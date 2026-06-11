@@ -1,26 +1,30 @@
-// GPU fluid simulation — Phases 1–2.
+// GPU fluid simulation — Phases 1–3 (Position Based Fluids).
 //
 // Demo-local (not babylon-lite core). Builds WebGPU compute pipelines from
 // `engine._device` and encodes the per-frame passes into the frame command
 // encoder (see the demo's onBeforeRender → sim.step).
 //
 // Phase 1: gravity integration + ground bounce.
-// Phase 2: spatial-hash neighbour grid (the backbone for the PBF density
-//   solver in Phase 3) + a neighbour-count debug pass used to colour particles
-//   so the grid can be verified visually.
+// Phase 2: spatial-hash neighbour grid (fixed-capacity uniform grid).
+// Phase 3: PBF density-constraint solver (Macklin & Müller 2013) on top of the
+//   grid — the fluid becomes incompressible, holds volume, pools and splashes.
 //
-// Neighbour grid design — FIXED-CAPACITY uniform grid (no prefix-sum scan):
-//   • The simulation domain is a box [origin, origin + dim*cellSize]; cellSize
-//     equals the smoothing radius h, so a particle's neighbours lie in its own
-//     cell + the 26 surrounding cells (3×3×3).
-//   • cellCount[cell]    — atomic per-cell population (clamped to maxPerCell on read).
-//     cellParticles[cell*maxPerCell + slot] — the particle indices in each cell.
-//   • Build is two passes: clear cellCount, then each particle atomicAdd's its
-//     cell slot and writes its index. This trades memory (numCells*maxPerCell
-//     u32) for avoiding a GPU prefix-sum + scatter (counting sort). Fine for a
-//     demo; switch to counting-sort if particle counts/domain grow large.
-//   • Particles outside the domain clamp to edge cells (escaped/falling liquid
-//     just stops contributing to neighbour search — acceptable).
+// PBF per frame (encoded as a chain of compute passes):
+//   1. predict      x* = x + (v + g·dt)·dt              (predicted positions)
+//   2. clearGrid    cellCount = 0
+//   3. buildGrid    bucket each particle by x* into its cell
+//   4. × iterations:
+//        a. lambda  ρ_i (poly6) → C_i = ρ_i/ρ0 − 1 → λ_i = −C_i / (Σ|∇C|² + ε)
+//        b. delta   Δp_i = (1/ρ0) Σ_j (λ_i+λ_j+s_corr) ∇W_spiky(x*_i − x*_j)
+//        c. apply   x* += Δp; clamp to the box boundary
+//   5. finalize     v = (x* − x)/dt ; x = x*               (write rendered pos)
+//   6. viscosity    XSPH smoothing v += c/ρ0 Σ_j (v_j−v_i) W ; debug = speed
+//
+// Neighbour grid — FIXED-CAPACITY uniform grid (no prefix-sum scan): cellSize
+//   equals the smoothing radius h so neighbours lie in the 3×3×3 cell stencil.
+//   cellCount[cell] is an atomic population; cellParticles[cell*maxPerCell+slot]
+//   holds the indices. The grid is built once per frame from the predicted
+//   positions and reused across all solver iterations (standard PBF).
 
 import type { EngineContext } from "babylon-lite";
 
@@ -35,17 +39,23 @@ export interface FluidSimOptions {
     spawnMax?: [number, number, number];
     /** Gravity acceleration (m/s²). Default 9.8. */
     gravity?: number;
-    /** Ground plane height; particles bounce off `y = groundY`. Default 0. */
-    groundY?: number;
-    /** Restitution of the ground bounce (0 = stick, 1 = perfectly elastic). Default 0.3. */
-    restitution?: number;
     /** Smoothing radius h = neighbour-grid cell size (world units). Default 0.4. */
     smoothingRadius?: number;
-    /** Neighbour-grid domain min corner. Default [-10, 0, -10]. */
-    gridOrigin?: [number, number, number];
-    /** Neighbour-grid dimensions in cells per axis. Default [50, 50, 50]. */
-    gridDim?: [number, number, number];
-    /** Max particles stored per grid cell. Default 48. */
+    /** Simulation box min corner (also the ground plane at y = boundsMin.y). Default [-4, 0, -4]. */
+    boundsMin?: [number, number, number];
+    /** Simulation box max corner. Default [4, 20, 4]. */
+    boundsMax?: [number, number, number];
+    /** Explicit PBF rest density. If omitted, derived from spawn number density × restDensityScale. */
+    restDensity?: number;
+    /** Multiplier applied to the derived rest density. Default 1.0. */
+    restDensityScale?: number;
+    /** PBF constraint solver iterations per frame. Default 3. */
+    iterations?: number;
+    /** Constraint-force relaxation ε (added to the λ denominator). Default 50. */
+    relaxation?: number;
+    /** XSPH viscosity coefficient (0 = none). Default 0.08. */
+    viscosity?: number;
+    /** Max particles stored per grid cell. Default 64. */
     maxPerCell?: number;
 }
 
@@ -54,9 +64,9 @@ export interface FluidSim {
     readonly particleRadius: number;
     /** vec4<f32>-per-particle position buffer (STORAGE). Read by the renderer. */
     readonly positionBuffer: GPUBuffer;
-    /** f32-per-particle neighbour count (Phase 2 debug). Read by the renderer to tint by density. */
+    /** f32-per-particle speed (Phase 3 debug). Read by the renderer to tint by motion. */
     readonly debugBuffer: GPUBuffer;
-    /** Normalisation reciprocal for `debugBuffer` (≈ 1 / typical max neighbour count). */
+    /** Normalisation reciprocal for `debugBuffer` (≈ 1 / typical max speed). */
     readonly debugNorm: number;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
@@ -67,52 +77,81 @@ export interface FluidSim {
 
 const WORKGROUP_SIZE = 64;
 
-const INTEGRATE_WGSL = /* wgsl */ `
-struct Params {
+// Sim uniform — 96 bytes. Per-frame mutable (dt); the rest are constant.
+//   [0] dt        [1] gravity   [2] restDensity [3] h
+//   [4] h2        [5] poly6     [6] spikyGrad   [7] eps
+//   [8] scorrK    [9] scorrInvWdq [10] scorrN   [11] viscosity
+//   [12] count(u32) [13..15] pad
+//   [16..19] boundsMin.xyz + pad
+//   [20..23] boundsMax.xyz + pad
+const SIM_BYTES = 96;
+
+// Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
+const GRID_BYTES = 32;
+
+const COMMON_WGSL = /* wgsl */ `
+const PI = 3.14159265359;
+
+struct Sim {
     dt: f32,
     gravity: f32,
-    groundY: f32,
-    restitution: f32,
+    restDensity: f32,
+    h: f32,
+    h2: f32,
+    poly6: f32,
+    spikyGrad: f32,
+    eps: f32,
+    scorrK: f32,
+    scorrInvWdq: f32,
+    scorrN: f32,
+    viscosity: f32,
     count: u32,
-    _p0: u32, _p1: u32, _p2: u32,
+    _s0: u32, _s1: u32, _s2: u32,
+    boundsMin: vec4<f32>,
+    boundsMax: vec4<f32>,
 };
-@group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
+
+struct Grid {
+    originCell: vec4<f32>,
+    dim: vec4<u32>,
+};
+
+fn poly6(r2: f32, sim: Sim) -> f32 {
+    if (r2 >= sim.h2) { return 0.0; }
+    let t = sim.h2 - r2;
+    return sim.poly6 * t * t * t;
+}
+
+// ∇W_spiky(r) with r = p_i - p_j (points along r). sim.spikyGrad already carries the sign.
+fn spikyGradient(r: vec3<f32>, rlen: f32, sim: Sim) -> vec3<f32> {
+    let c = sim.spikyGrad * (sim.h - rlen) * (sim.h - rlen) / rlen;
+    return c * r;
+}
+
+fn cellCoordOf(p: vec3<f32>, grid: Grid) -> vec3<i32> {
+    let rel = (p - grid.originCell.xyz) / grid.originCell.w;
+    return clamp(vec3<i32>(floor(rel)), vec3<i32>(0), vec3<i32>(grid.dim.xyz) - vec3<i32>(1));
+}
+fn cellLinear(c: vec3<i32>, grid: Grid) -> u32 {
+    return u32((c.z * i32(grid.dim.y) + c.y) * i32(grid.dim.x) + c.x);
+}
+`;
+
+const PREDICT_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> vel: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> predicted: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> sim: Sim;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i >= params.count) { return; }
-    var p = pos[i].xyz;
+    if (i >= sim.count) { return; }
     var v = vel[i].xyz;
-    v.y -= params.gravity * params.dt;
-    p += v * params.dt;
-    if (p.y < params.groundY) {
-        p.y = params.groundY;
-        v.y = -v.y * params.restitution;
-        v.x *= 0.92;
-        v.z *= 0.92;
-    }
-    pos[i] = vec4<f32>(p, 1.0);
-    vel[i] = vec4<f32>(v, 0.0);
-}`;
-
-// Shared grid-uniform declaration + cell math. originCell = (origin.xyz, cellSize);
-// dim = (gridDim.xyz, maxPerCell).
-const GRID_HEADER_WGSL = /* wgsl */ `
-struct GridParams {
-    originCell: vec4<f32>,
-    dim: vec4<u32>,
-    count: u32,
-    _g0: u32, _g1: u32, _g2: u32,
-};
-fn cellCoordOf(p: vec3<f32>, grid: GridParams) -> vec3<i32> {
-    let rel = (p - grid.originCell.xyz) / grid.originCell.w;
-    return clamp(vec3<i32>(floor(rel)), vec3<i32>(0), vec3<i32>(grid.dim.xyz) - vec3<i32>(1));
-}
-fn cellLinear(c: vec3<i32>, grid: GridParams) -> u32 {
-    return u32((c.z * i32(grid.dim.y) + c.y) * i32(grid.dim.x) + c.x);
+    v.y -= sim.gravity * sim.dt;
+    let p = pos[i].xyz + v * sim.dt;
+    predicted[i] = vec4<f32>(p, 1.0);
 }`;
 
 const CLEAR_GRID_WGSL = /* wgsl */ `
@@ -125,54 +164,192 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 
 const BUILD_GRID_WGSL = /* wgsl */ `
-${GRID_HEADER_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read_write> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: GridParams;
+@group(0) @binding(3) var<uniform> grid: Grid;
+@group(0) @binding(4) var<uniform> sim: Sim;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i >= grid.count) { return; }
-    let cell = cellLinear(cellCoordOf(pos[i].xyz, grid), grid);
+    if (i >= sim.count) { return; }
+    let cell = cellLinear(cellCoordOf(predicted[i].xyz, grid), grid);
     let slot = atomicAdd(&cellCount[cell], 1u);
     if (slot < grid.dim.w) {
         cellParticles[cell * grid.dim.w + slot] = i;
     }
 }`;
 
-const NEIGHBOR_COUNT_WGSL = /* wgsl */ `
-${GRID_HEADER_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+// λ_i = −C_i / (|∇_i C|² + Σ_j |∇_j C|² + ε)
+const LAMBDA_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: GridParams;
-@group(0) @binding(4) var<storage, read_write> dbg: array<f32>;
+@group(0) @binding(3) var<uniform> grid: Grid;
+@group(0) @binding(4) var<uniform> sim: Sim;
+@group(0) @binding(5) var<storage, read_write> lambda: array<f32>;
+
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i >= grid.count) { return; }
-    let pi = pos[i].xyz;
-    let h = grid.originCell.w;
-    let h2 = h * h;
+    if (i >= sim.count) { return; }
+    let pi = predicted[i].xyz;
     let base = cellCoordOf(pi, grid);
-    var cnt = 0u;
+    let invRho = 1.0 / sim.restDensity;
+
+    var rho = 0.0;
+    var gradI = vec3<f32>(0.0);
+    var sumGrad2 = 0.0;
     for (var dz = -1; dz <= 1; dz = dz + 1) {
-        for (var dy = -1; dy <= 1; dy = dy + 1) {
-            for (var dx = -1; dx <= 1; dx = dx + 1) {
-                let cc = base + vec3<i32>(dx, dy, dz);
-                if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
-                let cell = cellLinear(cc, grid);
-                let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-                for (var s = 0u; s < n; s = s + 1u) {
-                    let j = cellParticles[cell * grid.dim.w + s];
-                    let d = pi - pos[j].xyz;
-                    if (dot(d, d) < h2) { cnt = cnt + 1u; }
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+        let cc = base + vec3<i32>(dx, dy, dz);
+        if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
+        let cell = cellLinear(cc, grid);
+        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
+        for (var s = 0u; s < n; s = s + 1u) {
+            let j = cellParticles[cell * grid.dim.w + s];
+            let r = pi - predicted[j].xyz;
+            let r2 = dot(r, r);
+            if (r2 < sim.h2) {
+                rho += poly6(r2, sim);
+                if (r2 > 1e-9) {
+                    let g = spikyGradient(r, sqrt(r2), sim) * invRho;
+                    gradI += g;
+                    sumGrad2 += dot(g, g);
                 }
             }
         }
-    }
-    dbg[i] = f32(cnt);
+    }}}
+
+    // Clamp to compression only (C ≥ 0): a free surface is naturally under-dense,
+    // and negative pressure there would pull the surface inward and collapse the
+    // whole body. Incompressibility (repulsion when over-dense) is all we need.
+    let ci = max(rho * invRho - 1.0, 0.0);
+    let denom = dot(gradI, gradI) + sumGrad2 + sim.eps;
+    lambda[i] = -ci / denom;
+}`;
+
+// Δp_i = (1/ρ0) Σ_j (λ_i + λ_j + s_corr) ∇W_spiky
+const DELTA_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read> cellParticles: array<u32>;
+@group(0) @binding(3) var<uniform> grid: Grid;
+@group(0) @binding(4) var<uniform> sim: Sim;
+@group(0) @binding(5) var<storage, read> lambda: array<f32>;
+@group(0) @binding(6) var<storage, read_write> delta: array<vec4<f32>>;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= sim.count) { return; }
+    let pi = predicted[i].xyz;
+    let li = lambda[i];
+    let base = cellCoordOf(pi, grid);
+
+    var dp = vec3<f32>(0.0);
+    for (var dz = -1; dz <= 1; dz = dz + 1) {
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+        let cc = base + vec3<i32>(dx, dy, dz);
+        if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
+        let cell = cellLinear(cc, grid);
+        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
+        for (var s = 0u; s < n; s = s + 1u) {
+            let j = cellParticles[cell * grid.dim.w + s];
+            if (j == i) { continue; }
+            let r = pi - predicted[j].xyz;
+            let r2 = dot(r, r);
+            if (r2 < sim.h2 && r2 > 1e-9) {
+                let w = poly6(r2, sim);
+                let scorr = -sim.scorrK * pow(w * sim.scorrInvWdq, sim.scorrN);
+                dp += (li + lambda[j] + scorr) * spikyGradient(r, sqrt(r2), sim);
+            }
+        }
+    }}}
+
+    delta[i] = vec4<f32>(dp / sim.restDensity, 0.0);
+}`;
+
+const APPLY_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> predicted: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> delta: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> sim: Sim;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= sim.count) { return; }
+    var p = predicted[i].xyz + delta[i].xyz;
+    let lo = sim.boundsMin.xyz;
+    let hi = sim.boundsMax.xyz;
+    p = clamp(p, lo, hi);
+    predicted[i] = vec4<f32>(p, 1.0);
+}`;
+
+const FINALIZE_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> sim: Sim;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= sim.count) { return; }
+    let xnew = predicted[i].xyz;
+    let v = (xnew - pos[i].xyz) / sim.dt;
+    pos[i] = vec4<f32>(xnew, 1.0);
+    vel[i] = vec4<f32>(v, 0.0);
+}`;
+
+// XSPH viscosity + speed readout for colouring. Reuses the per-frame grid
+// (positions now equal the finalised predicted positions).
+const VISCOSITY_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read> cellParticles: array<u32>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@group(0) @binding(6) var<storage, read_write> dbg: array<f32>;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= sim.count) { return; }
+    let pi = pos[i].xyz;
+    let vi = vel[i].xyz;
+    let base = cellCoordOf(pi, grid);
+
+    var dv = vec3<f32>(0.0);
+    for (var dz = -1; dz <= 1; dz = dz + 1) {
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+    for (var dx = -1; dx <= 1; dx = dx + 1) {
+        let cc = base + vec3<i32>(dx, dy, dz);
+        if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
+        let cell = cellLinear(cc, grid);
+        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
+        for (var s = 0u; s < n; s = s + 1u) {
+            let j = cellParticles[cell * grid.dim.w + s];
+            let r = pi - pos[j].xyz;
+            let r2 = dot(r, r);
+            if (r2 < sim.h2) {
+                dv += (vel[j].xyz - vi) * poly6(r2, sim);
+            }
+        }
+    }}}
+
+    let v = vi + (sim.viscosity / sim.restDensity) * dv;
+    vel[i] = vec4<f32>(v, 0.0);
+    dbg[i] = length(v);
 }`;
 
 export function createFluidSim(engine: EngineContext, options: FluidSimOptions = {}): FluidSim {
@@ -182,42 +359,88 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const spawnMin = options.spawnMin ?? [-2, 6, -2];
     const spawnMax = options.spawnMax ?? [2, 12, 2];
     const gravity = options.gravity ?? 9.8;
-    const groundY = options.groundY ?? 0;
-    const restitution = options.restitution ?? 0.3;
     const h = options.smoothingRadius ?? 0.4;
-    const gridOrigin = options.gridOrigin ?? [-10, 0, -10];
-    const gridDim = options.gridDim ?? [50, 50, 50];
-    const maxPerCell = options.maxPerCell ?? 48;
+    const boundsMin = options.boundsMin ?? [-4, 0, -4];
+    const boundsMax = options.boundsMax ?? [4, 20, 4];
+    const restDensityScale = options.restDensityScale ?? 1.0;
+    const iterations = options.iterations ?? 3;
+    const relaxation = options.relaxation ?? 50;
+    const viscosity = options.viscosity ?? 0.08;
+    const maxPerCell = options.maxPerCell ?? 64;
+
+    // Rest density: spawn number density (particles / spawn volume) × scale.
+    const spawnVol = Math.max(
+        1e-6,
+        (spawnMax[0] - spawnMin[0]) * (spawnMax[1] - spawnMin[1]) * (spawnMax[2] - spawnMin[2]),
+    );
+    const restDensity = options.restDensity ?? (count / spawnVol) * restDensityScale;
+
+    // Grid derived from the bounds so cells tightly cover the active region.
+    const gridDim: [number, number, number] = [
+        Math.max(1, Math.ceil((boundsMax[0] - boundsMin[0]) / h)),
+        Math.max(1, Math.ceil((boundsMax[1] - boundsMin[1]) / h)),
+        Math.max(1, Math.ceil((boundsMax[2] - boundsMin[2]) / h)),
+    ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
+
+    // Kernel coefficients (mass = 1).
+    const h2 = h * h;
+    const poly6Coef = 315 / (64 * Math.PI * Math.pow(h, 9));
+    const spikyGradCoef = -45 / (Math.PI * Math.pow(h, 6));
+    const dq = 0.2 * h;
+    const wDq = poly6Coef * Math.pow(h2 - dq * dq, 3);
+    const scorrInvWdq = 1 / wDq;
+    const scorrK = 0.0001;
+    const scorrN = 4;
 
     // ── Buffers ──────────────────────────────────────────────────────
     const positionBuffer = device.createBuffer({ label: "fluid-positions", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const velocityBuffer = device.createBuffer({ label: "fluid-velocities", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const predictedBuffer = device.createBuffer({ label: "fluid-predicted", size: count * 16, usage: GPUBufferUsage.STORAGE });
+    const lambdaBuffer = device.createBuffer({ label: "fluid-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
+    const deltaBuffer = device.createBuffer({ label: "fluid-delta", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const debugBuffer = device.createBuffer({ label: "fluid-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const cellCountBuffer = device.createBuffer({ label: "fluid-cell-count", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const cellParticlesBuffer = device.createBuffer({ label: "fluid-cell-particles", size: numCells * maxPerCell * 4, usage: GPUBufferUsage.STORAGE });
-    const paramsBuffer = device.createBuffer({ label: "fluid-params", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const gridParamsBuffer = device.createBuffer({ label: "fluid-grid-params", size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const simBuffer = device.createBuffer({ label: "fluid-sim", size: SIM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const gridBuffer = device.createBuffer({ label: "fluid-grid", size: GRID_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-    const paramsData = new ArrayBuffer(32);
-    const paramsF32 = new Float32Array(paramsData);
-    const paramsU32 = new Uint32Array(paramsData);
+    const simData = new ArrayBuffer(SIM_BYTES);
+    const simF32 = new Float32Array(simData);
+    const simU32 = new Uint32Array(simData);
+    simF32[1] = gravity;
+    simF32[2] = restDensity;
+    simF32[3] = h;
+    simF32[4] = h2;
+    simF32[5] = poly6Coef;
+    simF32[6] = spikyGradCoef;
+    simF32[7] = relaxation;
+    simF32[8] = scorrK;
+    simF32[9] = scorrInvWdq;
+    simF32[10] = scorrN;
+    simF32[11] = viscosity;
+    simU32[12] = count;
+    simF32[16] = boundsMin[0];
+    simF32[17] = boundsMin[1];
+    simF32[18] = boundsMin[2];
+    simF32[20] = boundsMax[0];
+    simF32[21] = boundsMax[1];
+    simF32[22] = boundsMax[2];
 
     // Grid params are static for the lifetime of the sim.
     {
-        const gridData = new ArrayBuffer(48);
+        const gridData = new ArrayBuffer(GRID_BYTES);
         const gf32 = new Float32Array(gridData);
         const gu32 = new Uint32Array(gridData);
-        gf32[0] = gridOrigin[0];
-        gf32[1] = gridOrigin[1];
-        gf32[2] = gridOrigin[2];
+        gf32[0] = boundsMin[0];
+        gf32[1] = boundsMin[1];
+        gf32[2] = boundsMin[2];
         gf32[3] = h; // cellSize
         gu32[4] = gridDim[0];
         gu32[5] = gridDim[1];
         gu32[6] = gridDim[2];
         gu32[7] = maxPerCell;
-        gu32[8] = count;
-        device.queue.writeBuffer(gridParamsBuffer, 0, gridData);
+        device.queue.writeBuffer(gridBuffer, 0, gridData);
     }
 
     function seed(): void {
@@ -239,17 +462,22 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     function computePipeline(label: string, code: string): GPUComputePipeline {
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
-    const integratePipeline = computePipeline("fluid-integrate", INTEGRATE_WGSL);
+    const predictPipeline = computePipeline("fluid-predict", PREDICT_WGSL);
     const clearGridPipeline = computePipeline("fluid-clear-grid", CLEAR_GRID_WGSL);
     const buildGridPipeline = computePipeline("fluid-build-grid", BUILD_GRID_WGSL);
-    const neighborPipeline = computePipeline("fluid-neighbor-count", NEIGHBOR_COUNT_WGSL);
+    const lambdaPipeline = computePipeline("fluid-lambda", LAMBDA_WGSL);
+    const deltaPipeline = computePipeline("fluid-delta", DELTA_WGSL);
+    const applyPipeline = computePipeline("fluid-apply", APPLY_WGSL);
+    const finalizePipeline = computePipeline("fluid-finalize", FINALIZE_WGSL);
+    const viscosityPipeline = computePipeline("fluid-viscosity", VISCOSITY_WGSL);
 
-    const integrateBG = device.createBindGroup({
-        layout: integratePipeline.getBindGroupLayout(0),
+    const predictBG = device.createBindGroup({
+        layout: predictPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: positionBuffer } },
             { binding: 1, resource: { buffer: velocityBuffer } },
-            { binding: 2, resource: { buffer: paramsBuffer } },
+            { binding: 2, resource: { buffer: predictedBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
         ],
     });
     const clearGridBG = device.createBindGroup({
@@ -259,20 +487,63 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const buildGridBG = device.createBindGroup({
         layout: buildGridPipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: positionBuffer } },
+            { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
             { binding: 2, resource: { buffer: cellParticlesBuffer } },
-            { binding: 3, resource: { buffer: gridParamsBuffer } },
+            { binding: 3, resource: { buffer: gridBuffer } },
+            { binding: 4, resource: { buffer: simBuffer } },
         ],
     });
-    const neighborBG = device.createBindGroup({
-        layout: neighborPipeline.getBindGroupLayout(0),
+    const lambdaBG = device.createBindGroup({
+        layout: lambdaPipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: positionBuffer } },
+            { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
             { binding: 2, resource: { buffer: cellParticlesBuffer } },
-            { binding: 3, resource: { buffer: gridParamsBuffer } },
-            { binding: 4, resource: { buffer: debugBuffer } },
+            { binding: 3, resource: { buffer: gridBuffer } },
+            { binding: 4, resource: { buffer: simBuffer } },
+            { binding: 5, resource: { buffer: lambdaBuffer } },
+        ],
+    });
+    const deltaBG = device.createBindGroup({
+        layout: deltaPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: predictedBuffer } },
+            { binding: 1, resource: { buffer: cellCountBuffer } },
+            { binding: 2, resource: { buffer: cellParticlesBuffer } },
+            { binding: 3, resource: { buffer: gridBuffer } },
+            { binding: 4, resource: { buffer: simBuffer } },
+            { binding: 5, resource: { buffer: lambdaBuffer } },
+            { binding: 6, resource: { buffer: deltaBuffer } },
+        ],
+    });
+    const applyBG = device.createBindGroup({
+        layout: applyPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: predictedBuffer } },
+            { binding: 1, resource: { buffer: deltaBuffer } },
+            { binding: 2, resource: { buffer: simBuffer } },
+        ],
+    });
+    const finalizeBG = device.createBindGroup({
+        layout: finalizePipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: positionBuffer } },
+            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 2, resource: { buffer: predictedBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
+        ],
+    });
+    const viscosityBG = device.createBindGroup({
+        layout: viscosityPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: positionBuffer } },
+            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 2, resource: { buffer: cellCountBuffer } },
+            { binding: 3, resource: { buffer: cellParticlesBuffer } },
+            { binding: 4, resource: { buffer: gridBuffer } },
+            { binding: 5, resource: { buffer: simBuffer } },
+            { binding: 6, resource: { buffer: debugBuffer } },
         ],
     });
 
@@ -292,20 +563,27 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
         particleRadius,
         positionBuffer,
         debugBuffer,
-        // Typical max neighbour count within h ≈ a full 3×3×3 stencil; normalise to that for colour.
-        debugNorm: 1 / 60,
+        // Speed colour normalisation: typical lively splash speed ≈ 5 world units/s.
+        debugNorm: 1 / 5,
         step(encoder: GPUCommandEncoder, dt: number): void {
-            paramsF32[0] = dt;
-            paramsF32[1] = gravity;
-            paramsF32[2] = groundY;
-            paramsF32[3] = restitution;
-            paramsU32[4] = count;
-            device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+            // finalize divides by dt; a zero/NaN dt (e.g. the very first frame)
+            // would poison every position with NaN, so skip such frames.
+            if (!(dt > 0)) {
+                return;
+            }
+            simF32[0] = dt;
+            device.queue.writeBuffer(simBuffer, 0, simData);
 
-            dispatch(encoder, "fluid-integrate", integratePipeline, integrateBG, particleGroups);
+            dispatch(encoder, "fluid-predict", predictPipeline, predictBG, particleGroups);
             dispatch(encoder, "fluid-clear-grid", clearGridPipeline, clearGridBG, cellGroups);
             dispatch(encoder, "fluid-build-grid", buildGridPipeline, buildGridBG, particleGroups);
-            dispatch(encoder, "fluid-neighbor-count", neighborPipeline, neighborBG, particleGroups);
+            for (let it = 0; it < iterations; it++) {
+                dispatch(encoder, "fluid-lambda", lambdaPipeline, lambdaBG, particleGroups);
+                dispatch(encoder, "fluid-delta", deltaPipeline, deltaBG, particleGroups);
+                dispatch(encoder, "fluid-apply", applyPipeline, applyBG, particleGroups);
+            }
+            dispatch(encoder, "fluid-finalize", finalizePipeline, finalizeBG, particleGroups);
+            dispatch(encoder, "fluid-viscosity", viscosityPipeline, viscosityBG, particleGroups);
         },
         reset(): void {
             seed();
@@ -313,11 +591,14 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
         dispose(): void {
             positionBuffer.destroy();
             velocityBuffer.destroy();
+            predictedBuffer.destroy();
+            lambdaBuffer.destroy();
+            deltaBuffer.destroy();
             debugBuffer.destroy();
             cellCountBuffer.destroy();
             cellParticlesBuffer.destroy();
-            paramsBuffer.destroy();
-            gridParamsBuffer.destroy();
+            simBuffer.destroy();
+            gridBuffer.destroy();
         },
     };
 }

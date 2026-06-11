@@ -1,4 +1,4 @@
-// Particle renderer for the GPU fluid sim — Phase 1.
+// Particle renderer for the GPU fluid sim.
 //
 // Draws the GPU-resident particles as camera-facing billboarded sphere
 // impostors, reading the simulation's position buffer directly in the vertex
@@ -48,10 +48,10 @@ struct VOut {
     var o: VOut;
     o.clip = cam.vp * vec4<f32>(world, 1.0);
     o.uv = c;
-    // Colour by local neighbour density (Phase 2 grid validation): cool (sparse)
-    // → warm (dense). A working grid shows the packed block hot and the spray cool.
+    // Colour by speed (Phase 3): slow/settled liquid is deep blue, fast-moving
+    // splashes/foam tend toward bright cyan-white.
     let t = clamp(dbg[ii] * cam.misc.y, 0.0, 1.0);
-    o.color = mix(vec3<f32>(0.15, 0.45, 0.95), vec3<f32>(1.0, 0.85, 0.25), t);
+    o.color = mix(vec3<f32>(0.10, 0.35, 0.85), vec3<f32>(0.85, 0.95, 1.0), t);
     return o;
 }
 
