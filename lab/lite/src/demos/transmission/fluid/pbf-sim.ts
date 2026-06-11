@@ -84,7 +84,9 @@ export interface FluidSim {
     readonly debugNorm: number;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
-    /** Re-seed all particles into the spawn box with zero velocity. */
+    /** Open a spherical hole in the capsule wall; liquid within escapes and drains. */
+    setHole(center: [number, number, number], radius: number): void;
+    /** Re-seed all particles into the spawn box with zero velocity and seal the tank. */
     reset(): void;
     dispose(): void;
 }
@@ -100,6 +102,7 @@ const WORKGROUP_SIZE = 64;
 //   [20..23] boundsMax.xyz + pad
 //   [24..27] capsuleA.xyz + capsuleRadius
 //   [28..31] capsuleB.xyz + groundY
+//   [32..35] holeCenter.xyz + holeRadius (radius 0 = no hole)
 const SIM_BYTES = 144;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
@@ -129,6 +132,7 @@ struct Sim {
     boundsMax: vec4<f32>,
     capsuleA: vec4<f32>,
     capsuleB: vec4<f32>,
+    holeCenter: vec4<f32>,
 };
 
 struct Grid {
@@ -329,18 +333,21 @@ ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read_write> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> delta: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> sim: Sim;
+@group(0) @binding(3) var<storage, read_write> escaped: array<u32>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= sim.count) { return; }
     var p = predicted[i].xyz + delta[i].xyz;
+    var esc = escaped[i];
 
-    if (sim.capsuleMode != 0u) {
-        // Keep the particle inside the capsule tank: project onto the inner
-        // surface along the radial direction from the nearest point on the
-        // capsule's core segment. The rounded boundary leaves no flat faces or
-        // sharp edges for particles to align against.
+    // Particles that have left through the hole are free; only those still
+    // inside are confined by the capsule wall.
+    if (sim.capsuleMode != 0u && esc == 0u) {
+        // Project onto the capsule's inner surface along the radial direction
+        // from the nearest point on its core segment. The rounded boundary
+        // leaves no flat faces or sharp edges for particles to align against.
         let a = sim.capsuleA.xyz;
         let b = sim.capsuleB.xyz;
         let r = sim.capsuleA.w;
@@ -350,7 +357,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let radial = p - axisPt;
         let dist = length(radial);
         if (dist > r) {
-            p = axisPt + radial * (r / max(dist, 1e-6));
+            // Outside the wall: escape through the hole, otherwise bounce back in.
+            if (sim.holeCenter.w > 0.0 && distance(p, sim.holeCenter.xyz) < sim.holeCenter.w) {
+                esc = 1u;
+            } else {
+                p = axisPt + radial * (r / max(dist, 1e-6));
+            }
         }
     }
 
@@ -359,6 +371,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Safety: never leave the neighbour-grid domain.
     p = clamp(p, sim.boundsMin.xyz, sim.boundsMax.xyz);
     predicted[i] = vec4<f32>(p, 1.0);
+    escaped[i] = esc;
 }`;
 
 const FINALIZE_WGSL = /* wgsl */ `
@@ -474,6 +487,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const lambdaBuffer = device.createBuffer({ label: "fluid-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
     const deltaBuffer = device.createBuffer({ label: "fluid-delta", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const debugBuffer = device.createBuffer({ label: "fluid-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const escapedBuffer = device.createBuffer({ label: "fluid-escaped", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const cellCountBuffer = device.createBuffer({ label: "fluid-cell-count", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const cellParticlesBuffer = device.createBuffer({ label: "fluid-cell-particles", size: numCells * maxPerCell * 4, usage: GPUBufferUsage.STORAGE });
     const simBuffer = device.createBuffer({ label: "fluid-sim", size: SIM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -539,6 +553,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
         device.queue.writeBuffer(positionBuffer, 0, positions);
         device.queue.writeBuffer(velocityBuffer, 0, new Float32Array(count * 4));
         device.queue.writeBuffer(debugBuffer, 0, new Float32Array(count));
+        device.queue.writeBuffer(escapedBuffer, 0, new Uint32Array(count));
     }
     seed();
 
@@ -607,6 +622,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: deltaBuffer } },
             { binding: 2, resource: { buffer: simBuffer } },
+            { binding: 3, resource: { buffer: escapedBuffer } },
         ],
     });
     const finalizeBG = device.createBindGroup({
@@ -670,7 +686,17 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             dispatch(encoder, "fluid-viscosity", viscosityPipeline, viscosityBG, particleGroups);
         },
         reset(): void {
+            simF32[32] = 0;
+            simF32[33] = 0;
+            simF32[34] = 0;
+            simF32[35] = 0;
             seed();
+        },
+        setHole(center: [number, number, number], radius: number): void {
+            simF32[32] = center[0];
+            simF32[33] = center[1];
+            simF32[34] = center[2];
+            simF32[35] = radius;
         },
         dispose(): void {
             positionBuffer.destroy();
@@ -679,6 +705,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             lambdaBuffer.destroy();
             deltaBuffer.destroy();
             debugBuffer.destroy();
+            escapedBuffer.destroy();
             cellCountBuffer.destroy();
             cellParticlesBuffer.destroy();
             simBuffer.destroy();

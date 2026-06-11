@@ -87,9 +87,10 @@ async function main(): Promise<void> {
         capsuleB: CAP_B,
         capsuleRadius: CAP_R,
         groundY: 0,
-        // Neighbour-grid domain = capsule AABB (+ small pad).
-        boundsMin: [-CAP_R - 0.2, 0, -CAP_R - 0.2],
-        boundsMax: [CAP_R + 0.2, CAP_B[1] + CAP_R + 0.2, CAP_R + 0.2],
+        // Neighbour-grid domain: capsule + surrounding ground so drained liquid
+        // has room to pool around the tank.
+        boundsMin: [-7, 0, -7],
+        boundsMax: [7, CAP_B[1] + CAP_R + 0.2, 7],
     });
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim });
     addTask(scene, particleTask);
@@ -100,9 +101,15 @@ async function main(): Promise<void> {
         sim.step(engine._currentEncoder, dt);
     });
 
-    // LMB resets the particle block (placeholder until Phase 5 wires the hole).
+    // LMB punches a hole in the tank wall at a random spot (low, so the liquid
+    // drains out and falls to the ground); right-click reseals + refills the tank.
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("pointerdown", (e) => {
         if (e.button === 0) {
+            const theta = Math.random() * Math.PI * 2;
+            const y = CAP_A[1] + 0.2 + Math.random() * 0.8;
+            sim.setHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], 1.3);
+        } else if (e.button === 2) {
             sim.reset();
         }
     });
