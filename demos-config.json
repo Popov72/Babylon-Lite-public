@@ -1,5 +1,12 @@
 [
     {
+        "slug": "transmission",
+        "name": "Fluid Tank (GPU)",
+        "description": "WebGPU compute-shader fluid simulation: GPU-resident particles fall under gravity and pile on the ground, rendered as instanced sphere impostors that read the simulation's position buffer directly. Phase 1 of a Position Based Fluids tank demo (capsule tank, transmissive shell, and click-to-puncture draining to follow).",
+        "tags": ["compute", "simulation", "showcase"],
+        "mobile": false
+    },
+    {
         "slug": "offscreen",
         "name": "Offscreen (Worker)",
         "description": "Side-by-side proof that Lite renders identically on the main thread (left, regular canvas) and inside a Web Worker via OffscreenCanvas (right). A button runs heavy synchronous work on the main thread: the left canvas freezes while the worker-driven right canvas keeps spinning at full speed. Reproduction of the Babylon.js Offscreen demo.",
