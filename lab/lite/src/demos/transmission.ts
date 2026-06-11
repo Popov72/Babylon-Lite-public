@@ -43,7 +43,7 @@ async function main(): Promise<void> {
     // writing the swapchain colour and sharing a depth buffer we control.
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
-    const cam = createArcRotateCamera(-Math.PI / 2, 1.15, 18, { x: 0, y: 1.5, z: 0 });
+    const cam = createArcRotateCamera(-Math.PI / 2, 1.1, 24, { x: 0, y: 5, z: 0 });
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
     scene.camera = cam;
@@ -70,11 +70,26 @@ async function main(): Promise<void> {
     );
     addTask(scene, sceneTask);
 
+    // Capsule tank: a vertical pill sitting on the ground (bottom hemisphere
+    // touches y = 0). The liquid is constrained to its interior; the rounded
+    // boundary avoids the flat-wall lattice artefacts of a box.
+    const CAP_A: [number, number, number] = [0, 3, 0];
+    const CAP_B: [number, number, number] = [0, 9, 0];
+    const CAP_R = 3;
+
     const sim = createFluidSim(engine, {
         count: PARTICLE_COUNT,
         particleRadius: 0.09,
-        spawnMin: [-2.5, 7, -2.5],
-        spawnMax: [2.5, 13, 2.5],
+        // Seed a slab of liquid inside the lower capsule (radius-safe corners).
+        spawnMin: [-2, 3.5, -2],
+        spawnMax: [2, 9.5, 2],
+        capsuleA: CAP_A,
+        capsuleB: CAP_B,
+        capsuleRadius: CAP_R,
+        groundY: 0,
+        // Neighbour-grid domain = capsule AABB (+ small pad).
+        boundsMin: [-CAP_R - 0.2, 0, -CAP_R - 0.2],
+        boundsMax: [CAP_R + 0.2, CAP_B[1] + CAP_R + 0.2, CAP_R + 0.2],
     });
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim });
     addTask(scene, particleTask);

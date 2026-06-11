@@ -41,10 +41,18 @@ export interface FluidSimOptions {
     gravity?: number;
     /** Smoothing radius h = neighbour-grid cell size (world units). Default 0.4. */
     smoothingRadius?: number;
-    /** Simulation box min corner (also the ground plane at y = boundsMin.y). Default [-4, 0, -4]. */
+    /** Simulation box min corner — the neighbour-grid domain AABB. Default [-4, 0, -4]. */
     boundsMin?: [number, number, number];
-    /** Simulation box max corner. Default [4, 20, 4]. */
+    /** Simulation box max corner — the neighbour-grid domain AABB. Default [4, 20, 4]. */
     boundsMax?: [number, number, number];
+    /** Capsule tank boundary: centre of the bottom hemisphere. Default null (box boundary). */
+    capsuleA?: [number, number, number];
+    /** Capsule tank boundary: centre of the top hemisphere. */
+    capsuleB?: [number, number, number];
+    /** Capsule tank radius. */
+    capsuleRadius?: number;
+    /** Ground plane height; particles are floored at y = groundY. Default boundsMin.y. */
+    groundY?: number;
     /** Explicit PBF rest density. If omitted, derived from spawn number density × restDensityScale. */
     restDensity?: number;
     /** Multiplier applied to the derived rest density. Default 1.0. */
@@ -77,14 +85,16 @@ export interface FluidSim {
 
 const WORKGROUP_SIZE = 64;
 
-// Sim uniform — 96 bytes. Per-frame mutable (dt); the rest are constant.
+// Sim uniform — 144 bytes. Per-frame mutable (dt); the rest are constant.
 //   [0] dt        [1] gravity   [2] restDensity [3] h
 //   [4] h2        [5] poly6     [6] spikyGrad   [7] eps
 //   [8] scorrK    [9] scorrInvWdq [10] scorrN   [11] viscosity
-//   [12] count(u32) [13..15] pad
+//   [12] count(u32) [13] capsuleMode(u32) [14..15] pad
 //   [16..19] boundsMin.xyz + pad
 //   [20..23] boundsMax.xyz + pad
-const SIM_BYTES = 96;
+//   [24..27] capsuleA.xyz + capsuleRadius
+//   [28..31] capsuleB.xyz + groundY
+const SIM_BYTES = 144;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
 const GRID_BYTES = 32;
@@ -106,9 +116,12 @@ struct Sim {
     scorrN: f32,
     viscosity: f32,
     count: u32,
-    _s0: u32, _s1: u32, _s2: u32,
+    capsuleMode: u32,
+    _s1: u32, _s2: u32,
     boundsMin: vec4<f32>,
     boundsMax: vec4<f32>,
+    capsuleA: vec4<f32>,
+    capsuleB: vec4<f32>,
 };
 
 struct Grid {
@@ -286,9 +299,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= sim.count) { return; }
     var p = predicted[i].xyz + delta[i].xyz;
-    let lo = sim.boundsMin.xyz;
-    let hi = sim.boundsMax.xyz;
-    p = clamp(p, lo, hi);
+
+    if (sim.capsuleMode != 0u) {
+        // Keep the particle inside the capsule tank: project onto the inner
+        // surface along the radial direction from the nearest point on the
+        // capsule's core segment. The rounded boundary leaves no flat faces or
+        // sharp edges for particles to align against.
+        let a = sim.capsuleA.xyz;
+        let b = sim.capsuleB.xyz;
+        let r = sim.capsuleA.w;
+        let ba = b - a;
+        let hh = clamp(dot(p - a, ba) / dot(ba, ba), 0.0, 1.0);
+        let axisPt = a + ba * hh;
+        let radial = p - axisPt;
+        let dist = length(radial);
+        if (dist > r) {
+            p = axisPt + radial * (r / max(dist, 1e-6));
+        }
+    }
+
+    // Ground floor (escaped liquid lands here once the tank is breached).
+    p.y = max(p.y, sim.capsuleB.w);
+    // Safety: never leave the neighbour-grid domain.
+    p = clamp(p, sim.boundsMin.xyz, sim.boundsMax.xyz);
     predicted[i] = vec4<f32>(p, 1.0);
 }`;
 
@@ -362,6 +395,10 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const h = options.smoothingRadius ?? 0.4;
     const boundsMin = options.boundsMin ?? [-4, 0, -4];
     const boundsMax = options.boundsMax ?? [4, 20, 4];
+    const capsuleA = options.capsuleA ?? null;
+    const capsuleB = options.capsuleB ?? null;
+    const capsuleRadius = options.capsuleRadius ?? 0;
+    const groundY = options.groundY ?? boundsMin[1];
     const restDensityScale = options.restDensityScale ?? 1.0;
     const iterations = options.iterations ?? 3;
     const relaxation = options.relaxation ?? 50;
@@ -420,12 +457,21 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     simF32[10] = scorrN;
     simF32[11] = viscosity;
     simU32[12] = count;
+    simU32[13] = capsuleA && capsuleB ? 1 : 0;
     simF32[16] = boundsMin[0];
     simF32[17] = boundsMin[1];
     simF32[18] = boundsMin[2];
     simF32[20] = boundsMax[0];
     simF32[21] = boundsMax[1];
     simF32[22] = boundsMax[2];
+    simF32[24] = capsuleA ? capsuleA[0] : 0;
+    simF32[25] = capsuleA ? capsuleA[1] : 0;
+    simF32[26] = capsuleA ? capsuleA[2] : 0;
+    simF32[27] = capsuleRadius;
+    simF32[28] = capsuleB ? capsuleB[0] : 0;
+    simF32[29] = capsuleB ? capsuleB[1] : 0;
+    simF32[30] = capsuleB ? capsuleB[2] : 0;
+    simF32[31] = groundY;
 
     // Grid params are static for the lifetime of the sim.
     {
