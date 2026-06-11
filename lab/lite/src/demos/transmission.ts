@@ -15,17 +15,20 @@ import {
     addToScene,
     attachControl,
     createArcRotateCamera,
+    createCylinder,
     createEngine,
     createGround,
     createHemisphericLight,
     createRenderTarget,
     createRenderTask,
     createSceneContext,
+    createSphere,
     createStandardMaterial,
     onBeforeRender,
     registerScene,
     startEngine,
 } from "babylon-lite";
+import type { Mesh } from "babylon-lite";
 import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 
@@ -76,6 +79,23 @@ async function main(): Promise<void> {
     const CAP_A: [number, number, number] = [0, 3, 0];
     const CAP_B: [number, number, number] = [0, 9, 0];
     const CAP_R = 3;
+
+    // Transparent glass shell so the tank is visible (cylinder body + two
+    // hemispherical caps). Alpha < 1 makes the standard material blend and skip
+    // depth writes, so the liquid particles (drawn afterwards) stay visible
+    // through it.
+    const glass = createStandardMaterial();
+    glass.diffuseColor = [0.5, 0.66, 0.82];
+    glass.specularColor = [0.8, 0.85, 0.95];
+    glass.alpha = 0.15;
+    const addShellPart = (mesh: Mesh, x: number, y: number, z: number): void => {
+        mesh.material = glass;
+        mesh.position.set(x, y, z);
+        addToScene(scene, mesh);
+    };
+    addShellPart(createCylinder(engine, { height: CAP_B[1] - CAP_A[1], diameter: 2 * CAP_R, tessellation: 48 }), 0, (CAP_A[1] + CAP_B[1]) / 2, 0);
+    addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_A[0], CAP_A[1], CAP_A[2]);
+    addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_B[0], CAP_B[1], CAP_B[2]);
 
     const sim = createFluidSim(engine, {
         count: PARTICLE_COUNT,
