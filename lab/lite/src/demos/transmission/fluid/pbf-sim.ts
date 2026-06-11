@@ -63,6 +63,12 @@ export interface FluidSimOptions {
     relaxation?: number;
     /** XSPH viscosity coefficient (0 = none). Default 0.08. */
     viscosity?: number;
+    /** Artificial-pressure (s_corr) strength — counters tensile instability and
+     *  keeps a free surface from collapsing under its own cohesion. Default 0.02. */
+    scorr?: number;
+    /** Boundary density support: fraction of ρ₀ added to particles touching a
+     *  solid wall, compensating the SPH density deficiency there (0 = off). Default 0. */
+    boundaryDensity?: number;
     /** Max particles stored per grid cell. Default 64. */
     maxPerCell?: number;
 }
@@ -89,7 +95,7 @@ const WORKGROUP_SIZE = 64;
 //   [0] dt        [1] gravity   [2] restDensity [3] h
 //   [4] h2        [5] poly6     [6] spikyGrad   [7] eps
 //   [8] scorrK    [9] scorrInvWdq [10] scorrN   [11] viscosity
-//   [12] count(u32) [13] capsuleMode(u32) [14..15] pad
+//   [12] count(u32) [13] capsuleMode(u32) [14] boundaryDensity [15] pad
 //   [16..19] boundsMin.xyz + pad
 //   [20..23] boundsMax.xyz + pad
 //   [24..27] capsuleA.xyz + capsuleRadius
@@ -117,7 +123,8 @@ struct Sim {
     viscosity: f32,
     count: u32,
     capsuleMode: u32,
-    _s1: u32, _s2: u32,
+    boundaryDensity: f32,
+    _s2: u32,
     boundsMin: vec4<f32>,
     boundsMax: vec4<f32>,
     capsuleA: vec4<f32>,
@@ -147,6 +154,21 @@ fn cellCoordOf(p: vec3<f32>, grid: Grid) -> vec3<i32> {
 }
 fn cellLinear(c: vec3<i32>, grid: Grid) -> u32 {
     return u32((c.z * i32(grid.dim.y) + c.y) * i32(grid.dim.x) + c.x);
+}
+
+// Distance from p to the nearest confining solid boundary (capsule wall and/or
+// ground floor). Positive inside the fluid region. Used to add the missing SPH
+// density near walls so the fluid doesn't climb them.
+fn distToSolid(p: vec3<f32>, sim: Sim) -> f32 {
+    var d = p.y - sim.capsuleB.w; // ground floor
+    if (sim.capsuleMode != 0u) {
+        let a = sim.capsuleA.xyz;
+        let ba = sim.capsuleB.xyz - a;
+        let hh = clamp(dot(p - a, ba) / dot(ba, ba), 0.0, 1.0);
+        let dWall = sim.capsuleA.w - length(p - (a + ba * hh));
+        d = min(d, dWall);
+    }
+    return d;
 }
 `;
 
@@ -237,10 +259,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }}}
 
-    // Clamp to compression only (C ≥ 0): a free surface is naturally under-dense,
-    // and negative pressure there would pull the surface inward and collapse the
-    // whole body. Incompressibility (repulsion when over-dense) is all we need.
-    let ci = max(rho * invRho - 1.0, 0.0);
+    // Boundary density support: near a solid wall the kernel sphere is partly
+    // outside the fluid, so the neighbour sum under-counts ρ. Add the density the
+    // missing (wall-side) fluid would contribute — without it, under-pressured
+    // wall particles get shoved up the wall and pile into a raised rim.
+    if (sim.boundaryDensity > 0.0) {
+        let dWall = distToSolid(pi, sim);
+        if (dWall < sim.h) {
+            let t = clamp(dWall / sim.h, 0.0, 1.0);
+            rho += sim.restDensity * sim.boundaryDensity * (1.0 - t) * (1.0 - t);
+        }
+    }
+
+    // Full PBF constraint (negative pressure allowed): a free surface is
+    // under-dense, and the resulting cohesion — balanced by the s_corr term in
+    // the Δp pass — is what holds the surface flat without it collapsing. (A
+    // compression-only clamp keeps the bulk stable but leaves wall particles
+    // pressure-less, so the hydrostatic gradient squeezes them up the walls.)
+    let ci = rho * invRho - 1.0;
     let denom = dot(gradI, gradI) + sumGrad2 + sim.eps;
     lambda[i] = -ci / denom;
 }`;
@@ -403,6 +439,8 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const iterations = options.iterations ?? 3;
     const relaxation = options.relaxation ?? 50;
     const viscosity = options.viscosity ?? 0.08;
+    const scorrK = options.scorr ?? 0.02;
+    const boundaryDensity = options.boundaryDensity ?? 0;
     const maxPerCell = options.maxPerCell ?? 64;
 
     // Rest density: spawn number density (particles / spawn volume) × scale.
@@ -427,7 +465,6 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const dq = 0.2 * h;
     const wDq = poly6Coef * Math.pow(h2 - dq * dq, 3);
     const scorrInvWdq = 1 / wDq;
-    const scorrK = 0.0001;
     const scorrN = 4;
 
     // ── Buffers ──────────────────────────────────────────────────────
@@ -458,6 +495,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     simF32[11] = viscosity;
     simU32[12] = count;
     simU32[13] = capsuleA && capsuleB ? 1 : 0;
+    simF32[14] = boundaryDensity;
     simF32[16] = boundsMin[0];
     simF32[17] = boundsMin[1];
     simF32[18] = boundsMin[2];
