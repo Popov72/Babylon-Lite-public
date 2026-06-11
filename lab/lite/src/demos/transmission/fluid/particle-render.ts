@@ -25,10 +25,11 @@ struct Cam {
     vp: mat4x4<f32>,
     right: vec4<f32>,
     up: vec4<f32>,
-    misc: vec4<f32>,   // x = particle radius
+    misc: vec4<f32>,   // x = particle radius, y = debug normalisation reciprocal
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> dbg: array<f32>;
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
@@ -47,8 +48,10 @@ struct VOut {
     var o: VOut;
     o.clip = cam.vp * vec4<f32>(world, 1.0);
     o.uv = c;
-    let h = clamp(center.y / 12.0, 0.0, 1.0);
-    o.color = mix(vec3<f32>(0.10, 0.35, 0.85), vec3<f32>(0.55, 0.80, 1.0), h);
+    // Colour by local neighbour density (Phase 2 grid validation): cool (sparse)
+    // → warm (dense). A working grid shows the packed block hot and the spray cool.
+    let t = clamp(dbg[ii] * cam.misc.y, 0.0, 1.0);
+    o.color = mix(vec3<f32>(0.15, 0.45, 0.95), vec3<f32>(1.0, 0.85, 0.25), t);
     return o;
 }
 
@@ -99,6 +102,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
             entries: [
                 { binding: 0, resource: { buffer: camBuffer } },
                 { binding: 1, resource: { buffer: sim.positionBuffer } },
+                { binding: 2, resource: { buffer: sim.debugBuffer } },
             ],
         });
     }
@@ -120,7 +124,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         camData[22] = wm[6]!;
         camData[23] = 0;
         camData[24] = sim.particleRadius;
-        camData[25] = 0;
+        camData[25] = sim.debugNorm;
         camData[26] = 0;
         camData[27] = 0;
         device.queue.writeBuffer(camBuffer, 0, camData);
