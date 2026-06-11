@@ -60,8 +60,16 @@ struct VOut {
     if (r2 > 1.0) { discard; }
     let nz = sqrt(1.0 - r2);
     let n = normalize(vec3<f32>(i.uv, nz));
-    let l = max(dot(n, normalize(vec3<f32>(0.4, 0.7, 0.6))), 0.0);
-    return vec4<f32>(i.color * (0.3 + 0.7 * l), 1.0);
+    let L = normalize(vec3<f32>(0.4, 0.7, 0.6));
+    let V = vec3<f32>(0.0, 0.0, 1.0);
+    let H = normalize(L + V);
+    let diff = max(dot(n, L), 0.0);
+    let spec = pow(max(dot(n, H), 0.0), 48.0);   // wet Blinn-Phong highlight
+    let fres = pow(1.0 - nz, 3.0);               // fresnel rim toward the silhouette
+    var col = i.color * (0.32 + 0.68 * diff);
+    col += vec3<f32>(0.9, 0.97, 1.0) * (spec * 0.6);
+    col += vec3<f32>(0.45, 0.65, 0.95) * (fres * 0.25);
+    return vec4<f32>(col, 1.0);
 }`;
 
 export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task {
