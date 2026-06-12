@@ -145,16 +145,23 @@ async function main(): Promise<void> {
         boundsMax: BOUNDS_MAX,
         dx: 0.22,
         // Fill control: a LOW rest density (few particles per cell) spaces the
-        // particles out, and a HIGH stiffness stops gravity from over-compressing
-        // them — together these make the fluid fill ~half the tank like PBF
-        // rather than collapsing into a dense puddle.
+        // particles out. Stiffness + gravity are kept in proportion so the fluid
+        // still fills ~half the tank, but both are LOW (vs a stiff 400) so the
+        // weakly-compressible EOS doesn't ring — high stiffness makes a springy
+        // fluid whose impact/drain energy becomes standing waves that never damp.
         restDensity: 3,
-        stiffness: 400,
-        viscosity: 0.1,
+        stiffness: 350,
+        gravity: 9.8,
+        // Dissipation so it actually comes to rest: a strong APIC→PIC affine
+        // damping kills the bulk convection and the divergence (compression)
+        // waves, modest viscosity smooths the floor pool, light velocity damping
+        // bleeds residual bulk motion. (Bulk flow/draining stays lively because
+        // the PIC velocity itself is only lightly damped.)
+        viscosity: 0.3,
         substeps: 5,
         subDt: 1 / 300,
-        damping: 0.998,
-        affineDamping: 0.99,
+        damping: 0.995,
+        affineDamping: 0.9,
     });
 
     let activeSim: FluidSim = pbfSim;
