@@ -264,7 +264,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }}}
 
     let Dinv = 4.0 / (dx * dx);
-    var C = B * Dinv;
+    // Dissipation so the fluid actually comes to rest (pure APIC + EOS is nearly
+    // energy-conserving and would slosh forever): damp the APIC affine field
+    // toward PIC (sim1.z) and bleed bulk kinetic energy (sim1.y).
+    var C = (B * Dinv) * p.sim1.z;
+    vel *= p.sim1.y;
     let dt = p.sim0.x;
     var np = pos + vel * dt;
     var esc = escaped[i];
@@ -337,6 +341,12 @@ export interface MlsMpmOptions extends FluidSimOptions {
     substeps?: number;
     /** Sub-step time (seconds). Default 1/120. */
     subDt?: number;
+    /** Per-substep velocity multiplier (<1 bleeds bulk kinetic energy so the
+     *  fluid settles to rest). Default 0.98. */
+    damping?: number;
+    /** Per-substep APIC affine (C) multiplier (<1 blends toward dissipative PIC,
+     *  killing residual swirl). Default 0.95. */
+    affineDamping?: number;
 }
 
 export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = {}): FluidSim {
@@ -357,6 +367,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const viscosity = options.viscosity ?? 0.1;
     const substeps = options.substeps ?? 2;
     const subDt = options.subDt ?? 1 / 120;
+    const damping = options.damping ?? 0.98;
+    const affineDamping = options.affineDamping ?? 0.95;
 
     const gridDim: [number, number, number] = [
         Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
@@ -405,6 +417,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     pf[18] = restDensity;
     pf[19] = stiffness;
     pf[20] = viscosity;
+    pf[21] = damping;
+    pf[22] = affineDamping;
     pu[COUNTS_OFFSET_F32] = count;
     pu[COUNTS_OFFSET_F32 + 1] = capsuleA && capsuleB ? 1 : 0;
     pu[COUNTS_OFFSET_F32 + 2] = 0; // holeCount

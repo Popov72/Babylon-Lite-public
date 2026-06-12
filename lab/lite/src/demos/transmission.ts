@@ -147,9 +147,13 @@ async function main(): Promise<void> {
         // the tank rather than over-compressing), with extra substeps for stability.
         restDensity: 8,
         stiffness: 120,
-        viscosity: 0.4,
+        viscosity: 0.6,
         substeps: 4,
         subDt: 1 / 240,
+        // Dissipation so the fluid comes to rest like the SPH/PBF case (pure APIC
+        // + EOS is nearly energy-conserving and would slosh indefinitely).
+        damping: 0.985,
+        affineDamping: 0.8,
     });
 
     let activeSim: FluidSim = pbfSim;
