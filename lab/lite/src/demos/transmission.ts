@@ -35,7 +35,7 @@ import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { pickCapsuleHole } from "./transmission/fluid/pick.js";
 
-const PARTICLE_COUNT = 30000;
+const PARTICLE_COUNT = 60000;
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -105,15 +105,18 @@ async function main(): Promise<void> {
         count: PARTICLE_COUNT,
         particleRadius: 0.09,
         // Seed a slab of liquid inside the lower capsule (radius-safe corners).
-        spawnMin: [-2, 5.5, -2],
-        spawnMax: [2, 11, 2],
+        spawnMin: [-2, 4, -2],
+        spawnMax: [2, 12, 2],
         capsuleA: CAP_A,
         capsuleB: CAP_B,
         capsuleRadius: CAP_R,
         groundY: 0,
+        // Pin the rest density (independent of count) so doubling the particle
+        // count doubles the liquid *volume* (fills the tank more) rather than the
+        // packing density — keeping per-cell occupancy (and grid memory) bounded.
+        restDensity: 341,
         // Collision domain spans the whole ground (±20) so drained liquid pools
-        // across it; y reaches the tank top. Coarser maxPerCell keeps the larger
-        // grid's memory in check.
+        // across it; y reaches the tank top. maxPerCell bounds the grid memory.
         boundsMin: [-20, 0, -20],
         boundsMax: [20, CAP_B[1] + CAP_R + 0.5, 20],
         maxPerCell: 48,
@@ -130,7 +133,7 @@ async function main(): Promise<void> {
     // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
     // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
     // adds another hole. R reseals + refills.
-    const HOLE_RADIUS = 1.3;
+    const HOLE_RADIUS = 1.0;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("pointerdown", (e) => {
         if (e.button !== 2) {
