@@ -133,7 +133,7 @@ async function main(): Promise<void> {
     // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
     // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
     // adds another hole. R reseals + refills.
-    const HOLE_RADIUS = 1.0;
+    const HOLE_RADIUS = 0.4;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("pointerdown", (e) => {
         if (e.button !== 2) {
