@@ -24,6 +24,8 @@ import {
     createSceneContext,
     createSphere,
     createStandardMaterial,
+    getEffectiveAspectRatio,
+    getViewProjectionMatrix,
     onBeforeRender,
     registerScene,
     startEngine,
@@ -31,6 +33,7 @@ import {
 import type { Mesh } from "babylon-lite";
 import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
+import { pickCapsuleHole } from "./transmission/fluid/pick.js";
 
 const PARTICLE_COUNT = 30000;
 
@@ -124,10 +127,22 @@ async function main(): Promise<void> {
         sim.step(engine._currentEncoder, dt);
     });
 
-    // Space punches a new hole in the tank wall at a random spot (low, so the
-    // liquid drains out and falls to the ground); each press adds another hole.
-    // R reseals + refills. LMB is left to the camera (drag to rotate).
+    // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
+    // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
+    // adds another hole. R reseals + refills.
+    const HOLE_RADIUS = 1.3;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("pointerdown", (e) => {
+        if (e.button !== 2) {
+            return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const vp = getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height));
+        const hit = pickCapsuleHole(vp, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height, CAP_A, CAP_B, CAP_R);
+        if (hit) {
+            sim.addHole(hit, HOLE_RADIUS);
+        }
+    });
     window.addEventListener("keydown", (e) => {
         if (e.repeat) {
             return;
@@ -136,7 +151,7 @@ async function main(): Promise<void> {
             e.preventDefault();
             const theta = Math.random() * Math.PI * 2;
             const y = CAP_A[1] + Math.random() * 1.5;
-            sim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], 1.3);
+            sim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], HOLE_RADIUS);
         } else if (e.key === "r" || e.key === "R") {
             sim.reset();
         }
