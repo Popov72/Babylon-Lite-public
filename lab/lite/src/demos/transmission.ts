@@ -32,10 +32,14 @@ import {
 } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
+import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
+import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { pickCapsuleHole } from "./transmission/fluid/pick.js";
 
 const PARTICLE_COUNT = 60000;
+// MLS-MPM scales far better (no neighbour search), so it runs many more particles.
+const MPM_PARTICLE_COUNT = 120000;
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -101,38 +105,77 @@ async function main(): Promise<void> {
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_A[0], CAP_A[1], CAP_A[2]);
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_B[0], CAP_B[1], CAP_B[2]);
 
-    const sim = createFluidSim(engine, {
+    // Shared scene geometry for both backends so switching is apples-to-apples.
+    const SPAWN_MIN: [number, number, number] = [-2, 4, -2];
+    const SPAWN_MAX: [number, number, number] = [2, 12, 2];
+    const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
+    const BOUNDS_MAX: [number, number, number] = [20, CAP_B[1] + CAP_R + 0.5, 20];
+
+    // Backend 1 — Position Based Fluids (the original solver).
+    const pbfSim = createFluidSim(engine, {
         count: PARTICLE_COUNT,
         particleRadius: 0.09,
-        // Seed a slab of liquid inside the lower capsule (radius-safe corners).
-        spawnMin: [-2, 4, -2],
-        spawnMax: [2, 12, 2],
+        spawnMin: SPAWN_MIN,
+        spawnMax: SPAWN_MAX,
         capsuleA: CAP_A,
         capsuleB: CAP_B,
         capsuleRadius: CAP_R,
         groundY: 0,
-        // Pin the rest density (independent of count) so doubling the particle
-        // count doubles the liquid *volume* (fills the tank more) rather than the
-        // packing density — keeping per-cell occupancy (and grid memory) bounded.
+        // Pin the rest density (independent of count) so the liquid volume — not
+        // the packing density — scales with count, keeping grid memory bounded.
         restDensity: 341,
-        // Collision domain spans the whole ground (±20) so drained liquid pools
-        // across it; y reaches the tank top. maxPerCell bounds the grid memory.
-        boundsMin: [-20, 0, -20],
-        boundsMax: [20, CAP_B[1] + CAP_R + 0.5, 20],
+        boundsMin: BOUNDS_MIN,
+        boundsMax: BOUNDS_MAX,
         maxPerCell: 48,
     });
-    const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim });
+
+    // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
+    const mpmSim = createMlsMpmSim(engine, {
+        count: MPM_PARTICLE_COUNT,
+        particleRadius: 0.09,
+        spawnMin: SPAWN_MIN,
+        spawnMax: SPAWN_MAX,
+        capsuleA: CAP_A,
+        capsuleB: CAP_B,
+        capsuleRadius: CAP_R,
+        groundY: 0,
+        boundsMin: BOUNDS_MIN,
+        boundsMax: BOUNDS_MAX,
+        dx: 0.22,
+        // Rest density (particles/cell) chosen so the settled volume ≈ the PBF
+        // fill; stiffness high enough to stay near-incompressible (so it fills
+        // the tank rather than over-compressing), with extra substeps for stability.
+        restDensity: 8,
+        stiffness: 120,
+        viscosity: 0.4,
+        substeps: 4,
+        subDt: 1 / 240,
+    });
+
+    let activeSim: FluidSim = pbfSim;
+    let methodName = "PBF";
+
+    const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
+
+    const hint = document.querySelector(".hint");
+    function refreshHud(): void {
+        canvas.dataset.method = methodName;
+        if (hint) {
+            hint.textContent = `Method: ${methodName} (M to switch) · Drag: rotate · Right-click: hole at cursor · Space: random hole · R: refill`;
+        }
+    }
+    refreshHud();
 
     onBeforeRender(scene, (deltaMs: number) => {
         // Clamp dt so a hitch / first frame can't blow the integration up.
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
-        sim.step(engine._currentEncoder, dt);
+        activeSim.step(engine._currentEncoder, dt);
     });
 
     // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
     // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
-    // adds another hole. R reseals + refills.
+    // adds another hole. R reseals + refills. M switches simulation backend.
     const HOLE_RADIUS = 0.4;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("pointerdown", (e) => {
@@ -143,7 +186,7 @@ async function main(): Promise<void> {
         const vp = getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height));
         const hit = pickCapsuleHole(vp, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height, CAP_A, CAP_B, CAP_R);
         if (hit) {
-            sim.addHole(hit, HOLE_RADIUS);
+            activeSim.addHole(hit, HOLE_RADIUS);
         }
     });
     window.addEventListener("keydown", (e) => {
@@ -154,9 +197,15 @@ async function main(): Promise<void> {
             e.preventDefault();
             const theta = Math.random() * Math.PI * 2;
             const y = CAP_A[1] + Math.random() * 1.5;
-            sim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], HOLE_RADIUS);
+            activeSim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], HOLE_RADIUS);
         } else if (e.key === "r" || e.key === "R") {
-            sim.reset();
+            activeSim.reset();
+        } else if (e.key === "m" || e.key === "M") {
+            activeSim = activeSim === pbfSim ? mpmSim : pbfSim;
+            methodName = activeSim === pbfSim ? "PBF" : "MLS-MPM";
+            activeSim.reset();
+            particleTask.setSim(activeSim);
+            refreshHud();
         }
     });
 

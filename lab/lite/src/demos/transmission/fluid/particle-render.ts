@@ -72,9 +72,10 @@ struct VOut {
     return vec4<f32>(col, 1.0);
 }`;
 
-export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task {
+export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void } {
     const device = engine._device;
-    const { colorRT, depthRT, camera, sim } = opts;
+    const { colorRT, depthRT, camera } = opts;
+    let currentSim = opts.sim;
 
     const camData = new Float32Array(28); // mat4 (16) + right (4) + up (4) + misc (4)
     const camBuffer = device.createBuffer({
@@ -85,6 +86,21 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
 
     let pipeline: GPURenderPipeline | null = null;
     let bindGroup: GPUBindGroup | null = null;
+
+    function buildBindGroup(): void {
+        if (!pipeline) {
+            return;
+        }
+        bindGroup = device.createBindGroup({
+            label: "fluid-particles",
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: camBuffer } },
+                { binding: 1, resource: { buffer: currentSim.positionBuffer } },
+                { binding: 2, resource: { buffer: currentSim.debugBuffer } },
+            ],
+        });
+    }
 
     function build(): void {
         if (pipeline) {
@@ -104,15 +120,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
             },
             multisample: { count: depthRT._descriptor.samples },
         });
-        bindGroup = device.createBindGroup({
-            label: "fluid-particles",
-            layout: pipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: camBuffer } },
-                { binding: 1, resource: { buffer: sim.positionBuffer } },
-                { binding: 2, resource: { buffer: sim.debugBuffer } },
-            ],
-        });
+        buildBindGroup();
     }
 
     function updateCamera(): void {
@@ -131,8 +139,8 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         camData[21] = wm[5]!;
         camData[22] = wm[6]!;
         camData[23] = 0;
-        camData[24] = sim.particleRadius;
-        camData[25] = sim.debugNorm;
+        camData[24] = currentSim.particleRadius;
+        camData[25] = currentSim.debugNorm;
         camData[26] = 0;
         camData[27] = 0;
         device.queue.writeBuffer(camBuffer, 0, camData);
@@ -143,6 +151,11 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         engine,
         scene,
         _passes: [],
+        /** Switch the rendered simulation backend (rebinds to its buffers). */
+        setSim(s: FluidSim): void {
+            currentSim = s;
+            buildBindGroup();
+        },
         record(): void {
             build();
         },
@@ -160,7 +173,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
             });
             pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
-            pass.draw(6, sim.count);
+            pass.draw(6, currentSim.count);
             pass.end();
             return 1;
         },
