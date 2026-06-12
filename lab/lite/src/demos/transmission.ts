@@ -38,8 +38,10 @@ import { createParticleRenderTask } from "./transmission/fluid/particle-render.j
 import { pickCapsuleHole } from "./transmission/fluid/pick.js";
 
 const PARTICLE_COUNT = 60000;
-// MLS-MPM scales far better (no neighbour search), so it runs many more particles.
-const MPM_PARTICLE_COUNT = 120000;
+// MLS-MPM scales far better (no neighbour search). Kept equal to the PBF count
+// here so the two methods fill the tank to a comparable level (more particles
+// would only pack denser in this fixed-volume capsule, not fill higher).
+const MPM_PARTICLE_COUNT = 60000;
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -142,16 +144,15 @@ async function main(): Promise<void> {
         boundsMin: BOUNDS_MIN,
         boundsMax: BOUNDS_MAX,
         dx: 0.22,
-        // Rest density (particles/cell) chosen so the settled volume ≈ the PBF fill.
-        restDensity: 8,
-        // Splash-like, lively parameters (stiffness 50 / viscosity 0.1). Only a
-        // light velocity + affine damping nudges the fluid to rest without making
-        // it sluggish (the boundary no longer pumps energy now the outward-velocity
-        // sign is fixed).
-        stiffness: 60,
+        // Fill control: a LOW rest density (few particles per cell) spaces the
+        // particles out, and a HIGH stiffness stops gravity from over-compressing
+        // them — together these make the fluid fill ~half the tank like PBF
+        // rather than collapsing into a dense puddle.
+        restDensity: 3,
+        stiffness: 400,
         viscosity: 0.1,
-        substeps: 4,
-        subDt: 1 / 240,
+        substeps: 5,
+        subDt: 1 / 300,
         damping: 0.998,
         affineDamping: 0.99,
     });
