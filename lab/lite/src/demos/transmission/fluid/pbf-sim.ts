@@ -84,8 +84,9 @@ export interface FluidSim {
     readonly debugNorm: number;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
-    /** Open a spherical hole in the capsule wall; liquid within escapes and drains. */
-    setHole(center: [number, number, number], radius: number): void;
+    /** Open a new spherical hole in the capsule wall (up to MAX_HOLES; the oldest
+     *  is replaced past the cap). Liquid reaching any hole escapes and drains. */
+    addHole(center: [number, number, number], radius: number): void;
     /** Re-seed all particles into the spawn box with zero velocity and seal the tank. */
     reset(): void;
     dispose(): void;
@@ -93,17 +94,22 @@ export interface FluidSim {
 
 const WORKGROUP_SIZE = 64;
 
-// Sim uniform — 144 bytes. Per-frame mutable (dt); the rest are constant.
+// Up to this many simultaneous holes (ring buffer; a new press past the cap
+// replaces the oldest). Kept small so the holes array stays a tiny uniform.
+const MAX_HOLES = 8;
+
+// Sim uniform. Per-frame mutable (dt); the rest are constant or set on demand.
 //   [0] dt        [1] gravity   [2] restDensity [3] h
 //   [4] h2        [5] poly6     [6] spikyGrad   [7] eps
 //   [8] scorrK    [9] scorrInvWdq [10] scorrN   [11] viscosity
-//   [12] count(u32) [13] capsuleMode(u32) [14] boundaryDensity [15] pad
+//   [12] count(u32) [13] capsuleMode(u32) [14] boundaryDensity [15] holeCount(u32)
 //   [16..19] boundsMin.xyz + pad
 //   [20..23] boundsMax.xyz + pad
 //   [24..27] capsuleA.xyz + capsuleRadius
 //   [28..31] capsuleB.xyz + groundY
-//   [32..35] holeCenter.xyz + holeRadius (radius 0 = no hole)
-const SIM_BYTES = 144;
+//   [32..]   holes[MAX_HOLES] — each vec4 (centre.xyz + radius; radius 0 = unused)
+const HOLE_BASE_F32 = 32;
+const SIM_BYTES = HOLE_BASE_F32 * 4 + MAX_HOLES * 16;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
 const GRID_BYTES = 32;
@@ -127,12 +133,12 @@ struct Sim {
     count: u32,
     capsuleMode: u32,
     boundaryDensity: f32,
-    _s2: u32,
+    holeCount: u32,
     boundsMin: vec4<f32>,
     boundsMax: vec4<f32>,
     capsuleA: vec4<f32>,
     capsuleB: vec4<f32>,
-    holeCenter: vec4<f32>,
+    holes: array<vec4<f32>, ${MAX_HOLES}>,
 };
 
 struct Grid {
@@ -357,8 +363,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let radial = p - axisPt;
         let dist = length(radial);
         if (dist > r) {
-            // Outside the wall: escape through the hole, otherwise bounce back in.
-            if (sim.holeCenter.w > 0.0 && distance(p, sim.holeCenter.xyz) < sim.holeCenter.w) {
+            // Outside the wall: escape through any hole, otherwise bounce back in.
+            var inHole = false;
+            for (var k = 0u; k < sim.holeCount; k = k + 1u) {
+                if (distance(p, sim.holes[k].xyz) < sim.holes[k].w) {
+                    inHole = true;
+                    break;
+                }
+            }
+            if (inHole) {
                 esc = 1u;
             } else {
                 p = axisPt + radial * (r / max(dist, 1e-6));
@@ -658,6 +671,10 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
         pass.end();
     }
 
+    // Hole ring-buffer state (CPU side; written into the holes uniform array).
+    let holeWriteSlot = 0;
+    let holeActiveCount = 0;
+
     return {
         count,
         particleRadius,
@@ -686,17 +703,21 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             dispatch(encoder, "fluid-viscosity", viscosityPipeline, viscosityBG, particleGroups);
         },
         reset(): void {
-            simF32[32] = 0;
-            simF32[33] = 0;
-            simF32[34] = 0;
-            simF32[35] = 0;
+            holeWriteSlot = 0;
+            holeActiveCount = 0;
+            simU32[15] = 0;
+            simF32.fill(0, HOLE_BASE_F32, HOLE_BASE_F32 + MAX_HOLES * 4);
             seed();
         },
-        setHole(center: [number, number, number], radius: number): void {
-            simF32[32] = center[0];
-            simF32[33] = center[1];
-            simF32[34] = center[2];
-            simF32[35] = radius;
+        addHole(center: [number, number, number], radius: number): void {
+            const o = HOLE_BASE_F32 + holeWriteSlot * 4;
+            simF32[o] = center[0];
+            simF32[o + 1] = center[1];
+            simF32[o + 2] = center[2];
+            simF32[o + 3] = radius;
+            holeWriteSlot = (holeWriteSlot + 1) % MAX_HOLES;
+            holeActiveCount = Math.min(holeActiveCount + 1, MAX_HOLES);
+            simU32[15] = holeActiveCount;
         },
         dispose(): void {
             positionBuffer.destroy();

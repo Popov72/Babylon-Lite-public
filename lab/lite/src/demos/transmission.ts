@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     // writing the swapchain colour and sharing a depth buffer we control.
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
-    const cam = createArcRotateCamera(-Math.PI / 2, 1.1, 24, { x: 0, y: 5, z: 0 });
+    const cam = createArcRotateCamera(-Math.PI / 2, 1.1, 30, { x: 0, y: 6, z: 0 });
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
     scene.camera = cam;
@@ -73,11 +73,12 @@ async function main(): Promise<void> {
     );
     addTask(scene, sceneTask);
 
-    // Capsule tank: a vertical pill sitting on the ground (bottom hemisphere
-    // touches y = 0). The liquid is constrained to its interior; the rounded
-    // boundary avoids the flat-wall lattice artefacts of a box.
-    const CAP_A: [number, number, number] = [0, 3, 0];
-    const CAP_B: [number, number, number] = [0, 9, 0];
+    // Capsule tank: a vertical pill floating just above the ground (bottom
+    // hemisphere centre at y=5, radius 3 → bottom at y=2). The liquid is
+    // constrained to its interior; the rounded boundary avoids the flat-wall
+    // lattice artefacts of a box.
+    const CAP_A: [number, number, number] = [0, 5, 0];
+    const CAP_B: [number, number, number] = [0, 11, 0];
     const CAP_R = 3;
 
     // Transparent glass shell so the tank is visible (cylinder body + two
@@ -101,16 +102,18 @@ async function main(): Promise<void> {
         count: PARTICLE_COUNT,
         particleRadius: 0.09,
         // Seed a slab of liquid inside the lower capsule (radius-safe corners).
-        spawnMin: [-2, 3.5, -2],
-        spawnMax: [2, 9.5, 2],
+        spawnMin: [-2, 5.5, -2],
+        spawnMax: [2, 11, 2],
         capsuleA: CAP_A,
         capsuleB: CAP_B,
         capsuleRadius: CAP_R,
         groundY: 0,
-        // Neighbour-grid domain: capsule + surrounding ground so drained liquid
-        // has room to pool around the tank.
-        boundsMin: [-7, 0, -7],
-        boundsMax: [7, CAP_B[1] + CAP_R + 0.2, 7],
+        // Collision domain spans the whole ground (±20) so drained liquid pools
+        // across it; y reaches the tank top. Coarser maxPerCell keeps the larger
+        // grid's memory in check.
+        boundsMin: [-20, 0, -20],
+        boundsMax: [20, CAP_B[1] + CAP_R + 0.5, 20],
+        maxPerCell: 48,
     });
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim });
     addTask(scene, particleTask);
@@ -121,15 +124,20 @@ async function main(): Promise<void> {
         sim.step(engine._currentEncoder, dt);
     });
 
-    // LMB punches a hole in the tank wall at a random spot (low, so the liquid
-    // drains out and falls to the ground); right-click reseals + refills the tank.
+    // Space punches a new hole in the tank wall at a random spot (low, so the
+    // liquid drains out and falls to the ground); each press adds another hole.
+    // R reseals + refills. LMB is left to the camera (drag to rotate).
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    canvas.addEventListener("pointerdown", (e) => {
-        if (e.button === 0) {
+    window.addEventListener("keydown", (e) => {
+        if (e.repeat) {
+            return;
+        }
+        if (e.code === "Space") {
+            e.preventDefault();
             const theta = Math.random() * Math.PI * 2;
-            const y = CAP_A[1] + 0.2 + Math.random() * 0.8;
-            sim.setHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], 1.3);
-        } else if (e.button === 2) {
+            const y = CAP_A[1] + Math.random() * 1.5;
+            sim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], 1.3);
+        } else if (e.key === "r" || e.key === "R") {
             sim.reset();
         }
     });
