@@ -142,18 +142,18 @@ async function main(): Promise<void> {
         boundsMin: BOUNDS_MIN,
         boundsMax: BOUNDS_MAX,
         dx: 0.22,
-        // Rest density (particles/cell) chosen so the settled volume ≈ the PBF
-        // fill; stiffness high enough to stay near-incompressible (so it fills
-        // the tank rather than over-compressing), with extra substeps for stability.
+        // Rest density (particles/cell) chosen so the settled volume ≈ the PBF fill.
         restDensity: 8,
-        stiffness: 120,
-        viscosity: 0.6,
+        // Splash-like, lively parameters (stiffness 50 / viscosity 0.1). Only a
+        // light velocity + affine damping nudges the fluid to rest without making
+        // it sluggish (the boundary no longer pumps energy now the outward-velocity
+        // sign is fixed).
+        stiffness: 60,
+        viscosity: 0.1,
         substeps: 4,
         subDt: 1 / 240,
-        // Dissipation so the fluid comes to rest like the SPH/PBF case (pure APIC
-        // + EOS is nearly energy-conserving and would slosh indefinitely).
-        damping: 0.985,
-        affineDamping: 0.8,
+        damping: 0.998,
+        affineDamping: 0.99,
     });
 
     let activeSim: FluidSim = pbfSim;

@@ -293,7 +293,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else {
                 let n = radial / max(dist, 1e-6);
                 np = axisPt + n * r;
-                vel -= min(dot(vel, n), 0.0) * n; // kill outward velocity
+                vel -= max(dot(vel, n), 0.0) * n; // remove the outward velocity (no bounce)
             }
         }
     }
