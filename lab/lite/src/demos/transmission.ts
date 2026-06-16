@@ -162,6 +162,12 @@ async function main(): Promise<void> {
         subDt: 1 / 300,
         damping: 0.995,
         affineDamping: 0.9,
+        // Each new hole sends a stream onto the thin, wide floor pool; without
+        // this the impact launches a ripple that travels forever. Damp velocity
+        // hard only within 1.5 units of the ground so the pool settles on contact
+        // while the capsule fluid and the falling streams stay lively.
+        groundDamp: 0.85,
+        groundDampHeight: 1.5,
     });
 
     let activeSim: FluidSim = pbfSim;

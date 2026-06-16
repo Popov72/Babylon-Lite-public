@@ -307,6 +307,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hi = p.origin.xyz + (p.dim.xyz - 3.0) * dx;
     np = clamp(np, lo, hi);
 
+    // Targeted ground damping: a particle landing on the thin, wide floor pool
+    // would otherwise launch a ripple that travels forever. Strongly damp
+    // velocity + affine field only within a thin layer above the ground, so the
+    // pool settles immediately while the capsule fluid and the falling streams
+    // (which are higher up) stay lively. sim1.w = strength, dim.w = layer height.
+    let gt = clamp((np.y - groundY) / max(p.dim.w, 1e-3), 0.0, 1.0);
+    let gd = mix(p.sim1.w, 1.0, gt);
+    vel *= gd;
+    C *= gd;
+
     particles[i].position = np;
     particles[i].v = vel;
     particles[i].C = C;
@@ -347,6 +357,11 @@ export interface MlsMpmOptions extends FluidSimOptions {
     /** Per-substep APIC affine (C) multiplier (<1 blends toward dissipative PIC,
      *  killing residual swirl). Default 0.95. */
     affineDamping?: number;
+    /** Extra per-substep velocity/affine damping applied within `groundDampHeight`
+     *  of the ground, so the thin floor pool settles without rippling. Default 0.9. */
+    groundDamp?: number;
+    /** Height (world units) of the near-ground damping layer. Default 1.2. */
+    groundDampHeight?: number;
 }
 
 export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = {}): FluidSim {
@@ -369,6 +384,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const subDt = options.subDt ?? 1 / 120;
     const damping = options.damping ?? 0.98;
     const affineDamping = options.affineDamping ?? 0.95;
+    const groundDamp = options.groundDamp ?? 0.9;
+    const groundDampHeight = options.groundDampHeight ?? 1.2;
 
     const gridDim: [number, number, number] = [
         Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
@@ -404,6 +421,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     pf[4] = gridDim[0];
     pf[5] = gridDim[1];
     pf[6] = gridDim[2];
+    pf[7] = groundDampHeight; // dim.w
     pf[8] = capsuleA ? capsuleA[0] : 0;
     pf[9] = capsuleA ? capsuleA[1] : 0;
     pf[10] = capsuleA ? capsuleA[2] : 0;
@@ -419,6 +437,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     pf[20] = viscosity;
     pf[21] = damping;
     pf[22] = affineDamping;
+    pf[23] = groundDamp; // sim1.w
     pu[COUNTS_OFFSET_F32] = count;
     pu[COUNTS_OFFSET_F32 + 1] = capsuleA && capsuleB ? 1 : 0;
     pu[COUNTS_OFFSET_F32 + 2] = 0; // holeCount
