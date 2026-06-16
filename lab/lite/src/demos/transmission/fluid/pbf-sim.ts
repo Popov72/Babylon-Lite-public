@@ -89,6 +89,8 @@ export interface FluidSim {
     addHole(center: [number, number, number], radius: number): void;
     /** Re-seed all particles into the spawn box with zero velocity and seal the tank. */
     reset(): void;
+    /** Live-update a named simulation parameter (for the demo's tuning UI). */
+    setParam(key: string, value: number): void;
     dispose(): void;
 }
 
@@ -463,6 +465,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
     const groundY = options.groundY ?? boundsMin[1];
     const restDensityScale = options.restDensityScale ?? 1.0;
     const iterations = options.iterations ?? 3;
+    let iterationsMut = iterations;
     const relaxation = options.relaxation ?? 50;
     const viscosity = options.viscosity ?? 0.08;
     const scorrK = options.scorr ?? 0.02;
@@ -694,7 +697,7 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             dispatch(encoder, "fluid-predict", predictPipeline, predictBG, particleGroups);
             dispatch(encoder, "fluid-clear-grid", clearGridPipeline, clearGridBG, cellGroups);
             dispatch(encoder, "fluid-build-grid", buildGridPipeline, buildGridBG, particleGroups);
-            for (let it = 0; it < iterations; it++) {
+            for (let it = 0; it < iterationsMut; it++) {
                 dispatch(encoder, "fluid-lambda", lambdaPipeline, lambdaBG, particleGroups);
                 dispatch(encoder, "fluid-delta", deltaPipeline, deltaBG, particleGroups);
                 dispatch(encoder, "fluid-apply", applyPipeline, applyBG, particleGroups);
@@ -708,6 +711,17 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             simU32[15] = 0;
             simF32.fill(0, HOLE_BASE_F32, HOLE_BASE_F32 + MAX_HOLES * 4);
             seed();
+        },
+        setParam(key: string, value: number): void {
+            switch (key) {
+                case "gravity": simF32[1] = value; break;
+                case "restDensity": simF32[2] = value; break;
+                case "relaxation": simF32[7] = value; break;
+                case "scorr": simF32[8] = value; break;
+                case "viscosity": simF32[11] = value; break;
+                case "boundaryDensity": simF32[14] = value; break;
+                case "iterations": iterationsMut = Math.max(1, Math.round(value)); break;
+            }
         },
         addHole(center: [number, number, number], radius: number): void {
             const o = HOLE_BASE_F32 + holeWriteSlot * 4;

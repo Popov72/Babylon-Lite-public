@@ -381,6 +381,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const stiffness = options.stiffness ?? 50;
     const viscosity = options.viscosity ?? 0.1;
     const substeps = options.substeps ?? 2;
+    let substepsMut = substeps;
     const subDt = options.subDt ?? 1 / 120;
     const damping = options.damping ?? 0.98;
     const affineDamping = options.affineDamping ?? 0.95;
@@ -550,7 +551,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         debugNorm: 1 / 6,
         step(encoder: GPUCommandEncoder, _dt: number): void {
             device.queue.writeBuffer(paramsBuffer, 0, paramsData);
-            for (let s = 0; s < substeps; s++) {
+            for (let s = 0; s < substepsMut; s++) {
                 dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
                 dispatch(encoder, "mpm-p2g1", p2g1Pipe, p2g1BG, particleGroups);
                 dispatch(encoder, "mpm-p2g2", p2g2Pipe, p2g2BG, particleGroups);
@@ -575,6 +576,19 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             pu[COUNTS_OFFSET_F32 + 2] = 0;
             pf.fill(0, HOLE_BASE_F32, HOLE_BASE_F32 + MAX_HOLES * 4);
             seed();
+        },
+        setParam(key: string, value: number): void {
+            switch (key) {
+                case "gravity": pf[17] = value; break;
+                case "restDensity": pf[18] = value; break;
+                case "stiffness": pf[19] = value; break;
+                case "viscosity": pf[20] = value; break;
+                case "damping": pf[21] = value; break;
+                case "affineDamping": pf[22] = value; break;
+                case "groundDamp": pf[23] = value; break;
+                case "groundDampHeight": pf[7] = value; break;
+                case "substeps": substepsMut = Math.max(1, Math.round(value)); break;
+            }
         },
         dispose(): void {
             particleBuffer.destroy();

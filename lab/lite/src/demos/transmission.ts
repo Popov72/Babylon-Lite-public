@@ -162,20 +162,120 @@ async function main(): Promise<void> {
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
 
-    const hint = document.querySelector(".hint");
-    function refreshHud(): void {
-        canvas.dataset.method = methodName;
-        if (hint) {
-            hint.textContent = `Method: ${methodName} (M to switch) · Drag: rotate · Right-click: hole at cursor · Space: random hole · R: refill`;
-        }
-    }
-    refreshHud();
-
     onBeforeRender(scene, (deltaMs: number) => {
         // Clamp dt so a hitch / first frame can't blow the integration up.
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         activeSim.step(engine._currentEncoder, dt);
     });
+
+    // ── Live tuning UI ───────────────────────────────────────────────
+    // A combo box to switch method, per-method parameter sliders (applied live),
+    // and a reset button. Each schema entry mirrors the sim's current default and
+    // remembers the last value the user set.
+    interface ParamDef {
+        key: string;
+        label: string;
+        min: number;
+        max: number;
+        step: number;
+        value: number;
+    }
+    const SCHEMAS: Record<string, ParamDef[]> = {
+        PBF: [
+            { key: "gravity", label: "Gravity", min: 0, max: 20, step: 0.1, value: 9.8 },
+            { key: "viscosity", label: "Viscosity (XSPH)", min: 0, max: 0.3, step: 0.005, value: 0.08 },
+            { key: "relaxation", label: "Relaxation ε", min: 1, max: 300, step: 1, value: 50 },
+            { key: "scorr", label: "Artificial pressure", min: 0, max: 0.1, step: 0.001, value: 0.02 },
+            { key: "iterations", label: "Solver iterations", min: 1, max: 8, step: 1, value: 3 },
+            { key: "restDensity", label: "Rest density", min: 100, max: 600, step: 10, value: 341 },
+            { key: "boundaryDensity", label: "Boundary density", min: 0, max: 1, step: 0.05, value: 0 },
+        ],
+        "MLS-MPM": [
+            { key: "gravity", label: "Gravity", min: 0, max: 20, step: 0.1, value: 9.8 },
+            { key: "stiffness", label: "Stiffness (EOS)", min: 10, max: 5000, step: 10, value: 350 },
+            { key: "viscosity", label: "Viscosity", min: 0, max: 1, step: 0.01, value: 0.3 },
+            { key: "restDensity", label: "Rest density (/cell)", min: 1, max: 16, step: 0.5, value: 3 },
+            { key: "damping", label: "Velocity damping", min: 0.9, max: 1, step: 0.001, value: 0.995 },
+            { key: "affineDamping", label: "Affine damping (→PIC)", min: 0.7, max: 1, step: 0.005, value: 0.9 },
+            { key: "groundDamp", label: "Ground damping", min: 0.7, max: 1, step: 0.01, value: 0.85 },
+            { key: "groundDampHeight", label: "Ground damp height", min: 0, max: 3, step: 0.1, value: 1.5 },
+            { key: "substeps", label: "Substeps", min: 1, max: 8, step: 1, value: 5 },
+        ],
+    };
+
+    const panel = document.createElement("div");
+    panel.style.cssText =
+        "position:fixed;top:12px;right:12px;z-index:20;width:248px;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
+        "color:#dfe6ee;background:rgba(10,14,20,0.85);padding:10px 12px;border-radius:8px;pointer-events:auto;user-select:none;";
+    const title = document.createElement("div");
+    title.textContent = "Fluid method";
+    title.style.cssText = "font-weight:600;margin-bottom:6px;";
+    const methodSel = document.createElement("select");
+    methodSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    for (const name of Object.keys(SCHEMAS)) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name === "PBF" ? "SPH (PBF)" : name;
+        methodSel.appendChild(opt);
+    }
+    const sliderHost = document.createElement("div");
+    const resetBtn = document.createElement("button");
+    resetBtn.textContent = "Reset simulation";
+    resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
+    resetBtn.onclick = () => activeSim.reset();
+    panel.append(title, methodSel, sliderHost, resetBtn);
+    document.body.appendChild(panel);
+
+    function buildSliders(name: string): void {
+        sliderHost.replaceChildren();
+        for (const p of SCHEMAS[name]!) {
+            const row = document.createElement("div");
+            row.style.cssText = "margin:6px 0;";
+            const head = document.createElement("div");
+            head.style.cssText = "display:flex;justify-content:space-between;";
+            const lab = document.createElement("span");
+            lab.textContent = p.label;
+            const val = document.createElement("span");
+            val.style.cssText = "color:#9fb4cc;";
+            val.textContent = String(p.value);
+            head.append(lab, val);
+            const input = document.createElement("input");
+            input.type = "range";
+            input.min = String(p.min);
+            input.max = String(p.max);
+            input.step = String(p.step);
+            input.value = String(p.value);
+            input.style.cssText = "width:100%;";
+            input.oninput = () => {
+                const v = parseFloat(input.value);
+                p.value = v;
+                val.textContent = String(v);
+                activeSim.setParam(p.key, v);
+            };
+            row.append(head, input);
+            sliderHost.appendChild(row);
+        }
+    }
+
+    function applyMethod(name: string): void {
+        activeSim = name === "PBF" ? pbfSim : mpmSim;
+        methodName = name;
+        for (const p of SCHEMAS[name]!) {
+            activeSim.setParam(p.key, p.value);
+        }
+        activeSim.reset();
+        particleTask.setSim(activeSim);
+        methodSel.value = name;
+        buildSliders(name);
+        canvas.dataset.method = methodName;
+    }
+    methodSel.onchange = () => applyMethod(methodSel.value);
+    applyMethod("PBF");
+
+    const hint = document.querySelector(".hint");
+    if (hint) {
+        hint.textContent = "Drag: rotate · Right-click: hole at cursor · Space: random hole · R: refill · M: switch method";
+    }
 
     // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
     // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
@@ -205,11 +305,7 @@ async function main(): Promise<void> {
         } else if (e.key === "r" || e.key === "R") {
             activeSim.reset();
         } else if (e.key === "m" || e.key === "M") {
-            activeSim = activeSim === pbfSim ? mpmSim : pbfSim;
-            methodName = activeSim === pbfSim ? "PBF" : "MLS-MPM";
-            activeSim.reset();
-            particleTask.setSim(activeSim);
-            refreshHud();
+            applyMethod(activeSim === pbfSim ? "MLS-MPM" : "PBF");
         }
     });
 
