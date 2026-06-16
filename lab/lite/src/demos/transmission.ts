@@ -144,22 +144,15 @@ async function main(): Promise<void> {
         boundsMin: BOUNDS_MIN,
         boundsMax: BOUNDS_MAX,
         dx: 0.22,
-        // Make the EOS nearly INCOMPRESSIBLE rather than damping the waves away:
-        // at moderate stiffness the flow is ~transonic (flow speed ≈ sound speed)
-        // so impacts make large density waves/ripples. A much higher stiffness
-        // pushes the Mach number low → density barely varies → no visible waves →
-        // and we can then keep viscosity/damping LOW so it flows like water. (We
-        // have plenty of timestep headroom: CFL allows far higher stiffness here.)
-        restDensity: 4.5,
-        stiffness: 4000,
+        restDensity: 3,
+        stiffness: 350,
         gravity: 9.8,
-        viscosity: 0.1,
+        viscosity: 0.3,
         substeps: 5,
         subDt: 1 / 300,
-        damping: 0.999,
-        affineDamping: 0.97,
-        // Light near-ground damping as a safety net for the thin floor pool.
-        groundDamp: 0.95,
+        damping: 0.995,
+        affineDamping: 0.9,
+        groundDamp: 0.85,
         groundDampHeight: 1.5,
     });
 
