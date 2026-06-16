@@ -144,29 +144,22 @@ async function main(): Promise<void> {
         boundsMin: BOUNDS_MIN,
         boundsMax: BOUNDS_MAX,
         dx: 0.22,
-        // Fill control: a LOW rest density (few particles per cell) spaces the
-        // particles out. Stiffness + gravity are kept in proportion so the fluid
-        // still fills ~half the tank, but both are LOW (vs a stiff 400) so the
-        // weakly-compressible EOS doesn't ring — high stiffness makes a springy
-        // fluid whose impact/drain energy becomes standing waves that never damp.
-        restDensity: 3,
-        stiffness: 350,
+        // Make the EOS nearly INCOMPRESSIBLE rather than damping the waves away:
+        // at moderate stiffness the flow is ~transonic (flow speed ≈ sound speed)
+        // so impacts make large density waves/ripples. A much higher stiffness
+        // pushes the Mach number low → density barely varies → no visible waves →
+        // and we can then keep viscosity/damping LOW so it flows like water. (We
+        // have plenty of timestep headroom: CFL allows far higher stiffness here.)
+        restDensity: 4.5,
+        stiffness: 4000,
         gravity: 9.8,
-        // Dissipation so it actually comes to rest: a strong APIC→PIC affine
-        // damping kills the bulk convection and the divergence (compression)
-        // waves, modest viscosity smooths the floor pool, light velocity damping
-        // bleeds residual bulk motion. (Bulk flow/draining stays lively because
-        // the PIC velocity itself is only lightly damped.)
-        viscosity: 0.3,
+        viscosity: 0.1,
         substeps: 5,
         subDt: 1 / 300,
-        damping: 0.995,
-        affineDamping: 0.9,
-        // Each new hole sends a stream onto the thin, wide floor pool; without
-        // this the impact launches a ripple that travels forever. Damp velocity
-        // hard only within 1.5 units of the ground so the pool settles on contact
-        // while the capsule fluid and the falling streams stay lively.
-        groundDamp: 0.85,
+        damping: 0.999,
+        affineDamping: 0.97,
+        // Light near-ground damping as a safety net for the thin floor pool.
+        groundDamp: 0.95,
         groundDampHeight: 1.5,
     });
 
