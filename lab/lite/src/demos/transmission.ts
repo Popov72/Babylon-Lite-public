@@ -353,12 +353,12 @@ async function main(): Promise<void> {
 
     const hint = document.querySelector(".hint");
     if (hint) {
-        hint.textContent = "Capsule: drag rotate · RMB/Space hole · R refill — Box: LMB drag to push fluid, RMB drag rotate, wheel zoom — M: switch method";
+        hint.textContent = "Capsule: drag rotate · RMB/Space hole · R refill — Box: LMB drag rotate, RMB drag to push fluid, wheel zoom — M: switch method";
     }
 
     // Input. Capsule mode: the built-in arc camera owns LMB-rotate; RMB / Space
-    // punch holes; R refills. Box mode: the camera is detached, LMB drag pushes
-    // the fluid (force ∝ mouse speed, along the mouse direction), RMB drag rotates,
+    // punch holes; R refills. Box mode: the camera is detached, LMB drag rotates,
+    // RMB drag pushes the fluid (force ∝ mouse speed, along the mouse direction),
     // wheel zooms.
     const HOLE_RADIUS = 0.4;
     let dragBtn = -1;
@@ -381,7 +381,7 @@ async function main(): Promise<void> {
             }
             return;
         }
-        // Box mode: start an LMB (force) or RMB (rotate) drag.
+        // Box mode: start an LMB (rotate) or RMB (force) drag.
         if (e.button === 0 || e.button === 2) {
             dragBtn = e.button;
             lastX = e.clientX;
@@ -403,13 +403,13 @@ async function main(): Promise<void> {
         lastY = e.clientY;
         lastT = now;
 
-        if (dragBtn === 2) {
-            // RMB: orbit the (detached) arc camera.
+        if (dragBtn === 0) {
+            // LMB: orbit the (detached) arc camera.
             cam.alpha -= dx / 200;
             cam.beta = Math.min(Math.max(cam.beta - dy / 200, 0.05), Math.PI - 0.05);
             return;
         }
-        // LMB: push the fluid. Direction = mouse motion mapped into world space
+        // RMB: push the fluid. Direction = mouse motion mapped into world space
         // via the camera basis; magnitude ∝ mouse speed (px/s).
         const speed = (Math.hypot(dx, dy) / dtMs) * 1000;
         if (speed < 1) {
