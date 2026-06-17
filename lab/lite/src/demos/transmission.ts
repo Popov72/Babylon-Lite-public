@@ -244,7 +244,7 @@ async function main(): Promise<void> {
     }
     const SCHEMAS: Record<string, ParamDef[]> = {
         PBF: [
-            { key: "gravity", label: "Gravity", min: 0, max: 20, step: 0.1, value: 9.8 },
+            { key: "gravity", label: "Gravity", min: 0, max: 50, step: 0.1, value: 9.8 },
             { key: "viscosity", label: "Viscosity (XSPH)", min: 0, max: 0.3, step: 0.005, value: 0.08 },
             { key: "relaxation", label: "Relaxation ε", min: 1, max: 300, step: 1, value: 50 },
             { key: "scorr", label: "Artificial pressure", min: 0, max: 0.1, step: 0.001, value: 0.02 },
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
             { key: "boundaryDensity", label: "Boundary density", min: 0, max: 1, step: 0.05, value: 0 },
         ],
         "MLS-MPM": [
-            { key: "gravity", label: "Gravity", min: 0, max: 20, step: 0.1, value: 9.8 },
+            { key: "gravity", label: "Gravity", min: 0, max: 50, step: 0.1, value: 9.8 },
             { key: "stiffness", label: "Stiffness (EOS)", min: 10, max: 5000, step: 10, value: 350 },
             { key: "viscosity", label: "Viscosity", min: 0, max: 1, step: 0.01, value: 0.3 },
             { key: "restDensity", label: "Rest density (/cell)", min: 1, max: 16, step: 0.5, value: 3 },
