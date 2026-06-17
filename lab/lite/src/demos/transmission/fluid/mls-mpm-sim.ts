@@ -232,6 +232,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (y < 2 || y > i32(p.dim.y) - 3) { v.y = 0.0; }
     if (z < 2 || z > i32(p.dim.z) - 3) { v.z = 0.0; }
 
+    // Box container: separating walls applied at the GRID (not by snapping
+    // particle positions, which would glue a single layer to each face). At a
+    // face cell, zero only the outward-pointing normal velocity, so the fluid
+    // decelerates smoothly over the kernel width and packs naturally — no glued
+    // layer, no gap.
+    if (p.counts.y == 2u) {
+        let cw = p.origin.xyz + (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) * p.origin.w;
+        if (cw.x <= p.boxMin.x) { v.x = max(v.x, 0.0); }
+        if (cw.x >= p.boxMax.x) { v.x = min(v.x, 0.0); }
+        if (cw.y <= p.boxMin.y) { v.y = max(v.y, 0.0); }
+        if (cw.y >= p.boxMax.y) { v.y = min(v.y, 0.0); }
+        if (cw.z <= p.boxMin.z) { v.z = max(v.z, 0.0); }
+        if (cw.z >= p.boxMax.z) { v.z = min(v.z, 0.0); }
+    }
+
     cells[i].vx = enc(v.x);
     cells[i].vy = enc(v.y);
     cells[i].vz = enc(v.z);
@@ -321,20 +336,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
     } else if (p.counts.y == 2u) {
-        // Closed axis-aligned box container (no holes): clamp to the inner faces
-        // and zero the velocity component into any face we hit.
+        // Closed axis-aligned box: the grid separating-walls (updateGrid) do the
+        // real confinement. Here we only need a soft safety net for the rare
+        // particle that drifts past a face — push it back by HALF the penetration
+        // (over several steps) instead of snapping to the exact plane, which is
+        // what was gluing a single layer to each wall.
         let lo = p.boxMin.xyz;
         let hi = p.boxMax.xyz;
-        let cl = clamp(np, lo, hi);
-        if (cl.x != np.x) { vel.x = 0.0; }
-        if (cl.y != np.y) { vel.y = 0.0; }
-        if (cl.z != np.z) { vel.z = 0.0; }
-        np = cl;
+        let over = max(np - hi, vec3<f32>(0.0)) + min(np - lo, vec3<f32>(0.0));
+        np -= 0.5 * over;
     }
 
-    // Ground floor.
+    // Ground floor (capsule mode only; the box has its own grid-wall floor).
     let groundY = p.capsuleB.w;
-    if (np.y < groundY) { np.y = groundY; vel.y = max(vel.y, 0.0); }
+    if (p.counts.y != 2u && np.y < groundY) { np.y = groundY; vel.y = max(vel.y, 0.0); }
 
     // Keep inside the grid domain (2-cell margin).
     let lo = p.origin.xyz + dx * 2.0;
