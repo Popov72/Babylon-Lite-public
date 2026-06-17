@@ -39,11 +39,13 @@ import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
-const PARTICLE_COUNT = 60000;
-// MLS-MPM scales far better (no neighbour search). Kept equal to the PBF count
-// here so the two methods fill the tank to a comparable level (more particles
-// would only pack denser in this fixed-volume capsule, not fill higher).
-const MPM_PARTICLE_COUNT = 60000;
+// Particle count is chosen at runtime via the panel dropdown. The PBF rest
+// density is pinned (see below) so the count scales the liquid VOLUME, not the
+// packing density; MLS-MPM uses the same count so the two methods fill the tank
+// comparably. Recreating the sims (createSims) is the only way to resize the
+// GPU particle buffers, so the dropdown disposes and rebuilds both backends.
+const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000];
+const DEFAULT_PARTICLE_COUNT = 80000;
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -133,48 +135,56 @@ async function main(): Promise<void> {
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
 
-    // Backend 1 — Position Based Fluids (the original solver).
-    const pbfSim = createFluidSim(engine, {
-        count: PARTICLE_COUNT,
-        particleRadius: 0.09,
-        spawnMin: SPAWN_MIN,
-        spawnMax: SPAWN_MAX,
-        capsuleA: CAP_A,
-        capsuleB: CAP_B,
-        capsuleRadius: CAP_R,
-        groundY: 0,
-        // Pin the rest density (independent of count) so the liquid volume — not
-        // the packing density — scales with count, keeping grid memory bounded.
-        restDensity: 341,
-        boundsMin: BOUNDS_MIN,
-        boundsMax: BOUNDS_MAX,
-        maxPerCell: 48,
-    });
+    // Backends are (re)built by createSims so the particle-count dropdown can
+    // resize the GPU buffers (the only way to change count is to reallocate).
+    function createSims(count: number): { pbf: FluidSim; mpm: FluidSim } {
+        // Backend 1 — Position Based Fluids (the original solver).
+        const pbf = createFluidSim(engine, {
+            count,
+            particleRadius: 0.09,
+            spawnMin: SPAWN_MIN,
+            spawnMax: SPAWN_MAX,
+            capsuleA: CAP_A,
+            capsuleB: CAP_B,
+            capsuleRadius: CAP_R,
+            groundY: 0,
+            // Pin the rest density (independent of count) so the liquid volume — not
+            // the packing density — scales with count, keeping grid memory bounded.
+            restDensity: 341,
+            boundsMin: BOUNDS_MIN,
+            boundsMax: BOUNDS_MAX,
+            maxPerCell: 48,
+        });
 
-    // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
-    const mpmSim = createMlsMpmSim(engine, {
-        count: MPM_PARTICLE_COUNT,
-        particleRadius: 0.09,
-        spawnMin: SPAWN_MIN,
-        spawnMax: SPAWN_MAX,
-        capsuleA: CAP_A,
-        capsuleB: CAP_B,
-        capsuleRadius: CAP_R,
-        groundY: 0,
-        boundsMin: BOUNDS_MIN,
-        boundsMax: BOUNDS_MAX,
-        dx: 0.22,
-        restDensity: 3,
-        stiffness: 350,
-        gravity: 9.8,
-        viscosity: 0.3,
-        substeps: 3,
-        damping: 0.995,
-        affineDamping: 0.9,
-        groundDamp: 0.85,
-        groundDampHeight: 1.5,
-    });
+        // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
+        const mpm = createMlsMpmSim(engine, {
+            count,
+            particleRadius: 0.09,
+            spawnMin: SPAWN_MIN,
+            spawnMax: SPAWN_MAX,
+            capsuleA: CAP_A,
+            capsuleB: CAP_B,
+            capsuleRadius: CAP_R,
+            groundY: 0,
+            boundsMin: BOUNDS_MIN,
+            boundsMax: BOUNDS_MAX,
+            dx: 0.22,
+            restDensity: 3,
+            stiffness: 350,
+            gravity: 9.8,
+            viscosity: 0.3,
+            substeps: 3,
+            damping: 0.995,
+            affineDamping: 0.9,
+            groundDamp: 0.85,
+            groundDampHeight: 1.5,
+        });
 
+        return { pbf, mpm };
+    }
+
+    let particleCount = DEFAULT_PARTICLE_COUNT;
+    let { pbf: pbfSim, mpm: mpmSim } = createSims(particleCount);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
     let containerMode = 1; // 1 = capsule, 2 = box
@@ -295,12 +305,24 @@ async function main(): Promise<void> {
         containerSel.appendChild(opt);
     }
     containerSel.onchange = () => applyContainer(parseInt(containerSel.value, 10));
+    const particlesTitle = document.createElement("div");
+    particlesTitle.textContent = "Particles";
+    particlesTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const particlesSel = document.createElement("select");
+    particlesSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    for (const c of PARTICLE_COUNTS) {
+        const opt = document.createElement("option");
+        opt.value = String(c);
+        opt.textContent = `${(c / 1000).toFixed(0)}k`;
+        if (c === DEFAULT_PARTICLE_COUNT) opt.selected = true;
+        particlesSel.appendChild(opt);
+    }
     const sliderHost = document.createElement("div");
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, containerTitle, containerSel, sliderHost, resetBtn);
+    panel.append(title, methodSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
@@ -347,6 +369,23 @@ async function main(): Promise<void> {
         canvas.dataset.method = methodName;
     }
     methodSel.onchange = () => applyMethod(methodSel.value);
+
+    // Resize the particle buffers by disposing and rebuilding both backends at
+    // the new count, then re-applying the current container and method (which
+    // re-seeds and rebinds the renderer).
+    function setParticleCount(n: number): void {
+        if (n === particleCount) return;
+        particleCount = n;
+        pbfSim.dispose();
+        mpmSim.dispose();
+        ({ pbf: pbfSim, mpm: mpmSim } = createSims(n));
+        pbfSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
+        mpmSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
+        applyMethod(methodName);
+        canvas.dataset.particleCount = String(n);
+    }
+    particlesSel.onchange = () => setParticleCount(parseInt(particlesSel.value, 10));
+
     applyMethod("PBF");
     applyContainer(1); // capsule by default (also hides the box mesh)
 
@@ -472,7 +511,7 @@ async function main(): Promise<void> {
     await registerScene(engine, scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
-    canvas.dataset.particleCount = String(PARTICLE_COUNT);
+    canvas.dataset.particleCount = String(particleCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);
     canvas.dataset.ready = "true";
 }
