@@ -396,10 +396,14 @@ export interface MlsMpmOptions extends FluidSimOptions {
     restDensity?: number;
     /** Dynamic (viscous) stress coefficient. Default 0.1. */
     viscosity?: number;
-    /** Fixed simulation sub-steps per frame. Default 2. */
+    /** Sub-steps per frame: the frame's dt is split into this many MLS-MPM steps.
+     *  More substeps = more stable (smaller dt per step) but more compute. Splash
+     *  uses 1 (its grid-unit scaling keeps a single big step stable); this
+     *  world-unit port needs a few. Default 3. */
     substeps?: number;
-    /** Sub-step time (seconds). Default 1/120. */
-    subDt?: number;
+    /** Safety cap on a single sub-step's dt (seconds); the per-frame dt/substeps
+     *  is clamped to this so a hitch can't blow the integration up. Default 1/120. */
+    maxSubDt?: number;
     /** Per-substep velocity multiplier (<1 bleeds bulk kinetic energy so the
      *  fluid settles to rest). Default 0.98. */
     damping?: number;
@@ -429,9 +433,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const capsuleRadius = options.capsuleRadius ?? 0;
     const stiffness = options.stiffness ?? 50;
     const viscosity = options.viscosity ?? 0.1;
-    const substeps = options.substeps ?? 2;
+    const substeps = options.substeps ?? 3;
     let substepsMut = substeps;
-    const subDt = options.subDt ?? 1 / 120;
+    const maxSubDt = options.maxSubDt ?? 1 / 120;
     const damping = options.damping ?? 0.98;
     const affineDamping = options.affineDamping ?? 0.95;
     const groundDamp = options.groundDamp ?? 0.9;
@@ -480,7 +484,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     pf[13] = capsuleB ? capsuleB[1] : 0;
     pf[14] = capsuleB ? capsuleB[2] : 0;
     pf[15] = groundY;
-    pf[16] = subDt;
+    pf[16] = maxSubDt; // updated per-frame in step() to frameDt / substeps (capped)
     pf[17] = gravity;
     pf[18] = restDensity;
     pf[19] = stiffness;
@@ -598,7 +602,12 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         positionBuffer,
         debugBuffer,
         debugNorm: 1 / 6,
-        step(encoder: GPUCommandEncoder, _dt: number): void {
+        step(encoder: GPUCommandEncoder, dt: number): void {
+            // Split the (real-time) frame dt into `substeps` MLS-MPM steps, so the
+            // substeps slider trades stability vs cost without changing playback
+            // speed. Cap each sub-step's dt so a hitch can't blow it up.
+            const frameDt = dt > 0 ? dt : 1 / 60;
+            pf[16] = Math.min(frameDt / substepsMut, maxSubDt);
             device.queue.writeBuffer(paramsBuffer, 0, paramsData);
             for (let s = 0; s < substepsMut; s++) {
                 dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);

@@ -168,8 +168,7 @@ async function main(): Promise<void> {
         stiffness: 350,
         gravity: 9.8,
         viscosity: 0.3,
-        substeps: 5,
-        subDt: 1 / 300,
+        substeps: 3,
         damping: 0.995,
         affineDamping: 0.9,
         groundDamp: 0.85,
@@ -261,7 +260,7 @@ async function main(): Promise<void> {
             { key: "affineDamping", label: "Affine damping (→PIC)", min: 0.7, max: 1, step: 0.005, value: 0.9 },
             { key: "groundDamp", label: "Ground damping", min: 0.7, max: 1, step: 0.01, value: 0.85 },
             { key: "groundDampHeight", label: "Ground damp height", min: 0, max: 3, step: 0.1, value: 1.5 },
-            { key: "substeps", label: "Substeps", min: 1, max: 8, step: 1, value: 5 },
+            { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
         ],
     };
 
