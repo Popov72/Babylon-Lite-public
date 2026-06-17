@@ -15,6 +15,7 @@ import {
     addToScene,
     attachControl,
     createArcRotateCamera,
+    createBox,
     createCylinder,
     createEngine,
     createGround,
@@ -28,6 +29,7 @@ import {
     getViewProjectionMatrix,
     onBeforeRender,
     registerScene,
+    setMeshVisible,
     startEngine,
 } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
@@ -98,14 +100,31 @@ async function main(): Promise<void> {
     glass.diffuseColor = [0.5, 0.66, 0.82];
     glass.specularColor = [0.8, 0.85, 0.95];
     glass.alpha = 0.15;
+    const capsuleMeshes: Mesh[] = [];
     const addShellPart = (mesh: Mesh, x: number, y: number, z: number): void => {
         mesh.material = glass;
         mesh.position.set(x, y, z);
         addToScene(scene, mesh);
+        capsuleMeshes.push(mesh);
     };
     addShellPart(createCylinder(engine, { height: CAP_B[1] - CAP_A[1], diameter: 2 * CAP_R, tessellation: 48 }), 0, (CAP_A[1] + CAP_B[1]) / 2, 0);
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_A[0], CAP_A[1], CAP_A[2]);
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_B[0], CAP_B[1], CAP_B[2]);
+
+    // Box container: a closed box sitting on the ground (no holes). Same footprint
+    // as the capsule; the box floor IS the ground, so the ground plane is hidden
+    // while the box is the active container.
+    const BOX_MIN: [number, number, number] = [-3, 0, -3];
+    const BOX_MAX: [number, number, number] = [3, 12, 3];
+    const boxMesh = createBox(engine, 1);
+    boxMesh.material = glass;
+    boxMesh.scaling.set(BOX_MAX[0] - BOX_MIN[0], BOX_MAX[1] - BOX_MIN[1], BOX_MAX[2] - BOX_MIN[2]);
+    boxMesh.position.set(
+        (BOX_MIN[0] + BOX_MAX[0]) / 2,
+        (BOX_MIN[1] + BOX_MAX[1]) / 2,
+        (BOX_MIN[2] + BOX_MAX[2]) / 2,
+    );
+    addToScene(scene, boxMesh);
 
     // Shared scene geometry for both backends so switching is apples-to-apples.
     const SPAWN_MIN: [number, number, number] = [-2, 4, -2];
@@ -158,6 +177,7 @@ async function main(): Promise<void> {
 
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
+    let containerMode = 1; // 1 = capsule, 2 = box
 
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
@@ -167,6 +187,20 @@ async function main(): Promise<void> {
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         activeSim.step(engine._currentEncoder, dt);
     });
+
+    // Apply the chosen container to both sims and swap the visible shell/ground.
+    function applyContainer(mode: number): void {
+        containerMode = mode;
+        const isBox = mode === 2;
+        pbfSim.setContainer(mode, BOX_MIN, BOX_MAX);
+        mpmSim.setContainer(mode, BOX_MIN, BOX_MAX);
+        for (const m of capsuleMeshes) {
+            setMeshVisible(m, !isBox);
+        }
+        setMeshVisible(boxMesh, isBox);
+        setMeshVisible(ground, !isBox); // the box floor replaces the ground
+        activeSim.reset();
+    }
 
     // ── Live tuning UI ───────────────────────────────────────────────
     // A combo box to switch method, per-method parameter sliders (applied live),
@@ -218,12 +252,28 @@ async function main(): Promise<void> {
         opt.textContent = name === "PBF" ? "SPH (PBF)" : name;
         methodSel.appendChild(opt);
     }
+    const containerTitle = document.createElement("div");
+    containerTitle.textContent = "Container";
+    containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const containerSel = document.createElement("select");
+    containerSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    const containerOpts: { value: string; label: string }[] = [
+        { value: "1", label: "Capsule (drainable)" },
+        { value: "2", label: "Box (closed)" },
+    ];
+    for (const o of containerOpts) {
+        const opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        containerSel.appendChild(opt);
+    }
+    containerSel.onchange = () => applyContainer(parseInt(containerSel.value, 10));
     const sliderHost = document.createElement("div");
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, sliderHost, resetBtn);
+    panel.append(title, methodSel, containerTitle, containerSel, sliderHost, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
@@ -271,6 +321,7 @@ async function main(): Promise<void> {
     }
     methodSel.onchange = () => applyMethod(methodSel.value);
     applyMethod("PBF");
+    applyContainer(1); // capsule by default (also hides the box mesh)
 
     const hint = document.querySelector(".hint");
     if (hint) {
@@ -280,10 +331,11 @@ async function main(): Promise<void> {
     // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
     // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
     // adds another hole. R reseals + refills. M switches simulation backend.
+    // Holes only apply to the (drainable) capsule container.
     const HOLE_RADIUS = 0.4;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     canvas.addEventListener("pointerdown", (e) => {
-        if (e.button !== 2) {
+        if (e.button !== 2 || containerMode !== 1) {
             return;
         }
         const rect = canvas.getBoundingClientRect();
@@ -299,6 +351,9 @@ async function main(): Promise<void> {
         }
         if (e.code === "Space") {
             e.preventDefault();
+            if (containerMode !== 1) {
+                return;
+            }
             const theta = Math.random() * Math.PI * 2;
             const y = CAP_A[1] + Math.random() * 1.5;
             activeSim.addHole([CAP_R * Math.cos(theta), y, CAP_R * Math.sin(theta)], HOLE_RADIUS);

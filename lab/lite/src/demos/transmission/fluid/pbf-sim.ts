@@ -91,6 +91,9 @@ export interface FluidSim {
     reset(): void;
     /** Live-update a named simulation parameter (for the demo's tuning UI). */
     setParam(key: string, value: number): void;
+    /** Switch the confining container: 0 = none, 1 = capsule (creation params),
+     *  2 = axis-aligned box [min, max]. */
+    setContainer(mode: number, min: [number, number, number], max: [number, number, number]): void;
     dispose(): void;
 }
 
@@ -104,14 +107,16 @@ const MAX_HOLES = 8;
 //   [0] dt        [1] gravity   [2] restDensity [3] h
 //   [4] h2        [5] poly6     [6] spikyGrad   [7] eps
 //   [8] scorrK    [9] scorrInvWdq [10] scorrN   [11] viscosity
-//   [12] count(u32) [13] capsuleMode(u32) [14] boundaryDensity [15] holeCount(u32)
+//   [12] count(u32) [13] containerMode(u32) [14] boundaryDensity [15] holeCount(u32)
 //   [16..19] boundsMin.xyz + pad
 //   [20..23] boundsMax.xyz + pad
 //   [24..27] capsuleA.xyz + capsuleRadius
 //   [28..31] capsuleB.xyz + groundY
 //   [32..]   holes[MAX_HOLES] — each vec4 (centre.xyz + radius; radius 0 = unused)
+//   then     boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
 const HOLE_BASE_F32 = 32;
-const SIM_BYTES = HOLE_BASE_F32 * 4 + MAX_HOLES * 16;
+const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
+const SIM_BYTES = (BOX_BASE_F32 + 8) * 4;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
 const GRID_BYTES = 32;
@@ -133,7 +138,7 @@ struct Sim {
     scorrN: f32,
     viscosity: f32,
     count: u32,
-    capsuleMode: u32,
+    containerMode: u32,
     boundaryDensity: f32,
     holeCount: u32,
     boundsMin: vec4<f32>,
@@ -141,6 +146,8 @@ struct Sim {
     capsuleA: vec4<f32>,
     capsuleB: vec4<f32>,
     holes: array<vec4<f32>, ${MAX_HOLES}>,
+    boxMin: vec4<f32>,
+    boxMax: vec4<f32>,
 };
 
 struct Grid {
@@ -173,12 +180,16 @@ fn cellLinear(c: vec3<i32>, grid: Grid) -> u32 {
 // density near walls so the fluid doesn't climb them.
 fn distToSolid(p: vec3<f32>, sim: Sim) -> f32 {
     var d = p.y - sim.capsuleB.w; // ground floor
-    if (sim.capsuleMode != 0u) {
+    if (sim.containerMode == 1u) {
         let a = sim.capsuleA.xyz;
         let ba = sim.capsuleB.xyz - a;
         let hh = clamp(dot(p - a, ba) / dot(ba, ba), 0.0, 1.0);
         let dWall = sim.capsuleA.w - length(p - (a + ba * hh));
         d = min(d, dWall);
+    } else if (sim.containerMode == 2u) {
+        let dlo = p - sim.boxMin.xyz;
+        let dhi = sim.boxMax.xyz - p;
+        d = min(d, min(min(dlo.x, dlo.y), min(dlo.z, min(dhi.x, min(dhi.y, dhi.z)))));
     }
     return d;
 }
@@ -352,7 +363,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Particles that have left through the hole are free; only those still
     // inside are confined by the capsule wall.
-    if (sim.capsuleMode != 0u && esc == 0u) {
+    if (sim.containerMode == 1u && esc == 0u) {
         // Project onto the capsule's inner surface along the radial direction
         // from the nearest point on its core segment. The rounded boundary
         // leaves no flat faces or sharp edges for particles to align against.
@@ -379,6 +390,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 p = axisPt + radial * (r / max(dist, 1e-6));
             }
         }
+    } else if (sim.containerMode == 2u) {
+        // Closed axis-aligned box container (no holes).
+        p = clamp(p, sim.boxMin.xyz, sim.boxMax.xyz);
     }
 
     // Ground floor (escaped liquid lands here once the tank is breached).
@@ -722,6 +736,15 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
                 case "boundaryDensity": simF32[14] = value; break;
                 case "iterations": iterationsMut = Math.max(1, Math.round(value)); break;
             }
+        },
+        setContainer(mode: number, min: [number, number, number], max: [number, number, number]): void {
+            simU32[13] = mode;
+            simF32[BOX_BASE_F32] = min[0];
+            simF32[BOX_BASE_F32 + 1] = min[1];
+            simF32[BOX_BASE_F32 + 2] = min[2];
+            simF32[BOX_BASE_F32 + 4] = max[0];
+            simF32[BOX_BASE_F32 + 5] = max[1];
+            simF32[BOX_BASE_F32 + 6] = max[2];
         },
         addHole(center: [number, number, number], radius: number): void {
             const o = HOLE_BASE_F32 + holeWriteSlot * 4;

@@ -33,12 +33,14 @@ const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
 //   capsuleB.xyz, groundY
 //   dt, gravity, restDensity, stiffness
 //   viscosity, pad, pad, pad
-//   counts: numParticles(u32), capsuleMode(u32), holeCount(u32), pad
+//   counts: numParticles(u32), containerMode(u32), holeCount(u32), pad
 //   holes[MAX_HOLES]: centre.xyz + radius
-const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4; // 7 vec4 header + holes
+//   boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
+const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8; // 7 vec4 header + holes + box min/max
 const PARAMS_BYTES = PARAMS_F32 * 4;
 const COUNTS_OFFSET_F32 = 24; // start of the counts vec4 (u32 view)
 const HOLE_BASE_F32 = 28;
+const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
 
 const COMMON_WGSL = /* wgsl */ `
 const FIXED_POINT: f32 = ${FIXED_POINT};
@@ -51,8 +53,10 @@ struct Params {
     capsuleB: vec4<f32>,    // xyz + groundY
     sim0: vec4<f32>,        // dt, gravity, restDensity, stiffness
     sim1: vec4<f32>,        // viscosity, _, _, _
-    counts: vec4<u32>,      // numParticles, capsuleMode, holeCount, _
+    counts: vec4<u32>,      // numParticles, containerMode, holeCount, _
     holes: array<vec4<f32>, ${MAX_HOLES}>,
+    boxMin: vec4<f32>,
+    boxMax: vec4<f32>,
 };
 
 fn enc(x: f32) -> i32 { return i32(x * FIXED_POINT); }
@@ -274,7 +278,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var esc = escaped[i];
 
     // Capsule tank boundary (unless the particle has escaped through a hole).
-    if (p.counts.y != 0u && esc == 0u) {
+    if (p.counts.y == 1u && esc == 0u) {
         let a = p.capsuleA.xyz;
         let b = p.capsuleB.xyz;
         let r = p.capsuleA.w;
@@ -296,6 +300,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 vel -= max(dot(vel, n), 0.0) * n; // remove the outward velocity (no bounce)
             }
         }
+    } else if (p.counts.y == 2u) {
+        // Closed axis-aligned box container (no holes): clamp to the inner faces
+        // and zero the velocity component into any face we hit.
+        let lo = p.boxMin.xyz;
+        let hi = p.boxMax.xyz;
+        let cl = clamp(np, lo, hi);
+        if (cl.x != np.x) { vel.x = 0.0; }
+        if (cl.y != np.y) { vel.y = 0.0; }
+        if (cl.z != np.z) { vel.z = 0.0; }
+        np = cl;
     }
 
     // Ground floor.
@@ -589,6 +603,15 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 case "groundDampHeight": pf[7] = value; break;
                 case "substeps": substepsMut = Math.max(1, Math.round(value)); break;
             }
+        },
+        setContainer(mode: number, min: [number, number, number], max: [number, number, number]): void {
+            pu[COUNTS_OFFSET_F32 + 1] = mode;
+            pf[BOX_BASE_F32] = min[0];
+            pf[BOX_BASE_F32 + 1] = min[1];
+            pf[BOX_BASE_F32 + 2] = min[2];
+            pf[BOX_BASE_F32 + 4] = max[0];
+            pf[BOX_BASE_F32 + 5] = max[1];
+            pf[BOX_BASE_F32 + 6] = max[2];
         },
         dispose(): void {
             particleBuffer.destroy();
