@@ -36,11 +36,13 @@ const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
 //   counts: numParticles(u32), containerMode(u32), holeCount(u32), pad
 //   holes[MAX_HOLES]: centre.xyz + radius
 //   boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
-const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8; // 7 vec4 header + holes + box min/max
+//   forceO.xyz+radius, forceD.xyz+accel, forceP.xyz+pad (mouse force)
+const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8 + 12; // header + holes + box + force
 const PARAMS_BYTES = PARAMS_F32 * 4;
 const COUNTS_OFFSET_F32 = 24; // start of the counts vec4 (u32 view)
 const HOLE_BASE_F32 = 28;
 const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
+const FORCE_BASE_F32 = BOX_BASE_F32 + 8;
 
 const COMMON_WGSL = /* wgsl */ `
 const FIXED_POINT: f32 = ${FIXED_POINT};
@@ -57,6 +59,9 @@ struct Params {
     holes: array<vec4<f32>, ${MAX_HOLES}>,
     boxMin: vec4<f32>,
     boxMax: vec4<f32>,
+    forceO: vec4<f32>,
+    forceD: vec4<f32>,
+    forceP: vec4<f32>,
 };
 
 fn enc(x: f32) -> i32 { return i32(x * FIXED_POINT); }
@@ -274,6 +279,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var C = (B * Dinv) * p.sim1.z;
     vel *= p.sim1.y;
     let dt = p.sim0.x;
+
+    // Interactive mouse force: push particles near the cursor ray.
+    let accel = p.forceD.w;
+    if (accel > 0.0) {
+        let o = p.forceO.xyz;
+        let dir = p.forceD.xyz;
+        let t = dot(pos - o, dir);
+        if (t > 0.0) {
+            let d2 = length(pos - (o + t * dir));
+            if (d2 < p.forceO.w) {
+                vel += p.forceP.xyz * (accel * (1.0 - d2 / p.forceO.w) * dt);
+            }
+        }
+    }
+
     var np = pos + vel * dt;
     var esc = escaped[i];
 
@@ -612,6 +632,19 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             pf[BOX_BASE_F32 + 4] = max[0];
             pf[BOX_BASE_F32 + 5] = max[1];
             pf[BOX_BASE_F32 + 6] = max[2];
+        },
+        setForce(origin: [number, number, number], dir: [number, number, number], push: [number, number, number], radius: number, accel: number): void {
+            pf[FORCE_BASE_F32] = origin[0];
+            pf[FORCE_BASE_F32 + 1] = origin[1];
+            pf[FORCE_BASE_F32 + 2] = origin[2];
+            pf[FORCE_BASE_F32 + 3] = radius;
+            pf[FORCE_BASE_F32 + 4] = dir[0];
+            pf[FORCE_BASE_F32 + 5] = dir[1];
+            pf[FORCE_BASE_F32 + 6] = dir[2];
+            pf[FORCE_BASE_F32 + 7] = accel;
+            pf[FORCE_BASE_F32 + 8] = push[0];
+            pf[FORCE_BASE_F32 + 9] = push[1];
+            pf[FORCE_BASE_F32 + 10] = push[2];
         },
         dispose(): void {
             particleBuffer.destroy();

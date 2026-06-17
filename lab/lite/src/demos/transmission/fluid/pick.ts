@@ -138,3 +138,27 @@ export function pickCapsuleHole(
     }
     return [near[0] + dx * t, near[1] + dy * t, near[2] + dz * t];
 }
+
+/** Screen-space cursor → world-space ray (origin on the near plane + unit dir). */
+export function screenRay(
+    vp: ArrayLike<number>,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+): { origin: Vec3; dir: Vec3 } | null {
+    const inv = mat4Invert(vp);
+    if (!inv) {
+        return null;
+    }
+    const ndcX = (2 * x) / width - 1;
+    const ndcY = 1 - (2 * y) / height; // WebGPU: Y flipped
+    const near = unproject(inv, ndcX, ndcY, 1);
+    const far = unproject(inv, ndcX, ndcY, 0);
+    let dx = far[0] - near[0], dy = far[1] - near[1], dz = far[2] - near[2];
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-10) {
+        return null;
+    }
+    return { origin: near, dir: [dx / len, dy / len, dz / len] };
+}

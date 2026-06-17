@@ -37,7 +37,7 @@ import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
 import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
-import { pickCapsuleHole } from "./transmission/fluid/pick.js";
+import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 const PARTICLE_COUNT = 60000;
 // MLS-MPM scales far better (no neighbour search). Kept equal to the PBF count
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
     scene.camera = cam;
-    attachControl(cam, canvas, scene);
+    let detachCam: (() => void) | null = attachControl(cam, canvas, scene);
 
     addToScene(scene, createHemisphericLight([0.3, 1, 0.4], 1.1));
 
@@ -111,11 +111,11 @@ async function main(): Promise<void> {
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_A[0], CAP_A[1], CAP_A[2]);
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_B[0], CAP_B[1], CAP_B[2]);
 
-    // Box container: a closed box sitting on the ground (no holes). Same footprint
-    // as the capsule; the box floor IS the ground, so the ground plane is hidden
-    // while the box is the active container.
-    const BOX_MIN: [number, number, number] = [-3, 0, -3];
-    const BOX_MAX: [number, number, number] = [3, 12, 3];
+    // Box container: a closed box sitting on the ground (no holes), 1.5× the
+    // original footprint. The box floor IS the ground, so the ground plane is
+    // hidden while the box is the active container.
+    const BOX_MIN: [number, number, number] = [-4.5, 0, -4.5];
+    const BOX_MAX: [number, number, number] = [4.5, 18, 4.5];
     const boxMesh = createBox(engine, 1);
     boxMesh.material = glass;
     boxMesh.scaling.set(BOX_MAX[0] - BOX_MIN[0], BOX_MAX[1] - BOX_MIN[1], BOX_MAX[2] - BOX_MIN[2]);
@@ -127,10 +127,11 @@ async function main(): Promise<void> {
     addToScene(scene, boxMesh);
 
     // Shared scene geometry for both backends so switching is apples-to-apples.
+    // The domain spans both containers (capsule drain spread + the taller box).
     const SPAWN_MIN: [number, number, number] = [-2, 4, -2];
     const SPAWN_MAX: [number, number, number] = [2, 12, 2];
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
-    const BOUNDS_MAX: [number, number, number] = [20, CAP_B[1] + CAP_R + 0.5, 20];
+    const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
 
     // Backend 1 — Position Based Fluids (the original solver).
     const pbfSim = createFluidSim(engine, {
@@ -179,12 +180,30 @@ async function main(): Promise<void> {
     let methodName = "PBF";
     let containerMode = 1; // 1 = capsule, 2 = box
 
+    // Mouse-force state (box mode). `forcePending` holds the force computed from
+    // the latest pointer move; it's applied for one frame then cleared, so the
+    // force only acts while the mouse is actually moving.
+    interface PendingForce {
+        origin: [number, number, number];
+        dir: [number, number, number];
+        push: [number, number, number];
+        accel: number;
+    }
+    let forcePending: PendingForce | null = null;
+    const FORCE_RADIUS = 3.5;
+
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
 
     onBeforeRender(scene, (deltaMs: number) => {
         // Clamp dt so a hitch / first frame can't blow the integration up.
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
+        if (forcePending) {
+            activeSim.setForce(forcePending.origin, forcePending.dir, forcePending.push, FORCE_RADIUS, forcePending.accel);
+            forcePending = null;
+        } else {
+            activeSim.setForce([0, 0, 0], [0, 0, 1], [0, 0, 0], FORCE_RADIUS, 0);
+        }
         activeSim.step(engine._currentEncoder, dt);
     });
 
@@ -199,6 +218,15 @@ async function main(): Promise<void> {
         }
         setMeshVisible(boxMesh, isBox);
         setMeshVisible(ground, !isBox); // the box floor replaces the ground
+        // In box mode LMB stirs the fluid, so the built-in camera control (which
+        // uses LMB to rotate) is detached and replaced by RMB-rotate / wheel-zoom.
+        if (isBox && detachCam) {
+            detachCam();
+            detachCam = null;
+        } else if (!isBox && !detachCam) {
+            detachCam = attachControl(cam, canvas, scene);
+        }
+        activeSim.setForce([0, 0, 0], [0, 0, 1], [0, 0, 0], 1, 0);
         activeSim.reset();
     }
 
@@ -325,26 +353,104 @@ async function main(): Promise<void> {
 
     const hint = document.querySelector(".hint");
     if (hint) {
-        hint.textContent = "Drag: rotate · Right-click: hole at cursor · Space: random hole · R: refill · M: switch method";
+        hint.textContent = "Capsule: drag rotate · RMB/Space hole · R refill — Box: LMB drag to push fluid, RMB drag rotate, wheel zoom — M: switch method";
     }
 
-    // Controls: drag (LMB) rotates the camera. Space punches a hole at a random
-    // spot; RMB punches a hole exactly where the cursor hits the tank. Each press
-    // adds another hole. R reseals + refills. M switches simulation backend.
-    // Holes only apply to the (drainable) capsule container.
+    // Input. Capsule mode: the built-in arc camera owns LMB-rotate; RMB / Space
+    // punch holes; R refills. Box mode: the camera is detached, LMB drag pushes
+    // the fluid (force ∝ mouse speed, along the mouse direction), RMB drag rotates,
+    // wheel zooms.
     const HOLE_RADIUS = 0.4;
+    let dragBtn = -1;
+    let lastX = 0;
+    let lastY = 0;
+    let lastT = 0;
+
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
     canvas.addEventListener("pointerdown", (e) => {
-        if (e.button !== 2 || containerMode !== 1) {
+        if (containerMode === 1) {
+            // Capsule: RMB punches a hole where the cursor hits the tank.
+            if (e.button === 2) {
+                const rect = canvas.getBoundingClientRect();
+                const vp = getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height));
+                const hit = pickCapsuleHole(vp, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height, CAP_A, CAP_B, CAP_R);
+                if (hit) {
+                    activeSim.addHole(hit, HOLE_RADIUS);
+                }
+            }
+            return;
+        }
+        // Box mode: start an LMB (force) or RMB (rotate) drag.
+        if (e.button === 0 || e.button === 2) {
+            dragBtn = e.button;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            lastT = performance.now();
+            canvas.setPointerCapture(e.pointerId);
+        }
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+        if (containerMode !== 2 || dragBtn < 0) {
+            return;
+        }
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        const now = performance.now();
+        const dtMs = Math.max(now - lastT, 1);
+        lastX = e.clientX;
+        lastY = e.clientY;
+        lastT = now;
+
+        if (dragBtn === 2) {
+            // RMB: orbit the (detached) arc camera.
+            cam.alpha -= dx / 200;
+            cam.beta = Math.min(Math.max(cam.beta - dy / 200, 0.05), Math.PI - 0.05);
+            return;
+        }
+        // LMB: push the fluid. Direction = mouse motion mapped into world space
+        // via the camera basis; magnitude ∝ mouse speed (px/s).
+        const speed = (Math.hypot(dx, dy) / dtMs) * 1000;
+        if (speed < 1) {
             return;
         }
         const rect = canvas.getBoundingClientRect();
         const vp = getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height));
-        const hit = pickCapsuleHole(vp, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height, CAP_A, CAP_B, CAP_R);
-        if (hit) {
-            activeSim.addHole(hit, HOLE_RADIUS);
+        const ray = screenRay(vp, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+        if (!ray) {
+            return;
         }
+        const wm = cam.worldMatrix;
+        // World-space mouse motion: camera right * dx − camera up * dy (screen-y down).
+        let px = wm[0]! * dx - wm[4]! * dy;
+        let py = wm[1]! * dx - wm[5]! * dy;
+        let pz = wm[2]! * dx - wm[6]! * dy;
+        const plen = Math.hypot(px, py, pz) || 1;
+        px /= plen;
+        py /= plen;
+        pz /= plen;
+        forcePending = { origin: ray.origin, dir: ray.dir, push: [px, py, pz], accel: speed * 0.5 };
     });
+
+    const endDrag = (e: PointerEvent): void => {
+        if (dragBtn >= 0) {
+            dragBtn = -1;
+            forcePending = null;
+            canvas.releasePointerCapture(e.pointerId);
+        }
+    };
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", endDrag);
+
+    canvas.addEventListener("wheel", (e) => {
+        if (containerMode !== 2) {
+            return; // capsule mode: the arc camera handles the wheel
+        }
+        e.preventDefault();
+        cam.radius = Math.min(Math.max(cam.radius * (1 + Math.sign(e.deltaY) * 0.1), 6), 120);
+    });
+
     window.addEventListener("keydown", (e) => {
         if (e.repeat) {
             return;

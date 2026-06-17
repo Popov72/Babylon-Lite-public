@@ -94,6 +94,9 @@ export interface FluidSim {
     /** Switch the confining container: 0 = none, 1 = capsule (creation params),
      *  2 = axis-aligned box [min, max]. */
     setContainer(mode: number, min: [number, number, number], max: [number, number, number]): void;
+    /** Set an interactive push force: particles within `radius` of the ray
+     *  (origin, dir) are accelerated along `push` by `accel` (0 = disabled). */
+    setForce(origin: [number, number, number], dir: [number, number, number], push: [number, number, number], radius: number, accel: number): void;
     dispose(): void;
 }
 
@@ -114,9 +117,11 @@ const MAX_HOLES = 8;
 //   [28..31] capsuleB.xyz + groundY
 //   [32..]   holes[MAX_HOLES] — each vec4 (centre.xyz + radius; radius 0 = unused)
 //   then     boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
+//   then     forceO.xyz+radius, forceD.xyz+accel, forceP.xyz+pad (mouse force)
 const HOLE_BASE_F32 = 32;
 const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
-const SIM_BYTES = (BOX_BASE_F32 + 8) * 4;
+const FORCE_BASE_F32 = BOX_BASE_F32 + 8;
+const SIM_BYTES = (FORCE_BASE_F32 + 12) * 4;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
 const GRID_BYTES = 32;
@@ -148,6 +153,9 @@ struct Sim {
     holes: array<vec4<f32>, ${MAX_HOLES}>,
     boxMin: vec4<f32>,
     boxMax: vec4<f32>,
+    forceO: vec4<f32>,
+    forceD: vec4<f32>,
+    forceP: vec4<f32>,
 };
 
 struct Grid {
@@ -193,6 +201,21 @@ fn distToSolid(p: vec3<f32>, sim: Sim) -> f32 {
     }
     return d;
 }
+
+// Interactive mouse force: an acceleration pushing particles near the cursor ray
+// (origin forceO.xyz, dir forceD.xyz) along forceP.xyz, with linear falloff over
+// radius forceO.w. forceD.w (accel) = 0 disables it.
+fn mouseForce(p: vec3<f32>, sim: Sim) -> vec3<f32> {
+    let accel = sim.forceD.w;
+    if (accel <= 0.0) { return vec3<f32>(0.0); }
+    let o = sim.forceO.xyz;
+    let dir = sim.forceD.xyz;
+    let t = dot(p - o, dir);
+    if (t <= 0.0) { return vec3<f32>(0.0); }
+    let dist = length(p - (o + t * dir));
+    if (dist >= sim.forceO.w) { return vec3<f32>(0.0); }
+    return sim.forceP.xyz * (accel * (1.0 - dist / sim.forceO.w));
+}
 `;
 
 const PREDICT_WGSL = /* wgsl */ `
@@ -208,6 +231,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= sim.count) { return; }
     var v = vel[i].xyz;
     v.y -= sim.gravity * sim.dt;
+    v += mouseForce(pos[i].xyz, sim) * sim.dt;
     let p = pos[i].xyz + v * sim.dt;
     predicted[i] = vec4<f32>(p, 1.0);
 }`;
@@ -745,6 +769,19 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             simF32[BOX_BASE_F32 + 4] = max[0];
             simF32[BOX_BASE_F32 + 5] = max[1];
             simF32[BOX_BASE_F32 + 6] = max[2];
+        },
+        setForce(origin: [number, number, number], dir: [number, number, number], push: [number, number, number], radius: number, accel: number): void {
+            simF32[FORCE_BASE_F32] = origin[0];
+            simF32[FORCE_BASE_F32 + 1] = origin[1];
+            simF32[FORCE_BASE_F32 + 2] = origin[2];
+            simF32[FORCE_BASE_F32 + 3] = radius;
+            simF32[FORCE_BASE_F32 + 4] = dir[0];
+            simF32[FORCE_BASE_F32 + 5] = dir[1];
+            simF32[FORCE_BASE_F32 + 6] = dir[2];
+            simF32[FORCE_BASE_F32 + 7] = accel;
+            simF32[FORCE_BASE_F32 + 8] = push[0];
+            simF32[FORCE_BASE_F32 + 9] = push[1];
+            simF32[FORCE_BASE_F32 + 10] = push[2];
         },
         addHole(center: [number, number, number], radius: number): void {
             const o = HOLE_BASE_F32 + holeWriteSlot * 4;
