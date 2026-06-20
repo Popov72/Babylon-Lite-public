@@ -53,7 +53,7 @@ const FLUID_COLOR: [number, number, number] = [0.085, 0.6375, 0.765];
 const DIR_LIGHT: [number, number, number] = [-2, -1, 1]; // normalized below
 const BLUR_DEPTH_FILTER_SIZE = 20;
 const BLUR_MAX_FILTER_SIZE = 64;
-const BLUR_DEPTH_DEPTH_SCALE = 35;
+const BLUR_DEPTH_DEPTH_SCALE = 10;
 const BLUR_THICKNESS_FILTER_SIZE = 10;
 const PARTICLE_SIZE_SCALE = 3.5; // impostor diameter = particleRadius * this
 
@@ -310,11 +310,14 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     if (abs(ddy.z) > abs(ddy2.z)) { ddy = ddy2; }
     // Guard against a degenerate cross product (fast/noisy depth under a force
     // can make ddx∥ddy → normalize(0) = NaN → dark specular/fresnel artefacts).
-    let cl = cross(ddy, ddx);
+    // Deterministic winding gives a camera-facing normal in our LH view space
+    // (matches BJS, which has no conditional flip). A normal.z > 0 orientation
+    // test is WRONG at grazing/off-axis angles: the view ray then has large x/y
+    // components, so a correctly camera-facing normal can legitimately have z > 0
+    // and would be flipped, inverting the whole top surface (purple speckle).
+    let cl = cross(ddx, ddy);
     let clLen = length(cl);
-    var normal = select(vec3<f32>(0.0, 0.0, -1.0), cl / clLen, clLen > 1e-7);
-    // Orient toward the camera (LH view space: camera at origin looking +Z).
-    if (normal.z > 0.0) { normal = -normal; }
+    let normal = select(vec3<f32>(0.0, 0.0, -1.0), cl / clLen, clLen > 1e-7);
 
     if (debugMode > 4.5) { // normals
         return vec4<f32>(normal * 0.5 + 0.5, 1.0);
