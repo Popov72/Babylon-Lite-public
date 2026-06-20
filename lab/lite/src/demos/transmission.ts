@@ -245,7 +245,7 @@ async function main(): Promise<void> {
     // and writes the swapchain. In sphere mode it just blits the scene (with the
     // impostors already drawn into it); in surface mode it reconstructs and
     // shades the liquid surface (refraction of the scene + speed foam).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
 
     // Load the environment cube map and wire it into the sky + the fluid's
@@ -384,6 +384,40 @@ async function main(): Promise<void> {
         debugSel.appendChild(opt);
     }
     debugSel.onchange = () => surfaceTask.setDebug(debugSel.value as FluidDebug);
+
+    // Foam threshold (speed at which the surface goes fully white) + a global
+    // half-resolution toggle for the fluid textures (perf).
+    const foamRow = document.createElement("div");
+    foamRow.style.cssText = "margin:2px 0 6px;";
+    const foamHead = document.createElement("div");
+    foamHead.style.cssText = "display:flex;justify-content:space-between;";
+    const foamLab = document.createElement("span");
+    foamLab.textContent = "Foam threshold (speed)";
+    const foamVal = document.createElement("span");
+    foamVal.style.cssText = "color:#9fb4cc;";
+    foamVal.textContent = "6";
+    foamHead.append(foamLab, foamVal);
+    const foamInput = document.createElement("input");
+    foamInput.type = "range";
+    foamInput.min = "1";
+    foamInput.max = "30";
+    foamInput.step = "0.5";
+    foamInput.value = "6";
+    foamInput.style.cssText = "width:100%;";
+    foamInput.oninput = () => {
+        foamVal.textContent = foamInput.value;
+        surfaceTask.setFoamThreshold(parseFloat(foamInput.value));
+    };
+    foamRow.append(foamHead, foamInput);
+    const halfRow = document.createElement("label");
+    halfRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
+    const halfChk = document.createElement("input");
+    halfChk.type = "checkbox";
+    const halfText = document.createElement("span");
+    halfText.textContent = "Half rendering (perf)";
+    halfRow.append(halfChk, halfText);
+    halfChk.onchange = () => surfaceTask.setHalfRender(halfChk.checked);
+
     const containerTitle = document.createElement("div");
     containerTitle.textContent = "Container";
     containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -457,7 +491,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, renderTitle, renderRow, debugTitle, debugSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {

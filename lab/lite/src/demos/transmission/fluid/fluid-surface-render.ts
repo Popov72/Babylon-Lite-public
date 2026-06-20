@@ -35,8 +35,6 @@ export interface FluidSurfaceOptions {
     bgRT: RenderTarget;
     /** Final output (the swapchain, typically `engine.scRT`). */
     outRT: RenderTarget;
-    /** Depth target shared with the scene render task (depth-test for occlusion). */
-    depthRT: RenderTarget;
     camera: Camera;
     sim: FluidSim;
 }
@@ -221,10 +219,11 @@ struct Comp {
     camR: vec4<f32>,    // camera world basis (view→world for reflection)
     camU: vec4<f32>,
     camF: vec4<f32>,
-    a: vec4<f32>,       // texelSize.xy, cameraFar, density
+    a: vec4<f32>,       // outputTexel.xy (full res, for texCoord), cameraFar, density
     b: vec4<f32>,       // dirLight.xyz, refractionStrength
     c: vec4<f32>,       // fresnelClamp, specularPower, minimumThickness, debugMode
     diffuse: vec4<f32>, // diffuseColor.rgb, _
+    extra: vec4<f32>,   // depthTexel.xy (for normal offsets), foamThreshold, _
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthSamp: sampler;
@@ -254,8 +253,9 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
 }
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let texelSize = u.a.xy;
-    let texCoord = pos.xy * texelSize;
+    let outputTexel = u.a.xy;       // full-res texel (for texCoord)
+    let depthTexel = u.extra.xy;    // depth-texture texel (for normal offsets)
+    let texCoord = pos.xy * outputTexel;
     let cameraFar = u.a.z;
     let density = u.a.w;
     let debugMode = u.c.w;
@@ -287,15 +287,19 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
         return backColor;
     }
 
-    // View-space position + normal (min-Z one-sided differences).
+    // View-space position + normal (min-Z one-sided differences, in depth texels).
     let viewPos = computeViewPosFromUVDepth(texCoord, depth);
-    var ddx = getViewPos(texCoord + vec2<f32>(texelSize.x, 0.0)) - viewPos;
-    var ddy = getViewPos(texCoord + vec2<f32>(0.0, texelSize.y)) - viewPos;
-    let ddx2 = viewPos - getViewPos(texCoord + vec2<f32>(-texelSize.x, 0.0));
+    var ddx = getViewPos(texCoord + vec2<f32>(depthTexel.x, 0.0)) - viewPos;
+    var ddy = getViewPos(texCoord + vec2<f32>(0.0, depthTexel.y)) - viewPos;
+    let ddx2 = viewPos - getViewPos(texCoord + vec2<f32>(-depthTexel.x, 0.0));
     if (abs(ddx.z) > abs(ddx2.z)) { ddx = ddx2; }
-    let ddy2 = viewPos - getViewPos(texCoord + vec2<f32>(0.0, -texelSize.y));
+    let ddy2 = viewPos - getViewPos(texCoord + vec2<f32>(0.0, -depthTexel.y));
     if (abs(ddy.z) > abs(ddy2.z)) { ddy = ddy2; }
-    var normal = normalize(cross(ddy, ddx));
+    // Guard against a degenerate cross product (fast/noisy depth under a force
+    // can make ddx∥ddy → normalize(0) = NaN → dark specular/fresnel artefacts).
+    let cl = cross(ddy, ddx);
+    let clLen = length(cl);
+    var normal = select(vec3<f32>(0.0, 0.0, -1.0), cl / clLen, clLen > 1e-7);
     // Orient toward the camera (LH view space: camera at origin looking +Z).
     if (normal.z > 0.0) { normal = -normal; }
 
@@ -309,8 +313,10 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     let H = normalize(lightDir - rayDir);
     let specular = pow(max(0.0, dot(H, normal)), u.c.y);
 
-    // Refraction of the scene background.
-    let refractionDir = refract(rayDir, normal, ETA);
+    // Refraction of the scene background. refract() returns 0 on total internal
+    // reflection — fall back to the straight-through ray so no dark hole appears.
+    var refractionDir = refract(rayDir, normal, ETA);
+    if (dot(refractionDir, refractionDir) < 1e-6) { refractionDir = rayDir; }
     let refrUV = texCoord + vec2<f32>(refractionDir.x, -refractionDir.y) * thickness * u.b.w;
     let transmitted = textureSampleLevel(bgTex, bgSamp, clamp(refrUV, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
     let transmittance = exp(-density * thickness * (1.0 - diffuseColor)); // Beer-Lambert
@@ -321,12 +327,13 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     let reflW = reflViewDir.x * u.camR.xyz + reflViewDir.y * u.camU.xyz + reflViewDir.z * u.camF.xyz;
     let reflectionColor = textureSampleLevel(envTex, envSamp, vec3<f32>(reflW.x, reflW.y, -reflW.z), 0.0).rgb;
 
-    let fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - dot(normal, -rayDir), 5.0), 0.0, u.c.x);
+    let fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - max(dot(normal, -rayDir), 0.0), 5.0), 0.0, u.c.x);
     var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
 
-    // Velocity → foam (BJS FLUIDRENDERING_VELOCITY).
+    // Velocity → foam. foamThreshold (u.extra.z) = speed at which the surface is
+    // fully white; higher = whitens slower.
     let velocity = depthVel.g;
-    finalColor = mix(finalColor, vec3<f32>(1.0), smoothstep(0.3, 1.0, velocity / 6.0));
+    finalColor = mix(finalColor, vec3<f32>(1.0), smoothstep(0.3, 1.0, velocity / max(u.extra.z, 0.001)));
 
     return vec4<f32>(finalColor, 1.0);
 }`;
@@ -335,12 +342,21 @@ export function createFluidSurfaceTask(
     engine: EngineContext,
     scene: SceneContext,
     opts: FluidSurfaceOptions,
-): Task & { setSim(s: FluidSim): void; setMode(m: "surface" | "blit"): void; setEnvMap(e: EnvMap): void; setDebug(d: FluidDebug): void } {
+): Task & {
+    setSim(s: FluidSim): void;
+    setMode(m: "surface" | "blit"): void;
+    setEnvMap(e: EnvMap): void;
+    setDebug(d: FluidDebug): void;
+    setFoamThreshold(v: number): void;
+    setHalfRender(on: boolean): void;
+} {
     const device = engine._device;
-    const { bgRT, outRT, depthRT, camera } = opts;
+    const { bgRT, outRT, camera } = opts;
     let currentSim = opts.sim;
     let mode: "surface" | "blit" = "surface";
     let debug: FluidDebug = "none";
+    let foamThreshold = 6;
+    let halfRender = false;
 
     const camData = new Float32Array(36); // view(16) + proj(16) + misc(4)
     const camBuffer = device.createBuffer({ label: "fluid-surf-cam", size: camData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -360,11 +376,17 @@ export function createFluidSurfaceTask(
     let envView: GPUTextureView = createPlaceholderCube(device);
     let envSampler: GPUSampler = envFallbackSampler;
 
-    let width = 0;
-    let height = 0;
+    let fullW = 0;
+    let fullH = 0;
+    let depthW = 0;
+    let depthH = 0;
+    let thickW = 0;
+    let thickH = 0;
+    let allocHalf = false;
     let depthTex: GPUTexture | null = null;
     let depthTmp: GPUTexture | null = null;
     let depthBlur: GPUTexture | null = null;
+    let fluidDepthBuf: GPUTexture | null = null; // dedicated depth buffer for the depth pass
     let thickTex: GPUTexture | null = null;
     let thickTmp: GPUTexture | null = null;
     let thickBlur: GPUTexture | null = null;
@@ -373,20 +395,28 @@ export function createFluidSurfaceTask(
     function allocTargets(): void {
         const w = engine.canvas.width;
         const h = engine.canvas.height;
-        if (w === width && h === height && depthTex) {
+        if (w === fullW && h === fullH && allocHalf === halfRender && depthTex) {
             return;
         }
-        for (const t of [depthTex, depthTmp, depthBlur, thickTex, thickTmp, thickBlur]) {
+        for (const t of [depthTex, depthTmp, depthBlur, fluidDepthBuf, thickTex, thickTmp, thickBlur]) {
             t?.destroy();
         }
-        width = w;
-        height = h;
+        fullW = w;
+        fullH = h;
+        allocHalf = halfRender;
+        // Depth: full res, or half when "half rendering" is on. Thickness: always
+        // half res (the surface barely changes but it's cheaper).
+        depthW = halfRender ? Math.max(1, Math.ceil(w / 2)) : w;
+        depthH = halfRender ? Math.max(1, Math.ceil(h / 2)) : h;
+        thickW = Math.max(1, Math.ceil(w / 2));
+        thickH = Math.max(1, Math.ceil(h / 2));
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
-        const mkDepth = (label: string): GPUTexture => device.createTexture({ label, size: { width: w, height: h }, format: "rg32float", usage });
-        const mkThick = (label: string): GPUTexture => device.createTexture({ label, size: { width: w, height: h }, format: "rgba16float", usage });
+        const mkDepth = (label: string): GPUTexture => device.createTexture({ label, size: { width: depthW, height: depthH }, format: "rg32float", usage });
+        const mkThick = (label: string): GPUTexture => device.createTexture({ label, size: { width: thickW, height: thickH }, format: "rgba16float", usage });
         depthTex = mkDepth("fluid-surf-depth");
         depthTmp = mkDepth("fluid-surf-depthTmp");
         depthBlur = mkDepth("fluid-surf-depthBlur");
+        fluidDepthBuf = device.createTexture({ label: "fluid-surf-zbuf", size: { width: depthW, height: depthH }, format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
         thickTex = mkThick("fluid-surf-thick");
         thickTmp = mkThick("fluid-surf-thickTmp");
         thickBlur = mkThick("fluid-surf-thickBlur");
@@ -394,6 +424,7 @@ export function createFluidSurfaceTask(
             depth: depthTex.createView(),
             depthTmp: depthTmp.createView(),
             depthBlur: depthBlur.createView(),
+            zbuf: fluidDepthBuf.createView(),
             thick: thickTex.createView(),
             thickTmp: thickTmp.createView(),
             thickBlur: thickBlur.createView(),
@@ -440,8 +471,11 @@ export function createFluidSurfaceTask(
             return;
         }
         const partMod = device.createShaderModule({ label: "fluid-surf-particle", code: PARTICLE_WGSL });
-        const dFormat = depthRT._descriptor.dFormat!;
-        const samples = depthRT._descriptor.samples;
+        // The depth pass owns a dedicated single-sample depth24plus buffer (so the
+        // fluid surface no longer depends on / mutates the scene depth, which lets
+        // it run at half resolution independently).
+        const dFormat: GPUTextureFormat = "depth24plus";
+        const samples = 1;
         particleBGL = device.createBindGroupLayout({
             label: "fluid-surf-particle",
             entries: [
@@ -536,11 +570,13 @@ export function createFluidSurfaceTask(
         comp[o + 4] = wm[4]!; comp[o + 5] = wm[5]!; comp[o + 6] = wm[6]!; comp[o + 7] = engine.canvas.width / Math.max(1, engine.canvas.height); // camU.xyz, camU.w = aspect
         comp[o + 8] = wm[8]!; comp[o + 9] = wm[9]!; comp[o + 10] = wm[10]!; comp[o + 11] = 0; // camF
         o += 12;
-        comp[o] = 1 / width; comp[o + 1] = 1 / height; comp[o + 2] = camera.farPlane; comp[o + 3] = DENSITY; // a
+        comp[o] = 1 / fullW; comp[o + 1] = 1 / fullH; comp[o + 2] = camera.farPlane; comp[o + 3] = DENSITY; // a: output texel, far, density
         comp[o + 4] = dl[0] / dlLen; comp[o + 5] = dl[1] / dlLen; comp[o + 6] = dl[2] / dlLen; comp[o + 7] = REFRACTION_STRENGTH; // b
         const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5 }[debug];
         comp[o + 8] = FRESNEL_CLAMP; comp[o + 9] = SPECULAR_POWER; comp[o + 10] = MINIMUM_THICKNESS; comp[o + 11] = debugMode; // c
         comp[o + 12] = FLUID_COLOR[0]; comp[o + 13] = FLUID_COLOR[1]; comp[o + 14] = FLUID_COLOR[2]; comp[o + 15] = 0; // diffuse
+        o += 16;
+        comp[o] = 1 / depthW; comp[o + 1] = 1 / depthH; comp[o + 2] = foamThreshold; comp[o + 3] = 0; // extra: depth texel, foamThreshold
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -548,7 +584,7 @@ export function createFluidSurfaceTask(
     function writeBilateral(buf: GPUBuffer, stepX: number, stepY: number): void {
         const radius = currentSim.particleRadius;
         const size = radius * PARTICLE_SIZE_SCALE;
-        const projConst = (BLUR_DEPTH_FILTER_SIZE * size * 0.05 * (height / 2)) / Math.tan(camera.fov / 2);
+        const projConst = (BLUR_DEPTH_FILTER_SIZE * size * 0.05 * (depthH / 2)) / Math.tan(camera.fov / 2);
         const depthThreshold = (size / 2) * BLUR_DEPTH_DEPTH_SCALE;
         device.queue.writeBuffer(buf, 0, new Float32Array([stepX, stepY, projConst, depthThreshold, BLUR_MAX_FILTER_SIZE, 0, 0, 0]));
     }
@@ -590,13 +626,18 @@ export function createFluidSurfaceTask(
         setDebug(d: FluidDebug): void {
             debug = d;
         },
+        setFoamThreshold(v: number): void {
+            foamThreshold = v;
+        },
+        setHalfRender(on: boolean): void {
+            halfRender = on;
+        },
         record(): void {
             build();
         },
         execute(): number {
             const outView = outRT._colorView;
             const bgView = bgRT._colorView;
-            const sceneDepth = depthRT._depthView;
             if (!depthPipe || !blitPipe || !compPipe || !particleBG || !outView || !bgView) {
                 return 0;
             }
@@ -612,18 +653,20 @@ export function createFluidSurfaceTask(
                 return 1;
             }
 
-            if (!thickPipe || !bilateralPipe || !standardBlurPipe || !sceneDepth) {
+            if (!thickPipe || !bilateralPipe || !standardBlurPipe) {
                 return 0;
             }
             allocTargets();
             updateUniforms();
 
-            // 1. Depth + speed (cleared to 1e6 so background reads as "far").
+            // 1. Depth + speed (cleared to 1e6 so background reads as "far"); the
+            // dedicated depth buffer (reverse-Z, cleared to far=0) keeps the
+            // nearest sphere surface per pixel.
             {
                 const pass = enc.beginRenderPass({
                     label: "fluid-surf-depth",
                     colorAttachments: [{ view: views.depth!, loadOp: "clear", storeOp: "store", clearValue: { r: 1e6, g: 1e6, b: 0, a: 1 } }],
-                    depthStencilAttachment: { view: sceneDepth, depthLoadOp: "load", depthStoreOp: "store" },
+                    depthStencilAttachment: { view: views.zbuf!, depthLoadOp: "clear", depthStoreOp: "store", depthClearValue: 0 },
                 });
                 pass.setPipeline(depthPipe);
                 pass.setBindGroup(0, particleBG);
@@ -683,7 +726,7 @@ export function createFluidSurfaceTask(
             blurThickXBuf.destroy();
             blurThickYBuf.destroy();
             compBuffer.destroy();
-            for (const t of [depthTex, depthTmp, depthBlur, thickTex, thickTmp, thickBlur]) {
+            for (const t of [depthTex, depthTmp, depthBlur, fluidDepthBuf, thickTex, thickTmp, thickBlur]) {
                 t?.destroy();
             }
         },
