@@ -127,11 +127,14 @@ async function main(): Promise<void> {
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_A[0], CAP_A[1], CAP_A[2]);
     addShellPart(createSphere(engine, { diameter: 2 * CAP_R, segments: 32 }), CAP_B[0], CAP_B[1], CAP_B[2]);
 
-    // Box container: a closed box sitting on the ground (no holes), 1.5× the
-    // original footprint. The box floor IS the ground, so the ground plane is
-    // hidden while the box is the active container.
-    const BOX_MIN: [number, number, number] = [-4.5, 0, -4.5];
-    const BOX_MAX: [number, number, number] = [4.5, 18, 4.5];
+    // Box container: a closed box sitting on the ground (no holes). The X/Z
+    // footprint is resizable at runtime via the "Box size" slider (0.5×–3×) by
+    // mutating BOX_MIN/BOX_MAX in place; the height is fixed so the box always
+    // stays inside the simulation grid bounds (BOUNDS) and needs no realloc. The
+    // box floor IS the ground, so the ground plane is hidden in box mode.
+    const BOX_HALF_BASE = 4.5; // half-footprint at scale 1
+    const BOX_MIN: [number, number, number] = [-BOX_HALF_BASE, 0, -BOX_HALF_BASE];
+    const BOX_MAX: [number, number, number] = [BOX_HALF_BASE, 18, BOX_HALF_BASE];
     const boxMesh = createBox(engine, 1);
     boxMesh.material = glass;
     boxMesh.scaling.set(BOX_MAX[0] - BOX_MIN[0], BOX_MAX[1] - BOX_MIN[1], BOX_MAX[2] - BOX_MIN[2]);
@@ -145,7 +148,8 @@ async function main(): Promise<void> {
     // Rotating paddle obstacle (box mode only): a thin, tall vertical slab that
     // spins about the box's vertical axis to stir the fluid. `OBS_HALF_WIDTH`
     // leaves a gap to the walls so fluid can flow around the blade ends.
-    const OBS_HALF_WIDTH = 3.0;
+    const OBS_HALF_WIDTH_BASE = 3.0;
+    let obsHalfWidth = OBS_HALF_WIDTH_BASE; // scales with the box footprint
     const OBS_HALF_THICK = 0.25;
     const OBS_CENTER: [number, number] = [(BOX_MIN[0] + BOX_MAX[0]) / 2, (BOX_MIN[2] + BOX_MAX[2]) / 2];
     const paddleMat = createStandardMaterial();
@@ -153,7 +157,7 @@ async function main(): Promise<void> {
     paddleMat.specularColor = [0.35, 0.35, 0.35];
     const paddleMesh = createBox(engine, 1);
     paddleMesh.material = paddleMat;
-    paddleMesh.scaling.set(2 * OBS_HALF_THICK, BOX_MAX[1] - BOX_MIN[1], 2 * OBS_HALF_WIDTH);
+    paddleMesh.scaling.set(2 * OBS_HALF_THICK, BOX_MAX[1] - BOX_MIN[1], 2 * obsHalfWidth);
     paddleMesh.position.set(OBS_CENTER[0], (BOX_MIN[1] + BOX_MAX[1]) / 2, OBS_CENTER[1]);
     addToScene(scene, paddleMesh);
 
@@ -288,9 +292,9 @@ async function main(): Promise<void> {
         if (containerMode === 2 && obstacleOn) {
             obstacleAngle += obstacleSpeed * dt;
             paddleMesh.rotation.y = obstacleAngle;
-            activeSim.setObstacle(true, OBS_CENTER, OBS_HALF_WIDTH, OBS_HALF_THICK, obstacleAngle, obstacleSpeed);
+            activeSim.setObstacle(true, OBS_CENTER, obsHalfWidth, OBS_HALF_THICK, obstacleAngle, obstacleSpeed);
         } else {
-            activeSim.setObstacle(false, OBS_CENTER, OBS_HALF_WIDTH, OBS_HALF_THICK, obstacleAngle, 0);
+            activeSim.setObstacle(false, OBS_CENTER, obsHalfWidth, OBS_HALF_THICK, obstacleAngle, 0);
         }
         activeSim.step(engine._currentEncoder, dt);
     });
@@ -317,6 +321,24 @@ async function main(): Promise<void> {
         }
         activeSim.setForce([0, 0, 0], [0, 0, 1], [0, 0, 0], 1, 0);
         activeSim.reset();
+    }
+
+    // Resize the box footprint live (X/Z only; height fixed). Mutates BOX_MIN/MAX
+    // in place so every later setContainer call (incl. the particle-count rebuild)
+    // picks up the current size, rescales the box mesh + paddle, and pushes the new
+    // bounds to both sims. No reset: the solver's per-step clamp lets the fluid
+    // flow into the new shape, and the grid bounds are unchanged so no realloc.
+    function applyBoxScale(scale: number): void {
+        const half = BOX_HALF_BASE * scale;
+        BOX_MIN[0] = -half;
+        BOX_MIN[2] = -half;
+        BOX_MAX[0] = half;
+        BOX_MAX[2] = half;
+        boxMesh.scaling.set(BOX_MAX[0] - BOX_MIN[0], BOX_MAX[1] - BOX_MIN[1], BOX_MAX[2] - BOX_MIN[2]);
+        obsHalfWidth = OBS_HALF_WIDTH_BASE * scale;
+        paddleMesh.scaling.set(2 * OBS_HALF_THICK, BOX_MAX[1] - BOX_MIN[1], 2 * obsHalfWidth);
+        pbfSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
+        mpmSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
     }
 
     // ── Live tuning UI ───────────────────────────────────────────────
@@ -451,6 +473,31 @@ async function main(): Promise<void> {
         containerSel.appendChild(opt);
     }
     containerSel.onchange = () => applyContainer(parseInt(containerSel.value, 10));
+
+    // Box-size slider (box mode): scales the box X/Z footprint from 0.5× to 3×.
+    const boxSizeRow = document.createElement("div");
+    boxSizeRow.style.cssText = "margin:2px 0 8px;";
+    const boxSizeHead = document.createElement("div");
+    boxSizeHead.style.cssText = "display:flex;justify-content:space-between;";
+    const boxSizeLab = document.createElement("span");
+    boxSizeLab.textContent = "Box size (box only)";
+    const boxSizeVal = document.createElement("span");
+    boxSizeVal.style.cssText = "color:#9fb4cc;";
+    boxSizeVal.textContent = "1.0×";
+    boxSizeHead.append(boxSizeLab, boxSizeVal);
+    const boxSizeInput = document.createElement("input");
+    boxSizeInput.type = "range";
+    boxSizeInput.min = "0.5";
+    boxSizeInput.max = "3";
+    boxSizeInput.step = "0.1";
+    boxSizeInput.value = "1";
+    boxSizeInput.style.cssText = "width:100%;";
+    boxSizeInput.oninput = () => {
+        const s = parseFloat(boxSizeInput.value);
+        boxSizeVal.textContent = `${s.toFixed(1)}×`;
+        applyBoxScale(s);
+    };
+    boxSizeRow.append(boxSizeHead, boxSizeInput);
     const particlesTitle = document.createElement("div");
     particlesTitle.textContent = "Particles";
     particlesTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -508,7 +555,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
