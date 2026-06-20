@@ -217,9 +217,10 @@ fn viewPos(pix: vec2<i32>, d: f32) -> vec3<f32> {
     let trans = exp(-thick * c.absorb.xyz);
     let refr = bg * trans + c.deep.xyz * (1.0 - trans);
 
-    // Reflection: a cheap sky/horizon gradient along the reflected ray.
+    // Reflection: a sky/horizon gradient along the reflected ray (matches the
+    // procedural skybox so reflections read as the sky).
     let R = reflect(-V, n);
-    let refl = mix(vec3<f32>(0.18, 0.26, 0.38), vec3<f32>(0.5, 0.62, 0.8), clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
+    let refl = mix(vec3<f32>(0.30, 0.42, 0.62), vec3<f32>(0.72, 0.83, 0.93), clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
 
     var col = mix(refr, refl, fres);
     col = col + vec3<f32>(1.0) * spec;

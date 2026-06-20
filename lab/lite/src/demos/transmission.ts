@@ -12,6 +12,7 @@
 
 import {
     addTask,
+    addTaskAtStart,
     addToScene,
     attachControl,
     createArcRotateCamera,
@@ -38,6 +39,7 @@ import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "./transmission/fluid/fluid-surface-render.js";
+import { createSkyTask } from "./transmission/fluid/sky-render.js";
 import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
@@ -86,12 +88,16 @@ async function main(): Promise<void> {
     // refraction composite in surface mode).
     const sceneColorRT = createRenderTarget({ lbl: "fluid-scene-color", format: engine.format, samples: 1, size: "canvas" });
 
+    // A procedural sky is drawn into sceneColorRT first (sky task, added at the
+    // start below), so the scene task must NOT clear the colour (clr: false) —
+    // it loads the sky and renders the geometry on top (depth is still cleared).
     const sceneTask = createRenderTask(
-        { name: "scene", rt: sceneColorRT, depth: depthRT, clrColor: { r: 0.05, g: 0.06, b: 0.09, a: 1 } },
+        { name: "scene", rt: sceneColorRT, depth: depthRT, clr: false },
         engine,
         scene,
     );
     addTask(scene, sceneTask);
+    addTaskAtStart(scene, createSkyTask(engine, scene, { targetRT: sceneColorRT, camera: cam }));
 
     // Capsule tank: a vertical pill floating just above the ground (bottom
     // hemisphere centre at y=5, radius 3 → bottom at y=2). The liquid is
