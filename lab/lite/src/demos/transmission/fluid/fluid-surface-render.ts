@@ -35,6 +35,9 @@ export interface FluidSurfaceOptions {
     bgRT: RenderTarget;
     /** Final output (the swapchain, typically `engine.scRT`). */
     outRT: RenderTarget;
+    /** Scene depth (opaque geometry) — sampled in the composite so opaque objects
+     *  like the paddle correctly occlude the fluid surface behind them. */
+    depthRT: RenderTarget;
     camera: Camera;
     sim: FluidSim;
 }
@@ -236,6 +239,7 @@ struct Comp {
 @group(0) @binding(8) var depthRawTex: texture_2d<f32>;
 @group(0) @binding(9) var thickRawTex: texture_2d<f32>;
 @group(0) @binding(10) var<uniform> u: Comp;
+@group(0) @binding(11) var sceneDepthTex: texture_depth_2d;
 
 fn computeViewPosFromUVDepth(texCoord: vec2<f32>, depth: f32) -> vec3<f32> {
     // Direct perspective unproject (equivalent to invProj * ndc for a standard
@@ -284,6 +288,15 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     }
 
     if (depth >= cameraFar || depth <= 0.0 || thickness <= u.c.z) {
+        return backColor;
+    }
+
+    // Occlusion against opaque scene geometry (e.g. the paddle): convert the scene
+    // depth-buffer value (reverse-Z) to eye depth and, if the fluid surface is
+    // behind it, show the background (which already contains that geometry).
+    let sceneNdc = textureLoad(sceneDepthTex, vec2<i32>(floor(pos.xy)), 0);
+    let sceneEyeDepth = u.proj[3].z / (sceneNdc - u.proj[2].z);
+    if (sceneNdc > 0.0 && depth > sceneEyeDepth + 0.02) {
         return backColor;
     }
 
@@ -351,7 +364,7 @@ export function createFluidSurfaceTask(
     setHalfRender(on: boolean): void;
 } {
     const device = engine._device;
-    const { bgRT, outRT, camera } = opts;
+    const { bgRT, outRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
     let mode: "surface" | "blit" = "surface";
     let debug: FluidDebug = "none";
@@ -710,6 +723,7 @@ export function createFluidSurfaceTask(
                     { binding: 8, resource: views.depth! },
                     { binding: 9, resource: views.thick! },
                     { binding: 10, resource: { buffer: compBuffer } },
+                    { binding: 11, resource: depthRT._depthView! },
                 ],
             });
             const cpass = enc.beginRenderPass({ label: "fluid-surf-composite", colorAttachments: [{ view: outView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });

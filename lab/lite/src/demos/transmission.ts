@@ -245,7 +245,7 @@ async function main(): Promise<void> {
     // and writes the swapchain. In sphere mode it just blits the scene (with the
     // impostors already drawn into it); in surface mode it reconstructs and
     // shades the liquid surface (refraction of the scene + speed foam).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, camera: cam, sim: activeSim });
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
 
     // Load the environment cube map and wire it into the sky + the fluid's
