@@ -408,14 +408,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let hi = p.origin.xyz + (p.dim.xyz - 3.0) * dx;
     np = clamp(np, lo, hi);
 
-    // Targeted ground damping: a particle landing on the thin, wide floor pool
-    // would otherwise launch a ripple that travels forever. Strongly damp
-    // velocity + affine field only within a thin layer above the ground, so the
-    // pool settles immediately while the capsule fluid and the falling streams
-    // (which are higher up) stay lively. sim1.w = strength, dim.w = layer height.
+    // Free-slip ground friction: damp only the VERTICAL velocity within a thin
+    // layer above the floor. This kills the vertical bounce/oscillation at the
+    // source (so the wide floor pool doesn't launch ripples that travel forever)
+    // while leaving the horizontal velocity intact, so the fluid slips along the
+    // ground and spreads into a flat sheet instead of clumping into blobs.
+    // Damping every component (the old behaviour) froze the horizontal flow and
+    // made landing fluid aggregate. sim1.w = strength, dim.w = layer height.
     let gt = clamp((np.y - groundY) / max(p.dim.w, 1e-3), 0.0, 1.0);
     let gd = mix(p.sim1.w, 1.0, gt);
-    vel *= gd;
+    vel.y *= gd;
     C *= gd;
 
     particles[i].position = np;
