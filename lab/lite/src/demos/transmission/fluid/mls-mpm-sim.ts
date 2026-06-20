@@ -258,9 +258,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (cw.z <= p.boxMin.z) { v.z = max(v.z, 0.0); }
         if (cw.z >= p.boxMax.z) { v.z = min(v.z, 0.0); }
 
-        // Rotating paddle: a no-slip moving solid. Cells whose centre lies inside
-        // the thin slab adopt the paddle's surface velocity, so it drags the
-        // fluid around as it spins (momentum coupling happens here on the grid).
+        // Rotating paddle: a free-slip moving blade. Cells inside the thin slab
+        // keep only their tangential flow and have the normal velocity matched to
+        // the blade's, so the face shoves fluid ahead of it but does NOT drag a
+        // boundary layer around tangentially. (No-slip — setting v to the full
+        // surface velocity — made pushed particles stick and orbit the blade for
+        // several turns before falling; free-slip lets them slide off and fall.)
         if (p.obsB.w > 0.5) {
             let c = p.obsB.x;
             let s = p.obsB.y;
@@ -269,7 +272,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let lx =  c * rx + s * rz;
             let lz = -s * rx + c * rz;
             if (abs(lx) < p.obsA.w && abs(lz) < p.obsA.z) {
-                v = obstacleSurfaceVel(rx, rz, p);
+                let sv = obstacleSurfaceVel(rx, rz, p);
+                let n = vec3<f32>(c, 0.0, s); // world slab normal
+                v = v - (dot(v, n) - dot(sv, n)) * n;
             }
         }
     }
