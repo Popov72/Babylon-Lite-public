@@ -10,7 +10,7 @@
 type Vec3 = [number, number, number];
 
 /** Inverse of a 4×4 column-major matrix, or null if singular. */
-function mat4Invert(m: ArrayLike<number>): number[] | null {
+export function mat4Invert(m: ArrayLike<number>): number[] | null {
     const a00 = m[0]!, a01 = m[1]!, a02 = m[2]!, a03 = m[3]!;
     const a10 = m[4]!, a11 = m[5]!, a12 = m[6]!, a13 = m[7]!;
     const a20 = m[8]!, a21 = m[9]!, a22 = m[10]!, a23 = m[11]!;

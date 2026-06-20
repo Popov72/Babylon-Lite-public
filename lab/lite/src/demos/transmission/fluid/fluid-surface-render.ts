@@ -1,34 +1,34 @@
-// Screen-space fluid surface renderer for the GPU fluid sim.
+// Screen-space fluid surface renderer — a faithful port of Babylon.js's
+// FluidRenderer (packages/dev/core/src/Rendering/fluidRenderer) shaders, so the
+// visuals match BJS. All demo-local, encoded as one frame-graph task that also
+// presents the frame to the swapchain. The scene is rendered to an offscreen
+// colour target (`bgRT`) so this pass can sample it for refraction. Pipeline:
 //
-// Reconstructs a smooth liquid SURFACE in screen space (the technique behind
-// Babylon.js's FluidRenderer / van der Laan 2009), all demo-local and encoded as
-// one frame-graph task that also PRESENTS the frame to the swapchain. The scene
-// is rendered to an offscreen colour target (`bgRT`) so this pass can sample it
-// for refraction. Pipeline (surface mode):
+//   1. depth     : particle sphere-impostors write the nearest eye-space Z (and
+//                  speed) into an RG32F target, with fragDepth = clip.z/clip.w so
+//                  the z-buffer keeps the nearest sphere surface; depth-tested
+//                  against the shared scene depth so ground/paddle occlude it.
+//   2. thickness : impostors again, additively (particleAlpha*sqrt(1-r²)) into an
+//                  RGBA16F target — the fluid-column thickness.
+//   3. blur      : bilateral (adaptive, depth-weighted) blur of the depth, and a
+//                  standard gaussian blur of the thickness — both separable.
+//   4. composite : reconstruct view position (inverse projection) + normal,
+//                  refract the scene background (refract()), absorb via
+//                  Beer-Lambert, Fresnel-mix with an environment reflection, add
+//                  specular + velocity foam. Writes the swapchain.
 //
-//   1. depth     : particles as sphere impostors write the nearest eye-space
-//                  depth + the surface particle's speed into an RGBA16F target,
-//                  depth-tested against the shared scene depth (ground/paddle
-//                  occlude the fluid).
-//   2. thickness : impostors again, additively, into an RGBA16F target — the
-//                  fluid column thickness (drives absorption + refraction).
-//   3. blur      : separable bilateral blur of BOTH the depth and the thickness
-//                  (depth-weighted), turning the bumpy sphere data into a smooth
-//                  surface + smooth thickness.
-//   4. composite : reconstruct eye position + normal, then shade like real water
-//                  — refract the background (sample `bgRT` offset by the surface
-//                  normal), absorb it through the thickness (Beer-Lambert tint),
-//                  Fresnel-mix with a reflection colour, add a specular highlight
-//                  and whiten by speed (foam). Writes the swapchain.
-//
-// In "blit" mode (the demo's sphere-impostor renderer is active instead) this
-// task just copies `bgRT` (scene + impostors) to the swapchain.
+// A "blit" mode presents the scene unchanged (sphere-impostor renderer active),
+// and a `debug` mode visualises the intermediate textures (like the BJS demo's
+// Debug → Feature dropdown).
 
-import { getEffectiveAspectRatio, getViewProjectionMatrix } from "babylon-lite";
+import { getViewMatrix, getProjectionMatrix } from "babylon-lite";
 import type { Camera, EngineContext, RenderTarget, SceneContext, Task } from "babylon-lite";
-import type { FluidSim } from "./pbf-sim.js";
+import { mat4Invert } from "./pick.js";
 import { createPlaceholderCube } from "./sky-render.js";
 import type { EnvMap } from "./sky-render.js";
+import type { FluidSim } from "./pbf-sim.js";
+
+export type FluidDebug = "none" | "depth" | "depthBlur" | "thickness" | "thicknessBlur" | "normals";
 
 export interface FluidSurfaceOptions {
     /** Offscreen scene colour (background) — sampled for refraction / blit. */
@@ -41,16 +41,27 @@ export interface FluidSurfaceOptions {
     sim: FluidSim;
 }
 
-// Bilateral-blur half-width in texels (per separable pass).
-const BLUR_RADIUS = 14;
+// ── BJS-equivalent tunables (fluidRenderingTargetRenderer defaults) ──
+const DENSITY = 1.0;
+const REFRACTION_STRENGTH = 0.1;
+const FRESNEL_CLAMP = 1.0;
+const SPECULAR_POWER = 250.0;
+const MINIMUM_THICKNESS = 0;
+const PARTICLE_THICKNESS_ALPHA = 0.05;
+const FLUID_COLOR: [number, number, number] = [0.085, 0.6375, 0.765];
+const DIR_LIGHT: [number, number, number] = [-2, -1, 1]; // normalized below
+const BLUR_DEPTH_FILTER_SIZE = 12;
+const BLUR_MAX_FILTER_SIZE = 64;
+const BLUR_DEPTH_DEPTH_SCALE = 10;
+const BLUR_THICKNESS_FILTER_SIZE = 10;
+const PARTICLE_SIZE_SCALE = 3.5; // impostor diameter = particleRadius * this
 
-// Shared billboard + camera uniform (depth and thickness passes).
-const SPHERE_WGSL = /* wgsl */ `
+// ── Depth + thickness particle passes (sphere impostors) ──
+const PARTICLE_WGSL = /* wgsl */ `
 struct Cam {
-    vp: mat4x4<f32>,
-    right: vec4<f32>,   // camera world right (billboard X)
-    up: vec4<f32>,      // camera world up    (billboard Y)
-    misc: vec4<f32>,    // x = radius, y = speed norm, z = thickness/particle
+    view: mat4x4<f32>,
+    proj: mat4x4<f32>,
+    misc: vec4<f32>,   // x = size (diameter), y = sphereRadius, z = speedScale, w = particleAlpha
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
@@ -59,42 +70,55 @@ struct Cam {
 struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) viewZc: f32,
+    @location(1) @interpolate(flat) viewPos: vec3<f32>,
     @location(2) @interpolate(flat) speed: f32,
 };
 
 fn corner(vi: u32) -> vec2<f32> {
-    var corners = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
-        vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0));
-    return corners[vi];
+    // offset in [0,1]; matches BJS 'offset' attribute (quad corners).
+    var c = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0));
+    return c[vi];
 }
 
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
-    let c = corner(vi);
-    let center = positions[ii].xyz;
-    let r = cam.misc.x;
-    let world = center + cam.right.xyz * (c.x * r) + cam.up.xyz * (c.y * r);
+    let offset = corner(vi);
+    let cornerPos = vec3<f32>((offset - vec2<f32>(0.5)) * cam.misc.x, 0.0);
+    let viewPos = (cam.view * vec4<f32>(positions[ii].xyz, 1.0)).xyz;
     var o: VOut;
-    o.clip = cam.vp * vec4<f32>(world, 1.0);
-    o.viewZc = (cam.vp * vec4<f32>(center, 1.0)).w; // LH clip.w = view-space z (eye depth)
-    o.uv = c;
-    o.speed = clamp(dbg[ii] * cam.misc.y, 0.0, 1.0);
+    o.clip = cam.proj * vec4<f32>(viewPos + cornerPos, 1.0);
+    o.uv = offset;
+    o.viewPos = viewPos;
+    o.speed = dbg[ii];
     return o;
 }
 
-@fragment fn fsDepth(i: VOut) -> @location(0) vec4<f32> {
-    let r2 = dot(i.uv, i.uv);
+struct DepthOut {
+    @builtin(frag_depth) depth: f32,
+    @location(0) color: vec4<f32>,
+};
+
+@fragment fn fsDepth(i: VOut) -> DepthOut {
+    let nxy = i.uv * 2.0 - 1.0;
+    let r2 = dot(nxy, nxy);
     if (r2 > 1.0) { discard; }
-    let nz = sqrt(1.0 - r2);
-    let eyeDepth = i.viewZc - cam.misc.x * nz;
-    return vec4<f32>(eyeDepth, i.speed, 0.0, 1.0);
+    // LH: front-facing sphere normal points toward camera (negative view z).
+    let normal = vec3<f32>(nxy, -sqrt(1.0 - r2));
+    let realViewPos = i.viewPos + normal * cam.misc.y;
+    let clipPos = cam.proj * vec4<f32>(realViewPos, 1.0);
+    var o: DepthOut;
+    o.depth = clipPos.z / clipPos.w;          // reverse-Z, tested greater-equal
+    o.color = vec4<f32>(realViewPos.z, i.speed, 0.0, 1.0); // eye-space Z + speed
+    return o;
 }
 
 @fragment fn fsThick(i: VOut) -> @location(0) vec4<f32> {
-    let r2 = dot(i.uv, i.uv);
+    let nxy = i.uv * 2.0 - 1.0;
+    let r2 = dot(nxy, nxy);
     if (r2 > 1.0) { discard; }
-    return vec4<f32>(cam.misc.z * (1.0 - r2), 0.0, 0.0, 1.0);
+    let thickness = sqrt(1.0 - r2);
+    return vec4<f32>(vec3<f32>(cam.misc.w * thickness), 1.0);
 }`;
 
 const FULLSCREEN_VS = /* wgsl */ `
@@ -103,43 +127,72 @@ const FULLSCREEN_VS = /* wgsl */ `
     return vec4<f32>(p[vi], 0.0, 1.0);
 }`;
 
-// Separable bilateral blur of an RGBA16F target — smooths R (depth or thickness)
-// and carries G (speed) along, weighting by the difference in R so silhouettes
-// stay sharp. `dir.xy` = texel direction, `dir.z` = 1/(2*rangeSigma^2).
-const BLUR_WGSL = /* wgsl */ `
+// Bilateral blur of the depth (R) + speed (G), ported from
+// fluidRenderingBilateralBlur. Adaptive filter size + depth-weighted. Uses
+// textureLoad (integer texel fetch) for exact, sampler-independent reads.
+const BILATERAL_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
-struct Blur { dir: vec4<f32> }
+struct Blur { p: vec4<f32>, q: vec4<f32> }; // p: stepX, stepY, projConst, depthThreshold; q: maxFilterSize, _, _, _
 @group(0) @binding(0) var src: texture_2d<f32>;
-@group(0) @binding(1) var<uniform> bl: Blur;
-
-const RADIUS: i32 = ${BLUR_RADIUS};
-const INV_SS2: f32 = ${(1 / (2 * (BLUR_RADIUS / 2.0) * (BLUR_RADIUS / 2.0))).toFixed(6)};
+@group(0) @binding(1) var<uniform> b: Blur;
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let pix = vec2<i32>(floor(pos.xy));
     let dim = vec2<i32>(textureDimensions(src));
-    let center = textureLoad(src, pix, 0);
-    let d0 = center.r;
-    if (d0 <= 0.0) { return vec4<f32>(0.0); }
-    let step = vec2<i32>(i32(bl.dir.x), i32(bl.dir.y));
-    var sumD = 0.0;
-    var sumS = 0.0;
-    var sumW = 0.0;
-    for (var i = -RADIUS; i <= RADIUS; i = i + 1) {
-        let c = pix + step * i;
+    let depth = textureLoad(src, pix, 0).x;
+    if (depth >= 1e6 || depth <= 0.0) { return vec4<f32>(depth, depth, 0.0, 1.0); }
+    let filterSize = min(i32(b.q.x), i32(ceil(b.p.z / depth)));
+    let sigma = f32(filterSize) / 3.0;
+    let twoSigma2 = 2.0 * sigma * sigma;
+    let sigmaDepth = b.p.w / 3.0;
+    let twoSigmaDepth2 = 2.0 * sigmaDepth * sigmaDepth;
+    let step = vec2<i32>(i32(b.p.x), i32(b.p.y));
+    var sum = 0.0;
+    var sumVel = 0.0;
+    var wsum = 0.0;
+    for (var x = -filterSize; x <= filterSize; x = x + 1) {
+        let c = pix + step * x;
         if (any(c < vec2<i32>(0)) || any(c >= dim)) { continue; }
-        let t = textureLoad(src, c, 0);
-        if (t.r <= 0.0) { continue; }
-        let ws = exp(-f32(i * i) * INV_SS2);
-        let dd = t.r - d0;
-        let wr = exp(-dd * dd * bl.dir.z);
-        let w = ws * wr;
-        sumD = sumD + t.r * w;
-        sumS = sumS + t.g * w;
-        sumW = sumW + w;
+        let s = textureLoad(src, c, 0).rg;
+        if (s.r >= 1e6 || s.r <= 0.0) { continue; }
+        let w = exp(-f32(x * x) / twoSigma2);
+        let rDepth = s.r - depth;
+        let wd = exp(-rDepth * rDepth / twoSigmaDepth2);
+        sum = sum + s.r * w * wd;
+        sumVel = sumVel + s.g * w * wd;
+        wsum = wsum + w * wd;
     }
-    if (sumW <= 0.0) { return vec4<f32>(d0, center.g, 0.0, 1.0); }
-    return vec4<f32>(sumD / sumW, sumS / sumW, 0.0, 1.0);
+    if (wsum <= 0.0) { return vec4<f32>(depth, 0.0, 0.0, 1.0); }
+    return vec4<f32>(sum / wsum, sumVel / wsum, 0.0, 1.0);
+}`;
+
+// Standard gaussian blur of the thickness, ported from fluidRenderingStandardBlur.
+const STANDARD_BLUR_WGSL = /* wgsl */ `
+${FULLSCREEN_VS}
+struct Blur { p: vec4<f32>, q: vec4<f32> }; // p: stepX, stepY, filterSize, _
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> b: Blur;
+
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let pix = vec2<i32>(floor(pos.xy));
+    let dim = vec2<i32>(textureDimensions(src));
+    let s0 = textureLoad(src, pix, 0);
+    if (s0.r == 0.0) { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+    let filterSize = i32(b.p.z);
+    let sigma = b.p.z / 3.0;
+    let twoSigma2 = 2.0 * sigma * sigma;
+    let step = vec2<i32>(i32(b.p.x), i32(b.p.y));
+    var sum = vec4<f32>(0.0);
+    var wsum = 0.0;
+    for (var x = -filterSize; x <= filterSize; x = x + 1) {
+        let c = pix + step * x;
+        if (any(c < vec2<i32>(0)) || any(c >= dim)) { continue; }
+        let s = textureLoad(src, c, 0);
+        let w = exp(-f32(x * x) / twoSigma2);
+        sum = sum + s * w;
+        wsum = wsum + w;
+    }
+    return vec4<f32>(sum.rgb / wsum, 1.0);
 }`;
 
 // Plain copy of the background to the swapchain (sphere-impostor mode).
@@ -152,120 +205,168 @@ ${FULLSCREEN_VS}
     return textureSampleLevel(bg, samp, pos.xy / dim, 0.0);
 }`;
 
-// Composite: shade the reconstructed surface like water and present it.
+// Composite — faithful port of fluidRenderingRender.fragment (water shading:
+// refraction, Beer-Lambert, Fresnel + environment reflection, specular, foam).
+// Also implements the debug-texture visualisations.
 const COMPOSITE_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
+const IOR: f32 = 1.333;
+const ETA: f32 = 1.0 / 1.333;
+const F0: f32 = 0.02;
+
 struct Comp {
-    res: vec4<f32>,    // xy = size (px), zw = 1/size
-    proj: vec4<f32>,   // tanHalfFov, aspect, refractStrength, foamStrength
-    light: vec4<f32>,  // xyz = view light dir, w = specular strength
-    absorb: vec4<f32>, // xyz = absorption coeff (per channel), w = fresnel F0
-    deep: vec4<f32>,   // xyz = deep fluid colour, w = shininess
-    right: vec4<f32>,  // camera world basis (view→world for the reflected ray)
-    up: vec4<f32>,
-    fwd: vec4<f32>,
+    view: mat4x4<f32>,
+    proj: mat4x4<f32>,
+    invProj: mat4x4<f32>,
+    camR: vec4<f32>,    // camera world basis (view→world for reflection)
+    camU: vec4<f32>,
+    camF: vec4<f32>,
+    a: vec4<f32>,       // texelSize.xy, cameraFar, density
+    b: vec4<f32>,       // dirLight.xyz, refractionStrength
+    c: vec4<f32>,       // fresnelClamp, specularPower, minimumThickness, debugMode
+    diffuse: vec4<f32>, // diffuseColor.rgb, _
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
-@group(0) @binding(1) var thickTex: texture_2d<f32>;
-@group(0) @binding(2) var bgTex: texture_2d<f32>;
-@group(0) @binding(3) var bgSamp: sampler;
-@group(0) @binding(4) var<uniform> c: Comp;
-@group(0) @binding(5) var envTex: texture_cube<f32>;
-@group(0) @binding(6) var envSamp: sampler;
+@group(0) @binding(1) var depthSamp: sampler;
+@group(0) @binding(2) var thickTex: texture_2d<f32>;
+@group(0) @binding(3) var thickSamp: sampler;
+@group(0) @binding(4) var bgTex: texture_2d<f32>;
+@group(0) @binding(5) var bgSamp: sampler;
+@group(0) @binding(6) var envTex: texture_cube<f32>;
+@group(0) @binding(7) var envSamp: sampler;
+@group(0) @binding(8) var depthRawTex: texture_2d<f32>;
+@group(0) @binding(9) var thickRawTex: texture_2d<f32>;
+@group(0) @binding(10) var<uniform> u: Comp;
 
-fn viewPos(pix: vec2<i32>, d: f32) -> vec3<f32> {
-    let ndcX = (f32(pix.x) + 0.5) * c.res.z * 2.0 - 1.0;
-    let ndcY = 1.0 - (f32(pix.y) + 0.5) * c.res.w * 2.0;
-    return vec3<f32>(ndcX * d * c.proj.y * c.proj.x, ndcY * d * c.proj.x, d);
+fn computeViewPosFromUVDepth(texCoord: vec2<f32>, depth: f32) -> vec3<f32> {
+    // Direct perspective unproject (equivalent to invProj * ndc for a standard
+    // perspective): eye z = depth, and x/y from the screen position scaled by
+    // depth * tan(fov/2). texCoord is y-down, view Y is up → flip y.
+    let tanHalfFov = u.camR.w;
+    let aspect = u.camU.w;
+    let ndcX = texCoord.x * 2.0 - 1.0;
+    let ndcY = 1.0 - texCoord.y * 2.0;
+    return vec3<f32>(ndcX * depth * tanHalfFov * aspect, ndcY * depth * tanHalfFov, depth);
+}
+fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
+    let d = textureSampleLevel(depthTex, depthSamp, texCoord, 0.0).x;
+    return computeViewPosFromUVDepth(texCoord, d);
 }
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let pix = vec2<i32>(floor(pos.xy));
-    let dim = vec2<i32>(textureDimensions(depthTex));
-    let uv = (vec2<f32>(pix) + 0.5) * c.res.zw;
-    let d0 = textureLoad(depthTex, pix, 0).r;
-    if (d0 <= 0.0) {
-        return vec4<f32>(textureSampleLevel(bgTex, bgSamp, uv, 0.0).rgb, 1.0);
+    let texelSize = u.a.xy;
+    let texCoord = pos.xy * texelSize;
+    let cameraFar = u.a.z;
+    let density = u.a.w;
+    let debugMode = u.c.w;
+
+    let depthVel = textureSampleLevel(depthTex, depthSamp, texCoord, 0.0).rg;
+    let depth = depthVel.r;
+    let thickness = textureSampleLevel(thickTex, thickSamp, texCoord, 0.0).x;
+    let backColor = textureSampleLevel(bgTex, bgSamp, texCoord, 0.0);
+
+    // ── Debug visualisations (mirror the BJS Debug→Feature dropdown) ──
+    if (debugMode > 0.5) {
+        if (debugMode < 1.5) {        // depth (raw)
+            let v = textureSampleLevel(depthRawTex, depthSamp, texCoord, 0.0).r;
+            let g = select(v / cameraFar, 1.0, v >= 1e6 || v <= 0.0);
+            return vec4<f32>(vec3<f32>(g), 1.0);
+        } else if (debugMode < 2.5) { // depth blurred
+            let g = select(depth / cameraFar, 1.0, depth >= 1e6 || depth <= 0.0);
+            return vec4<f32>(vec3<f32>(g), 1.0);
+        } else if (debugMode < 3.5) { // thickness (raw)
+            let t = textureSampleLevel(thickRawTex, thickSamp, texCoord, 0.0).r;
+            return vec4<f32>(vec3<f32>(t), 1.0);
+        } else if (debugMode < 4.5) { // thickness blurred
+            return vec4<f32>(vec3<f32>(thickness), 1.0);
+        }
+        // else mode 5: normals — fall through after computing the normal below.
     }
 
-    let p0 = viewPos(pix, d0);
-    let xr = clamp(pix + vec2<i32>(1, 0), vec2<i32>(0), dim - vec2<i32>(1));
-    let xl = clamp(pix - vec2<i32>(1, 0), vec2<i32>(0), dim - vec2<i32>(1));
-    let yd = clamp(pix + vec2<i32>(0, 1), vec2<i32>(0), dim - vec2<i32>(1));
-    let yu = clamp(pix - vec2<i32>(0, 1), vec2<i32>(0), dim - vec2<i32>(1));
-    let dxr = textureLoad(depthTex, xr, 0).r;
-    let dxl = textureLoad(depthTex, xl, 0).r;
-    let dyd = textureLoad(depthTex, yd, 0).r;
-    let dyu = textureLoad(depthTex, yu, 0).r;
-    var ddx = viewPos(xr, dxr) - p0;
-    let ddxl = p0 - viewPos(xl, dxl);
-    if (dxr <= 0.0 || (dxl > 0.0 && abs(ddxl.z) < abs(ddx.z))) { ddx = ddxl; }
-    var ddy = viewPos(yd, dyd) - p0;
-    let ddyu = p0 - viewPos(yu, dyu);
-    if (dyd <= 0.0 || (dyu > 0.0 && abs(ddyu.z) < abs(ddy.z))) { ddy = ddyu; }
-    var n = normalize(cross(ddx, ddy));
-    if (n.z > 0.0) { n = -n; }
+    if (depth >= cameraFar || depth <= 0.0 || thickness <= u.c.z) {
+        return backColor;
+    }
 
-    let V = normalize(-p0);
-    let L = normalize(c.light.xyz);
-    let H = normalize(L + V);
-    let spec = pow(max(dot(n, H), 0.0), c.deep.w) * c.light.w;
-    let fres = c.absorb.w + (1.0 - c.absorb.w) * pow(1.0 - max(dot(n, V), 0.0), 5.0);
+    // View-space position + normal (min-Z one-sided differences).
+    let viewPos = computeViewPosFromUVDepth(texCoord, depth);
+    var ddx = getViewPos(texCoord + vec2<f32>(texelSize.x, 0.0)) - viewPos;
+    var ddy = getViewPos(texCoord + vec2<f32>(0.0, texelSize.y)) - viewPos;
+    let ddx2 = viewPos - getViewPos(texCoord + vec2<f32>(-texelSize.x, 0.0));
+    if (abs(ddx.z) > abs(ddx2.z)) { ddx = ddx2; }
+    let ddy2 = viewPos - getViewPos(texCoord + vec2<f32>(0.0, -texelSize.y));
+    if (abs(ddy.z) > abs(ddy2.z)) { ddy = ddy2; }
+    var normal = normalize(cross(ddy, ddx));
+    // Orient toward the camera (LH view space: camera at origin looking +Z).
+    if (normal.z > 0.0) { normal = -normal; }
 
-    let thick = textureLoad(thickTex, pix, 0).r;
+    if (debugMode > 4.5) { // normals
+        return vec4<f32>(normal * 0.5 + 0.5, 1.0);
+    }
 
-    // Refraction: offset the background lookup by the surface normal, a bit more
-    // for a thicker surface. (Screen Y is flipped vs. view Y.)
-    let off = vec2<f32>(n.x, -n.y) * c.proj.z * (0.5 + clamp(thick, 0.0, 2.0));
-    let bg = textureSampleLevel(bgTex, bgSamp, clamp(uv + off, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+    let rayDir = normalize(viewPos); // camera → surface
+    let diffuseColor = u.diffuse.rgb;
+    let lightDir = normalize((u.view * vec4<f32>(-u.b.xyz, 0.0)).xyz);
+    let H = normalize(lightDir - rayDir);
+    let specular = pow(max(0.0, dot(H, normal)), u.c.y);
 
-    // Beer-Lambert absorption: thicker fluid transmits less and tends to the deep
-    // colour.
-    let trans = exp(-thick * c.absorb.xyz);
-    let refr = bg * trans + c.deep.xyz * (1.0 - trans);
+    // Refraction of the scene background.
+    let refractionDir = refract(rayDir, normal, ETA);
+    let refrUV = texCoord + vec2<f32>(refractionDir.x, -refractionDir.y) * thickness * u.b.w;
+    let transmitted = textureSampleLevel(bgTex, bgSamp, clamp(refrUV, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+    let transmittance = exp(-density * thickness * (1.0 - diffuseColor)); // Beer-Lambert
+    let refractionColor = transmitted * transmittance;
 
-    // Reflection: sample the environment cube along the reflected ray (transform
-    // the view-space reflection into world space via the camera basis).
-    let Rv = reflect(-V, n);
-    let Rw = Rv.x * c.right.xyz + Rv.y * c.up.xyz + Rv.z * c.fwd.xyz;
-    let refl = textureSampleLevel(envTex, envSamp, vec3<f32>(Rw.x, Rw.y, -Rw.z), 0.0).rgb;
+    // Environment reflection (transform the view-space reflected ray to world).
+    let reflViewDir = reflect(rayDir, normal);
+    let reflW = reflViewDir.x * u.camR.xyz + reflViewDir.y * u.camU.xyz + reflViewDir.z * u.camF.xyz;
+    let reflectionColor = textureSampleLevel(envTex, envSamp, vec3<f32>(reflW.x, reflW.y, -reflW.z), 0.0).rgb;
 
-    var col = mix(refr, refl, fres);
-    col = col + vec3<f32>(1.0) * spec;
+    let fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - dot(normal, -rayDir), 5.0), 0.0, u.c.x);
+    var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
 
-    // Speed → foam: only genuinely fast-moving surface whitens (settled fluid
-    // keeps its translucent look).
-    let speed = textureLoad(depthTex, pix, 0).g;
-    let foam = smoothstep(0.45, 0.95, speed) * c.proj.w;
-    col = mix(col, vec3<f32>(0.92, 0.96, 1.0), foam);
-    return vec4<f32>(col, 1.0);
+    // Velocity → foam (BJS FLUIDRENDERING_VELOCITY).
+    let velocity = depthVel.g;
+    finalColor = mix(finalColor, vec3<f32>(1.0), smoothstep(0.3, 1.0, velocity / 6.0));
+
+    return vec4<f32>(finalColor, 1.0);
 }`;
 
 export function createFluidSurfaceTask(
     engine: EngineContext,
     scene: SceneContext,
     opts: FluidSurfaceOptions,
-): Task & { setSim(s: FluidSim): void; setMode(m: "surface" | "blit"): void; setEnvMap(e: EnvMap): void } {
+): Task & { setSim(s: FluidSim): void; setMode(m: "surface" | "blit"): void; setEnvMap(e: EnvMap): void; setDebug(d: FluidDebug): void } {
     const device = engine._device;
     const { bgRT, outRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
     let mode: "surface" | "blit" = "surface";
+    let debug: FluidDebug = "none";
 
-    const camData = new Float32Array(28);
+    const camData = new Float32Array(36); // view(16) + proj(16) + misc(4)
     const camBuffer = device.createBuffer({ label: "fluid-surf-cam", size: camData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const blurBuffer = device.createBuffer({ label: "fluid-surf-blur", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const compBuffer = device.createBuffer({ label: "fluid-surf-comp", size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const sampler = device.createSampler({ label: "fluid-surf-samp", magFilter: "linear", minFilter: "linear" });
-    const envFallbackSampler = device.createSampler({ label: "fluid-surf-env-samp", magFilter: "linear", minFilter: "linear", mipmapFilter: "linear" });
+    // Four separate blur uniform buffers — the four blur passes run in ONE
+    // command encoder, but queue.writeBuffer applies on the queue timeline BEFORE
+    // the encoder executes, so a single shared buffer would give every pass the
+    // last-written value. Distinct buffers keep each pass's params correct.
+    const blurDepthXBuf = device.createBuffer({ label: "fluid-surf-blur-dx", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const blurDepthYBuf = device.createBuffer({ label: "fluid-surf-blur-dy", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const blurThickXBuf = device.createBuffer({ label: "fluid-surf-blur-tx", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const blurThickYBuf = device.createBuffer({ label: "fluid-surf-blur-ty", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const compBuffer = device.createBuffer({ label: "fluid-surf-comp", size: 16 * 13 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // Non-filtering sampler for the RG32F depth (32-float textures aren't filterable).
+    const nearestSampler = device.createSampler({ label: "fluid-surf-nearest" });
+    const linearSampler = device.createSampler({ label: "fluid-surf-linear", magFilter: "linear", minFilter: "linear" });
+    const envFallbackSampler = device.createSampler({ label: "fluid-surf-env", magFilter: "linear", minFilter: "linear", mipmapFilter: "linear" });
     let envView: GPUTextureView = createPlaceholderCube(device);
     let envSampler: GPUSampler = envFallbackSampler;
 
     let width = 0;
     let height = 0;
     let depthTex: GPUTexture | null = null;
-    let thickTex: GPUTexture | null = null;
-    let tmpTex: GPUTexture | null = null;
+    let depthTmp: GPUTexture | null = null;
     let depthBlur: GPUTexture | null = null;
+    let thickTex: GPUTexture | null = null;
+    let thickTmp: GPUTexture | null = null;
     let thickBlur: GPUTexture | null = null;
     let views: Record<string, GPUTextureView> = {};
 
@@ -275,42 +376,46 @@ export function createFluidSurfaceTask(
         if (w === width && h === height && depthTex) {
             return;
         }
-        for (const t of [depthTex, thickTex, tmpTex, depthBlur, thickBlur]) {
+        for (const t of [depthTex, depthTmp, depthBlur, thickTex, thickTmp, thickBlur]) {
             t?.destroy();
         }
         width = w;
         height = h;
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
-        const mk = (label: string): GPUTexture => device.createTexture({ label, size: { width: w, height: h }, format: "rgba16float", usage });
-        depthTex = mk("fluid-surf-depth");
-        thickTex = mk("fluid-surf-thick");
-        tmpTex = mk("fluid-surf-tmp");
-        depthBlur = mk("fluid-surf-depthBlur");
-        thickBlur = mk("fluid-surf-thickBlur");
+        const mkDepth = (label: string): GPUTexture => device.createTexture({ label, size: { width: w, height: h }, format: "rg32float", usage });
+        const mkThick = (label: string): GPUTexture => device.createTexture({ label, size: { width: w, height: h }, format: "rgba16float", usage });
+        depthTex = mkDepth("fluid-surf-depth");
+        depthTmp = mkDepth("fluid-surf-depthTmp");
+        depthBlur = mkDepth("fluid-surf-depthBlur");
+        thickTex = mkThick("fluid-surf-thick");
+        thickTmp = mkThick("fluid-surf-thickTmp");
+        thickBlur = mkThick("fluid-surf-thickBlur");
         views = {
             depth: depthTex.createView(),
-            thick: thickTex.createView(),
-            tmp: tmpTex.createView(),
+            depthTmp: depthTmp.createView(),
             depthBlur: depthBlur.createView(),
+            thick: thickTex.createView(),
+            thickTmp: thickTmp.createView(),
             thickBlur: thickBlur.createView(),
         };
     }
 
     let depthPipe: GPURenderPipeline | null = null;
     let thickPipe: GPURenderPipeline | null = null;
-    let blurPipe: GPURenderPipeline | null = null;
+    let bilateralPipe: GPURenderPipeline | null = null;
+    let standardBlurPipe: GPURenderPipeline | null = null;
     let blitPipe: GPURenderPipeline | null = null;
     let compPipe: GPURenderPipeline | null = null;
-    let sphereBGL: GPUBindGroupLayout | null = null;
-    let sphereBG: GPUBindGroup | null = null;
+    let particleBGL: GPUBindGroupLayout | null = null;
+    let particleBG: GPUBindGroup | null = null;
 
-    function buildSphereBG(): void {
-        if (!sphereBGL) {
+    function buildParticleBG(): void {
+        if (!particleBGL) {
             return;
         }
-        sphereBG = device.createBindGroup({
-            label: "fluid-surf-sphere",
-            layout: sphereBGL,
+        particleBG = device.createBindGroup({
+            label: "fluid-surf-particle",
+            layout: particleBGL,
             entries: [
                 { binding: 0, resource: { buffer: camBuffer } },
                 { binding: 1, resource: { buffer: currentSim.positionBuffer } },
@@ -319,27 +424,38 @@ export function createFluidSurfaceTask(
         });
     }
 
+    function blurPipeline(label: string, code: string): GPURenderPipeline {
+        const module = device.createShaderModule({ label, code });
+        return device.createRenderPipeline({
+            label,
+            layout: "auto",
+            vertex: { module, entryPoint: "vs" },
+            fragment: { module, entryPoint: "fs", targets: [{ format: code === BILATERAL_WGSL ? "rg32float" : "rgba16float" }] },
+            primitive: { topology: "triangle-list" },
+        });
+    }
+
     function build(): void {
         if (depthPipe) {
             return;
         }
-        const sphereMod = device.createShaderModule({ label: "fluid-surf-sphere", code: SPHERE_WGSL });
+        const partMod = device.createShaderModule({ label: "fluid-surf-particle", code: PARTICLE_WGSL });
         const dFormat = depthRT._descriptor.dFormat!;
         const samples = depthRT._descriptor.samples;
-        sphereBGL = device.createBindGroupLayout({
-            label: "fluid-surf-sphere",
+        particleBGL = device.createBindGroupLayout({
+            label: "fluid-surf-particle",
             entries: [
                 { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
                 { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
                 { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
             ],
         });
-        const spherePL = device.createPipelineLayout({ bindGroupLayouts: [sphereBGL] });
+        const partPL = device.createPipelineLayout({ bindGroupLayouts: [particleBGL] });
         depthPipe = device.createRenderPipeline({
             label: "fluid-surf-depth",
-            layout: spherePL,
-            vertex: { module: sphereMod, entryPoint: "vs" },
-            fragment: { module: sphereMod, entryPoint: "fsDepth", targets: [{ format: "rgba16float" }] },
+            layout: partPL,
+            vertex: { module: partMod, entryPoint: "vs" },
+            fragment: { module: partMod, entryPoint: "fsDepth", targets: [{ format: "rg32float" }] },
             primitive: { topology: "triangle-list", cullMode: "none" },
             depthStencil: { format: dFormat, depthWriteEnabled: true, depthCompare: "greater-equal" },
             multisample: { count: samples },
@@ -347,21 +463,20 @@ export function createFluidSurfaceTask(
         const addBlend = { color: { srcFactor: "one", dstFactor: "one", operation: "add" }, alpha: { srcFactor: "one", dstFactor: "one", operation: "add" } } as const;
         thickPipe = device.createRenderPipeline({
             label: "fluid-surf-thick",
-            layout: spherePL,
-            vertex: { module: sphereMod, entryPoint: "vs" },
-            fragment: { module: sphereMod, entryPoint: "fsThick", targets: [{ format: "rgba16float", blend: addBlend }] },
+            layout: partPL,
+            vertex: { module: partMod, entryPoint: "vs" },
+            fragment: { module: partMod, entryPoint: "fsThick", targets: [{ format: "rgba16float", blend: addBlend }] },
             primitive: { topology: "triangle-list", cullMode: "none" },
-            depthStencil: { format: dFormat, depthWriteEnabled: false, depthCompare: "greater-equal" },
+            // No depth test: thickness is a full additive volume integral (every
+            // particle along a ray contributes). The composite masks the result by
+            // the depth texture, so occluded regions are still culled correctly.
+            // (Sharing the scene depth here would let the depth pass — which writes
+            // the nearest surface — cull all back-of-volume particles, collapsing
+            // thickness to a single layer.)
             multisample: { count: samples },
         });
-        const blurMod = device.createShaderModule({ label: "fluid-surf-blur", code: BLUR_WGSL });
-        blurPipe = device.createRenderPipeline({
-            label: "fluid-surf-blur",
-            layout: "auto",
-            vertex: { module: blurMod, entryPoint: "vs" },
-            fragment: { module: blurMod, entryPoint: "fs", targets: [{ format: "rgba16float" }] },
-            primitive: { topology: "triangle-list" },
-        });
+        bilateralPipe = blurPipeline("fluid-surf-bilateral", BILATERAL_WGSL);
+        standardBlurPipe = blurPipeline("fluid-surf-standard-blur", STANDARD_BLUR_WGSL);
         const blitMod = device.createShaderModule({ label: "fluid-surf-blit", code: BLIT_WGSL });
         blitPipe = device.createRenderPipeline({
             label: "fluid-surf-blit",
@@ -378,45 +493,79 @@ export function createFluidSurfaceTask(
             fragment: { module: compMod, entryPoint: "fs", targets: [{ format: engine.format }] },
             primitive: { topology: "triangle-list" },
         });
-        buildSphereBG();
+        buildParticleBG();
     }
 
     function updateUniforms(): void {
-        const aspect = getEffectiveAspectRatio(camera, engine.canvas.width, engine.canvas.height);
-        const vp = getViewProjectionMatrix(camera, aspect);
+        const view = getViewMatrix(camera);
+        const proj = getProjectionMatrix(camera, engine.canvas.width / Math.max(1, engine.canvas.height));
+        const invProj = mat4Invert(proj) ?? Array.from(proj);
+        const radius = currentSim.particleRadius;
+        const size = radius * PARTICLE_SIZE_SCALE;
+
+        // Particle pass uniform.
         for (let k = 0; k < 16; k++) {
-            camData[k] = vp[k]!;
+            camData[k] = view[k]!;
+            camData[16 + k] = proj[k]!;
         }
-        const wm = camera.worldMatrix;
-        camData[16] = wm[0]!; camData[17] = wm[1]!; camData[18] = wm[2]!; camData[19] = 0;
-        camData[20] = wm[4]!; camData[21] = wm[5]!; camData[22] = wm[6]!; camData[23] = 0;
-        camData[24] = currentSim.particleRadius * 1.7;
-        camData[25] = currentSim.debugNorm;
-        camData[26] = 0.1; // thickness per particle (lower = more transparent)
-        camData[27] = 0;
+        camData[32] = size;
+        camData[33] = size / 2;
+        camData[34] = 0; // unused
+        camData[35] = PARTICLE_THICKNESS_ALPHA;
         device.queue.writeBuffer(camBuffer, 0, camData);
 
-        const tanHalfFov = Math.tan(camera.fov * 0.5);
-        const comp = new Float32Array(32);
-        comp[0] = width; comp[1] = height; comp[2] = 1 / width; comp[3] = 1 / height;
-        comp[4] = tanHalfFov; comp[5] = aspect; comp[6] = 0.05; comp[7] = 0.6;  // refractStrength, foam
-        comp[8] = 0.3; comp[9] = 0.5; comp[10] = -0.8; comp[11] = 0.5;          // view light, spec
-        comp[12] = 0.32; comp[13] = 0.16; comp[14] = 0.1; comp[15] = 0.04;      // absorption rgb, fresnel F0
-        comp[16] = 0.04; comp[17] = 0.16; comp[18] = 0.28; comp[19] = 120;      // deep colour, shininess
-        comp[20] = wm[0]!; comp[21] = wm[1]!; comp[22] = wm[2]!; comp[23] = 0;  // camera right
-        comp[24] = wm[4]!; comp[25] = wm[5]!; comp[26] = wm[6]!; comp[27] = 0;  // camera up
-        comp[28] = wm[8]!; comp[29] = wm[9]!; comp[30] = wm[10]!; comp[31] = 0; // camera forward
+        // Composite uniform.
+        const wm = camera.worldMatrix;
+        const dl = DIR_LIGHT;
+        const dlLen = Math.hypot(dl[0], dl[1], dl[2]);
+        const comp = new Float32Array(16 * 13);
+        let o = 0;
+        for (let k = 0; k < 16; k++) {
+            comp[o + k] = view[k]!;
+        }
+        o += 16;
+        for (let k = 0; k < 16; k++) {
+            comp[o + k] = proj[k]!;
+        }
+        o += 16;
+        for (let k = 0; k < 16; k++) {
+            comp[o + k] = invProj[k]!;
+        }
+        o += 16;
+        comp[o] = wm[0]!; comp[o + 1] = wm[1]!; comp[o + 2] = wm[2]!; comp[o + 3] = Math.tan(camera.fov / 2); // camR.xyz, camR.w = tanHalfFov
+        comp[o + 4] = wm[4]!; comp[o + 5] = wm[5]!; comp[o + 6] = wm[6]!; comp[o + 7] = engine.canvas.width / Math.max(1, engine.canvas.height); // camU.xyz, camU.w = aspect
+        comp[o + 8] = wm[8]!; comp[o + 9] = wm[9]!; comp[o + 10] = wm[10]!; comp[o + 11] = 0; // camF
+        o += 12;
+        comp[o] = 1 / width; comp[o + 1] = 1 / height; comp[o + 2] = camera.farPlane; comp[o + 3] = DENSITY; // a
+        comp[o + 4] = dl[0] / dlLen; comp[o + 5] = dl[1] / dlLen; comp[o + 6] = dl[2] / dlLen; comp[o + 7] = REFRACTION_STRENGTH; // b
+        const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5 }[debug];
+        comp[o + 8] = FRESNEL_CLAMP; comp[o + 9] = SPECULAR_POWER; comp[o + 10] = MINIMUM_THICKNESS; comp[o + 11] = debugMode; // c
+        comp[o + 12] = FLUID_COLOR[0]; comp[o + 13] = FLUID_COLOR[1]; comp[o + 14] = FLUID_COLOR[2]; comp[o + 15] = 0; // diffuse
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
-    function writeBlur(dirX: number, dirY: number, rangeSigma: number): void {
-        device.queue.writeBuffer(blurBuffer, 0, new Float32Array([dirX, dirY, 1 / (2 * rangeSigma * rangeSigma), 0]));
+    // Bilateral (depth) blur uniform: integer step dir, projConst, depthThreshold + maxFilterSize.
+    function writeBilateral(buf: GPUBuffer, stepX: number, stepY: number): void {
+        const radius = currentSim.particleRadius;
+        const size = radius * PARTICLE_SIZE_SCALE;
+        const projConst = (BLUR_DEPTH_FILTER_SIZE * size * 0.05 * (height / 2)) / Math.tan(camera.fov / 2);
+        const depthThreshold = (size / 2) * BLUR_DEPTH_DEPTH_SCALE;
+        device.queue.writeBuffer(buf, 0, new Float32Array([stepX, stepY, projConst, depthThreshold, BLUR_MAX_FILTER_SIZE, 0, 0, 0]));
+    }
+    function writeStandard(buf: GPUBuffer, stepX: number, stepY: number): void {
+        device.queue.writeBuffer(buf, 0, new Float32Array([stepX, stepY, BLUR_THICKNESS_FILTER_SIZE, 0, 0, 0, 0, 0]));
     }
 
-    function blurPass(label: string, srcView: GPUTextureView, dstView: GPUTextureView): void {
-        const bg = device.createBindGroup({ layout: blurPipe!.getBindGroupLayout(0), entries: [{ binding: 0, resource: srcView }, { binding: 1, resource: { buffer: blurBuffer } }] });
-        const pass = engine._currentEncoder.beginRenderPass({ label, colorAttachments: [{ view: dstView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
-        pass.setPipeline(blurPipe!);
+    function blurPass(label: string, pipe: GPURenderPipeline, buf: GPUBuffer, srcView: GPUTextureView, dstView: GPUTextureView): void {
+        const bg = device.createBindGroup({
+            layout: pipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: srcView },
+                { binding: 1, resource: { buffer: buf } },
+            ],
+        });
+        const pass = engine._currentEncoder.beginRenderPass({ label, colorAttachments: [{ view: dstView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+        pass.setPipeline(pipe);
         pass.setBindGroup(0, bg);
         pass.draw(3);
         pass.end();
@@ -429,7 +578,7 @@ export function createFluidSurfaceTask(
         _passes: [],
         setSim(s: FluidSim): void {
             currentSim = s;
-            buildSphereBG();
+            buildParticleBG();
         },
         setMode(m: "surface" | "blit"): void {
             mode = m;
@@ -438,6 +587,9 @@ export function createFluidSurfaceTask(
             envView = e.view;
             envSampler = e.sampler;
         },
+        setDebug(d: FluidDebug): void {
+            debug = d;
+        },
         record(): void {
             build();
         },
@@ -445,15 +597,13 @@ export function createFluidSurfaceTask(
             const outView = outRT._colorView;
             const bgView = bgRT._colorView;
             const sceneDepth = depthRT._depthView;
-            if (!depthPipe || !blitPipe || !compPipe || !sphereBG || !outView || !bgView) {
+            if (!depthPipe || !blitPipe || !compPipe || !particleBG || !outView || !bgView) {
                 return 0;
             }
             const enc = engine._currentEncoder;
 
-            // Sphere-impostor mode: just present the scene (which already has the
-            // impostors drawn into it) to the swapchain.
             if (mode === "blit") {
-                const bg = device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: bgView }, { binding: 1, resource: sampler }] });
+                const bg = device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: bgView }, { binding: 1, resource: linearSampler }] });
                 const pass = enc.beginRenderPass({ label: "fluid-surf-blit", colorAttachments: [{ view: outView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
                 pass.setPipeline(blitPipe);
                 pass.setBindGroup(0, bg);
@@ -462,57 +612,61 @@ export function createFluidSurfaceTask(
                 return 1;
             }
 
-            if (!thickPipe || !blurPipe || !sceneDepth) {
+            if (!thickPipe || !bilateralPipe || !standardBlurPipe || !sceneDepth) {
                 return 0;
             }
             allocTargets();
             updateUniforms();
 
-            // 1. Depth + speed.
+            // 1. Depth + speed (cleared to 1e6 so background reads as "far").
             {
                 const pass = enc.beginRenderPass({
                     label: "fluid-surf-depth",
-                    colorAttachments: [{ view: views.depth!, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+                    colorAttachments: [{ view: views.depth!, loadOp: "clear", storeOp: "store", clearValue: { r: 1e6, g: 1e6, b: 0, a: 1 } }],
                     depthStencilAttachment: { view: sceneDepth, depthLoadOp: "load", depthStoreOp: "store" },
                 });
                 pass.setPipeline(depthPipe);
-                pass.setBindGroup(0, sphereBG);
+                pass.setBindGroup(0, particleBG);
                 pass.draw(6, currentSim.count);
                 pass.end();
             }
-            // 2. Thickness (additive).
+            // 2. Thickness (additive, no depth test — full volume integral).
             {
                 const pass = enc.beginRenderPass({
                     label: "fluid-surf-thick",
-                    colorAttachments: [{ view: views.thick!, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-                    depthStencilAttachment: { view: sceneDepth, depthLoadOp: "load", depthStoreOp: "store" },
+                    colorAttachments: [{ view: views.thick!, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
                 });
                 pass.setPipeline(thickPipe);
-                pass.setBindGroup(0, sphereBG);
+                pass.setBindGroup(0, particleBG);
                 pass.draw(6, currentSim.count);
                 pass.end();
             }
-            // 3. Bilateral blur of depth (tight range) and thickness (loose range).
-            writeBlur(1, 0, 0.5);
-            blurPass("fluid-surf-depthBlurH", views.depth!, views.tmp!);
-            writeBlur(0, 1, 0.5);
-            blurPass("fluid-surf-depthBlurV", views.tmp!, views.depthBlur!);
-            writeBlur(1, 0, 6.0);
-            blurPass("fluid-surf-thickBlurH", views.thick!, views.tmp!);
-            writeBlur(0, 1, 6.0);
-            blurPass("fluid-surf-thickBlurV", views.tmp!, views.thickBlur!);
+            // 3. Bilateral depth blur (X then Y), standard thickness blur (X then Y).
+            // Each pass uses its OWN uniform buffer (see the buffer declarations).
+            writeBilateral(blurDepthXBuf, 1, 0);
+            writeBilateral(blurDepthYBuf, 0, 1);
+            writeStandard(blurThickXBuf, 1, 0);
+            writeStandard(blurThickYBuf, 0, 1);
+            blurPass("fluid-surf-depthBlurX", bilateralPipe, blurDepthXBuf, views.depth!, views.depthTmp!);
+            blurPass("fluid-surf-depthBlurY", bilateralPipe, blurDepthYBuf, views.depthTmp!, views.depthBlur!);
+            blurPass("fluid-surf-thickBlurX", standardBlurPipe, blurThickXBuf, views.thick!, views.thickTmp!);
+            blurPass("fluid-surf-thickBlurY", standardBlurPipe, blurThickYBuf, views.thickTmp!, views.thickBlur!);
 
-            // 4. Composite (refraction) → swapchain.
+            // 4. Composite → swapchain.
             const compBG = device.createBindGroup({
                 layout: compPipe.getBindGroupLayout(0),
                 entries: [
                     { binding: 0, resource: views.depthBlur! },
-                    { binding: 1, resource: views.thickBlur! },
-                    { binding: 2, resource: bgView },
-                    { binding: 3, resource: sampler },
-                    { binding: 4, resource: { buffer: compBuffer } },
-                    { binding: 5, resource: envView },
-                    { binding: 6, resource: envSampler },
+                    { binding: 1, resource: nearestSampler },
+                    { binding: 2, resource: views.thickBlur! },
+                    { binding: 3, resource: linearSampler },
+                    { binding: 4, resource: bgView },
+                    { binding: 5, resource: linearSampler },
+                    { binding: 6, resource: envView },
+                    { binding: 7, resource: envSampler },
+                    { binding: 8, resource: views.depth! },
+                    { binding: 9, resource: views.thick! },
+                    { binding: 10, resource: { buffer: compBuffer } },
                 ],
             });
             const cpass = enc.beginRenderPass({ label: "fluid-surf-composite", colorAttachments: [{ view: outView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
@@ -524,9 +678,12 @@ export function createFluidSurfaceTask(
         },
         dispose(): void {
             camBuffer.destroy();
-            blurBuffer.destroy();
+            blurDepthXBuf.destroy();
+            blurDepthYBuf.destroy();
+            blurThickXBuf.destroy();
+            blurThickYBuf.destroy();
             compBuffer.destroy();
-            for (const t of [depthTex, thickTex, tmpTex, depthBlur, thickBlur]) {
+            for (const t of [depthTex, depthTmp, depthBlur, thickTex, thickTmp, thickBlur]) {
                 t?.destroy();
             }
         },

@@ -39,6 +39,7 @@ import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "./transmission/fluid/fluid-surface-render.js";
+import type { FluidDebug } from "./transmission/fluid/fluid-surface-render.js";
 import { createSkyTask, loadEnvCubeFromEnv } from "./transmission/fluid/sky-render.js";import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
@@ -363,6 +364,26 @@ async function main(): Promise<void> {
     renderChkText.textContent = "Render as spheres";
     renderRow.append(renderChk, renderChkText);
     renderChk.onchange = () => applyRenderMode(renderChk.checked);
+    const debugTitle = document.createElement("div");
+    debugTitle.textContent = "Debug (feature)";
+    debugTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const debugSel = document.createElement("select");
+    debugSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    const debugOpts: { value: string; label: string }[] = [
+        { value: "none", label: "None (final render)" },
+        { value: "depth", label: "Depth" },
+        { value: "depthBlur", label: "Depth (blurred)" },
+        { value: "thickness", label: "Thickness" },
+        { value: "thicknessBlur", label: "Thickness (blurred)" },
+        { value: "normals", label: "Normals" },
+    ];
+    for (const o of debugOpts) {
+        const opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        debugSel.appendChild(opt);
+    }
+    debugSel.onchange = () => surfaceTask.setDebug(debugSel.value as FluidDebug);
     const containerTitle = document.createElement("div");
     containerTitle.textContent = "Container";
     containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -436,7 +457,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, renderTitle, renderRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, methodSel, renderTitle, renderRow, debugTitle, debugSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
