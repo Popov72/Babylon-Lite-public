@@ -80,8 +80,14 @@ async function main(): Promise<void> {
     // task so particles depth-test against the ground.
     const depthRT = createRenderTarget({ lbl: "fluid-depth", dFormat: "depth24plus", samples: 1, size: "canvas" });
 
+    // The scene renders to an offscreen colour target (not directly the
+    // swapchain) so the fluid surface pass can SAMPLE it for refraction. The
+    // fluid task then presents to the swapchain (blit in sphere mode, or a
+    // refraction composite in surface mode).
+    const sceneColorRT = createRenderTarget({ lbl: "fluid-scene-color", format: engine.format, samples: 1, size: "canvas" });
+
     const sceneTask = createRenderTask(
-        { name: "scene", rt: engine.scRT, depth: depthRT, clrColor: { r: 0.05, g: 0.06, b: 0.09, a: 1 } },
+        { name: "scene", rt: sceneColorRT, depth: depthRT, clrColor: { r: 0.05, g: 0.06, b: 0.09, a: 1 } },
         engine,
         scene,
     );
@@ -226,11 +232,13 @@ async function main(): Promise<void> {
     let forcePending: PendingForce | null = null;
     const FORCE_RADIUS = 3.5;
 
-    const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
+    const particleTask = createParticleRenderTask(engine, scene, { colorRT: sceneColorRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
-    // Alternative renderer: screen-space fluid surface (disabled by default; the
-    // "Render" dropdown toggles between this and the sphere impostors).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
+    // Fluid surface renderer + frame presenter: reads the offscreen scene colour
+    // and writes the swapchain. In sphere mode it just blits the scene (with the
+    // impostors already drawn into it); in surface mode it reconstructs and
+    // shades the liquid surface (refraction of the scene + speed foam).
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
 
     onBeforeRender(scene, (deltaMs: number) => {
@@ -332,14 +340,14 @@ async function main(): Promise<void> {
     const renderTitle = document.createElement("div");
     renderTitle.textContent = "Render";
     renderTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
-    const renderSel = document.createElement("select");
-    renderSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
-    for (const o of [{ value: "spheres", label: "Spheres (impostors)" }, { value: "surface", label: "Surface (screen-space)" }]) {
-        const opt = document.createElement("option");
-        opt.value = o.value;
-        opt.textContent = o.label;
-        renderSel.appendChild(opt);
-    }
+    const renderRow = document.createElement("label");
+    renderRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
+    const renderChk = document.createElement("input");
+    renderChk.type = "checkbox"; // unchecked = fluid surface (default), checked = spheres
+    const renderChkText = document.createElement("span");
+    renderChkText.textContent = "Render as spheres";
+    renderRow.append(renderChk, renderChkText);
+    renderChk.onchange = () => applyRenderMode(renderChk.checked);
     const containerTitle = document.createElement("div");
     containerTitle.textContent = "Container";
     containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -413,7 +421,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, renderTitle, renderSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, methodSel, renderTitle, renderRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
@@ -463,13 +471,12 @@ async function main(): Promise<void> {
     methodSel.onchange = () => applyMethod(methodSel.value);
 
     // Toggle between the sphere-impostor renderer and the screen-space surface.
-    function applyRenderMode(mode: string): void {
-        const surface = mode === "surface";
-        particleTask.setEnabled(!surface);
-        surfaceTask.setEnabled(surface);
-        canvas.dataset.render = mode;
+    // Default is the fluid surface; the checkbox switches to spheres.
+    function applyRenderMode(spheres: boolean): void {
+        particleTask.setEnabled(spheres);
+        surfaceTask.setMode(spheres ? "blit" : "surface");
+        canvas.dataset.render = spheres ? "spheres" : "surface";
     }
-    renderSel.onchange = () => applyRenderMode(renderSel.value);
 
     // Resize the particle buffers by disposing and rebuilding both backends at
     // the new count, then re-applying the current container and method (which
@@ -489,6 +496,7 @@ async function main(): Promise<void> {
 
     applyMethod("PBF");
     applyContainer(1); // capsule by default (also hides the box mesh)
+    applyRenderMode(false); // fluid surface by default
 
     const hint = document.querySelector(".hint");
     if (hint) {
