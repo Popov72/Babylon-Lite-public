@@ -27,6 +27,8 @@
 import { getEffectiveAspectRatio, getViewProjectionMatrix } from "babylon-lite";
 import type { Camera, EngineContext, RenderTarget, SceneContext, Task } from "babylon-lite";
 import type { FluidSim } from "./pbf-sim.js";
+import { createPlaceholderCube } from "./sky-render.js";
+import type { EnvMap } from "./sky-render.js";
 
 export interface FluidSurfaceOptions {
     /** Offscreen scene colour (background) — sampled for refraction / blit. */
@@ -159,12 +161,17 @@ struct Comp {
     light: vec4<f32>,  // xyz = view light dir, w = specular strength
     absorb: vec4<f32>, // xyz = absorption coeff (per channel), w = fresnel F0
     deep: vec4<f32>,   // xyz = deep fluid colour, w = shininess
+    right: vec4<f32>,  // camera world basis (view→world for the reflected ray)
+    up: vec4<f32>,
+    fwd: vec4<f32>,
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var thickTex: texture_2d<f32>;
 @group(0) @binding(2) var bgTex: texture_2d<f32>;
 @group(0) @binding(3) var bgSamp: sampler;
 @group(0) @binding(4) var<uniform> c: Comp;
+@group(0) @binding(5) var envTex: texture_cube<f32>;
+@group(0) @binding(6) var envSamp: sampler;
 
 fn viewPos(pix: vec2<i32>, d: f32) -> vec3<f32> {
     let ndcX = (f32(pix.x) + 0.5) * c.res.z * 2.0 - 1.0;
@@ -217,10 +224,11 @@ fn viewPos(pix: vec2<i32>, d: f32) -> vec3<f32> {
     let trans = exp(-thick * c.absorb.xyz);
     let refr = bg * trans + c.deep.xyz * (1.0 - trans);
 
-    // Reflection: a sky/horizon gradient along the reflected ray (matches the
-    // procedural skybox so reflections read as the sky).
-    let R = reflect(-V, n);
-    let refl = mix(vec3<f32>(0.30, 0.42, 0.62), vec3<f32>(0.72, 0.83, 0.93), clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
+    // Reflection: sample the environment cube along the reflected ray (transform
+    // the view-space reflection into world space via the camera basis).
+    let Rv = reflect(-V, n);
+    let Rw = Rv.x * c.right.xyz + Rv.y * c.up.xyz + Rv.z * c.fwd.xyz;
+    let refl = textureSampleLevel(envTex, envSamp, vec3<f32>(Rw.x, Rw.y, -Rw.z), 0.0).rgb;
 
     var col = mix(refr, refl, fres);
     col = col + vec3<f32>(1.0) * spec;
@@ -237,7 +245,7 @@ export function createFluidSurfaceTask(
     engine: EngineContext,
     scene: SceneContext,
     opts: FluidSurfaceOptions,
-): Task & { setSim(s: FluidSim): void; setMode(m: "surface" | "blit"): void } {
+): Task & { setSim(s: FluidSim): void; setMode(m: "surface" | "blit"): void; setEnvMap(e: EnvMap): void } {
     const device = engine._device;
     const { bgRT, outRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
@@ -246,8 +254,11 @@ export function createFluidSurfaceTask(
     const camData = new Float32Array(28);
     const camBuffer = device.createBuffer({ label: "fluid-surf-cam", size: camData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurBuffer = device.createBuffer({ label: "fluid-surf-blur", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const compBuffer = device.createBuffer({ label: "fluid-surf-comp", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const compBuffer = device.createBuffer({ label: "fluid-surf-comp", size: 128, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const sampler = device.createSampler({ label: "fluid-surf-samp", magFilter: "linear", minFilter: "linear" });
+    const envFallbackSampler = device.createSampler({ label: "fluid-surf-env-samp", magFilter: "linear", minFilter: "linear", mipmapFilter: "linear" });
+    let envView: GPUTextureView = createPlaceholderCube(device);
+    let envSampler: GPUSampler = envFallbackSampler;
 
     let width = 0;
     let height = 0;
@@ -386,12 +397,15 @@ export function createFluidSurfaceTask(
         device.queue.writeBuffer(camBuffer, 0, camData);
 
         const tanHalfFov = Math.tan(camera.fov * 0.5);
-        const comp = new Float32Array(20);
+        const comp = new Float32Array(32);
         comp[0] = width; comp[1] = height; comp[2] = 1 / width; comp[3] = 1 / height;
         comp[4] = tanHalfFov; comp[5] = aspect; comp[6] = 0.05; comp[7] = 0.6;  // refractStrength, foam
         comp[8] = 0.3; comp[9] = 0.5; comp[10] = -0.8; comp[11] = 0.5;          // view light, spec
         comp[12] = 0.32; comp[13] = 0.16; comp[14] = 0.1; comp[15] = 0.04;      // absorption rgb, fresnel F0
         comp[16] = 0.04; comp[17] = 0.16; comp[18] = 0.28; comp[19] = 120;      // deep colour, shininess
+        comp[20] = wm[0]!; comp[21] = wm[1]!; comp[22] = wm[2]!; comp[23] = 0;  // camera right
+        comp[24] = wm[4]!; comp[25] = wm[5]!; comp[26] = wm[6]!; comp[27] = 0;  // camera up
+        comp[28] = wm[8]!; comp[29] = wm[9]!; comp[30] = wm[10]!; comp[31] = 0; // camera forward
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -419,6 +433,10 @@ export function createFluidSurfaceTask(
         },
         setMode(m: "surface" | "blit"): void {
             mode = m;
+        },
+        setEnvMap(e: EnvMap): void {
+            envView = e.view;
+            envSampler = e.sampler;
         },
         record(): void {
             build();
@@ -493,6 +511,8 @@ export function createFluidSurfaceTask(
                     { binding: 2, resource: bgView },
                     { binding: 3, resource: sampler },
                     { binding: 4, resource: { buffer: compBuffer } },
+                    { binding: 5, resource: envView },
+                    { binding: 6, resource: envSampler },
                 ],
             });
             const cpass = enc.beginRenderPass({ label: "fluid-surf-composite", colorAttachments: [{ view: outView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });

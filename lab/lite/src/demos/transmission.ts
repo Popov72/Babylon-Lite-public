@@ -39,8 +39,7 @@ import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "./transmission/fluid/fluid-surface-render.js";
-import { createSkyTask } from "./transmission/fluid/sky-render.js";
-import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
+import { createSkyTask, loadEnvCube } from "./transmission/fluid/sky-render.js";import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
@@ -97,7 +96,8 @@ async function main(): Promise<void> {
         scene,
     );
     addTask(scene, sceneTask);
-    addTaskAtStart(scene, createSkyTask(engine, scene, { targetRT: sceneColorRT, camera: cam }));
+    const skyTask = createSkyTask(engine, scene, { targetRT: sceneColorRT, camera: cam });
+    addTaskAtStart(scene, skyTask);
 
     // Capsule tank: a vertical pill floating just above the ground (bottom
     // hemisphere centre at y=5, radius 3 → bottom at y=2). The liquid is
@@ -246,6 +246,15 @@ async function main(): Promise<void> {
     // shades the liquid surface (refraction of the scene + speed foam).
     const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
+
+    // Load the environment cube map and wire it into the sky + the fluid's
+    // reflections (a sky-blue placeholder is used until it arrives).
+    loadEnvCube(engine, "https://playground.babylonjs.com/textures/skybox", ".jpg")
+        .then((env) => {
+            skyTask.setEnvMap(env);
+            surfaceTask.setEnvMap(env);
+        })
+        .catch((err) => console.warn("[transmission] skybox load failed:", err));
 
     onBeforeRender(scene, (deltaMs: number) => {
         // Clamp dt so a hitch / first frame can't blow the integration up.
