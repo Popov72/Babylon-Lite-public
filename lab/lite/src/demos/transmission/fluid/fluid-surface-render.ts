@@ -421,8 +421,11 @@ export function createFluidSurfaceTask(
         // half res (the surface barely changes but it's cheaper).
         depthW = halfRender ? Math.max(1, Math.ceil(w / 2)) : w;
         depthH = halfRender ? Math.max(1, Math.ceil(h / 2)) : h;
-        thickW = Math.max(1, Math.ceil(w / 2));
-        thickH = Math.max(1, Math.ceil(h / 2));
+        // Thickness is low-frequency, so render it at half res normally and at
+        // quarter res when "half rendering" is on (so the toggle shrinks every
+        // texture by another half).
+        thickW = halfRender ? Math.max(1, Math.ceil(w / 4)) : Math.max(1, Math.ceil(w / 2));
+        thickH = halfRender ? Math.max(1, Math.ceil(h / 4)) : Math.max(1, Math.ceil(h / 2));
         const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
         const mkDepth = (label: string): GPUTexture => device.createTexture({ label, size: { width: depthW, height: depthH }, format: "rg32float", usage });
         const mkThick = (label: string): GPUTexture => device.createTexture({ label, size: { width: thickW, height: thickH }, format: "rgba16float", usage });
@@ -548,7 +551,7 @@ export function createFluidSurfaceTask(
         const proj = getProjectionMatrix(camera, engine.canvas.width / Math.max(1, engine.canvas.height));
         const invProj = mat4Invert(proj) ?? Array.from(proj);
         const radius = currentSim.particleRadius;
-        const size = radius * PARTICLE_SIZE_SCALE;
+        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1);
 
         // Particle pass uniform.
         for (let k = 0; k < 16; k++) {
@@ -596,7 +599,7 @@ export function createFluidSurfaceTask(
     // Bilateral (depth) blur uniform: integer step dir, projConst, depthThreshold + maxFilterSize.
     function writeBilateral(buf: GPUBuffer, stepX: number, stepY: number): void {
         const radius = currentSim.particleRadius;
-        const size = radius * PARTICLE_SIZE_SCALE;
+        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1);
         const projConst = (BLUR_DEPTH_FILTER_SIZE * size * 0.05 * (depthH / 2)) / Math.tan(camera.fov / 2);
         const depthThreshold = (size / 2) * BLUR_DEPTH_DEPTH_SCALE;
         device.queue.writeBuffer(buf, 0, new Float32Array([stepX, stepY, projConst, depthThreshold, BLUR_MAX_FILTER_SIZE, 0, 0, 0]));

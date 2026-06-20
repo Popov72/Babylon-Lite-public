@@ -257,7 +257,24 @@ async function main(): Promise<void> {
         })
         .catch((err) => console.warn("[transmission] skybox load failed:", err));
 
+    // On-screen FPS read-out (smoothed over ~0.5 s windows). The element lives in
+    // the control panel (appended below); it's created here so the render loop can
+    // update it without a use-before-define.
+    const fpsLabel = document.createElement("div");
+    fpsLabel.textContent = "— fps";
+    fpsLabel.style.cssText = "font-weight:600;color:#7fd68a;margin-bottom:6px;font-variant-numeric:tabular-nums;";
+    let fpsAccumMs = 0;
+    let fpsFrames = 0;
+
     onBeforeRender(scene, (deltaMs: number) => {
+        // Smoothed FPS: average the frame interval over ~0.5 s, then refresh.
+        fpsAccumMs += deltaMs;
+        fpsFrames++;
+        if (fpsAccumMs >= 500) {
+            fpsLabel.textContent = `${Math.round((fpsFrames * 1000) / fpsAccumMs)} fps`;
+            fpsAccumMs = 0;
+            fpsFrames = 0;
+        }
         // Clamp dt so a hitch / first frame can't blow the integration up.
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         if (forcePending) {
@@ -491,7 +508,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {

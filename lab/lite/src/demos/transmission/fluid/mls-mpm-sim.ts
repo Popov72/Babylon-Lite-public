@@ -673,6 +673,10 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     return {
         count,
         particleRadius,
+        // MLS-MPM particles settle on a near-regular lattice spaced wider than the
+        // PBF fluid packs, so without bigger impostors the surface shows the
+        // individual spheres. Enlarge them (and the blur) to match SPH smoothness.
+        surfaceSizeScale: 1.5,
         positionBuffer,
         debugBuffer,
         debugNorm: 1 / 6,

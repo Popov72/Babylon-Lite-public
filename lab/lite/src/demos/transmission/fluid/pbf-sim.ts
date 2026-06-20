@@ -76,6 +76,11 @@ export interface FluidSimOptions {
 export interface FluidSim {
     readonly count: number;
     readonly particleRadius: number;
+    /** Optional multiplier on the screen-space surface impostor size (and the
+     *  bilateral-blur kernel derived from it). Backends whose particles settle at
+     *  wider spacing (e.g. MLS-MPM) need bigger, more-overlapping impostors to
+     *  render a smooth surface instead of visible individual spheres. Default 1. */
+    readonly surfaceSizeScale?: number;
     /** vec4<f32>-per-particle position buffer (STORAGE). Read by the renderer. */
     readonly positionBuffer: GPUBuffer;
     /** f32-per-particle speed (Phase 3 debug). Read by the renderer to tint by motion. */
