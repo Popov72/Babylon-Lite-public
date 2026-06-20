@@ -53,7 +53,7 @@ const FLUID_COLOR: [number, number, number] = [0.085, 0.6375, 0.765];
 const DIR_LIGHT: [number, number, number] = [-2, -1, 1]; // normalized below
 const BLUR_DEPTH_FILTER_SIZE = 20;
 const BLUR_MAX_FILTER_SIZE = 64;
-const BLUR_DEPTH_DEPTH_SCALE = 10;
+const BLUR_DEPTH_DEPTH_SCALE = 35;
 const BLUR_THICKNESS_FILTER_SIZE = 10;
 const PARTICLE_SIZE_SCALE = 3.5; // impostor diameter = particleRadius * this
 
