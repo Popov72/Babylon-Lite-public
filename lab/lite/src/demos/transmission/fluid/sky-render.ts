@@ -83,6 +83,89 @@ export async function loadEnvCube(engine: EngineContext, baseUrl: string, ext = 
     return { view: tex.createView({ dimension: "cube" }), sampler };
 }
 
+// Babylon .env magic header.
+const ENV_MAGIC = [0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36];
+
+// RGBD → display-colour decode (compute). Mirrors babylon-lite's rgbd-decode:
+// sRGB-decode the RGB, divide by the alpha divisor to recover linear HDR, then
+// bake exposure + Reinhard tonemap + gamma so the cube is in the SAME display
+// space as the rest of the scene (so refraction/reflection composite cleanly).
+// Faces are Y-flipped on read (BJS uploads cube faces inverted).
+const ENV_DECODE_WGSL = /* wgsl */ `
+const EXPOSURE: f32 = 2.0;
+const CONTRAST: f32 = 1.2;
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var o: texture_storage_2d<rgba16float, write>;
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) g: vec3u) {
+    let d = textureDimensions(t);
+    if (any(g.xy >= d)) { return; }
+    let c = textureLoad(t, vec2u(g.x, d.y - 1u - g.y), 0);
+    let lin = pow(c.rgb, vec3f(2.2)) / max(c.a, 1.0 / 255.0);
+    let exposed = lin * EXPOSURE;
+    let tm = exposed / (vec3f(1.0) + exposed);
+    var disp = pow(tm, vec3f(1.0 / 2.2));
+    disp = (disp - vec3f(0.5)) * CONTRAST + vec3f(0.5);
+    textureStore(o, g.xy, vec4f(clamp(disp, vec3f(0.0), vec3f(1.0)), 1.0));
+}`;
+
+/** Load a Babylon `.env` (prefiltered RGBD cube) and decode its sharpest mip
+ *  into a display-space rgba16float cube map for the skybox + reflections. */
+export async function loadEnvCubeFromEnv(engine: EngineContext, url: string): Promise<EnvMap> {
+    const device = engine._device;
+    const buffer = await (await fetch(url)).arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < 8; i++) {
+        if (bytes[i] !== ENV_MAGIC[i]) {
+            throw new Error("invalid .env magic");
+        }
+    }
+    let pos = 8;
+    while (pos < bytes.length && bytes[pos] !== 0) {
+        pos++;
+    }
+    const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(8, pos)));
+    const binaryStart = pos + 1;
+    const width: number = manifest.width;
+    const imageType: string = manifest.imageType || "image/png";
+    const mipmaps: { position: number; length: number }[] = manifest.specular.mipmaps;
+    // Mip 0 = the first 6 faces (the sharp environment), order +X,-X,+Y,-Y,+Z,-Z.
+    const faces = await Promise.all(
+        mipmaps.slice(0, 6).map((e) => {
+            const slice = buffer.slice(binaryStart + e.position, binaryStart + e.position + e.length);
+            return createImageBitmap(new Blob([slice], { type: imageType }), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+        }),
+    );
+
+    const module = device.createShaderModule({ label: "env-decode", code: ENV_DECODE_WGSL });
+    const pipeline = device.createComputePipeline({ label: "env-decode", layout: "auto", compute: { module, entryPoint: "main" } });
+    const cube = device.createTexture({
+        label: "env-cube",
+        size: { width, height: width, depthOrArrayLayers: 6 },
+        format: "rgba16float",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT,
+        dimension: "2d",
+    });
+    for (let face = 0; face < 6; face++) {
+        const inputTex = device.createTexture({ size: { width, height: width }, format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        const outputTex = device.createTexture({ size: { width, height: width }, format: "rgba16float", usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC });
+        device.queue.copyExternalImageToTexture({ source: faces[face]!, flipY: false }, { texture: inputTex, premultipliedAlpha: false }, { width, height: width });
+        const bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: inputTex.createView() }, { binding: 1, resource: outputTex.createView() }] });
+        const enc = device.createCommandEncoder();
+        const cpass = enc.beginComputePass();
+        cpass.setPipeline(pipeline);
+        cpass.setBindGroup(0, bg);
+        cpass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(width / 8));
+        cpass.end();
+        enc.copyTextureToTexture({ texture: outputTex }, { texture: cube, origin: { x: 0, y: 0, z: face } }, { width, height: width });
+        device.queue.submit([enc.finish()]);
+        faces[face]!.close();
+        inputTex.destroy();
+        outputTex.destroy();
+    }
+    const sampler = device.createSampler({ label: "env-samp", magFilter: "linear", minFilter: "linear" });
+    return { view: cube.createView({ dimension: "cube" }), sampler };
+}
+
 export function createSkyTask(engine: EngineContext, scene: SceneContext, opts: SkyOptions): Task & { setEnvMap(e: EnvMap): void } {
     const device = engine._device;
     const { targetRT, camera } = opts;

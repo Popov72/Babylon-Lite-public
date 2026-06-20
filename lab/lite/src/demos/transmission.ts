@@ -39,7 +39,7 @@ import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "./transmission/fluid/fluid-surface-render.js";
-import { createSkyTask, loadEnvCube } from "./transmission/fluid/sky-render.js";import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
+import { createSkyTask, loadEnvCubeFromEnv } from "./transmission/fluid/sky-render.js";import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
 
     // Load the environment cube map and wire it into the sky + the fluid's
     // reflections (a sky-blue placeholder is used until it arrives).
-    loadEnvCube(engine, "https://playground.babylonjs.com/textures/skybox", ".jpg")
+    loadEnvCubeFromEnv(engine, "https://playground.babylonjs.com/textures/environment.env")
         .then((env) => {
             skyTask.setEnvMap(env);
             surfaceTask.setEnvMap(env);
