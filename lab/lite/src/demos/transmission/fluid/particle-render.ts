@@ -72,10 +72,11 @@ struct VOut {
     return vec4<f32>(col, 1.0);
 }`;
 
-export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void } {
+export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void } {
     const device = engine._device;
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
+    let enabled = true;
 
     const camData = new Float32Array(28); // mat4 (16) + right (4) + up (4) + misc (4)
     const camBuffer = device.createBuffer({
@@ -156,10 +157,17 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
             currentSim = s;
             buildBindGroup();
         },
+        /** Enable/disable this renderer (so the demo can swap to surface mode). */
+        setEnabled(on: boolean): void {
+            enabled = on;
+        },
         record(): void {
             build();
         },
         execute(): number {
+            if (!enabled) {
+                return 0;
+            }
             const colorView = colorRT._colorView;
             const depthView = depthRT._depthView;
             if (!pipeline || !bindGroup || !colorView || !depthView) {

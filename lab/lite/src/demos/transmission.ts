@@ -37,6 +37,7 @@ import { createFluidSim } from "./transmission/fluid/pbf-sim.js";
 import type { FluidSim } from "./transmission/fluid/pbf-sim.js";
 import { createMlsMpmSim } from "./transmission/fluid/mls-mpm-sim.js";
 import { createParticleRenderTask } from "./transmission/fluid/particle-render.js";
+import { createFluidSurfaceTask } from "./transmission/fluid/fluid-surface-render.js";
 import { pickCapsuleHole, screenRay } from "./transmission/fluid/pick.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
@@ -227,6 +228,10 @@ async function main(): Promise<void> {
 
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
+    // Alternative renderer: screen-space fluid surface (disabled by default; the
+    // "Render" dropdown toggles between this and the sphere impostors).
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { colorRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
+    addTask(scene, surfaceTask);
 
     onBeforeRender(scene, (deltaMs: number) => {
         // Clamp dt so a hitch / first frame can't blow the integration up.
@@ -323,6 +328,17 @@ async function main(): Promise<void> {
         opt.textContent = name === "PBF" ? "SPH (PBF)" : name;
         methodSel.appendChild(opt);
     }
+    const renderTitle = document.createElement("div");
+    renderTitle.textContent = "Render";
+    renderTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const renderSel = document.createElement("select");
+    renderSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    for (const o of [{ value: "spheres", label: "Spheres (impostors)" }, { value: "surface", label: "Surface (screen-space)" }]) {
+        const opt = document.createElement("option");
+        opt.value = o.value;
+        opt.textContent = o.label;
+        renderSel.appendChild(opt);
+    }
     const containerTitle = document.createElement("div");
     containerTitle.textContent = "Container";
     containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -396,7 +412,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, methodSel, renderTitle, renderSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
@@ -438,11 +454,21 @@ async function main(): Promise<void> {
         }
         activeSim.reset();
         particleTask.setSim(activeSim);
+        surfaceTask.setSim(activeSim);
         methodSel.value = name;
         buildSliders(name);
         canvas.dataset.method = methodName;
     }
     methodSel.onchange = () => applyMethod(methodSel.value);
+
+    // Toggle between the sphere-impostor renderer and the screen-space surface.
+    function applyRenderMode(mode: string): void {
+        const surface = mode === "surface";
+        particleTask.setEnabled(!surface);
+        surfaceTask.setEnabled(surface);
+        canvas.dataset.render = mode;
+    }
+    renderSel.onchange = () => applyRenderMode(renderSel.value);
 
     // Resize the particle buffers by disposing and rebuilding both backends at
     // the new count, then re-applying the current container and method (which
