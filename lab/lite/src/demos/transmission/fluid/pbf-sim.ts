@@ -97,6 +97,11 @@ export interface FluidSim {
     /** Set an interactive push force: particles within `radius` of the ray
      *  (origin, dir) are accelerated along `push` by `accel` (0 = disabled). */
     setForce(origin: [number, number, number], dir: [number, number, number], push: [number, number, number], radius: number, accel: number): void;
+    /** Configure a rotating vertical paddle obstacle (box mode only). `active`
+     *  toggles it; `center` is the XZ pivot, `halfWidth` the horizontal reach
+     *  from the pivot, `halfThickness` the slab half-thickness, `angle` the
+     *  current rotation (radians about +Y) and `omega` its angular velocity. */
+    setObstacle(active: boolean, center: [number, number], halfWidth: number, halfThickness: number, angle: number, omega: number): void;
     dispose(): void;
 }
 
@@ -118,10 +123,12 @@ const MAX_HOLES = 8;
 //   [32..]   holes[MAX_HOLES] — each vec4 (centre.xyz + radius; radius 0 = unused)
 //   then     boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
 //   then     forceO.xyz+radius, forceD.xyz+accel, forceP.xyz+pad (mouse force)
+//   then     obsA (cx,cz,halfWidth,halfThickness), obsB (cos,sin,omega,enabled) — rotating paddle
 const HOLE_BASE_F32 = 32;
 const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
 const FORCE_BASE_F32 = BOX_BASE_F32 + 8;
-const SIM_BYTES = (FORCE_BASE_F32 + 12) * 4;
+const OBS_BASE_F32 = FORCE_BASE_F32 + 12;
+const SIM_BYTES = (OBS_BASE_F32 + 8) * 4;
 
 // Grid uniform — 32 bytes. originCell = (origin.xyz, cellSize); dim = (gridDim.xyz, maxPerCell).
 const GRID_BYTES = 32;
@@ -156,6 +163,8 @@ struct Sim {
     forceO: vec4<f32>,
     forceD: vec4<f32>,
     forceP: vec4<f32>,
+    obsA: vec4<f32>,
+    obsB: vec4<f32>,
 };
 
 struct Grid {
@@ -215,6 +224,27 @@ fn mouseForce(p: vec3<f32>, sim: Sim) -> vec3<f32> {
     let dist = length(p - (o + t * dir));
     if (dist >= sim.forceO.w) { return vec3<f32>(0.0); }
     return sim.forceP.xyz * (accel * (1.0 - dist / sim.forceO.w));
+}
+
+// Rotating vertical paddle obstacle (box mode). If p is inside the thin slab,
+// push it out along the slab normal to the nearer face. PBF derives velocity
+// from the position change, so the sweeping paddle imparts the stir for free.
+// obsA = (cx, cz, halfWidth, halfThickness); obsB = (cos, sin, omega, enabled).
+fn obstacleResolve(p: vec3<f32>, sim: Sim) -> vec3<f32> {
+    if (sim.obsB.w < 0.5) { return p; }
+    let c = sim.obsB.x;
+    let s = sim.obsB.y;
+    let rx = p.x - sim.obsA.x;
+    let rz = p.z - sim.obsA.y;
+    let lx =  c * rx + s * rz; // local slab-normal axis
+    let lz = -s * rx + c * rz; // local slab-width axis
+    if (abs(lx) < sim.obsA.w && abs(lz) < sim.obsA.z) {
+        let nl = select(-sim.obsA.w, sim.obsA.w, lx >= 0.0); // nearer face
+        let nrx = c * nl - s * lz;
+        let nrz = s * nl + c * lz;
+        return vec3<f32>(sim.obsA.x + nrx, p.y, sim.obsA.y + nrz);
+    }
+    return p;
 }
 `;
 
@@ -417,6 +447,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if (sim.containerMode == 2u) {
         // Closed axis-aligned box container (no holes).
         p = clamp(p, sim.boxMin.xyz, sim.boxMax.xyz);
+        p = obstacleResolve(p, sim);
     }
 
     // Ground floor (escaped liquid lands here once the tank is breached).
@@ -782,6 +813,16 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             simF32[FORCE_BASE_F32 + 8] = push[0];
             simF32[FORCE_BASE_F32 + 9] = push[1];
             simF32[FORCE_BASE_F32 + 10] = push[2];
+        },
+        setObstacle(active: boolean, center: [number, number], halfWidth: number, halfThickness: number, angle: number, omega: number): void {
+            simF32[OBS_BASE_F32] = center[0];
+            simF32[OBS_BASE_F32 + 1] = center[1];
+            simF32[OBS_BASE_F32 + 2] = halfWidth;
+            simF32[OBS_BASE_F32 + 3] = halfThickness;
+            simF32[OBS_BASE_F32 + 4] = Math.cos(angle);
+            simF32[OBS_BASE_F32 + 5] = Math.sin(angle);
+            simF32[OBS_BASE_F32 + 6] = omega;
+            simF32[OBS_BASE_F32 + 7] = active ? 1 : 0;
         },
         addHole(center: [number, number, number], radius: number): void {
             const o = HOLE_BASE_F32 + holeWriteSlot * 4;

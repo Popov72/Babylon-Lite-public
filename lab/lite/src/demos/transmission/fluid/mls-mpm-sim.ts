@@ -37,12 +37,14 @@ const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
 //   holes[MAX_HOLES]: centre.xyz + radius
 //   boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
 //   forceO.xyz+radius, forceD.xyz+accel, forceP.xyz+pad (mouse force)
-const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8 + 12; // header + holes + box + force
+//   obsA (cx,cz,halfWidth,halfThickness), obsB (cos,sin,omega,enabled) — rotating paddle
+const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8 + 12 + 8; // header + holes + box + force + obstacle
 const PARAMS_BYTES = PARAMS_F32 * 4;
 const COUNTS_OFFSET_F32 = 24; // start of the counts vec4 (u32 view)
 const HOLE_BASE_F32 = 28;
 const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
 const FORCE_BASE_F32 = BOX_BASE_F32 + 8;
+const OBS_BASE_F32 = FORCE_BASE_F32 + 12;
 
 const COMMON_WGSL = /* wgsl */ `
 const FIXED_POINT: f32 = ${FIXED_POINT};
@@ -62,7 +64,17 @@ struct Params {
     forceO: vec4<f32>,
     forceD: vec4<f32>,
     forceP: vec4<f32>,
+    obsA: vec4<f32>,        // cx, cz, halfWidth, halfThickness (rotating paddle)
+    obsB: vec4<f32>,        // cos, sin, omega, enabled
 };
+
+// World-space surface velocity of the rotating paddle at a point (rx,rz) given
+// relative to the pivot. Consistent with the position rotation used in the slab
+// test: v = d/dt(local→world) with d(angle)/dt = omega.
+fn obstacleSurfaceVel(rx: f32, rz: f32, p: Params) -> vec3<f32> {
+    let omega = p.obsB.z;
+    return vec3<f32>(-omega * rz, 0.0, omega * rx);
+}
 
 fn enc(x: f32) -> i32 { return i32(x * FIXED_POINT); }
 fn dec(x: i32) -> f32 { return f32(x) * FIXED_POINT_INV; }
@@ -245,6 +257,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (cw.y >= p.boxMax.y) { v.y = min(v.y, 0.0); }
         if (cw.z <= p.boxMin.z) { v.z = max(v.z, 0.0); }
         if (cw.z >= p.boxMax.z) { v.z = min(v.z, 0.0); }
+
+        // Rotating paddle: a no-slip moving solid. Cells whose centre lies inside
+        // the thin slab adopt the paddle's surface velocity, so it drags the
+        // fluid around as it spins (momentum coupling happens here on the grid).
+        if (p.obsB.w > 0.5) {
+            let c = p.obsB.x;
+            let s = p.obsB.y;
+            let rx = cw.x - p.obsA.x;
+            let rz = cw.z - p.obsA.y;
+            let lx =  c * rx + s * rz;
+            let lz = -s * rx + c * rz;
+            if (abs(lx) < p.obsA.w && abs(lz) < p.obsA.z) {
+                v = obstacleSurfaceVel(rx, rz, p);
+            }
+        }
     }
 
     cells[i].vx = enc(v.x);
@@ -345,6 +372,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let hi = p.boxMax.xyz;
         let over = max(np - hi, vec3<f32>(0.0)) + min(np - lo, vec3<f32>(0.0));
         np -= 0.5 * over;
+
+        // Paddle anti-tunnelling: a particle that ended inside the thin slab is
+        // pushed out to the nearer face and given the paddle's normal velocity,
+        // so the fast-spinning blade can't let particles slip through it.
+        if (p.obsB.w > 0.5) {
+            let c = p.obsB.x;
+            let s = p.obsB.y;
+            let rx = np.x - p.obsA.x;
+            let rz = np.z - p.obsA.y;
+            let lx =  c * rx + s * rz;
+            let lz = -s * rx + c * rz;
+            if (abs(lx) < p.obsA.w && abs(lz) < p.obsA.z) {
+                let nl = select(-p.obsA.w, p.obsA.w, lx >= 0.0);
+                np.x = p.obsA.x + (c * nl - s * lz);
+                np.z = p.obsA.y + (s * nl + c * lz);
+                let sv = obstacleSurfaceVel(rx, rz, p);
+                let n = vec3<f32>(c, 0.0, s); // world slab normal
+                vel = vel - dot(vel - sv, n) * n;
+            }
+        }
     }
 
     // Ground floor (capsule mode only; the box has its own grid-wall floor).
@@ -669,6 +716,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             pf[FORCE_BASE_F32 + 8] = push[0];
             pf[FORCE_BASE_F32 + 9] = push[1];
             pf[FORCE_BASE_F32 + 10] = push[2];
+        },
+        setObstacle(active: boolean, center: [number, number], halfWidth: number, halfThickness: number, angle: number, omega: number): void {
+            pf[OBS_BASE_F32] = center[0];
+            pf[OBS_BASE_F32 + 1] = center[1];
+            pf[OBS_BASE_F32 + 2] = halfWidth;
+            pf[OBS_BASE_F32 + 3] = halfThickness;
+            pf[OBS_BASE_F32 + 4] = Math.cos(angle);
+            pf[OBS_BASE_F32 + 5] = Math.sin(angle);
+            pf[OBS_BASE_F32 + 6] = omega;
+            pf[OBS_BASE_F32 + 7] = active ? 1 : 0;
         },
         dispose(): void {
             particleBuffer.destroy();

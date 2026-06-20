@@ -128,6 +128,21 @@ async function main(): Promise<void> {
     );
     addToScene(scene, boxMesh);
 
+    // Rotating paddle obstacle (box mode only): a thin, tall vertical slab that
+    // spins about the box's vertical axis to stir the fluid. `OBS_HALF_WIDTH`
+    // leaves a gap to the walls so fluid can flow around the blade ends.
+    const OBS_HALF_WIDTH = 3.0;
+    const OBS_HALF_THICK = 0.25;
+    const OBS_CENTER: [number, number] = [(BOX_MIN[0] + BOX_MAX[0]) / 2, (BOX_MIN[2] + BOX_MAX[2]) / 2];
+    const paddleMat = createStandardMaterial();
+    paddleMat.diffuseColor = [0.86, 0.5, 0.2];
+    paddleMat.specularColor = [0.35, 0.35, 0.35];
+    const paddleMesh = createBox(engine, 1);
+    paddleMesh.material = paddleMat;
+    paddleMesh.scaling.set(2 * OBS_HALF_THICK, BOX_MAX[1] - BOX_MIN[1], 2 * OBS_HALF_WIDTH);
+    paddleMesh.position.set(OBS_CENTER[0], (BOX_MIN[1] + BOX_MAX[1]) / 2, OBS_CENTER[1]);
+    addToScene(scene, paddleMesh);
+
     // Shared scene geometry for both backends so switching is apples-to-apples.
     // The domain spans both containers (capsule drain spread + the taller box).
     const SPAWN_MIN: [number, number, number] = [-2, 4, -2];
@@ -189,6 +204,15 @@ async function main(): Promise<void> {
     let methodName = "PBF";
     let containerMode = 1; // 1 = capsule, 2 = box
 
+    // Rotating-paddle obstacle state (box mode). `obstacleAngle` accumulates from
+    // `obstacleSpeed` (rad/s) each frame; the mesh and both sims read it.
+    let obstacleOn = false;
+    let obstacleSpeed = 1.2;
+    let obstacleAngle = 0;
+    function updatePaddleVisibility(): void {
+        setMeshVisible(paddleMesh, containerMode === 2 && obstacleOn);
+    }
+
     // Mouse-force state (box mode). `forcePending` holds the force computed from
     // the latest pointer move; it's applied for one frame then cleared, so the
     // force only acts while the mouse is actually moving.
@@ -213,6 +237,15 @@ async function main(): Promise<void> {
         } else {
             activeSim.setForce([0, 0, 0], [0, 0, 1], [0, 0, 0], FORCE_RADIUS, 0);
         }
+        // Rotating paddle (box mode only): advance the angle and feed it to the
+        // visible mesh and the active sim's collision.
+        if (containerMode === 2 && obstacleOn) {
+            obstacleAngle += obstacleSpeed * dt;
+            paddleMesh.rotation.y = obstacleAngle;
+            activeSim.setObstacle(true, OBS_CENTER, OBS_HALF_WIDTH, OBS_HALF_THICK, obstacleAngle, obstacleSpeed);
+        } else {
+            activeSim.setObstacle(false, OBS_CENTER, OBS_HALF_WIDTH, OBS_HALF_THICK, obstacleAngle, 0);
+        }
         activeSim.step(engine._currentEncoder, dt);
     });
 
@@ -227,6 +260,7 @@ async function main(): Promise<void> {
         }
         setMeshVisible(boxMesh, isBox);
         setMeshVisible(ground, !isBox); // the box floor replaces the ground
+        updatePaddleVisibility();
         // In box mode LMB stirs the fluid, so the built-in camera control (which
         // uses LMB to rotate) is detached and replaced by RMB-rotate / wheel-zoom.
         if (isBox && detachCam) {
@@ -318,11 +352,51 @@ async function main(): Promise<void> {
         particlesSel.appendChild(opt);
     }
     const sliderHost = document.createElement("div");
+
+    // Obstacle (box mode): a checkbox to toggle the rotating paddle and a slider
+    // for its angular speed. Inactive in capsule mode (the paddle is box-only).
+    const obstacleTitle = document.createElement("div");
+    obstacleTitle.textContent = "Obstacle (box only)";
+    obstacleTitle.style.cssText = "font-weight:600;margin:8px 0 6px;";
+    const obstacleRow = document.createElement("label");
+    obstacleRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;";
+    const obstacleChk = document.createElement("input");
+    obstacleChk.type = "checkbox";
+    const obstacleChkText = document.createElement("span");
+    obstacleChkText.textContent = "Rotating paddle";
+    obstacleRow.append(obstacleChk, obstacleChkText);
+    const speedRow = document.createElement("div");
+    speedRow.style.cssText = "margin:2px 0 4px;";
+    const speedHead = document.createElement("div");
+    speedHead.style.cssText = "display:flex;justify-content:space-between;";
+    const speedLab = document.createElement("span");
+    speedLab.textContent = "Paddle speed (rad/s)";
+    const speedVal = document.createElement("span");
+    speedVal.style.cssText = "color:#9fb4cc;";
+    speedVal.textContent = String(obstacleSpeed);
+    speedHead.append(speedLab, speedVal);
+    const speedInput = document.createElement("input");
+    speedInput.type = "range";
+    speedInput.min = "0";
+    speedInput.max = "4";
+    speedInput.step = "0.1";
+    speedInput.value = String(obstacleSpeed);
+    speedInput.style.cssText = "width:100%;";
+    speedInput.oninput = () => {
+        obstacleSpeed = parseFloat(speedInput.value);
+        speedVal.textContent = speedInput.value;
+    };
+    obstacleChk.onchange = () => {
+        obstacleOn = obstacleChk.checked;
+        updatePaddleVisibility();
+    };
+    speedRow.append(speedHead, speedInput);
+
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, methodSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, resetBtn);
+    panel.append(title, methodSel, containerTitle, containerSel, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
