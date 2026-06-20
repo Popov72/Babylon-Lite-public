@@ -38,13 +38,15 @@ const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
 //   boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
 //   forceO.xyz+radius, forceD.xyz+accel, forceP.xyz+pad (mouse force)
 //   obsA (cx,cz,halfWidth,halfThickness), obsB (cos,sin,omega,enabled) — rotating paddle
-const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8 + 12 + 8; // header + holes + box + force + obstacle
+//   misc2 (restitution, _, _, _)
+const PARAMS_F32 = 7 * 4 + MAX_HOLES * 4 + 8 + 12 + 8 + 4; // header + holes + box + force + obstacle + misc2
 const PARAMS_BYTES = PARAMS_F32 * 4;
 const COUNTS_OFFSET_F32 = 24; // start of the counts vec4 (u32 view)
 const HOLE_BASE_F32 = 28;
 const BOX_BASE_F32 = HOLE_BASE_F32 + MAX_HOLES * 4;
 const FORCE_BASE_F32 = BOX_BASE_F32 + 8;
 const OBS_BASE_F32 = FORCE_BASE_F32 + 12;
+const MISC2_BASE_F32 = OBS_BASE_F32 + 8;
 
 const COMMON_WGSL = /* wgsl */ `
 const FIXED_POINT: f32 = ${FIXED_POINT};
@@ -66,7 +68,20 @@ struct Params {
     forceP: vec4<f32>,
     obsA: vec4<f32>,        // cx, cz, halfWidth, halfThickness (rotating paddle)
     obsB: vec4<f32>,        // cos, sin, omega, enabled
+    misc2: vec4<f32>,       // x = restitution (0 = free-slip, 1 = elastic mirror)
 };
+
+// Reflect a velocity for a collision, given n = the penetration normal (a unit
+// vector pointing FROM the fluid INTO the solid). The component of v along n is
+// the part driving into the surface; e is the restitution: e = 0 removes it
+// (free-slip, no bounce), e = 1 reverses it (elastic mirror), in between bounces
+// partially. Tangential velocity is always preserved, so the fluid slips along
+// the surface and spreads instead of clumping.
+fn reflectVel(v: vec3<f32>, n: vec3<f32>, e: f32) -> vec3<f32> {
+    let vn = dot(v, n);
+    if (vn <= 0.0) { return v; }
+    return v - (1.0 + e) * vn * n;
+}
 
 // World-space surface velocity of the rotating paddle at a point (rx,rz) given
 // relative to the pivot. Consistent with the position rotation used in the slab
@@ -364,7 +379,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             } else {
                 let n = radial / max(dist, 1e-6);
                 np = axisPt + n * r;
-                vel -= max(dot(vel, n), 0.0) * n; // remove the outward velocity (no bounce)
+                vel = reflectVel(vel, n, p.misc2.x); // slip along the wall, bounce by restitution
             }
         }
     } else if (p.counts.y == 2u) {
@@ -400,25 +415,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Ground floor (capsule mode only; the box has its own grid-wall floor).
+    // Reflect the vertical velocity with restitution: tangential is preserved so
+    // a draining stream slips and spreads radially on impact instead of piling.
     let groundY = p.capsuleB.w;
-    if (p.counts.y != 2u && np.y < groundY) { np.y = groundY; vel.y = max(vel.y, 0.0); }
+    if (p.counts.y != 2u && np.y < groundY) { np.y = groundY; vel = reflectVel(vel, vec3<f32>(0.0, -1.0, 0.0), p.misc2.x); }
 
     // Keep inside the grid domain (2-cell margin).
     let lo = p.origin.xyz + dx * 2.0;
     let hi = p.origin.xyz + (p.dim.xyz - 3.0) * dx;
     np = clamp(np, lo, hi);
 
-    // Free-slip ground friction: damp only the VERTICAL velocity within a thin
-    // layer above the floor. This kills the vertical bounce/oscillation at the
-    // source (so the wide floor pool doesn't launch ripples that travel forever)
-    // while leaving the horizontal velocity intact, so the fluid slips along the
-    // ground and spreads into a flat sheet instead of clumping into blobs.
-    // Damping every component (the old behaviour) froze the horizontal flow and
-    // made landing fluid aggregate. sim1.w = strength, dim.w = layer height.
+    // Near-ground anti-ripple: damp only the VERTICAL velocity within a thin
+    // layer above the floor — this bleeds the up/down oscillation that would
+    // otherwise launch floor ripples, while leaving the horizontal flow (and the
+    // affine field) intact so the fluid keeps slipping and spreading. (Damping
+    // the affine field C here as well used to keep the bottom layer sluggish and
+    // made landing fluid mound up.) sim1.w = strength, dim.w = layer height.
     let gt = clamp((np.y - groundY) / max(p.dim.w, 1e-3), 0.0, 1.0);
     let gd = mix(p.sim1.w, 1.0, gt);
     vel.y *= gd;
-    C *= gd;
 
     particles[i].position = np;
     particles[i].v = vel;
@@ -469,6 +484,9 @@ export interface MlsMpmOptions extends FluidSimOptions {
     groundDamp?: number;
     /** Height (world units) of the near-ground damping layer. Default 1.2. */
     groundDampHeight?: number;
+    /** Collision restitution for the capsule wall + ground (0 = free-slip / no
+     *  bounce, 1 = elastic mirror). Default 0.3. */
+    restitution?: number;
 }
 
 export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = {}): FluidSim {
@@ -494,6 +512,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const affineDamping = options.affineDamping ?? 0.95;
     const groundDamp = options.groundDamp ?? 0.9;
     const groundDampHeight = options.groundDampHeight ?? 1.2;
+    const restitution = options.restitution ?? 0.3;
 
     const gridDim: [number, number, number] = [
         Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
@@ -546,6 +565,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     pf[21] = damping;
     pf[22] = affineDamping;
     pf[23] = groundDamp; // sim1.w
+    pf[MISC2_BASE_F32] = restitution;
     pu[COUNTS_OFFSET_F32] = count;
     pu[COUNTS_OFFSET_F32 + 1] = capsuleA && capsuleB ? 1 : 0;
     pu[COUNTS_OFFSET_F32 + 2] = 0; // holeCount
@@ -699,6 +719,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 case "affineDamping": pf[22] = value; break;
                 case "groundDamp": pf[23] = value; break;
                 case "groundDampHeight": pf[7] = value; break;
+                case "restitution": pf[MISC2_BASE_F32] = value; break;
                 case "substeps": substepsMut = Math.max(1, Math.round(value)); break;
             }
         },

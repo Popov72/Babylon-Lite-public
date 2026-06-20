@@ -309,6 +309,7 @@ async function main(): Promise<void> {
             { key: "affineDamping", label: "Affine damping (→PIC)", min: 0.7, max: 1, step: 0.005, value: 0.9 },
             { key: "groundDamp", label: "Ground damping", min: 0.7, max: 1, step: 0.01, value: 0.85 },
             { key: "groundDampHeight", label: "Ground damp height", min: 0, max: 3, step: 0.1, value: 1.5 },
+            { key: "restitution", label: "Restitution (bounce)", min: 0, max: 1, step: 0.05, value: 0.3 },
             { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
         ],
     };
