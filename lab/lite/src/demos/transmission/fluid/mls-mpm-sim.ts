@@ -722,9 +722,14 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             pf[OBS_BASE_F32 + 1] = center[1];
             pf[OBS_BASE_F32 + 2] = halfWidth;
             pf[OBS_BASE_F32 + 3] = halfThickness;
+            // Babylon's rotation.y about +Y maps local +Z → world (sinθ,0,cosθ)
+            // (left-handed), the mirror of the textbook +sinθ used by the slab
+            // maths. Negate sin so the collision slab aligns with the visible
+            // mesh, and negate omega so the paddle's surface velocity pushes in
+            // the direction the mesh actually spins.
             pf[OBS_BASE_F32 + 4] = Math.cos(angle);
-            pf[OBS_BASE_F32 + 5] = Math.sin(angle);
-            pf[OBS_BASE_F32 + 6] = omega;
+            pf[OBS_BASE_F32 + 5] = -Math.sin(angle);
+            pf[OBS_BASE_F32 + 6] = -omega;
             pf[OBS_BASE_F32 + 7] = active ? 1 : 0;
         },
         dispose(): void {

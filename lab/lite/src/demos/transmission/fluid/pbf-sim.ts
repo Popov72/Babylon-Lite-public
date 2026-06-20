@@ -819,9 +819,14 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
             simF32[OBS_BASE_F32 + 1] = center[1];
             simF32[OBS_BASE_F32 + 2] = halfWidth;
             simF32[OBS_BASE_F32 + 3] = halfThickness;
+            // Babylon's rotation.y about +Y maps local +Z → world (sinθ,0,cosθ)
+            // (left-handed), the mirror of the textbook +sinθ used by the slab
+            // maths. Negate sin so the collision slab aligns with the visible
+            // mesh, and negate omega so the paddle's surface velocity pushes in
+            // the direction the mesh actually spins.
             simF32[OBS_BASE_F32 + 4] = Math.cos(angle);
-            simF32[OBS_BASE_F32 + 5] = Math.sin(angle);
-            simF32[OBS_BASE_F32 + 6] = omega;
+            simF32[OBS_BASE_F32 + 5] = -Math.sin(angle);
+            simF32[OBS_BASE_F32 + 6] = -omega;
             simF32[OBS_BASE_F32 + 7] = active ? 1 : 0;
         },
         addHole(center: [number, number, number], radius: number): void {
