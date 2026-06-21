@@ -366,6 +366,7 @@ export function createFluidSurfaceTask(
     setFoamThreshold(v: number): void;
     setFoamEnabled(on: boolean): void;
     setFluidColor(rgb: [number, number, number]): void;
+    setAbsorption(v: number): void;
     setHalfRender(on: boolean): void;
     setSizeScale(s: number): void;
 } {
@@ -377,6 +378,7 @@ export function createFluidSurfaceTask(
     let foamThreshold = 6;
     let foamEnabled = true;
     let fluidColor: [number, number, number] = [...FLUID_COLOR];
+    let absorption = DENSITY; // Beer-Lambert absorption coefficient
     let halfRender = false;
     let sizeScale = 1; // user-controlled visual particle-size multiplier
 
@@ -595,7 +597,7 @@ export function createFluidSurfaceTask(
         comp[o + 4] = wm[4]!; comp[o + 5] = wm[5]!; comp[o + 6] = wm[6]!; comp[o + 7] = engine.canvas.width / Math.max(1, engine.canvas.height); // camU.xyz, camU.w = aspect
         comp[o + 8] = wm[8]!; comp[o + 9] = wm[9]!; comp[o + 10] = wm[10]!; comp[o + 11] = 0; // camF
         o += 12;
-        comp[o] = 1 / fullW; comp[o + 1] = 1 / fullH; comp[o + 2] = camera.farPlane; comp[o + 3] = DENSITY; // a: output texel, far, density
+        comp[o] = 1 / fullW; comp[o + 1] = 1 / fullH; comp[o + 2] = camera.farPlane; comp[o + 3] = absorption; // a: output texel, far, density
         comp[o + 4] = dl[0] / dlLen; comp[o + 5] = dl[1] / dlLen; comp[o + 6] = dl[2] / dlLen; comp[o + 7] = REFRACTION_STRENGTH; // b
         const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5 }[debug];
         comp[o + 8] = FRESNEL_CLAMP; comp[o + 9] = SPECULAR_POWER; comp[o + 10] = MINIMUM_THICKNESS; comp[o + 11] = debugMode; // c
@@ -659,6 +661,9 @@ export function createFluidSurfaceTask(
         },
         setFluidColor(rgb: [number, number, number]): void {
             fluidColor = rgb;
+        },
+        setAbsorption(v: number): void {
+            absorption = v;
         },
         setHalfRender(on: boolean): void {
             halfRender = on;

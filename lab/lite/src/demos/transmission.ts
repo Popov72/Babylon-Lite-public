@@ -172,12 +172,18 @@ async function main(): Promise<void> {
     );
     addToScene(scene, boxMesh);
 
-    // Rotating paddle obstacle (box mode only): a thin, tall vertical slab that
-    // spins about the box's vertical axis to stir the fluid. `OBS_HALF_WIDTH`
-    // leaves a gap to the walls so fluid can flow around the blade ends.
+    // Rotating paddle obstacle: a thin, tall vertical slab that spins about the
+    // tank's vertical axis to stir the fluid (works in both containers; both are
+    // centred on the XZ origin). `OBS_HALF_WIDTH` leaves a gap to the walls so
+    // fluid can flow around the blade ends.
     const OBS_HALF_WIDTH_BASE = 3.0;
-    let obsHalfWidth = OBS_HALF_WIDTH_BASE; // scales with the box footprint
+    let obsHalfWidth = OBS_HALF_WIDTH_BASE; // box footprint half-reach (scales with the box)
     const OBS_HALF_THICK = 0.25;
+    // Capsule paddle: narrower (radius 3) and shorter so the blade stays inside the
+    // pill's rounded caps (spans y=3..13, sweep radius ~2.21 < the cap radius there).
+    const CAP_OBS_HALF_WIDTH = 2.2;
+    const CAP_OBS_HEIGHT = 10;
+    const CAP_OBS_CENTER_Y = 8;
     const OBS_CENTER: [number, number] = [(BOX_MIN[0] + BOX_MAX[0]) / 2, (BOX_MIN[2] + BOX_MAX[2]) / 2];
     const paddleMat = createStandardMaterial();
     paddleMat.diffuseColor = [0.86, 0.5, 0.2];
@@ -292,8 +298,21 @@ async function main(): Promise<void> {
     let obstacleOn = false;
     let obstacleSpeed = 1.2;
     let obstacleAngle = 0;
+    // Paddle reach + mesh geometry depend on the active container (the box footprint
+    // scales; the capsule is a fixed narrower/shorter blade inside the pill).
+    function obstacleHalfWidth(): number {
+        return containerMode === 2 ? obsHalfWidth : CAP_OBS_HALF_WIDTH;
+    }
+    function updatePaddleGeometry(): void {
+        const isBox = containerMode === 2;
+        const height = isBox ? BOX_MAX[1] - BOX_MIN[1] : CAP_OBS_HEIGHT;
+        const cy = isBox ? (BOX_MIN[1] + BOX_MAX[1]) / 2 : CAP_OBS_CENTER_Y;
+        paddleMesh.scaling.set(2 * OBS_HALF_THICK, height, 2 * obstacleHalfWidth());
+        paddleMesh.position.set(OBS_CENTER[0], cy, OBS_CENTER[1]);
+    }
     function updatePaddleVisibility(): void {
-        setMeshVisible(paddleMesh, containerMode === 2 && obstacleOn);
+        setMeshVisible(paddleMesh, obstacleOn);
+        updatePaddleGeometry();
     }
 
     // Mouse-force state (box mode). `forcePending` holds the force computed from
@@ -352,14 +371,14 @@ async function main(): Promise<void> {
         } else {
             activeSim.setForce([0, 0, 0], [0, 0, 1], [0, 0, 0], FORCE_RADIUS, 0);
         }
-        // Rotating paddle (box mode only): advance the angle and feed it to the
+        // Rotating paddle (both containers): advance the angle and feed it to the
         // visible mesh and the active sim's collision.
-        if (containerMode === 2 && obstacleOn) {
+        if (obstacleOn) {
             obstacleAngle += obstacleSpeed * dt;
             paddleMesh.rotation.y = obstacleAngle;
-            activeSim.setObstacle(true, OBS_CENTER, obsHalfWidth, OBS_HALF_THICK, obstacleAngle, obstacleSpeed);
+            activeSim.setObstacle(true, OBS_CENTER, obstacleHalfWidth(), OBS_HALF_THICK, obstacleAngle, obstacleSpeed);
         } else {
-            activeSim.setObstacle(false, OBS_CENTER, obsHalfWidth, OBS_HALF_THICK, obstacleAngle, 0);
+            activeSim.setObstacle(false, OBS_CENTER, obstacleHalfWidth(), OBS_HALF_THICK, obstacleAngle, 0);
         }
         activeSim.step(engine._currentEncoder, dt);
     });
@@ -401,7 +420,7 @@ async function main(): Promise<void> {
         BOX_MAX[2] = half;
         boxMesh.scaling.set(BOX_MAX[0] - BOX_MIN[0], BOX_MAX[1] - BOX_MIN[1], BOX_MAX[2] - BOX_MIN[2]);
         obsHalfWidth = OBS_HALF_WIDTH_BASE * scale;
-        paddleMesh.scaling.set(2 * OBS_HALF_THICK, BOX_MAX[1] - BOX_MIN[1], 2 * obsHalfWidth);
+        updatePaddleGeometry();
         pbfSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
         mpmSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
     }
@@ -444,7 +463,7 @@ async function main(): Promise<void> {
 
     const panel = document.createElement("div");
     panel.style.cssText =
-        "position:fixed;top:12px;right:12px;z-index:20;width:248px;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
+        "position:fixed;top:12px;right:12px;z-index:20;width:248px;max-height:calc(100vh - 24px);overflow-y:auto;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
         "color:#dfe6ee;background:rgba(10,14,20,0.85);padding:10px 12px;border-radius:8px;pointer-events:auto;user-select:none;";
     const title = document.createElement("div");
     title.textContent = "Fluid method";
@@ -457,9 +476,6 @@ async function main(): Promise<void> {
         opt.textContent = name === "PBF" ? "SPH (PBF)" : name;
         methodSel.appendChild(opt);
     }
-    const renderTitle = document.createElement("div");
-    renderTitle.textContent = "Render";
-    renderTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
     const renderRow = document.createElement("label");
     renderRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
     const renderChk = document.createElement("input");
@@ -552,6 +568,32 @@ async function main(): Promise<void> {
         const b = parseInt(hex.slice(5, 7), 16) / 255;
         surfaceTask.setFluidColor([r, g, b]);
     };
+
+    // Absorption (Beer-Lambert): scales how strongly the liquid absorbs light over
+    // its thickness — 0 = clear, higher = deeper/more saturated tint.
+    const absorbRow = document.createElement("div");
+    absorbRow.style.cssText = "margin:2px 0 8px;";
+    const absorbHead = document.createElement("div");
+    absorbHead.style.cssText = "display:flex;justify-content:space-between;";
+    const absorbLab = document.createElement("span");
+    absorbLab.textContent = "Absorption (Beer-Lambert)";
+    const absorbVal = document.createElement("span");
+    absorbVal.style.cssText = "color:#9fb4cc;";
+    absorbVal.textContent = "1.0";
+    absorbHead.append(absorbLab, absorbVal);
+    const absorbInput = document.createElement("input");
+    absorbInput.type = "range";
+    absorbInput.min = "0";
+    absorbInput.max = "4";
+    absorbInput.step = "0.1";
+    absorbInput.value = "1";
+    absorbInput.style.cssText = "width:100%;";
+    absorbInput.oninput = () => {
+        const v = parseFloat(absorbInput.value);
+        absorbVal.textContent = v.toFixed(1);
+        surfaceTask.setAbsorption(v);
+    };
+    absorbRow.append(absorbHead, absorbInput);
 
     // Particle size: a visual multiplier for both the sphere impostors and the
     // fluid-surface splats (does not change the physics / particle spacing).
@@ -664,10 +706,10 @@ async function main(): Promise<void> {
         physVal.textContent = `${parseFloat(physInput.value).toFixed(1)}×`;
     };
     physRow.append(physHead, physInput);
-    // Obstacle (box mode): a checkbox to toggle the rotating paddle and a slider
-    // for its angular speed. Inactive in capsule mode (the paddle is box-only).
+    // Obstacle (both containers): a checkbox to toggle the rotating paddle and a
+    // slider for its angular speed.
     const obstacleTitle = document.createElement("div");
-    obstacleTitle.textContent = "Obstacle (box only)";
+    obstacleTitle.textContent = "Obstacle";
     obstacleTitle.style.cssText = "font-weight:600;margin:8px 0 6px;";
     const obstacleRow = document.createElement("label");
     obstacleRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;";
@@ -707,7 +749,20 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, foamDisableRow, halfRow, colorRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+
+    // Group the controls into three labelled sections for clarity.
+    const sectionHeader = (text: string): HTMLDivElement => {
+        const h = document.createElement("div");
+        h.textContent = text;
+        h.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#7fb0e0;margin:12px 0 8px;padding-top:9px;border-top:1px solid #2a3647;";
+        return h;
+    };
+    panel.append(
+        fpsLabel,
+        sectionHeader("General"), title, methodSel, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel,
+        sectionHeader("Render"), renderRow, debugTitle, debugSel, colorRow, absorbRow, foamRow, foamDisableRow, halfRow, sizeRow,
+        sectionHeader("Physics simulation"), physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn,
+    );
     document.body.appendChild(panel);
 
     // Apply a solver parameter, folding in the physics particle-size coupling.
