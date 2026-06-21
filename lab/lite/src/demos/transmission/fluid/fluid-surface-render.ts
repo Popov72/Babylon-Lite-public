@@ -365,6 +365,7 @@ export function createFluidSurfaceTask(
     setDebug(d: FluidDebug): void;
     setFoamThreshold(v: number): void;
     setFoamEnabled(on: boolean): void;
+    setFluidColor(rgb: [number, number, number]): void;
     setHalfRender(on: boolean): void;
     setSizeScale(s: number): void;
 } {
@@ -375,6 +376,7 @@ export function createFluidSurfaceTask(
     let debug: FluidDebug = "none";
     let foamThreshold = 6;
     let foamEnabled = true;
+    let fluidColor: [number, number, number] = [...FLUID_COLOR];
     let halfRender = false;
     let sizeScale = 1; // user-controlled visual particle-size multiplier
 
@@ -597,7 +599,7 @@ export function createFluidSurfaceTask(
         comp[o + 4] = dl[0] / dlLen; comp[o + 5] = dl[1] / dlLen; comp[o + 6] = dl[2] / dlLen; comp[o + 7] = REFRACTION_STRENGTH; // b
         const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5 }[debug];
         comp[o + 8] = FRESNEL_CLAMP; comp[o + 9] = SPECULAR_POWER; comp[o + 10] = MINIMUM_THICKNESS; comp[o + 11] = debugMode; // c
-        comp[o + 12] = FLUID_COLOR[0]; comp[o + 13] = FLUID_COLOR[1]; comp[o + 14] = FLUID_COLOR[2]; comp[o + 15] = 0; // diffuse
+        comp[o + 12] = fluidColor[0]; comp[o + 13] = fluidColor[1]; comp[o + 14] = fluidColor[2]; comp[o + 15] = 0; // diffuse
         o += 16;
         comp[o] = 1 / depthW; comp[o + 1] = 1 / depthH; comp[o + 2] = foamThreshold; comp[o + 3] = foamEnabled ? 1 : 0; // extra: depth texel, foamThreshold, foamEnabled
         device.queue.writeBuffer(compBuffer, 0, comp);
@@ -654,6 +656,9 @@ export function createFluidSurfaceTask(
         },
         setFoamEnabled(on: boolean): void {
             foamEnabled = on;
+        },
+        setFluidColor(rgb: [number, number, number]): void {
+            fluidColor = rgb;
         },
         setHalfRender(on: boolean): void {
             halfRender = on;

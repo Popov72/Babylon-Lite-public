@@ -533,6 +533,26 @@ async function main(): Promise<void> {
     halfRow.append(halfChk, halfText);
     halfChk.onchange = () => surfaceTask.setHalfRender(halfChk.checked);
 
+    // Water color picker. The composite shader tints the liquid via Beer-Lambert
+    // absorption; the swapchain is a non-sRGB UNORM format, so the picker's sRGB
+    // hex maps straight to the diffuse RGB (no colour-space conversion).
+    const colorRow = document.createElement("label");
+    colorRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:2px 0 8px;cursor:pointer;";
+    const colorLab = document.createElement("span");
+    colorLab.textContent = "Water color";
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.value = "#16a3c3"; // matches the default FLUID_COLOR
+    colorInput.style.cssText = "width:36px;height:22px;padding:0;border:1px solid #33415a;border-radius:4px;background:#1a2230;cursor:pointer;";
+    colorRow.append(colorLab, colorInput);
+    colorInput.oninput = () => {
+        const hex = colorInput.value;
+        const r = parseInt(hex.slice(1, 3), 16) / 255;
+        const g = parseInt(hex.slice(3, 5), 16) / 255;
+        const b = parseInt(hex.slice(5, 7), 16) / 255;
+        surfaceTask.setFluidColor([r, g, b]);
+    };
+
     // Particle size: a visual multiplier for both the sphere impostors and the
     // fluid-surface splats (does not change the physics / particle spacing).
     const sizeRow = document.createElement("div");
@@ -687,7 +707,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, foamDisableRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, foamDisableRow, halfRow, colorRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     // Apply a solver parameter, folding in the physics particle-size coupling.
