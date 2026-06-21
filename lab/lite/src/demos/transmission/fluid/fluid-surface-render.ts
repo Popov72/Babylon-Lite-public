@@ -226,7 +226,7 @@ struct Comp {
     b: vec4<f32>,       // dirLight.xyz, refractionStrength
     c: vec4<f32>,       // fresnelClamp, specularPower, minimumThickness, debugMode
     diffuse: vec4<f32>, // diffuseColor.rgb, _
-    extra: vec4<f32>,   // depthTexel.xy (for normal offsets), foamThreshold, _
+    extra: vec4<f32>,   // depthTexel.xy (for normal offsets), foamThreshold, foamEnabled
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthSamp: sampler;
@@ -347,9 +347,9 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
 
     // Velocity → foam. foamThreshold (u.extra.z) = speed at which the surface is
-    // fully white; higher = whitens slower.
+    // fully white; higher = whitens slower. u.extra.w is a 0/1 enable flag.
     let velocity = depthVel.g;
-    finalColor = mix(finalColor, vec3<f32>(1.0), smoothstep(0.3, 1.0, velocity / max(u.extra.z, 0.001)));
+    finalColor = mix(finalColor, vec3<f32>(1.0), u.extra.w * smoothstep(0.3, 1.0, velocity / max(u.extra.z, 0.001)));
 
     return vec4<f32>(finalColor, 1.0);
 }`;
@@ -364,6 +364,7 @@ export function createFluidSurfaceTask(
     setEnvMap(e: EnvMap): void;
     setDebug(d: FluidDebug): void;
     setFoamThreshold(v: number): void;
+    setFoamEnabled(on: boolean): void;
     setHalfRender(on: boolean): void;
     setSizeScale(s: number): void;
 } {
@@ -373,6 +374,7 @@ export function createFluidSurfaceTask(
     let mode: "surface" | "blit" = "surface";
     let debug: FluidDebug = "none";
     let foamThreshold = 6;
+    let foamEnabled = true;
     let halfRender = false;
     let sizeScale = 1; // user-controlled visual particle-size multiplier
 
@@ -597,7 +599,7 @@ export function createFluidSurfaceTask(
         comp[o + 8] = FRESNEL_CLAMP; comp[o + 9] = SPECULAR_POWER; comp[o + 10] = MINIMUM_THICKNESS; comp[o + 11] = debugMode; // c
         comp[o + 12] = FLUID_COLOR[0]; comp[o + 13] = FLUID_COLOR[1]; comp[o + 14] = FLUID_COLOR[2]; comp[o + 15] = 0; // diffuse
         o += 16;
-        comp[o] = 1 / depthW; comp[o + 1] = 1 / depthH; comp[o + 2] = foamThreshold; comp[o + 3] = 0; // extra: depth texel, foamThreshold
+        comp[o] = 1 / depthW; comp[o + 1] = 1 / depthH; comp[o + 2] = foamThreshold; comp[o + 3] = foamEnabled ? 1 : 0; // extra: depth texel, foamThreshold, foamEnabled
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -649,6 +651,9 @@ export function createFluidSurfaceTask(
         },
         setFoamThreshold(v: number): void {
             foamThreshold = v;
+        },
+        setFoamEnabled(on: boolean): void {
+            foamEnabled = on;
         },
         setHalfRender(on: boolean): void {
             halfRender = on;

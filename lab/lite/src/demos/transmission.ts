@@ -513,6 +513,17 @@ async function main(): Promise<void> {
         surfaceTask.setFoamThreshold(parseFloat(foamInput.value));
     };
     foamRow.append(foamHead, foamInput);
+    const foamDisableRow = document.createElement("label");
+    foamDisableRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
+    const foamChk = document.createElement("input");
+    foamChk.type = "checkbox";
+    const foamChkText = document.createElement("span");
+    foamChkText.textContent = "Disable foam";
+    foamDisableRow.append(foamChk, foamChkText);
+    foamChk.onchange = () => {
+        surfaceTask.setFoamEnabled(!foamChk.checked);
+        foamInput.disabled = foamChk.checked;
+    };
     const halfRow = document.createElement("label");
     halfRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
     const halfChk = document.createElement("input");
@@ -676,7 +687,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, foamDisableRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     // Apply a solver parameter, folding in the physics particle-size coupling.
