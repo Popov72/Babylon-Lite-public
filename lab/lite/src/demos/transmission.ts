@@ -170,29 +170,52 @@ async function main(): Promise<void> {
 
     // Backends are (re)built by createSims so the particle-count dropdown can
     // resize the GPU buffers (the only way to change count is to reallocate).
-    function createSims(count: number): { pbf: FluidSim; mpm: FluidSim } {
+    function createSims(count: number, scale: number): { pbf: FluidSim; mpm: FluidSim } {
+        // `scale` is the physics particle-size multiplier (>= 1). Bigger physics
+        // particles are simulated as a UNIFORM RESCALING of the fluid: the
+        // smoothing radius / grid cell AND the rest spacing both grow by `scale`,
+        // while the active particle count shrinks by scale^3 so the settled liquid
+        // keeps the SAME volume. This is the only stable interpretation in a fixed
+        // tank — holding the count fixed forces the fluid to occupy scale^3 more
+        // space than the tank holds and it explodes into foam.
+        //   • PBF: the poly6 kernel sum of the scaled radius shrinks by scale^3, so
+        //     restDensity ∝ 1/scale^3 keeps the neighbourhood size (and thus solver
+        //     stability) unchanged. settledVolume = count/restDensity is invariant,
+        //     so the tank stays filled and grid memory only shrinks.
+        //   • MLS-MPM: cell size dx grows by scale; restDensity (particles/cell)
+        //     stays fixed because both the count and the cell count shrink by
+        //     scale^3.
+        // Only >= 1x is exposed: a finer grid (scale < 1) would exceed the GPU
+        // storage-buffer limit; coarser grids only shrink memory.
+        const cube = scale * scale * scale;
+        const n = Math.max(2000, Math.round(count / cube));
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createFluidSim(engine, {
-            count,
-            particleRadius: 0.09,
+            count: n,
+            particleRadius: 0.09 * scale,
+            smoothingRadius: 0.4 * scale,
             spawnMin: SPAWN_MIN,
             spawnMax: SPAWN_MAX,
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
             groundY: 0,
-            // Pin the rest density (independent of count) so the liquid volume — not
-            // the packing density — scales with count, keeping grid memory bounded.
-            restDensity: 341,
+            restDensity: 341 / cube,
             boundsMin: BOUNDS_MIN,
             boundsMax: BOUNDS_MAX,
             maxPerCell: 48,
+            // The constraint relaxation ε is an additive regulariser in
+            // λ = -C/(Σ|∇C|² + ε). Under the uniform rescaling above Σ|∇C|²
+            // shrinks ∝ 1/scale², so ε must shrink the same way or λ gets
+            // over-damped at large scale and the liquid collapses into
+            // s_corr-cohesion droplets instead of keeping its volume.
+            relaxation: 50 / (scale * scale),
         });
 
         // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
-            count,
-            particleRadius: 0.09,
+            count: n,
+            particleRadius: 0.09 * scale,
             spawnMin: SPAWN_MIN,
             spawnMax: SPAWN_MAX,
             capsuleA: CAP_A,
@@ -201,7 +224,7 @@ async function main(): Promise<void> {
             groundY: 0,
             boundsMin: BOUNDS_MIN,
             boundsMax: BOUNDS_MAX,
-            dx: 0.22,
+            dx: 0.22 * scale,
             restDensity: 3,
             stiffness: 350,
             gravity: 9.8,
@@ -217,7 +240,8 @@ async function main(): Promise<void> {
     }
 
     let particleCount = DEFAULT_PARTICLE_COUNT;
-    let { pbf: pbfSim, mpm: mpmSim } = createSims(particleCount);
+    let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
+    let { pbf: pbfSim, mpm: mpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
     let containerMode = 1; // 1 = capsule, 2 = box
@@ -539,6 +563,35 @@ async function main(): Promise<void> {
     }
     const sliderHost = document.createElement("div");
 
+    // Physics particle size: rebuilds the sims with a larger smoothing radius /
+    // grid cell so each particle is a bigger blob of fluid. The active count
+    // drops ∝ scale³ so the settled liquid keeps the same volume (the tank stays
+    // full) rather than overflowing. Only >= 1x is offered (a finer grid would
+    // exceed the GPU storage-buffer limit). The rebuild is expensive, so it
+    // fires on release (change), not while dragging (input only updates the
+    // read-out).
+    const physTitle = document.createElement("div");
+    physTitle.textContent = "Physics particle size";
+    physTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const physRow = document.createElement("div");
+    physRow.style.cssText = "margin:2px 0 8px;";
+    const physHead = document.createElement("div");
+    physHead.style.cssText = "display:flex;justify-content:flex-end;";
+    const physVal = document.createElement("span");
+    physVal.style.cssText = "color:#9fb4cc;";
+    physVal.textContent = "1.0×";
+    physHead.append(physVal);
+    const physInput = document.createElement("input");
+    physInput.type = "range";
+    physInput.min = "1";
+    physInput.max = "2";
+    physInput.step = "0.1";
+    physInput.value = "1";
+    physInput.style.cssText = "width:100%;";
+    physInput.oninput = () => {
+        physVal.textContent = `${parseFloat(physInput.value).toFixed(1)}×`;
+    };
+    physRow.append(physHead, physInput);
     // Obstacle (box mode): a checkbox to toggle the rotating paddle and a slider
     // for its angular speed. Inactive in capsule mode (the paddle is box-only).
     const obstacleTitle = document.createElement("div");
@@ -582,8 +635,23 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, physTitle, physRow, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
+
+    // Apply a solver parameter, folding in the physics particle-size coupling.
+    // The sliders expose the base (1×) values; PBF's restDensity and constraint
+    // relaxation must additionally track the particle scale (restDensity ∝
+    // 1/scale³, relaxation ∝ 1/scale²) or the uniformly-rescaled fluid leaves
+    // its stable regime and collapses into cohesion droplets. MLS-MPM couples
+    // purely through its cell size dx (set at creation), so it needs no fold-in.
+    function applyParam(sim: FluidSim, key: string, value: number): void {
+        let v = value;
+        if (methodName === "PBF") {
+            if (key === "restDensity") v = value / (physicsScale * physicsScale * physicsScale);
+            else if (key === "relaxation") v = value / (physicsScale * physicsScale);
+        }
+        sim.setParam(key, v);
+    }
 
     function buildSliders(name: string): void {
         sliderHost.replaceChildren();
@@ -609,7 +677,7 @@ async function main(): Promise<void> {
                 const v = parseFloat(input.value);
                 p.value = v;
                 val.textContent = String(v);
-                activeSim.setParam(p.key, v);
+                applyParam(activeSim, p.key, v);
             };
             row.append(head, input);
             sliderHost.appendChild(row);
@@ -620,7 +688,7 @@ async function main(): Promise<void> {
         activeSim = name === "PBF" ? pbfSim : mpmSim;
         methodName = name;
         for (const p of SCHEMAS[name]!) {
-            activeSim.setParam(p.key, p.value);
+            applyParam(activeSim, p.key, p.value);
         }
         activeSim.reset();
         particleTask.setSim(activeSim);
@@ -647,13 +715,28 @@ async function main(): Promise<void> {
         particleCount = n;
         pbfSim.dispose();
         mpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim } = createSims(n));
+        ({ pbf: pbfSim, mpm: mpmSim } = createSims(n, physicsScale));
         pbfSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
         mpmSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
         applyMethod(methodName);
         canvas.dataset.particleCount = String(n);
     }
     particlesSel.onchange = () => setParticleCount(parseInt(particlesSel.value, 10));
+
+    // Rebuild both backends at a new physics particle-size scale (couples the
+    // smoothing radius / grid cell + rest spacing). Like a count change it
+    // reallocates + re-seeds, so it is wired to the slider's release (change).
+    function setPhysicsScale(s: number): void {
+        if (s === physicsScale) return;
+        physicsScale = s;
+        pbfSim.dispose();
+        mpmSim.dispose();
+        ({ pbf: pbfSim, mpm: mpmSim } = createSims(particleCount, physicsScale));
+        pbfSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
+        mpmSim.setContainer(containerMode, BOX_MIN, BOX_MAX);
+        applyMethod(methodName);
+    }
+    physInput.onchange = () => setPhysicsScale(parseFloat(physInput.value));
 
     applyMethod("PBF");
     applyContainer(1); // capsule by default (also hides the box mesh)
