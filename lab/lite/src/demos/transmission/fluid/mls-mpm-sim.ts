@@ -23,6 +23,11 @@ import type { EngineContext } from "babylon-lite";
 import type { FluidSim, FluidSimOptions } from "./pbf-sim.js";
 
 const WORKGROUP_SIZE = 64;
+// WebGPU caps a dispatch at 65535 workgroups per dimension. The MLS grid can need
+// far more groups than that at small particle sizes (very fine cells), so
+// cell-indexed dispatches spill the overflow into a second (y) dimension and the
+// cell kernels rebuild the linear index from num_workgroups.x.
+const MAX_WORKGROUPS = 65535;
 const MAX_HOLES = 8;
 const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
 
@@ -117,8 +122,8 @@ const CLEAR_WGSL = /* wgsl */ `
 struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: atomic<i32>, };
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= arrayLength(&cells)) { return; }
     atomicStore(&cells[i].vx, 0);
     atomicStore(&cells[i].vy, 0);
@@ -240,8 +245,8 @@ struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
 @group(0) @binding(1) var<uniform> p: Params;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= arrayLength(&cells)) { return; }
     if (cells[i].mass <= 0) { return; }
     let invMass = 1.0 / dec(cells[i].mass);
@@ -663,7 +668,11 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         const pass = encoder.beginComputePass({ label });
         pass.setPipeline(pipe);
         pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(groups);
+        if (groups > MAX_WORKGROUPS) {
+            pass.dispatchWorkgroups(MAX_WORKGROUPS, Math.ceil(groups / MAX_WORKGROUPS), 1);
+        } else {
+            pass.dispatchWorkgroups(groups);
+        }
         pass.end();
     }
 

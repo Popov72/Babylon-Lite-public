@@ -50,13 +50,40 @@ import { createSkyTask, loadEnvCubeFromEnv } from "./transmission/fluid/sky-rend
 const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000];
 const DEFAULT_PARTICLE_COUNT = 80000;
 
+// Physics particle-size range (matches the spirit of the visual "Particle size"
+// slider). The range is clamped to where the real-time solvers stay visually
+// clean: below ~0.8× the fluid is too stiff for a 60 fps timestep (CFL) and
+// sprays, and PBF over-compresses the closed box above ~2×. PBF is additionally
+// capped at 2× (MLS-MPM handles the larger overfill gracefully up to 3×).
+const PHYS_MIN_SCALE = 0.8;
+const PHYS_MAX_SCALE = 3;
+const PBF_MIN_SCALE = 0.8;
+const PBF_MAX_SCALE = 2;
+const MPM_MIN_SCALE = 0.8;
+const MPM_MAX_SCALE = 3;
+const clampScale = (s: number, lo: number, hi: number): number => Math.min(Math.max(s, lo), hi);
+
 async function main(): Promise<void> {
     const __initStart = performance.now();
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 
     // Single-sample so the swapchain RT is the direct render target and the
     // particle task can share one single-sample depth buffer with the scene.
-    const engine = await createEngine(canvas, { msaaSamples: 1 });
+    // Request the adapter's max storage-buffer limits so the very fine neighbour
+    // grids used by small physics particle sizes fit (the defaults cap at 128 MB).
+    let requiredLimits: Record<string, number> | undefined;
+    try {
+        const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+        if (adapter) {
+            requiredLimits = {
+                maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                maxBufferSize: adapter.limits.maxBufferSize,
+            };
+        }
+    } catch {
+        // Fall back to default limits; small physics sizes will be unavailable.
+    }
+    const engine = await createEngine(canvas, { msaaSamples: 1, requiredLimits });
 
     // We own the frame graph: scene render task → particle render task, both
     // writing the swapchain colour and sharing a depth buffer we control.
@@ -168,63 +195,77 @@ async function main(): Promise<void> {
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
 
+    // Seed box scaled with the physics particle size. The fixed spawn box only
+    // matches the rest density at 1×; at other sizes the seed is far under-dense
+    // (small particles → violent collapse) or over-dense (big particles → eruption),
+    // which shows up as white spray. Scaling the box half-extents with the size
+    // holds the seed-to-rest density ratio ~constant so the fluid settles calmly at
+    // every size. Clamped to stay inside the base tank footprint and above ground.
+    function scaledSpawn(s: number): { min: [number, number, number]; max: [number, number, number] } {
+        const cx = (SPAWN_MIN[0] + SPAWN_MAX[0]) / 2;
+        const cy = (SPAWN_MIN[1] + SPAWN_MAX[1]) / 2;
+        const cz = (SPAWN_MIN[2] + SPAWN_MAX[2]) / 2;
+        const hx = Math.min(((SPAWN_MAX[0] - SPAWN_MIN[0]) / 2) * s, 4);
+        const hz = Math.min(((SPAWN_MAX[2] - SPAWN_MIN[2]) / 2) * s, 4);
+        const hy = Math.min(((SPAWN_MAX[1] - SPAWN_MIN[1]) / 2) * s, 7);
+        const yMin = Math.max(1, cy - hy);
+        const yMax = Math.min(17, cy + hy);
+        return { min: [cx - hx, yMin, cz - hz], max: [cx + hx, yMax, cz + hz] };
+    }
+
     // Backends are (re)built by createSims so the particle-count dropdown can
     // resize the GPU buffers (the only way to change count is to reallocate).
     function createSims(count: number, scale: number): { pbf: FluidSim; mpm: FluidSim } {
-        // `scale` is the physics particle-size multiplier (>= 1). Bigger physics
-        // particles are simulated as a UNIFORM RESCALING of the fluid: the
-        // smoothing radius / grid cell AND the rest spacing both grow by `scale`,
-        // while the active particle count shrinks by scale^3 so the settled liquid
-        // keeps the SAME volume. This is the only stable interpretation in a fixed
-        // tank — holding the count fixed forces the fluid to occupy scale^3 more
-        // space than the tank holds and it explodes into foam.
-        //   • PBF: the poly6 kernel sum of the scaled radius shrinks by scale^3, so
-        //     restDensity ∝ 1/scale^3 keeps the neighbourhood size (and thus solver
-        //     stability) unchanged. settledVolume = count/restDensity is invariant,
-        //     so the tank stays filled and grid memory only shrinks.
+        // `scale` is the physics particle-size multiplier. The particle COUNT is
+        // the user's choice and stays fixed, so each particle is a bigger (or
+        // smaller) blob of fluid and the liquid VOLUME scales with the size: the
+        // tank overfills at large sizes and shrinks to a small puddle at tiny
+        // sizes. Implemented as a uniform rescaling of one particle's footprint —
+        // the smoothing radius / grid cell and the rest spacing both grow by the
+        // scale, so the per-particle volume grows ∝ scale³:
+        //   • PBF: restDensity ∝ 1/scale³ (the poly6 kernel sum of the scaled
+        //     radius shrinks by scale³); relaxation ∝ 1/scale² (the additive ε in
+        //     λ = -C/(Σ|∇C|² + ε) must track the rescaling or the liquid collapses).
         //   • MLS-MPM: cell size dx grows by scale; restDensity (particles/cell)
-        //     stays fixed because both the count and the cell count shrink by
-        //     scale^3.
-        // Only >= 1x is exposed: a finer grid (scale < 1) would exceed the GPU
-        // storage-buffer limit; coarser grids only shrink memory.
-        const cube = scale * scale * scale;
-        const n = Math.max(2000, Math.round(count / cube));
+        //     stays fixed so the per-particle volume = dx³/restDensity grows ∝ scale³.
+        // Each backend's scale is clamped to its own visually-clean range: below
+        // ~0.8× the fluid is too stiff for the real-time timestep and sprays
+        // (CFL), and PBF over-compresses the closed box above ~2×.
+        const pbfScale = clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE);
+        const mpmScale = clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE);
+        const pbfSpawn = scaledSpawn(pbfScale);
+        const mpmSpawn = scaledSpawn(mpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createFluidSim(engine, {
-            count: n,
-            particleRadius: 0.09 * scale,
-            smoothingRadius: 0.4 * scale,
-            spawnMin: SPAWN_MIN,
-            spawnMax: SPAWN_MAX,
+            count,
+            particleRadius: 0.09 * pbfScale,
+            smoothingRadius: 0.4 * pbfScale,
+            spawnMin: pbfSpawn.min,
+            spawnMax: pbfSpawn.max,
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
             groundY: 0,
-            restDensity: 341 / cube,
+            restDensity: 341 / (pbfScale * pbfScale * pbfScale),
             boundsMin: BOUNDS_MIN,
             boundsMax: BOUNDS_MAX,
             maxPerCell: 48,
-            // The constraint relaxation ε is an additive regulariser in
-            // λ = -C/(Σ|∇C|² + ε). Under the uniform rescaling above Σ|∇C|²
-            // shrinks ∝ 1/scale², so ε must shrink the same way or λ gets
-            // over-damped at large scale and the liquid collapses into
-            // s_corr-cohesion droplets instead of keeping its volume.
-            relaxation: 50 / (scale * scale),
+            relaxation: 50 / (pbfScale * pbfScale),
         });
 
         // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
-            count: n,
-            particleRadius: 0.09 * scale,
-            spawnMin: SPAWN_MIN,
-            spawnMax: SPAWN_MAX,
+            count,
+            particleRadius: 0.09 * mpmScale,
+            spawnMin: mpmSpawn.min,
+            spawnMax: mpmSpawn.max,
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
             groundY: 0,
             boundsMin: BOUNDS_MIN,
             boundsMax: BOUNDS_MAX,
-            dx: 0.22 * scale,
+            dx: 0.22 * mpmScale,
             restDensity: 3,
             stiffness: 350,
             gravity: 9.8,
@@ -563,13 +604,13 @@ async function main(): Promise<void> {
     }
     const sliderHost = document.createElement("div");
 
-    // Physics particle size: rebuilds the sims with a larger smoothing radius /
-    // grid cell so each particle is a bigger blob of fluid. The active count
-    // drops ∝ scale³ so the settled liquid keeps the same volume (the tank stays
-    // full) rather than overflowing. Only >= 1x is offered (a finer grid would
-    // exceed the GPU storage-buffer limit). The rebuild is expensive, so it
-    // fires on release (change), not while dragging (input only updates the
-    // read-out).
+    // Physics particle size: rebuilds the sims at a larger/smaller smoothing
+    // radius / grid cell so each particle is a bigger or smaller blob of fluid.
+    // The count stays the user's choice, so the water volume scales with the size
+    // (overfills the tank at large sizes, a small puddle at small sizes). The
+    // range is clamped to where the real-time solvers stay visually clean. The
+    // rebuild is expensive, so it fires on release (change), not while dragging
+    // (input only updates the read-out).
     const physTitle = document.createElement("div");
     physTitle.textContent = "Physics particle size";
     physTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -583,8 +624,8 @@ async function main(): Promise<void> {
     physHead.append(physVal);
     const physInput = document.createElement("input");
     physInput.type = "range";
-    physInput.min = "1";
-    physInput.max = "2";
+    physInput.min = String(PHYS_MIN_SCALE);
+    physInput.max = String(PHYS_MAX_SCALE);
     physInput.step = "0.1";
     physInput.value = "1";
     physInput.style.cssText = "width:100%;";
@@ -641,14 +682,15 @@ async function main(): Promise<void> {
     // Apply a solver parameter, folding in the physics particle-size coupling.
     // The sliders expose the base (1×) values; PBF's restDensity and constraint
     // relaxation must additionally track the particle scale (restDensity ∝
-    // 1/scale³, relaxation ∝ 1/scale²) or the uniformly-rescaled fluid leaves
-    // its stable regime and collapses into cohesion droplets. MLS-MPM couples
-    // purely through its cell size dx (set at creation), so it needs no fold-in.
+    // 1/scale³, relaxation ∝ 1/scale²) — using the same floored scale createSims
+    // built the grid with — or the rescaled fluid leaves its stable regime. MLS-MPM
+    // couples purely through its cell size dx (set at creation), so no fold-in.
     function applyParam(sim: FluidSim, key: string, value: number): void {
         let v = value;
         if (methodName === "PBF") {
-            if (key === "restDensity") v = value / (physicsScale * physicsScale * physicsScale);
-            else if (key === "relaxation") v = value / (physicsScale * physicsScale);
+            const s = clampScale(physicsScale, PBF_MIN_SCALE, PBF_MAX_SCALE);
+            if (key === "restDensity") v = value / (s * s * s);
+            else if (key === "relaxation") v = value / (s * s);
         }
         sim.setParam(key, v);
     }

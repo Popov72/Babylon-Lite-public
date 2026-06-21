@@ -111,6 +111,11 @@ export interface FluidSim {
 }
 
 const WORKGROUP_SIZE = 64;
+// WebGPU caps a dispatch at 65535 workgroups per dimension. The neighbour grid
+// can need far more groups than that at small particle sizes (very fine cells),
+// so cell-indexed dispatches spill the overflow into a second (y) dimension and
+// the cell kernels rebuild the linear index from num_workgroups.x.
+const MAX_WORKGROUPS = 65535;
 
 // Up to this many simultaneous holes (ring buffer; a new press past the cap
 // replaces the oldest). Kept small so the holes array stays a tiny uniform.
@@ -274,8 +279,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const CLEAR_GRID_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> cellCount: array<atomic<u32>>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let c = gid.x;
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let c = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (c >= arrayLength(&cellCount)) { return; }
     atomicStore(&cellCount[c], 0u);
 }`;
@@ -744,7 +749,11 @@ export function createFluidSim(engine: EngineContext, options: FluidSimOptions =
         const pass = encoder.beginComputePass({ label });
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(groups);
+        if (groups > MAX_WORKGROUPS) {
+            pass.dispatchWorkgroups(MAX_WORKGROUPS, Math.ceil(groups / MAX_WORKGROUPS), 1);
+        } else {
+            pass.dispatchWorkgroups(groups);
+        }
         pass.end();
     }
 
