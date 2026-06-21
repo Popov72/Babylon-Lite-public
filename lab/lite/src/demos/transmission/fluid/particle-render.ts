@@ -72,11 +72,12 @@ struct VOut {
     return vec4<f32>(col, 1.0);
 }`;
 
-export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void } {
+export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void; setSizeScale(s: number): void } {
     const device = engine._device;
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
     let enabled = true;
+    let sizeScale = 1; // user-controlled visual particle-size multiplier
 
     const camData = new Float32Array(28); // mat4 (16) + right (4) + up (4) + misc (4)
     const camBuffer = device.createBuffer({
@@ -140,7 +141,7 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         camData[21] = wm[5]!;
         camData[22] = wm[6]!;
         camData[23] = 0;
-        camData[24] = currentSim.particleRadius;
+        camData[24] = currentSim.particleRadius * sizeScale;
         camData[25] = currentSim.debugNorm;
         camData[26] = 0;
         camData[27] = 0;
@@ -160,6 +161,10 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         /** Enable/disable this renderer (so the demo can swap to surface mode). */
         setEnabled(on: boolean): void {
             enabled = on;
+        },
+        /** Visual particle-size multiplier (does not affect the physics). */
+        setSizeScale(s: number): void {
+            sizeScale = s;
         },
         record(): void {
             build();

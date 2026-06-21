@@ -365,6 +365,7 @@ export function createFluidSurfaceTask(
     setDebug(d: FluidDebug): void;
     setFoamThreshold(v: number): void;
     setHalfRender(on: boolean): void;
+    setSizeScale(s: number): void;
 } {
     const device = engine._device;
     const { bgRT, outRT, depthRT, camera } = opts;
@@ -373,6 +374,7 @@ export function createFluidSurfaceTask(
     let debug: FluidDebug = "none";
     let foamThreshold = 6;
     let halfRender = false;
+    let sizeScale = 1; // user-controlled visual particle-size multiplier
 
     const camData = new Float32Array(36); // view(16) + proj(16) + misc(4)
     const camBuffer = device.createBuffer({ label: "fluid-surf-cam", size: camData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -554,7 +556,7 @@ export function createFluidSurfaceTask(
         const proj = getProjectionMatrix(camera, engine.canvas.width / Math.max(1, engine.canvas.height));
         const invProj = mat4Invert(proj) ?? Array.from(proj);
         const radius = currentSim.particleRadius;
-        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1);
+        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1) * sizeScale;
 
         // Particle pass uniform.
         for (let k = 0; k < 16; k++) {
@@ -602,7 +604,7 @@ export function createFluidSurfaceTask(
     // Bilateral (depth) blur uniform: integer step dir, projConst, depthThreshold + maxFilterSize.
     function writeBilateral(buf: GPUBuffer, stepX: number, stepY: number): void {
         const radius = currentSim.particleRadius;
-        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1);
+        const size = radius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1) * sizeScale;
         const projConst = (BLUR_DEPTH_FILTER_SIZE * size * 0.05 * (depthH / 2)) / Math.tan(camera.fov / 2);
         const depthThreshold = (size / 2) * BLUR_DEPTH_DEPTH_SCALE;
         device.queue.writeBuffer(buf, 0, new Float32Array([stepX, stepY, projConst, depthThreshold, BLUR_MAX_FILTER_SIZE, 0, 0, 0]));
@@ -650,6 +652,9 @@ export function createFluidSurfaceTask(
         },
         setHalfRender(on: boolean): void {
             halfRender = on;
+        },
+        setSizeScale(s: number): void {
+            sizeScale = s;
         },
         record(): void {
             build();

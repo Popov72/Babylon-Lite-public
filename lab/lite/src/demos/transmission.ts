@@ -457,6 +457,33 @@ async function main(): Promise<void> {
     halfRow.append(halfChk, halfText);
     halfChk.onchange = () => surfaceTask.setHalfRender(halfChk.checked);
 
+    // Particle size: a visual multiplier for both the sphere impostors and the
+    // fluid-surface splats (does not change the physics / particle spacing).
+    const sizeRow = document.createElement("div");
+    sizeRow.style.cssText = "margin:2px 0 8px;";
+    const sizeHead = document.createElement("div");
+    sizeHead.style.cssText = "display:flex;justify-content:space-between;";
+    const sizeLab = document.createElement("span");
+    sizeLab.textContent = "Particle size";
+    const sizeVal = document.createElement("span");
+    sizeVal.style.cssText = "color:#9fb4cc;";
+    sizeVal.textContent = "1.0×";
+    sizeHead.append(sizeLab, sizeVal);
+    const sizeInput = document.createElement("input");
+    sizeInput.type = "range";
+    sizeInput.min = "0.3";
+    sizeInput.max = "3";
+    sizeInput.step = "0.1";
+    sizeInput.value = "1";
+    sizeInput.style.cssText = "width:100%;";
+    sizeInput.oninput = () => {
+        const s = parseFloat(sizeInput.value);
+        sizeVal.textContent = `${s.toFixed(1)}×`;
+        surfaceTask.setSizeScale(s);
+        particleTask.setSizeScale(s);
+    };
+    sizeRow.append(sizeHead, sizeInput);
+
     const containerTitle = document.createElement("div");
     containerTitle.textContent = "Container";
     containerTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
@@ -555,7 +582,7 @@ async function main(): Promise<void> {
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     resetBtn.onclick = () => activeSim.reset();
-    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
+    panel.append(title, fpsLabel, methodSel, renderTitle, renderRow, debugTitle, debugSel, foamRow, halfRow, sizeRow, containerTitle, containerSel, boxSizeRow, particlesTitle, particlesSel, sliderHost, obstacleTitle, obstacleRow, speedRow, resetBtn);
     document.body.appendChild(panel);
 
     function buildSliders(name: string): void {
