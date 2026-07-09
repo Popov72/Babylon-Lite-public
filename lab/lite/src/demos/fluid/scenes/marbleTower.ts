@@ -10,11 +10,11 @@
 // param block every frame (like the box paddle) so those slots survive the core's
 // per-switch `clearSceneHoles()` (which zeroes offset 32..159).
 
-import { addToScene, createMeshFromData, createStandardMaterial, loadGltf, resizeMeshGeometry, setMeshVisible } from "babylon-lite";
+import { addToScene, loadGltf, setMeshVisible } from "babylon-lite";
 import type { Mesh, SceneNode } from "babylon-lite";
 import type { EmitterConfig, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
-import { createPlane } from "babylon-lite/mesh/mesh-factories.js";
+import { createPlane, createMeshFromData } from "babylon-lite/mesh/mesh-factories.js";
 import { createShaderMaterial, setShaderTexture } from "babylon-lite/material/shader/shader-material.js";
 import type { ShaderMaterial } from "babylon-lite/material/shader/shader-material.js";
 import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite/texture/pixels-texture.js";
@@ -51,28 +51,23 @@ const HOLE_OFFSET = 0.5;
 const SDF_CELL_SIZE = 0.05;
 const SDF_PADDING = 2;
 
-// ── Water wheel (the glTF "wheel" node = gltf_mesh_4): a rim ring + a coaxial axle shaft
-//    running along +X, offset on the +X side of the tower. These WORLD-space values were
-//    measured offline from the asset geometry AFTER the load transform (which fits the tower
-//    to TOWER_HEIGHT tall, base at y=0, centred on X/Z), so they are stable as long as
-//    TOWER_HEIGHT stays 14. They drive THREE things: (a) the STATIC analytic wheel SDF term,
-//    (b) carving the wheel disk out of the baked grid, and (c) splitting the rim disk into its
-//    own (Stage-2-rotatable) mesh. Recon: rim band ≈[3.73,3.99], shaft radius ≈0.5 spanning
-//    world X≈[0.05,4.24]; NO spokes in the geometry (rim + hub only).
+// ── Water wheel ANALYTIC collision SDF (the glTF "wheel" node → mesh 4): a rim torus + a
+//    coaxial axle shaft running along +X, offset on the +X side of the tower. These WORLD-space
+//    values were measured offline from the asset geometry AFTER the load transform (which fits
+//    the tower to TOWER_HEIGHT tall, base at y=0, centred on X/Z), so they are stable as long as
+//    TOWER_HEIGHT stays 14. They drive ONLY the rotation-symmetric analytic wheel SDF the fluid
+//    collides with (the rim+hub the water splashes off). The DISPLAY of the wheel uses the real
+//    textured mesh, spun in place about its axle via the "wheel" TransformNode (see the pivot
+//    repurposing in the load callback) — it is NOT split, re-created, or carved from the bake.
+//    Recon: rim band ≈[3.73,3.99], shaft radius ≈0.5 spanning world X≈[0.05,4.24]; NO spokes in
+//    the geometry (rim + hub only).
 const WHEEL_C: [number, number, number] = [3.78, 4.28, 0.06]; // disk centre — a point on the axle
 const WHEEL_AXLE: [number, number, number] = [1, 0, 0]; // unit axle direction (horizontal, +X)
-const WHEEL_R = 3.85; // rim radius (rim centreline)
-const WHEEL_T = 0.4; // rim half-thickness (axial half-width ≈0.4; also the torus minor radius)
+const WHEEL_R = 3.65; // rim/bucket-band centreline — bucket outer (R+T)=4.05 = measured mesh perimeter
+const WHEEL_T = 0.4; // rim half-thickness (axial half-width ≈0.4; R+T is the bucket-band outer radius)
 const WHEEL_HUB_R = 0.5; // axle / hub radius
 const WHEEL_HUB_HALF = 2.1; // hub / axle half-length along the axle
 const WHEEL_HUB_OFFSET = -1.63; // hub centre along the axle relative to C (shaft world X≈[0.05,4.24])
-// Split / bake-exclusion cylinder: a thin slab about the axle that tightly bounds the VISIBLE
-// rim disk (world X≈[2.98,4.58]). Captures exactly the wheel's 7840 disk triangles and ZERO
-// triangles of any other mesh — the coaxial "supports" bearing-frame (gltf_mesh_3) stays static.
-// A full-length axle cylinder would wrongly swallow those supports, so the capture is bounded to
-// the disk; the inner axle shaft (rotation-symmetric) is left static in the source mesh + bake.
-const WHEEL_CAP_R = WHEEL_R + 0.4; // 4.25 — radial cap (≥ rim outer radius ≈3.99)
-const WHEEL_CAP_T = 0.8; // axial half-thickness about C.x (disk axial half-extent ≈0.4)
 
 // Mesh node carrying CPU geometry (present on glTF Mesh leaves, absent on TransformNodes).
 type CpuMeshNode = SceneNode & {
@@ -98,25 +93,94 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     // below the lid AND above the floor AND outside every solid). update() re-writes the whole
     // param block every frame so it survives clearSceneHoles() (which zeroes floats 8..39).
     //
-    // Shared WGSL: the STATIC analytic water wheel (Stage 1) = a rim torus (major R, minor T) +
-    // a coaxial capped-cylinder hub, both about the axle `wheelA` through centre `wheelC`, unioned
-    // via min() into BOTH sceneSdf variants (negative inside the solid). wheelMisc.x toggles it
-    // (UI checkbox). θ (wheelHub.w) is PACKED for Stage 2 but unused here: the rim+hub are
-    // rotation-symmetric about the axle, so a fixed θ has no effect until angular features (spokes/
-    // buckets) are added. Layout floats 24..39: wheelC=(cx,cy,cz,R), wheelA=(ax,ay,az,T),
-    // wheelHub=(hubR,hubHalf,hubOffset,θ), wheelMisc=(enabled,_,_,_).
-    const WHEEL_SDF_FN = `fn sdWheel(pt: vec3<f32>) -> f32 {
+    // Shared WGSL: the analytic water wheel = a coaxial capped-cylinder hub + N straight radial
+    // SPOKES + a perimeter BUCKET band (sole floor ring + two side shrouds + M rotating radial
+    // vanes forming the open pockets), all about the axle `wheelA` through centre `wheelC`, unioned
+    // via min() into BOTH sceneSdf variants (negative inside the solid). wheelMisc.x toggles it (UI
+    // checkbox). The hub + sole + shrouds are rotation-symmetric so θ is a no-op on them, but the
+    // SPOKES and bucket VANES rotate with the wheel as a MOVING BOUNDARY (exactly like the box
+    // paddle): their phase advances by -(θ + ω·dt) inside the SDF, so the core's g2p confinement
+    // finite-differences sceneSdf(pt,dt) and recovers the surface velocity → the spinning
+    // spokes/vanes push/carry the fluid, and water flows through the gaps between them.
+    // The mesh spins by -wheelTheta; the engine-measured world rotation sense is dφ/dθ = -1, so the
+    // SDF uses -θ (and -ω·dt) → collision features co-rotate with the VISIBLE wheel on screen.
+    // Layout floats 24..39: wheelC=(cx,cy,cz,R), wheelA=(spokeHalfW,bucketCount@29,_,T),
+    // wheelHub=(hubR,hubHalf,hubOffset,θ@35), wheelMisc=(enabled@36, ω@37, spokeN@38, φ0@39).
+    // The axle direction is a compile-time constant (world +X) — hardcoded in sdWheel + the flux
+    // reduction — so wheelA.yz is free; we repurpose wheelA.x for the spoke half-width and
+    // wheelA.y for the (tunable) bucket count.
+    const SPOKE_HALF_AX = 0.32; // spoke axial half-thickness (< WHEEL_T=0.4) — thin but tunnel-safe like the paddle
+    // Overshot BUCKET band (the ~30 open pockets around the rim that catch top-poured water, carry
+    // it as the wheel turns, then overflow / eject it near the bottom). Compile-time geometry; the
+    // pocket COUNT is user-tunable (wheelA.y, "Wheel buckets" slider). A pocket is bounded by an
+    // inner cylindrical SOLE (floor), two axial SHROUD side walls, and two radial VANES — and is
+    // OPEN on the outer radial face, so gravity holds water while the pocket climbs/descends and
+    // dumps it once the opening rotates to face downward. Walls are thin but tunnel-safe.
+    const BUCKET_DEPTH = 0.40; // radial depth of the pocket band → bInner=3.65 = measured rim inner (spokes stop here)
+    const BUCKET_WALL = 0.1; // sole / shroud wall half-thickness (tunnel-safe)
+    const VANE_HALF_W = 0.09; // vane tangential half-width
+    const WHEEL_SDF_FN = `fn sdWheel(pt: vec3<f32>, dt: f32) -> f32 {
     if (sceneSdfParams.wheelMisc.x < 0.5) { return 1.0e9; }
     let wc = sceneSdfParams.wheelC.xyz;
-    let axis = normalize(sceneSdfParams.wheelA.xyz);
+    let axis = vec3<f32>(1.0, 0.0, 0.0); // axle = world +X (compile-time constant; frees wheelA.xyz)
     let d = pt - wc;
     let a = dot(d, axis);
-    let rad = length(d - a * axis);
-    let rim = length(vec2<f32>(rad - sceneSdfParams.wheelC.w, a)) - sceneSdfParams.wheelA.w;
-    let qx = rad - sceneSdfParams.wheelHub.x;
+    let perp = d - a * axis;
+    let rad = length(perp);
+    let rInner = sceneSdfParams.wheelHub.x; // hub radius
+    let rOuter = sceneSdfParams.wheelC.w;   // rim radius
+    let T = sceneSdfParams.wheelA.w;        // rim axial half-width
+    // Bucket-band radii (used to size both the spokes and the buckets so they don't overlap).
+    let bOuter = rOuter + T;                       // outer edge of the wheel band
+    let bInner = bOuter - ${BUCKET_DEPTH.toFixed(4)}; // sole radius = pocket floor = spoke outer end
+    let bMid = 0.5 * (bInner + bOuter);
+    let bHalfR = 0.5 * (bOuter - bInner);
+    let bHalfA = T;                                // shrouds sit at the axial extremes |a| = T
+    // Hub / axle capped cylinder (rotation-symmetric, static).
+    let qx = rad - rInner;
     let qy = abs(a - sceneSdfParams.wheelHub.z) - sceneSdfParams.wheelHub.y;
     let hub = length(max(vec2<f32>(qx, qy), vec2<f32>(0.0))) + min(max(qx, qy), 0.0);
-    return min(rim, hub);
+    // Angle in the disk plane + the shared moving-boundary phase. Phase = -(θ + ω·dt): the mesh
+    // spins by wheelNode.rotation.x = -θ, and the engine-measured world rotation sense of the disk
+    // is dφ_world/dθ = -1 (world Y-Z angle DECREASES as θ grows). The SDF spokes/vanes track that
+    // with -θ, so collision + debug overlay + visible mesh all co-rotate. The core g2p confinement
+    // finite-differences sceneSdf(pt,dt) and recovers their surface velocity → they push the fluid.
+    let phi = atan2(perp.z, perp.y);
+    let spokePhase = -(sceneSdfParams.wheelHub.w + sceneSdfParams.wheelMisc.y * dt);
+    // N radial spokes (hub -> rim bars, static shape, rotating phase). They stop at the rim INNER
+    // (bInner = measured felloe inner radius) — the real spokes mortise into the rim and do not cross
+    // the bucket band, so the analytic wheel matches the mesh instead of poking through the rim.
+    let nSpokes = max(sceneSdfParams.wheelMisc.z, 1.0);
+    let sector = 6.2831853071795864 / nSpokes;
+    var rel = phi - sceneSdfParams.wheelMisc.w - spokePhase;
+    rel = rel - sector * round(rel / sector);
+    let midR = 0.5 * (rInner + bInner);
+    let halfLenR = 0.5 * (bInner - rInner);
+    let sa = abs(a) - ${SPOKE_HALF_AX.toFixed(4)};
+    let st = abs(rad * rel) - sceneSdfParams.wheelA.x; // spoke tangential half-width (tunable, wheelA.x)
+    let sr = abs(rad - midR) - halfLenR;
+    let spoke = length(max(vec3<f32>(sa, st, sr), vec3<f32>(0.0))) + min(max(sa, max(st, sr)), 0.0);
+    // ── Bucket band: sole (inner floor ring) + two side shrouds + N rotating radial vanes ──────
+    // Sole: a thin cylindrical wall at rad = bInner spanning the full axial width (pocket floor).
+    let soleRad = abs(rad - bInner) - ${BUCKET_WALL.toFixed(4)};
+    let soleAx = abs(a) - bHalfA;
+    let sole = length(max(vec2<f32>(soleRad, soleAx), vec2<f32>(0.0))) + min(max(soleRad, soleAx), 0.0);
+    // Shrouds: the two side walls at |a| = bHalfA, spanning the pocket band radially (pocket sides).
+    let shrAx = abs(abs(a) - bHalfA) - ${BUCKET_WALL.toFixed(4)};
+    let shrRad = abs(rad - bMid) - bHalfR;
+    let shroud = length(max(vec2<f32>(shrRad, shrAx), vec2<f32>(0.0))) + min(max(shrRad, shrAx), 0.0);
+    // Vanes: N thin radial dividers across the band, polar-repeated, rotating with the wheel. The
+    // buckets are a 30-fold structure independent of the 12 spokes, so they use their OWN base phase
+    // (wheelA.z, detected separately) — reusing the spoke phase misaligns the vanes vs the mesh.
+    let nBuckets = max(sceneSdfParams.wheelA.y, 1.0);
+    let bSector = 6.2831853071795864 / nBuckets;
+    var brel = phi - sceneSdfParams.wheelA.z - spokePhase;
+    brel = brel - bSector * round(brel / bSector);
+    let vAx = abs(a) - bHalfA;
+    let vT = abs(rad * brel) - ${VANE_HALF_W.toFixed(4)};
+    let vR = abs(rad - bMid) - bHalfR;
+    let vane = length(max(vec3<f32>(vAx, vT, vR), vec3<f32>(0.0))) + min(max(vAx, max(vT, vR)), 0.0);
+    return min(min(min(sole, shroud), vane), min(hub, spoke));
 }`;
 
     // tier4..tier7 (floats 24..39) are repurposed into the wheel param block (wheelC / wheelA /
@@ -145,7 +209,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     var d = min(min(radial, ceiling), floorD);
     d = min(d, towerBox(pt, sceneSdfParams.tier0, sceneSdfParams.tier1));
     d = min(d, towerBox(pt, sceneSdfParams.tier2, sceneSdfParams.tier3));
-    d = min(d, sdWheel(pt));
+    d = min(d, sdWheel(pt, dt));
     return d;
 }`;
 
@@ -173,13 +237,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // the domain via min() so water stays inside the cylinder/floor AND outside the tower. The
     // wheel disk is carved from the baked grid, so union the STATIC analytic wheel back in here.
     let baked = sampleSdfGrid(pt, sceneSdfParams.gridOrigin.xyz, sceneSdfParams.gridOrigin.w, dims);
-    return min(min(min(min(radial, ceiling), floorD), baked), sdWheel(pt));
+    return min(min(min(min(radial, ceiling), floorD), baked), sdWheel(pt, dt));
 }`;
 
     // Baked grid state (uploaded after the async load bakes it) + which mode is live.
     let gridBuffer: GPUBuffer | null = null;
     let bakeReady = false; // true once the mesh SDF is baked + uploaded
     let bakedActive = false; // true when the BAKED spec is selected (only possible once bakeReady)
+    // Desired baked state — set by restoreState() / the checkbox. If a preset asks for baked mode
+    // BEFORE the async bake finishes, we remember it here and apply it at the end of bakeSceneSdf().
+    let desiredBaked = false;
     // The baked distances, retained on the CPU so the SDF-texture visualizer can slice arbitrary
     // cross-sections without a GPU readback (the gridBuffer upload is the GPU copy the sims sample).
     let bakedGrid: BakedGrid | null = null;
@@ -236,48 +303,40 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     setBox(1, 0, 1.2, 0, 2.3, 1.2, 2.0, 0.2); // plinth
     // slots 2,3 (floats 24..39) are now the wheel param block (see packWheel below), not boxes.
 
-    // ── STATIC analytic water wheel (Stage 1) ─────────────────────────────────────────────────
+    // ── Analytic water wheel: rim torus + hub + N rotating SPOKES (moving boundary) ────────────
     // Enabled by default; the "Water wheel (analytic)" UI checkbox toggles the SDF union (the
-    // split rim mesh always renders regardless). Packed at floats 24..39 in BOTH param arrays:
+    // wheel mesh always renders regardless). Packed at floats 24..39 in BOTH param arrays:
     //   wheelC  (24..27) = centre.xyz, R (rim radius)
-    //   wheelA  (28..31) = axle.xyz (unit), T (rim half-thickness)
-    //   wheelHub(32..35) = hubR, hubHalf, hubOffset, θ (θ packed for Stage 2, unused now)
-    //   wheelMisc(36..39) = enabled(1/0), spare, spare, spare
+    //   wheelA  (28..31) = spokeHalfW (tangential half-width, tunable), M buckets, bucketPhase0, T
+    //   wheelHub(32..35) = hubR, hubHalf, hubOffset, θ (spoke angle, written each frame)
+    //   wheelMisc(36..39) = enabled(1/0), ω (rad/s, each frame), N (spoke count), φ0 (spoke base phase)
     let wheelSdfEnabled = true;
+    // N spokes + spoke half-width are USER-TUNABLE (sliders) — the source of truth. The wheel's
+    // spoke MIDDLES carry no vertices, so the Fourier auto-detect can't pin the count; the user
+    // dials N + thickness by eye against the "Debug wheel SDF" overlay. detectSpokes() below is
+    // kept only as a diagnostic hint + to seed the base phase φ0.
+    let spokeCount = 12; // N straight spokes — driven by the "Wheel spokes" slider (mesh has 12, Fourier-detected)
+    let spokeHalfW = 0.18; // spoke tangential half-width — driven by "Spoke thickness"; packed into wheelA.x
+    let bucketCount = 30; // M perimeter buckets — driven by the "Wheel buckets" slider; packed into wheelA.y
+    let spokePhase0 = 0; // base phase φ0 — world disk-plane angle of spoke 0 (seeded by detectSpokes)
+    let bucketPhase0 = 0; // base phase for the 30-fold bucket vanes (seeded separately by detectSpokes)
     const packWheel = (arr: Float32Array): void => {
         arr[24] = WHEEL_C[0];
         arr[25] = WHEEL_C[1];
         arr[26] = WHEEL_C[2];
         arr[27] = WHEEL_R;
-        arr[28] = WHEEL_AXLE[0];
-        arr[29] = WHEEL_AXLE[1];
-        arr[30] = WHEEL_AXLE[2];
+        arr[28] = spokeHalfW; // wheelA.x — spoke tangential half-width (axle dir is a WGSL constant)
+        arr[29] = bucketCount; // wheelA.y — M perimeter buckets (never 0 → sdWheel guards with max(M,1))
+        arr[30] = bucketPhase0; // wheelA.z — bucket-vane base phase (30-fold, detected separately)
         arr[31] = WHEEL_T;
         arr[32] = WHEEL_HUB_R;
         arr[33] = WHEEL_HUB_HALF;
         arr[34] = WHEEL_HUB_OFFSET;
-        arr[35] = 0; // θ — Stage 2 (rim+hub are rotation-symmetric, so 0 is a no-op in Stage 1)
+        arr[35] = 0; // θ — spoke angle (mirrored from wheelTheta each frame by updateWheelSpin)
         arr[36] = wheelSdfEnabled ? 1 : 0;
-        arr[37] = 0;
-        arr[38] = 0;
-        arr[39] = 0;
-    };
-
-    // Bounding-cylinder test (WORLD space) that tightly bounds the visible rim disk. Used by BOTH
-    // the bake (skip these triangles) and the mesh split (extract them). A thin axial slab about
-    // C.x plus a radial cap, in the axle frame (axle is unit → axial dist = dot, radial = perp).
-    const inWheelCylinder = (x: number, y: number, z: number): boolean => {
-        const dx = x - WHEEL_C[0];
-        const dy = y - WHEEL_C[1];
-        const dz = z - WHEEL_C[2];
-        const axial = dx * WHEEL_AXLE[0] + dy * WHEEL_AXLE[1] + dz * WHEEL_AXLE[2];
-        if (Math.abs(axial) > WHEEL_CAP_T) {
-            return false;
-        }
-        const px = dx - axial * WHEEL_AXLE[0];
-        const py = dy - axial * WHEEL_AXLE[1];
-        const pz = dz - axial * WHEEL_AXLE[2];
-        return px * px + py * py + pz * pz <= WHEEL_CAP_R * WHEEL_CAP_R;
+        arr[37] = 0; // ω — spoke angular speed (mirrored from wheelOmega each frame; drives the FD)
+        arr[38] = spokeCount; // N spokes (never 0 → sdWheel guards with max(N,1))
+        arr[39] = spokePhase0; // base phase φ0
     };
 
     packWheel(sdfData);
@@ -295,6 +354,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const writeSdfParams = (): void => {
         // Write the ACTIVE param block into the shared UBO. clearSceneHoles() zeroes bytes
         // 32..159 (floats 8..39) on every pair switch, so update() re-writes this every frame.
+        // GUARD: only touch the SHARED sceneSdfBuffer while THIS demo is on-screen. All demos
+        // share ctx.sceneSdfBuffer, and marbleTower's ASYNC load path (bakeSceneSdf/detectSpokes/
+        // deferred baked-mode) fires ~seconds after boot — if that ran while another demo (e.g. the
+        // default Box) were active it would clobber that demo's params (floats 0..15) and wreck its
+        // bounds. onEnter() sets active=true before the core's applySceneSdf re-writes us, and
+        // update() re-writes every frame, so gating here loses nothing when we ARE active.
+        if (!active) {
+            return;
+        }
         if (bakedActive && gridBuffer) {
             engine._device.queue.writeBuffer(ctx.sceneSdfBuffer, 0, bakedData);
         } else {
@@ -339,8 +407,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 
     // ── The tower model: loaded async + non-blocking, kept with its own materials ──
     const towerMeshes: Mesh[] = [];
-    // The rim disk split out of gltf_mesh_4 into its own mesh (rotatable in Stage 2). Kept
-    // separate from towerMeshes so its visibility is driven explicitly alongside the SDF toggle.
+    // The glTF "wheel" TransformNode (identity transform) repurposed as the spin pivot, and its
+    // child Mesh leaf — the REAL textured water-wheel geometry (mesh 4). The mesh STAYS inside
+    // towerMeshes so the standard visibility loops (onEnter/onLeave/setContainerVisible) cover it;
+    // we only keep separate references to (a) exclude the mesh from the SDF bake and (b) drive the
+    // pivot node's rotation for the spin. Set once the async load locates the node by name.
+    let wheelNode: SceneNode | null = null;
     let wheelMesh: Mesh | null = null;
     let active = false; // true while this demo is the on-screen demo
     let containerVisible = true; // toggled by the "Show container" UI checkbox
@@ -352,6 +424,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         for (const c of node.children) {
             collectMeshes(c, out);
         }
+    };
+
+    // Depth-first search for a node by name (the loader preserves glTF node names on the
+    // TransformNode hierarchy). Used to locate the "wheel" node (its child mesh is the wheel).
+    const findNodeByName = (node: SceneNode, target: string): SceneNode | null => {
+        if (node.name === target) {
+            return node;
+        }
+        for (const c of node.children) {
+            const found = findNodeByName(c, target);
+            if (found) {
+                return found;
+            }
+        }
+        return null;
     };
 
     // World-space AABB folded over every mesh's CPU positions × its worldMatrix
@@ -414,13 +501,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     bakedStatusEl.textContent = "baking mesh SDF…";
     let bakeStatus = "baking mesh SDF…";
 
-    bakedChk.onchange = (): void => {
-        const want = bakedChk.checked;
-        if (want && !bakeReady) {
-            bakedChk.checked = false; // bake not ready → stay analytic
-            return;
+    // Apply the baked/analytic mode (shared by the checkbox handler + restoreState). Remembers
+    // the DESIRED state in `desiredBaked` so a preset that asks for baked mode BEFORE the async
+    // bake completes is honoured later (bakeSceneSdf re-invokes this once bakeReady). When the bake
+    // isn't ready yet the switch is deferred (returns early) so we never select a null grid.
+    const setBakedMode = (v: boolean): void => {
+        desiredBaked = v;
+        if (v && !bakeReady) {
+            return; // deferred — applied at the end of bakeSceneSdf once the grid exists
         }
-        bakedActive = want;
+        bakedActive = v;
         applyMode(bakedActive);
         writeSdfParams(); // re-pack the UBO for the active mode
         if (active) {
@@ -430,11 +520,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     };
 
-    // ── "Water wheel (analytic)" toggle: unions the STATIC analytic wheel SDF into whichever mode
-    //    is live (analytic or baked). Default ON. The split rim mesh renders regardless; this only
-    //    gates the SDF collision term (a wheelMisc.x uniform the WGSL branches on — no pipeline
-    //    rebuild). The wheel disk is carved from the baked grid either way, so with this OFF in
-    //    baked mode the water simply passes through the (now empty) wheel region.
+    bakedChk.onchange = (): void => {
+        const want = bakedChk.checked;
+        if (want && !bakeReady) {
+            bakedChk.checked = false; // bake not ready → stay analytic
+            return;
+        }
+        setBakedMode(want);
+    };
+
+    // ── "Water wheel (analytic)" toggle: unions the analytic wheel SDF (rim + hub + rotating
+    //    spokes) into whichever mode is live (analytic or baked). Default ON. The textured wheel
+    //    mesh renders + spins regardless; this only gates the SDF collision term (a wheelMisc.x
+    //    uniform the WGSL branches on — no pipeline rebuild). The wheel mesh is excluded from the
+    //    baked grid either way, so with this OFF in baked mode water passes through the wheel region.
     const wheelRow = document.createElement("label");
     wheelRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
     const wheelChk = document.createElement("input");
@@ -444,36 +543,59 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     wheelText.textContent = "Water wheel (analytic)";
     wheelRow.append(wheelChk, wheelText);
 
-    wheelChk.onchange = (): void => {
-        wheelSdfEnabled = wheelChk.checked;
+    // Toggle the wheel SDF union (shared by the checkbox handler + restoreState).
+    const setWheelSdf = (v: boolean): void => {
+        wheelSdfEnabled = v;
         packWheel(sdfData); // refresh the enabled flag (float 36) in BOTH blocks
         packWheel(bakedData);
         writeSdfParams(); // push the active block now (update() also re-writes every frame)
     };
+    wheelChk.onchange = (): void => {
+        setWheelSdf(wheelChk.checked);
+    };
 
     // ── STAGE 2: flux-driven wheel spin ────────────────────────────────────────────────────────
-    // Spin the split rim mesh driven by the amount of liquid that reaches the wheel. Each frame a
-    // tiny GPU reduction counts particles inside the wheel's CATCH cylinder (axle-local: perpendicular
-    // distance to the axle ≤ R+margin, |axial offset along the axle| ≤ T+margin), reducing to a single
-    // atomic<u32>. That count is copied to a double-buffered staging buffer and read back with mapAsync
-    // (NON-blocking — never awaited in the render path; frames with no fresh value reuse the last one).
-    // The count is EMA-smoothed, mapped to a target angular speed ωTarget = driveStrength·n (clamped),
-    // and the actual ω relaxes toward it; θ integrates ω and drives mesh.rotation.x (axle = +X → the
-    // disk spins in place about C). This is fully DECOUPLED from collision: the analytic wheel SDF stays
-    // rotation-symmetric, so θ is a physical no-op there — it is still mirrored into the param block
-    // (float 35) for consistency. Little water reaches the wheel by design, so the drive is deliberately
-    // sensitive and the strength is exposed as a slider (crank it to see a clear spin from a trickle).
+    // Spin the REAL textured wheel mesh (via its "wheel" pivot node) driven by the amount of MOVING
+    // liquid that reaches the wheel. Each frame a tiny GPU reduction counts particles that are BOTH
+    // inside the wheel's CATCH cylinder (axle-local: perpendicular distance to the axle ≤ R+margin,
+    // |axial offset along the axle| ≤ T+margin) AND actually moving (normalized speed > SPEED_GATE),
+    // reducing to a single atomic<u32>. That count is copied to a double-buffered staging buffer and
+    // read back with mapAsync (NON-blocking — never awaited in the render path; frames with no fresh
+    // value reuse the last one). The count is EMA-smoothed, mapped to a target angular speed
+    // ωTarget = driveStrength·n (clamped to DRIVE_OMEGA_MAX), and the actual ω relaxes toward it; θ
+    // integrates ω and drives wheelNode.rotation.x (axle = local +X → the disk spins in place about
+    // the axle). This is fully DECOUPLED from collision: the analytic wheel SDF stays rotation-
+    // symmetric, so θ is a physical no-op there — it is still mirrored into the param block (float 35)
+    // for consistency. Because only MOVING water counts, the wheel coasts to a stop when the pour is
+    // off and the water pools.
     const CATCH_MARGIN_R = 0.5; // radial slack beyond the rim radius R
     const CATCH_MARGIN_A = 0.6; // axial slack beyond the disk half-thickness T
-    const DRIVE_OMEGA_MAX = 8; // rad/s clamp on the target speed (~1.3 rev/s — a clear, fast spin)
+    // Only water on the UPPER rim band drives the wheel: a particle counts when its offset from the
+    // axle is in the rim band [R-RIM_BAND, R+CATCH_MARGIN_R] AND it is above the axle (perp.y>0). This
+    // excludes (a) the submerged lower rim sitting in the base pool and (b) the hub interior, so the
+    // count reflects water actually riding/striking the top of the wheel — it falls to ~0 when the
+    // pour is off and the water drains, which is what stops the wheel.
+    const RIM_BAND = 1.2; // radial depth of the rim catch band inward from R
+    const DRIVE_OMEGA_MAX = 3; // rad/s — hard safety clamp AND the drive-strength slider's max
     const DRIVE_RESPONSIVENESS = 2; // 1/s — how fast ω relaxes toward its target (~0.5 s time-constant)
     const COUNT_EMA_RATE = 4; // 1/s — how fast the smoothed catch count tracks the async readback
+    // Proportional drive: the smoothed moving-particle count is mapped through a deadzone + span into a
+    // 0..1 flow fraction, so the wheel speed reflects HOW MUCH water reaches it (not a saturated on/off).
+    // Below COUNT_DEADZONE there is too little water to turn the wheel → it idles/stops; COUNT_SPAN above
+    // that maps to full drive. Both scale with the ~200k particle budget of this scene.
+    const COUNT_DEADZONE = 250; // moving upper-rim particles below which the wheel is not driven
+    const COUNT_SPAN = 2500; // moving-particle count above the deadzone that reaches full drive
+    // Normalized speed gate: a particle is only counted when it is actually MOVING (its normalized
+    // world speed `speed·debugNorm` exceeds this). Settled/pooled water the lower rim sits in reads
+    // ~0 and is ignored, so the wheel only turns when moving water reaches it and coasts to a stop
+    // when the pour is off. Resolution-independent (debugNorm ≈ 1/typical-max-speed).
+    const SPEED_GATE = 0.3;
     const TWO_PI = Math.PI * 2;
     const FLUX_WG_SIZE = 256; // reduction workgroup size
     const FLUX_STAGING = 2; // double-buffered readback so mapAsync never stalls the render path
 
     let spinEnabled = true; // "Spin water wheel" checkbox (default ON)
-    let driveStrength = 0.02; // "Wheel drive strength" slider → ωTarget = driveStrength · smoothedCount
+    let driveStrength = 1.0; // "Wheel drive strength" slider → the wheel's ω (rad/s) at FULL flow
     let wheelTheta = 0; // current rotation angle about the axle (rad)
     let wheelOmega = 0; // current angular speed (rad/s)
     let smoothedCount = 0; // EMA of the catch count (de-jitters the async readback cadence)
@@ -483,20 +605,26 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // Lazily-built GPU reduction resources — created once, never per frame.
     let fluxPipeline: GPUComputePipeline | null = null;
     let fluxCountBuffer: GPUBuffer | null = null; // atomic<u32> the reduction writes
+    let fluxNormBuffer: GPUBuffer | null = null; // uniform: x = active sim's debugNorm (speed→normalized)
     let fluxBindGroup: GPUBindGroup | null = null;
     let fluxBoundPos: GPUBuffer | null = null; // positionBuffer the bind group is wired to (rebind on change)
     const fluxStaging: GPUBuffer[] = []; // COPY_DST→MAP_READ readback ring
     const fluxStagingBusy: boolean[] = []; // per-staging in-flight flag (mapAsync pending)
 
-    // Reduction shader: for each particle, add 1 to the atomic when it lies inside the catch cylinder.
-    // Wheel geometry is compile-time constant, so it is inlined as literals (single source of truth via
-    // the WHEEL_* consts). arrayLength(&positions) == the sim's particle count (positionBuffer is exactly
-    // `count` vec4s), so the last workgroup self-guards without a count uniform.
+    // Reduction shader: for each particle, add 1 to the atomic when it lies inside the catch cylinder
+    // AND is moving (speed gate). Wheel geometry is compile-time constant, so it is inlined as literals
+    // (single source of truth via the WHEEL_* consts). arrayLength(&positions) == the sim's particle
+    // count (positionBuffer is exactly `count` vec4s), so the last workgroup self-guards without a count
+    // uniform. `speeds` is the sim's f32-per-particle world-speed buffer (same indexing as positions);
+    // fluxParams.x = debugNorm (1/typical-max-speed) so `speed·norm` is a resolution-independent 0..1.
     const wgslF = (n: number): string => n.toFixed(5);
     const fluxRadCap = WHEEL_R + CATCH_MARGIN_R;
+    const fluxRimInner = WHEEL_R - RIM_BAND;
     const fluxAxHalf = WHEEL_T + CATCH_MARGIN_A;
     const FLUX_WGSL = `@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> outCount: atomic<u32>;
+@group(0) @binding(2) var<storage, read> speeds: array<f32>;
+@group(0) @binding(3) var<uniform> fluxParams: vec4<f32>;
 @compute @workgroup_size(${FLUX_WG_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -505,7 +633,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let axis = vec3<f32>(${wgslF(WHEEL_AXLE[0])}, ${wgslF(WHEEL_AXLE[1])}, ${wgslF(WHEEL_AXLE[2])});
     let a = dot(d, axis);
     if (abs(a) > ${wgslF(fluxAxHalf)}) { return; }
-    if (length(d - a * axis) > ${wgslF(fluxRadCap)}) { return; }
+    let perp = d - a * axis;              // offset within the disk (Y-Z) plane
+    if (perp.y <= 0.0) { return; }        // upper half only — skip the submerged lower rim / base pool
+    let rad = length(perp);
+    if (rad < ${wgslF(fluxRimInner)} || rad > ${wgslF(fluxRadCap)}) { return; } // rim band (water on the buckets)
+    if (speeds[i] * fluxParams.x <= ${wgslF(SPEED_GATE)}) { return; }
     atomicAdd(&outCount, 1u);
 }`;
 
@@ -520,6 +652,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             label: "marbleTower-wheel-flux-count",
             size: 4,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
+        fluxNormBuffer = device.createBuffer({
+            label: "marbleTower-wheel-flux-norm",
+            size: 16, // vec4<f32> — only .x used (debugNorm)
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         for (let s = 0; s < FLUX_STAGING; s++) {
             fluxStaging.push(device.createBuffer({ label: `marbleTower-wheel-flux-staging${s}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
@@ -548,9 +685,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 entries: [
                     { binding: 0, resource: { buffer: sim.positionBuffer } },
                     { binding: 1, resource: { buffer: fluxCountBuffer! } },
+                    { binding: 2, resource: { buffer: sim.debugBuffer } },
+                    { binding: 3, resource: { buffer: fluxNormBuffer! } },
                 ],
             });
             fluxBoundPos = sim.positionBuffer;
+            // debugNorm is per-sim (≈1/typical-max-speed); refresh the gate uniform when the sim changes.
+            device.queue.writeBuffer(fluxNormBuffer!, 0, new Float32Array([sim.debugNorm, 0, 0, 0]));
         }
         const staging = fluxStaging[slot]!;
         const enc = device.createCommandEncoder({ label: "marbleTower-wheel-flux" });
@@ -575,28 +716,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             });
     };
 
-    // Per-frame drive: measure flux (when on + active), smooth it, integrate ω→θ, rotate the mesh.
+    // Per-frame drive: measure flux (when on + active), smooth it, integrate ω→θ, spin the wheel node.
     const updateWheelSpin = (dt: number): void => {
         if (spinEnabled && active) {
             runFluxPass(ctx.getActiveSim());
         }
-        // EMA-smooth the catch count so the spin doesn't jitter with the async readback cadence.
+        // EMA-smooth the catch count so the spin doesn't jitter with the async readback cadence. The
+        // count is speed-gated + restricted to the UPPER rim band (only water riding/striking the top of
+        // the wheel), so the base pool the lower rim sits in is excluded.
         const targetCount = spinEnabled ? latestCount : 0;
         smoothedCount += (targetCount - smoothedCount) * Math.min(COUNT_EMA_RATE * dt, 1);
-        // Target angular speed from the smoothed count; relax the actual ω toward it (fixed spin sense —
-        // falling water drives a wheel one consistent way; the disk is z-symmetric so +X is as natural
-        // as −X). When off, ωTarget = 0 so ω coasts to a stop and the mesh holds still.
-        const omegaTarget = spinEnabled ? Math.min(driveStrength * smoothedCount, DRIVE_OMEGA_MAX) : 0;
+        // Map the count through a deadzone + span into a 0..1 flow fraction, then scale by the drive
+        // strength (ω at full flow). Below the deadzone there is too little water to turn the wheel →
+        // ωTarget 0 → it coasts to a stop; more water → proportionally faster (up to the safety clamp).
+        const flow = Math.max(0, Math.min(1, (smoothedCount - COUNT_DEADZONE) / COUNT_SPAN));
+        const omegaTarget = spinEnabled ? Math.min(driveStrength * flow, DRIVE_OMEGA_MAX) : 0;
         wheelOmega += (omegaTarget - wheelOmega) * Math.min(DRIVE_RESPONSIVENESS * dt, 1);
         if (omegaTarget === 0 && wheelOmega < 1e-4) {
             wheelOmega = 0; // fully at rest
         }
         wheelTheta = (wheelTheta + wheelOmega * dt) % TWO_PI; // integrate + wrap
-        if (wheelMesh) {
-            wheelMesh.rotation.x = wheelTheta; // axle = +X → spins the disk in place about C
+        if (wheelNode) {
+            // Spin the "wheel" TransformNode (repurposed as the axle pivot) — negative sense so the
+            // wheel turns the natural way for water falling onto it (the axle is local +X).
+            wheelNode.rotation.x = -wheelTheta;
         }
-        sdfData[35] = wheelTheta; // mirror θ into the wheel block (no-op for the symmetric SDF, kept in sync)
+        sdfData[35] = wheelTheta; // mirror θ into the wheel block (drives the rotating spokes)
         bakedData[35] = wheelTheta;
+        sdfData[37] = wheelOmega; // mirror ω → the spoke moving-boundary finite-difference reads this
+        bakedData[37] = wheelOmega;
         // Lightweight tuning read-out (throttled so it doesn't thrash layout every frame).
         if (++spinReadoutFrames >= 12) {
             spinReadoutFrames = 0;
@@ -614,8 +762,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const spinText = document.createElement("span");
     spinText.textContent = "Spin water wheel";
     spinRow.append(spinChk, spinText);
+    // Toggle the wheel spin (shared by the checkbox handler + restoreState).
+    const setSpin = (v: boolean): void => {
+        spinEnabled = v; // gates the flux pass (readback stops when off) + ω→0
+    };
     spinChk.onchange = (): void => {
-        spinEnabled = spinChk.checked; // gates the flux pass (readback stops when off) + ω→0
+        setSpin(spinChk.checked);
     };
 
     const driveRow = document.createElement("label");
@@ -625,17 +777,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const driveSlider = document.createElement("input");
     driveSlider.type = "range";
     driveSlider.min = "0";
-    driveSlider.max = "0.3";
-    driveSlider.step = "0.005";
+    driveSlider.min = "0";
+    driveSlider.max = String(DRIVE_OMEGA_MAX);
+    driveSlider.step = "0.1";
     driveSlider.value = String(driveStrength);
     driveSlider.style.flex = "1";
     const driveVal = document.createElement("span");
     driveVal.style.cssText = "min-width:34px;text-align:right;";
-    driveVal.textContent = driveStrength.toFixed(3);
+    driveVal.textContent = driveStrength.toFixed(1);
     driveRow.append(driveText, driveSlider, driveVal);
+    // Set the drive strength (shared by the slider handler + restoreState).
+    const setDrive = (v: number): void => {
+        driveStrength = v;
+        driveVal.textContent = driveStrength.toFixed(1);
+    };
     driveSlider.oninput = (): void => {
-        driveStrength = Number(driveSlider.value);
-        driveVal.textContent = driveStrength.toFixed(3);
+        setDrive(Number(driveSlider.value));
     };
 
     const spinReadoutEl = document.createElement("div");
@@ -899,16 +1056,311 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     };
 
+    // ── Analytic wheel SDF DEBUG viz: a face-on, colour-coded picture of what `sdWheel` actually
+    //    looks like (hub + N rotating spokes + the M perimeter bucket vanes / pockets), evaluated
+    //    on the CPU and overlaid on the REAL wheel so the user can directly compare gap counts. The
+    //    wheel is EXCLUDED from the baked grid, so the SDF-texture slice viewer above can't show it
+    //    — this evaluates the ANALYTIC sdWheel directly. Reuses the EXACT slice-viewer infra (the
+    //    writeSdfColor ramp, createTexture2DFromPixels + the textured-quad ShaderMaterial). Works in
+    //    BOTH analytic and baked mode (it does not depend on the bake). ──
+    // CPU port of the WGSL `sdWheel`, evaluated in the wheel's axle frame: perpendicular offset
+    // (perpY,perpZ) in the disk plane (world Y-Z), axial offset along the axle (world +X), at wheel
+    // angle `theta`. Mirrors the WGSL exactly — hub capped cylinder, the polar-repeat spoke bar,
+    // and the perimeter bucket band (sole ring + shrouds + M rotating vanes), all with the same
+    // fold + half-widths and the -θ phase convention (dt=0 here → phase = -θ; φ0 = spokePhase0).
+    const wheelSdfCpu = (perpY: number, perpZ: number, axial: number, theta: number, nSpokes: number, spokeHW: number, nBuckets: number, bucketPh0: number): number => {
+        const a = axial;
+        const rad = Math.hypot(perpY, perpZ);
+        const rInner = WHEEL_HUB_R;
+        const rOuter = WHEEL_R;
+        const T = WHEEL_T;
+        // Bucket-band radii (spokes stop at bInner = rim inner; the band [bInner,bOuter] is the rim+buckets).
+        const bOuter = rOuter + T;
+        const bInner = bOuter - BUCKET_DEPTH;
+        const bMid = 0.5 * (bInner + bOuter);
+        const bHalfR = 0.5 * (bOuter - bInner);
+        const bHalfA = T;
+        // Hub / axle capped cylinder (rotation-symmetric, static).
+        const qx = rad - rInner;
+        const qy = Math.abs(a - WHEEL_HUB_OFFSET) - WHEEL_HUB_HALF;
+        const hub = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0);
+        // Disk-plane angle + shared moving-boundary phase; the debug viz uses dt=0 → phase = -θ.
+        const phi = Math.atan2(perpZ, perpY);
+        const spokePhase = -theta;
+        // N radial spokes, polar-repeated, ending at the rim inner (bInner).
+        const n = Math.max(nSpokes, 1);
+        const sector = TWO_PI / n;
+        let rel = phi - spokePhase0 - spokePhase;
+        rel = rel - sector * Math.round(rel / sector);
+        const midR = 0.5 * (rInner + bInner); // spokes stop at the rim inner (like the real mesh)
+        const halfLenR = 0.5 * (bInner - rInner);
+        const sa = Math.abs(a) - SPOKE_HALF_AX;
+        const st = Math.abs(rad * rel) - spokeHW;
+        const sr = Math.abs(rad - midR) - halfLenR;
+        const spoke = Math.hypot(Math.max(sa, 0), Math.max(st, 0), Math.max(sr, 0)) + Math.min(Math.max(sa, Math.max(st, sr)), 0);
+        // Bucket band: sole (inner floor ring) + two side shrouds + M rotating radial vanes.
+        const soleRad = Math.abs(rad - bInner) - BUCKET_WALL;
+        const soleAx = Math.abs(a) - bHalfA;
+        const sole = Math.hypot(Math.max(soleRad, 0), Math.max(soleAx, 0)) + Math.min(Math.max(soleRad, soleAx), 0);
+        const shrAx = Math.abs(Math.abs(a) - bHalfA) - BUCKET_WALL;
+        const shrRad = Math.abs(rad - bMid) - bHalfR;
+        const shroud = Math.hypot(Math.max(shrRad, 0), Math.max(shrAx, 0)) + Math.min(Math.max(shrRad, shrAx), 0);
+        const m = Math.max(nBuckets, 1);
+        const bSector = TWO_PI / m;
+        let brel = phi - bucketPh0 - spokePhase; // buckets use their OWN 30-fold phase
+        brel = brel - bSector * Math.round(brel / bSector);
+        const vAx = Math.abs(a) - bHalfA;
+        const vT = Math.abs(rad * brel) - VANE_HALF_W;
+        const vR = Math.abs(rad - bMid) - bHalfR;
+        const vane = Math.hypot(Math.max(vAx, 0), Math.max(vT, 0), Math.max(vR, 0)) + Math.min(Math.max(vAx, Math.max(vT, vR)), 0);
+        return Math.min(Math.min(Math.min(sole, shroud), vane), Math.min(hub, spoke));
+    };
+
+    // Face-on debug quad: normal along the axle (world +X), spanning ±(WHEEL_R + margin) in the
+    // world Y-Z plane, centred on WHEEL_C. Placement mirrors the slice viewer's X-slab case
+    // (rotation −90° about Y → local X→world +Z (u), local Y→world +Y (v), normal→world −X), so the
+    // colour map is un-mirrored vs. the real wheel (the one verified orientation, reused verbatim).
+    const DBG_RES = 160; // CPU eval grid resolution (both axes)
+    const DBG_MARGIN = 0.6; // world-unit slack beyond the rim radius so the whole ring is inside
+    let dbgActive = false; // "Debug wheel SDF" toggle
+    let dbgTexN = 1; // current debug-texture side (forces a re-create on the first real build)
+    const dbgPx = new Uint8Array(DBG_RES * DBG_RES * 4); // reused RGBA scratch
+    // A second textured quad, its OWN material + texture (a ShaderMaterial can only carry one slice
+    // texture, so the debug quad can't share sliceMat). Created eagerly at boot — like sliceMat —
+    // so the ShaderMaterial family's single-mesh rebuilder is wired at scene-build time.
+    const dbgMat: ShaderMaterial = createShaderMaterial({
+        name: "sdfWheelDbg",
+        vertexSource: SLICE_VS,
+        fragmentSource: SLICE_FS,
+        attributes: ["position", "uv"],
+        uniforms: ["world", "viewProjection"],
+        samplers: [{ name: "sliceTex", sampleType: "float", viewDimension: "2d" }],
+        needAlphaBlending: true,
+        blendMode: "alpha",
+        depthWrite: false,
+        backFaceCulling: false,
+        depthCompare: "greater-equal",
+    });
+    let dbgTex: Texture2D = createTexture2DFromPixels(engine, new Uint8Array(4), 1, 1, { minFilter: "linear", magFilter: "linear" });
+    setShaderTexture(dbgMat, "sliceTex", dbgTex);
+    const dbgPlane = createPlane(engine, {});
+    dbgPlane.name = "sdfWheelDebugPlane";
+    dbgPlane.material = dbgMat;
+    addToScene(ctx.scene, dbgPlane);
+    setMeshVisible(dbgPlane, false);
+
+    // ── Flux-region visualiser (shown with "Debug wheel SDF") ──────────────────────────────────
+    // A translucent green half-annular prism outlining EXACTLY the region the flux reduction counts
+    // to derive the wheel's drive: the UPPER half (perp.y>0) of the annulus [fluxRimInner, fluxRadCap]
+    // around the axle through WHEEL_C, axially |x-Cx| ≤ fluxAxHalf. Only MOVING water inside this box
+    // spins the wheel — so if the pour lands outside it, the wheel won't turn (this makes that visible).
+    const FLUX_VS = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*(shaderSystem.world*vec4<f32>(input.position,1.0));return out;}`;
+    const FLUX_FS = `@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(0.15,1.0,0.35,0.24);}`;
+    const fluxMat: ShaderMaterial = createShaderMaterial({
+        name: "wheelFluxRegion",
+        vertexSource: FLUX_VS,
+        fragmentSource: FLUX_FS,
+        attributes: ["position"],
+        uniforms: ["world", "viewProjection"],
+        needAlphaBlending: true,
+        blendMode: "alpha",
+        depthWrite: false,
+        backFaceCulling: false,
+        depthCompare: "greater-equal",
+    });
+    // Build the half-annular prism (local coords about WHEEL_C; axle = local/world +X). φ∈[-π/2,π/2]
+    // so local Y = r·cos φ ≥ 0 → the +Y (upper) half, matching the reduction's perp.y>0 gate.
+    const buildFluxRegion = (rIn: number, rOut: number, axHalf: number, seg: number): { positions: Float32Array; indices: Uint32Array } => {
+        const p: number[] = [];
+        const idx: number[] = [];
+        const inX0: number[] = [], outX0: number[] = [], inX1: number[] = [], outX1: number[] = [];
+        const push = (x: number, y: number, z: number): number => { p.push(x, y, z); return p.length / 3 - 1; };
+        for (let j = 0; j <= seg; j++) {
+            const phi = -Math.PI / 2 + Math.PI * (j / seg);
+            const cy = Math.cos(phi), sy = Math.sin(phi);
+            inX0.push(push(-axHalf, rIn * cy, rIn * sy));
+            outX0.push(push(-axHalf, rOut * cy, rOut * sy));
+            inX1.push(push(axHalf, rIn * cy, rIn * sy));
+            outX1.push(push(axHalf, rOut * cy, rOut * sy));
+        }
+        const quad = (a: number, b: number, c: number, d: number): void => { idx.push(a, b, c, a, c, d); };
+        for (let j = 0; j < seg; j++) {
+            quad(outX0[j]!, outX0[j + 1]!, outX1[j + 1]!, outX1[j]!); // outer wall
+            quad(inX1[j]!, inX1[j + 1]!, inX0[j + 1]!, inX0[j]!);     // inner wall
+            quad(inX0[j]!, outX0[j]!, outX0[j + 1]!, inX0[j + 1]!);   // −X annular cap
+            quad(inX1[j + 1]!, outX1[j + 1]!, outX1[j]!, inX1[j]!);   // +X annular cap
+        }
+        quad(inX0[0]!, inX1[0]!, outX1[0]!, outX0[0]!);             // φ=-π/2 end cap
+        quad(outX0[seg]!, outX1[seg]!, inX1[seg]!, inX0[seg]!);     // φ=+π/2 end cap
+        return { positions: new Float32Array(p), indices: new Uint32Array(idx) };
+    };
+    const fluxGeo = buildFluxRegion(fluxRimInner, fluxRadCap, fluxAxHalf, 48);
+    const fluxMesh = createMeshFromData(engine, "wheelFluxRegion", fluxGeo.positions, new Float32Array(fluxGeo.positions.length), fluxGeo.indices);
+    fluxMesh.name = "wheelFluxRegion";
+    fluxMesh.material = fluxMat;
+    addToScene(ctx.scene, fluxMesh);
+    fluxMesh.position.set(WHEEL_C[0], WHEEL_C[1], WHEEL_C[2]);
+    setMeshVisible(fluxMesh, false);
+
+    // Rebuild the debug image for the CURRENT wheel θ / N / thickness and keep the quad glued to the
+    // wheel disk (WHEEL_C, normal along the axle). Cheap (160×160 CPU evals) + throttled (update()).
+    const refreshWheelDebug = (): void => {
+        const half = WHEEL_R + DBG_MARGIN;
+        const sizeD = 2 * half;
+        const step = sizeD / (DBG_RES - 1); // world units per texel (≈ the disk cell for the ramp)
+        for (let j = 0; j < DBG_RES; j++) {
+            const perpY = -half + j * step; // v → world +Y
+            const rowBase = j * DBG_RES;
+            for (let k = 0; k < DBG_RES; k++) {
+                const perpZ = -half + k * step; // u → world +Z
+                const dist = wheelSdfCpu(perpY, perpZ, 0, wheelTheta, spokeCount, spokeHalfW, bucketCount, bucketPhase0);
+                writeSdfColor(dbgPx, (rowBase + k) * 4, dist, step);
+            }
+        }
+        if (dbgTexN !== DBG_RES) {
+            releaseTexture(dbgTex); // pair the acquire inside createTexture2DFromPixels (old dims)
+            dbgTex = createTexture2DFromPixels(engine, dbgPx, DBG_RES, DBG_RES, { minFilter: "linear", magFilter: "linear" });
+            dbgTexN = DBG_RES;
+            setShaderTexture(dbgMat, "sliceTex", dbgTex);
+        } else {
+            updateTexture2DFromPixels(engine, dbgTex, dbgPx);
+        }
+        // Face-on to the disk at WHEEL_C, normal along the axle (world −X after the −90° Y turn).
+        dbgPlane.rotation.set(0, -Math.PI / 2, 0);
+        dbgPlane.scaling.set(sizeD, sizeD, 1);
+        dbgPlane.position.set(WHEEL_C[0], WHEEL_C[1], WHEEL_C[2]);
+    };
+
+    const updateDbgVisibility = (): void => {
+        setMeshVisible(dbgPlane, active && dbgActive);
+        setMeshVisible(fluxMesh, active && dbgActive); // flux region shown alongside the debug quad
+    };
+
+    // ── "Debug wheel SDF" toggle + the "Wheel spokes" / "Spoke thickness" sliders ──────────────
+    const dbgRow = document.createElement("label");
+    dbgRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
+    const dbgChk = document.createElement("input");
+    dbgChk.type = "checkbox";
+    const dbgText = document.createElement("span");
+    dbgText.textContent = "Debug wheel SDF";
+    dbgRow.append(dbgChk, dbgText);
+
+    const spokeRow = document.createElement("label");
+    spokeRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;color:#9fb4cc;font-size:12px;";
+    const spokeText = document.createElement("span");
+    spokeText.textContent = "Wheel spokes";
+    const spokeSlider = document.createElement("input");
+    spokeSlider.type = "range";
+    spokeSlider.min = "6";
+    spokeSlider.max = "48";
+    spokeSlider.step = "1";
+    spokeSlider.value = String(spokeCount);
+    spokeSlider.style.flex = "1";
+    const spokeVal = document.createElement("span");
+    spokeVal.style.cssText = "min-width:24px;text-align:right;";
+    spokeVal.textContent = String(spokeCount);
+    spokeRow.append(spokeText, spokeSlider, spokeVal);
+
+    const thickRow = document.createElement("label");
+    thickRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0 6px;color:#9fb4cc;font-size:12px;";
+    const thickText = document.createElement("span");
+    thickText.textContent = "Spoke thickness";
+    const thickSlider = document.createElement("input");
+    thickSlider.type = "range";
+    thickSlider.min = "0.05";
+    thickSlider.max = "0.4";
+    thickSlider.step = "0.01";
+    thickSlider.value = String(spokeHalfW);
+    thickSlider.style.flex = "1";
+    const thickVal = document.createElement("span");
+    thickVal.style.cssText = "min-width:34px;text-align:right;";
+    thickVal.textContent = spokeHalfW.toFixed(2);
+    thickRow.append(thickText, thickSlider, thickVal);
+
+    const bucketRow = document.createElement("label");
+    bucketRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0 6px;color:#9fb4cc;font-size:12px;";
+    const bucketText = document.createElement("span");
+    bucketText.textContent = "Wheel buckets";
+    const bucketSlider = document.createElement("input");
+    bucketSlider.type = "range";
+    bucketSlider.min = "12";
+    bucketSlider.max = "48";
+    bucketSlider.step = "1";
+    bucketSlider.value = String(bucketCount);
+    bucketSlider.style.flex = "1";
+    const bucketVal = document.createElement("span");
+    bucketVal.style.cssText = "min-width:24px;text-align:right;";
+    bucketVal.textContent = String(bucketCount);
+    bucketRow.append(bucketText, bucketSlider, bucketVal);
+
+    // Live setters shared by the sliders + restoreState — re-pack the wheel block for BOTH modes
+    // (collision) and refresh the debug picture (viz) so the two stay in lockstep.
+    const setSpokeCount = (v: number): void => {
+        spokeCount = Math.max(1, Math.round(v));
+        packWheel(sdfData); // N → float 38 in BOTH blocks
+        packWheel(bakedData);
+        writeSdfParams();
+        spokeVal.textContent = String(spokeCount);
+        if (active && dbgActive) {
+            refreshWheelDebug();
+        }
+    };
+    const setSpokeThickness = (v: number): void => {
+        spokeHalfW = v;
+        packWheel(sdfData); // spokeHalfW → wheelA.x (float 28) in BOTH blocks
+        packWheel(bakedData);
+        writeSdfParams();
+        thickVal.textContent = spokeHalfW.toFixed(2);
+        if (active && dbgActive) {
+            refreshWheelDebug();
+        }
+    };
+    const setBucketCount = (v: number): void => {
+        bucketCount = Math.max(1, Math.round(v));
+        packWheel(sdfData); // M → wheelA.y (float 29) in BOTH blocks
+        packWheel(bakedData);
+        writeSdfParams();
+        bucketVal.textContent = String(bucketCount);
+        if (active && dbgActive) {
+            refreshWheelDebug();
+        }
+    };
+
+    dbgChk.onchange = (): void => {
+        dbgActive = dbgChk.checked;
+        if (dbgActive) {
+            refreshWheelDebug(); // build the picture immediately (don't wait for the throttle)
+        }
+        updateDbgVisibility();
+    };
+    spokeSlider.oninput = (): void => {
+        setSpokeCount(Number(spokeSlider.value));
+    };
+    thickSlider.oninput = (): void => {
+        setSpokeThickness(Number(thickSlider.value));
+    };
+    bucketSlider.oninput = (): void => {
+        setBucketCount(Number(bucketSlider.value));
+    };
+
     // Merge every tower mesh's CPU geometry into ONE world-space triangle soup, bake it into a
     // signed-distance grid, and upload it to a storage buffer the sims sample. One-time
     // (~sub-second) synchronous cost right after the async load; logged. Non-fatal on failure.
     const bakeSceneSdf = (): void => {
-        // 1) Gather meshes that actually carry CPU positions + indices.
+        // 1) Gather meshes that actually carry CPU positions + indices — EXCLUDING the water wheel
+        //    mesh (it spins, so its world transform is dynamic; the fluid collides with the analytic
+        //    wheel SDF instead). Log how many tris the wheel had so the exclusion is visible.
         let totalV = 0;
         let totalI = 0;
+        let wheelTris = 0;
         const usable: Mesh[] = [];
         for (const mesh of towerMeshes) {
             const cm = mesh as CpuMeshNode;
+            if (mesh === wheelMesh) {
+                wheelTris = cm._cpuIndices ? cm._cpuIndices.length / 3 : 0;
+                continue; // the whole wheel mesh is skipped from the bake
+            }
             if (!cm._cpuPositions || cm._cpuPositions.length === 0 || !cm._cpuIndices || cm._cpuIndices.length === 0) {
                 continue;
             }
@@ -931,7 +1383,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let pOff = 0;
         let iOff = 0;
         let vBase = 0;
-        let excluded = 0; // wheel-disk triangles skipped from the bake (carved so the wheel can spin)
         let minX = Infinity,
             minY = Infinity,
             minZ = Infinity,
@@ -973,25 +1424,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 maxZ = Math.max(maxZ, z);
             }
             const vCount = src.length / 3;
-            // Copy indices triangle-by-triangle, SKIPPING any triangle whose world centroid lies
-            // inside the wheel-disk cylinder. This carves the wheel out of the baked grid so a
-            // (Stage-2) spinning wheel won't fight a static baked copy; the analytic wheel SDF is
-            // unioned back in. Positions above stay in mergedPos (unreferenced verts are harmless
-            // and keep the merged AABB / grid bounds unchanged so the carved region reads outside).
             for (let i = 0; i < idx.length; i += 3) {
-                const a = idx[i]! + vBase;
-                const b = idx[i + 1]! + vBase;
-                const c = idx[i + 2]! + vBase;
-                const gx = (mergedPos[a * 3]! + mergedPos[b * 3]! + mergedPos[c * 3]!) / 3;
-                const gy = (mergedPos[a * 3 + 1]! + mergedPos[b * 3 + 1]! + mergedPos[c * 3 + 1]!) / 3;
-                const gz = (mergedPos[a * 3 + 2]! + mergedPos[b * 3 + 2]! + mergedPos[c * 3 + 2]!) / 3;
-                if (inWheelCylinder(gx, gy, gz)) {
-                    excluded++;
-                    continue;
-                }
-                mergedIdx[iOff++] = a; // Uint16→Uint32 normalised by the target array
-                mergedIdx[iOff++] = b;
-                mergedIdx[iOff++] = c;
+                mergedIdx[iOff++] = idx[i]! + vBase; // Uint16→Uint32 normalised by the target array
+                mergedIdx[iOff++] = idx[i + 1]! + vBase;
+                mergedIdx[iOff++] = idx[i + 2]! + vBase;
             }
             vBase += vCount;
         }
@@ -1037,6 +1473,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             bakeReady = true;
             bakedChk.disabled = false;
+            // A preset / restored state may have requested baked mode BEFORE the bake finished
+            // (desiredBaked). Honour it now that the grid exists, and sync the checkbox.
+            if (desiredBaked) {
+                setBakedMode(true);
+                bakedChk.checked = true;
+            }
             // The visualizer can now slice the grid — enable its controls (extraControls() also
             // re-syncs these if the bake finished while the demo was off-screen).
             vizChk.disabled = false;
@@ -1046,7 +1488,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             bakedStatusEl.textContent = bakeStatus;
             // eslint-disable-next-line no-console
             console.warn(
-                `[marbleTower] baked mesh SDF: ${bakeStatus} | wheel-excluded ${excluded} tris | ` +
+                `[marbleTower] baked mesh SDF: ${bakeStatus} | wheel-excluded ${wheelTris} tris | ` +
                     `origin=[${grid.origin.map((v) => v.toFixed(2)).join(", ")}] cell=${grid.cellSize}`
             );
         } catch (err) {
@@ -1057,121 +1499,133 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     };
 
-    // Split the wheel's rim disk out of its source mesh into a standalone mesh so Stage 2 can
-    // rotate it about the axle. Runs AFTER bakeSceneSdf (which already carved the same triangles
-    // from the grid via the SAME inWheelCylinder test). Every triangle whose WORLD centroid lies
-    // inside the wheel cylinder is MOVED into a new de-indexed mesh (positions stored in axle-local
-    // space = world − C, so the mesh's origin sits on the axle at C and a Stage-2 rotation spins the
-    // disk in place). The source mesh is rebuilt WITHOUT those triangles (same vertex arrays +
-    // filtered indices), so the untouched geometry (the coaxial axle shaft) renders identically.
-    const splitWheelMesh = (): void => {
-        const wPos: number[] = [];
-        const wNrm: number[] = [];
-        const wUv: number[] = [];
-        let moved = 0;
-        for (const mesh of towerMeshes) {
-            const cm = mesh as CpuMeshNode;
-            const pos = cm._cpuPositions;
-            const idx = cm._cpuIndices;
-            const nrm = cm._cpuNormals;
-            // Only meshes with positions + indices + normals can be rebuilt (normals are mandatory
-            // for resizeMeshGeometry). Every glTF leaf here carries normals, so this never skips the
-            // wheel; it just guards against removing triangles we couldn't cleanly rebuild without.
-            if (!pos || pos.length === 0 || !idx || idx.length === 0 || !nrm) {
-                continue;
-            }
-            const uv = cm._cpuUvs;
-            const w = mesh.worldMatrix;
-            const m0 = w[0]!,
-                m1 = w[1]!,
-                m2 = w[2]!,
-                m4 = w[4]!,
-                m5 = w[5]!,
-                m6 = w[6]!,
-                m8 = w[8]!,
-                m9 = w[9]!,
-                m10 = w[10]!,
-                m12 = w[12]!,
-                m13 = w[13]!,
-                m14 = w[14]!;
-            const kept: number[] = [];
-            let removedHere = 0;
-            for (let t = 0; t < idx.length; t += 3) {
-                const tri = [idx[t]!, idx[t + 1]!, idx[t + 2]!];
-                // World centroid of the triangle.
-                let gx = 0,
-                    gy = 0,
-                    gz = 0;
-                for (const vi of tri) {
-                    const lx = pos[vi * 3]!,
-                        ly = pos[vi * 3 + 1]!,
-                        lz = pos[vi * 3 + 2]!;
-                    gx += m0 * lx + m4 * ly + m8 * lz + m12;
-                    gy += m1 * lx + m5 * ly + m9 * lz + m13;
-                    gz += m2 * lx + m6 * ly + m10 * lz + m14;
-                }
-                if (!inWheelCylinder(gx / 3, gy / 3, gz / 3)) {
-                    kept.push(tri[0]!, tri[1]!, tri[2]!);
-                    continue;
-                }
-                // Move: emit 3 de-indexed verts (world − C for position, world dir for normal).
-                for (const vi of tri) {
-                    const lx = pos[vi * 3]!,
-                        ly = pos[vi * 3 + 1]!,
-                        lz = pos[vi * 3 + 2]!;
-                    const wx = m0 * lx + m4 * ly + m8 * lz + m12;
-                    const wy = m1 * lx + m5 * ly + m9 * lz + m13;
-                    const wz = m2 * lx + m6 * ly + m10 * lz + m14;
-                    wPos.push(wx - WHEEL_C[0], wy - WHEEL_C[1], wz - WHEEL_C[2]);
-                    const nx0 = nrm[vi * 3]!,
-                        ny0 = nrm[vi * 3 + 1]!,
-                        nz0 = nrm[vi * 3 + 2]!;
-                    let nx = m0 * nx0 + m4 * ny0 + m8 * nz0;
-                    let ny = m1 * nx0 + m5 * ny0 + m9 * nz0;
-                    let nz = m2 * nx0 + m6 * ny0 + m10 * nz0;
-                    const nl = Math.hypot(nx, ny, nz) || 1;
-                    nx /= nl;
-                    ny /= nl;
-                    nz /= nl;
-                    wNrm.push(nx, ny, nz);
-                    if (uv) {
-                        wUv.push(uv[vi * 2]!, uv[vi * 2 + 1]!);
-                    } else {
-                        wUv.push(0, 0);
-                    }
-                }
-                moved++;
-                removedHere++;
-            }
-            // Rebuild this source mesh WITHOUT the moved triangles (only if any were removed).
-            if (removedHere > 0) {
-                resizeMeshGeometry(engine, mesh, pos, nrm, new Uint32Array(kept), uv);
-            }
-        }
-        if (moved === 0) {
-            // eslint-disable-next-line no-console
-            console.warn("[marbleTower] wheel split: no triangles matched the wheel cylinder");
+    // Detect the wheel's spoke count N (and base phase φ0) from the mesh geometry so the collision
+    // spokes track the VISIBLE wheel. Project every wheel-mesh vertex into the disk plane (world
+    // frame, perpendicular to the world +X axle, around WHEEL_C), restrict to a rim-inclusive band
+    // (the marbleTower wheel carries its N-fold symmetry on the rim; the mid-span is nearly empty),
+    // and take the rotational-symmetry order via a Fourier scan: N maximizes |Σ exp(i·N·φ)|. The
+    // argument of that sum gives N·φ0, so φ0 = arg/N. Falls back to N=12 when the peak is weak.
+    const detectSpokes = (): void => {
+        if (!wheelMesh) {
             return;
         }
-        const positions = new Float32Array(wPos);
-        const normals = new Float32Array(wNrm);
-        const uvs = new Float32Array(wUv);
-        const indices = new Uint32Array(positions.length / 3);
-        for (let i = 0; i < indices.length; i++) {
-            indices[i] = i;
+        const pos = (wheelMesh as CpuMeshNode)._cpuPositions;
+        if (!pos || pos.length === 0) {
+            return;
         }
-        const mesh = createMeshFromData(engine, "marbleTower-wheel", positions, normals, indices, uvs);
-        const mat = createStandardMaterial();
-        mat.diffuseColor = [0.28, 0.18, 0.1]; // dark wood (single representative material for the rim)
-        mat.specularColor = [0.05, 0.05, 0.05];
-        mat.backFaceCulling = false; // world-space rebuild loses the source's reflected winding → draw both sides
-        mesh.material = mat;
-        mesh.position.set(WHEEL_C[0], WHEEL_C[1], WHEEL_C[2]); // origin on the axle → Stage-2 rotation spins in place
-        addToScene(ctx.scene, mesh);
-        wheelMesh = mesh;
-        setMeshVisible(mesh, active && containerVisible);
+        const w = wheelMesh.worldMatrix; // column-major; θ=0 pose (detected before repurposeWheelPivot)
+        // Only the Y/Z rows are needed — the disk is the world Y-Z plane (axle = world +X).
+        const m1 = w[1]!,
+            m2 = w[2]!,
+            m5 = w[5]!,
+            m6 = w[6]!,
+            m9 = w[9]!,
+            m10 = w[10]!,
+            m13 = w[13]!,
+            m14 = w[14]!;
+        const cy = WHEEL_C[1];
+        const cz = WHEEL_C[2];
+        const rLo = WHEEL_HUB_R + 0.5; // exclude the hub / axle shaft
+        const rHi = WHEEL_R + WHEEL_T + 0.5; // include the whole rim band
+        const NMIN = 3;
+        const NMAX = 36; // extend past the 30-fold bucket structure so its phase can be read too
+        const re = new Float64Array(NMAX + 1);
+        const im = new Float64Array(NMAX + 1);
+        let cnt = 0;
+        for (let i = 0; i < pos.length; i += 3) {
+            const lx = pos[i]!,
+                ly = pos[i + 1]!,
+                lz = pos[i + 2]!;
+            const y = m1 * lx + m5 * ly + m9 * lz + m13;
+            const z = m2 * lx + m6 * ly + m10 * lz + m14;
+            const dy = y - cy;
+            const dz = z - cz;
+            const rad = Math.hypot(dy, dz);
+            if (rad < rLo || rad > rHi) {
+                continue;
+            }
+            const ang = Math.atan2(dz, dy); // matches sdWheel's atan2(perp.z, perp.y)
+            cnt++;
+            for (let n = NMIN; n <= NMAX; n++) {
+                re[n]! += Math.cos(n * ang);
+                im[n]! += Math.sin(n * ang);
+            }
+        }
+        let bestN = 12;
+        let bestMag = 0;
+        let bestPhase = 0;
+        if (cnt > 0) {
+            for (let n = NMIN; n <= 18; n++) { // spoke fundamental (12) lives here — exclude its 24/36 harmonics
+                const mag = Math.hypot(re[n]!, im[n]!) / cnt;
+                if (mag > bestMag) {
+                    bestMag = mag;
+                    bestN = n;
+                    bestPhase = Math.atan2(im[n]!, re[n]!) / n;
+                }
+            }
+        }
+        // N is the "Wheel spokes" slider's value — NOT overwritten here, since the spoke MIDDLES
+        // carry no vertices and the Fourier count is unreliable for this wheel. We keep the peak
+        // only as a diagnostic hint and seed the spoke base phase φ0 from it. The 30-fold buckets
+        // get their OWN base phase from the n=bucketCount harmonic (independent of the 12 spokes).
+        if (bestMag >= 0.15) {
+            spokePhase0 = bestPhase;
+        } else {
+            spokePhase0 = 0;
+        }
+        if (cnt > 0 && bucketCount >= NMIN && bucketCount <= NMAX) {
+            const bMagN = Math.hypot(re[bucketCount]!, im[bucketCount]!) / cnt;
+            bucketPhase0 = bMagN >= 0.05 ? Math.atan2(im[bucketCount]!, re[bucketCount]!) / bucketCount : spokePhase0;
+        } else {
+            bucketPhase0 = spokePhase0;
+        }
+        packWheel(sdfData); // push φ0 (float 39) into BOTH blocks (N stays the slider value)
+        packWheel(bakedData);
+        writeSdfParams();
         // eslint-disable-next-line no-console
-        console.warn(`[marbleTower] wheel split: moved ${moved} tris into a standalone mesh at C=[${WHEEL_C.map((v) => v.toFixed(2)).join(", ")}]`);
+        console.warn(
+            `[marbleTower] wheel spokes: geometry peak N=${bestN} mag=${bestMag.toFixed(3)} (${cnt} rim verts) ` +
+                `— hint only; slider N=${spokeCount}, phase0=${spokePhase0.toFixed(4)}, bucketPhase0=${bucketPhase0.toFixed(4)} (dial N by eye)`
+        );
+    };
+
+    // Repurpose the glTF "wheel" TransformNode (identity transform) as the spin PIVOT, using the
+    // REAL textured wheel mesh — no re-created disk, no geometry split. The node's pivot sits at the
+    // mesh's local ORIGIN, which is NOT on the axle; the axle is the local-X line through the disk
+    // centre (Cy,Cz) computed from the mesh's local geometry (Cy=(minY+maxY)/2, Cz=(minZ+maxZ)/2;
+    // the axle runs along local X so its X is irrelevant → use 0). We move the node to that axle
+    // point and counter-translate the mesh by the negative, so at θ=0 the world transform is
+    // unchanged (parent·T(0,Cy,Cz)·T(0,−Cy,−Cz) = parent·I) and a rotation about the node's local X
+    // (wheelNode.rotation.x = θ) spins the disk IN PLACE about the axle line. Offsets are in the
+    // wheel node's local frame (glTF units, same as _cpuPositions).
+    const repurposeWheelPivot = (): void => {
+        if (!wheelNode || !wheelMesh) {
+            // eslint-disable-next-line no-console
+            console.warn("[marbleTower] wheel pivot: 'wheel' node/mesh not found — spin disabled");
+            return;
+        }
+        const pos = (wheelMesh as CpuMeshNode)._cpuPositions;
+        if (!pos || pos.length === 0) {
+            return;
+        }
+        let minY = Infinity,
+            maxY = -Infinity,
+            minZ = Infinity,
+            maxZ = -Infinity;
+        for (let i = 0; i < pos.length; i += 3) {
+            const y = pos[i + 1]!,
+                z = pos[i + 2]!;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+        const cy = (minY + maxY) / 2;
+        const cz = (minZ + maxZ) / 2;
+        wheelNode.position.set(0, cy, cz); // move the pivot node onto the axle line
+        wheelMesh.position.set(0, -cy, -cz); // counter-translate the mesh → θ=0 is a no-op
+        // eslint-disable-next-line no-console
+        console.warn(`[marbleTower] wheel pivot: axle at local (Cy=${cy.toFixed(1)}, Cz=${cz.toFixed(1)}) — node +offset, mesh −offset`);
     };
 
     void (async (): Promise<void> => {
@@ -1189,6 +1643,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 console.warn("[marbleTower] asset loaded but contains no meshes");
                 return;
             }
+
+            // Locate the glTF "wheel" TransformNode by name; its child Mesh leaf (with `_gpu`) is
+            // the real textured water-wheel geometry. Kept for (a) bake exclusion and (b) spin pivot.
+            wheelNode = findNodeByName(root, "wheel");
+            if (wheelNode) {
+                for (const c of wheelNode.children) {
+                    if ("_gpu" in c) {
+                        wheelMesh = c as unknown as Mesh;
+                        break;
+                    }
+                }
+            }
+            // eslint-disable-next-line no-console
+            console.warn(`[marbleTower] wheel node ${wheelNode ? "found" : "NOT found"} | wheel mesh ${wheelMesh ? "found" : "NOT found"}`);
 
             // 1) Uniformly scale the root so the model stands TOWER_HEIGHT tall. Multiply
             //    the EXISTING root scale (preserves any handedness sign baked by the
@@ -1283,11 +1751,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             // Bake the real marble-run geometry into a signed-distance grid (off the hot path,
             // once, right after the final transform is in place). The "Baked SDF" toggle enables.
-            // Excludes the wheel disk from the grid.
+            // The water wheel mesh is EXCLUDED from the grid (it spins; the fluid collides with the
+            // analytic wheel SDF instead).
             bakeSceneSdf();
-            // Split the wheel's rim disk into its own mesh (Stage-2-rotatable). AFTER the bake so
-            // the same triangles are carved from the grid and moved out of the source mesh together.
-            splitWheelMesh();
+            // Detect the spoke count / phase from the wheel mesh BEFORE repurposing its pivot (the
+            // repurpose is a θ=0 no-op on world positions, but detecting first keeps the frame clean).
+            detectSpokes();
+            // Repurpose the "wheel" node as the spin pivot on the REAL wheel mesh (no split / re-create).
+            repurposeWheelPivot();
         } catch (err) {
             // Non-fatal: the demo still works with just the water + placeholder floor.
             // eslint-disable-next-line no-console
@@ -1306,24 +1777,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             physScale: 0.8,
             count: 150000,
             camera: { alpha: -1.2, beta: 1.15, radius: 30 },
+            // Open in baked mode with the wheel spinning (baked SDF captures the real tower; the
+            // analytic wheel + rotating spokes/buckets are unioned on top and stir/carry the water).
+            demoState: { bakedActive: true, wheelSdfEnabled: true, spinEnabled: true, driveStrength: 1.0, spokeCount: 12, spokeThickness: 0.18, bucketCount: 30 },
         },
         "MLS-MPM": {
-            schema: { gravity: 19.4, stiffness: 1020, viscosity: 0.02, restDensity: 73.5, damping: 0.998, affineDamping: 0.84, groundDamp: 0.85, groundDampHeight: 1, restitution: 1, substeps: 2 },
-            demoParams: { centralSpeed: 2, emitRate: 1.5, nozzleRadius: 0.2 },
+            schema: { gravity: 11.1, stiffness: 1160, viscosity: 0.02, restDensity: 47.5, damping: 1, affineDamping: 0.84, groundDamp: 0.85, groundDampHeight: 1, restitution: 1, substeps: 2 },
+            demoParams: { centralSpeed: 0.5, emitRate: 2.76, nozzleRadius: 0.25 },
             color: "#bfe9f3",
             half: true,
             thicknessDownscale: 6,
             absorption: 3.6,
             size: 0.3,
             physScale: 0.5,
-            count: 150000,
-            camera: { alpha: -7.113995853380378, beta: 1.1888512326265948, radius: 23.126190088504494 },
+            count: 200000,
+            camera: { alpha: -0.4172960178148234, beta: 1.2587129923753027, radius: 13.403067826684495 },
             renderMode: "surface",
             refraction: 0.02,
             specular: 250,
             depthBlur: 20,
             depthBlurThreshold: 10,
-            thicknessBlur: 5,
+            thicknessBlur: 18,
             surfaceFilter: "narrowRange",
             narrowDelta: 10,
             narrowMu: 1,
@@ -1347,6 +1821,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 density: 50,
                 subsurfaceStrength: 0.15,
             },
+            // Default demo look: baked SDF (real tower geometry) with the water wheel on and its
+            // spokes/buckets spinning, so the tower opens exactly as the curated screenshot.
+            demoState: { bakedActive: true, wheelSdfEnabled: true, spinEnabled: true, driveStrength: 1.0, spokeCount: 12, spokeThickness: 0.18, bucketCount: 30 },
         },
     };
 
@@ -1369,11 +1846,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (const m of towerMeshes) {
                 setMeshVisible(m, containerVisible);
             }
-            if (wheelMesh) {
-                setMeshVisible(wheelMesh, containerVisible);
-            }
             setMeshVisible(ctx.ground, true);
             updatePlaneVisibility(); // reveal the SDF slice plane if the tool is on + grid baked
+            updateDbgVisibility(); // reveal the wheel-SDF debug quad if that tool is on
+            if (dbgActive) {
+                refreshWheelDebug(); // make the picture fresh the moment the demo comes on-screen
+            }
             // Raise the orbit target to the tower's mid-height so the tall model is framed.
             ctx.camera.target.x = 0;
             ctx.camera.target.y = TOWER_HEIGHT * 0.5;
@@ -1384,10 +1862,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (const m of towerMeshes) {
                 setMeshVisible(m, false);
             }
-            if (wheelMesh) {
-                setMeshVisible(wheelMesh, false);
-            }
             updatePlaneVisibility(); // hide the SDF slice plane along with the tower
+            updateDbgVisibility(); // hide the wheel-SDF debug quad along with the tower
             ctx.camera.target.x = 0;
             ctx.camera.target.y = 6;
             ctx.camera.target.z = 0;
@@ -1397,14 +1873,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (const m of towerMeshes) {
                 setMeshVisible(m, active && v);
             }
-            if (wheelMesh) {
-                setMeshVisible(wheelMesh, active && v);
-            }
         },
         update(dt: number): void {
-            // Stage 2: measure the liquid reaching the wheel → integrate ω → spin the split wheel mesh
-            // (this also refreshes θ at float 35 in BOTH param blocks before they are uploaded below).
+            // Stage 2: measure the MOVING liquid reaching the wheel → integrate ω → spin the wheel
+            // pivot node (this also refreshes θ at float 35 in BOTH param blocks before upload below).
             updateWheelSpin(dt);
+            // Refresh the analytic-wheel SDF debug picture EVERY frame so it rotates as smoothly as
+            // the mesh (160² CPU evals + a small texture upload — cheap). Gated on toggle + active.
+            if (active && dbgActive) {
+                refreshWheelDebug();
+            }
             // Re-write the ACTIVE param block every frame — analytic packs the tower boxes, baked packs
             // the grid origin/dims (both now carry the fresh θ). This keeps the spare tier / grid slots
             // alive against the core's per-switch clearSceneHoles() (which zeroes floats 8..39).
@@ -1412,9 +1890,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         },
         demoParams(): DemoParam[] {
             return [
-                { key: "centralSpeed", label: "Top pour speed", type: "number", min: 0.5, max: 16, step: 0.25, value: marbleParams.centralSpeed },
+                { key: "centralSpeed", label: "Top pour speed", type: "number", min: 0, max: 16, step: 0.25, value: marbleParams.centralSpeed },
                 { key: "nozzleRadius", label: "Nozzle radius", type: "number", min: 0.1, max: 0.8, step: 0.05, value: marbleParams.nozzleRadius },
-                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0.02, max: 3, step: 0.02, value: marbleParams.emitRate },
+                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0, max: 3, step: 0.02, value: marbleParams.emitRate },
             ];
         },
         applyParam(key: string, value: number | boolean | string): void {
@@ -1436,11 +1914,59 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             sliceSlider.disabled = !bakeReady;
             // Wheel toggle persists across re-enters like the others.
             wheelChk.checked = wheelSdfEnabled;
+            // Wheel-spoke tuning + the analytic-wheel debug toggle persist across re-enters too.
+            spokeSlider.value = String(spokeCount);
+            spokeVal.textContent = String(spokeCount);
+            thickSlider.value = String(spokeHalfW);
+            thickVal.textContent = spokeHalfW.toFixed(2);
+            bucketSlider.value = String(bucketCount);
+            bucketVal.textContent = String(bucketCount);
+            dbgChk.checked = dbgActive;
             // Stage-2 wheel-spin controls persist across re-enters too.
             spinChk.checked = spinEnabled;
             driveSlider.value = String(driveStrength);
-            driveVal.textContent = driveStrength.toFixed(3);
-            return [bakedRow, bakedStatusEl, wheelRow, spinRow, driveRow, spinReadoutEl, vizRow, axisRow, sliceRow];
+            driveVal.textContent = driveStrength.toFixed(1);
+            return [bakedRow, bakedStatusEl, wheelRow, spokeRow, thickRow, bucketRow, dbgRow, spinRow, driveRow, spinReadoutEl, vizRow, axisRow, sliceRow];
+        },
+        snapshotState(): Record<string, number | boolean> {
+            // The wheel/baked toggle state that is NOT already a schema/render param, so
+            // "Export parameters" and presets carry it. The spoke count + thickness are collision
+            // params, so they export too. (The SDF-texture visualizer and the wheel-SDF debug quad
+            // are debug tools, not preset settings, so they are deliberately excluded.)
+            return { bakedActive, wheelSdfEnabled, spinEnabled, driveStrength, spokeCount, spokeThickness: spokeHalfW, bucketCount };
+        },
+        restoreState(state: Record<string, number | boolean>): void {
+            // Apply each field via the same helper the DOM handler uses (identical behaviour) and
+            // sync its control. bakedActive may be DEFERRED here until the async bake completes —
+            // setBakedMode remembers the desire (desiredBaked) and bakeSceneSdf applies it later.
+            if (typeof state.bakedActive === "boolean") {
+                setBakedMode(state.bakedActive);
+                bakedChk.checked = state.bakedActive;
+            }
+            if (typeof state.wheelSdfEnabled === "boolean") {
+                setWheelSdf(state.wheelSdfEnabled);
+                wheelChk.checked = wheelSdfEnabled;
+            }
+            if (typeof state.spinEnabled === "boolean") {
+                setSpin(state.spinEnabled);
+                spinChk.checked = spinEnabled;
+            }
+            if (typeof state.driveStrength === "number") {
+                setDrive(state.driveStrength);
+                driveSlider.value = String(driveStrength);
+            }
+            if (typeof state.spokeCount === "number") {
+                setSpokeCount(state.spokeCount);
+                spokeSlider.value = String(spokeCount);
+            }
+            if (typeof state.spokeThickness === "number") {
+                setSpokeThickness(state.spokeThickness);
+                thickSlider.value = String(spokeHalfW);
+            }
+            if (typeof state.bucketCount === "number") {
+                setBucketCount(state.bucketCount);
+                bucketSlider.value = String(bucketCount);
+            }
         },
         presets,
     };

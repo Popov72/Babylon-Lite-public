@@ -2489,13 +2489,10 @@
     ]
   },
   "scene179": {
-    "rawKB": 70.4,
-    "gzipKB": 28.5,
+    "rawKB": 44.2,
+    "gzipKB": 17.4,
     "ignoredRawKB": 0,
     "runtimeChunks": [
-      "scene179-alpha-test-fragment-BaX_J1Vy.js",
-      "scene179-generate-mipmaps-BQDWTtuU.js",
-      "scene179-pbr-renderable-4dIj6Fon.js",
       "scene179.js"
     ]
   },

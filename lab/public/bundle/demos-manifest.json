@@ -4,19 +4,19 @@
     "gzipKB": 75.2
   },
   "torus-states": {
-    "rawKB": 24.6,
+    "rawKB": 24.7,
     "gzipKB": 8.6
   },
   "doom": {
     "rawKB": 123.9,
-    "gzipKB": 41.4
+    "gzipKB": 41.5
   },
   "quake": {
     "rawKB": 126.8,
     "gzipKB": 46
   },
   "minecraft": {
-    "rawKB": 106.1,
+    "rawKB": 106.2,
     "gzipKB": 38.4
   },
   "freeciv": {
@@ -36,15 +36,19 @@
     "gzipKB": 23.6
   },
   "bath-day": {
-    "rawKB": 177.5,
-    "gzipKB": 61.4
+    "rawKB": 177.6,
+    "gzipKB": 61.5
   },
   "platformer": {
     "rawKB": 81.6,
-    "gzipKB": 28.9
+    "gzipKB": 29
   },
-  "transmission": {
-    "rawKB": 119.5,
-    "gzipKB": 39.2
+  "fluid": {
+    "rawKB": 315.2,
+    "gzipKB": 107.6
+  },
+  "liquefactor": {
+    "rawKB": 201.6,
+    "gzipKB": 67.3
   }
 }
