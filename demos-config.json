@@ -1,8 +1,8 @@
 [
     {
-        "slug": "transmission",
-        "name": "Fluid Tank (GPU)",
-        "description": "WebGPU compute-shader fluid simulation: GPU-resident particles fall under gravity and pile on the ground, rendered as instanced sphere impostors that read the simulation's position buffer directly. Phase 1 of a Position Based Fluids tank demo (capsule tank, transmissive shell, and click-to-puncture draining to follow).",
+        "slug": "fluid",
+        "name": "Fluid Simulation (GPU)",
+        "description": "WebGPU compute-shader fluid simulation: GPU-resident particles (PBF / MLS-MPM) confined by injected scene SDFs, with recirculating jet emitters. Multiple demos — draining capsule tank, stirred box, and a radial-jet fountain — rendered as a screen-space fluid surface or instanced sphere impostors.",
         "tags": ["compute", "simulation", "showcase"],
         "mobile": false
     },
@@ -87,5 +87,12 @@
         "description": "Animated, stylized glTF diorama: a frog enjoying a candle-lit bath surrounded by water and plants, slowly orbiting under a studio HDR environment for PBR lighting. The Draco-compressed model's animation groups auto-play on load. \"Bath Day\" by StanSt (https://sketchfab.com/stanst), CC BY 4.0.",
         "tags": ["showcase"],
         "mobile": true
+    },
+    {
+        "slug": "liquefactor",
+        "name": "Liquefactor",
+        "description": "Liquefy an enemy mesh into GPU fluid by sampling its interior volume into particles: the new volume sampler fills a procedural shape with particles that occupy its exact form, then MLS-MPM melts the fill into a flowing puddle on the ground.",
+        "tags": ["compute", "simulation", "showcase"],
+        "mobile": false
     }
 ]

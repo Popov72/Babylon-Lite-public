@@ -1,0 +1,1352 @@
+// Alternative GPU fluid backend — MLS-MPM (Moving Least Squares Material Point
+// Method), the algorithm behind matsuoka-601's "Splash". A grid-transfer method
+// (no neighbour search), which scales to far more particles than the PBF solver.
+//
+// References:
+//   • MLS-MPM: Hu et al. 2018, "A Moving Least Squares Material Point Method with Displacement
+//     Discontinuity and Two-Way Rigid Body Coupling" —
+//     https://yuanming.taichi.graphics/publication/2018-mlsmpm/mls-mpm-cpic.pdf
+//   • APIC transfer: Jiang et al. 2015, "The Affine Particle-In-Cell Method" —
+//     https://disneyanimation.com/publications/the-affine-particle-in-cell-method/
+//   • Foam (spray/foam/bubbles): Ihmsen et al. 2012, "Unified spray, foam and air bubbles for
+//     particle-based fluids" —
+//     https://cg.informatik.uni-freiburg.de/publications/2012_CGI_sprayFoamBubbles.pdf
+//
+// Demo-local, exposes the same surface as the PBF sim (positionBuffer +
+// debugBuffer in WORLD units, step/reset/dispose) so the renderer and
+// the demo can switch between the two backends at runtime.
+//
+// Differences from the reference Splash implementation:
+//   • Runs in WORLD units with an explicit grid cell size `dx` (Splash uses
+//     grid units, dx=1). The quadratic-B-spline inverse-inertia factor is
+//     therefore 4/dx² (Splash's literal "4") and gravity is in world units.
+//   • The box walls are replaced by the demo's capsule-tank SDF + ground + hole
+//     boundary (ported from the PBF apply pass), applied per-particle in G2P.
+//   • Shadows / density-grid raymarching are omitted (we keep impostor render).
+//
+// Per substep: clearGrid → p2g_1 (mass + APIC momentum) → p2g_2 (EOS pressure +
+// viscous stress momentum) → updateGrid (v = p/m, gravity, domain walls) → g2p
+// (gather v + affine C, advect, capsule/hole boundary). A copy pass then packs
+// world positions + speed for the renderer.
+
+import type { EngineContext } from "../engine/engine.js";
+import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
+import { MAX_EMITTERS, EMITTERS_FLOATS, FOAM_BYTES, FOAM_COMMON_WGSL, packEmitters, SCENE_NORMAL_WGSL, SCENE_SDF_GRID_WGSL } from "./sim-common.js";
+
+// Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
+// null by default so `profiler?.pass(...)` is undefined and timing costs nothing.
+let profiler: FluidProfiler | null = null;
+
+const WORKGROUP_SIZE = 64;
+// WebGPU caps a dispatch at 65535 workgroups per dimension. The MLS grid can need
+// far more groups than that at small particle sizes (very fine cells), so
+// cell-indexed dispatches spill the overflow into a second (y) dimension and the
+// cell kernels rebuild the linear index from num_workgroups.x.
+const MAX_WORKGROUPS = 65535;
+const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
+
+// Params uniform (std140), 16-byte rows:
+//   origin.xyz, dx
+//   gridDim.xyz (f32), pad
+//   capsuleA.xyz, capsuleRadius
+//   capsuleB.xyz, groundY
+//   dt, gravity, restDensity, stiffness
+//   viscosity, pad, pad, pad
+//   counts: numParticles(u32), containerMode(u32), pad, pad
+//   boxMin.xyz+pad, boxMax.xyz+pad (container box for containerMode 2)
+//   obsA (cx,cz,halfWidth,halfThickness), obsB (cos,sin,omega,enabled) — rotating paddle
+//   misc2 (restitution, _, _, _)
+const PARAMS_F32 = 7 * 4 + 8 + 8 + 4; // header + box + obstacle + misc2
+const PARAMS_BYTES = PARAMS_F32 * 4;
+const COUNTS_OFFSET_F32 = 24; // start of the counts vec4 (u32 view)
+const BOX_BASE_F32 = COUNTS_OFFSET_F32 + 4; // boxMin/boxMax follow the counts vec4
+const OBS_BASE_F32 = BOX_BASE_F32 + 8;
+const MISC2_BASE_F32 = OBS_BASE_F32 + 8;
+
+const COMMON_WGSL = /* wgsl */ `
+const FIXED_POINT: f32 = ${FIXED_POINT};
+const FIXED_POINT_INV: f32 = ${1 / FIXED_POINT};
+
+struct Params {
+    origin: vec4<f32>,      // xyz origin (world), w = dx
+    dim: vec4<f32>,         // xyz grid dims (as f32), w unused
+    capsuleA: vec4<f32>,    // xyz + radius
+    capsuleB: vec4<f32>,    // xyz + groundY
+    sim0: vec4<f32>,        // dt, gravity, restDensity, stiffness
+    sim1: vec4<f32>,        // viscosity, _, _, _
+    counts: vec4<u32>,      // numParticles, containerMode, _, _
+    boxMin: vec4<f32>,
+    boxMax: vec4<f32>,
+    obsA: vec4<f32>,        // cx, cz, halfWidth, halfThickness (rotating paddle)
+    obsB: vec4<f32>,        // cos, sin, omega, enabled
+    misc2: vec4<f32>,       // x = restitution (0 = free-slip, 1 = elastic mirror)
+};
+
+// Reflect a velocity for a collision, given n = the penetration normal (a unit
+// vector pointing FROM the fluid INTO the solid). The component of v along n is
+// the part driving into the surface; e is the restitution: e = 0 removes it
+// (free-slip, no bounce), e = 1 reverses it (elastic mirror), in between bounces
+// partially. Tangential velocity is always preserved, so the fluid slips along
+// the surface and spreads instead of clumping.
+fn reflectVel(v: vec3<f32>, n: vec3<f32>, e: f32) -> vec3<f32> {
+    let vn = dot(v, n);
+    if (vn <= 0.0) { return v; }
+    return v - (1.0 + e) * vn * n;
+}
+
+// World-space surface velocity of the rotating paddle at a point (rx,rz) given
+// relative to the pivot. Consistent with the position rotation used in the slab
+// test: v = d/dt(local→world) with d(angle)/dt = omega.
+fn obstacleSurfaceVel(rx: f32, rz: f32, p: Params) -> vec3<f32> {
+    let omega = p.obsB.z;
+    return vec3<f32>(-omega * rz, 0.0, omega * rx);
+}
+
+fn enc(x: f32) -> i32 { return i32(x * FIXED_POINT); }
+fn dec(x: i32) -> f32 { return f32(x) * FIXED_POINT_INV; }
+
+fn cellOf(worldPos: vec3<f32>, p: Params) -> vec3<i32> {
+    return vec3<i32>(floor((worldPos - p.origin.xyz) / p.origin.w));
+}
+fn index1D(c: vec3<i32>, p: Params) -> i32 {
+    return (c.x * i32(p.dim.y) + c.y) * i32(p.dim.z) + c.z;
+}
+fn inGrid(c: vec3<i32>, p: Params) -> bool {
+    return all(c >= vec3<i32>(0)) && all(c < vec3<i32>(p.dim.xyz));
+}
+`;
+
+const PARTICLE_STRUCT = /* wgsl */ `
+struct Particle {
+    position: vec3<f32>,
+    v: vec3<f32>,
+    C: mat3x3<f32>,
+};
+`;
+
+const CLEAR_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> cells: array<vec4<u32>>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&cells)) { return; }
+    cells[i] = vec4<u32>(0u);
+}`;
+
+// Quadratic B-spline weights from the fractional cell position.
+const WEIGHTS_WGSL = /* wgsl */ `
+fn weightsOf(worldPos: vec3<f32>, p: Params) -> array<vec3<f32>, 3> {
+    let fc = (worldPos - p.origin.xyz) / p.origin.w;
+    let base = floor(fc);
+    let d = fc - (base + 0.5);
+    var w: array<vec3<f32>, 3>;
+    w[0] = 0.5 * (0.5 - d) * (0.5 - d);
+    w[1] = 0.75 - d * d;
+    w[2] = 0.5 * (0.5 + d) * (0.5 + d);
+    return w;
+}`;
+
+const P2G1_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${WEIGHTS_WGSL}
+struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: atomic<i32>, };
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
+@group(0) @binding(2) var<uniform> p: Params;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; } // warm-up: not-yet-released particles deposit no mass
+    let pos = particles[i].position;
+    let v = particles[i].v;
+    let C = particles[i].C;
+    let base = cellOf(pos, p);
+    let w = weightsOf(pos, p);
+    let dx = p.origin.w;
+
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
+        let cellDist = nodeCenter - pos;
+        let Q = C * cellDist;
+        let mass = weight;                  // particle mass = 1
+        let vel = mass * (v + Q);
+        let idx = index1D(node, p);
+        atomicAdd(&cells[idx].mass, enc(mass));
+        atomicAdd(&cells[idx].vx, enc(vel.x));
+        atomicAdd(&cells[idx].vy, enc(vel.y));
+        atomicAdd(&cells[idx].vz, enc(vel.z));
+    }}}
+}`;
+
+const P2G2_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${WEIGHTS_WGSL}
+struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: i32, };
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
+@group(0) @binding(2) var<uniform> p: Params;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
+    let pos = particles[i].position;
+    let base = cellOf(pos, p);
+    let w = weightsOf(pos, p);
+    let dx = p.origin.w;
+    let dt = p.sim0.x;
+
+    var density = 0.0;
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        density += dec(cells[index1D(node, p)].mass) * weight;
+    }}}
+    if (density <= 0.0) { return; }
+
+    let volume = 1.0 / density;
+    let pressure = max(0.0, p.sim0.w * (density / p.sim0.z - 1.0));
+    let dudv = particles[i].C;
+    let strain = dudv + transpose(dudv);
+    var stress = mat3x3<f32>(-pressure, 0.0, 0.0, 0.0, -pressure, 0.0, 0.0, 0.0, -pressure);
+    stress += p.sim1.x * strain;
+    let Dinv = 4.0 / (dx * dx);
+    let term0 = -volume * Dinv * dt * stress;
+
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
+        let cellDist = nodeCenter - pos;
+        let momentum = (term0 * cellDist) * weight;
+        let idx = index1D(node, p);
+        atomicAdd(&cells[idx].vx, enc(momentum.x));
+        atomicAdd(&cells[idx].vy, enc(momentum.y));
+        atomicAdd(&cells[idx].vz, enc(momentum.z));
+    }}}
+}`;
+
+// The grid-velocity update. A CLOSED container (gridConfine !== false) confines the
+// fluid at the grid with a generic SDF separating wall: at nodes just outside the
+// domain the wall velocity BC — reflectVel with the restitution (free-slip at 0, bounce
+// at >0) — packs the fluid against the wall over the kernel width, with no glued layer
+// and no gap (a per-particle position snap causes one or the other). A per-particle
+// container (gridConfine === false) skips the grid wall — the coarse grid reflection
+// would miss its thin curved shell — and confines per-particle in G2P instead. Static
+// walls only; a moving boundary (paddle: |−∂sdf/∂t| large) is left to the per-particle
+// G2P moving-boundary resolve.
+function buildUpdateGridWgsl(scene: SceneSdfSpec): string {
+    const closed = scene.gridConfine !== false;
+    // Baked SDF grid (optional): only the CLOSED path injects the scene SDF here, so the
+    // storage grid + sampler are injected only then (else the binding would be unused and
+    // stripped from the layout:"auto" layout, breaking the bind group). Binding 3 is free
+    // (0=cells, 1=p, 2=sceneSdfParams).
+    const gridInject = closed && scene.sdfGrid ? `\n@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const decls = closed ? `${scene.struct}\n@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}` : "";
+    const wall = closed
+        ? `
+    let cw = p.origin.xyz + (vec3<f32>(f32(x), f32(y), f32(z)) + 0.5) * p.origin.w;
+    if (sceneSdf(cw, 0.0) < 0.0) {
+        let vN = -(sceneSdf(cw, 0.002) - sceneSdf(cw, 0.0)) / 0.002; // boundary normal speed
+        if (abs(vN) < 0.05) { // static wall only — the moving paddle is handled in G2P
+            let n = sceneNormal(cw, 0.0);
+            v = reflectVel(v, -n, p.misc2.x);
+        }
+    }`
+        : "";
+    return /* wgsl */ `
+${COMMON_WGSL}
+${decls}
+@group(0) @binding(0) var<storage, read_write> cells: array<vec4<i32>>;
+@group(0) @binding(1) var<uniform> p: Params;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&cells)) { return; }
+    let c = cells[i];
+    if (c.w <= 0) { return; }
+    let invMass = 1.0 / dec(c.w);
+    var v = vec3<f32>(dec(c.x), dec(c.y), dec(c.z)) * invMass;
+
+    v.y -= p.sim0.y * p.sim0.x; // gravity * dt
+
+    // Domain walls: one-sided FREE-SLIP in the 2-cell border — remove only the
+    // into-wall (outward) velocity, keeping the pressure-driven push-BACK, so fluid
+    // pressed against the grid bounds decompresses instead of gluing into a stuck sheet.
+    // (A plain v = 0 kills the push-back too, which is the flat-wall gluing artefact.)
+    let dimZ = i32(p.dim.z);
+    let dimYZ = i32(p.dim.y) * dimZ;
+    let x = i32(i) / dimYZ;
+    let y = (i32(i) / dimZ) % i32(p.dim.y);
+    let z = i32(i) % dimZ;
+    if (x < 2) { v.x = max(v.x, 0.0); } else if (x > i32(p.dim.x) - 3) { v.x = min(v.x, 0.0); }
+    if (y < 2) { v.y = max(v.y, 0.0); } else if (y > i32(p.dim.y) - 3) { v.y = min(v.y, 0.0); }
+    if (z < 2) { v.z = max(v.z, 0.0); } else if (z > i32(p.dim.z) - 3) { v.z = min(v.z, 0.0); }
+${wall}
+    cells[i] = vec4<i32>(enc(v.x), enc(v.y), enc(v.z), c.w);
+}`;
+}
+
+// SDF confinement resolve (position). Penetrating particles (sceneSdf < 0) are pushed
+// out along the SDF gradient: a moving boundary (nonzero -∂sceneSdf/∂t, e.g. the paddle)
+// hard-pushes and reflects relative to its own motion so the sweep stirs the fluid. A
+// static wall's velocity: for a CLOSED container it was already applied at the grid
+// separating wall, so G2P only nudges position (half depth, avoids gluing on flat walls);
+// a per-particle container has no grid wall, so G2P does the full push + restitution
+// reflect per-particle. The unified SDF confines interior + exterior/ground alike, so
+// drained fluid is caught by the SAME field.
+function g2pConfineSdf(scene: SceneSdfSpec): string {
+    const closed = scene.gridConfine !== false;
+    const staticResolve = closed ? "np += gn * (-d) * 0.5;" : "np += gn * (-d);\n                    vel = reflectVel(vel, -gn, p.misc2.x);";
+    return /* wgsl */ `
+    let d = sceneSdf(np, 0.0);
+    if (d < 0.0) {
+        let gn = sceneNormal(np, 0.0);
+        let vN = -(sceneSdf(np, 0.002) - sceneSdf(np, 0.0)) / 0.002; // boundary normal speed (along gn)
+        if (abs(vN) > 0.05) {
+            np += gn * (-d);
+            let bvel = vN * gn;
+            vel = bvel + reflectVel(vel - bvel, -gn, p.misc2.x);
+        } else {
+            ${staticResolve}
+        }
+    }`;
+}
+
+// The per-demo sceneSdf is always injected (setSceneSdf) before the first step, so
+// the G2P pass always uses the SDF confinement path. External forces run as their
+// OWN dedicated compute pass (mpm-force) before the p2g transfer, so G2P stays
+// force-free (a single pipeline cache-keyed on the scene only).
+function buildG2pWgsl(scene: SceneSdfSpec): string {
+    // Baked SDF grid (optional): binding 4 is free here (0=particles, 1=cells, 2=p,
+    // 3=sceneSdfParams). Injected BEFORE scene.sdf so `sceneSdf` can call sampleSdfGrid.
+    const gridInject = scene.sdfGrid ? `\n@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
+    const decls = `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}`;
+    const confine = g2pConfineSdf(scene);
+    return /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${WEIGHTS_WGSL}
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read> cells: array<vec4<i32>>;
+@group(0) @binding(2) var<uniform> p: Params;
+${decls}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
+    let pos = particles[i].position;
+    let base = cellOf(pos, p);
+    let w = weightsOf(pos, p);
+    let dx = p.origin.w;
+
+    var vel = vec3<f32>(0.0);
+    var B = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
+        let cellDist = nodeCenter - pos;
+        let idx = index1D(node, p);
+        let cv = cells[idx];   // single 16-byte load (vx, vy, vz, mass)
+        let wv = vec3<f32>(dec(cv.x), dec(cv.y), dec(cv.z)) * weight;
+        vel += wv;
+        B += mat3x3<f32>(wv * cellDist.x, wv * cellDist.y, wv * cellDist.z);
+    }}}
+
+    let Dinv = 4.0 / (dx * dx);
+    // Dissipation so the fluid actually comes to rest (pure APIC + EOS is nearly
+    // energy-conserving and would slosh forever): damp the APIC affine field
+    // toward PIC (sim1.z) and bleed bulk kinetic energy (sim1.y).
+    var C = (B * Dinv) * p.sim1.z;
+    vel *= p.sim1.y;
+    let dt = p.sim0.x;
+
+    var np = pos + vel * dt;
+    let groundY = p.capsuleB.w;
+${confine}
+
+    // Keep inside the grid domain (2-cell margin).
+    let lo = p.origin.xyz + dx * 2.0;
+    let hi = p.origin.xyz + (p.dim.xyz - 3.0) * dx;
+    np = clamp(np, lo, hi);
+
+    // Near-ground anti-ripple: damp only the VERTICAL velocity within a thin
+    // layer above the floor — this bleeds the up/down oscillation that would
+    // otherwise launch floor ripples, while leaving the horizontal flow (and the
+    // affine field) intact so the fluid keeps slipping and spreading. (Damping
+    // the affine field C here as well used to keep the bottom layer sluggish and
+    // made landing fluid mound up.) sim1.w = strength, dim.w = layer height.
+    let gt = clamp((np.y - groundY) / max(p.dim.w, 1e-3), 0.0, 1.0);
+    let gd = mix(p.sim1.w, 1.0, gt);
+    vel.y *= gd;
+
+    particles[i].position = np;
+    particles[i].v = vel;
+    particles[i].C = C;
+}`;
+}
+
+// Dedicated external-force compute pass, built from an injected ForceFieldSpec.
+// Mirrors the emit pass: dispatched once at the start of step() ONLY while a force
+// is active, BEFORE the p2g transfer, so the app-supplied velocity delta flows
+// through the grid this step and the G2P pass stays force-free. Reads the particle
+// position + velocity, adds the delta, and writes only the velocity field back
+// (position + affine field C untouched). count + sub-step dt come from Params.
+function buildForceWgsl(force: ForceFieldSpec): string {
+    return /* wgsl */ `
+${PARTICLE_STRUCT}
+struct Params {
+    origin: vec4<f32>,
+    dim: vec4<f32>,
+    capsuleA: vec4<f32>,
+    capsuleB: vec4<f32>,
+    sim0: vec4<f32>,
+    sim1: vec4<f32>,
+    counts: vec4<u32>,
+};
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<uniform> p: Params;
+${force.struct}
+@group(0) @binding(2) var<uniform> forceFieldParams: ForceFieldParams;
+${force.wgsl}
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; } // warm-up: dormant particles feel no external force
+    var v = particles[i].v;
+    v += externalForce(particles[i].position, v, p.sim0.x);
+    particles[i].v = v;
+}`;
+}
+
+const COPY_WGSL = /* wgsl */ `
+${PARTICLE_STRUCT}
+struct Params2 { count: u32, debugScale: f32, live: u32, _b: f32, };
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> renderPos: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> dbg: array<f32>;
+@group(0) @binding(3) var<uniform> pc: Params2;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= pc.count) { return; }
+    if (i >= pc.live) {
+        // Dormant (not-yet-released) particle during the start warm-up: park it far
+        // off-screen so it stays invisible until it is activated (see warmupFrames).
+        renderPos[i] = vec4<f32>(0.0, -1.0e5, 0.0, 1.0);
+        dbg[i] = 0.0;
+        return;
+    }
+    renderPos[i] = vec4<f32>(particles[i].position, 1.0);
+    dbg[i] = length(particles[i].v);
+}`;
+
+const EMIT_WGSL = /* wgsl */ `
+${PARTICLE_STRUCT}
+struct Emitter { p: vec4<f32>, d: vec4<f32> };
+struct Emitters {
+    head: vec4<f32>,        // emitterCount, rate, seed, spread
+    head2: vec4<f32>,       // particleCount, dt, _, _
+    intakeMin: vec4<f32>,
+    intakeMax: vec4<f32>,
+    list: array<Emitter, ${MAX_EMITTERS}>,
+};
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<uniform> em: Emitters;
+
+fn hashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
+fn rnd(x: u32) -> f32 { return f32(hashU(x)) / 4294967296.0; }
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= u32(em.head2.x)) { return; }
+    let ec = u32(em.head.x);
+    if (ec == 0u) { return; }
+    let p = particles[i].position;
+    if (all(p >= em.intakeMin.xyz) && all(p <= em.intakeMax.xyz)) {
+        let seed = u32(em.head.z) * 2654435761u + i;
+        if (rnd(seed) < em.head.y * em.head2.y) {
+            let e = em.list[hashU(seed) % ec];
+            let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
+            let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
+            particles[i].position = e.p.xyz + jit;
+            particles[i].v = e.d.xyz * e.d.w + sj;
+            particles[i].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+        }
+    }
+}`;
+
+// ── Foam: diffuse particles (spray / foam / bubbles), grid-derived ──────────────
+// Compute passes appended ONCE per frame at the end of step() (after the substep loop,
+// before the copy) when foam is enabled. Generation follows Ihmsen 2012 (`FOAM_EMIT_WGSL`):
+// the three generation potentials, derived from the MLS GRID quantities the last substep
+// produced (see the tuning notes below). The pool, classification and advection
+// (mpm-foam-update) then run method-agnostically.
+// There is no neighbour list on this backend, so the Ihmsen potentials are derived from:
+//   • the grid mass (a local density ρ) + velocity (v = momentum / mass), and
+//   • the particle v and the APIC affine C = ∇v (the local velocity gradient).
+// The shared Foam UBO + Diffuse slot struct + Φ / hash helpers come from
+// `FOAM_COMMON_WGSL`; gravity / restDensity / dx / bounds are read from the Params
+// UBO, and the FRAME dt (not the substep dt) is passed through Params.misc2.y.
+//
+// Tuning notes (Ihmsen path — deviations from the neighbour-based PBF generator):
+//   • Trapped air uses ‖strain-rate‖ = ‖0.5(C + Cᵀ)‖_F (the symmetric part of the
+//     velocity gradient) as the turbulence proxy — it excludes pure rotation and fires
+//     on the shear/compression the paddle entrains, staying ~0 in the calm interior.
+//   • Wave crest has no neighbour-normal curvature; it is approximated by a surface
+//     gate (low ρ), an outward-motion gate (v̂·n ≥ 0.6 with n = −∇ρ/‖∇ρ‖) and the
+//     outward speed as the crest strength.
+//   • Classification is by grid density ρ (fraction of restDensity) instead of a
+//     neighbour count: low ρ → spray, high ρ → bubble, mid → foam.
+// K_STRAIN / WC_SCALE and the RHO_* fractions below are the tuned live constants.
+const FOAM_EMIT_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${WEIGHTS_WGSL}
+${FOAM_COMMON_WGSL}
+struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read> cells: array<Cell>;
+@group(0) @binding(2) var<uniform> p: Params;
+@group(0) @binding(3) var<uniform> foam: Foam;
+@group(0) @binding(4) var<storage, read_write> diffuse: array<Diffuse>;
+@group(0) @binding(5) var<storage, read_write> head: array<atomic<u32>>;
+
+// Scales ‖strain-rate‖ (1/s) into the trapped-air potential; tuned so the paddle wake
+// reaches the τ_ta band while the calm interior stays below it.
+const K_STRAIN: f32 = 1.6;
+// Scales the wave-crest argument (surfaceness · outward-speed) into the τ_wc band.
+const WC_SCALE: f32 = 1.2;
+// Surfaceness ramp: 1 below RHO_SURF_LO·restDensity (free surface), 0 above RHO_SURF_HI·restDensity (interior).
+const RHO_SURF_LO: f32 = 0.15;
+const RHO_SURF_HI: f32 = 0.85;
+
+fn frob(m: mat3x3<f32>) -> f32 { return sqrt(dot(m[0], m[0]) + dot(m[1], m[1]) + dot(m[2], m[2])); }
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.counts.x) { return; }
+    let pos = particles[i].position;
+    let vi = particles[i].v;
+    let speed = length(vi);
+    if (speed < 1e-4) { return; }
+    let vhat = vi / speed;
+    let C = particles[i].C;
+    let dx = p.origin.w;
+    let Dinv = 4.0 / (dx * dx);
+    let restD = max(p.sim0.z, 1e-3);
+    let frameDt = p.misc2.y;
+
+    // Gather the grid mass field around the particle → local density ρ and its gradient
+    // ∇ρ (the MLS/APIC least-squares reconstruction: ∇ρ = Dinv·Σ w·(x_node − x)·ρ_node).
+    let base = cellOf(pos, p);
+    let w = weightsOf(pos, p);
+    var rho = 0.0;
+    var gradRho = vec3<f32>(0.0);
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        let m = dec(cells[index1D(node, p)].mass);
+        let cellDist = (p.origin.xyz + (vec3<f32>(node) + 0.5) * dx) - pos;
+        rho += m * weight;
+        gradRho += (m * weight) * cellDist;
+    }}}
+    gradRho *= Dinv;
+
+    // Trapped air — strain-rate Frobenius norm (symmetric part of the velocity gradient
+    // C = ∇v; excludes pure rotation, captures shear + compression entraining air).
+    let strain = 0.5 * (C + transpose(C));
+    let ita = phi(K_STRAIN * frob(strain), foam.tauTaMin, foam.tauTaMax);
+    // Kinetic energy modulator.
+    let ek = 0.5 * speed * speed;
+    let ik = phi(ek, foam.tauKMin, foam.tauKMax);
+    // Wave crest — outward normal n = −∇ρ/‖∇ρ‖; surface gate + moving-outward gate ×
+    // outward speed as the crest strength (no neighbour-normal curvature on this backend).
+    var n = vec3<f32>(0.0, 1.0, 0.0);
+    let gl = length(gradRho);
+    if (gl > 1e-6) { n = -gradRho / gl; }
+    let surfaceness = 1.0 - smoothstep(RHO_SURF_LO * restD, RHO_SURF_HI * restD, rho);
+    let vn = dot(vi, n);
+    let dvn = select(0.0, 1.0, (vn / speed) >= 0.6);
+    let crest = max(0.0, vn);
+    let iwc = phi(WC_SCALE * surfaceness * dvn * crest, foam.tauWcMin, foam.tauWcMax);
+
+    let ndf = ik * (foam.kTa * ita + foam.kWc * iwc) * frameDt;
+    var nd = i32(floor(ndf + 0.5));
+    if (nd <= 0) { return; }
+    nd = min(nd, 8);
+
+    let potential = clamp(ita + iwc, 0.0, 1.0);
+    let life = mix(foam.tMin, foam.tMax, potential);
+    // Orthonormal basis perpendicular to v̂ (cylinder axis).
+    var e1 = cross(vhat, vec3<f32>(0.0, 1.0, 0.0));
+    if (!(dot(e1, e1) > 1e-6)) { e1 = cross(vhat, vec3<f32>(1.0, 0.0, 0.0)); }
+    e1 = normalize(e1);
+    let e2 = cross(vhat, e1);
+    let cap = arrayLength(&diffuse);
+    let dtv = length(frameDt * vi);
+    for (var k = 0; k < nd; k = k + 1) {
+        let seed = (i * 2654435761u) ^ (foam.frameSeed * 40503u) ^ (u32(k) * 2246822519u);
+        let xr = fRnd(seed);
+        let xt = fRnd(seed * 3u + 1u);
+        let xh = fRnd(seed * 7u + 5u);
+        let rr = foam.rv * sqrt(xr);
+        let th = 6.28318530718 * xt;
+        let off = e1 * (rr * cos(th)) + e2 * (rr * sin(th));
+        let xd = pos + off + vhat * (xh * dtv);
+        let vd = off + vi;
+        let idx = atomicAdd(&head[0], 1u) % cap;
+        diffuse[idx].p = vec4<f32>(xd, life);
+        diffuse[idx].v = vec4<f32>(vd, 0.0);
+    }
+}`;
+
+// Pass 2 — classify + advect + dissolve over the whole diffuse pool. The local fluid
+// velocity ṽ_f is the grid velocity gathered at the diffuse position (trivial in MLS:
+// a weighted 3×3×3 gather of the post-update cell velocity), and the local density ρ is
+// the grid mass gather. ρ (as a fraction of restDensity) classifies each live particle
+// — low ρ → spray, high ρ → bubble, else foam — then each class advects like PBF.
+const FOAM_UPDATE_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${WEIGHTS_WGSL}
+${FOAM_COMMON_WGSL}
+struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
+@group(0) @binding(0) var<storage, read> cells: array<Cell>;
+@group(0) @binding(1) var<uniform> p: Params;
+@group(0) @binding(2) var<uniform> foam: Foam;
+@group(0) @binding(3) var<storage, read_write> diffuse: array<Diffuse>;
+
+// Classification thresholds as a fraction of restDensity (the interior packs at ~restD).
+const RHO_SPRAY: f32 = 0.35;  // ρ below this → spray (near-empty, flying droplet)
+const RHO_BUBBLE: f32 = 0.9;  // ρ above this → bubble (submerged, rises)
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= arrayLength(&diffuse)) { return; }
+    let p0 = diffuse[i].p;
+    if (p0.w <= 0.0) { return; }
+    let pp = p0.xyz;
+    let dx = p.origin.w;
+    let lo = p.origin.xyz;
+    let hi = p.origin.xyz + p.dim.xyz * dx;
+    if (any(pp < lo) || any(pp > hi)) { diffuse[i].p = vec4<f32>(pp, 0.0); return; }
+    var v = diffuse[i].v.xyz;
+
+    // Gather the post-update grid at the diffuse position → local fluid velocity ṽ_f
+    // (cells hold v = momentum/mass after updateGrid) + local density ρ (grid mass).
+    let base = cellOf(pp, p);
+    let w = weightsOf(pp, p);
+    var vf = vec3<f32>(0.0);
+    var rho = 0.0;
+    for (var gx = 0; gx < 3; gx++) {
+    for (var gy = 0; gy < 3; gy++) {
+    for (var gz = 0; gz < 3; gz++) {
+        let weight = w[gx].x * w[gy].y * w[gz].z;
+        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+        if (!inGrid(node, p)) { continue; }
+        let idx = index1D(node, p);
+        vf += vec3<f32>(dec(cells[idx].vx), dec(cells[idx].vy), dec(cells[idx].vz)) * weight;
+        rho += dec(cells[idx].mass) * weight;
+    }}}
+
+    let g = p.sim0.y;
+    let dt = p.misc2.y; // frame dt
+    let restD = max(p.sim0.z, 1e-3);
+    var kind = 1u;
+    if (rho < RHO_SPRAY * restD) { kind = 0u; } else if (rho > RHO_BUBBLE * restD) { kind = 2u; }
+
+    var np = pp;
+    var life = p0.w;
+    if (kind == 0u) {
+        // Spray: ballistic (Euler-Cromer).
+        v.y -= g * dt;
+        np = pp + dt * v;
+    } else if (kind == 2u) {
+        // Bubble: buoyancy up + drag toward the local grid flow.
+        v.y += dt * foam.kb * g;
+        v += foam.kd * (vf - v);
+        np = pp + dt * v;
+    } else {
+        // Foam: rides the surface at the grid fluid velocity; lifetime decays.
+        v = vf;
+        np = pp + dt * vf;
+        life = p0.w - dt;
+    }
+    if (life <= 0.0) { diffuse[i].p = vec4<f32>(np, 0.0); return; }
+    diffuse[i].p = vec4<f32>(np, life);
+    diffuse[i].v = vec4<f32>(v, f32(kind));
+}`;
+
+export interface MlsMpmOptions extends FluidSimBaseOptions {
+    /** Simulation box min corner — the MLS grid domain AABB. Default [-20, 0, -20]. */
+    boundsMin?: [number, number, number];
+    /** Simulation box max corner — the MLS grid domain AABB. Default [20, 15, 20]. */
+    boundsMax?: [number, number, number];
+    /** Ground plane height; particles are floored at y = groundY. Default boundsMin.y. */
+    groundY?: number;
+    /** Capsule tank boundary: centre of the bottom hemisphere. Default null. */
+    capsuleA?: [number, number, number];
+    /** Capsule tank boundary: centre of the top hemisphere. Default null. */
+    capsuleB?: [number, number, number];
+    /** Capsule tank radius. Default 0. */
+    capsuleRadius?: number;
+    /** Grid cell size in world units (smaller = finer fluid, more cells). Default 0.25. */
+    dx?: number;
+    /** Equation-of-state stiffness. Default 50. */
+    stiffness?: number;
+    /** Rest density in particles-per-cell. Default derived from spawn packing. */
+    restDensity?: number;
+    /** Dynamic (viscous) stress coefficient. Default 0.1. */
+    viscosity?: number;
+    /** Sub-steps per frame: the frame's dt is split into this many MLS-MPM steps.
+     *  More substeps = more stable (smaller dt per step) but more compute. Splash
+     *  uses 1 (its grid-unit scaling keeps a single big step stable); this
+     *  world-unit port needs a few. Default 3. */
+    substeps?: number;
+    /** Safety cap on a single sub-step's dt (seconds); the per-frame dt/substeps
+     *  is clamped to this so a hitch can't blow the integration up. Default 1/120. */
+    maxSubDt?: number;
+    /** Per-substep velocity multiplier (below 1 bleeds bulk kinetic energy so the
+     *  fluid settles to rest). Default 0.98. */
+    damping?: number;
+    /** Per-substep APIC affine (C) multiplier (below 1 blends toward dissipative PIC,
+     *  killing residual swirl). Default 0.95. */
+    affineDamping?: number;
+    /** Extra per-substep velocity/affine damping applied within `groundDampHeight`
+     *  of the ground, so the thin floor pool settles without rippling. Default 0.9. */
+    groundDamp?: number;
+    /** Height (world units) of the near-ground damping layer. Default 1.2. */
+    groundDampHeight?: number;
+    /** Collision restitution for the capsule wall + ground (0 = free-slip / no
+     *  bounce, 1 = elastic mirror). Default 0.3. */
+    restitution?: number;
+    /** Explicit per-particle seed positions as flat world-space xyz triples
+     *  (`[x0,y0,z0, x1,y1,z1, …]`). When present, `seed()`/`reset()` places each
+     *  particle `i (< count)` at `initialPositions[3i..3i+2]` with zero velocity and
+     *  a zero affine field — instead of drawing a random point in the spawn box. Size
+     *  `count` to `initialPositions.length / 3` so every particle is real. Absent (the
+     *  default) restores the random-in-spawn-box behaviour. Used to fill a mesh with a
+     *  volume-sampled particle set (see fluid/volume-sampling). */
+    initialPositions?: Float32Array;
+}
+
+export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = {}): FluidSim {
+    const device = engine._device;
+    const count = options.count ?? 60000;
+    const particleRadius = options.particleRadius ?? 0.09;
+    const spawnMin: [number, number, number] = options.spawnMin ?? [-2, 4, -2];
+    const spawnMax: [number, number, number] = options.spawnMax ?? [2, 12, 2];
+    let spawnAccept: ((x: number, y: number, z: number) => boolean) | null = null;
+    // Start-of-sim WARM-UP ramp: releasing all particles at once spikes the density
+    // (on an open shelf the stiff MLS pressure then flings them into spray). Instead,
+    // only `liveCount` particles are live each frame, ramping up over `warmupFrames`
+    // frames; dormant particles deposit no mass (skipped in force/P2G/G2P) and are
+    // parked off-screen by the copy pass, so the body fills in gradually and stays
+    // grouped. 0 (default) = release everything immediately (original behaviour).
+    let warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 0));
+    let warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
+    let liveCount = count;
+    const gravity = options.gravity ?? 9.8;
+    const dx = options.dx ?? 0.25;
+    const boundsMin = options.boundsMin ?? [-20, 0, -20];
+    const boundsMax = options.boundsMax ?? [20, 15, 20];
+    const groundY = options.groundY ?? boundsMin[1];
+    const capsuleA = options.capsuleA ?? null;
+    const capsuleB = options.capsuleB ?? null;
+    const capsuleRadius = options.capsuleRadius ?? 0;
+    const stiffness = options.stiffness ?? 50;
+    const viscosity = options.viscosity ?? 0.1;
+    const substeps = options.substeps ?? 3;
+    let substepsMut = substeps;
+    const maxSubDt = options.maxSubDt ?? 1 / 120;
+    const damping = options.damping ?? 0.98;
+    const affineDamping = options.affineDamping ?? 0.95;
+    const groundDamp = options.groundDamp ?? 0.9;
+    const groundDampHeight = options.groundDampHeight ?? 1.2;
+    const restitution = options.restitution ?? 0.3;
+    // Optional explicit per-particle seed (flat world-space xyz). When set, seed()
+    // reads position i from here instead of the random spawn draw (see the interface).
+    const initialPositions = options.initialPositions ?? null;
+
+    const gridDim: [number, number, number] = [
+        Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
+        Math.max(4, Math.ceil((boundsMax[1] - boundsMin[1]) / dx)),
+        Math.max(4, Math.ceil((boundsMax[2] - boundsMin[2]) / dx)),
+    ];
+    const numCells = gridDim[0] * gridDim[1] * gridDim[2];
+
+    // Rest density (particles per cell): from the spawn packing if not given.
+    const spawnVolCells = Math.max(1, ((spawnMax[0] - spawnMin[0]) * (spawnMax[1] - spawnMin[1]) * (spawnMax[2] - spawnMin[2])) / (dx * dx * dx));
+    const restDensity = options.restDensity ?? Math.max(2, count / spawnVolCells);
+
+    // ── Buffers ──────────────────────────────────────────────────────
+    const PARTICLE_STRIDE = 80;
+    const particleBuffer = device.createBuffer({ label: "mpm-particles", size: count * PARTICLE_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const cellBuffer = device.createBuffer({ label: "mpm-cells", size: numCells * 16, usage: GPUBufferUsage.STORAGE });
+    const positionBuffer = device.createBuffer({ label: "mpm-render-pos", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const debugBuffer = device.createBuffer({ label: "mpm-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const paramsBuffer = device.createBuffer({ label: "mpm-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const copyParamsBuffer = device.createBuffer({ label: "mpm-copy-params", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    const paramsData = new ArrayBuffer(PARAMS_BYTES);
+    const pf = new Float32Array(paramsData);
+    const pu = new Uint32Array(paramsData);
+    // Copy-pass params (Params2): [0]=count, [1]=debugScale(unused), [2]=active
+    // (warm-up live count, gates the render copy), [3]=pad.
+    const copyData = new ArrayBuffer(16);
+    const copyU32 = new Uint32Array(copyData);
+    copyU32[0] = count;
+    copyU32[2] = count;
+    pf[0] = boundsMin[0];
+    pf[1] = boundsMin[1];
+    pf[2] = boundsMin[2];
+    pf[3] = dx;
+    pf[4] = gridDim[0];
+    pf[5] = gridDim[1];
+    pf[6] = gridDim[2];
+    pf[7] = groundDampHeight; // dim.w
+    pf[8] = capsuleA ? capsuleA[0] : 0;
+    pf[9] = capsuleA ? capsuleA[1] : 0;
+    pf[10] = capsuleA ? capsuleA[2] : 0;
+    pf[11] = capsuleRadius;
+    pf[12] = capsuleB ? capsuleB[0] : 0;
+    pf[13] = capsuleB ? capsuleB[1] : 0;
+    pf[14] = capsuleB ? capsuleB[2] : 0;
+    pf[15] = groundY;
+    pf[16] = maxSubDt; // updated per-frame in step() to frameDt / substeps (capped)
+    pf[17] = gravity;
+    pf[18] = restDensity;
+    pf[19] = stiffness;
+    pf[20] = viscosity;
+    pf[21] = damping;
+    pf[22] = affineDamping;
+    pf[23] = groundDamp; // sim1.w
+    pf[MISC2_BASE_F32] = restitution;
+    pu[COUNTS_OFFSET_F32] = count;
+    pu[COUNTS_OFFSET_F32 + 1] = capsuleA && capsuleB ? 1 : 0;
+
+    device.queue.writeBuffer(copyParamsBuffer, 0, copyData);
+
+    function seed(): void {
+        // Reset the warm-up ramp: start with just the first batch live (or everything,
+        // when warm-up is disabled). step() grows liveCount back up to count.
+        liveCount = warmupFrames > 0 ? Math.min(count, warmupStep) : count;
+        const buf = new ArrayBuffer(count * PARTICLE_STRIDE);
+        const f = new Float32Array(buf);
+        const rp = new Float32Array(count * 4);
+        for (let i = 0; i < count; i++) {
+            const o = (i * PARTICLE_STRIDE) / 4; // float offset into the particle struct
+            let x: number;
+            let y: number;
+            let z: number;
+            if (initialPositions) {
+                // Explicit per-particle seed (e.g. a volume-sampled mesh fill): read the
+                // world position straight from the caller's flat xyz array. Velocity (o+4..6)
+                // and the affine field C (o+8..19) stay zeroed, exactly as in the random path.
+                x = initialPositions[i * 3]!;
+                y = initialPositions[i * 3 + 1]!;
+                z = initialPositions[i * 3 + 2]!;
+            } else {
+                x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
+                y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
+                z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
+                if (spawnAccept) {
+                    // Reject-sample so particles fit a non-box container shape: redraw
+                    // uniformly in the box until accepted (or keep the last try after 30).
+                    for (let tries = 0; tries < 30 && !spawnAccept(x, y, z); tries++) {
+                        x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
+                        y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
+                        z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
+                    }
+                }
+            }
+            f[o] = x;
+            f[o + 1] = y;
+            f[o + 2] = z;
+            // v (o+4..6) and C (o+8..19) left at 0
+            const live = i < liveCount;
+            rp[i * 4] = live ? x : 0;
+            rp[i * 4 + 1] = live ? y : -1.0e5; // park dormant (warm-up) particles off-screen
+            rp[i * 4 + 2] = live ? z : 0;
+            rp[i * 4 + 3] = 1;
+        }
+        device.queue.writeBuffer(particleBuffer, 0, buf);
+        device.queue.writeBuffer(debugBuffer, 0, new Float32Array(count));
+        // Seed render positions so the first frame draws the spawn before any step.
+        device.queue.writeBuffer(positionBuffer, 0, rp);
+    }
+    seed();
+
+    function pipeline(label: string, code: string): GPUComputePipeline {
+        return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
+    }
+    const clearPipe = pipeline("mpm-clear", CLEAR_WGSL);
+    const p2g1Pipe = pipeline("mpm-p2g1", P2G1_WGSL);
+    const p2g2Pipe = pipeline("mpm-p2g2", P2G2_WGSL);
+    // update-grid + g2p pipelines/bind-groups are built lazily in setSceneSdf (always
+    // called before the first step); compiled variants are cached by source so
+    // re-selecting a demo is instant.
+    const updatePipeCache = new Map<string, GPUComputePipeline>();
+    function getUpdatePipe(scene: SceneSdfSpec): GPUComputePipeline {
+        const src = buildUpdateGridWgsl(scene);
+        let pipe = updatePipeCache.get(src);
+        if (!pipe) {
+            pipe = pipeline("mpm-update", src);
+            updatePipeCache.set(src, pipe);
+        }
+        return pipe;
+    }
+    let updatePipe: GPUComputePipeline | null = null;
+    // g2p pipeline/bind-group are built lazily in setSceneSdf (scene is always
+    // injected before the first step); compiled variants are cached by the scene
+    // WGSL source so re-selecting a demo is instant. Force-free: any external force
+    // runs as its own dedicated pass, so G2P is keyed on the scene alone.
+    const g2pPipeCache = new Map<string, GPUComputePipeline>();
+    function getG2pPipe(scene: SceneSdfSpec): GPUComputePipeline {
+        const src = buildG2pWgsl(scene);
+        let pipe = g2pPipeCache.get(src);
+        if (!pipe) {
+            pipe = pipeline("mpm-g2p", src);
+            g2pPipeCache.set(src, pipe);
+        }
+        return pipe;
+    }
+    let g2pPipe: GPUComputePipeline | null = null;
+    const copyPipe = pipeline("mpm-copy", COPY_WGSL);
+    const emitPipe = pipeline("mpm-emit", EMIT_WGSL);
+    const emittersBuffer = device.createBuffer({ label: "mpm-emitters", size: EMITTERS_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const emitData = new Float32Array(EMITTERS_FLOATS);
+    emitData[4] = count; // head2.x = particle count
+    let emitEnabled = false;
+    let emitSeed = 0;
+    const emitBG = device.createBindGroup({
+        layout: emitPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: emittersBuffer } },
+        ],
+    });
+
+    const clearBG = device.createBindGroup({ layout: clearPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cellBuffer } }] });
+    const p2g1BG = device.createBindGroup({
+        layout: p2g1Pipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: cellBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } },
+        ],
+    });
+    const p2g2BG = device.createBindGroup({
+        layout: p2g2Pipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: cellBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } },
+        ],
+    });
+    function buildUpdateBG(pipe: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
+        // Only a CLOSED container's update-grid pass reads the scene SDF (for its grid
+        // separating wall); a per-particle container has no grid wall, so binding 2 is absent.
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: cellBuffer } },
+            { binding: 1, resource: { buffer: paramsBuffer } },
+        ];
+        if (scene.gridConfine !== false) {
+            entries.push({ binding: 2, resource: { buffer: scene.buffer } });
+            // Baked SDF grid: matches the @binding(3) storage decl injected by buildUpdateGridWgsl.
+            if (scene.sdfGrid) {
+                entries.push({ binding: 3, resource: { buffer: scene.sdfGrid } });
+            }
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+    let updateBG: GPUBindGroup | null = null;
+    function buildG2pBG(pipe: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: cellBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } },
+            { binding: 3, resource: { buffer: scene.buffer } },
+        ];
+        // Baked SDF grid: matches the @binding(4) storage decl injected by buildG2pWgsl.
+        if (scene.sdfGrid) {
+            entries.push({ binding: 4, resource: { buffer: scene.sdfGrid } });
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+    let g2pBG: GPUBindGroup | null = null;
+    // Current scene SDF; setSceneSdf rebuilds the G2P + update-grid passes from it.
+    let currentScene: SceneSdfSpec | null = null;
+    function rebuildScenePipes(): void {
+        if (currentScene) {
+            g2pPipe = getG2pPipe(currentScene);
+            g2pBG = buildG2pBG(g2pPipe, currentScene);
+            updatePipe = getUpdatePipe(currentScene);
+            updateBG = buildUpdateBG(updatePipe, currentScene);
+        } else {
+            g2pPipe = null;
+            g2pBG = null;
+            updatePipe = null;
+            updateBG = null;
+        }
+    }
+    const copyBG = device.createBindGroup({
+        layout: copyPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: positionBuffer } },
+            { binding: 2, resource: { buffer: debugBuffer } },
+            { binding: 3, resource: { buffer: copyParamsBuffer } },
+        ],
+    });
+
+    // Dedicated external-force pass (setForceField). Built LAZILY on the first
+    // non-null injection and cached by the force WGSL source, so NOTHING force
+    // related is compiled until a force is actually used. `forceSpec` is the enable
+    // flag (null = disabled); `forceBuiltSpec` tracks what the cached pipeline +
+    // bind-group were built for, so re-enabling the same spec is free.
+    const forcePipeCache = new Map<string, GPUComputePipeline>();
+    let forceSpec: ForceFieldSpec | null = null;
+    let forceBuiltSpec: ForceFieldSpec | null = null;
+    let forcePipe: GPUComputePipeline | null = null;
+    let forceBG: GPUBindGroup | null = null;
+    function buildForceBG(pipe: GPUComputePipeline, spec: ForceFieldSpec): GPUBindGroup {
+        return device.createBindGroup({
+            layout: pipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: particleBuffer } },
+                { binding: 1, resource: { buffer: paramsBuffer } },
+                { binding: 2, resource: { buffer: spec.buffer } },
+            ],
+        });
+    }
+    const particleGroups = Math.ceil(count / WORKGROUP_SIZE);
+    const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
+
+    function dispatch(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, groups: number): void {
+        // Opt-in GPU timing: "foam" labels → "Foam gen", everything else → "Simulation".
+        const pass = encoder.beginComputePass({ label, timestampWrites: profiler?.pass(label.includes("foam") ? "Foam gen" : "Simulation") });
+        pass.setPipeline(pipe);
+        pass.setBindGroup(0, bg);
+        if (groups > MAX_WORKGROUPS) {
+            pass.dispatchWorkgroups(MAX_WORKGROUPS, Math.ceil(groups / MAX_WORKGROUPS), 1);
+        } else {
+            pass.dispatchWorkgroups(groups);
+        }
+        pass.end();
+    }
+
+    // ── Foam (Ihmsen 2012 diffuse particles) — lazily allocated on first setFoam ──
+    // Mirrors the PBF backend: the ring pool + the two grid-based compute passes are
+    // built the first time foam is enabled, so a sim that never turns foam on pays
+    // nothing. The pool is sized D = poolScale × count (capped) and reused; the emit
+    // pass overwrites the oldest slots via an atomic write-head modulo D. The shared
+    // FoamParams UBO carries the tuning knobs; frame dt / gravity / restDensity / dx /
+    // bounds are read from the Params UBO (frame dt via misc2.y, written each frame).
+    const FOAM_CAP_LIMIT = MAX_WORKGROUPS * WORKGROUP_SIZE; // keep the pool dispatch 1D
+    const foamData = new ArrayBuffer(FOAM_BYTES);
+    const foamF32 = new Float32Array(foamData);
+    const foamU32 = new Uint32Array(foamData);
+    let foamEnabled = false;
+    let foamSeed = 0;
+    let foamCapacity = 0;
+    let foamPoolGroups = 0;
+    let diffuseBuffer: GPUBuffer | null = null;
+    let diffuseHeadBuffer: GPUBuffer | null = null;
+    let foamParamsBuffer: GPUBuffer | null = null;
+    let foamEmitPipe: GPUComputePipeline | null = null;
+    let foamUpdatePipe: GPUComputePipeline | null = null;
+    let foamEmitBG: GPUBindGroup | null = null;
+    let foamUpdateBG: GPUBindGroup | null = null;
+    let diffusePool: DiffusePool | undefined;
+
+    function buildFoamBindGroups(): void {
+        foamEmitBG = device.createBindGroup({
+            layout: foamEmitPipe!.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: particleBuffer } },
+                { binding: 1, resource: { buffer: cellBuffer } },
+                { binding: 2, resource: { buffer: paramsBuffer } },
+                { binding: 3, resource: { buffer: foamParamsBuffer! } },
+                { binding: 4, resource: { buffer: diffuseBuffer! } },
+                { binding: 5, resource: { buffer: diffuseHeadBuffer! } },
+            ],
+        });
+        foamUpdateBG = device.createBindGroup({
+            layout: foamUpdatePipe!.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: cellBuffer } },
+                { binding: 1, resource: { buffer: paramsBuffer } },
+                { binding: 2, resource: { buffer: foamParamsBuffer! } },
+                { binding: 3, resource: { buffer: diffuseBuffer! } },
+            ],
+        });
+    }
+
+    function ensureFoam(cfg: FoamConfig): void {
+        if (!foamEmitPipe) {
+            foamEmitPipe = pipeline("mpm-foam-emit", FOAM_EMIT_WGSL);
+            foamUpdatePipe = pipeline("mpm-foam-update", FOAM_UPDATE_WGSL);
+            foamParamsBuffer = device.createBuffer({ label: "mpm-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            diffuseHeadBuffer = device.createBuffer({ label: "mpm-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        }
+        let cap = Math.round(count * (cfg.poolScale ?? 3));
+        cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? 1_500_000, FOAM_CAP_LIMIT));
+        if (cap !== foamCapacity || !diffuseBuffer) {
+            diffuseBuffer?.destroy();
+            diffuseBuffer = device.createBuffer({ label: "mpm-foam-pool", size: cap * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+            foamCapacity = cap;
+            foamPoolGroups = Math.ceil(cap / WORKGROUP_SIZE);
+            // Zero the pool (all slots dead) + reset the ring head on (re)allocation.
+            const enc = device.createCommandEncoder({ label: "mpm-foam-clear" });
+            enc.clearBuffer(diffuseBuffer);
+            enc.clearBuffer(diffuseHeadBuffer!);
+            device.queue.submit([enc.finish()]);
+            diffusePool = { buffer: diffuseBuffer, headBuffer: diffuseHeadBuffer!, capacity: cap };
+            buildFoamBindGroups();
+        }
+        // Foam-specific knobs (dt / gravity / restDensity / dx / bounds come from Params).
+        foamF32[0] = 5; // tauTaMin
+        foamF32[1] = 20; // tauTaMax
+        foamF32[2] = 2; // tauWcMin
+        foamF32[3] = 8; // tauWcMax
+        foamF32[4] = 5; // tauKMin
+        foamF32[5] = 50; // tauKMax
+        foamF32[6] = cfg.kTa ?? 40;
+        foamF32[7] = cfg.kWc ?? 40;
+        foamF32[8] = cfg.kb ?? 0.8;
+        foamF32[9] = cfg.kd ?? 0.5;
+        foamF32[10] = cfg.rv ?? particleRadius;
+        foamF32[12] = cfg.tMin ?? 0.3;
+        foamF32[13] = cfg.tMax ?? 2.0;
+        // foamU32[14] (frameSeed) is written per frame in step().
+        device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
+    }
+
+    return {
+        count,
+        particleRadius,
+        // MLS-MPM particles settle on a near-regular lattice spaced wider than the
+        // PBF fluid packs, so without bigger impostors the surface shows the
+        // individual spheres. Enlarge them (and the blur) to match SPH smoothness.
+        surfaceSizeScale: 1.5,
+        positionBuffer,
+        debugBuffer,
+        debugNorm: 1 / 6,
+        get gpuBytes(): number {
+            // Sum every GPU buffer this backend owns; the lazily-allocated foam pool +
+            // uniforms are added only once foam has been enabled.
+            let b = particleBuffer.size + cellBuffer.size + positionBuffer.size + debugBuffer.size + paramsBuffer.size + copyParamsBuffer.size + emittersBuffer.size;
+            if (diffuseBuffer) {
+                b += diffuseBuffer.size;
+            }
+            if (diffuseHeadBuffer) {
+                b += diffuseHeadBuffer.size;
+            }
+            if (foamParamsBuffer) {
+                b += foamParamsBuffer.size;
+            }
+            return b;
+        },
+        step(encoder: GPUCommandEncoder, dt: number): void {
+            // Split the (real-time) frame dt into `substeps` MLS-MPM steps, so the
+            // substeps slider trades stability vs cost without changing playback
+            // speed. Cap each sub-step's dt so a hitch can't blow it up.
+            const frameDt = dt > 0 ? dt : 1 / 60;
+            pf[16] = Math.min(frameDt / substepsMut, maxSubDt);
+            pf[MISC2_BASE_F32 + 1] = frameDt; // misc2.y — frame dt for the foam emit count
+            // Warm-up ramp: grow the live-particle count by one batch per frame. counts.z
+            // gates the mass/integration passes; copyU32[2] gates the render copy pass.
+            if (liveCount < count) {
+                liveCount = Math.min(count, liveCount + warmupStep);
+            }
+            pu[COUNTS_OFFSET_F32 + 2] = liveCount;
+            if (copyU32[2] !== liveCount) {
+                copyU32[2] = liveCount;
+                device.queue.writeBuffer(copyParamsBuffer, 0, copyData);
+            }
+            device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+            // PIX / GPU-capture debug group: scopes this frame's MLS-MPM compute
+            // passes (plus the nested substep + foam groups). Balanced by the
+            // popDebugGroup at the end of step().
+            encoder.pushDebugGroup("MLS-MPM sim step");
+            if (emitEnabled) {
+                emitData[2] = emitSeed++;
+                emitData[5] = frameDt;
+                device.queue.writeBuffer(emittersBuffer, 0, emitData);
+                dispatch(encoder, "mpm-emit", emitPipe, emitBG, particleGroups);
+            }
+            encoder.pushDebugGroup(`substeps (${substepsMut})`);
+            for (let s = 0; s < substepsMut; s++) {
+                // Optional interactive force (setForceField) runs as its own pass at
+                // the start of each substep, so the per-frame velocity impulse is
+                // accel·substepDt × substeps = accel·frameDt — independent of the
+                // substeps count (matches the old in-G2P application). Only dispatched
+                // while a force is active; nothing force-related runs (or compiles) idle.
+                if (forceSpec && forcePipe && forceBG) {
+                    dispatch(encoder, "mpm-force", forcePipe, forceBG, particleGroups);
+                }
+                dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
+                dispatch(encoder, "mpm-p2g1", p2g1Pipe, p2g1BG, particleGroups);
+                dispatch(encoder, "mpm-p2g2", p2g2Pipe, p2g2BG, particleGroups);
+                if (updatePipe && updateBG) {
+                    dispatch(encoder, "mpm-update", updatePipe, updateBG, cellGroups);
+                }
+                if (g2pPipe && g2pBG) {
+                    dispatch(encoder, "mpm-g2p", g2pPipe, g2pBG, particleGroups);
+                }
+            }
+            encoder.popDebugGroup();
+            // Foam: generate + advect diffuse particles ONCE per frame, AFTER the substep
+            // loop and BEFORE the copy — the grid then holds the last substep's mass +
+            // velocity and particles[i].v/.C hold the last G2P output. Skipped when off.
+            if (foamEnabled && foamUpdateBG) {
+                foamU32[14] = foamSeed++;
+                device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
+                encoder.pushDebugGroup("foam");
+                dispatch(encoder, "mpm-foam-emit", foamEmitPipe!, foamEmitBG!, particleGroups);
+                dispatch(encoder, "mpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamPoolGroups);
+                encoder.popDebugGroup();
+            }
+            dispatch(encoder, "mpm-copy", copyPipe, copyBG, particleGroups);
+            encoder.popDebugGroup();
+        },
+        get diffuse(): DiffusePool | undefined {
+            return diffusePool;
+        },
+        reset(): void {
+            seed();
+        },
+        setParam(key: string, value: number): void {
+            switch (key) {
+                case "gravity":
+                    pf[17] = value;
+                    break;
+                case "restDensity":
+                    pf[18] = value;
+                    break;
+                case "stiffness":
+                    pf[19] = value;
+                    break;
+                case "viscosity":
+                    pf[20] = value;
+                    break;
+                case "damping":
+                    pf[21] = value;
+                    break;
+                case "affineDamping":
+                    pf[22] = value;
+                    break;
+                case "groundDamp":
+                    pf[23] = value;
+                    break;
+                case "groundDampHeight":
+                    pf[7] = value;
+                    break;
+                case "restitution":
+                    pf[MISC2_BASE_F32] = value;
+                    break;
+                case "substeps":
+                    substepsMut = Math.max(1, Math.round(value));
+                    break;
+            }
+        },
+        setSceneSdf(spec: SceneSdfSpec | null): void {
+            currentScene = spec;
+            rebuildScenePipes();
+        },
+        setEmitters(cfg: EmitterConfig | null): void {
+            packEmitters(emitData, cfg);
+            emitEnabled = !!cfg && cfg.emitters.length > 0;
+            device.queue.writeBuffer(emittersBuffer, 0, emitData);
+        },
+        setSpawn(min: [number, number, number], max: [number, number, number], accept?: ((x: number, y: number, z: number) => boolean) | null): void {
+            spawnMin[0] = min[0];
+            spawnMin[1] = min[1];
+            spawnMin[2] = min[2];
+            spawnMax[0] = max[0];
+            spawnMax[1] = max[1];
+            spawnMax[2] = max[2];
+            spawnAccept = accept ?? null;
+        },
+        setWarmup(frames: number): void {
+            // Number of frames over which reset()/seed() gradually releases particles
+            // (0 = release all at once). Takes effect on the next seed()/reset().
+            warmupFrames = Math.max(0, Math.floor(frames));
+            warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
+        },
+        setForceField(spec: ForceFieldSpec | null): void {
+            forceSpec = spec;
+            if (!spec || spec === forceBuiltSpec) {
+                return;
+            }
+            let pipe = forcePipeCache.get(spec.wgsl);
+            if (!pipe) {
+                pipe = pipeline("mpm-force", buildForceWgsl(spec));
+                forcePipeCache.set(spec.wgsl, pipe);
+            }
+            forcePipe = pipe;
+            forceBG = buildForceBG(pipe, spec);
+            forceBuiltSpec = spec;
+        },
+        setFoam(cfg: FoamConfig | null): void {
+            if (!cfg) {
+                foamEnabled = false;
+                // Empty the pool so a later re-enable starts clean (no frozen ghosts).
+                if (diffuseBuffer && diffuseHeadBuffer) {
+                    const enc = device.createCommandEncoder({ label: "mpm-foam-off-clear" });
+                    enc.clearBuffer(diffuseBuffer);
+                    enc.clearBuffer(diffuseHeadBuffer);
+                    device.queue.submit([enc.finish()]);
+                }
+                return;
+            }
+            ensureFoam(cfg);
+            foamEnabled = true;
+        },
+        setProfiler(p: FluidProfiler | null): void {
+            profiler = p;
+        },
+        dispose(): void {
+            particleBuffer.destroy();
+            cellBuffer.destroy();
+            positionBuffer.destroy();
+            debugBuffer.destroy();
+            paramsBuffer.destroy();
+            copyParamsBuffer.destroy();
+            diffuseBuffer?.destroy();
+            diffuseHeadBuffer?.destroy();
+            foamParamsBuffer?.destroy();
+        },
+    };
+}

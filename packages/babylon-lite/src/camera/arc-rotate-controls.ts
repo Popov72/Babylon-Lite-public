@@ -125,10 +125,16 @@ export function setCameraLimits(camera: ArcRotateCamera, limits: ArcRotateCamera
  * Orbit/zoom limits are entirely opt-in via {@link setCameraLimits}; the camera
  * self-clamps in its setters, so this loop carries no limit code.
  *
+ * The optional `shouldHandlePointer` predicate gates every pointerdown: when it
+ * returns `false` the camera fully ignores that gesture — no pointer capture, no
+ * rotate/pan — so a caller can claim specific buttons/modifiers for its own use
+ * (e.g. Shift+RMB to push fluid, or a click that hits a pickable object). Omit it
+ * to keep the original always-handle behavior; existing callers are unchanged.
+ *
  * Camera stays plain data — this function reads/writes its properties.
  * Returns a cleanup function to remove all listeners and the beforeRender hook.
  */
-export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext): () => void {
+export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext, shouldHandlePointer?: (e: PointerEvent) => boolean): () => void {
     const angularSensibility = 1000; // Babylon default
     const panningSensibility = 50; // Babylon default (pixels per unit)
     const wheelPrecision = 3; // Babylon default
@@ -148,6 +154,13 @@ export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement
     let pinchStartRadius = 0;
 
     function onPointerDown(e: PointerEvent): void {
+        // A caller-supplied gate can claim a gesture (e.g. Shift+RMB, or a click
+        // over a pickable object): if it rejects this pointerdown, ignore the
+        // gesture entirely — no capture, no rotate/pan — so the claiming code owns
+        // the pointer.
+        if (shouldHandlePointer && !shouldHandlePointer(e)) {
+            return;
+        }
         canvas.setPointerCapture(e.pointerId);
         lastX = e.clientX;
         lastY = e.clientY;

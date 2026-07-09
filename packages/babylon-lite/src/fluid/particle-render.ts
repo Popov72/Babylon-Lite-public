@@ -7,9 +7,17 @@
 // sharing the scene depth buffer, so particles depth-test against the ground
 // (and, later, the tank) and occlude correctly.
 
-import { getEffectiveAspectRatio, getViewProjectionMatrix } from "babylon-lite";
-import type { Camera, EngineContext, RenderTarget, SceneContext, Task } from "babylon-lite";
-import type { FluidSim } from "./pbf-sim.js";
+import { getEffectiveAspectRatio, getViewProjectionMatrix } from "../camera/camera.js";
+import type { Camera } from "../camera/camera.js";
+import type { EngineContext } from "../engine/engine.js";
+import type { RenderTarget } from "../engine/render-target.js";
+import type { SceneContext } from "../scene/scene-core.js";
+import type { Task } from "../frame-graph/task.js";
+import type { FluidSim, FluidProfiler } from "./sim-common.js";
+
+// Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
+// null by default so `profiler?.pass(...)` is undefined and timing costs nothing.
+let profiler: FluidProfiler | null = null;
 
 export interface ParticleRenderOptions {
     /** Colour target the particles draw into (typically `engine.scRT`). */
@@ -49,7 +57,7 @@ struct VOut {
     o.clip = cam.vp * vec4<f32>(world, 1.0);
     o.uv = c;
     // Colour by speed (Phase 3): slow/settled liquid is deep blue, fast-moving
-    // splashes/foam tend toward bright cyan-white.
+    // splashes tend toward bright cyan-white.
     let t = clamp(dbg[ii] * cam.misc.y, 0.0, 1.0);
     o.color = mix(vec3<f32>(0.10, 0.35, 0.85), vec3<f32>(0.85, 0.95, 1.0), t);
     return o;
@@ -72,7 +80,11 @@ struct VOut {
     return vec4<f32>(col, 1.0);
 }`;
 
-export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void; setSizeScale(s: number): void } {
+export function createParticleRenderTask(
+    engine: EngineContext,
+    scene: SceneContext,
+    opts: ParticleRenderOptions
+): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void; setSizeScale(s: number): void; setProfiler(p: FluidProfiler | null): void } {
     const device = engine._device;
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
@@ -166,6 +178,9 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
         setSizeScale(s: number): void {
             sizeScale = s;
         },
+        setProfiler(p: FluidProfiler | null): void {
+            profiler = p;
+        },
         record(): void {
             build();
         },
@@ -179,15 +194,18 @@ export function createParticleRenderTask(engine: EngineContext, scene: SceneCont
                 return 0;
             }
             updateCamera();
+            engine._currentEncoder.pushDebugGroup("Fluid particles (spheres)");
             const pass = engine._currentEncoder.beginRenderPass({
                 label: "fluid-particles",
                 colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
                 depthStencilAttachment: { view: depthView, depthLoadOp: "load", depthStoreOp: "store" },
+                timestampWrites: profiler?.pass("Particles"),
             });
             pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
             pass.draw(6, currentSim.count);
             pass.end();
+            engine._currentEncoder.popDebugGroup();
             return 1;
         },
         dispose(): void {

@@ -585,6 +585,10 @@ export default defineConfig({
         },
     },
     server: {
+        // Bind to ALL network interfaces (0.0.0.0) so the dev server is reachable
+        // from other devices on the LAN (e.g. http://<your-machine-ip>:5174), not
+        // just http://localhost. Vite prints the "Network:" URL on startup.
+        host: true,
         // Default interactive port is 5174. Playwright test runs pass LAB_DEV_PORT
         // to spin up an ISOLATED server on a dedicated port (so test traffic never
         // competes with the interactive lab). strictPort is enabled only for that
