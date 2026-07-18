@@ -24,10 +24,12 @@
 //     boundary (ported from the PBF apply pass), applied per-particle in G2P.
 //   • Shadows / density-grid raymarching are omitted (we keep impostor render).
 //
-// Per substep: clearGrid → p2g_1 (mass + APIC momentum) → p2g_2 (EOS pressure +
-// viscous stress momentum) → updateGrid (v = p/m, gravity, domain walls) → g2p
-// (gather v + affine C, advect, capsule/hole boundary). A copy pass then packs
-// world positions + speed for the renderer.
+// Per substep: clearGrid → p2g_mass (mass scatter only, 1 atomic/node) → p2g_vel (gather
+// current node density, then scatter APIC momentum + EOS/viscous stress momentum together,
+// 3 atomics/node — the two velocity scatters the old two-pass split did separately are
+// combined here, cutting the per-node global atomics from 7 to 4) → updateGrid (v = p/m,
+// gravity, domain walls) → g2p (gather v + affine C, advect, capsule/hole boundary). A
+// copy pass then packs world positions + speed for the renderer.
 
 import type { EngineContext } from "../engine/engine.js";
 import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
@@ -146,7 +148,18 @@ fn weightsOf(worldPos: vec3<f32>, p: Params) -> array<vec3<f32>, 3> {
     return w;
 }`;
 
-const P2G1_WGSL = /* wgsl */ `
+// Particle-to-grid transfer, split into a cheap mass scatter then a fused momentum
+// pass. The two-pass structure is required because the EOS pressure needs the
+// grid-reconstructed density, which is unavailable until every particle has deposited
+// its mass. But the ORIGINAL split wasted atomics: it scattered the node VELOCITY twice
+// (APIC momentum in pass 1, stress momentum in pass 2 = 6 velocity atomics/node). By
+// deferring the momentum scatter to AFTER the mass is known, both velocity contributions
+// combine into ONE scatter — dropping the per-node global atomics from 7 (4+3) to 4
+// (mass pass: 1; momentum pass: 3) with IDENTICAL physics (density is still the current
+// substep's grid mass, so there is no lag and no stability change vs the old two passes).
+//
+// Pass 1 — mass only (1 atomic/node), giving the current node mass.
+const P2G_MASS_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -161,11 +174,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= p.counts.x) { return; }
     if (i >= p.counts.z) { return; } // warm-up: not-yet-released particles deposit no mass
     let pos = particles[i].position;
-    let v = particles[i].v;
-    let C = particles[i].C;
     let base = cellOf(pos, p);
     let w = weightsOf(pos, p);
-    let dx = p.origin.w;
 
     for (var gx = 0; gx < 3; gx++) {
     for (var gy = 0; gy < 3; gy++) {
@@ -173,20 +183,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let weight = w[gx].x * w[gy].y * w[gz].z;
         let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
         if (!inGrid(node, p)) { continue; }
-        let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
-        let cellDist = nodeCenter - pos;
-        let Q = C * cellDist;
-        let mass = weight;                  // particle mass = 1
-        let vel = mass * (v + Q);
-        let idx = index1D(node, p);
-        atomicAdd(&cells[idx].mass, enc(mass));
-        atomicAdd(&cells[idx].vx, enc(vel.x));
-        atomicAdd(&cells[idx].vy, enc(vel.y));
-        atomicAdd(&cells[idx].vz, enc(vel.z));
+        atomicAdd(&cells[index1D(node, p)].mass, enc(weight)); // particle mass = 1
     }}}
 }`;
 
-const P2G2_WGSL = /* wgsl */ `
+// Pass 2 — gather the current node density, then scatter APIC momentum + EOS/viscous
+// stress momentum together (3 velocity atomics/node). `mass` is read non-atomically
+// (the mass pass has completed) exactly like the old p2g2 density gather.
+const P2G_VEL_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -201,6 +205,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= p.counts.x) { return; }
     if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
     let pos = particles[i].position;
+    let v = particles[i].v;
+    let C = particles[i].C;
     let base = cellOf(pos, p);
     let w = weightsOf(pos, p);
     let dx = p.origin.w;
@@ -215,16 +221,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!inGrid(node, p)) { continue; }
         density += dec(cells[index1D(node, p)].mass) * weight;
     }}}
-    if (density <= 0.0) { return; }
 
-    let volume = 1.0 / density;
-    let pressure = max(0.0, p.sim0.w * (density / p.sim0.z - 1.0));
-    let dudv = particles[i].C;
-    let strain = dudv + transpose(dudv);
-    var stress = mat3x3<f32>(-pressure, 0.0, 0.0, 0.0, -pressure, 0.0, 0.0, 0.0, -pressure);
-    stress += p.sim1.x * strain;
-    let Dinv = 4.0 / (dx * dx);
-    let term0 = -volume * Dinv * dt * stress;
+    // Stress term (pressure + viscous). Isolated particle (zero density) deposits APIC
+    // momentum only, matching the old p2g2 zero-density skip.
+    var term0 = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    if (density > 0.0) {
+        let volume = 1.0 / density;
+        let pressure = max(0.0, p.sim0.w * (density / p.sim0.z - 1.0));
+        let strain = C + transpose(C);
+        var stress = mat3x3<f32>(-pressure, 0.0, 0.0, 0.0, -pressure, 0.0, 0.0, 0.0, -pressure);
+        stress += p.sim1.x * strain;
+        let Dinv = 4.0 / (dx * dx);
+        term0 = -volume * Dinv * dt * stress;
+    }
 
     for (var gx = 0; gx < 3; gx++) {
     for (var gy = 0; gy < 3; gy++) {
@@ -234,11 +243,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!inGrid(node, p)) { continue; }
         let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
         let cellDist = nodeCenter - pos;
-        let momentum = (term0 * cellDist) * weight;
+        let Q = C * cellDist;
+        let vel = weight * (v + Q) + (term0 * cellDist) * weight; // APIC momentum + stress
         let idx = index1D(node, p);
-        atomicAdd(&cells[idx].vx, enc(momentum.x));
-        atomicAdd(&cells[idx].vy, enc(momentum.y));
-        atomicAdd(&cells[idx].vz, enc(momentum.z));
+        atomicAdd(&cells[idx].vx, enc(vel.x));
+        atomicAdd(&cells[idx].vy, enc(vel.y));
+        atomicAdd(&cells[idx].vz, enc(vel.z));
     }}}
 }`;
 
@@ -911,8 +921,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
     const clearPipe = pipeline("mpm-clear", CLEAR_WGSL);
-    const p2g1Pipe = pipeline("mpm-p2g1", P2G1_WGSL);
-    const p2g2Pipe = pipeline("mpm-p2g2", P2G2_WGSL);
+    const p2gMassPipe = pipeline("mpm-p2g-mass", P2G_MASS_WGSL);
+    const p2gVelPipe = pipeline("mpm-p2g-vel", P2G_VEL_WGSL);
     // update-grid + g2p pipelines/bind-groups are built lazily in setSceneSdf (always
     // called before the first step); compiled variants are cached by source so
     // re-selecting a demo is instant.
@@ -958,16 +968,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     });
 
     const clearBG = device.createBindGroup({ layout: clearPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cellBuffer } }] });
-    const p2g1BG = device.createBindGroup({
-        layout: p2g1Pipe.getBindGroupLayout(0),
+    const p2gMassBG = device.createBindGroup({
+        layout: p2gMassPipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: particleBuffer } },
             { binding: 1, resource: { buffer: cellBuffer } },
             { binding: 2, resource: { buffer: paramsBuffer } },
         ],
     });
-    const p2g2BG = device.createBindGroup({
-        layout: p2g2Pipe.getBindGroupLayout(0),
+    const p2gVelBG = device.createBindGroup({
+        layout: p2gVelPipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: particleBuffer } },
             { binding: 1, resource: { buffer: cellBuffer } },
@@ -1217,8 +1227,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                     dispatch(encoder, "mpm-force", forcePipe, forceBG, particleGroups);
                 }
                 dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
-                dispatch(encoder, "mpm-p2g1", p2g1Pipe, p2g1BG, particleGroups);
-                dispatch(encoder, "mpm-p2g2", p2g2Pipe, p2g2BG, particleGroups);
+                dispatch(encoder, "mpm-p2g-mass", p2gMassPipe, p2gMassBG, particleGroups);
+                dispatch(encoder, "mpm-p2g-vel", p2gVelPipe, p2gVelBG, particleGroups);
                 if (updatePipe && updateBG) {
                     dispatch(encoder, "mpm-update", updatePipe, updateBG, cellGroups);
                 }
