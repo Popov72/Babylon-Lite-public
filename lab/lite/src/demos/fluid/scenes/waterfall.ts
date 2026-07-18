@@ -22,7 +22,7 @@
 import { addToScene, createMeshFromData, createPbrMaterial, createPolyhedron, createSolidTexture2D, createSphere, loadGltf, loadTexture2D, rebuildMaterial, setMeshVisible, setShadowTaskCasterMeshes } from "babylon-lite";
 import type { Mesh, SceneNode } from "babylon-lite";
 import type { EmitterConfig, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import type { DemoParam, FluidCtx, FluidDemo, PairState } from "../demo.js";
+import type { DemoParam, FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_COUNTRY_URL } from "../demo.js";
 
 // ── Crique (rocky cove) heightfield parameters — the single source of truth for BOTH
@@ -522,84 +522,6 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         placePlant("fern_02", th, rr, 1.05 + vegRng() * 0.7, 0.05);
     }
 
-    // Curated first-visit presets (merged over the core defaults on first visit).
-    // Front 3/4 camera looking at the waterfall face; light-blue water; foam ON.
-    // Foam rates are DELIBERATELY lower than the other demos: the recirculating
-    // impact/pool churn generates a lot of foam BELOW the visible surface (occluded →
-    // wasted). Lower kTa/kWc + a smaller poolScale spend the pool on the visible
-    // whitewater (cascade + front curtain) instead of saturating it with hidden bubbles.
-    const foam = {
-        enabled: true,
-        kTa: 20,
-        kWc: 20,
-        kb: 0.6,
-        kd: 0.3,
-        tMin: 0.45,
-        tMax: 2.5,
-        poolScale: 2,
-        blurRadius: 3,
-        lightIntensity: 0.25,
-        ambient: 1,
-        aoStrength: 0.15,
-        normalStrength: 1.5,
-        debugTexture: "off",
-        softness: 0.1,
-        density: 24,
-        subsurfaceStrength: 0.05,
-    };
-    const camera = { alpha: -1.3, beta: 1.12, radius: 45 };
-    // MLS-MPM defaults imported from an exported preset (fluid-waterfall-MLS-MPM.json):
-    // deeper/looser water (restDensity 2.5) with gentler recirculation, its own camera
-    // framing, and heavier foam (much higher trapped-air/wave-crest rates + a bigger,
-    // more buoyant, subsurface-tinted pool). Kept separate from the PBF preset above.
-    const mlsCamera = { alpha: -1.3, beta: 1.12, radius: 45 };
-    const mlsFoam = {
-        enabled: true,
-        kTa: 113,
-        kWc: 108,
-        kb: 1.65,
-        kd: 0.8,
-        tMin: 0.45,
-        tMax: 2.5,
-        poolScale: 3.5,
-        blurRadius: 4,
-        lightIntensity: 0.25,
-        ambient: 1,
-        aoStrength: 0.15,
-        normalStrength: 1.5,
-        debugTexture: "off",
-        softness: 0.12,
-        density: 23.4,
-        subsurfaceStrength: 1,
-    };
-    const presets: Record<string, Partial<PairState>> = {
-        PBF: {
-            schema: { gravity: 16, viscosity: 0.45, relaxation: 45, scorr: 0.02, iterations: 4, restDensity: 400, boundaryDensity: 0 },
-            demoParams: { sourceSpeed: 1.8, emitRate: 9.0, sourceDown: 1.0, spread: 0.35 },
-            color: "#cfe8f2",
-            half: true,
-            size: 0.4,
-            physScale: 0.5,
-            count: 150000,
-            absorption: 0.4,
-            camera,
-            foam,
-        },
-        "MLS-MPM": {
-            schema: { gravity: 21, stiffness: 260, viscosity: 0.04, restDensity: 2.5, damping: 0.997, affineDamping: 0.75, groundDamp: 0.9, groundDampHeight: 1, restitution: 0.4, substeps: 2 },
-            demoParams: { sourceSpeed: 1.8, emitRate: 7.0, sourceDown: 1.0, spread: 0.35 },
-            color: "#cfe8f2",
-            half: true,
-            size: 0.5,
-            physScale: 0.5,
-            count: 150000,
-            absorption: 0.5,
-            thicknessDownscale: 6,
-            camera: mlsCamera,
-            foam: mlsFoam,
-        },
-    };
-
     return {
         key: "waterfall",
         label: "Waterfall",
@@ -698,6 +620,5 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         extraControls() {
             return [];
         },
-        presets,
     };
 }

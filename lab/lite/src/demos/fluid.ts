@@ -49,6 +49,8 @@ import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, PairState, PendingForce } from "./fluid/demo.js";
+import { exportJsonFromPairState } from "./fluid/preset-io.js";
+import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { ENV_COUNTRY_URL, ENV_STUDIO_URL } from "./fluid/demo.js";
 import { screenRay } from "./fluid/pick.js";
 import { CAP_A, CAP_B, CAP_R, createCapsuleDemo } from "./fluid/scenes/capsule.js";
@@ -202,6 +204,16 @@ async function main(): Promise<void> {
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
 
+    // Domain (world) scale for the sim bounds. Base 1× keeps the tank at ±20; a demo can grow
+    // the whole simulated domain (marble tower "Mesh scale") by scaling the BOUNDS, the grid
+    // cell `dx`, the particle/smoothing radius and the spawn box together — so the grid
+    // dimensions (bounds/dx) and therefore the GPU memory stay CONSTANT while the domain
+    // physically grows. `domainScale` is the desired value (set by switchPair from the active
+    // demo's getDomainScale, or by setDomainScale); `builtDomainScale` is what the live sims were
+    // last created with (rebuild fires when they differ).
+    let domainScale = 1;
+    let builtDomainScale = 1;
+
     // Seed box scaled with the physics particle size. The fixed spawn box only
     // matches the rest density at 1×; at other sizes the seed is far under-dense
     // (small particles → violent collapse) or over-dense (big particles → eruption),
@@ -242,22 +254,31 @@ async function main(): Promise<void> {
         // (CFL), and PBF over-compresses the closed box above ~2×.
         const pbfScale = clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE);
         const mpmScale = clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE);
+        // Domain scale grows the WORLD (bounds + dx + particle/smoothing radius + spawn) uniformly,
+        // leaving the grid dimensions (bounds/dx) — and hence GPU memory — constant. It is a
+        // separate axis from the physics particle-size `scale` above (which changes per-particle
+        // density). restDensity/relaxation stay keyed off pbfScale/mpmScale ONLY: they encode the
+        // per-particle size ratio, not the world size.
+        const ds = domainScale;
+        const scaleTriple = (t: [number, number, number]): [number, number, number] => [t[0] * ds, t[1] * ds, t[2] * ds];
+        const boundsMin = scaleTriple(BOUNDS_MIN);
+        const boundsMax = scaleTriple(BOUNDS_MAX);
         const pbfSpawn = scaledSpawn(pbfScale);
         const mpmSpawn = scaledSpawn(mpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createPbfSim(engine, {
             count,
-            particleRadius: 0.09 * pbfScale,
-            smoothingRadius: 0.4 * pbfScale,
-            spawnMin: pbfSpawn.min,
-            spawnMax: pbfSpawn.max,
+            particleRadius: 0.09 * pbfScale * ds,
+            smoothingRadius: 0.4 * pbfScale * ds,
+            spawnMin: scaleTriple(pbfSpawn.min),
+            spawnMax: scaleTriple(pbfSpawn.max),
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
             groundY: 0,
             restDensity: 341 / (pbfScale * pbfScale * pbfScale),
-            boundsMin: BOUNDS_MIN,
-            boundsMax: BOUNDS_MAX,
+            boundsMin,
+            boundsMax,
             maxPerCell: 48,
             relaxation: 50 / (pbfScale * pbfScale),
         });
@@ -265,9 +286,9 @@ async function main(): Promise<void> {
         // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
             count,
-            particleRadius: 0.09 * mpmScale,
-            spawnMin: mpmSpawn.min,
-            spawnMax: mpmSpawn.max,
+            particleRadius: 0.09 * mpmScale * ds,
+            spawnMin: scaleTriple(mpmSpawn.min),
+            spawnMax: scaleTriple(mpmSpawn.max),
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
@@ -278,9 +299,10 @@ async function main(): Promise<void> {
             // v.y=0 zone — which coincided with y=0 and cancelled gravity there,
             // leaving the fluid hovering a row above the floor (PBF hard-clamps, so
             // it sat flush). The border now sits harmlessly below all demo floors.
-            boundsMin: [BOUNDS_MIN[0], -1, BOUNDS_MIN[2]],
-            boundsMax: BOUNDS_MAX,
-            dx: 0.22 * mpmScale,
+            // The -1 floor offset scales with the domain too so the grid dims stay constant.
+            boundsMin: [boundsMin[0], -1 * ds, boundsMin[2]],
+            boundsMax,
+            dx: 0.22 * mpmScale * ds,
             restDensity: 3,
             stiffness: 350,
             gravity: 9.8,
@@ -300,6 +322,7 @@ async function main(): Promise<void> {
     let { pbf: pbfSim, mpm: mpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
+    let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
     // Interactive push force (Shift+RMB mouse-stir): a ready-made injectable force
     // field shared by both backends. The frame loop drives it via setRay + toggles
     // it on the ACTIVE sim via setForceField, so it dispatches its own dedicated
@@ -374,11 +397,18 @@ async function main(): Promise<void> {
     // per-(demo, method)). `pushFoam` reads its live snapshot and (re)applies it to the
     // ACTIVE sim (null disables). Cheap: re-writes the foam UBO (and reallocates only when
     // poolScale changed). Also gates the renderer so a disabled pool costs nothing to draw.
+    // Foam sprites are composited OVER the fluid surface straight into the swapchain, so while
+    // a fluid-surface DEBUG texture (depth / normals / thickness) is being visualised they would
+    // draw on top of it. Track that mode and suppress the foam render whenever it is active.
+    let surfaceDebugActive = false;
+    function foamRenderVisible(): boolean {
+        return controls.getValues().foam.enabled && !!activeSim.setFoam && !surfaceDebugActive;
+    }
     function pushFoam(): void {
         const f = controls.getValues().foam;
         const cfg: FoamConfig = { kTa: f.kTa, kWc: f.kWc, kb: f.kb, kd: f.kd, tMin: f.tMin, tMax: f.tMax, poolScale: f.poolScale };
         activeSim.setFoam?.(f.enabled ? cfg : null);
-        foamTask.setEnabled(f.enabled && !!activeSim.setFoam);
+        foamTask.setEnabled(foamRenderVisible());
     }
     // Re-apply after any sim rebuild / backend switch: (re)enable foam on the new active
     // sim (allocates its pool) THEN rebind the renderer to that pool.
@@ -576,14 +606,36 @@ async function main(): Promise<void> {
     // applies the SAME effect the old inline handler did; the component's programmatic
     // setters drive the controls on pair-state restore WITHOUT re-firing side effects.
     const containerSel = document.createElement("select");
-    containerSel.style.cssText = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    const DEMO_SEL_CSS = "flex:1;min-width:0;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+    containerSel.style.cssText = DEMO_SEL_CSS;
     // Options are populated from the demo registry once it is built (below).
     containerSel.onchange = () => {
         const demo = demos.find((d) => d.key === containerSel.value);
         if (demo) {
-            switchPair(demo, methodName);
+            switchPair(demo, methodName, quality);
         }
     };
+    // Quality tier (low / middle / high) — sits NEXT TO the demo dropdown. Each
+    // (demo, method, quality) is its own pair, seeded from the matching preset file, so
+    // picking a tier loads that tier's settings (and remembers per-tier tweaks).
+    const qualitySel = document.createElement("select");
+    qualitySel.style.cssText = DEMO_SEL_CSS;
+    for (const q of QUALITIES) {
+        const opt = document.createElement("option");
+        opt.value = q;
+        opt.textContent = q.charAt(0).toUpperCase() + q.slice(1);
+        qualitySel.appendChild(opt);
+    }
+    qualitySel.value = quality;
+    qualitySel.onchange = () => {
+        if (activeDemo) {
+            switchPair(activeDemo, methodName, qualitySel.value as Quality);
+        }
+    };
+    // Demo + quality dropdowns, side by side, at the top of the "Demo" section.
+    const demoQualityRow = document.createElement("div");
+    demoQualityRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
+    demoQualityRow.append(containerSel, qualitySel);
     // Host for the active demo's live tunables ("Demo parameters") + its demo-specific
     // panel controls.
     const demoParamsHost = document.createElement("div");
@@ -623,6 +675,7 @@ async function main(): Promise<void> {
                 tMin: 0.3,
                 tMax: 2.0,
                 poolScale: 3,
+                size: 1,
                 blurRadius: 4,
                 lightIntensity: 0.9,
                 ambient: 0.5,
@@ -654,7 +707,12 @@ async function main(): Promise<void> {
             onNarrowRange: (delta, mu) => surfaceTask.setNarrowRange(delta, mu),
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
             onShowContainer: (visible) => activeDemo?.setContainerVisible?.(visible),
-            onDebug: (mode) => surfaceTask.setDebug(mode),
+            onDebug: (mode) => {
+                surfaceTask.setDebug(mode);
+                // Hide foam sprites while a surface debug texture is shown (they composite over it).
+                surfaceDebugActive = mode !== "none";
+                foamTask.setEnabled(foamRenderVisible());
+            },
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
             onPhysScale: (s) => setPhysicsScale(s),
             onReset: () => {
@@ -694,6 +752,7 @@ async function main(): Promise<void> {
             },
             onFoamThresholds: (t0, t1) => foamTask.setThresholds(t0, t1),
             onFoamSubsurface: (v) => foamTask.setSubsurfaceStrength(v),
+            onFoamSize: (v) => foamTask.setSizeScale(v),
             onFoamBlur: (v) => foamTask.setBlurRadius(v),
             onFoamLight: (v) => foamTask.setLightIntensity(v),
             onFoamAmbient: (v) => foamTask.setAmbient(v),
@@ -706,7 +765,7 @@ async function main(): Promise<void> {
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(...controls.makeSection("Demo", [containerSel, demoParamsHost, controls.containerToggleRow!]));
+    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, demoParamsHost, controls.containerToggleRow!]));
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -717,56 +776,9 @@ async function main(): Promise<void> {
     exportBtn.textContent = "Export parameters";
     exportBtn.style.cssText = "width:100%;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
     function exportParameters(): void {
-        const live = readLivePairState(methodName);
-        const v = controls.getValues();
-        // JSON keys mirror the on-screen UI labels (camelCased) so every tunable is easy
-        // to find; it's a human-facing snapshot (the app never re-imports it — presets are
-        // translated by hand). Grouped: physics / render / foam, like the panel sections.
-        const data = {
-            meta: { demo: activeDemo!.key, method: methodName },
-            physics: live.schema, // "Physics simulation" sliders (keys = solver params)
-            demoParams: live.demoParams, // demo's numeric "Demo parameters" (empty for box)
-            demoState: activeDemo!.snapshotState?.() ?? {}, // box: boxSize / paddleOn / paddleSpeed
-            showContainer: v.showContainer, // "Show container / nozzle meshes"
-            physicsParticleSize: live.physScale, // "Physics particle size"
-            particleCount: live.count, // "Particles"
-            camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius },
-            render: {
-                renderAsSpheres: v.renderMode === "spheres", // "Render as spheres" (else fluid surface)
-                waterColor: live.color, // "Water color"
-                absorption: live.absorption, // "Absorption (Beer-Lambert)"
-                particleSize: live.size, // "Particle size"
-                refractionStrength: v.refraction, // "Refraction strength"
-                specularPower: v.specular, // "Specular power"
-                surfaceDepthBlur: v.depthBlur, // "Surface depth blur"
-                depthBlurEdgeThreshold: v.depthBlurThreshold, // "Depth blur edge threshold"
-                surfaceThicknessBlur: v.thicknessBlur, // "Surface thickness blur"
-                halfRendering: live.half, // "Half rendering (perf)"
-                thicknessDownscale: live.thicknessDownscale, // "Thickness downscale"
-                surfaceFilter: v.surfaceFilter, // "Surface filter" (bilateral / narrow-range)
-                narrowRangeDelta: v.narrowDelta, // "Narrow range δ (×size)"
-                narrowRangeMu: v.narrowMu, // "Narrow range µ (×size)"
-            },
-            foam: {
-                enableFoam: v.foam.enabled, // "Enable foam"
-                trappedAirRate: v.foam.kTa, // "Trapped-air rate k_ta"
-                waveCrestRate: v.foam.kWc, // "Wave-crest rate k_wc"
-                foamLifetime: v.foam.tMax, // "Foam lifetime (s)"
-                foamLifetimeMin: v.foam.tMin, // (no UI slider — carried)
-                bubbleBuoyancy: v.foam.kb, // "Bubble buoyancy k_b"
-                bubbleDrag: v.foam.kd, // "Bubble drag k_d"
-                poolSize: v.foam.poolScale, // "Pool size (× fluid)"
-                foamSoftness: v.foam.softness, // "Foam softness t0 (edge)"
-                foamDensity: v.foam.density, // "Foam density t1 (opaque)"
-                subsurfaceBubbleStrength: v.foam.subsurfaceStrength, // "Subsurface bubble strength"
-                foamBlurRadius: v.foam.blurRadius, // "Foam blur radius"
-                foamLightIntensity: v.foam.lightIntensity, // "Foam light intensity"
-                foamAmbient: v.foam.ambient, // "Foam ambient"
-                foamAO: v.foam.aoStrength, // "Foam AO / shadow"
-                foamNormalStrength: v.foam.normalStrength, // "Foam normal strength"
-                foamDebug: v.foam.debugTexture, // "Foam debug"
-            },
-        };
+        // Serialise the live UI into the shared grouped shape (the same format the on-disk
+        // quality presets use), so an exported file can be dropped straight into presets/.
+        const data = exportJsonFromPairState(activeDemo!.key, methodName, readLivePairState(methodName));
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -939,6 +951,7 @@ async function main(): Promise<void> {
         pbfSim.dispose();
         mpmSim.dispose();
         ({ pbf: pbfSim, mpm: mpmSim } = createSims(count, scale));
+        builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
         applyMethod(methodName);
         canvas.dataset.particleCount = String(count);
@@ -1015,10 +1028,11 @@ async function main(): Promise<void> {
             showContainer: true,
         };
     }
-    // First-visit state: the demo's preset (if any) merged over the core defaults.
-    function presetOrDefault(demo: FluidDemo, method: string): PairState {
+    // First-visit state: the on-disk quality preset for this (demo, method, quality),
+    // if any, merged over the core defaults. Pairs with no file use pure defaults.
+    function presetOrDefault(demo: FluidDemo, method: string, q: Quality): PairState {
         const base = defaultPairState(demo, method);
-        const p = demo.presets[method];
+        const p = getQualityPreset(demo.key, method, q);
         if (!p) {
             return base;
         }
@@ -1140,6 +1154,7 @@ async function main(): Promise<void> {
                 tMin: f.tMin,
                 tMax: f.tMax,
                 poolScale: f.poolScale,
+                size: f.size ?? cur.size,
                 blurRadius: f.blurRadius,
                 lightIntensity: f.lightIntensity,
                 ambient: f.ambient,
@@ -1161,8 +1176,8 @@ async function main(): Promise<void> {
         if (st.showContainer !== undefined) {
             controls.setShowContainer(st.showContainer);
         }
-        if (st.count !== particleCount || st.physScale !== physicsScale) {
-            rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method
+        if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale) {
+            rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method (at the current domain scale)
         } else {
             applySceneSdf(); // refresh emitters/spawn for the loaded demo params
             applyMethod(methodName);
@@ -1180,7 +1195,7 @@ async function main(): Promise<void> {
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
     // demo visuals if the demo changed, then load the target pair's state.
-    function switchPair(nextDemo: FluidDemo, nextMethod: string): void {
+    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality): void {
         // Switching demo or fluid method resumes the sim if it was paused.
         if (paused) {
             paused = false;
@@ -1203,9 +1218,14 @@ async function main(): Promise<void> {
             clearSceneHoles();
         }
         methodName = nextMethod;
-        const key = `${nextDemo.key}:${nextMethod}`;
-        const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod);
+        quality = nextQuality;
+        const key = `${nextDemo.key}:${nextMethod}:${nextQuality}`;
+        const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality);
         currentPairKey = key;
+        // Propagate the target demo's domain (world) scale BEFORE loading the pair state, so the
+        // pair-state rebuild guard fires when it differs from the built scale — switching AWAY from a
+        // scaled demo resets it to 1 (base bounds), switching TO one grows the sim domain.
+        domainScale = nextDemo.getDomainScale?.() ?? 1;
         loadPairState(st);
         // Re-apply the container-mesh visibility choice (onEnter shows it by default).
         nextDemo.setContainerVisible?.(controls.getValues().showContainer);
@@ -1228,6 +1248,13 @@ async function main(): Promise<void> {
         sunShadow,
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         getProfiler: () => (timingEnabled ? profiler : null),
+        setDomainScale: (s: number) => {
+            // Rebuild both backends with bounds/dx/radius/spawn scaled by `s` (grid dims — and GPU
+            // memory — stay constant) and re-apply the active demo's scene SDF. builtDomainScale is
+            // set inside rebuildSims.
+            domainScale = s;
+            rebuildSims(particleCount, physicsScale);
+        },
     };
 
     // Build the demo registry (capsule default) and populate the demo dropdown.
@@ -1417,8 +1444,13 @@ async function main(): Promise<void> {
     });
 
     const boxDemo = demos.find((d) => d.key === "box") ?? demos[0]!;
-    switchPair(boxDemo, "MLS-MPM"); // box + MLS-MPM by default
+    // Load the on-disk quality presets (served from lab/public/fluid-presets) BEFORE the first
+    // switchPair, so first-visit lookups see them. Runtime fetch → editing a preset + reloading
+    // the page applies it with no bundle rebuild.
+    await loadQualityPresets(demos.map((d) => d.key));
+    switchPair(boxDemo, "MLS-MPM", quality); // box + MLS-MPM at the default quality
     containerSel.value = boxDemo.key;
+    qualitySel.value = quality;
     controls.setMethod("MLS-MPM");
     applyRenderMode(false); // fluid surface by default
 

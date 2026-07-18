@@ -70,6 +70,8 @@ export interface FluidFoamValues {
     tMin: number;
     tMax: number;
     poolScale: number;
+    /** Visual foam splat-size multiplier (× the foam renderer's base splat radius). */
+    size: number;
     blurRadius: number;
     lightIntensity: number;
     ambient: number;
@@ -162,6 +164,7 @@ export interface FluidControlsCallbacks {
     // Foam screen-space look — always applied to the foam renderer.
     onFoamThresholds?(t0: number, t1: number): void;
     onFoamSubsurface?(v: number): void;
+    onFoamSize?(v: number): void;
     onFoamBlur?(v: number): void;
     onFoamLight?(v: number): void;
     onFoamAmbient?(v: number): void;
@@ -406,7 +409,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const absorbInput = document.createElement("input");
     absorbInput.type = "range";
     absorbInput.min = "0";
-    absorbInput.max = "4";
+    absorbInput.max = "40";
     absorbInput.step = "0.1";
     absorbInput.value = String(init.absorption);
     absorbInput.style.cssText = "width:100%;";
@@ -426,18 +429,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     sizeLab.textContent = "Particle size";
     const sizeVal = document.createElement("span");
     sizeVal.style.cssText = "color:#9fb4cc;";
-    sizeVal.textContent = `${init.size.toFixed(1)}\u00d7`;
+    sizeVal.textContent = `${init.size.toFixed(2)}\u00d7`;
     sizeHead.append(sizeLab, sizeVal);
     const sizeInput = document.createElement("input");
     sizeInput.type = "range";
-    sizeInput.min = "0.3";
+    sizeInput.min = "0.1";
     sizeInput.max = "3";
-    sizeInput.step = "0.1";
+    sizeInput.step = "0.01";
     sizeInput.value = String(init.size);
     sizeInput.style.cssText = "width:100%;";
     sizeInput.oninput = () => {
         const s = parseFloat(sizeInput.value);
-        sizeVal.textContent = `${s.toFixed(1)}\u00d7`;
+        sizeVal.textContent = `${s.toFixed(2)}\u00d7`;
         on.onParticleSize?.(s);
     };
     sizeRow.append(sizeHead, sizeInput);
@@ -711,6 +714,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let foamT0 = init.foam.softness;
     let foamT1 = init.foam.density;
     let foamSubStrength = init.foam.subsurfaceStrength;
+    let foamSize = init.foam.size;
     let foamBlurRadius = init.foam.blurRadius;
     let foamLightIntensity = init.foam.lightIntensity;
     let foamAmbient = init.foam.ambient;
@@ -837,6 +841,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             on.onFoamSubsurface?.(v);
         }
     );
+    const foamSizeRow = makeRenderSlider(
+        "Foam size",
+        0.1,
+        3,
+        0.05,
+        foamSize,
+        (v) => `${v.toFixed(2)}\u00d7`,
+        (v) => {
+            foamSize = v;
+            on.onFoamSize?.(v);
+        }
+    );
     const foamBlurRow = makeRenderSlider(
         "Foam blur radius",
         0,
@@ -940,6 +956,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamSoftRow,
         foamDensityRow,
         foamSubRow,
+        foamSizeRow,
         foamBlurRow,
         foamLightRow,
         foamAmbientRow,
@@ -1132,7 +1149,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         setParticleSize(v: number): void {
             sizeInput.value = String(v);
-            sizeVal.textContent = `${v.toFixed(1)}\u00d7`;
+            sizeVal.textContent = `${v.toFixed(2)}\u00d7`;
             on.onParticleSize?.(v);
         },
         setRefraction(v: number): void {
@@ -1199,6 +1216,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamLifeRow.set(foam.tMax);
             foamPoolRow.set(foam.poolScale);
             // Look sliders.
+            foamSizeRow.set(foam.size);
             foamBlurRow.set(foam.blurRadius);
             foamLightRow.set(foam.lightIntensity);
             foamAmbientRow.set(foam.ambient);
@@ -1245,6 +1263,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                     tMin: foamTMin,
                     tMax: foamCfg.tMax,
                     poolScale: foamCfg.poolScale,
+                    size: foamSize,
                     blurRadius: foamBlurRadius,
                     lightIntensity: foamLightIntensity,
                     ambient: foamAmbient,

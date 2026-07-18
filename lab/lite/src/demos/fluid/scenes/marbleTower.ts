@@ -20,7 +20,7 @@ import type { ShaderMaterial } from "babylon-lite/material/shader/shader-materia
 import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite/texture/pixels-texture.js";
 import type { Texture2D } from "babylon-lite/texture/texture-2d.js";
 import { releaseTexture } from "babylon-lite/resource/gpu-pool.js";
-import type { DemoParam, FluidCtx, FluidDemo, PairState } from "../demo.js";
+import type { DemoParam, FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
 const TOWER_URL = "https://assets.babylonjs.com/meshes/Marble/marbleTower/marbleTower.gltf";
@@ -63,9 +63,9 @@ const SDF_PADDING = 2;
 //    the geometry (rim + hub only).
 const WHEEL_C: [number, number, number] = [3.78, 4.28, 0.06]; // disk centre — a point on the axle
 const WHEEL_AXLE: [number, number, number] = [1, 0, 0]; // unit axle direction (horizontal, +X)
-const WHEEL_R = 3.65; // rim/bucket-band centreline — bucket outer (R+T)=4.05 = measured mesh perimeter
+const WHEEL_R = 3.8325; // rim/bucket-band centreline (3.65 measured perimeter +5% per user request)
 const WHEEL_T = 0.4; // rim half-thickness (axial half-width ≈0.4; R+T is the bucket-band outer radius)
-const WHEEL_HUB_R = 0.5; // axle / hub radius
+const WHEEL_HUB_R = 0.6; // axle / hub radius (centre cylinder — sized by eye per user)
 const WHEEL_HUB_HALF = 2.1; // hub / axle half-length along the axle
 const WHEEL_HUB_OFFSET = -1.63; // hub centre along the axle relative to C (shaft world X≈[0.05,4.24])
 
@@ -116,10 +116,15 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     // inner cylindrical SOLE (floor), two axial SHROUD side walls, and two radial VANES — and is
     // OPEN on the outer radial face, so gravity holds water while the pocket climbs/descends and
     // dumps it once the opening rotates to face downward. Walls are thin but tunnel-safe.
-    const BUCKET_DEPTH = 0.40; // radial depth of the pocket band → bInner=3.65 = measured rim inner (spokes stop here)
+    const BUCKET_DEPTH = 0.40; // radial depth of the pocket band (sole/shroud collision walls)
     const BUCKET_WALL = 0.1; // sole / shroud wall half-thickness (tunnel-safe)
     const VANE_HALF_W = 0.09; // vane tangential half-width
-    const WHEEL_SDF_FN = `fn sdWheel(pt: vec3<f32>, dt: f32) -> f32 {
+    // The paddle DIVIDERS (vanes) span the pocket radially from the sole (bInner) OUT to the measured
+    // mesh bucket-ring (BUCKET_RIM_OUTER≈4.05) — a TALL divider that pushes liquid through the whole
+    // bucket depth, not just a sliver at the rim. The outer edge stays at the mesh ring so the vane
+    // never pokes past the visible wheel (the +5%-enlarged collision bOuter=R+T≈4.23 would).
+    const BUCKET_RIM_OUTER = 4.05; // measured mesh bucket-ring outer radius (vane outer edge)
+    const WHEEL_SDF_FN = (k: number): string => `fn sdWheel(pt: vec3<f32>, dt: f32) -> f32 {
     if (sceneSdfParams.wheelMisc.x < 0.5) { return 1.0e9; }
     let wc = sceneSdfParams.wheelC.xyz;
     let axis = vec3<f32>(1.0, 0.0, 0.0); // axle = world +X (compile-time constant; frees wheelA.xyz)
@@ -132,7 +137,7 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     let T = sceneSdfParams.wheelA.w;        // rim axial half-width
     // Bucket-band radii (used to size both the spokes and the buckets so they don't overlap).
     let bOuter = rOuter + T;                       // outer edge of the wheel band
-    let bInner = bOuter - ${BUCKET_DEPTH.toFixed(4)}; // sole radius = pocket floor = spoke outer end
+    let bInner = bOuter - ${(BUCKET_DEPTH * k).toFixed(4)}; // sole radius = pocket floor = spoke outer end
     let bMid = 0.5 * (bInner + bOuter);
     let bHalfR = 0.5 * (bOuter - bInner);
     let bHalfA = T;                                // shrouds sit at the axial extremes |a| = T
@@ -156,29 +161,34 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     rel = rel - sector * round(rel / sector);
     let midR = 0.5 * (rInner + bInner);
     let halfLenR = 0.5 * (bInner - rInner);
-    let sa = abs(a) - ${SPOKE_HALF_AX.toFixed(4)};
+    let sa = abs(a) - ${(SPOKE_HALF_AX * k).toFixed(4)};
     let st = abs(rad * rel) - sceneSdfParams.wheelA.x; // spoke tangential half-width (tunable, wheelA.x)
     let sr = abs(rad - midR) - halfLenR;
     let spoke = length(max(vec3<f32>(sa, st, sr), vec3<f32>(0.0))) + min(max(sa, max(st, sr)), 0.0);
     // ── Bucket band: sole (inner floor ring) + two side shrouds + N rotating radial vanes ──────
     // Sole: a thin cylindrical wall at rad = bInner spanning the full axial width (pocket floor).
-    let soleRad = abs(rad - bInner) - ${BUCKET_WALL.toFixed(4)};
+    let soleRad = abs(rad - bInner) - ${(BUCKET_WALL * k).toFixed(4)};
     let soleAx = abs(a) - bHalfA;
     let sole = length(max(vec2<f32>(soleRad, soleAx), vec2<f32>(0.0))) + min(max(soleRad, soleAx), 0.0);
     // Shrouds: the two side walls at |a| = bHalfA, spanning the pocket band radially (pocket sides).
-    let shrAx = abs(abs(a) - bHalfA) - ${BUCKET_WALL.toFixed(4)};
+    let shrAx = abs(abs(a) - bHalfA) - ${(BUCKET_WALL * k).toFixed(4)};
     let shrRad = abs(rad - bMid) - bHalfR;
     let shroud = length(max(vec2<f32>(shrRad, shrAx), vec2<f32>(0.0))) + min(max(shrRad, shrAx), 0.0);
-    // Vanes: N thin radial dividers across the band, polar-repeated, rotating with the wheel. The
-    // buckets are a 30-fold structure independent of the 12 spokes, so they use their OWN base phase
-    // (wheelA.z, detected separately) — reusing the spoke phase misaligns the vanes vs the mesh.
+    // Vanes: N radial dividers, polar-repeated, rotating with the wheel. The buckets are a 30-fold
+    // structure independent of the 12 spokes, so they use their OWN base phase (wheelA.z, detected
+    // separately). Each divider spans the pocket radially from the sole (bInner) OUT to the measured
+    // mesh bucket ring (BUCKET_RIM_OUTER) — TALL enough to push liquid through the whole bucket depth,
+    // while its outer edge stays at the mesh ring so it never pokes past the visible wheel rim.
     let nBuckets = max(sceneSdfParams.wheelA.y, 1.0);
     let bSector = 6.2831853071795864 / nBuckets;
     var brel = phi - sceneSdfParams.wheelA.z - spokePhase;
     brel = brel - bSector * round(brel / bSector);
+    let vaneOuter = ${(BUCKET_RIM_OUTER * k).toFixed(4)};
+    let vaneMidR = 0.5 * (bInner + vaneOuter);
+    let vaneHalfR = 0.5 * (vaneOuter - bInner);
     let vAx = abs(a) - bHalfA;
-    let vT = abs(rad * brel) - ${VANE_HALF_W.toFixed(4)};
-    let vR = abs(rad - bMid) - bHalfR;
+    let vT = abs(rad * brel) - ${(VANE_HALF_W * k).toFixed(4)};
+    let vR = abs(rad - vaneMidR) - vaneHalfR;
     let vane = length(max(vec3<f32>(vAx, vT, vR), vec3<f32>(0.0))) + min(max(vAx, max(vT, vR)), 0.0);
     return min(min(min(sole, shroud), vane), min(hub, spoke));
 }`;
@@ -187,7 +197,7 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     // wheelHub / wheelMisc); the analytic tower only needs tier0..tier3 (keep + plinth).
     const ANALYTIC_STRUCT =
         "struct SceneSdfParams { domain: vec4<f32>, center: vec4<f32>, tier0: vec4<f32>, tier1: vec4<f32>, tier2: vec4<f32>, tier3: vec4<f32>, wheelC: vec4<f32>, wheelA: vec4<f32>, wheelHub: vec4<f32>, wheelMisc: vec4<f32>, };";
-    const ANALYTIC_SDF = `fn sdRBox(p: vec3<f32>, c: vec3<f32>, h: vec3<f32>, r: f32) -> f32 {
+    const ANALYTIC_SDF = (k: number): string => `fn sdRBox(p: vec3<f32>, c: vec3<f32>, h: vec3<f32>, r: f32) -> f32 {
     let q = abs(p - c) - (h - vec3<f32>(r));
     return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 }
@@ -197,12 +207,13 @@ fn towerBox(pt: vec3<f32>, t0: vec4<f32>, t1: vec4<f32>) -> f32 {
     if (t1.w < 0.5) { return 1.0e9; }
     return sdRBox(pt, t0.xyz, vec3<f32>(t0.w, t1.x, t1.y), t1.z);
 }
-${WHEEL_SDF_FN}
+${WHEEL_SDF_FN(k)}
 fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // Valid fluid space = inside the domain cylinder, below the lid, above the floor, AND outside
     // the two tower boxes (keep+plinth) AND outside the analytic water wheel. min() intersects all
     // constraints (any negative term => penetrating). Each solid's signed distance is positive
-    // outside it.
+    // outside it. All geometry constants are already at the final mesh scale (regenerated literals +
+    // scaled UBO), so there is NO runtime scale math here.
     let radial = sceneSdfParams.domain.x - length(pt.xz - sceneSdfParams.center.xz);
     let ceiling = sceneSdfParams.domain.y - pt.y;
     let floorD = pt.y - sceneSdfParams.domain.w;
@@ -227,8 +238,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     //                                       baked mode, where its disk has been CARVED from the grid)
     const BAKED_STRUCT =
         "struct SceneSdfParams { domain: vec4<f32>, center: vec4<f32>, gridOrigin: vec4<f32>, gridDims: vec4<f32>, pad0: vec4<f32>, pad1: vec4<f32>, wheelC: vec4<f32>, wheelA: vec4<f32>, wheelHub: vec4<f32>, wheelMisc: vec4<f32>, };";
-    const BAKED_SDF = `${WHEEL_SDF_FN}
+    const BAKED_SDF = (k: number): string => `${WHEEL_SDF_FN(k)}
 fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    // All geometry (baked grid data + wheel literals + domain UBO) is already at the final mesh
+    // scale, so this reads the scaled world position directly — NO runtime scale math.
     let radial = sceneSdfParams.domain.x - length(pt.xz - sceneSdfParams.center.xz);
     let ceiling = sceneSdfParams.domain.y - pt.y;
     let floorD = pt.y - sceneSdfParams.domain.w;
@@ -244,9 +257,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let gridBuffer: GPUBuffer | null = null;
     let bakeReady = false; // true once the mesh SDF is baked + uploaded
     let bakedActive = false; // true when the BAKED spec is selected (only possible once bakeReady)
-    // Desired baked state — set by restoreState() / the checkbox. If a preset asks for baked mode
-    // BEFORE the async bake finishes, we remember it here and apply it at the end of bakeSceneSdf().
-    let desiredBaked = false;
+    // Desired baked state. The tower ALWAYS uses the baked mesh SDF (there is no analytic-mode
+    // toggle any more), so this starts true and bakeSceneSdf() flips to baked as soon as the async
+    // bake finishes. The analytic placeholder SDF is only ever live during the first ~2 s bake.
+    let desiredBaked = true;
     // The baked distances, retained on the CPU so the SDF-texture visualizer can slice arbitrary
     // cross-sections without a GPU readback (the gridBuffer upload is the GPU copy the sims sample).
     let bakedGrid: BakedGrid | null = null;
@@ -254,34 +268,46 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // The LIVE spec handed to the core (FluidDemo.sdf). Starts analytic; applyMode() swaps
     // its fields IN PLACE so a demo re-enter / method switch (both re-read demo.sdf via the
     // core's applySceneSdf → setSceneSdf on both sims) picks up the current choice.
-    const sdf: SceneSdfSpec = { struct: ANALYTIC_STRUCT, sdf: ANALYTIC_SDF, buffer: ctx.sceneSdfBuffer };
+    const sdf: SceneSdfSpec = { struct: ANALYTIC_STRUCT, sdf: ANALYTIC_SDF(1), buffer: ctx.sceneSdfBuffer };
 
     const applyMode = (baked: boolean): void => {
+        // Regenerate the collision WGSL at the CURRENT mesh scale — the emitted literals are already
+        // final-scale, so the shader itself carries no runtime scale math (see WHEEL_SDF_FN(k)).
         if (baked) {
             sdf.struct = BAKED_STRUCT;
-            sdf.sdf = BAKED_SDF;
+            sdf.sdf = BAKED_SDF(meshScale);
             sdf.sdfGrid = gridBuffer ?? undefined; // storage grid the sims bind
             sdf.gridConfine = false; // per-particle push-out vs. the baked shape (a run isn't a closed box)
         } else {
             sdf.struct = ANALYTIC_STRUCT;
-            sdf.sdf = ANALYTIC_SDF;
+            sdf.sdf = ANALYTIC_SDF(meshScale);
             sdf.sdfGrid = undefined; // no grid → sims take the analytic-only path
             sdf.gridConfine = undefined; // closed-container default (matches the placeholder cylinder)
         }
     };
 
+    // ── Uniform mesh-scale (demo "Mesh scale" slider, 0.25..4) ──────────────────────────────────
+    // Scales the WHOLE tower uniformly about the base origin (0,0,0). The scaling is applied by
+    // REBUILDING the collision at the new scale — NOT by any per-fragment shader math: the visual
+    // glTF root node is scaled, the wheel/tower SDF WGSL is REGENERATED with final-scale literals,
+    // the UBO lengths/positions and the baked SDF grid are multiplied by k, and the fluid-sim domain
+    // bounds are grown via ctx.setDomainScale. Fluid physics (gravity / particle size) is left to
+    // the user's own sliders. Declared here (before the param packers) because setBox/packWheel read
+    // meshScale to emit scaled UBO values.
+    let meshScale = 1;
+    let towerRoot: SceneNode | null = null; // glTF root; scaled+repositioned by applyMeshScale (visual only)
+    let baseRootScale: [number, number, number] = [1, 1, 1]; // root scale at k=1 (post TOWER_HEIGHT fit)
+    let baseRootPos: [number, number, number] = [0, 0, 0]; // root position at k=1
+
     // Whole param block (40 floats = 160 bytes = the shared UBO size). domain.x = radius,
     // domain.y = ceilingY, domain.w = floorY; center.xz = domain centre (origin). The
     // spare tier slots stay zero until the real cascade uses them.
     const sdfData = new Float32Array(40);
-    sdfData[0] = DOMAIN_R; // domain.x — cylinder radius
-    sdfData[1] = CEILING_Y; // domain.y — lid height
     sdfData[2] = 0; // domain.z — spare
-    sdfData[3] = FLOOR_Y; // domain.w — floor height
     sdfData[4] = 0; // center.x
     sdfData[5] = TOWER_HEIGHT * 0.5; // center.y — spare (tower mid-height, handy for tiers)
     sdfData[6] = 0; // center.z
-    sdfData[7] = 0; // center.w — spare
+    sdfData[7] = 0; // center.w — spare (mesh scale is NOT stored here any more; the SDF is regenerated)
 
     // Analytic tower solid: a stack of rounded boxes the water flows AROUND/DOWN. Each box
     // uses two tier slots — tierN = centre.xyz + halfX (w); tierN+1 = halfY, halfZ,
@@ -289,67 +315,128 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // (the water-wheel + cantilever tracks are ignored — that's what the baked SDF is for).
     // Keep: y≈2..12, ~2.8 wide. Plinth: y≈0..2.4, ~4.6 wide.
     const setBox = (slot: number, cx: number, cy: number, cz: number, hx: number, hy: number, hz: number, round: number): void => {
+        // Scale centre, half-extents AND corner radius by the current mesh scale — the tower boxes
+        // grow with the model about the origin. Called from packScaledCollision().
+        const k = meshScale;
         const o = 8 + slot * 8;
-        sdfData[o] = cx;
-        sdfData[o + 1] = cy;
-        sdfData[o + 2] = cz;
-        sdfData[o + 3] = hx;
-        sdfData[o + 4] = hy;
-        sdfData[o + 5] = hz;
-        sdfData[o + 6] = round;
+        sdfData[o] = cx * k;
+        sdfData[o + 1] = cy * k;
+        sdfData[o + 2] = cz * k;
+        sdfData[o + 3] = hx * k;
+        sdfData[o + 4] = hy * k;
+        sdfData[o + 5] = hz * k;
+        sdfData[o + 6] = round * k;
         sdfData[o + 7] = 1; // enabled
     };
-    setBox(0, 0, 7.0, 0, 1.4, 5.0, 1.4, 0.2); // keep
-    setBox(1, 0, 1.2, 0, 2.3, 1.2, 2.0, 0.2); // plinth
     // slots 2,3 (floats 24..39) are now the wheel param block (see packWheel below), not boxes.
 
-    // ── Analytic water wheel: rim torus + hub + N rotating SPOKES (moving boundary) ────────────
-    // Enabled by default; the "Water wheel (analytic)" UI checkbox toggles the SDF union (the
-    // wheel mesh always renders regardless). Packed at floats 24..39 in BOTH param arrays:
+    // ── Water wheel SDF: rim/bucket band + hub + N rotating SPOKES (moving boundary) ────────────
+    // ALWAYS unioned into the (baked) tower SDF — the wheel mesh renders + spins and the fluid always
+    // collides with it. Packed at floats 24..39 in BOTH param arrays:
     //   wheelC  (24..27) = centre.xyz, R (rim radius)
-    //   wheelA  (28..31) = spokeHalfW (tangential half-width, tunable), M buckets, bucketPhase0, T
+    //   wheelA  (28..31) = spokeHalfW (tangential half-width), M buckets, bucketPhase0, T
     //   wheelHub(32..35) = hubR, hubHalf, hubOffset, θ (spoke angle, written each frame)
-    //   wheelMisc(36..39) = enabled(1/0), ω (rad/s, each frame), N (spoke count), φ0 (spoke base phase)
-    let wheelSdfEnabled = true;
-    // N spokes + spoke half-width are USER-TUNABLE (sliders) — the source of truth. The wheel's
-    // spoke MIDDLES carry no vertices, so the Fourier auto-detect can't pin the count; the user
-    // dials N + thickness by eye against the "Debug wheel SDF" overlay. detectSpokes() below is
-    // kept only as a diagnostic hint + to seed the base phase φ0.
-    let spokeCount = 12; // N straight spokes — driven by the "Wheel spokes" slider (mesh has 12, Fourier-detected)
-    let spokeHalfW = 0.18; // spoke tangential half-width — driven by "Spoke thickness"; packed into wheelA.x
-    let bucketCount = 30; // M perimeter buckets — driven by the "Wheel buckets" slider; packed into wheelA.y
+    //   wheelMisc(36..39) = enabled(1, always on), ω (rad/s, each frame), N (spoke count), φ0 (spoke base phase)
+    // Wheel shape params (spoke count/thickness, bucket count, radii) are FIXED — mesh-calibrated,
+    // no longer user-tunable. detectSpokes() below seeds the spoke + bucket base phases φ0.
+    const spokeCount = 12; // N straight spokes (fixed — mesh has 12, Fourier-detected)
+    const spokeHalfW = 0.11; // spoke tangential half-width (fixed per user); packed into wheelA.x
+    const bucketCount = 30; // M perimeter buckets (fixed); packed into wheelA.y
     let spokePhase0 = 0; // base phase φ0 — world disk-plane angle of spoke 0 (seeded by detectSpokes)
     let bucketPhase0 = 0; // base phase for the 30-fold bucket vanes (seeded separately by detectSpokes)
     const packWheel = (arr: Float32Array): void => {
-        arr[24] = WHEEL_C[0];
-        arr[25] = WHEEL_C[1];
-        arr[26] = WHEEL_C[2];
-        arr[27] = WHEEL_R;
-        arr[28] = spokeHalfW; // wheelA.x — spoke tangential half-width (axle dir is a WGSL constant)
+        // World-space lengths / positions scale with the mesh; counts and phases (dimensionless)
+        // do NOT. This keeps the wheel SDF geometry matching the (also-scaling) visual mesh without
+        // any runtime scale math in the shader.
+        const k = meshScale;
+        arr[24] = WHEEL_C[0] * k;
+        arr[25] = WHEEL_C[1] * k;
+        arr[26] = WHEEL_C[2] * k;
+        arr[27] = WHEEL_R * k;
+        arr[28] = spokeHalfW * k; // wheelA.x — spoke tangential half-width (axle dir is a WGSL constant)
         arr[29] = bucketCount; // wheelA.y — M perimeter buckets (never 0 → sdWheel guards with max(M,1))
         arr[30] = bucketPhase0; // wheelA.z — bucket-vane base phase (30-fold, detected separately)
-        arr[31] = WHEEL_T;
-        arr[32] = WHEEL_HUB_R;
-        arr[33] = WHEEL_HUB_HALF;
-        arr[34] = WHEEL_HUB_OFFSET;
+        arr[31] = WHEEL_T * k;
+        arr[32] = WHEEL_HUB_R * k;
+        arr[33] = WHEEL_HUB_HALF * k;
+        arr[34] = WHEEL_HUB_OFFSET * k;
         arr[35] = 0; // θ — spoke angle (mirrored from wheelTheta each frame by updateWheelSpin)
-        arr[36] = wheelSdfEnabled ? 1 : 0;
+        arr[36] = 1; // enabled — wheel SDF is ALWAYS on
         arr[37] = 0; // ω — spoke angular speed (mirrored from wheelOmega each frame; drives the FD)
         arr[38] = spokeCount; // N spokes (never 0 → sdWheel guards with max(N,1))
         arr[39] = spokePhase0; // base phase φ0
     };
 
-    packWheel(sdfData);
-
     // BAKED param block (40 floats = domain + center + grid params + wheel block). domain/center
     // mirror the analytic block; the grid origin/invCell/dims (floats 8..15) are filled by
     // bakeSceneSdf(); the wheel block (24..39) mirrors sdfData so the wheel collides in baked mode.
     const bakedData = new Float32Array(40);
-    bakedData[0] = DOMAIN_R; // domain.x — cylinder radius
-    bakedData[1] = CEILING_Y; // domain.y — lid height
-    bakedData[3] = FLOOR_Y; // domain.w — floor height
     bakedData[5] = TOWER_HEIGHT * 0.5; // center.y — spare
-    packWheel(bakedData);
+
+    // Pack EVERY scale-dependent collision param (domain floats + tower boxes + wheel block) into
+    // BOTH param blocks at the current meshScale. Called at init (k=1) and by the debounced heavy
+    // rebuild on a scale change. The baked grid params (floats 8..15) are handled by uploadScaledGrid.
+    const packScaledCollision = (): void => {
+        const k = meshScale;
+        sdfData[0] = DOMAIN_R * k; // domain.x — cylinder radius
+        sdfData[1] = CEILING_Y * k; // domain.y — lid height
+        sdfData[3] = FLOOR_Y * k; // domain.w — floor height
+        bakedData[0] = DOMAIN_R * k;
+        bakedData[1] = CEILING_Y * k;
+        bakedData[3] = FLOOR_Y * k;
+        setBox(0, 0, 7.0, 0, 1.4, 5.0, 1.4, 0.2); // keep   (setBox multiplies by k internally)
+        setBox(1, 0, 1.2, 0, 2.3, 1.2, 2.0, 0.2); // plinth
+        packWheel(sdfData);
+        packWheel(bakedData);
+    };
+    packScaledCollision();
+
+    // Visual-only mesh scaling: scale + reposition the glTF root about the world origin. Cheap; run
+    // LIVE on every slider tick for immediate feedback. The heavy collision rebuild is debounced.
+    const applyMeshScale = (): void => {
+        if (towerRoot) {
+            towerRoot.scaling.set(baseRootScale[0] * meshScale, baseRootScale[1] * meshScale, baseRootScale[2] * meshScale);
+            towerRoot.position.set(baseRootPos[0] * meshScale, baseRootPos[1] * meshScale, baseRootPos[2] * meshScale);
+        }
+    };
+
+    // Rescale the BASE baked grid (bakedGrid, held at scale 1) to the current meshScale and upload it
+    // to a FRESH GPU storage buffer, disposing the previous one. A uniform grid rescale — data*k,
+    // origin*k, cellSize*k — is EXACTLY equivalent to re-baking the k-scaled mesh (scaling is about
+    // the world origin), but instant. Also writes the scaled grid origin/invCell/dims into the baked
+    // param block (floats 8..15). No-op until the async bake has produced the base grid.
+    const uploadScaledGrid = (): void => {
+        if (!bakedGrid) {
+            return;
+        }
+        const k = meshScale;
+        const base = bakedGrid;
+        const n = base.data.length;
+        const scaled = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            scaled[i] = base.data[i]! * k; // signed distances scale with the world
+        }
+        const buf = engine._device.createBuffer({
+            label: "marbleTower-sdf-grid",
+            size: scaled.byteLength,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        engine._device.queue.writeBuffer(buf, 0, scaled);
+        const old = gridBuffer;
+        gridBuffer = buf;
+        if (bakedActive) {
+            sdf.sdfGrid = gridBuffer; // the sims rebind it on the next setSceneSdf
+        }
+        old?.destroy();
+        bakedData[8] = base.origin[0] * k;
+        bakedData[9] = base.origin[1] * k;
+        bakedData[10] = base.origin[2] * k;
+        bakedData[11] = 1 / (base.cellSize * k);
+        bakedData[12] = base.dims[0];
+        bakedData[13] = base.dims[1];
+        bakedData[14] = base.dims[2];
+        bakedData[15] = 0;
+    };
 
     const writeSdfParams = (): void => {
         // Write the ACTIVE param block into the shared UBO. clearSceneHoles() zeroes bytes
@@ -383,13 +470,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // FOUR nozzles straddling the top cube's inlet holes (2×2), each pouring straight
         // down from just under the apex. Multiple emitters share the recycle budget (`rate`),
         // so this splits the same flow across the four holes rather than quadrupling it.
-        const ox = Math.max(topStructure.hx * HOLE_OFFSET, 0.12);
-        const oz = Math.max(topStructure.hz * HOLE_OFFSET, 0.12);
-        const ey = topStructure.y - 0.25;
+        // Nozzle POSITIONS + geometry (offsets, drop, radius, intake slab) scale with the tower
+        // (meshScale, about the origin); the pour SPEED and recycle RATE are physics — left as set.
+        const k = meshScale;
+        const ox = Math.max(topStructure.hx * HOLE_OFFSET, 0.12) * k;
+        const oz = Math.max(topStructure.hz * HOLE_OFFSET, 0.12) * k;
+        const ey = (topStructure.y - 0.25) * k;
         const speed = marbleParams.centralSpeed;
-        const radius = marbleParams.nozzleRadius;
+        const radius = marbleParams.nozzleRadius * k;
         const emitters = ([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz]) => ({
-            pos: [topStructure.cx + sx * ox, ey, topStructure.cz + sz * oz] as [number, number, number],
+            pos: [topStructure.cx * k + sx * ox, ey, topStructure.cz * k + sz * oz] as [number, number, number],
             dir: [0, -1, 0] as [number, number, number],
             speed,
             radius,
@@ -398,8 +488,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             emitters,
             // Pump intake: a thin slab across the whole domain floor. Settled water is pulled
             // back up to the top nozzles (throttled by `rate` — a controlled trickle).
-            intakeMin: [-DOMAIN_R, FLOOR_Y, -DOMAIN_R],
-            intakeMax: [DOMAIN_R, FLOOR_Y + 0.8, DOMAIN_R],
+            intakeMin: [-DOMAIN_R * k, FLOOR_Y * k, -DOMAIN_R * k],
+            intakeMax: [DOMAIN_R * k, (FLOOR_Y + 0.8) * k, DOMAIN_R * k],
             rate: marbleParams.emitRate,
             spread: 0.2,
         };
@@ -486,25 +576,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
     };
 
-    // ── "Baked SDF (mesh)" toggle UI (appended under Demo parameters). Built once here so
-    //    bakeSceneSdf() can enable it + show the grid stats when the async bake finishes. ──
-    const bakedRow = document.createElement("label");
-    bakedRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
-    const bakedChk = document.createElement("input");
-    bakedChk.type = "checkbox";
-    bakedChk.disabled = true; // enabled once the mesh SDF is baked
-    const bakedText = document.createElement("span");
-    bakedText.textContent = "Baked SDF (mesh)";
-    bakedRow.append(bakedChk, bakedText);
+    // ── Baked mesh-SDF status line (appended under Demo parameters). The tower ALWAYS runs on the
+    //    baked SDF (no mode toggle); this just shows the bake progress / grid stats. ──
     const bakedStatusEl = document.createElement("div");
     bakedStatusEl.style.cssText = "color:#9fb4cc;font-size:11px;margin:0 0 6px;";
     bakedStatusEl.textContent = "baking mesh SDF…";
     let bakeStatus = "baking mesh SDF…";
 
-    // Apply the baked/analytic mode (shared by the checkbox handler + restoreState). Remembers
-    // the DESIRED state in `desiredBaked` so a preset that asks for baked mode BEFORE the async
-    // bake completes is honoured later (bakeSceneSdf re-invokes this once bakeReady). When the bake
-    // isn't ready yet the switch is deferred (returns early) so we never select a null grid.
+    // Switch the live SDF spec to the baked grid (called once by bakeSceneSdf when the bake finishes;
+    // desiredBaked is always true). Guards on bakeReady so we never select a null grid.
     const setBakedMode = (v: boolean): void => {
         desiredBaked = v;
         if (v && !bakeReady) {
@@ -520,40 +600,42 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     };
 
-    bakedChk.onchange = (): void => {
-        const want = bakedChk.checked;
-        if (want && !bakeReady) {
-            bakedChk.checked = false; // bake not ready → stay analytic
+    // Heavy mesh-scale rebuild (DEBOUNCED — see applyParam). Rebuilds the ENTIRE collision at the new
+    // scale WITHOUT any per-fragment shader scale math: regenerate the sceneSdf + flux WGSL with
+    // final-scale literals, repack the UBO lengths/positions, rescale + re-upload the baked grid, and
+    // grow the fluid-sim domain bounds. ctx.setDomainScale rebuilds both sims and re-injects the
+    // regenerated scene SDF (recompiling the collision pipelines), which also refreshes emitters+spawn.
+    const rebuildScaledCollision = (): void => {
+        // 1) Repack every scale-dependent UBO value (domain floats + tower boxes + wheel block).
+        packScaledCollision();
+        // 2) Regenerate the collision WGSL + rescale/re-upload the baked grid (updates sdf.sdf / grid).
+        applyMode(bakedActive);
+        uploadScaledGrid();
+        // 3) Force the flux compute pipeline to recompile with the rescaled catch-region literals.
+        fluxPipeline = null;
+        fluxBindGroup = null;
+        fluxBoundPos = null;
+        builtMeshScale = meshScale; // the demo-local collision state is now built at this scale
+        // 4) The sim-domain rebuild touches the SHARED core state (bounds + the shared UBO), so only do
+        //    it while THIS demo is on-screen. If the demo was switched away before this debounced call
+        //    fired, skip it: switching BACK re-propagates getDomainScale()==meshScale via switchPair,
+        //    which rebuilds the sims and re-injects the (already regenerated) scene SDF.
+        if (!active) {
             return;
         }
-        setBakedMode(want);
+        // Push the freshly-packed UBO, then rebuild the sims at the new domain scale. setDomainScale →
+        // rebuildSims → applySceneSdf re-reads demo.sdf/writeSdfParams/emitters/spawn on both sims.
+        writeSdfParams();
+        ctx.setDomainScale(meshScale);
+        // 5) Follow-up visual bits the core doesn't own: camera framing + the (optional) debug overlays.
+        ctx.camera.target.y = TOWER_HEIGHT * 0.5 * meshScale;
+        if (dbgActive) {
+            refreshWheelDebug();
+        }
+        applyVisualizer(); // reposition the SDF-texture slice quad for the new scale (no-op if off)
     };
-
-    // ── "Water wheel (analytic)" toggle: unions the analytic wheel SDF (rim + hub + rotating
-    //    spokes) into whichever mode is live (analytic or baked). Default ON. The textured wheel
-    //    mesh renders + spins regardless; this only gates the SDF collision term (a wheelMisc.x
-    //    uniform the WGSL branches on — no pipeline rebuild). The wheel mesh is excluded from the
-    //    baked grid either way, so with this OFF in baked mode water passes through the wheel region.
-    const wheelRow = document.createElement("label");
-    wheelRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
-    const wheelChk = document.createElement("input");
-    wheelChk.type = "checkbox";
-    wheelChk.checked = wheelSdfEnabled;
-    const wheelText = document.createElement("span");
-    wheelText.textContent = "Water wheel (analytic)";
-    wheelRow.append(wheelChk, wheelText);
-
-    // Toggle the wheel SDF union (shared by the checkbox handler + restoreState).
-    const setWheelSdf = (v: boolean): void => {
-        wheelSdfEnabled = v;
-        packWheel(sdfData); // refresh the enabled flag (float 36) in BOTH blocks
-        packWheel(bakedData);
-        writeSdfParams(); // push the active block now (update() also re-writes every frame)
-    };
-    wheelChk.onchange = (): void => {
-        setWheelSdf(wheelChk.checked);
-    };
-
+    let meshScaleTimer: ReturnType<typeof setTimeout> | null = null; // debounce handle for the heavy rebuild
+    let builtMeshScale = 1; // mesh scale the collision (WGSL + UBO + grid + sim bounds) was last built at
     // ── STAGE 2: flux-driven wheel spin ────────────────────────────────────────────────────────
     // Spin the REAL textured wheel mesh (via its "wheel" pivot node) driven by the amount of MOVING
     // liquid that reaches the wheel. Each frame a tiny GPU reduction counts particles that are BOTH
@@ -576,15 +658,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // count reflects water actually riding/striking the top of the wheel — it falls to ~0 when the
     // pour is off and the water drains, which is what stops the wheel.
     const RIM_BAND = 1.2; // radial depth of the rim catch band inward from R
-    const DRIVE_OMEGA_MAX = 3; // rad/s — hard safety clamp AND the drive-strength slider's max
+    const DRIVE_OMEGA_MAX = 3; // rad/s — hard safety clamp on the proportional drive
     const DRIVE_RESPONSIVENESS = 2; // 1/s — how fast ω relaxes toward its target (~0.5 s time-constant)
     const COUNT_EMA_RATE = 4; // 1/s — how fast the smoothed catch count tracks the async readback
-    // Proportional drive: the smoothed moving-particle count is mapped through a deadzone + span into a
-    // 0..1 flow fraction, so the wheel speed reflects HOW MUCH water reaches it (not a saturated on/off).
-    // Below COUNT_DEADZONE there is too little water to turn the wheel → it idles/stops; COUNT_SPAN above
-    // that maps to full drive. Both scale with the ~200k particle budget of this scene.
-    const COUNT_DEADZONE = 250; // moving upper-rim particles below which the wheel is not driven
-    const COUNT_SPAN = 2500; // moving-particle count above the deadzone that reaches full drive
+    // Proportional drive: the smoothed moving-particle count is mapped (above a small deadzone) LINEARLY
+    // to the target ω, so the wheel speed reflects HOW MUCH water reaches it. ω reaches driveStrength at
+    // the NOMINAL flow (COUNT_DEADZONE + COUNT_SPAN caught particles) and keeps growing proportionally
+    // beyond that — a heavier cascade spins the wheel faster — bounded only by the DRIVE_OMEGA_MAX clamp.
+    // (Previously `flow` was clamped to 1, so every catch above the nominal point saturated at the same
+    // ω: 6k and 26k both read 0.4 rad/s. The clamp is gone so more caught water → visibly faster.)
+    // Measured catch is ~5–7k in steady flow and near 0 when drained; nominal sits within that band so
+    // typical flow turns the wheel at driveStrength and surges/heavier pours push it faster.
+    const COUNT_DEADZONE = 250; // moving upper-rim particles below which the wheel is not driven (idle)
+    const COUNT_SPAN = 5750; // catch above the deadzone that reaches NOMINAL drive (ω = driveStrength)
     // Normalized speed gate: a particle is only counted when it is actually MOVING (its normalized
     // world speed `speed·debugNorm` exceeds this). Settled/pooled water the lower rim sits in reads
     // ~0 and is ignored, so the wheel only turns when moving water reaches it and coasts to a stop
@@ -594,8 +680,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const FLUX_WG_SIZE = 256; // reduction workgroup size
     const FLUX_STAGING = 2; // double-buffered readback so mapAsync never stalls the render path
 
-    let spinEnabled = true; // "Spin water wheel" checkbox (default ON)
-    let driveStrength = 1.0; // "Wheel drive strength" slider → the wheel's ω (rad/s) at FULL flow
+    const spinEnabled = true; // the wheel ALWAYS spins (no toggle any more)
+    const driveStrength = 0.4; // wheel ω (rad/s) at NOMINAL flow; heavier catch spins proportionally faster
     let wheelTheta = 0; // current rotation angle about the axle (rad)
     let wheelOmega = 0; // current angular speed (rad/s)
     let smoothedCount = 0; // EMA of the catch count (de-jitters the async readback cadence)
@@ -612,16 +698,18 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const fluxStagingBusy: boolean[] = []; // per-staging in-flight flag (mapAsync pending)
 
     // Reduction shader: for each particle, add 1 to the atomic when it lies inside the catch cylinder
-    // AND is moving (speed gate). Wheel geometry is compile-time constant, so it is inlined as literals
-    // (single source of truth via the WHEEL_* consts). arrayLength(&positions) == the sim's particle
-    // count (positionBuffer is exactly `count` vec4s), so the last workgroup self-guards without a count
-    // uniform. `speeds` is the sim's f32-per-particle world-speed buffer (same indexing as positions);
-    // fluxParams.x = debugNorm (1/typical-max-speed) so `speed·norm` is a resolution-independent 0..1.
+    // AND is moving (speed gate). The wheel catch geometry is baked into the WGSL as literals at the
+    // CURRENT mesh scale (regenerated + pipeline rebuilt on a scale change) — there is NO runtime scale
+    // math in the shader. arrayLength(&positions) == the sim's particle count (positionBuffer is
+    // exactly `count` vec4s), so the last workgroup self-guards without a count uniform. `speeds` is
+    // the sim's f32-per-particle world-speed buffer (same indexing as positions); fluxParams.x =
+    // debugNorm (1/typical-max-speed) so `speed·norm` is a resolution-independent 0..1.
     const wgslF = (n: number): string => n.toFixed(5);
-    const fluxRadCap = WHEEL_R + CATCH_MARGIN_R;
-    const fluxRimInner = WHEEL_R - RIM_BAND;
-    const fluxAxHalf = WHEEL_T + CATCH_MARGIN_A;
-    const FLUX_WGSL = `@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
+    const fluxWgsl = (k: number): string => {
+        const fluxRadCap = (WHEEL_R + CATCH_MARGIN_R) * k;
+        const fluxRimInner = (WHEEL_R - RIM_BAND) * k;
+        const fluxAxHalf = (WHEEL_T + CATCH_MARGIN_A) * k;
+        return `@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> outCount: atomic<u32>;
 @group(0) @binding(2) var<storage, read> speeds: array<f32>;
 @group(0) @binding(3) var<uniform> fluxParams: vec4<f32>;
@@ -629,7 +717,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= arrayLength(&positions)) { return; }
-    let d = positions[i].xyz - vec3<f32>(${wgslF(WHEEL_C[0])}, ${wgslF(WHEEL_C[1])}, ${wgslF(WHEEL_C[2])});
+    let d = positions[i].xyz - vec3<f32>(${wgslF(WHEEL_C[0] * k)}, ${wgslF(WHEEL_C[1] * k)}, ${wgslF(WHEEL_C[2] * k)});
     let axis = vec3<f32>(${wgslF(WHEEL_AXLE[0])}, ${wgslF(WHEEL_AXLE[1])}, ${wgslF(WHEEL_AXLE[2])});
     let a = dot(d, axis);
     if (abs(a) > ${wgslF(fluxAxHalf)}) { return; }
@@ -640,27 +728,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (speeds[i] * fluxParams.x <= ${wgslF(SPEED_GATE)}) { return; }
     atomicAdd(&outCount, 1u);
 }`;
+    };
 
+    // Scale-independent GPU buffers (count/norm/staging) are created ONCE; the pipeline is (re)built
+    // whenever it is null — nulled on a mesh-scale change so it recompiles with the rescaled WGSL.
     const ensureFluxResources = (): void => {
-        if (fluxPipeline) {
-            return;
-        }
         const device = engine._device;
-        const module = device.createShaderModule({ code: FLUX_WGSL });
-        fluxPipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-        fluxCountBuffer = device.createBuffer({
-            label: "marbleTower-wheel-flux-count",
-            size: 4,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        });
-        fluxNormBuffer = device.createBuffer({
-            label: "marbleTower-wheel-flux-norm",
-            size: 16, // vec4<f32> — only .x used (debugNorm)
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        for (let s = 0; s < FLUX_STAGING; s++) {
-            fluxStaging.push(device.createBuffer({ label: `marbleTower-wheel-flux-staging${s}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
-            fluxStagingBusy.push(false);
+        if (!fluxCountBuffer) {
+            fluxCountBuffer = device.createBuffer({
+                label: "marbleTower-wheel-flux-count",
+                size: 4,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            });
+            fluxNormBuffer = device.createBuffer({
+                label: "marbleTower-wheel-flux-norm",
+                size: 16, // vec4<f32> — only .x used (debugNorm)
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            for (let s = 0; s < FLUX_STAGING; s++) {
+                fluxStaging.push(device.createBuffer({ label: `marbleTower-wheel-flux-staging${s}`, size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
+                fluxStagingBusy.push(false);
+            }
+        }
+        if (!fluxPipeline) {
+            const module = device.createShaderModule({ code: fluxWgsl(meshScale) });
+            fluxPipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
         }
     };
 
@@ -691,7 +783,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             });
             fluxBoundPos = sim.positionBuffer;
             // debugNorm is per-sim (≈1/typical-max-speed); refresh the gate uniform when the sim changes.
-            device.queue.writeBuffer(fluxNormBuffer!, 0, new Float32Array([sim.debugNorm, 0, 0, 0]));
+            device.queue.writeBuffer(fluxNormBuffer!, 0, new Float32Array([sim.debugNorm]));
         }
         const staging = fluxStaging[slot]!;
         const enc = device.createCommandEncoder({ label: "marbleTower-wheel-flux" });
@@ -726,10 +818,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // the wheel), so the base pool the lower rim sits in is excluded.
         const targetCount = spinEnabled ? latestCount : 0;
         smoothedCount += (targetCount - smoothedCount) * Math.min(COUNT_EMA_RATE * dt, 1);
-        // Map the count through a deadzone + span into a 0..1 flow fraction, then scale by the drive
-        // strength (ω at full flow). Below the deadzone there is too little water to turn the wheel →
-        // ωTarget 0 → it coasts to a stop; more water → proportionally faster (up to the safety clamp).
-        const flow = Math.max(0, Math.min(1, (smoothedCount - COUNT_DEADZONE) / COUNT_SPAN));
+        // Map the count (above a small deadzone) LINEARLY to the target ω: ω = driveStrength at the
+        // nominal flow and proportionally MORE for heavier flow (no upper clamp on `flow`, so a bigger
+        // cascade spins the wheel faster). Below the deadzone there is too little water to turn the
+        // wheel → ωTarget 0 → it coasts to a stop; DRIVE_OMEGA_MAX bounds the top for safety.
+        const flow = Math.max(0, (smoothedCount - COUNT_DEADZONE) / COUNT_SPAN);
         const omegaTarget = spinEnabled ? Math.min(driveStrength * flow, DRIVE_OMEGA_MAX) : 0;
         wheelOmega += (omegaTarget - wheelOmega) * Math.min(DRIVE_RESPONSIVENESS * dt, 1);
         if (omegaTarget === 0 && wheelOmega < 1e-4) {
@@ -752,49 +845,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     };
 
-    // ── Stage-2 UI (built once; appended near the wheel toggle in extraControls). State persists across
-    //    demo re-enters exactly like the other wheel controls (closure vars + re-sync in extraControls). ──
-    const spinRow = document.createElement("label");
-    spinRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
-    const spinChk = document.createElement("input");
-    spinChk.type = "checkbox";
-    spinChk.checked = spinEnabled;
-    const spinText = document.createElement("span");
-    spinText.textContent = "Spin water wheel";
-    spinRow.append(spinChk, spinText);
-    // Toggle the wheel spin (shared by the checkbox handler + restoreState).
-    const setSpin = (v: boolean): void => {
-        spinEnabled = v; // gates the flux pass (readback stops when off) + ω→0
-    };
-    spinChk.onchange = (): void => {
-        setSpin(spinChk.checked);
-    };
-
-    const driveRow = document.createElement("label");
-    driveRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;color:#9fb4cc;font-size:12px;";
-    const driveText = document.createElement("span");
-    driveText.textContent = "Wheel drive strength";
-    const driveSlider = document.createElement("input");
-    driveSlider.type = "range";
-    driveSlider.min = "0";
-    driveSlider.min = "0";
-    driveSlider.max = String(DRIVE_OMEGA_MAX);
-    driveSlider.step = "0.1";
-    driveSlider.value = String(driveStrength);
-    driveSlider.style.flex = "1";
-    const driveVal = document.createElement("span");
-    driveVal.style.cssText = "min-width:34px;text-align:right;";
-    driveVal.textContent = driveStrength.toFixed(1);
-    driveRow.append(driveText, driveSlider, driveVal);
-    // Set the drive strength (shared by the slider handler + restoreState).
-    const setDrive = (v: number): void => {
-        driveStrength = v;
-        driveVal.textContent = driveStrength.toFixed(1);
-    };
-    driveSlider.oninput = (): void => {
-        setDrive(Number(driveSlider.value));
-    };
-
+    // ── Stage-2 UI: the wheel now ALWAYS spins (no toggle) and the drive strength is FIXED. Only the
+    //    ω / catch read-out remains, appended in extraControls. ──
     const spinReadoutEl = document.createElement("div");
     spinReadoutEl.style.cssText = "color:#9fb4cc;font-size:11px;margin:0 0 6px;";
     spinReadoutEl.textContent = "ω 0.00 rad/s · catch 0";
@@ -968,21 +1020,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const sizeX = dimX * cell;
         const sizeY = dimY * cell;
         const sizeZ = dimZ * cell;
+        // Scale the slab quad's world placement by meshScale: the collision grid is rescaled about the
+        // origin (origin×k, cell×k) to match the scaled tower, so the visualizer follows suit.
+        const k = meshScale;
         if (sliceAxis === 2) {
             // No rotation: local X→world X (u→i), local Y→world Y (v→j), at fixed Z.
             planeMesh.rotation.set(0, 0, 0);
-            planeMesh.scaling.set(sizeX, sizeY, 1);
-            planeMesh.position.set(ox + sizeX / 2, oy + sizeY / 2, oz + idx * cell);
+            planeMesh.scaling.set(sizeX * k, sizeY * k, 1);
+            planeMesh.position.set((ox + sizeX / 2) * k, (oy + sizeY / 2) * k, (oz + idx * cell) * k);
         } else if (sliceAxis === 0) {
             // Rotate −90° about Y: local X→world +Z (u→k), local Y→world +Y (v→j), at fixed X.
             planeMesh.rotation.set(0, -Math.PI / 2, 0);
-            planeMesh.scaling.set(sizeZ, sizeY, 1);
-            planeMesh.position.set(ox + idx * cell, oy + sizeY / 2, oz + sizeZ / 2);
+            planeMesh.scaling.set(sizeZ * k, sizeY * k, 1);
+            planeMesh.position.set((ox + idx * cell) * k, (oy + sizeY / 2) * k, (oz + sizeZ / 2) * k);
         } else {
             // Rotate +90° about X: local X→world +X (u→i), local Y→world +Z (v→k), at fixed Y.
             planeMesh.rotation.set(Math.PI / 2, 0, 0);
-            planeMesh.scaling.set(sizeX, sizeZ, 1);
-            planeMesh.position.set(ox + sizeX / 2, oy + idx * cell, oz + sizeZ / 2);
+            planeMesh.scaling.set(sizeX * k, sizeZ * k, 1);
+            planeMesh.position.set((ox + sizeX / 2) * k, (oy + idx * cell) * k, (oz + sizeZ / 2) * k);
         }
     };
 
@@ -1109,9 +1164,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const bSector = TWO_PI / m;
         let brel = phi - bucketPh0 - spokePhase; // buckets use their OWN 30-fold phase
         brel = brel - bSector * Math.round(brel / bSector);
+        const vaneOuter = BUCKET_RIM_OUTER; // vane spans [bInner (sole) .. mesh ring]
+        const vaneMidR = 0.5 * (bInner + vaneOuter);
+        const vaneHalfR = 0.5 * (vaneOuter - bInner);
         const vAx = Math.abs(a) - bHalfA;
         const vT = Math.abs(rad * brel) - VANE_HALF_W;
-        const vR = Math.abs(rad - bMid) - bHalfR;
+        const vR = Math.abs(rad - vaneMidR) - vaneHalfR;
         const vane = Math.hypot(Math.max(vAx, 0), Math.max(vT, 0), Math.max(vR, 0)) + Math.min(Math.max(vAx, Math.max(vT, vR)), 0);
         return Math.min(Math.min(Math.min(sole, shroud), vane), Math.min(hub, spoke));
     };
@@ -1195,7 +1253,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         quad(outX0[seg]!, outX1[seg]!, inX1[seg]!, inX0[seg]!);     // φ=+π/2 end cap
         return { positions: new Float32Array(p), indices: new Uint32Array(idx) };
     };
-    const fluxGeo = buildFluxRegion(fluxRimInner, fluxRadCap, fluxAxHalf, 48);
+    // Debug region mesh is kept at BASE scale (invisible by default; a dev-only overlay).
+    const fluxRadCapBase = WHEEL_R + CATCH_MARGIN_R;
+    const fluxRimInnerBase = WHEEL_R - RIM_BAND;
+    const fluxAxHalfBase = WHEEL_T + CATCH_MARGIN_A;
+    const fluxGeo = buildFluxRegion(fluxRimInnerBase, fluxRadCapBase, fluxAxHalfBase, 48);
     const fluxMesh = createMeshFromData(engine, "wheelFluxRegion", fluxGeo.positions, new Float32Array(fluxGeo.positions.length), fluxGeo.indices);
     fluxMesh.name = "wheelFluxRegion";
     fluxMesh.material = fluxMat;
@@ -1227,9 +1289,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             updateTexture2DFromPixels(engine, dbgTex, dbgPx);
         }
         // Face-on to the disk at WHEEL_C, normal along the axle (world −X after the −90° Y turn).
+        // Scale the overlay quad AND the green flux-region prism by meshScale so they stay glued to
+        // the (scaled) wheel — the collision wheel + flux catch literals both scale with meshScale.
+        const k = meshScale;
         dbgPlane.rotation.set(0, -Math.PI / 2, 0);
-        dbgPlane.scaling.set(sizeD, sizeD, 1);
-        dbgPlane.position.set(WHEEL_C[0], WHEEL_C[1], WHEEL_C[2]);
+        dbgPlane.scaling.set(sizeD * k, sizeD * k, 1);
+        dbgPlane.position.set(WHEEL_C[0] * k, WHEEL_C[1] * k, WHEEL_C[2] * k);
+        fluxMesh.scaling.set(k, k, k);
+        fluxMesh.position.set(WHEEL_C[0] * k, WHEEL_C[1] * k, WHEEL_C[2] * k);
     };
 
     const updateDbgVisibility = (): void => {
@@ -1237,7 +1304,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         setMeshVisible(fluxMesh, active && dbgActive); // flux region shown alongside the debug quad
     };
 
-    // ── "Debug wheel SDF" toggle + the "Wheel spokes" / "Spoke thickness" sliders ──────────────
+    // ── "Debug wheel SDF" toggle (overlay + green flux-region viz). The wheel shape params (spokes,
+    //    thickness, buckets, radius) are fixed/mesh-calibrated, so there are no wheel-shape sliders. ──
     const dbgRow = document.createElement("label");
     dbgRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:6px 0 2px;cursor:pointer;";
     const dbgChk = document.createElement("input");
@@ -1246,102 +1314,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     dbgText.textContent = "Debug wheel SDF";
     dbgRow.append(dbgChk, dbgText);
 
-    const spokeRow = document.createElement("label");
-    spokeRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;color:#9fb4cc;font-size:12px;";
-    const spokeText = document.createElement("span");
-    spokeText.textContent = "Wheel spokes";
-    const spokeSlider = document.createElement("input");
-    spokeSlider.type = "range";
-    spokeSlider.min = "6";
-    spokeSlider.max = "48";
-    spokeSlider.step = "1";
-    spokeSlider.value = String(spokeCount);
-    spokeSlider.style.flex = "1";
-    const spokeVal = document.createElement("span");
-    spokeVal.style.cssText = "min-width:24px;text-align:right;";
-    spokeVal.textContent = String(spokeCount);
-    spokeRow.append(spokeText, spokeSlider, spokeVal);
-
-    const thickRow = document.createElement("label");
-    thickRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0 6px;color:#9fb4cc;font-size:12px;";
-    const thickText = document.createElement("span");
-    thickText.textContent = "Spoke thickness";
-    const thickSlider = document.createElement("input");
-    thickSlider.type = "range";
-    thickSlider.min = "0.05";
-    thickSlider.max = "0.4";
-    thickSlider.step = "0.01";
-    thickSlider.value = String(spokeHalfW);
-    thickSlider.style.flex = "1";
-    const thickVal = document.createElement("span");
-    thickVal.style.cssText = "min-width:34px;text-align:right;";
-    thickVal.textContent = spokeHalfW.toFixed(2);
-    thickRow.append(thickText, thickSlider, thickVal);
-
-    const bucketRow = document.createElement("label");
-    bucketRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0 6px;color:#9fb4cc;font-size:12px;";
-    const bucketText = document.createElement("span");
-    bucketText.textContent = "Wheel buckets";
-    const bucketSlider = document.createElement("input");
-    bucketSlider.type = "range";
-    bucketSlider.min = "12";
-    bucketSlider.max = "48";
-    bucketSlider.step = "1";
-    bucketSlider.value = String(bucketCount);
-    bucketSlider.style.flex = "1";
-    const bucketVal = document.createElement("span");
-    bucketVal.style.cssText = "min-width:24px;text-align:right;";
-    bucketVal.textContent = String(bucketCount);
-    bucketRow.append(bucketText, bucketSlider, bucketVal);
-
-    // Live setters shared by the sliders + restoreState — re-pack the wheel block for BOTH modes
-    // (collision) and refresh the debug picture (viz) so the two stay in lockstep.
-    const setSpokeCount = (v: number): void => {
-        spokeCount = Math.max(1, Math.round(v));
-        packWheel(sdfData); // N → float 38 in BOTH blocks
-        packWheel(bakedData);
-        writeSdfParams();
-        spokeVal.textContent = String(spokeCount);
-        if (active && dbgActive) {
-            refreshWheelDebug();
-        }
-    };
-    const setSpokeThickness = (v: number): void => {
-        spokeHalfW = v;
-        packWheel(sdfData); // spokeHalfW → wheelA.x (float 28) in BOTH blocks
-        packWheel(bakedData);
-        writeSdfParams();
-        thickVal.textContent = spokeHalfW.toFixed(2);
-        if (active && dbgActive) {
-            refreshWheelDebug();
-        }
-    };
-    const setBucketCount = (v: number): void => {
-        bucketCount = Math.max(1, Math.round(v));
-        packWheel(sdfData); // M → wheelA.y (float 29) in BOTH blocks
-        packWheel(bakedData);
-        writeSdfParams();
-        bucketVal.textContent = String(bucketCount);
-        if (active && dbgActive) {
-            refreshWheelDebug();
-        }
-    };
-
     dbgChk.onchange = (): void => {
         dbgActive = dbgChk.checked;
         if (dbgActive) {
             refreshWheelDebug(); // build the picture immediately (don't wait for the throttle)
         }
         updateDbgVisibility();
-    };
-    spokeSlider.oninput = (): void => {
-        setSpokeCount(Number(spokeSlider.value));
-    };
-    thickSlider.oninput = (): void => {
-        setSpokeThickness(Number(thickSlider.value));
-    };
-    bucketSlider.oninput = (): void => {
-        setBucketCount(Number(bucketSlider.value));
     };
 
     // Merge every tower mesh's CPU geometry into ONE world-space triangle soup, bake it into a
@@ -1444,40 +1422,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             });
             const bakeMs = performance.now() - t0;
 
-            const buf = engine._device.createBuffer({
-                label: "marbleTower-sdf-grid",
-                size: grid.data.byteLength,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
-            engine._device.queue.writeBuffer(buf, 0, grid.data as Float32Array<ArrayBuffer>);
-            gridBuffer = buf;
-
-            // Retain the raw distances on the CPU for the SDF-texture visualizer (a movable slice
-            // plane). Copies references / spreads the dims + origin into fixed tuples.
+            // The bake reads live world positions, which include the current mesh scale (uniform
+            // scaling about the origin). Recover the BASE grid (scale 1) by dividing distances,
+            // origin and cellSize by the scale active at bake — an exact inverse of the uniform
+            // scaling. uploadScaledGrid() then re-multiplies by the current meshScale to produce the
+            // GPU buffer, so the stored bakedGrid is always the canonical scale-1 field.
+            const kBake = Math.max(meshScale, 1e-4);
+            const inv = 1 / kBake;
+            const baseData = new Float32Array(grid.data.length);
+            for (let i = 0; i < baseData.length; i++) {
+                baseData[i] = grid.data[i]! * inv;
+            }
+            // Retain the BASE distances on the CPU for the SDF-texture visualizer + for re-uploads.
             bakedGrid = {
-                data: grid.data,
+                data: baseData,
                 dims: [grid.dims[0], grid.dims[1], grid.dims[2]],
-                origin: [grid.origin[0], grid.origin[1], grid.origin[2]],
-                cellSize: grid.cellSize,
+                origin: [grid.origin[0] * inv, grid.origin[1] * inv, grid.origin[2] * inv],
+                cellSize: grid.cellSize * inv,
             };
 
-            // 4) Pack grid params into the baked block (floats 8..15).
-            bakedData[8] = grid.origin[0];
-            bakedData[9] = grid.origin[1];
-            bakedData[10] = grid.origin[2];
-            bakedData[11] = 1 / grid.cellSize;
-            bakedData[12] = grid.dims[0];
-            bakedData[13] = grid.dims[1];
-            bakedData[14] = grid.dims[2];
-            bakedData[15] = 0;
+            // Build the GPU grid buffer + pack the grid params (floats 8..15) at the current scale.
+            uploadScaledGrid();
 
             bakeReady = true;
-            bakedChk.disabled = false;
-            // A preset / restored state may have requested baked mode BEFORE the bake finished
-            // (desiredBaked). Honour it now that the grid exists, and sync the checkbox.
+            // The tower always wants baked mode (desiredBaked=true); apply it now the grid exists.
             if (desiredBaked) {
                 setBakedMode(true);
-                bakedChk.checked = true;
             }
             // The visualizer can now slice the grid — enable its controls (extraControls() also
             // re-syncs these if the bake finished while the demo was off-screen).
@@ -1680,6 +1650,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 pz = p.z;
             p.set(px - cx, py - baseY, pz - cz);
 
+            // Capture the k=1 baseline transform, then (re)apply the current mesh-scale — this also
+            // covers a meshScale restored from pair state BEFORE this async load finished.
+            towerRoot = root;
+            baseRootScale = [root.scaling.x, root.scaling.y, root.scaling.z];
+            baseRootPos = [root.position.x, root.position.y, root.position.z];
+            applyMeshScale();
+
             for (const m of towerMeshes) {
                 setMeshVisible(m, active && containerVisible);
             }
@@ -1766,67 +1743,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     })();
 
-    // Curated first-visit presets (recirculating top-pour, framed on the tall tower).
-    const presets: Record<string, Partial<PairState>> = {
-        PBF: {
-            schema: { gravity: 17, viscosity: 1, relaxation: 209, scorr: 0, iterations: 1, restDensity: 600, boundaryDensity: 0 },
-            demoParams: { centralSpeed: 7, emitRate: 0.05, nozzleRadius: 0.3 },
-            color: "#bfe9f3",
-            half: true,
-            size: 0.6,
-            physScale: 0.8,
-            count: 150000,
-            camera: { alpha: -1.2, beta: 1.15, radius: 30 },
-            // Open in baked mode with the wheel spinning (baked SDF captures the real tower; the
-            // analytic wheel + rotating spokes/buckets are unioned on top and stir/carry the water).
-            demoState: { bakedActive: true, wheelSdfEnabled: true, spinEnabled: true, driveStrength: 1.0, spokeCount: 12, spokeThickness: 0.18, bucketCount: 30 },
-        },
-        "MLS-MPM": {
-            schema: { gravity: 11.1, stiffness: 1160, viscosity: 0.02, restDensity: 47.5, damping: 1, affineDamping: 0.84, groundDamp: 0.85, groundDampHeight: 1, restitution: 1, substeps: 2 },
-            demoParams: { centralSpeed: 0.5, emitRate: 2.76, nozzleRadius: 0.25 },
-            color: "#bfe9f3",
-            half: true,
-            thicknessDownscale: 6,
-            absorption: 3.6,
-            size: 0.3,
-            physScale: 0.5,
-            count: 200000,
-            camera: { alpha: -0.4172960178148234, beta: 1.2587129923753027, radius: 13.403067826684495 },
-            renderMode: "surface",
-            refraction: 0.02,
-            specular: 250,
-            depthBlur: 20,
-            depthBlurThreshold: 10,
-            thicknessBlur: 18,
-            surfaceFilter: "narrowRange",
-            narrowDelta: 10,
-            narrowMu: 1,
-            showContainer: true,
-            foam: {
-                enabled: true,
-                kTa: 120,
-                kWc: 44,
-                kb: 0.9,
-                kd: 0.45,
-                tMin: 0.3,
-                tMax: 4.7,
-                poolScale: 3,
-                blurRadius: 0,
-                lightIntensity: 0.2,
-                ambient: 1,
-                aoStrength: 0.18,
-                normalStrength: 1,
-                debugTexture: "off",
-                softness: 2,
-                density: 50,
-                subsurfaceStrength: 0.15,
-            },
-            // Default demo look: baked SDF (real tower geometry) with the water wheel on and its
-            // spokes/buckets spinning, so the tower opens exactly as the curated screenshot.
-            demoState: { bakedActive: true, wheelSdfEnabled: true, spinEnabled: true, driveStrength: 1.0, spokeCount: 12, spokeThickness: 0.18, bucketCount: 30 },
-        },
-    };
-
     return {
         key: "marbleTower",
         label: "Marble Tower",
@@ -1835,8 +1751,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         writeSdfParams,
         spawn() {
             // A block pooled near the floor across the domain footprint — the top nozzle
-            // then recirculates it upward and pours it back down.
-            return { min: [-5, FLOOR_Y + 0.3, -5] as [number, number, number], max: [5, 3, 5] as [number, number, number] };
+            // then recirculates it upward and pours it back down. Scales with the tower.
+            const k = meshScale;
+            return { min: [-5 * k, (FLOOR_Y + 0.3) * k, -5 * k] as [number, number, number], max: [5 * k, 3 * k, 5 * k] as [number, number, number] };
         },
         emitters() {
             return marbleConfig();
@@ -1847,14 +1764,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 setMeshVisible(m, containerVisible);
             }
             setMeshVisible(ctx.ground, true);
-            updatePlaneVisibility(); // reveal the SDF slice plane if the tool is on + grid baked
+            applyVisualizer(); // reposition + reveal the SDF slice plane at the current mesh scale
             updateDbgVisibility(); // reveal the wheel-SDF debug quad if that tool is on
             if (dbgActive) {
                 refreshWheelDebug(); // make the picture fresh the moment the demo comes on-screen
             }
             // Raise the orbit target to the tower's mid-height so the tall model is framed.
             ctx.camera.target.x = 0;
-            ctx.camera.target.y = TOWER_HEIGHT * 0.5;
+            ctx.camera.target.y = TOWER_HEIGHT * 0.5 * meshScale;
             ctx.camera.target.z = 0;
         },
         onLeave(): void {
@@ -1890,84 +1807,70 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         },
         demoParams(): DemoParam[] {
             return [
+                { key: "meshScale", label: "Mesh scale", type: "number", min: 0.25, max: 4, step: 0.05, value: meshScale },
                 { key: "centralSpeed", label: "Top pour speed", type: "number", min: 0, max: 16, step: 0.25, value: marbleParams.centralSpeed },
                 { key: "nozzleRadius", label: "Nozzle radius", type: "number", min: 0.1, max: 0.8, step: 0.05, value: marbleParams.nozzleRadius },
                 { key: "emitRate", label: "Recirculation rate", type: "number", min: 0, max: 3, step: 0.02, value: marbleParams.emitRate },
             ];
         },
+        getDomainScale(): number {
+            // The core reads this on every switchPair to size the fluid-sim bounds. A larger tower
+            // gets a proportionally larger simulated domain (see ctx.setDomainScale in fluid.ts).
+            return meshScale;
+        },
         applyParam(key: string, value: number | boolean | string): void {
+            if (key === "meshScale") {
+                meshScale = value as number;
+                // CHEAP + LIVE on every slider tick: scale the visual glTF root for immediate feedback
+                // (about the world origin) and nudge the camera framing.
+                applyMeshScale();
+                if (active) {
+                    ctx.camera.target.y = TOWER_HEIGHT * 0.5 * meshScale;
+                }
+                // DEBOUNCE the heavy path (regenerate WGSL, rescale + re-upload the grid, repack the
+                // UBO, rebuild the flux pipeline, ctx.setDomainScale sim rebuild, refresh emitters +
+                // camera). Fires ~250 ms after the LAST change so a drag doesn't recreate 200k-particle
+                // sims + recompile shaders every tick. Skip entirely when the scale is unchanged from
+                // the last heavy build (e.g. pair-state restore re-applying the same value).
+                if (meshScale !== builtMeshScale) {
+                    if (meshScaleTimer !== null) {
+                        clearTimeout(meshScaleTimer);
+                    }
+                    meshScaleTimer = setTimeout(() => {
+                        meshScaleTimer = null;
+                        rebuildScaledCollision();
+                    }, 250);
+                } else if (meshScaleTimer !== null) {
+                    // Scale returned to the built value before the pending rebuild fired — cancel it.
+                    clearTimeout(meshScaleTimer);
+                    meshScaleTimer = null;
+                }
+                return;
+            }
             (marbleParams as Record<string, number>)[key] = value as number;
             ctx.refreshEmitters();
         },
         extraControls() {
-            // Sync the persistent checkbox + status to the current state (it is re-appended on
-            // every demo enter / pair load; the bake may have completed while off-screen).
-            bakedChk.checked = bakedActive;
-            bakedChk.disabled = !bakeReady;
+            // Sync the persistent bake status + the SDF-texture visualizer controls (state persists
+            // across re-enters; the bake may have completed while off-screen).
             bakedStatusEl.textContent = bakeStatus;
-            // Same for the SDF-texture visualizer controls (state persists across re-enters).
             vizChk.checked = vizActive;
             vizChk.disabled = !bakeReady;
             axisSel.value = String(sliceAxis);
             axisSel.disabled = !bakeReady;
             sliceSlider.value = String(slicePos);
             sliceSlider.disabled = !bakeReady;
-            // Wheel toggle persists across re-enters like the others.
-            wheelChk.checked = wheelSdfEnabled;
-            // Wheel-spoke tuning + the analytic-wheel debug toggle persist across re-enters too.
-            spokeSlider.value = String(spokeCount);
-            spokeVal.textContent = String(spokeCount);
-            thickSlider.value = String(spokeHalfW);
-            thickVal.textContent = spokeHalfW.toFixed(2);
-            bucketSlider.value = String(bucketCount);
-            bucketVal.textContent = String(bucketCount);
+            // The wheel-SDF debug toggle persists across re-enters.
             dbgChk.checked = dbgActive;
-            // Stage-2 wheel-spin controls persist across re-enters too.
-            spinChk.checked = spinEnabled;
-            driveSlider.value = String(driveStrength);
-            driveVal.textContent = driveStrength.toFixed(1);
-            return [bakedRow, bakedStatusEl, wheelRow, spokeRow, thickRow, bucketRow, dbgRow, spinRow, driveRow, spinReadoutEl, vizRow, axisRow, sliceRow];
+            return [bakedStatusEl, dbgRow, spinReadoutEl, vizRow, axisRow, sliceRow];
         },
         snapshotState(): Record<string, number | boolean> {
-            // The wheel/baked toggle state that is NOT already a schema/render param, so
-            // "Export parameters" and presets carry it. The spoke count + thickness are collision
-            // params, so they export too. (The SDF-texture visualizer and the wheel-SDF debug quad
-            // are debug tools, not preset settings, so they are deliberately excluded.)
-            return { bakedActive, wheelSdfEnabled, spinEnabled, driveStrength, spokeCount, spokeThickness: spokeHalfW, bucketCount };
+            // The tower is always baked, the wheel always spins, and its shape/drive params are fixed,
+            // so there is no demo-specific toggle state left to export or carry in presets.
+            return {};
         },
-        restoreState(state: Record<string, number | boolean>): void {
-            // Apply each field via the same helper the DOM handler uses (identical behaviour) and
-            // sync its control. bakedActive may be DEFERRED here until the async bake completes —
-            // setBakedMode remembers the desire (desiredBaked) and bakeSceneSdf applies it later.
-            if (typeof state.bakedActive === "boolean") {
-                setBakedMode(state.bakedActive);
-                bakedChk.checked = state.bakedActive;
-            }
-            if (typeof state.wheelSdfEnabled === "boolean") {
-                setWheelSdf(state.wheelSdfEnabled);
-                wheelChk.checked = wheelSdfEnabled;
-            }
-            if (typeof state.spinEnabled === "boolean") {
-                setSpin(state.spinEnabled);
-                spinChk.checked = spinEnabled;
-            }
-            if (typeof state.driveStrength === "number") {
-                setDrive(state.driveStrength);
-                driveSlider.value = String(driveStrength);
-            }
-            if (typeof state.spokeCount === "number") {
-                setSpokeCount(state.spokeCount);
-                spokeSlider.value = String(spokeCount);
-            }
-            if (typeof state.spokeThickness === "number") {
-                setSpokeThickness(state.spokeThickness);
-                thickSlider.value = String(spokeHalfW);
-            }
-            if (typeof state.bucketCount === "number") {
-                setBucketCount(state.bucketCount);
-                bucketSlider.value = String(bucketCount);
-            }
+        restoreState(): void {
+            // Nothing to restore — all former wheel/baked toggles are now permanent defaults.
         },
-        presets,
     };
 }

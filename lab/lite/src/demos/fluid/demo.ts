@@ -87,6 +87,9 @@ export interface PairState {
         softness?: number;
         density?: number;
         subsurfaceStrength?: number;
+        /** Visual foam splat-size multiplier ("Foam size"). Optional so presets/states
+         *  predating it fall back to the core foam default (1). */
+        size?: number;
     };
     /** Opaque per-demo extra-control state (box: size / paddle), captured via
      *  {@link FluidDemo.snapshotState} and restored via {@link FluidDemo.restoreState}. */
@@ -142,6 +145,13 @@ export interface FluidCtx {
      *  that encodes its own passes can tag them by forwarding this to their encode() so
      *  they appear in the GPU panel. */
     getProfiler(): FluidProfiler | null;
+    /** Set the fluid-sim DOMAIN (world) scale. Rebuilds BOTH backends with the sim bounds,
+     *  grid cell `dx`, particle/smoothing radius and spawn box all multiplied by `s` — so the
+     *  grid dimensions (bounds/dx) stay constant and GPU memory is unchanged while the domain
+     *  physically grows/shrinks. Re-applies the active demo's scene SDF. 1 = base domain. Used
+     *  by the marble-tower "Mesh scale" slider so a larger tower gets a proportionally larger
+     *  water domain instead of hitting the fixed-grid cap. */
+    setDomainScale(s: number): void;
 }
 
 // A single fluid demo (capsule / box / fountain). The core drives the active
@@ -174,6 +184,11 @@ export interface FluidDemo {
     onLeave(): void;
     /** Per-frame hook (box: spin paddle + write paddle SDF block). */
     update(dt: number): void;
+    /** Optional world/domain scale for the fluid-sim bounds (the marble tower's "Mesh scale").
+     *  The core reads this on every `switchPair` (default 1 when omitted) and, if it differs
+     *  from the currently-built domain scale, rebuilds the sims with scaled bounds. Demos that
+     *  do not resize their world omit it → the sims always use the base bounds. */
+    getDomainScale?(): number;
     /** Live tunables shown in "Demo parameters" (empty if none). */
     demoParams(): DemoParam[];
     /** Apply a live demo-param change. */
@@ -199,10 +214,7 @@ export interface FluidDemo {
     /** Snapshot this demo's extra-control state (box: size/paddle) as a flat bag. */
     snapshotState?(): Record<string, number | boolean>;
     /** Restore extra-control state; MUST also update the extra-control UI to match. */
-    restoreState?(state: Record<string, number | boolean>): void;
-    /** First-visit presets keyed by method name ("PBF" / "MLS-MPM"), merged
-     *  over the core defaults. Pairs with no preset use defaults. */
-    presets: Record<string, Partial<PairState>>;
+    restoreState?(state: Record<string, number | boolean>): void;
     /** Return true if this demo will handle the pointerdown itself, so the
      *  built-in arc-camera control should ignore it (e.g. capsule: LMB over the
      *  tank punches a hole instead of rotating). Omit → camera always handles. */

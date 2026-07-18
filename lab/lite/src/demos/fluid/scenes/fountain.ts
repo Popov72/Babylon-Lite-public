@@ -5,7 +5,7 @@
 import { addToScene, createCylinder, createStandardMaterial, setMeshVisible } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import type { EmitterConfig, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import type { DemoParam, FluidCtx, FluidDemo, PairState } from "../demo.js";
+import type { DemoParam, FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
 const FOUNTAIN_R = 8;
@@ -105,28 +105,6 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
     updateFountainNozzles();
     let containerVisible = true; // toggled by the "Show container / nozzle meshes" UI checkbox
 
-    // Curated first-visit presets (merged over the core defaults on first visit).
-    const presets: Record<string, Partial<PairState>> = {
-        PBF: {
-            schema: { gravity: 17, viscosity: 1, relaxation: 209, scorr: 0, iterations: 1, restDensity: 600, boundaryDensity: 0 },
-            demoParams: { centralSpeed: 10.5, ringSpeed: 5.5, ringOut: 0.9, rate: 0.1, spread: 0.5, centralRadius: 0.15, ringRadius: 0.12 },
-            color: "#bfe9f3",
-            half: true,
-            size: 0.6,
-            physScale: 0.8,
-            count: 150000,
-        },
-        "MLS-MPM": {
-            schema: { gravity: 23, stiffness: 420, viscosity: 0.03, restDensity: 16, damping: 0.998, affineDamping: 0.7, groundDamp: 0.85, groundDampHeight: 1, restitution: 1, substeps: 2 },
-            demoParams: { centralSpeed: 18, ringSpeed: 5.5, ringOut: 0.9, rate: 0.05, spread: 0.5, centralRadius: 0.15, ringRadius: 0.12 },
-            color: "#bfe9f3",
-            half: true,
-            size: 0.6,
-            physScale: 0.8,
-            count: 200000,
-        },
-    };
-
     return {
         key: "fountain",
         label: "Fountain (jets)",
@@ -181,6 +159,5 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
         extraControls() {
             return [];
         },
-        presets,
     };
 }

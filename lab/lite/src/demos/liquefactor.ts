@@ -1028,6 +1028,7 @@ async function main(): Promise<void> {
                 tMin: 0.3,
                 tMax: 2.0,
                 poolScale: 3,
+                size: 1,
                 blurRadius: 4,
                 lightIntensity: 0.9,
                 ambient: 0.5,

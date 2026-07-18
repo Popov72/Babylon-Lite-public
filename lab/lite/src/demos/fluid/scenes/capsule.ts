@@ -191,8 +191,7 @@ export function createCapsuleDemo(ctx: FluidCtx): FluidDemo {
         },
         extraControls() {
             return [];
-        },
-        presets: {},
+        },
         claimsPointer(e: PointerEvent): boolean {
             // LMB over the tank wall belongs to the demo (punch a hole), so tell the
             // camera to ignore it instead of rotating. Any other button/miss rotates.

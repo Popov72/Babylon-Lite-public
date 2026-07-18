@@ -106,13 +106,35 @@ struct Cam {
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> dbg: array<f32>;
+// Scene opaque depth (reverse-Z). Sampled per-fragment so fluid hidden BEHIND opaque
+// geometry (ground / paddle / wheel) is discarded from BOTH the depth and thickness
+// passes. Without this the additive thickness integral counts occluded particles and the
+// surface bleeds through solids.
+@group(0) @binding(3) var sceneDepthTex: texture_depth_2d;
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) viewPos: vec3<f32>,
     @location(2) @interpolate(flat) speed: f32,
+    @location(3) ndc: vec4<f32>,
 };
+
+// True when the sphere-surface point (eye-space Z fragEyeZ, positive = away from the
+// camera) lies BEHIND the nearest opaque scene surface at this fragment. The clip-space
+// ndc varying reconstructs the screen UV (clip.xy/clip.w is screen-linear, so this is
+// perspective-correct and resolution-independent — the fluid passes may run at half res
+// while the scene depth is full res). Mirrors the composite's occlusion test.
+fn occludedByScene(fragEyeZ: f32, ndc: vec4<f32>) -> bool {
+    let uv = ndc.xy / ndc.w;
+    let screenUV = vec2<f32>(uv.x * 0.5 + 0.5, 0.5 - uv.y * 0.5);
+    let dims = vec2<f32>(textureDimensions(sceneDepthTex));
+    let coord = vec2<i32>(clamp(screenUV, vec2<f32>(0.0), vec2<f32>(1.0)) * dims);
+    let sceneNdc = textureLoad(sceneDepthTex, coord, 0);
+    if (sceneNdc <= 0.0) { return false; } // no opaque geometry here (reverse-Z far = 0)
+    let sceneEye = cam.proj[3].z / (sceneNdc - cam.proj[2].z);
+    return fragEyeZ > sceneEye + 0.02;
+}
 
 fn corner(vi: u32) -> vec2<f32> {
     // offset in [0,1]; matches BJS 'offset' attribute (quad corners).
@@ -131,6 +153,7 @@ fn corner(vi: u32) -> vec2<f32> {
     o.uv = offset;
     o.viewPos = viewPos;
     o.speed = dbg[ii];
+    o.ndc = o.clip;
     return o;
 }
 
@@ -146,6 +169,9 @@ struct DepthOut {
     // LH: front-facing sphere normal points toward camera (negative view z).
     let normal = vec3<f32>(nxy, -sqrt(1.0 - r2));
     let realViewPos = i.viewPos + normal * cam.misc.y;
+    // Drop the fragment if this sphere point is behind opaque scene geometry, so the
+    // recorded nearest surface is the nearest VISIBLE water (not water behind a solid).
+    if (occludedByScene(realViewPos.z, i.ndc)) { discard; }
     let clipPos = cam.proj * vec4<f32>(realViewPos, 1.0);
     var o: DepthOut;
     o.depth = clipPos.z / clipPos.w;          // reverse-Z, tested greater-equal
@@ -157,6 +183,11 @@ struct DepthOut {
     let nxy = i.uv * 2.0 - 1.0;
     let r2 = dot(nxy, nxy);
     if (r2 > 1.0) { discard; }
+    // Discard particles hidden behind opaque geometry so the additive thickness integral
+    // stops at the solid surface (no bleed-through, no over-thick columns from occluded water).
+    let normal = vec3<f32>(nxy, -sqrt(1.0 - r2));
+    let realViewPos = i.viewPos + normal * cam.misc.y;
+    if (occludedByScene(realViewPos.z, i.ndc)) { discard; }
     let thickness = sqrt(1.0 - r2);
     return vec4<f32>(vec3<f32>(cam.misc.w * thickness), 1.0);
 }`;
@@ -402,6 +433,18 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     return computeViewPosFromUVDepth(texCoord, d);
 }
 
+// High-contrast eye-depth visualisation for the debug views. A raw depth/cameraFar map is
+// nearly useless: the fluid's depth spans only a few percent of cameraFar, so it shows as a flat dark grey where neither the surface shape NOR the effect of the depth
+// blur is visible. Iso-depth contour bands (a triangle wave) remove that large DC offset,
+// so the fine surface structure appears — raw depth reads as bumpy/wobbly bands, the
+// blurred depth as smooth parallel bands, making the "Surface depth blur" effect obvious.
+// The band frequency scales with cameraFar so density is roughly scene-independent.
+fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
+    if (d >= 1e6 || d <= 0.0) { return vec3<f32>(1.0); } // background / no water = white
+    let tri = abs(fract(d / cameraFar * 512.0) * 2.0 - 1.0);
+    return vec3<f32>(tri);
+}
+
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let outputTexel = u.a.xy;       // full-res texel (for texCoord)
     let depthTexel = u.extra.xy;    // depth-texture texel (for normal offsets)
@@ -419,11 +462,9 @@ fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     if (debugMode > 0.5) {
         if (debugMode < 1.5) {        // depth (raw)
             let v = textureSampleLevel(depthRawTex, depthSamp, texCoord, 0.0).r;
-            let g = select(v / cameraFar, 1.0, v >= 1e6 || v <= 0.0);
-            return vec4<f32>(vec3<f32>(g), 1.0);
+            return vec4<f32>(depthViz(v, cameraFar), 1.0);
         } else if (debugMode < 2.5) { // depth blurred
-            let g = select(depth / cameraFar, 1.0, depth >= 1e6 || depth <= 0.0);
-            return vec4<f32>(vec3<f32>(g), 1.0);
+            return vec4<f32>(depthViz(depth, cameraFar), 1.0);
         } else if (debugMode < 3.5) { // thickness (raw)
             let t = textureSampleLevel(thickRawTex, thickSamp, texCoord, 0.0).r;
             return vec4<f32>(vec3<f32>(t), 1.0);
@@ -688,7 +729,7 @@ export function createFluidSurfaceTask(
     let particleBG: GPUBindGroup | null = null;
 
     function buildParticleBG(): void {
-        if (!particleBGL) {
+        if (!particleBGL || !depthRT._depthView) {
             return;
         }
         particleBG = device.createBindGroup({
@@ -698,6 +739,7 @@ export function createFluidSurfaceTask(
                 { binding: 0, resource: { buffer: camBuffer } },
                 { binding: 1, resource: { buffer: currentSim.positionBuffer } },
                 { binding: 2, resource: { buffer: currentSim.debugBuffer } },
+                { binding: 3, resource: depthRT._depthView },
             ],
         });
     }
@@ -729,6 +771,7 @@ export function createFluidSurfaceTask(
                 { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
                 { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
                 { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+                { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
             ],
         });
         const partPL = device.createPipelineLayout({ bindGroupLayouts: [particleBGL] });
@@ -1002,6 +1045,9 @@ export function createFluidSurfaceTask(
             }
             allocTargets();
             updateUniforms();
+            // Rebuild the particle bind group each frame: it references the SCENE depth
+            // view (binding 3), which is recreated on resize — a cached group would stale.
+            buildParticleBG();
             // PIX / GPU-capture debug group scoping the whole screen-space surface
             // pipeline (depth, thickness, blur, composite). Balanced before return 1.
             enc.pushDebugGroup("Fluid surface (screen-space)");
