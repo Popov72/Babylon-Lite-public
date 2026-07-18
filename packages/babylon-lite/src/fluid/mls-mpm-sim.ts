@@ -24,12 +24,16 @@
 //     boundary (ported from the PBF apply pass), applied per-particle in G2P.
 //   • Shadows / density-grid raymarching are omitted (we keep impostor render).
 //
-// Per substep: clearGrid → p2g_mass (mass scatter only, 1 atomic/node) → p2g_vel (gather
-// current node density, then scatter APIC momentum + EOS/viscous stress momentum together,
-// 3 atomics/node — the two velocity scatters the old two-pass split did separately are
-// combined here, cutting the per-node global atomics from 7 to 4) → updateGrid (v = p/m,
-// gravity, domain walls) → g2p (gather v + affine C, advect, capsule/hole boundary). A
-// copy pass then packs world positions + speed for the renderer.
+// Per substep: clearGrid → block counting sort of the live particles (histogram → prefix
+// sum → scatter into sortedIdx) → tiled p2g_mass → tiled p2g_vel → updateGrid (v = p/m,
+// gravity, domain walls) → g2p (gather v + affine C, advect, capsule/hole boundary). The
+// two P2G scatters run one workgroup per grid BLOCK: each block stages its particles'
+// mass / momentum into a workgroup-shared apron tile and flushes it to the global grid
+// with a single atomicAdd per touched node, trading heavily contended global atomics for
+// far cheaper workgroup-shared ones. Because the grid accumulates in integer fixed-point,
+// reordering the particles and staging through shared memory is bit-identical to the old
+// per-particle global scatter (integer addition is order-independent). A copy pass then
+// packs world positions + speed for the renderer.
 
 import type { EngineContext } from "../engine/engine.js";
 import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
@@ -46,6 +50,16 @@ const WORKGROUP_SIZE = 64;
 // cell kernels rebuild the linear index from num_workgroups.x.
 const MAX_WORKGROUPS = 65535;
 const FIXED_POINT = 1e7; // float→i32 scale for atomic grid accumulation
+// Block-tiled P2G: TILE grid cells per block per axis. A block's particles have their
+// base cell inside a TILE^3 region and therefore touch a (TILE+2)^3 apron of grid nodes.
+// That apron is staged in workgroup-shared memory and flushed once to global (one global
+// atomicAdd per touched node) instead of one global atomic per (particle, node) — trading
+// contended global atomics for far cheaper workgroup-shared atomics.
+const TILE = 4;
+const TILE_NODES = TILE + 2; // apron size per axis (base-1 .. base+TILE)
+const TILE_NODES3 = TILE_NODES * TILE_NODES * TILE_NODES; // shared-tile slot count (6^3 = 216)
+// Prefix-sum workgroup width for the per-substep block counting-sort scan.
+const SCAN_WG = 256;
 
 // Params uniform (std140), 16-byte rows:
 //   origin.xyz, dx
@@ -148,108 +162,330 @@ fn weightsOf(worldPos: vec3<f32>, p: Params) -> array<vec3<f32>, 3> {
     return w;
 }`;
 
-// Particle-to-grid transfer, split into a cheap mass scatter then a fused momentum
-// pass. The two-pass structure is required because the EOS pressure needs the
-// grid-reconstructed density, which is unavailable until every particle has deposited
-// its mass. But the ORIGINAL split wasted atomics: it scattered the node VELOCITY twice
-// (APIC momentum in pass 1, stress momentum in pass 2 = 6 velocity atomics/node). By
-// deferring the momentum scatter to AFTER the mass is known, both velocity contributions
-// combine into ONE scatter — dropping the per-node global atomics from 7 (4+3) to 4
-// (mass pass: 1; momentum pass: 3) with IDENTICAL physics (density is still the current
-// substep's grid mass, so there is no lag and no stability change vs the old two passes).
+// Block math shared by the counting sort + the tiled P2G. A block is a TILE^3 tile of
+// grid cells; blockDim = ceil(gridDim / TILE) and the block of a cell is floor(cell/TILE)
+// linearised as (bx*blockDim.y + by)*blockDim.z + bz. Computed from p.dim (the grid dims)
+// so it always matches the numBlocks the CPU dispatches. Requires COMMON_WGSL (Params).
+const BLOCK_WGSL = /* wgsl */ `
+const TILE_I: i32 = ${TILE};
+const TILE_U: u32 = ${TILE}u;
+const TN_U: u32 = ${TILE_NODES}u; // nodes per axis in a block apron (TILE + 2)
+fn blockDimOf(p: Params) -> vec3<u32> {
+    let g = vec3<u32>(u32(p.dim.x), u32(p.dim.y), u32(p.dim.z));
+    return (g + vec3<u32>(TILE_U - 1u)) / vec3<u32>(TILE_U);
+}
+fn numBlocksOf(p: Params) -> u32 {
+    let b = blockDimOf(p);
+    return b.x * b.y * b.z;
+}
+// Block index of an in-grid (non-negative) cell.
+fn blockIndexOfCell(c: vec3<i32>, p: Params) -> u32 {
+    let bd = blockDimOf(p);
+    let b = vec3<u32>(c) / vec3<u32>(TILE_U);
+    return (b.x * bd.y + b.y) * bd.z + b.z;
+}
+// Block coordinate (bx,by,bz) of a linear block index.
+fn blockCoordOf(bIdx: u32, p: Params) -> vec3<u32> {
+    let bd = blockDimOf(p);
+    return vec3<u32>(bIdx / (bd.y * bd.z), (bIdx / bd.z) % bd.y, bIdx % bd.z);
+}`;
+
+// ── Per-substep block counting sort ──────────────────────────────────────────────
+// The tiled P2G runs one workgroup per grid BLOCK and needs that block's particles as a
+// contiguous run. A counting sort by block builds exactly that: histogram (blockCount),
+// exclusive prefix sum (blockStart), then a scatter of each live particle index into
+// sortedIdx[blockStart[block] + cursor]. blockCount/blockCursor are zeroed by the CPU
+// (clearBuffer) before the histogram/scatter. Reordering the particles does not change
+// any accumulated sum (the grid is integer fixed-point, so the transfer is bit-identical
+// regardless of order), only the memory access pattern of the scatter.
 //
-// Pass 1 — mass only (1 atomic/node), giving the current node mass.
-const P2G_MASS_WGSL = /* wgsl */ `
+// S1 — histogram: each live particle bumps its block's count.
+const HISTOGRAM_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${BLOCK_WGSL}
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> blockCount: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> p: Params;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; } // warm-up: dormant particles are not sorted
+    let c = cellOf(particles[i].position, p);
+    if (!inGrid(c, p)) { return; } // out-of-grid base cell deposits nothing (as in the old P2G)
+    atomicAdd(&blockCount[blockIndexOfCell(c, p)], 1u);
+}`;
+
+// S2a — per-chunk exclusive scan of blockCount into blockStart, plus each chunk's total
+// into partialSums. Hillis-Steele inclusive scan in shared memory, converted to exclusive.
+const SCAN_LOCAL_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> blockCount: array<u32>;
+@group(0) @binding(1) var<storage, read_write> blockStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> partialSums: array<u32>;
+var<workgroup> s: array<u32, ${SCAN_WG}>;
+@compute @workgroup_size(${SCAN_WG})
+fn main(@builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let n = arrayLength(&blockCount);
+    let chunk = wid.x + wid.y * ng.x;
+    let idx = chunk * ${SCAN_WG}u + lid;
+    var v = 0u;
+    if (idx < n) { v = blockCount[idx]; }
+    s[lid] = v;
+    workgroupBarrier();
+    var offset = 1u;
+    loop {
+        if (offset >= ${SCAN_WG}u) { break; }
+        var t = 0u;
+        if (lid >= offset) { t = s[lid - offset]; }
+        workgroupBarrier();
+        if (lid >= offset) { s[lid] = s[lid] + t; }
+        workgroupBarrier();
+        offset = offset * 2u;
+    }
+    if (idx < n) { blockStart[idx] = s[lid] - v; } // inclusive - self = exclusive
+    if (lid == ${SCAN_WG}u - 1u) { partialSums[chunk] = s[${SCAN_WG}u - 1u]; } // chunk total
+}`;
+
+// S2b — exclusive scan of the per-chunk totals (partialSums), in place, by a SINGLE
+// workgroup that chains over the array in SCAN_WG-wide strides carrying a running
+// offset. Handles an arbitrary number of chunks (no single-workgroup size assumption).
+const SCAN_PARTIALS_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> partialSums: array<u32>;
+var<workgroup> s: array<u32, ${SCAN_WG}>;
+var<workgroup> carry: u32;
+@compute @workgroup_size(${SCAN_WG})
+fn main(@builtin(local_invocation_index) lid: u32) {
+    let n = arrayLength(&partialSums);
+    if (lid == 0u) { carry = 0u; }
+    workgroupBarrier();
+    var base = 0u;
+    loop {
+        if (base >= n) { break; }
+        let idx = base + lid;
+        var v = 0u;
+        if (idx < n) { v = partialSums[idx]; }
+        s[lid] = v;
+        workgroupBarrier();
+        var offset = 1u;
+        loop {
+            if (offset >= ${SCAN_WG}u) { break; }
+            var t = 0u;
+            if (lid >= offset) { t = s[lid - offset]; }
+            workgroupBarrier();
+            if (lid >= offset) { s[lid] = s[lid] + t; }
+            workgroupBarrier();
+            offset = offset * 2u;
+        }
+        if (idx < n) { partialSums[idx] = carry + (s[lid] - v); }
+        workgroupBarrier();
+        if (lid == 0u) { carry = carry + s[${SCAN_WG}u - 1u]; }
+        workgroupBarrier();
+        base = base + ${SCAN_WG}u;
+    }
+}`;
+
+// S2c — add each chunk's scanned offset back into blockStart, yielding the global
+// exclusive prefix sum.
+const SCAN_ADD_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> blockStart: array<u32>;
+@group(0) @binding(1) var<storage, read> partialSums: array<u32>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&blockStart)) { return; }
+    blockStart[i] = blockStart[i] + partialSums[i / ${SCAN_WG}u];
+}`;
+
+// S3 — scatter each live particle index into its block's contiguous run.
+const SCATTER_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${PARTICLE_STRUCT}
+${BLOCK_WGSL}
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read> blockStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> blockCursor: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> sortedIdx: array<u32>;
+@group(0) @binding(4) var<uniform> p: Params;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= p.counts.x) { return; }
+    if (i >= p.counts.z) { return; }
+    let c = cellOf(particles[i].position, p);
+    if (!inGrid(c, p)) { return; }
+    let b = blockIndexOfCell(c, p);
+    let slot = blockStart[b] + atomicAdd(&blockCursor[b], 1u);
+    sortedIdx[slot] = i;
+}`;
+
+// Tiled particle-to-grid transfer. One workgroup per grid block scatters its sorted run
+// of particles into a workgroup-shared apron tile, then flushes the tile to the global
+// grid with one atomicAdd per touched node. Because the grid is integer fixed-point, the
+// staged sums are bit-identical to the per-particle global scatter (integer addition is
+// order-independent); only the number of contended global atomics changes.
+//
+// A block's base cells lie in [B0, B0+TILE); their 3x3x3 stencils touch nodes in
+// [B0-1, B0+TILE], a TILE_NODES^3 apron. Local node index = (base - B0) + g (g in 0..2),
+// always in [0, TILE_NODES) per axis. Uniform control flow around the barriers: the whole
+// workgroup shares bIdx and blockCount, so the out-of-range and empty-block returns are
+// uniform (all threads or none) and happen before any barrier.
+//
+// Pass 1 — mass only (staged, 1 shared atomic + at most 1 global atomic per node).
+const P2G_MASS_TILED_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
+${BLOCK_WGSL}
 struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: atomic<i32>, };
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
 @group(0) @binding(2) var<uniform> p: Params;
-
+@group(0) @binding(3) var<storage, read> blockStart: array<u32>;
+@group(0) @binding(4) var<storage, read> blockCount: array<u32>;
+@group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
+var<workgroup> tileMass: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; } // warm-up: not-yet-released particles deposit no mass
-    let pos = particles[i].position;
-    let base = cellOf(pos, p);
-    let w = weightsOf(pos, p);
+fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let bIdx = wid.x + wid.y * ng.x;
+    if (bIdx >= numBlocksOf(p)) { return; }
+    let cnt = blockCount[bIdx];
+    if (cnt == 0u) { return; }
+    let start = blockStart[bIdx];
+    let B0 = vec3<i32>(blockCoordOf(bIdx, p)) * TILE_I;
 
-    for (var gx = 0; gx < 3; gx++) {
-    for (var gy = 0; gy < 3; gy++) {
-    for (var gz = 0; gz < 3; gz++) {
-        let weight = w[gx].x * w[gy].y * w[gz].z;
-        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
-        if (!inGrid(node, p)) { continue; }
-        atomicAdd(&cells[index1D(node, p)].mass, enc(weight)); // particle mass = 1
-    }}}
+    for (var si = tid; si < ${TILE_NODES3}u; si = si + ${WORKGROUP_SIZE}u) { atomicStore(&tileMass[si], 0); }
+    workgroupBarrier();
+
+    for (var k = tid; k < cnt; k = k + ${WORKGROUP_SIZE}u) {
+        let pos = particles[sortedIdx[start + k]].position;
+        let base = cellOf(pos, p);
+        let w = weightsOf(pos, p);
+        let lbase = base - B0; // per-axis in [0, TILE)
+        for (var gx = 0; gx < 3; gx++) {
+        for (var gy = 0; gy < 3; gy++) {
+        for (var gz = 0; gz < 3; gz++) {
+            let weight = w[gx].x * w[gy].y * w[gz].z;
+            let ln = ((lbase.x + gx) * i32(TN_U) + (lbase.y + gy)) * i32(TN_U) + (lbase.z + gz);
+            atomicAdd(&tileMass[ln], enc(weight)); // particle mass = 1
+        }}}
+    }
+    workgroupBarrier();
+
+    for (var si = tid; si < ${TILE_NODES3}u; si = si + ${WORKGROUP_SIZE}u) {
+        let m = atomicLoad(&tileMass[si]);
+        if (m != 0) {
+            let lx = i32(si / (TN_U * TN_U));
+            let ly = i32((si / TN_U) % TN_U);
+            let lz = i32(si % TN_U);
+            let node = B0 - vec3<i32>(1) + vec3<i32>(lx, ly, lz);
+            if (inGrid(node, p)) { atomicAdd(&cells[index1D(node, p)].mass, m); }
+        }
+    }
 }`;
 
-// Pass 2 — gather the current node density, then scatter APIC momentum + EOS/viscous
-// stress momentum together (3 velocity atomics/node). `mass` is read non-atomically
-// (the mass pass has completed) exactly like the old p2g2 density gather.
-const P2G_VEL_WGSL = /* wgsl */ `
+// Pass 2 — gather the current node density from GLOBAL mass, compute the EOS/viscous
+// stress exactly as the old p2g-vel, then stage the APIC + stress momentum into a shared
+// velocity tile and flush (3 global atomics per touched node).
+const P2G_VEL_TILED_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
+${BLOCK_WGSL}
 struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: i32, };
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
 @group(0) @binding(2) var<uniform> p: Params;
-
+@group(0) @binding(3) var<storage, read> blockStart: array<u32>;
+@group(0) @binding(4) var<storage, read> blockCount: array<u32>;
+@group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
+var<workgroup> tileVx: array<atomic<i32>, ${TILE_NODES3}>;
+var<workgroup> tileVy: array<atomic<i32>, ${TILE_NODES3}>;
+var<workgroup> tileVz: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
-    let pos = particles[i].position;
-    let v = particles[i].v;
-    let C = particles[i].C;
-    let base = cellOf(pos, p);
-    let w = weightsOf(pos, p);
+fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let bIdx = wid.x + wid.y * ng.x;
+    if (bIdx >= numBlocksOf(p)) { return; }
+    let cnt = blockCount[bIdx];
+    if (cnt == 0u) { return; }
+    let start = blockStart[bIdx];
+    let B0 = vec3<i32>(blockCoordOf(bIdx, p)) * TILE_I;
     let dx = p.origin.w;
     let dt = p.sim0.x;
 
-    var density = 0.0;
-    for (var gx = 0; gx < 3; gx++) {
-    for (var gy = 0; gy < 3; gy++) {
-    for (var gz = 0; gz < 3; gz++) {
-        let weight = w[gx].x * w[gy].y * w[gz].z;
-        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
-        if (!inGrid(node, p)) { continue; }
-        density += dec(cells[index1D(node, p)].mass) * weight;
-    }}}
-
-    // Stress term (pressure + viscous). Isolated particle (zero density) deposits APIC
-    // momentum only, matching the old p2g2 zero-density skip.
-    var term0 = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
-    if (density > 0.0) {
-        let volume = 1.0 / density;
-        let pressure = max(0.0, p.sim0.w * (density / p.sim0.z - 1.0));
-        let strain = C + transpose(C);
-        var stress = mat3x3<f32>(-pressure, 0.0, 0.0, 0.0, -pressure, 0.0, 0.0, 0.0, -pressure);
-        stress += p.sim1.x * strain;
-        let Dinv = 4.0 / (dx * dx);
-        term0 = -volume * Dinv * dt * stress;
+    for (var si = tid; si < ${TILE_NODES3}u; si = si + ${WORKGROUP_SIZE}u) {
+        atomicStore(&tileVx[si], 0);
+        atomicStore(&tileVy[si], 0);
+        atomicStore(&tileVz[si], 0);
     }
+    workgroupBarrier();
 
-    for (var gx = 0; gx < 3; gx++) {
-    for (var gy = 0; gy < 3; gy++) {
-    for (var gz = 0; gz < 3; gz++) {
-        let weight = w[gx].x * w[gy].y * w[gz].z;
-        let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
-        if (!inGrid(node, p)) { continue; }
-        let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
-        let cellDist = nodeCenter - pos;
-        let Q = C * cellDist;
-        let vel = weight * (v + Q) + (term0 * cellDist) * weight; // APIC momentum + stress
-        let idx = index1D(node, p);
-        atomicAdd(&cells[idx].vx, enc(vel.x));
-        atomicAdd(&cells[idx].vy, enc(vel.y));
-        atomicAdd(&cells[idx].vz, enc(vel.z));
-    }}}
+    for (var k = tid; k < cnt; k = k + ${WORKGROUP_SIZE}u) {
+        let pi = sortedIdx[start + k];
+        let pos = particles[pi].position;
+        let v = particles[pi].v;
+        let C = particles[pi].C;
+        let base = cellOf(pos, p);
+        let w = weightsOf(pos, p);
+        let lbase = base - B0;
+
+        var density = 0.0;
+        for (var gx = 0; gx < 3; gx++) {
+        for (var gy = 0; gy < 3; gy++) {
+        for (var gz = 0; gz < 3; gz++) {
+            let weight = w[gx].x * w[gy].y * w[gz].z;
+            let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+            if (!inGrid(node, p)) { continue; }
+            density += dec(cells[index1D(node, p)].mass) * weight;
+        }}}
+
+        // Stress term (pressure + viscous). Isolated particle (zero density) deposits APIC
+        // momentum only, matching the old p2g-vel zero-density skip.
+        var term0 = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+        if (density > 0.0) {
+            let volume = 1.0 / density;
+            let pressure = max(0.0, p.sim0.w * (density / p.sim0.z - 1.0));
+            let strain = C + transpose(C);
+            var stress = mat3x3<f32>(-pressure, 0.0, 0.0, 0.0, -pressure, 0.0, 0.0, 0.0, -pressure);
+            stress += p.sim1.x * strain;
+            let Dinv = 4.0 / (dx * dx);
+            term0 = -volume * Dinv * dt * stress;
+        }
+
+        for (var gx = 0; gx < 3; gx++) {
+        for (var gy = 0; gy < 3; gy++) {
+        for (var gz = 0; gz < 3; gz++) {
+            let weight = w[gx].x * w[gy].y * w[gz].z;
+            let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
+            let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
+            let cellDist = nodeCenter - pos;
+            let Q = C * cellDist;
+            let vel = weight * (v + Q) + (term0 * cellDist) * weight; // APIC momentum + stress
+            let ln = ((lbase.x + gx) * i32(TN_U) + (lbase.y + gy)) * i32(TN_U) + (lbase.z + gz);
+            atomicAdd(&tileVx[ln], enc(vel.x));
+            atomicAdd(&tileVy[ln], enc(vel.y));
+            atomicAdd(&tileVz[ln], enc(vel.z));
+        }}}
+    }
+    workgroupBarrier();
+
+    for (var si = tid; si < ${TILE_NODES3}u; si = si + ${WORKGROUP_SIZE}u) {
+        let vx = atomicLoad(&tileVx[si]);
+        let vy = atomicLoad(&tileVy[si]);
+        let vz = atomicLoad(&tileVz[si]);
+        if (vx != 0 || vy != 0 || vz != 0) {
+            let lx = i32(si / (TN_U * TN_U));
+            let ly = i32((si / TN_U) % TN_U);
+            let lz = i32(si % TN_U);
+            let node = B0 - vec3<i32>(1) + vec3<i32>(lx, ly, lz);
+            if (inGrid(node, p)) {
+                let idx = index1D(node, p);
+                atomicAdd(&cells[idx].vx, vx);
+                atomicAdd(&cells[idx].vy, vy);
+                atomicAdd(&cells[idx].vz, vz);
+            }
+        }
+    }
 }`;
 
 // The grid-velocity update. A CLOSED container (gridConfine !== false) confines the
@@ -815,6 +1051,11 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
 
+    // Block grid for the tiled P2G counting sort: blockDim = ceil(gridDim / TILE).
+    const blockDim: [number, number, number] = [Math.ceil(gridDim[0] / TILE), Math.ceil(gridDim[1] / TILE), Math.ceil(gridDim[2] / TILE)];
+    const numBlocks = blockDim[0] * blockDim[1] * blockDim[2];
+    const scanChunks = Math.ceil(numBlocks / SCAN_WG); // per-chunk totals for the multi-level scan
+
     // Rest density (particles per cell): from the spawn packing if not given.
     const spawnVolCells = Math.max(1, ((spawnMax[0] - spawnMin[0]) * (spawnMax[1] - spawnMin[1]) * (spawnMax[2] - spawnMin[2])) / (dx * dx * dx));
     const restDensity = options.restDensity ?? Math.max(2, count / spawnVolCells);
@@ -827,6 +1068,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const debugBuffer = device.createBuffer({ label: "mpm-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const paramsBuffer = device.createBuffer({ label: "mpm-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const copyParamsBuffer = device.createBuffer({ label: "mpm-copy-params", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    // Block counting-sort buffers (per-substep). blockCount/blockCursor are zeroed each
+    // substep via clearBuffer (hence COPY_DST); blockStart/partialSums/sortedIdx are fully
+    // overwritten each substep. Sized from numBlocks/count so createSims rebuilds them on a
+    // domainScale change alongside every other buffer.
+    const blockCountBuffer = device.createBuffer({ label: "mpm-block-count", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const blockStartBuffer = device.createBuffer({ label: "mpm-block-start", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE });
+    const blockCursorBuffer = device.createBuffer({ label: "mpm-block-cursor", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const partialSumsBuffer = device.createBuffer({ label: "mpm-partial-sums", size: scanChunks * 4, usage: GPUBufferUsage.STORAGE });
+    const sortedIdxBuffer = device.createBuffer({ label: "mpm-sorted-idx", size: count * 4, usage: GPUBufferUsage.STORAGE });
 
     const paramsData = new ArrayBuffer(PARAMS_BYTES);
     const pf = new Float32Array(paramsData);
@@ -921,8 +1172,15 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
     const clearPipe = pipeline("mpm-clear", CLEAR_WGSL);
-    const p2gMassPipe = pipeline("mpm-p2g-mass", P2G_MASS_WGSL);
-    const p2gVelPipe = pipeline("mpm-p2g-vel", P2G_VEL_WGSL);
+    // Block counting-sort + tiled P2G pipelines (replace the old global-atomic p2g-mass /
+    // p2g-vel scatter with a shared-memory-staged transfer over sorted blocks).
+    const histogramPipe = pipeline("mpm-histogram", HISTOGRAM_WGSL);
+    const scanLocalPipe = pipeline("mpm-scan-local", SCAN_LOCAL_WGSL);
+    const scanPartialsPipe = pipeline("mpm-scan-partials", SCAN_PARTIALS_WGSL);
+    const scanAddPipe = pipeline("mpm-scan-add", SCAN_ADD_WGSL);
+    const scatterPipe = pipeline("mpm-scatter", SCATTER_WGSL);
+    const p2gMassTiledPipe = pipeline("mpm-p2g-mass-tiled", P2G_MASS_TILED_WGSL);
+    const p2gVelTiledPipe = pipeline("mpm-p2g-vel-tiled", P2G_VEL_TILED_WGSL);
     // update-grid + g2p pipelines/bind-groups are built lazily in setSceneSdf (always
     // called before the first step); compiled variants are cached by source so
     // re-selecting a demo is instant.
@@ -968,20 +1226,63 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     });
 
     const clearBG = device.createBindGroup({ layout: clearPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cellBuffer } }] });
-    const p2gMassBG = device.createBindGroup({
-        layout: p2gMassPipe.getBindGroupLayout(0),
+    const histogramBG = device.createBindGroup({
+        layout: histogramPipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: cellBuffer } },
+            { binding: 1, resource: { buffer: blockCountBuffer } },
             { binding: 2, resource: { buffer: paramsBuffer } },
         ],
     });
-    const p2gVelBG = device.createBindGroup({
-        layout: p2gVelPipe.getBindGroupLayout(0),
+    const scanLocalBG = device.createBindGroup({
+        layout: scanLocalPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: blockCountBuffer } },
+            { binding: 1, resource: { buffer: blockStartBuffer } },
+            { binding: 2, resource: { buffer: partialSumsBuffer } },
+        ],
+    });
+    const scanPartialsBG = device.createBindGroup({
+        layout: scanPartialsPipe.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: partialSumsBuffer } }],
+    });
+    const scanAddBG = device.createBindGroup({
+        layout: scanAddPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: blockStartBuffer } },
+            { binding: 1, resource: { buffer: partialSumsBuffer } },
+        ],
+    });
+    const scatterBG = device.createBindGroup({
+        layout: scatterPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: blockStartBuffer } },
+            { binding: 2, resource: { buffer: blockCursorBuffer } },
+            { binding: 3, resource: { buffer: sortedIdxBuffer } },
+            { binding: 4, resource: { buffer: paramsBuffer } },
+        ],
+    });
+    const p2gMassTiledBG = device.createBindGroup({
+        layout: p2gMassTiledPipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: particleBuffer } },
             { binding: 1, resource: { buffer: cellBuffer } },
             { binding: 2, resource: { buffer: paramsBuffer } },
+            { binding: 3, resource: { buffer: blockStartBuffer } },
+            { binding: 4, resource: { buffer: blockCountBuffer } },
+            { binding: 5, resource: { buffer: sortedIdxBuffer } },
+        ],
+    });
+    const p2gVelTiledBG = device.createBindGroup({
+        layout: p2gVelTiledPipe.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: particleBuffer } },
+            { binding: 1, resource: { buffer: cellBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } },
+            { binding: 3, resource: { buffer: blockStartBuffer } },
+            { binding: 4, resource: { buffer: blockCountBuffer } },
+            { binding: 5, resource: { buffer: sortedIdxBuffer } },
         ],
     });
     function buildUpdateBG(pipe: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
@@ -1062,6 +1363,10 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     }
     const particleGroups = Math.ceil(count / WORKGROUP_SIZE);
     const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
+    // Block counting-sort dispatch sizes: one workgroup per block for the tiled P2G, and
+    // block-/chunk-indexed groups for the scan (all spill past MAX_WORKGROUPS via dispatch()).
+    const blockDispatch = numBlocks; // one workgroup per block (tiled P2G)
+    const blockGroups = Math.ceil(numBlocks / WORKGROUP_SIZE); // block-indexed particle-style passes
 
     function dispatch(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, groups: number): void {
         // Opt-in GPU timing: "foam" labels → "Foam gen", everything else → "Simulation".
@@ -1177,6 +1482,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             // Sum every GPU buffer this backend owns; the lazily-allocated foam pool +
             // uniforms are added only once foam has been enabled.
             let b = particleBuffer.size + cellBuffer.size + positionBuffer.size + debugBuffer.size + paramsBuffer.size + copyParamsBuffer.size + emittersBuffer.size;
+            // Block counting-sort buffers (always allocated).
+            b += blockCountBuffer.size + blockStartBuffer.size + blockCursorBuffer.size + partialSumsBuffer.size + sortedIdxBuffer.size;
             if (diffuseBuffer) {
                 b += diffuseBuffer.size;
             }
@@ -1227,8 +1534,18 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                     dispatch(encoder, "mpm-force", forcePipe, forceBG, particleGroups);
                 }
                 dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
-                dispatch(encoder, "mpm-p2g-mass", p2gMassPipe, p2gMassBG, particleGroups);
-                dispatch(encoder, "mpm-p2g-vel", p2gVelPipe, p2gVelBG, particleGroups);
+                // Block counting sort of the live particles (histogram -> prefix sum ->
+                // scatter), then the shared-memory-tiled P2G. blockCount/blockCursor are
+                // zeroed here (clearBuffer) before the histogram/scatter accumulate into them.
+                encoder.clearBuffer(blockCountBuffer);
+                encoder.clearBuffer(blockCursorBuffer);
+                dispatch(encoder, "mpm-histogram", histogramPipe, histogramBG, particleGroups);
+                dispatch(encoder, "mpm-scan-local", scanLocalPipe, scanLocalBG, scanChunks);
+                dispatch(encoder, "mpm-scan-partials", scanPartialsPipe, scanPartialsBG, 1);
+                dispatch(encoder, "mpm-scan-add", scanAddPipe, scanAddBG, blockGroups);
+                dispatch(encoder, "mpm-scatter", scatterPipe, scatterBG, particleGroups);
+                dispatch(encoder, "mpm-p2g-mass", p2gMassTiledPipe, p2gMassTiledBG, blockDispatch);
+                dispatch(encoder, "mpm-p2g-vel", p2gVelTiledPipe, p2gVelTiledBG, blockDispatch);
                 if (updatePipe && updateBG) {
                     dispatch(encoder, "mpm-update", updatePipe, updateBG, cellGroups);
                 }
@@ -1354,6 +1671,11 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             debugBuffer.destroy();
             paramsBuffer.destroy();
             copyParamsBuffer.destroy();
+            blockCountBuffer.destroy();
+            blockStartBuffer.destroy();
+            blockCursorBuffer.destroy();
+            partialSumsBuffer.destroy();
+            sortedIdxBuffer.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
             foamParamsBuffer?.destroy();
