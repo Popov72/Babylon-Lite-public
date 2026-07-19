@@ -19,26 +19,30 @@
 // PBF per frame (encoded as a chain of compute passes):
 //   1. predict      x* = x + (v + g·dt)·dt              (predicted positions)
 //   2. sort         counting-sort particles by cell (histogram → prefix sum →
-//                   scatter) + gather predicted → sortedPos mirror
-//   3. × iterations:
+//                   scatter) building sortedIdx (slot → original index)
+//   3. reorder-in   copy the live working set (predicted/pos/vel) into sorted order
+//   4. × iterations (all dispatched over cell-SORTED slots):
 //        a. lambda  ρ_i (poly6) → C_i = ρ_i/ρ0 − 1 → λ_i = −C_i / (Σ|∇C|² + ε)
 //        b. delta   Δp_i = (1/ρ0) Σ_j (λ_i+λ_j+s_corr) ∇W_spiky(x*_i − x*_j)
-//        c. apply   x* += Δp; clamp to the box boundary + re-gather sortedPos
-//   4. finalize     v = (x* − x)/dt ; x = x*               (write rendered pos)
-//   5. viscosity    XSPH smoothing v += c/ρ0 Σ_j (v_j−v_i) W ; debug = speed
+//        c. apply   x* += Δp; confine to the sceneSdf + clamp (in place)
+//   5. finalize     v = (x* − x0)/dt                     (x0 = frame-start position)
+//   6. viscosity    XSPH smoothing v += c/ρ0 Σ_j (v_j−v_i) W (double-buffered via
+//                   sortedPos0 to avoid a read/write race, then copied back to sortedVel)
+//   7. scatter-back write the solved sorted pos/vel back to original order (+ speed)
+//   8. foam?        normals → emit → update, also over sorted slots
 //
 // Neighbour grid — COUNTING-SORT uniform grid (Hoetzlein 2014, fast fixed-radius
 //   nearest neighbours): cellSize equals the smoothing radius h so neighbours lie
 //   in the 3×3×3 cell stencil. Each frame a counting sort by cell produces
 //   cellCount[cell] (population), cellStart[cell] (exclusive prefix sum) and
-//   sortedIdx[] (original indices in cell-sorted order). Cell-sorted MIRRORS of
-//   the per-particle payload (sortedPos ← predicted, sortedLambda ← lambda,
-//   sortedVel ← vel) let the hot neighbour loops read CONTIGUOUS (coalesced)
-//   memory instead of random-indexed reads. The cell assignment (sortedIdx) is
-//   built once per frame from the predicted positions and reused across all solver
-//   iterations (standard PBF); the sortedPos mirror is re-gathered after each
-//   apply so neighbour reads see the current predicted positions. There is no
-//   per-cell capacity cap (unlike the old fixed-capacity grid).
+//   sortedIdx[] (original indices in cell-sorted order). Instead of solving in
+//   original order and reading neighbours through the sort, the WHOLE solve runs in
+//   cell-SORTED order (Fluids v5.0 countingSortFull): reorder-in copies the working
+//   set into the sorted buffers ONCE, every neighbour pass dispatches over slot k so
+//   consecutive threads are spatially adjacent particles that reuse the same
+//   neighbour cells in cache, and scatter-back writes results to original order ONCE.
+//   The sorted working buffers are mutated in place across the iterations (no
+//   per-iteration gathers). There is no per-cell capacity cap.
 
 import type { EngineContext } from "../engine/engine.js";
 import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
@@ -373,55 +377,74 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     sortedIdx[slot] = i;
 }`;
 
-// Gather a vec4 payload into cell-sorted order (predicted->sortedPos, vel->sortedVel).
-// One pipeline, driven by different bind groups. Only slots for live particles carry a
-// fresh sortedIdx; the neighbour loops read only within [cellStart, +cellCount) so stale
-// slots are never queried, but the o<count guard keeps every read in bounds.
-const GATHER_VEC4_WGSL = /* wgsl */ `
+// Reorder the live working set into cell-sorted order ONCE per frame (Fluids v5.0
+// countingSortFull): slot k reads its original index o = sortedIdx[k] and copies the
+// predicted position / current position / velocity into the sorted working buffers.
+// sortedPos0 keeps the pre-predict (frame-start) position for finalize's velocity
+// v = (x* - x0)/dt. Every solver + foam pass then runs over slot k so consecutive
+// threads are spatially adjacent particles that share neighbour cells (cross-thread
+// cache reuse); scatter-back writes the results to original order at the very end.
+const REORDER_IN_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> sortedIdx: array<u32>;
-@group(0) @binding(1) var<storage, read> src: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
-@group(0) @binding(3) var<uniform> sim: Sim;
+@group(0) @binding(1) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> pos: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> vel: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> sortedPos: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> sortedPos0: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read_write> sortedVel: array<vec4<f32>>;
+@group(0) @binding(7) var<uniform> sim: Sim;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let k = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
-    if (k >= sim.count) { return; }
+    if (k >= sim.live) { return; }
     let o = sortedIdx[k];
-    if (o < sim.count) { dst[k] = src[o]; }
+    sortedPos[k] = predicted[o];
+    sortedPos0[k] = pos[o];
+    sortedVel[k] = vel[o];
 }`;
 
-// Gather an f32 payload into cell-sorted order (lambda->sortedLambda).
-const GATHER_F32_WGSL = /* wgsl */ `
+// Scatter the solved sorted working set back to original order ONCE per frame: slot k
+// writes its original particle o = sortedIdx[k]. Only live slots (k < sim.live) are
+// written, so dormant (never-inserted) particles keep their parked pos/vel. debug is the
+// speed used for colouring (was written by the old original-order viscosity pass).
+const SCATTER_BACK_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> sortedIdx: array<u32>;
-@group(0) @binding(1) var<storage, read> src: array<f32>;
-@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
-@group(0) @binding(3) var<uniform> sim: Sim;
+@group(0) @binding(1) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> sortedVel: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> pos: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> vel: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> debug: array<f32>;
+@group(0) @binding(6) var<uniform> sim: Sim;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let k = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
-    if (k >= sim.count) { return; }
+    if (k >= sim.live) { return; }
     let o = sortedIdx[k];
-    if (o < sim.count) { dst[k] = src[o]; }
+    pos[o] = vec4<f32>(sortedPos[k].xyz, 1.0);
+    vel[o] = vec4<f32>(sortedVel[k].xyz, 0.0);
+    debug[o] = length(sortedVel[k].xyz);
 }`;
 
 // λ_i = −C_i / (|∇_i C|² + Σ_j |∇_j C|² + ε)
+// Sorted-order dispatch (Fluids v5.0): thread k is sorted slot k; both the centre and
+// the neighbours read the contiguous sorted working buffer, so consecutive threads reuse
+// the same neighbour cells in cache.
 const LAMBDA_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> sortedPos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> cellStart: array<u32>;
-@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
-@group(0) @binding(4) var<uniform> grid: Grid;
-@group(0) @binding(5) var<uniform> sim: Sim;
-@group(0) @binding(6) var<storage, read_write> lambda: array<f32>;
+@group(0) @binding(3) var<uniform> grid: Grid;
+@group(0) @binding(4) var<uniform> sim: Sim;
+@group(0) @binding(5) var<storage, read_write> sortedLambda: array<f32>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    let pi = predicted[i].xyz;
+    let k = gid.x;
+    if (k >= sim.live) { return; }
+    let pi = sortedPos[k].xyz;
     let base = cellCoordOf(pi, grid);
     let invRho = 1.0 / sim.restDensity;
 
@@ -469,28 +492,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // pressure-less, so the hydrostatic gradient squeezes them up the walls.)
     let ci = rho * invRho - 1.0;
     let denom = dot(gradI, gradI) + sumGrad2 + sim.eps;
-    lambda[i] = -ci / denom;
+    sortedLambda[k] = -ci / denom;
 }`;
 
-// Δp_i = (1/ρ0) Σ_j (λ_i + λ_j + s_corr) ∇W_spiky
+// Δp_i = (1/ρ0) Σ_j (λ_i + λ_j + s_corr) ∇W_spiky  (sorted-order dispatch over slot k)
 const DELTA_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> sortedPos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> cellStart: array<u32>;
-@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read> sortedLambda: array<f32>;
-@group(0) @binding(5) var<uniform> grid: Grid;
-@group(0) @binding(6) var<uniform> sim: Sim;
-@group(0) @binding(7) var<storage, read> lambda: array<f32>;
-@group(0) @binding(8) var<storage, read_write> delta: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> sortedLambda: array<f32>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@group(0) @binding(6) var<storage, read_write> sortedDelta: array<vec4<f32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    let pi = predicted[i].xyz;
-    let li = lambda[i];
+    let k = gid.x;
+    if (k >= sim.live) { return; }
+    let pi = sortedPos[k].xyz;
+    let li = sortedLambda[k];
     let base = cellCoordOf(pi, grid);
 
     var dp = vec3<f32>(0.0);
@@ -516,7 +537,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }}}
 
-    delta[i] = vec4<f32>(dp / sim.restDensity, 0.0);
+    sortedDelta[k] = vec4<f32>(dp / sim.restDensity, 0.0);
 }`;
 
 // Confinement using the per-demo sceneSdf (always injected by the demo before the
@@ -533,70 +554,73 @@ const APPLY_CONFINE_SDF = /* wgsl */ `
 // The per-demo sceneSdf is always injected (setSceneSdf) before the first step,
 // so the apply pass always uses the SDF confinement path.
 function buildApplyWgsl(scene: SceneSdfSpec): string {
-    // Baked SDF grid (optional): binding 4 is free here (0=predicted, 1=delta, 2=sim,
-    // 3=sceneSdfParams). Injected BEFORE scene.sdf so `sceneSdf` can call sampleSdfGrid.
+    // Baked SDF grid (optional): binding 4 is free here (0=sortedPos, 1=sortedDelta,
+    // 2=sim, 3=sceneSdfParams). Injected BEFORE scene.sdf so sceneSdf can call
+    // sampleSdfGrid.
     const gridInject = scene.sdfGrid ? `\n@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
     const decls = `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}`;
     const confine = APPLY_CONFINE_SDF;
     return /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read_write> predicted: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> delta: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read_write> sortedPos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> sortedDelta: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> sim: Sim;
 ${decls}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    if (i >= sim.live) { return; } // warm-up: dormant particles get no position correction
-    var p = predicted[i].xyz + delta[i].xyz;
+    let k = gid.x;
+    if (k >= sim.live) { return; } // warm-up: dormant slots are not solved
+    var p = sortedPos[k].xyz + sortedDelta[k].xyz;
 ${confine}
     // Safety: never leave the neighbour-grid domain.
     p = clamp(p, sim.boundsMin.xyz, sim.boundsMax.xyz);
-    predicted[i] = vec4<f32>(p, 1.0);
+    sortedPos[k] = vec4<f32>(p, 1.0);
 }`;
 }
 
+// PBF velocity update: v = (x* - x0)/dt, where x0 is the pre-predict (frame-start)
+// position captured by reorder-in into sortedPos0. Sorted-order dispatch over slot k;
+// the original-order pos/vel are written later by scatter-back.
 const FINALIZE_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> sortedPos0: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> sortedVel: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> sim: Sim;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    if (i >= sim.live) { return; } // warm-up: dormant particles keep their parked position
-    let xnew = predicted[i].xyz;
-    let v = (xnew - pos[i].xyz) / sim.dt;
-    pos[i] = vec4<f32>(xnew, 1.0);
-    vel[i] = vec4<f32>(v, 0.0);
+    let k = gid.x;
+    if (k >= sim.live) { return; } // warm-up: dormant slots are not solved
+    let xnew = sortedPos[k].xyz;
+    let v = (xnew - sortedPos0[k].xyz) / sim.dt;
+    sortedVel[k] = vec4<f32>(v, 0.0);
 }`;
 
-// XSPH viscosity + speed readout for colouring. Reuses the per-frame counting-sort
-// grid; neighbour position/velocity come from the sorted mirrors (after the last
-// apply-gather sortedPos == predicted == finalised pos, so it is valid here).
+// XSPH viscosity, sorted-order dispatch over slot k. Both the centre and the neighbours
+// read the contiguous sorted working buffers (sortedPos is the finalised position;
+// sortedVel is finalize's velocity). To avoid a storage read-after-write DATA RACE
+// (reading neighbour sortedVel while writing our own), the smoothed velocity is written
+// to sortedPos0 — DEAD after finalize consumed it as x0 — so sortedVel stays read-only
+// this pass and sortedPos0 is write-only. A trivial copy-vel pass then restores
+// sortedPos0 -> sortedVel before scatter-back / foam read the final velocity.
 const VISCOSITY_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> sortedVel: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read> cellStart: array<u32>;
-@group(0) @binding(4) var<storage, read> sortedPos: array<vec4<f32>>;
-@group(0) @binding(5) var<storage, read> sortedVel: array<vec4<f32>>;
-@group(0) @binding(6) var<uniform> grid: Grid;
-@group(0) @binding(7) var<uniform> sim: Sim;
-@group(0) @binding(8) var<storage, read_write> dbg: array<f32>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@group(0) @binding(6) var<storage, read_write> sortedVelOut: array<vec4<f32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    let pi = pos[i].xyz;
-    let vi = vel[i].xyz;
+    let k = gid.x;
+    if (k >= sim.live) { return; }
+    let pi = sortedPos[k].xyz;
+    let vi = sortedVel[k].xyz;
     let base = cellCoordOf(pi, grid);
 
     var dv = vec3<f32>(0.0);
@@ -619,8 +643,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }}}
 
     let v = vi + (sim.viscosity / sim.restDensity) * dv;
-    vel[i] = vec4<f32>(v, 0.0);
-    dbg[i] = length(v);
+    sortedVelOut[k] = vec4<f32>(v, 0.0);
+}`;
+
+// Trivial copy of the just-smoothed velocity (viscosity wrote it into sortedPos0 to dodge
+// the read/write race) back into sortedVel, so scatter-back and the foam passes read the
+// FINAL post-viscosity velocity from sortedVel exactly as before. Only live slots copy;
+// no same-buffer read+write (src and dst are distinct buffers, disjoint index per thread).
+const COPY_VEC4_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> sim: Sim;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let k = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (k >= sim.live) { return; }
+    dst[k] = src[k];
 }`;
 
 // ── Generic particle emitter / recycling ─────────────────────────────
@@ -683,23 +722,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Pass 1 — SPH surface normal per fluid particle (for wave-crest detection).
 // n_i = normalize(Σ_j ∇W_spiky(x_i - x_j)); that colour-field gradient points toward
 // the denser interior, so the OUTWARD normal is its negation. .w stores the neighbour
-// count as a surface indicator (surface particles have fewer neighbours). Neighbour
-// positions are read from the sortedPos mirror (self excluded by the r2>1e-9 guard).
+// count as a surface indicator (surface particles have fewer neighbours). Sorted-order
+// dispatch over slot k: centre and neighbours both read the sortedPos mirror (self
+// excluded by the r2>1e-9 guard) and the normal is written directly into sortedNormals,
+// so foam-emit/update read it contiguously without a gather.
 const FOAM_NORMALS_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
+@group(0) @binding(0) var<storage, read> sortedPos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read> cellStart: array<u32>;
-@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
-@group(0) @binding(4) var<uniform> grid: Grid;
-@group(0) @binding(5) var<uniform> sim: Sim;
-@group(0) @binding(6) var<storage, read_write> normals: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> grid: Grid;
+@group(0) @binding(4) var<uniform> sim: Sim;
+@group(0) @binding(5) var<storage, read_write> sortedNormals: array<vec4<f32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    let pi = pos[i].xyz;
+    let k = gid.x;
+    if (k >= sim.live) { return; }
+    let pi = sortedPos[k].xyz;
     let base = cellCoordOf(pi, grid);
     var grad = vec3<f32>(0.0);
     var cnt = 0.0;
@@ -723,7 +763,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let glen = length(grad);
     var nrm = vec3<f32>(0.0, 1.0, 0.0);
     if (glen > 1e-6) { nrm = -grad / glen; }
-    normals[i] = vec4<f32>(nrm, cnt);
+    sortedNormals[k] = vec4<f32>(nrm, cnt);
 }`;
 
 // Pass 2 — generation. Per fluid particle compute the trapped-air, wave-crest and
@@ -974,21 +1014,24 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const positionBuffer = device.createBuffer({ label: "fluid-positions", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const velocityBuffer = device.createBuffer({ label: "fluid-velocities", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const predictedBuffer = device.createBuffer({ label: "fluid-predicted", size: count * 16, usage: GPUBufferUsage.STORAGE });
-    const lambdaBuffer = device.createBuffer({ label: "fluid-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
-    const deltaBuffer = device.createBuffer({ label: "fluid-delta", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const debugBuffer = device.createBuffer({ label: "fluid-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    // Counting-sort grid buffers (Hoetzlein 2014). All sized from numCells/count so a
-    // domainScale rebuild (createPbfSim re-run) resizes them alongside every other buffer.
-    // cellCount (histogram population), cellStart (exclusive prefix sum), cellCursor
-    // (scatter write cursor), partialSums (per-chunk scan carries), sortedIdx (original
-    // indices in cell-sorted order) + the sorted payload mirrors read by the neighbour loops.
+    // Counting-sort grid buffers (Hoetzlein 2014) + sorted-order working set (Fluids v5.0
+    // countingSortFull). All sized from numCells/count so a domainScale rebuild
+    // (createPbfSim re-run) resizes them alongside every other buffer. cellCount
+    // (histogram population), cellStart (exclusive prefix sum), cellCursor (scatter write
+    // cursor), partialSums (per-chunk scan carries), sortedIdx (original indices in
+    // cell-sorted order). The solver runs over sorted slots on the sorted working buffers:
+    // sortedPos (mutable predicted position), sortedPos0 (frame-start position, for the
+    // finalize velocity), sortedVel (velocity), sortedLambda (λ), sortedDelta (Δp).
     const cellCountBuffer = device.createBuffer({ label: "fluid-cell-count", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const cellStartBuffer = device.createBuffer({ label: "fluid-cell-start", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const cellCursorBuffer = device.createBuffer({ label: "fluid-cell-cursor", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const partialSumsBuffer = device.createBuffer({ label: "fluid-partial-sums", size: scanChunks * 4, usage: GPUBufferUsage.STORAGE });
     const sortedIdxBuffer = device.createBuffer({ label: "fluid-sorted-idx", size: count * 4, usage: GPUBufferUsage.STORAGE });
     const sortedPosBuffer = device.createBuffer({ label: "fluid-sorted-pos", size: count * 16, usage: GPUBufferUsage.STORAGE });
+    const sortedPos0Buffer = device.createBuffer({ label: "fluid-sorted-pos0", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const sortedLambdaBuffer = device.createBuffer({ label: "fluid-sorted-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
+    const sortedDeltaBuffer = device.createBuffer({ label: "fluid-sorted-delta", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const sortedVelBuffer = device.createBuffer({ label: "fluid-sorted-vel", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const simBuffer = device.createBuffer({ label: "fluid-sim", size: SIM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const gridBuffer = device.createBuffer({ label: "fluid-grid", size: GRID_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1106,8 +1149,9 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const scanPartialsPipeline = computePipeline("fluid-scan-partials", SCAN_PARTIALS_WGSL);
     const scanAddPipeline = computePipeline("fluid-scan-add", SCAN_ADD_WGSL);
     const scatterPipeline = computePipeline("fluid-scatter", SCATTER_WGSL);
-    const gatherVec4Pipeline = computePipeline("fluid-gather-vec4", GATHER_VEC4_WGSL);
-    const gatherF32Pipeline = computePipeline("fluid-gather-f32", GATHER_F32_WGSL);
+    const reorderInPipeline = computePipeline("fluid-reorder-in", REORDER_IN_WGSL);
+    const scatterBackPipeline = computePipeline("fluid-scatter-back", SCATTER_BACK_WGSL);
+    const copyVec4Pipeline = computePipeline("fluid-copy-vec4", COPY_VEC4_WGSL);
     const lambdaPipeline = computePipeline("fluid-lambda", LAMBDA_WGSL);
     const deltaPipeline = computePipeline("fluid-delta", DELTA_WGSL);
     // Apply-pass pipeline/bind-group are built lazily in setSceneSdf (always called
@@ -1209,65 +1253,62 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             { binding: 5, resource: { buffer: simBuffer } },
         ],
     });
-    // Gather bind groups (one gatherVec4 pipeline, driven by different bind groups):
-    // predicted -> sortedPos, vel -> sortedVel; plus lambda -> sortedLambda (gatherF32).
-    const gatherPosBG = device.createBindGroup({
-        layout: gatherVec4Pipeline.getBindGroupLayout(0),
+    // Reorder the live working set into sorted order (predicted/pos/vel -> sortedPos/
+    // sortedPos0/sortedVel); the whole solve then runs over sorted slots.
+    const reorderInBG = device.createBindGroup({
+        layout: reorderInPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: sortedIdxBuffer } },
             { binding: 1, resource: { buffer: predictedBuffer } },
-            { binding: 2, resource: { buffer: sortedPosBuffer } },
-            { binding: 3, resource: { buffer: simBuffer } },
+            { binding: 2, resource: { buffer: positionBuffer } },
+            { binding: 3, resource: { buffer: velocityBuffer } },
+            { binding: 4, resource: { buffer: sortedPosBuffer } },
+            { binding: 5, resource: { buffer: sortedPos0Buffer } },
+            { binding: 6, resource: { buffer: sortedVelBuffer } },
+            { binding: 7, resource: { buffer: simBuffer } },
         ],
     });
-    const gatherVelBG = device.createBindGroup({
-        layout: gatherVec4Pipeline.getBindGroupLayout(0),
+    // Scatter the solved sorted working set back to original order (sortedPos/sortedVel ->
+    // pos/vel + debug speed). Only live slots write, so dormant particles stay parked.
+    const scatterBackBG = device.createBindGroup({
+        layout: scatterBackPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: sortedIdxBuffer } },
-            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 1, resource: { buffer: sortedPosBuffer } },
             { binding: 2, resource: { buffer: sortedVelBuffer } },
-            { binding: 3, resource: { buffer: simBuffer } },
-        ],
-    });
-    const gatherLambdaBG = device.createBindGroup({
-        layout: gatherF32Pipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: sortedIdxBuffer } },
-            { binding: 1, resource: { buffer: lambdaBuffer } },
-            { binding: 2, resource: { buffer: sortedLambdaBuffer } },
-            { binding: 3, resource: { buffer: simBuffer } },
+            { binding: 3, resource: { buffer: positionBuffer } },
+            { binding: 4, resource: { buffer: velocityBuffer } },
+            { binding: 5, resource: { buffer: debugBuffer } },
+            { binding: 6, resource: { buffer: simBuffer } },
         ],
     });
     const lambdaBG = device.createBindGroup({
         layout: lambdaPipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: predictedBuffer } },
+            { binding: 0, resource: { buffer: sortedPosBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
             { binding: 2, resource: { buffer: cellStartBuffer } },
-            { binding: 3, resource: { buffer: sortedPosBuffer } },
-            { binding: 4, resource: { buffer: gridBuffer } },
-            { binding: 5, resource: { buffer: simBuffer } },
-            { binding: 6, resource: { buffer: lambdaBuffer } },
+            { binding: 3, resource: { buffer: gridBuffer } },
+            { binding: 4, resource: { buffer: simBuffer } },
+            { binding: 5, resource: { buffer: sortedLambdaBuffer } },
         ],
     });
     const deltaBG = device.createBindGroup({
         layout: deltaPipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: predictedBuffer } },
+            { binding: 0, resource: { buffer: sortedPosBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
             { binding: 2, resource: { buffer: cellStartBuffer } },
-            { binding: 3, resource: { buffer: sortedPosBuffer } },
-            { binding: 4, resource: { buffer: sortedLambdaBuffer } },
-            { binding: 5, resource: { buffer: gridBuffer } },
-            { binding: 6, resource: { buffer: simBuffer } },
-            { binding: 7, resource: { buffer: lambdaBuffer } },
-            { binding: 8, resource: { buffer: deltaBuffer } },
+            { binding: 3, resource: { buffer: sortedLambdaBuffer } },
+            { binding: 4, resource: { buffer: gridBuffer } },
+            { binding: 5, resource: { buffer: simBuffer } },
+            { binding: 6, resource: { buffer: sortedDeltaBuffer } },
         ],
     });
     function buildApplyBG(pipeline: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
         const entries: GPUBindGroupEntry[] = [
-            { binding: 0, resource: { buffer: predictedBuffer } },
-            { binding: 1, resource: { buffer: deltaBuffer } },
+            { binding: 0, resource: { buffer: sortedPosBuffer } },
+            { binding: 1, resource: { buffer: sortedDeltaBuffer } },
             { binding: 2, resource: { buffer: simBuffer } },
             { binding: 3, resource: { buffer: scene.buffer } },
         ];
@@ -1281,24 +1322,31 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const finalizeBG = device.createBindGroup({
         layout: finalizePipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: positionBuffer } },
-            { binding: 1, resource: { buffer: velocityBuffer } },
-            { binding: 2, resource: { buffer: predictedBuffer } },
+            { binding: 0, resource: { buffer: sortedPosBuffer } },
+            { binding: 1, resource: { buffer: sortedPos0Buffer } },
+            { binding: 2, resource: { buffer: sortedVelBuffer } },
             { binding: 3, resource: { buffer: simBuffer } },
         ],
     });
     const viscosityBG = device.createBindGroup({
         layout: viscosityPipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: { buffer: positionBuffer } },
-            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 0, resource: { buffer: sortedPosBuffer } },
+            { binding: 1, resource: { buffer: sortedVelBuffer } },
             { binding: 2, resource: { buffer: cellCountBuffer } },
             { binding: 3, resource: { buffer: cellStartBuffer } },
-            { binding: 4, resource: { buffer: sortedPosBuffer } },
-            { binding: 5, resource: { buffer: sortedVelBuffer } },
-            { binding: 6, resource: { buffer: gridBuffer } },
-            { binding: 7, resource: { buffer: simBuffer } },
-            { binding: 8, resource: { buffer: debugBuffer } },
+            { binding: 4, resource: { buffer: gridBuffer } },
+            { binding: 5, resource: { buffer: simBuffer } },
+            { binding: 6, resource: { buffer: sortedPos0Buffer } },
+        ],
+    });
+    // Copy the smoothed velocity (viscosity wrote it into sortedPos0) back into sortedVel.
+    const copyVelBG = device.createBindGroup({
+        layout: copyVec4Pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: sortedPos0Buffer } },
+            { binding: 1, resource: { buffer: sortedVelBuffer } },
+            { binding: 2, resource: { buffer: simBuffer } },
         ],
     });
     const emitBG = device.createBindGroup({
@@ -1343,7 +1391,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let foamPoolGroups = 0;
     let diffuseBuffer: GPUBuffer | null = null;
     let diffuseHeadBuffer: GPUBuffer | null = null;
-    let foamNormalBuffer: GPUBuffer | null = null;
     let sortedNormalBuffer: GPUBuffer | null = null;
     let foamParamsBuffer: GPUBuffer | null = null;
     let foamNormalsPipeline: GPUComputePipeline | null = null;
@@ -1352,20 +1399,18 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let foamNormalsBG: GPUBindGroup | null = null;
     let foamEmitBG: GPUBindGroup | null = null;
     let foamUpdateBG: GPUBindGroup | null = null;
-    let gatherNormalsBG: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
 
     function buildFoamBindGroups(): void {
         foamNormalsBG = device.createBindGroup({
             layout: foamNormalsPipeline!.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: { buffer: positionBuffer } },
+                { binding: 0, resource: { buffer: sortedPosBuffer } },
                 { binding: 1, resource: { buffer: cellCountBuffer } },
                 { binding: 2, resource: { buffer: cellStartBuffer } },
-                { binding: 3, resource: { buffer: sortedPosBuffer } },
-                { binding: 4, resource: { buffer: gridBuffer } },
-                { binding: 5, resource: { buffer: simBuffer } },
-                { binding: 6, resource: { buffer: foamNormalBuffer! } },
+                { binding: 3, resource: { buffer: gridBuffer } },
+                { binding: 4, resource: { buffer: simBuffer } },
+                { binding: 5, resource: { buffer: sortedNormalBuffer! } },
             ],
         });
         foamEmitBG = device.createBindGroup({
@@ -1397,17 +1442,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 { binding: 7, resource: { buffer: diffuseBuffer! } },
             ],
         });
-        // normals -> sortedNormals (cell-sorted mirror for foam-emit's wave-crest term),
-        // reusing the generic gatherVec4 pipeline like the sim's pos/vel gathers.
-        gatherNormalsBG = device.createBindGroup({
-            layout: gatherVec4Pipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: sortedIdxBuffer } },
-                { binding: 1, resource: { buffer: foamNormalBuffer! } },
-                { binding: 2, resource: { buffer: sortedNormalBuffer! } },
-                { binding: 3, resource: { buffer: simBuffer } },
-            ],
-        });
     }
 
     function ensureFoam(cfg: FoamConfig): void {
@@ -1415,7 +1449,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             foamNormalsPipeline = computePipeline("fluid-foam-normals", FOAM_NORMALS_WGSL);
             foamEmitPipeline = computePipeline("fluid-foam-emit", FOAM_EMIT_WGSL);
             foamUpdatePipeline = computePipeline("fluid-foam-update", FOAM_UPDATE_WGSL);
-            foamNormalBuffer = device.createBuffer({ label: "fluid-foam-normals", size: count * 16, usage: GPUBufferUsage.STORAGE });
             sortedNormalBuffer = device.createBuffer({ label: "fluid-foam-sorted-normals", size: count * 16, usage: GPUBufferUsage.STORAGE });
             foamParamsBuffer = device.createBuffer({ label: "fluid-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             diffuseHeadBuffer = device.createBuffer({ label: "fluid-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -1468,8 +1501,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 positionBuffer.size +
                 velocityBuffer.size +
                 predictedBuffer.size +
-                lambdaBuffer.size +
-                deltaBuffer.size +
                 debugBuffer.size +
                 cellCountBuffer.size +
                 cellStartBuffer.size +
@@ -1477,7 +1508,9 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 partialSumsBuffer.size +
                 sortedIdxBuffer.size +
                 sortedPosBuffer.size +
+                sortedPos0Buffer.size +
                 sortedLambdaBuffer.size +
+                sortedDeltaBuffer.size +
                 sortedVelBuffer.size +
                 simBuffer.size +
                 gridBuffer.size +
@@ -1487,9 +1520,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             }
             if (diffuseHeadBuffer) {
                 b += diffuseHeadBuffer.size;
-            }
-            if (foamNormalBuffer) {
-                b += foamNormalBuffer.size;
             }
             if (sortedNormalBuffer) {
                 b += sortedNormalBuffer.size;
@@ -1535,49 +1565,45 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             dispatch(encoder, "fluid-predict", predictPipeline, predictBG, particleGroups);
             dispatch(encoder, "fluid-clear-grid", clearGridPipeline, clearGridBG, cellGroups);
             // Counting-sort the live particles by cell (Hoetzlein 2014): histogram ->
-            // exclusive prefix sum (multi-level) -> scatter, then gather the predicted
-            // positions into cell-sorted order so the neighbour loops read contiguous
-            // (coalesced) memory. The cell assignment (sortedIdx) is built once and reused
-            // across the solver iterations; only the sortedPos mirror is re-gathered.
+            // exclusive prefix sum (multi-level) -> scatter builds sortedIdx (slot ->
+            // original index). reorder-in then copies the working set (predicted/pos/vel)
+            // into sorted order, and the ENTIRE solve runs over sorted slots so
+            // consecutive threads share neighbour cells in cache (Fluids v5.0
+            // countingSortFull). No per-iteration gathers: the sorted buffers are mutated
+            // in place and scatter-back writes results to original order once at the end.
             dispatch(encoder, "fluid-histogram", histogramPipeline, histogramBG, particleGroups);
             dispatch(encoder, "fluid-scan-local", scanLocalPipeline, scanLocalBG, scanChunks);
             dispatch(encoder, "fluid-scan-partials", scanPartialsPipeline, scanPartialsBG, 1);
             dispatch(encoder, "fluid-scan-add", scanAddPipeline, scanAddBG, cellGroups);
             dispatch(encoder, "fluid-scatter", scatterPipeline, scatterBG, particleGroups);
-            dispatch(encoder, "fluid-gather-pos", gatherVec4Pipeline, gatherPosBG, particleGroups);
+            dispatch(encoder, "fluid-reorder-in", reorderInPipeline, reorderInBG, particleGroups);
             encoder.pushDebugGroup(`constraint solve (${iterationsMut} iters)`);
             for (let it = 0; it < iterationsMut; it++) {
                 dispatch(encoder, "fluid-lambda", lambdaPipeline, lambdaBG, particleGroups);
-                dispatch(encoder, "fluid-gather-lambda", gatherF32Pipeline, gatherLambdaBG, particleGroups);
                 dispatch(encoder, "fluid-delta", deltaPipeline, deltaBG, particleGroups);
                 if (applyPipeline && applyBG) {
                     dispatch(encoder, "fluid-apply", applyPipeline, applyBG, particleGroups);
                 }
-                // Re-gather the moved x* so the next iteration's neighbour reads see the
-                // current predicted positions (cell assignment / sortedIdx stays fixed).
-                dispatch(encoder, "fluid-gather-pos", gatherVec4Pipeline, gatherPosBG, particleGroups);
             }
             encoder.popDebugGroup();
             dispatch(encoder, "fluid-finalize", finalizePipeline, finalizeBG, particleGroups);
-            // sortedPos now equals the finalized positions (last apply-gather); gather the
-            // finalized velocities so viscosity reads neighbour position + velocity mirrors.
-            dispatch(encoder, "fluid-gather-vel", gatherVec4Pipeline, gatherVelBG, particleGroups);
             dispatch(encoder, "fluid-viscosity", viscosityPipeline, viscosityBG, particleGroups);
+            // Viscosity wrote the smoothed velocity into sortedPos0 (to avoid a read/write
+            // race on sortedVel); copy it back so scatter-back + foam read the FINAL
+            // post-viscosity velocity from sortedVel exactly as before.
+            dispatch(encoder, "fluid-copy-vel", copyVec4Pipeline, copyVelBG, particleGroups);
+            // Write the solved sorted working set back to original order (pos/vel + speed).
+            dispatch(encoder, "fluid-scatter-back", scatterBackPipeline, scatterBackBG, particleGroups);
             // Foam passes: generate + advect diffuse particles on the finalized fluid
-            // state, reusing the neighbour grid built above. Skipped entirely when off.
+            // state, reusing the neighbour grid built above. All foam passes dispatch over
+            // the SAME cell-sorted slots and read the sorted buffers directly (sortedVel is
+            // already the final post-viscosity velocity), so no gathers are needed.
             // Ihmsen: normals → emit. The update pass then classifies + advects the pool.
             if (foamEnabled && foamUpdateBG) {
                 foamU32[14] = foamSeed++;
                 device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
                 encoder.pushDebugGroup("foam");
-                // Viscosity rewrote vel[i], so re-fill the sortedVel mirror from the now-
-                // final velocities; foam then reads neighbour pos/vel/normals from the
-                // cell-sorted mirrors (coalesced) instead of sortedIdx-indirected arrays.
-                dispatch(encoder, "fluid-gather-vel", gatherVec4Pipeline, gatherVelBG, particleGroups);
                 dispatch(encoder, "fluid-foam-normals", foamNormalsPipeline!, foamNormalsBG!, particleGroups);
-                // Gather the just-written surface normals into cell-sorted order for the
-                // wave-crest term in foam-emit.
-                dispatch(encoder, "fluid-gather-normals", gatherVec4Pipeline, gatherNormalsBG!, particleGroups);
                 dispatch(encoder, "fluid-foam-emit", foamEmitPipeline!, foamEmitBG!, particleGroups);
                 dispatch(encoder, "fluid-foam-update", foamUpdatePipeline!, foamUpdateBG, foamPoolGroups);
                 encoder.popDebugGroup();
@@ -1677,8 +1703,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             positionBuffer.destroy();
             velocityBuffer.destroy();
             predictedBuffer.destroy();
-            lambdaBuffer.destroy();
-            deltaBuffer.destroy();
             debugBuffer.destroy();
             cellCountBuffer.destroy();
             cellStartBuffer.destroy();
@@ -1686,13 +1710,14 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             partialSumsBuffer.destroy();
             sortedIdxBuffer.destroy();
             sortedPosBuffer.destroy();
+            sortedPos0Buffer.destroy();
             sortedLambdaBuffer.destroy();
+            sortedDeltaBuffer.destroy();
             sortedVelBuffer.destroy();
             simBuffer.destroy();
             gridBuffer.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
-            foamNormalBuffer?.destroy();
             sortedNormalBuffer?.destroy();
             foamParamsBuffer?.destroy();
         },
