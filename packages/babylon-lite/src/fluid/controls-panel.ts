@@ -103,6 +103,8 @@ export interface FluidControlValues {
     surfaceFilter: "bilateral" | "narrowRange";
     narrowDelta: number;
     narrowMu: number;
+    anisotropic: boolean;
+    anisoSurfScale: number;
     debug: string;
     showContainer: boolean;
     foam: FluidFoamValues;
@@ -126,6 +128,9 @@ export interface FluidControlsInitial {
     surfaceFilter: "bilateral" | "narrowRange";
     narrowDelta: number;
     narrowMu: number;
+    anisotropic: boolean;
+    /** Anisotropic WPCA radius damping (0..1); defaults to 0.5 when omitted. */
+    anisoSurfScale?: number;
     renderMode: "surface" | "spheres";
     debug: string;
     showContainer: boolean;
@@ -147,6 +152,8 @@ export interface FluidControlsCallbacks {
     onHalf?(on: boolean): void;
     onSurfaceFilter?(m: "bilateral" | "narrowRange"): void;
     onNarrowRange?(delta: number, mu: number): void;
+    onAnisotropic?(on: boolean): void;
+    onAnisotropySurfScale?(share: number): void;
     onThicknessDownscale?(v: number): void;
     onShowContainer?(visible: boolean): void;
     onDebug?(mode: FluidDebug): void;
@@ -254,6 +261,8 @@ export interface FluidControlsHandle {
     setHalf(on: boolean): void;
     setSurfaceFilter(m: "bilateral" | "narrowRange"): void;
     setNarrowRange(delta: number, mu: number): void;
+    setAnisotropic(on: boolean): void;
+    setAnisotropySurfScale(v: number): void;
     setThicknessDownscale(v: number): void;
     setShowContainer(on: boolean): void;
     setDebug(mode: string): void;
@@ -566,6 +575,45 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     halfText.textContent = "Half rendering (perf)";
     halfRow.append(halfChk, halfText);
     halfChk.onchange = () => on.onHalf?.(halfChk.checked);
+
+    // Anisotropic surface toggle (Yu & Turk ellipsoidal splatting; default OFF).
+    const anisoRow = document.createElement("label");
+    anisoRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
+    const anisoChk = document.createElement("input");
+    anisoChk.type = "checkbox";
+    anisoChk.checked = init.anisotropic;
+    const anisoText = document.createElement("span");
+    anisoText.textContent = "Anisotropic surface";
+    anisoRow.append(anisoChk, anisoText);
+    anisoChk.onchange = () => on.onAnisotropic?.(anisoChk.checked);
+
+    // Anisotropic WPCA radius damping (0 = ignore surfaceSizeScale → tightest neighbourhood,
+    // fastest, most sphere-like discs; 1 = full radius → widest/strongest, slowest). Only
+    // affects backends with surfaceSizeScale != 1 (MLS-MPM). Live tuning of ANISO_SURFSCALE_RADIUS.
+    const anisoDampInit = init.anisoSurfScale ?? 0.5;
+    const anisoDampRow = document.createElement("div");
+    anisoDampRow.style.cssText = "margin:2px 0 8px;";
+    const anisoDampHead = document.createElement("div");
+    anisoDampHead.style.cssText = "display:flex;justify-content:space-between;";
+    const anisoDampLab = document.createElement("span");
+    anisoDampLab.textContent = "Aniso radius damping";
+    const anisoDampVal = document.createElement("span");
+    anisoDampVal.style.cssText = "color:#9fb4cc;";
+    anisoDampVal.textContent = anisoDampInit.toFixed(2);
+    anisoDampHead.append(anisoDampLab, anisoDampVal);
+    const anisoDampInput = document.createElement("input");
+    anisoDampInput.type = "range";
+    anisoDampInput.min = "0";
+    anisoDampInput.max = "1";
+    anisoDampInput.step = "0.05";
+    anisoDampInput.value = String(anisoDampInit);
+    anisoDampInput.style.cssText = "width:100%;";
+    anisoDampInput.oninput = () => {
+        const v = parseFloat(anisoDampInput.value);
+        anisoDampVal.textContent = v.toFixed(2);
+        on.onAnisotropySurfScale?.(v);
+    };
+    anisoDampRow.append(anisoDampHead, anisoDampInput);
 
     // Thickness-texture downscale (independent of half rendering).
     const thickDownRow = document.createElement("div");
@@ -998,6 +1046,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         nrDeltaRow,
         nrMuRow,
         halfRow,
+        anisoRow,
+        anisoDampRow,
         thickDownRow,
     ];
     if (!opts.hideRenderAsSpheres) {
@@ -1177,6 +1227,15 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             nrDeltaRow.set(delta);
             nrMuRow.set(mu);
         },
+        setAnisotropic(onFlag: boolean): void {
+            anisoChk.checked = onFlag;
+            on.onAnisotropic?.(onFlag);
+        },
+        setAnisotropySurfScale(v: number): void {
+            anisoDampInput.value = String(v);
+            anisoDampVal.textContent = v.toFixed(2);
+            on.onAnisotropySurfScale?.(v);
+        },
         setThicknessDownscale(v: number): void {
             thickDownInput.value = String(v);
             thickDownVal.textContent = `${v}\u00d7`;
@@ -1252,6 +1311,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 surfaceFilter: surfFilterSel.value as "bilateral" | "narrowRange",
                 narrowDelta: nrDelta,
                 narrowMu: nrMu,
+                anisotropic: anisoChk.checked,
+                anisoSurfScale: parseFloat(anisoDampInput.value),
                 debug: debugSel.value,
                 showContainer: containerChk.checked,
                 foam: {

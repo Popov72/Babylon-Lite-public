@@ -64,6 +64,10 @@ export interface PairState {
     surfaceFilter?: "bilateral" | "narrowRange";
     narrowDelta?: number;
     narrowMu?: number;
+    /** Anisotropic surface (Yu & Turk ellipsoidal splatting). Default OFF; per-pair. */
+    anisotropic?: boolean;
+    /** Anisotropic WPCA radius damping (0..1 share of surfaceSizeScale). Default 0.5; per-pair. */
+    anisoSurfScale?: number;
     /** Foam (diffuse-particle) config for this pair — generation, pool and screen-space
      *  look. Present → foam is restored (enabled/disabled) with these knobs on switch. */
     foam?: {

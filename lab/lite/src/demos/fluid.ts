@@ -663,6 +663,8 @@ async function main(): Promise<void> {
             surfaceFilter: "narrowRange",
             narrowDelta: 10,
             narrowMu: 1,
+            anisotropic: false,
+            anisoSurfScale: 0.5,
             renderMode: "surface",
             debug: "none",
             showContainer: true,
@@ -705,6 +707,12 @@ async function main(): Promise<void> {
             onHalf: (on) => surfaceTask.setHalfRender(on),
             onSurfaceFilter: (m) => surfaceTask.setSurfaceFilter(m),
             onNarrowRange: (delta, mu) => surfaceTask.setNarrowRange(delta, mu),
+            onAnisotropic: (v) => {
+                surfaceTask.setAnisotropic(v);
+                renderAnisotropic = v;
+                applyEffectiveRenderMode();
+            },
+            onAnisotropySurfScale: (v) => surfaceTask.setAnisotropySurfScale(v),
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
             onShowContainer: (visible) => activeDemo?.setContainerVisible?.(visible),
             onDebug: (mode) => {
@@ -909,10 +917,33 @@ async function main(): Promise<void> {
     }
     // Toggle between the sphere-impostor renderer and the screen-space surface.
     // Default is the fluid surface; the checkbox switches to spheres.
+    //
+    // "Render as spheres" and "Anisotropic surface" are independent toggles whose COMBINATION
+    // selects what gets drawn, so the effective state is resolved in ONE place (called from
+    // both applyRenderMode and onAnisotropic) to keep the sphere task and surface mode in sync.
+    let renderSpheres = false;
+    let renderAnisotropic = false;
+    function applyEffectiveRenderMode(): void {
+        if (renderSpheres && renderAnisotropic) {
+            // Both ON: inspection view — show the true anisotropic ellipsoids as opaque lit
+            // splats (the opaque sphere task is disabled so it doesn't overlap them).
+            particleTask.setEnabled(false);
+            surfaceTask.setMode("ellipsoidDebug");
+            canvas.dataset.render = "ellipsoids";
+        } else if (renderSpheres) {
+            particleTask.setEnabled(true);
+            surfaceTask.setMode("blit");
+            canvas.dataset.render = "spheres";
+        } else {
+            // Surface view. Anisotropy (when on) still shapes the surface itself, as before.
+            particleTask.setEnabled(false);
+            surfaceTask.setMode("surface");
+            canvas.dataset.render = "surface";
+        }
+    }
     function applyRenderMode(spheres: boolean): void {
-        particleTask.setEnabled(spheres);
-        surfaceTask.setMode(spheres ? "blit" : "surface");
-        canvas.dataset.render = spheres ? "spheres" : "surface";
+        renderSpheres = spheres;
+        applyEffectiveRenderMode();
     }
 
     // Resize the particle buffers by disposing and rebuilding both backends at
@@ -993,6 +1024,8 @@ async function main(): Promise<void> {
         surfaceFilter: initialValues.surfaceFilter,
         narrowDelta: initialValues.narrowDelta,
         narrowMu: initialValues.narrowMu,
+        anisotropic: initialValues.anisotropic,
+        anisoSurfScale: initialValues.anisoSurfScale ?? 0.5,
     };
     // Pristine foam look, snapshotted before any interaction; seeds the foam block of
     // every preset-less pair so foam becomes per-(demo, method) (restored on switch).
@@ -1024,6 +1057,8 @@ async function main(): Promise<void> {
             surfaceFilter: RENDER_DEFAULTS.surfaceFilter,
             narrowDelta: RENDER_DEFAULTS.narrowDelta,
             narrowMu: RENDER_DEFAULTS.narrowMu,
+            anisotropic: RENDER_DEFAULTS.anisotropic,
+            anisoSurfScale: RENDER_DEFAULTS.anisoSurfScale,
             foam: { ...FOAM_DEFAULTS },
             showContainer: true,
         };
@@ -1056,6 +1091,8 @@ async function main(): Promise<void> {
             surfaceFilter: p.surfaceFilter ?? base.surfaceFilter,
             narrowDelta: p.narrowDelta ?? base.narrowDelta,
             narrowMu: p.narrowMu ?? base.narrowMu,
+            anisotropic: p.anisotropic ?? base.anisotropic,
+            anisoSurfScale: p.anisoSurfScale ?? base.anisoSurfScale,
             foam: p.foam ? { ...base.foam!, ...p.foam } : base.foam,
             demoState: p.demoState ?? base.demoState,
             showContainer: p.showContainer ?? base.showContainer,
@@ -1088,6 +1125,8 @@ async function main(): Promise<void> {
             surfaceFilter: v.surfaceFilter,
             narrowDelta: v.narrowDelta,
             narrowMu: v.narrowMu,
+            anisotropic: v.anisotropic,
+            anisoSurfScale: v.anisoSurfScale,
             foam: v.foam,
             demoState: activeDemo!.snapshotState?.() ?? {},
             showContainer: v.showContainer,
@@ -1137,6 +1176,12 @@ async function main(): Promise<void> {
         if (st.narrowDelta !== undefined || st.narrowMu !== undefined) {
             const cur = controls.getValues();
             controls.setNarrowRange(st.narrowDelta ?? cur.narrowDelta, st.narrowMu ?? cur.narrowMu);
+        }
+        if (st.anisotropic !== undefined) {
+            controls.setAnisotropic(st.anisotropic);
+        }
+        if (st.anisoSurfScale !== undefined) {
+            controls.setAnisotropySurfScale(st.anisoSurfScale);
         }
         // Foam block (optional). The component sets the enable state + config + UI here;
         // the authoritative push to the active sim happens via applyFoam() inside

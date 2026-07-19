@@ -1016,6 +1016,7 @@ async function main(): Promise<void> {
             surfaceFilter: DEF_SURFACE_FILTER,
             narrowDelta: DEF_NARROW_DELTA,
             narrowMu: DEF_NARROW_MU,
+            anisotropic: false,
             renderMode: "surface",
             debug: "none",
             showContainer: true,

@@ -36,6 +36,9 @@ export interface FluidExportJson {
         surfaceFilter: "bilateral" | "narrowRange";
         narrowRangeDelta: number;
         narrowRangeMu: number;
+        anisotropicSurface: boolean;
+        /** Anisotropic WPCA radius damping (0..1). Optional for backward compatibility. */
+        anisoRadiusDamping?: number;
     };
     foam: {
         enableFoam: boolean;
@@ -87,6 +90,8 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             surfaceFilter: ps.surfaceFilter ?? "bilateral",
             narrowRangeDelta: ps.narrowDelta ?? 0,
             narrowRangeMu: ps.narrowMu ?? 0,
+            anisotropicSurface: ps.anisotropic ?? false,
+            anisoRadiusDamping: ps.anisoSurfScale ?? 0.5,
         },
         foam: {
             enableFoam: f?.enabled ?? false,
@@ -136,6 +141,8 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         surfaceFilter: r.surfaceFilter,
         narrowDelta: r.narrowRangeDelta,
         narrowMu: r.narrowRangeMu,
+        anisotropic: r.anisotropicSurface ?? false,
+        anisoSurfScale: r.anisoRadiusDamping ?? 0.5,
         foam: {
             enabled: fm.enableFoam,
             kTa: fm.trappedAirRate,
