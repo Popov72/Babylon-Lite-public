@@ -18,20 +18,27 @@
 //
 // PBF per frame (encoded as a chain of compute passes):
 //   1. predict      x* = x + (v + g·dt)·dt              (predicted positions)
-//   2. clearGrid    cellCount = 0
-//   3. buildGrid    bucket each particle by x* into its cell
-//   4. × iterations:
+//   2. sort         counting-sort particles by cell (histogram → prefix sum →
+//                   scatter) + gather predicted → sortedPos mirror
+//   3. × iterations:
 //        a. lambda  ρ_i (poly6) → C_i = ρ_i/ρ0 − 1 → λ_i = −C_i / (Σ|∇C|² + ε)
 //        b. delta   Δp_i = (1/ρ0) Σ_j (λ_i+λ_j+s_corr) ∇W_spiky(x*_i − x*_j)
-//        c. apply   x* += Δp; clamp to the box boundary
-//   5. finalize     v = (x* − x)/dt ; x = x*               (write rendered pos)
-//   6. viscosity    XSPH smoothing v += c/ρ0 Σ_j (v_j−v_i) W ; debug = speed
+//        c. apply   x* += Δp; clamp to the box boundary + re-gather sortedPos
+//   4. finalize     v = (x* − x)/dt ; x = x*               (write rendered pos)
+//   5. viscosity    XSPH smoothing v += c/ρ0 Σ_j (v_j−v_i) W ; debug = speed
 //
-// Neighbour grid — FIXED-CAPACITY uniform grid (no prefix-sum scan): cellSize
-//   equals the smoothing radius h so neighbours lie in the 3×3×3 cell stencil.
-//   cellCount[cell] is an atomic population; cellParticles[cell*maxPerCell+slot]
-//   holds the indices. The grid is built once per frame from the predicted
-//   positions and reused across all solver iterations (standard PBF).
+// Neighbour grid — COUNTING-SORT uniform grid (Hoetzlein 2014, fast fixed-radius
+//   nearest neighbours): cellSize equals the smoothing radius h so neighbours lie
+//   in the 3×3×3 cell stencil. Each frame a counting sort by cell produces
+//   cellCount[cell] (population), cellStart[cell] (exclusive prefix sum) and
+//   sortedIdx[] (original indices in cell-sorted order). Cell-sorted MIRRORS of
+//   the per-particle payload (sortedPos ← predicted, sortedLambda ← lambda,
+//   sortedVel ← vel) let the hot neighbour loops read CONTIGUOUS (coalesced)
+//   memory instead of random-indexed reads. The cell assignment (sortedIdx) is
+//   built once per frame from the predicted positions and reused across all solver
+//   iterations (standard PBF); the sortedPos mirror is re-gathered after each
+//   apply so neighbour reads see the current predicted positions. There is no
+//   per-cell capacity cap (unlike the old fixed-capacity grid).
 
 import type { EngineContext } from "../engine/engine.js";
 import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
@@ -92,6 +99,9 @@ const WORKGROUP_SIZE = 64;
 // so cell-indexed dispatches spill the overflow into a second (y) dimension and
 // the cell kernels rebuild the linear index from num_workgroups.x.
 const MAX_WORKGROUPS = 65535;
+// Counting-sort prefix-sum workgroup width (matches the MLS-MPM backend). The
+// per-chunk exclusive scan processes SCAN_WG cells per workgroup.
+const SCAN_WG = 256;
 
 // Sim uniform. Per-frame mutable (dt); the rest are constant or set on demand.
 //   [0] dt        [1] gravity   [2] restDensity [3] h
@@ -231,32 +241,169 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
+// Clear both counting-sort accumulators to 0: cellCount (histogram population) and
+// cellCursor (scatter write cursor). cellStart is fully overwritten by the scan.
 const CLEAR_GRID_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> cellCursor: array<u32>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let c = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (c >= arrayLength(&cellCount)) { return; }
     atomicStore(&cellCount[c], 0u);
+    cellCursor[c] = 0u;
 }`;
 
-const BUILD_GRID_WGSL = /* wgsl */ `
+// ── Counting-sort grid (Hoetzlein 2014) ──────────────────────────────
+// Sort the live particles by cell so each cell's members form a contiguous run in
+// sortedIdx[cellStart[cell] .. +cellCount[cell]). S1 histogram → S2a/b/c exclusive
+// prefix sum (multi-level, robust for arbitrary numCells) → S3 scatter. Cell-sorted
+// payload mirrors (sortedPos/sortedLambda/sortedVel) are then gathered so the hot
+// neighbour loops read contiguous memory. The bucket is cellLinear(cellCoordOf(x*)).
+
+// S1 — histogram: each live particle bumps its cell's count.
+const HISTOGRAM_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read_write> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: Grid;
-@group(0) @binding(4) var<uniform> sim: Sim;
+@group(0) @binding(2) var<uniform> grid: Grid;
+@group(0) @binding(3) var<uniform> sim: Sim;
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= sim.count) { return; }
     if (i >= sim.live) { return; } // warm-up: dormant particles stay out of the grid
-    let cell = cellLinear(cellCoordOf(predicted[i].xyz, grid), grid);
-    let slot = atomicAdd(&cellCount[cell], 1u);
-    if (slot < grid.dim.w) {
-        cellParticles[cell * grid.dim.w + slot] = i;
+    atomicAdd(&cellCount[cellLinear(cellCoordOf(predicted[i].xyz, grid), grid)], 1u);
+}`;
+
+// S2a — per-chunk exclusive scan of cellCount into cellStart, plus each chunk's total
+// into partialSums. Hillis-Steele inclusive scan in shared memory, converted to exclusive.
+const SCAN_LOCAL_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> cellCount: array<u32>;
+@group(0) @binding(1) var<storage, read_write> cellStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> partialSums: array<u32>;
+var<workgroup> s: array<u32, ${SCAN_WG}>;
+@compute @workgroup_size(${SCAN_WG})
+fn main(@builtin(local_invocation_index) lid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let n = arrayLength(&cellCount);
+    let chunk = wid.x + wid.y * ng.x;
+    let idx = chunk * ${SCAN_WG}u + lid;
+    var v = 0u;
+    if (idx < n) { v = cellCount[idx]; }
+    s[lid] = v;
+    workgroupBarrier();
+    var offset = 1u;
+    loop {
+        if (offset >= ${SCAN_WG}u) { break; }
+        var t = 0u;
+        if (lid >= offset) { t = s[lid - offset]; }
+        workgroupBarrier();
+        if (lid >= offset) { s[lid] = s[lid] + t; }
+        workgroupBarrier();
+        offset = offset * 2u;
     }
+    if (idx < n) { cellStart[idx] = s[lid] - v; } // inclusive - self = exclusive
+    if (lid == ${SCAN_WG}u - 1u) { partialSums[chunk] = s[${SCAN_WG}u - 1u]; } // chunk total
+}`;
+
+// S2b — exclusive scan of the per-chunk totals (partialSums), in place, by a SINGLE
+// workgroup that chains over the array in SCAN_WG-wide strides carrying a running offset.
+const SCAN_PARTIALS_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> partialSums: array<u32>;
+var<workgroup> s: array<u32, ${SCAN_WG}>;
+var<workgroup> carry: u32;
+@compute @workgroup_size(${SCAN_WG})
+fn main(@builtin(local_invocation_index) lid: u32) {
+    let n = arrayLength(&partialSums);
+    if (lid == 0u) { carry = 0u; }
+    workgroupBarrier();
+    var base = 0u;
+    loop {
+        if (base >= n) { break; }
+        let idx = base + lid;
+        var v = 0u;
+        if (idx < n) { v = partialSums[idx]; }
+        s[lid] = v;
+        workgroupBarrier();
+        var offset = 1u;
+        loop {
+            if (offset >= ${SCAN_WG}u) { break; }
+            var t = 0u;
+            if (lid >= offset) { t = s[lid - offset]; }
+            workgroupBarrier();
+            if (lid >= offset) { s[lid] = s[lid] + t; }
+            workgroupBarrier();
+            offset = offset * 2u;
+        }
+        if (idx < n) { partialSums[idx] = carry + (s[lid] - v); }
+        workgroupBarrier();
+        if (lid == 0u) { carry = carry + s[${SCAN_WG}u - 1u]; }
+        workgroupBarrier();
+        base = base + ${SCAN_WG}u;
+    }
+}`;
+
+// S2c — add each chunk's scanned offset back into cellStart -> global exclusive prefix sum.
+const SCAN_ADD_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> cellStart: array<u32>;
+@group(0) @binding(1) var<storage, read> partialSums: array<u32>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&cellStart)) { return; }
+    cellStart[i] = cellStart[i] + partialSums[i / ${SCAN_WG}u];
+}`;
+
+// S3 — scatter each live particle index into its cell's contiguous run.
+const SCATTER_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(2) var<storage, read_write> cellCursor: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> sortedIdx: array<u32>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= sim.count) { return; }
+    if (i >= sim.live) { return; }
+    let cell = cellLinear(cellCoordOf(predicted[i].xyz, grid), grid);
+    let slot = cellStart[cell] + atomicAdd(&cellCursor[cell], 1u);
+    sortedIdx[slot] = i;
+}`;
+
+// Gather a vec4 payload into cell-sorted order (predicted->sortedPos, vel->sortedVel).
+// One pipeline, driven by different bind groups. Only slots for live particles carry a
+// fresh sortedIdx; the neighbour loops read only within [cellStart, +cellCount) so stale
+// slots are never queried, but the o<count guard keeps every read in bounds.
+const GATHER_VEC4_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> sortedIdx: array<u32>;
+@group(0) @binding(1) var<storage, read> src: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> dst: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> sim: Sim;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let k = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (k >= sim.count) { return; }
+    let o = sortedIdx[k];
+    if (o < sim.count) { dst[k] = src[o]; }
+}`;
+
+// Gather an f32 payload into cell-sorted order (lambda->sortedLambda).
+const GATHER_F32_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> sortedIdx: array<u32>;
+@group(0) @binding(1) var<storage, read> src: array<f32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(3) var<uniform> sim: Sim;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let k = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (k >= sim.count) { return; }
+    let o = sortedIdx[k];
+    if (o < sim.count) { dst[k] = src[o]; }
 }`;
 
 // λ_i = −C_i / (|∇_i C|² + Σ_j |∇_j C|² + ε)
@@ -264,10 +411,11 @@ const LAMBDA_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: Grid;
-@group(0) @binding(4) var<uniform> sim: Sim;
-@group(0) @binding(5) var<storage, read_write> lambda: array<f32>;
+@group(0) @binding(2) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@group(0) @binding(6) var<storage, read_write> lambda: array<f32>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -286,10 +434,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            let r = pi - predicted[j].xyz;
+        let start = cellStart[cell];
+        let cnt = atomicLoad(&cellCount[cell]);
+        for (var s = 0u; s < cnt; s = s + 1u) {
+            let r = pi - sortedPos[start + s].xyz;
             let r2 = dot(r, r);
             if (r2 < sim.h2) {
                 rho += poly6(r2, sim);
@@ -329,11 +477,13 @@ const DELTA_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> predicted: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: Grid;
-@group(0) @binding(4) var<uniform> sim: Sim;
-@group(0) @binding(5) var<storage, read> lambda: array<f32>;
-@group(0) @binding(6) var<storage, read_write> delta: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> sortedLambda: array<f32>;
+@group(0) @binding(5) var<uniform> grid: Grid;
+@group(0) @binding(6) var<uniform> sim: Sim;
+@group(0) @binding(7) var<storage, read> lambda: array<f32>;
+@group(0) @binding(8) var<storage, read_write> delta: array<vec4<f32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -350,16 +500,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            if (j == i) { continue; }
-            let r = pi - predicted[j].xyz;
+        let start = cellStart[cell];
+        let cnt = atomicLoad(&cellCount[cell]);
+        // The self entry has r2 == 0, excluded by the r2 > 1e-9 guard below (this is
+        // why no explicit j == i skip is needed once neighbours come from the mirror).
+        for (var s = 0u; s < cnt; s = s + 1u) {
+            let k2 = start + s;
+            let r = pi - sortedPos[k2].xyz;
             let r2 = dot(r, r);
             if (r2 < sim.h2 && r2 > 1e-9) {
                 let w = poly6(r2, sim);
                 let scorr = -sim.scorrK * pow(w * sim.scorrInvWdq, sim.scorrN);
-                dp += (li + lambda[j] + scorr) * spikyGradient(r, sqrt(r2), sim);
+                dp += (li + sortedLambda[k2] + scorr) * spikyGradient(r, sqrt(r2), sim);
             }
         }
     }}}
@@ -424,17 +576,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     vel[i] = vec4<f32>(v, 0.0);
 }`;
 
-// XSPH viscosity + speed readout for colouring. Reuses the per-frame grid
-// (positions now equal the finalised predicted positions).
+// XSPH viscosity + speed readout for colouring. Reuses the per-frame counting-sort
+// grid; neighbour position/velocity come from the sorted mirrors (after the last
+// apply-gather sortedPos == predicted == finalised pos, so it is valid here).
 const VISCOSITY_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(4) var<uniform> grid: Grid;
-@group(0) @binding(5) var<uniform> sim: Sim;
-@group(0) @binding(6) var<storage, read_write> dbg: array<f32>;
+@group(0) @binding(3) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(4) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> sortedVel: array<vec4<f32>>;
+@group(0) @binding(6) var<uniform> grid: Grid;
+@group(0) @binding(7) var<uniform> sim: Sim;
+@group(0) @binding(8) var<storage, read_write> dbg: array<f32>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -451,13 +606,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            let r = pi - pos[j].xyz;
+        let start = cellStart[cell];
+        let cnt = atomicLoad(&cellCount[cell]);
+        for (var s = 0u; s < cnt; s = s + 1u) {
+            let k2 = start + s;
+            let r = pi - sortedPos[k2].xyz;
             let r2 = dot(r, r);
             if (r2 < sim.h2) {
-                dv += (vel[j].xyz - vi) * poly6(r2, sim);
+                dv += (sortedVel[k2].xyz - vi) * poly6(r2, sim);
             }
         }
     }}}
@@ -514,8 +670,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // same step. Generation follows Ihmsen 2012: foam-normals → foam-emit (trapped-air +
 // wave-crest + kinetic potentials from the neighbour grid), selective — fires at
 // impacts, convergence and wave crests. The foam-update pass then classifies +
-// advects the pool. The shared foam WGSL (the Foam UBO, the diffuse slot struct, the
-// radial hat kernel W, the [0,1] clamp map Φ, and a hash PRNG) + the FoamParams UBO
+// advects the pool. Like the solver kernels, the neighbour loops here read the cell-
+// sorted MIRRORS (sortedPos / sortedVel / sortedNormals) contiguously (coalesced)
+// rather than sortedIdx-indirected original arrays: sortedVel is re-gathered from the
+// post-viscosity velocities and sortedNormals is gathered from the per-particle normals
+// written by foam-normals. The shared foam WGSL (the Foam UBO, the diffuse slot struct,
+// the radial hat kernel W, the [0,1] clamp map Φ, and a hash PRNG) + the FoamParams UBO
 // layout live in sim-common.ts (`FOAM_COMMON_WGSL` / `FOAM_BYTES`) so the MLS-MPM
 // backend injects the identical struct. h / dt / gravity / bounds are read from the
 // PBF Sim UBO here, so only the foam-specific knobs live in FoamParams.
@@ -523,15 +683,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Pass 1 — SPH surface normal per fluid particle (for wave-crest detection).
 // n_i = normalize(Σ_j ∇W_spiky(x_i - x_j)); that colour-field gradient points toward
 // the denser interior, so the OUTWARD normal is its negation. .w stores the neighbour
-// count as a surface indicator (surface particles have fewer neighbours).
+// count as a surface indicator (surface particles have fewer neighbours). Neighbour
+// positions are read from the sortedPos mirror (self excluded by the r2>1e-9 guard).
 const FOAM_NORMALS_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(3) var<uniform> grid: Grid;
-@group(0) @binding(4) var<uniform> sim: Sim;
-@group(0) @binding(5) var<storage, read_write> normals: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(4) var<uniform> grid: Grid;
+@group(0) @binding(5) var<uniform> sim: Sim;
+@group(0) @binding(6) var<storage, read_write> normals: array<vec4<f32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -547,10 +709,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            let r = pi - pos[j].xyz;
+        let start = cellStart[cell];
+        let ncell = atomicLoad(&cellCount[cell]);
+        for (var s = 0u; s < ncell; s = s + 1u) {
+            let r = pi - sortedPos[start + s].xyz;
             let r2 = dot(r, r);
             if (r2 < sim.h2 && r2 > 1e-9) {
                 grad += spikyGradient(r, sqrt(r2), sim);
@@ -566,31 +728,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // Pass 2 — generation. Per fluid particle compute the trapped-air, wave-crest and
 // kinetic potentials, derive a capped count n_d, and append n_d sampled diffuse
-// particles into the ring (atomicAdd on the write-head, modulo capacity).
+// particles into the ring (atomicAdd on the write-head, modulo capacity). Dispatched
+// over the cell-SORTED order (slot k), so self position/velocity/normal come from the
+// sortedPos/sortedVel/sortedNormals mirrors and neighbour reads are contiguous; this
+// also keeps the pass within the 8-storage-buffer-per-stage device limit. The original
+// index i = sortedIdx[k] is recovered only to seed the PRNG identically. Occupied sorted
+// slots are [0, sim.live); the self entry is skipped by the existing rlen<1e-6 guard.
 const FOAM_EMIT_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${FOAM_COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> vel: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> cellParticles: array<u32>;
-@group(0) @binding(4) var<uniform> grid: Grid;
-@group(0) @binding(5) var<uniform> sim: Sim;
-@group(0) @binding(6) var<uniform> foam: Foam;
-@group(0) @binding(7) var<storage, read> normals: array<vec4<f32>>;
-@group(0) @binding(8) var<storage, read_write> diffuse: array<Diffuse>;
-@group(0) @binding(9) var<storage, read_write> head: array<atomic<u32>>;
+@group(0) @binding(0) var<storage, read> sortedIdx: array<u32>;
+@group(0) @binding(1) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(3) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> sortedVel: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read> sortedNormals: array<vec4<f32>>;
+@group(0) @binding(6) var<uniform> grid: Grid;
+@group(0) @binding(7) var<uniform> sim: Sim;
+@group(0) @binding(8) var<uniform> foam: Foam;
+@group(0) @binding(9) var<storage, read_write> diffuse: array<Diffuse>;
+@group(0) @binding(10) var<storage, read_write> head: array<atomic<u32>>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= sim.count) { return; }
-    let pi = pos[i].xyz;
-    let vi = vel[i].xyz;
+    let slot = gid.x;
+    if (slot >= sim.live) { return; }
+    let i = sortedIdx[slot];
+    let pi = sortedPos[slot].xyz;
+    let vi = sortedVel[slot].xyz;
     let speed = length(vi);
     if (speed < 1e-4) { return; }
     let vhat = vi / speed;
-    let ni = normals[i].xyz;
+    let ni = sortedNormals[slot].xyz;
     let base = cellCoordOf(pi, grid);
 
     var vdiff = 0.0;
@@ -601,22 +770,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            if (j == i) { continue; }
-            let xij = pi - pos[j].xyz;
+        let start = cellStart[cell];
+        let ncell = atomicLoad(&cellCount[cell]);
+        for (var s = 0u; s < ncell; s = s + 1u) {
+            let k2 = start + s;
+            let xij = pi - sortedPos[k2].xyz;
             let rlen = length(xij);
             if (rlen >= sim.h || rlen < 1e-6) { continue; }
             let w = wHat(rlen, sim.h);
-            let vij = vi - vel[j].xyz;
+            let vij = vi - sortedVel[k2].xyz;
             let vl = length(vij);
             if (vl > 1e-6) {
                 vdiff += vl * (1.0 - dot(vij / vl, xij / rlen)) * w;
             }
             // wave crest: convex neighbours only (x̂_ji · n̂_i < 0).
             if (dot(-xij / rlen, ni) < 0.0) {
-                kappa += (1.0 - dot(ni, normals[j].xyz)) * w;
+                kappa += (1.0 - dot(ni, sortedNormals[k2].xyz)) * w;
             }
         }
     }}}
@@ -659,14 +828,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Pass 3 — classify + advect + dissolve, over the whole diffuse pool. Fluid-neighbour
 // count n classifies each live particle (n<6 spray, n>20 bubble, else foam); each class
 // advects differently; foam decays its lifetime; particles die on lifetime<=0 or on
-// leaving the domain. kind is written into v.w for the renderer.
+// leaving the domain. kind is written into v.w for the renderer. The fluid-neighbour
+// position/velocity come from the sortedPos/sortedVel mirrors (a diffuse particle has
+// no self entry in the fluid set, so there is no self case to skip).
 const FOAM_UPDATE_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${FOAM_COMMON_WGSL}
-@group(0) @binding(0) var<storage, read> pos: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read> vel: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read> cellParticles: array<u32>;
+@group(0) @binding(0) var<storage, read_write> cellCount: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read> cellStart: array<u32>;
+@group(0) @binding(2) var<storage, read> sortedPos: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> sortedVel: array<vec4<f32>>;
 @group(0) @binding(4) var<uniform> grid: Grid;
 @group(0) @binding(5) var<uniform> sim: Sim;
 @group(0) @binding(6) var<uniform> foam: Foam;
@@ -694,14 +865,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let cc = base + vec3<i32>(dx, dy, dz);
         if (any(cc < vec3<i32>(0)) || any(cc >= vec3<i32>(grid.dim.xyz))) { continue; }
         let cell = cellLinear(cc, grid);
-        let n = min(atomicLoad(&cellCount[cell]), grid.dim.w);
-        for (var s = 0u; s < n; s = s + 1u) {
-            let j = cellParticles[cell * grid.dim.w + s];
-            let rlen = length(pp - pos[j].xyz);
+        let start = cellStart[cell];
+        let ncell = atomicLoad(&cellCount[cell]);
+        for (var s = 0u; s < ncell; s = s + 1u) {
+            let k2 = start + s;
+            let rlen = length(pp - sortedPos[k2].xyz);
             if (rlen < sim.h) {
                 nn = nn + 1u;
                 let w = wHat(rlen, sim.h);
-                vsum += vel[j].xyz * w;
+                vsum += sortedVel[k2].xyz * w;
                 wsum += w;
             }
         }
@@ -786,6 +958,8 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         Math.max(1, Math.ceil((boundsMax[2] - boundsMin[2]) / h)),
     ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
+    // Per-chunk totals for the multi-level counting-sort prefix scan over numCells.
+    const scanChunks = Math.ceil(numCells / SCAN_WG);
 
     // Kernel coefficients (mass = 1).
     const h2 = h * h;
@@ -803,8 +977,19 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const lambdaBuffer = device.createBuffer({ label: "fluid-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
     const deltaBuffer = device.createBuffer({ label: "fluid-delta", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const debugBuffer = device.createBuffer({ label: "fluid-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    // Counting-sort grid buffers (Hoetzlein 2014). All sized from numCells/count so a
+    // domainScale rebuild (createPbfSim re-run) resizes them alongside every other buffer.
+    // cellCount (histogram population), cellStart (exclusive prefix sum), cellCursor
+    // (scatter write cursor), partialSums (per-chunk scan carries), sortedIdx (original
+    // indices in cell-sorted order) + the sorted payload mirrors read by the neighbour loops.
     const cellCountBuffer = device.createBuffer({ label: "fluid-cell-count", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
-    const cellParticlesBuffer = device.createBuffer({ label: "fluid-cell-particles", size: numCells * maxPerCell * 4, usage: GPUBufferUsage.STORAGE });
+    const cellStartBuffer = device.createBuffer({ label: "fluid-cell-start", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
+    const cellCursorBuffer = device.createBuffer({ label: "fluid-cell-cursor", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
+    const partialSumsBuffer = device.createBuffer({ label: "fluid-partial-sums", size: scanChunks * 4, usage: GPUBufferUsage.STORAGE });
+    const sortedIdxBuffer = device.createBuffer({ label: "fluid-sorted-idx", size: count * 4, usage: GPUBufferUsage.STORAGE });
+    const sortedPosBuffer = device.createBuffer({ label: "fluid-sorted-pos", size: count * 16, usage: GPUBufferUsage.STORAGE });
+    const sortedLambdaBuffer = device.createBuffer({ label: "fluid-sorted-lambda", size: count * 4, usage: GPUBufferUsage.STORAGE });
+    const sortedVelBuffer = device.createBuffer({ label: "fluid-sorted-vel", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const simBuffer = device.createBuffer({ label: "fluid-sim", size: SIM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const gridBuffer = device.createBuffer({ label: "fluid-grid", size: GRID_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const emittersBuffer = device.createBuffer({ label: "fluid-emitters", size: EMITTERS_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -916,7 +1101,13 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
     const clearGridPipeline = computePipeline("fluid-clear-grid", CLEAR_GRID_WGSL);
-    const buildGridPipeline = computePipeline("fluid-build-grid", BUILD_GRID_WGSL);
+    const histogramPipeline = computePipeline("fluid-histogram", HISTOGRAM_WGSL);
+    const scanLocalPipeline = computePipeline("fluid-scan-local", SCAN_LOCAL_WGSL);
+    const scanPartialsPipeline = computePipeline("fluid-scan-partials", SCAN_PARTIALS_WGSL);
+    const scanAddPipeline = computePipeline("fluid-scan-add", SCAN_ADD_WGSL);
+    const scatterPipeline = computePipeline("fluid-scatter", SCATTER_WGSL);
+    const gatherVec4Pipeline = computePipeline("fluid-gather-vec4", GATHER_VEC4_WGSL);
+    const gatherF32Pipeline = computePipeline("fluid-gather-f32", GATHER_F32_WGSL);
     const lambdaPipeline = computePipeline("fluid-lambda", LAMBDA_WGSL);
     const deltaPipeline = computePipeline("fluid-delta", DELTA_WGSL);
     // Apply-pass pipeline/bind-group are built lazily in setSceneSdf (always called
@@ -974,16 +1165,77 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     }
     const clearGridBG = device.createBindGroup({
         layout: clearGridPipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: cellCountBuffer } }],
+        entries: [
+            { binding: 0, resource: { buffer: cellCountBuffer } },
+            { binding: 1, resource: { buffer: cellCursorBuffer } },
+        ],
     });
-    const buildGridBG = device.createBindGroup({
-        layout: buildGridPipeline.getBindGroupLayout(0),
+    const histogramBG = device.createBindGroup({
+        layout: histogramPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
-            { binding: 2, resource: { buffer: cellParticlesBuffer } },
-            { binding: 3, resource: { buffer: gridBuffer } },
-            { binding: 4, resource: { buffer: simBuffer } },
+            { binding: 2, resource: { buffer: gridBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
+        ],
+    });
+    const scanLocalBG = device.createBindGroup({
+        layout: scanLocalPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: cellCountBuffer } },
+            { binding: 1, resource: { buffer: cellStartBuffer } },
+            { binding: 2, resource: { buffer: partialSumsBuffer } },
+        ],
+    });
+    const scanPartialsBG = device.createBindGroup({
+        layout: scanPartialsPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: partialSumsBuffer } }],
+    });
+    const scanAddBG = device.createBindGroup({
+        layout: scanAddPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: cellStartBuffer } },
+            { binding: 1, resource: { buffer: partialSumsBuffer } },
+        ],
+    });
+    const scatterBG = device.createBindGroup({
+        layout: scatterPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: predictedBuffer } },
+            { binding: 1, resource: { buffer: cellStartBuffer } },
+            { binding: 2, resource: { buffer: cellCursorBuffer } },
+            { binding: 3, resource: { buffer: sortedIdxBuffer } },
+            { binding: 4, resource: { buffer: gridBuffer } },
+            { binding: 5, resource: { buffer: simBuffer } },
+        ],
+    });
+    // Gather bind groups (one gatherVec4 pipeline, driven by different bind groups):
+    // predicted -> sortedPos, vel -> sortedVel; plus lambda -> sortedLambda (gatherF32).
+    const gatherPosBG = device.createBindGroup({
+        layout: gatherVec4Pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: sortedIdxBuffer } },
+            { binding: 1, resource: { buffer: predictedBuffer } },
+            { binding: 2, resource: { buffer: sortedPosBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
+        ],
+    });
+    const gatherVelBG = device.createBindGroup({
+        layout: gatherVec4Pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: sortedIdxBuffer } },
+            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 2, resource: { buffer: sortedVelBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
+        ],
+    });
+    const gatherLambdaBG = device.createBindGroup({
+        layout: gatherF32Pipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: sortedIdxBuffer } },
+            { binding: 1, resource: { buffer: lambdaBuffer } },
+            { binding: 2, resource: { buffer: sortedLambdaBuffer } },
+            { binding: 3, resource: { buffer: simBuffer } },
         ],
     });
     const lambdaBG = device.createBindGroup({
@@ -991,10 +1243,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         entries: [
             { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
-            { binding: 2, resource: { buffer: cellParticlesBuffer } },
-            { binding: 3, resource: { buffer: gridBuffer } },
-            { binding: 4, resource: { buffer: simBuffer } },
-            { binding: 5, resource: { buffer: lambdaBuffer } },
+            { binding: 2, resource: { buffer: cellStartBuffer } },
+            { binding: 3, resource: { buffer: sortedPosBuffer } },
+            { binding: 4, resource: { buffer: gridBuffer } },
+            { binding: 5, resource: { buffer: simBuffer } },
+            { binding: 6, resource: { buffer: lambdaBuffer } },
         ],
     });
     const deltaBG = device.createBindGroup({
@@ -1002,11 +1255,13 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         entries: [
             { binding: 0, resource: { buffer: predictedBuffer } },
             { binding: 1, resource: { buffer: cellCountBuffer } },
-            { binding: 2, resource: { buffer: cellParticlesBuffer } },
-            { binding: 3, resource: { buffer: gridBuffer } },
-            { binding: 4, resource: { buffer: simBuffer } },
-            { binding: 5, resource: { buffer: lambdaBuffer } },
-            { binding: 6, resource: { buffer: deltaBuffer } },
+            { binding: 2, resource: { buffer: cellStartBuffer } },
+            { binding: 3, resource: { buffer: sortedPosBuffer } },
+            { binding: 4, resource: { buffer: sortedLambdaBuffer } },
+            { binding: 5, resource: { buffer: gridBuffer } },
+            { binding: 6, resource: { buffer: simBuffer } },
+            { binding: 7, resource: { buffer: lambdaBuffer } },
+            { binding: 8, resource: { buffer: deltaBuffer } },
         ],
     });
     function buildApplyBG(pipeline: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
@@ -1038,10 +1293,12 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             { binding: 0, resource: { buffer: positionBuffer } },
             { binding: 1, resource: { buffer: velocityBuffer } },
             { binding: 2, resource: { buffer: cellCountBuffer } },
-            { binding: 3, resource: { buffer: cellParticlesBuffer } },
-            { binding: 4, resource: { buffer: gridBuffer } },
-            { binding: 5, resource: { buffer: simBuffer } },
-            { binding: 6, resource: { buffer: debugBuffer } },
+            { binding: 3, resource: { buffer: cellStartBuffer } },
+            { binding: 4, resource: { buffer: sortedPosBuffer } },
+            { binding: 5, resource: { buffer: sortedVelBuffer } },
+            { binding: 6, resource: { buffer: gridBuffer } },
+            { binding: 7, resource: { buffer: simBuffer } },
+            { binding: 8, resource: { buffer: debugBuffer } },
         ],
     });
     const emitBG = device.createBindGroup({
@@ -1087,6 +1344,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let diffuseBuffer: GPUBuffer | null = null;
     let diffuseHeadBuffer: GPUBuffer | null = null;
     let foamNormalBuffer: GPUBuffer | null = null;
+    let sortedNormalBuffer: GPUBuffer | null = null;
     let foamParamsBuffer: GPUBuffer | null = null;
     let foamNormalsPipeline: GPUComputePipeline | null = null;
     let foamEmitPipeline: GPUComputePipeline | null = null;
@@ -1094,6 +1352,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let foamNormalsBG: GPUBindGroup | null = null;
     let foamEmitBG: GPUBindGroup | null = null;
     let foamUpdateBG: GPUBindGroup | null = null;
+    let gatherNormalsBG: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
 
     function buildFoamBindGroups(): void {
@@ -1102,38 +1361,51 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             entries: [
                 { binding: 0, resource: { buffer: positionBuffer } },
                 { binding: 1, resource: { buffer: cellCountBuffer } },
-                { binding: 2, resource: { buffer: cellParticlesBuffer } },
-                { binding: 3, resource: { buffer: gridBuffer } },
-                { binding: 4, resource: { buffer: simBuffer } },
-                { binding: 5, resource: { buffer: foamNormalBuffer! } },
+                { binding: 2, resource: { buffer: cellStartBuffer } },
+                { binding: 3, resource: { buffer: sortedPosBuffer } },
+                { binding: 4, resource: { buffer: gridBuffer } },
+                { binding: 5, resource: { buffer: simBuffer } },
+                { binding: 6, resource: { buffer: foamNormalBuffer! } },
             ],
         });
         foamEmitBG = device.createBindGroup({
             layout: foamEmitPipeline!.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: { buffer: positionBuffer } },
-                { binding: 1, resource: { buffer: velocityBuffer } },
-                { binding: 2, resource: { buffer: cellCountBuffer } },
-                { binding: 3, resource: { buffer: cellParticlesBuffer } },
-                { binding: 4, resource: { buffer: gridBuffer } },
-                { binding: 5, resource: { buffer: simBuffer } },
-                { binding: 6, resource: { buffer: foamParamsBuffer! } },
-                { binding: 7, resource: { buffer: foamNormalBuffer! } },
-                { binding: 8, resource: { buffer: diffuseBuffer! } },
-                { binding: 9, resource: { buffer: diffuseHeadBuffer! } },
+                { binding: 0, resource: { buffer: sortedIdxBuffer } },
+                { binding: 1, resource: { buffer: cellCountBuffer } },
+                { binding: 2, resource: { buffer: cellStartBuffer } },
+                { binding: 3, resource: { buffer: sortedPosBuffer } },
+                { binding: 4, resource: { buffer: sortedVelBuffer } },
+                { binding: 5, resource: { buffer: sortedNormalBuffer! } },
+                { binding: 6, resource: { buffer: gridBuffer } },
+                { binding: 7, resource: { buffer: simBuffer } },
+                { binding: 8, resource: { buffer: foamParamsBuffer! } },
+                { binding: 9, resource: { buffer: diffuseBuffer! } },
+                { binding: 10, resource: { buffer: diffuseHeadBuffer! } },
             ],
         });
         foamUpdateBG = device.createBindGroup({
             layout: foamUpdatePipeline!.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: { buffer: positionBuffer } },
-                { binding: 1, resource: { buffer: velocityBuffer } },
-                { binding: 2, resource: { buffer: cellCountBuffer } },
-                { binding: 3, resource: { buffer: cellParticlesBuffer } },
+                { binding: 0, resource: { buffer: cellCountBuffer } },
+                { binding: 1, resource: { buffer: cellStartBuffer } },
+                { binding: 2, resource: { buffer: sortedPosBuffer } },
+                { binding: 3, resource: { buffer: sortedVelBuffer } },
                 { binding: 4, resource: { buffer: gridBuffer } },
                 { binding: 5, resource: { buffer: simBuffer } },
                 { binding: 6, resource: { buffer: foamParamsBuffer! } },
                 { binding: 7, resource: { buffer: diffuseBuffer! } },
+            ],
+        });
+        // normals -> sortedNormals (cell-sorted mirror for foam-emit's wave-crest term),
+        // reusing the generic gatherVec4 pipeline like the sim's pos/vel gathers.
+        gatherNormalsBG = device.createBindGroup({
+            layout: gatherVec4Pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: sortedIdxBuffer } },
+                { binding: 1, resource: { buffer: foamNormalBuffer! } },
+                { binding: 2, resource: { buffer: sortedNormalBuffer! } },
+                { binding: 3, resource: { buffer: simBuffer } },
             ],
         });
     }
@@ -1144,6 +1416,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             foamEmitPipeline = computePipeline("fluid-foam-emit", FOAM_EMIT_WGSL);
             foamUpdatePipeline = computePipeline("fluid-foam-update", FOAM_UPDATE_WGSL);
             foamNormalBuffer = device.createBuffer({ label: "fluid-foam-normals", size: count * 16, usage: GPUBufferUsage.STORAGE });
+            sortedNormalBuffer = device.createBuffer({ label: "fluid-foam-sorted-normals", size: count * 16, usage: GPUBufferUsage.STORAGE });
             foamParamsBuffer = device.createBuffer({ label: "fluid-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             diffuseHeadBuffer = device.createBuffer({ label: "fluid-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
@@ -1199,7 +1472,13 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 deltaBuffer.size +
                 debugBuffer.size +
                 cellCountBuffer.size +
-                cellParticlesBuffer.size +
+                cellStartBuffer.size +
+                cellCursorBuffer.size +
+                partialSumsBuffer.size +
+                sortedIdxBuffer.size +
+                sortedPosBuffer.size +
+                sortedLambdaBuffer.size +
+                sortedVelBuffer.size +
                 simBuffer.size +
                 gridBuffer.size +
                 emittersBuffer.size;
@@ -1211,6 +1490,9 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             }
             if (foamNormalBuffer) {
                 b += foamNormalBuffer.size;
+            }
+            if (sortedNormalBuffer) {
+                b += sortedNormalBuffer.size;
             }
             if (foamParamsBuffer) {
                 b += foamParamsBuffer.size;
@@ -1252,17 +1534,34 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             }
             dispatch(encoder, "fluid-predict", predictPipeline, predictBG, particleGroups);
             dispatch(encoder, "fluid-clear-grid", clearGridPipeline, clearGridBG, cellGroups);
-            dispatch(encoder, "fluid-build-grid", buildGridPipeline, buildGridBG, particleGroups);
+            // Counting-sort the live particles by cell (Hoetzlein 2014): histogram ->
+            // exclusive prefix sum (multi-level) -> scatter, then gather the predicted
+            // positions into cell-sorted order so the neighbour loops read contiguous
+            // (coalesced) memory. The cell assignment (sortedIdx) is built once and reused
+            // across the solver iterations; only the sortedPos mirror is re-gathered.
+            dispatch(encoder, "fluid-histogram", histogramPipeline, histogramBG, particleGroups);
+            dispatch(encoder, "fluid-scan-local", scanLocalPipeline, scanLocalBG, scanChunks);
+            dispatch(encoder, "fluid-scan-partials", scanPartialsPipeline, scanPartialsBG, 1);
+            dispatch(encoder, "fluid-scan-add", scanAddPipeline, scanAddBG, cellGroups);
+            dispatch(encoder, "fluid-scatter", scatterPipeline, scatterBG, particleGroups);
+            dispatch(encoder, "fluid-gather-pos", gatherVec4Pipeline, gatherPosBG, particleGroups);
             encoder.pushDebugGroup(`constraint solve (${iterationsMut} iters)`);
             for (let it = 0; it < iterationsMut; it++) {
                 dispatch(encoder, "fluid-lambda", lambdaPipeline, lambdaBG, particleGroups);
+                dispatch(encoder, "fluid-gather-lambda", gatherF32Pipeline, gatherLambdaBG, particleGroups);
                 dispatch(encoder, "fluid-delta", deltaPipeline, deltaBG, particleGroups);
                 if (applyPipeline && applyBG) {
                     dispatch(encoder, "fluid-apply", applyPipeline, applyBG, particleGroups);
                 }
+                // Re-gather the moved x* so the next iteration's neighbour reads see the
+                // current predicted positions (cell assignment / sortedIdx stays fixed).
+                dispatch(encoder, "fluid-gather-pos", gatherVec4Pipeline, gatherPosBG, particleGroups);
             }
             encoder.popDebugGroup();
             dispatch(encoder, "fluid-finalize", finalizePipeline, finalizeBG, particleGroups);
+            // sortedPos now equals the finalized positions (last apply-gather); gather the
+            // finalized velocities so viscosity reads neighbour position + velocity mirrors.
+            dispatch(encoder, "fluid-gather-vel", gatherVec4Pipeline, gatherVelBG, particleGroups);
             dispatch(encoder, "fluid-viscosity", viscosityPipeline, viscosityBG, particleGroups);
             // Foam passes: generate + advect diffuse particles on the finalized fluid
             // state, reusing the neighbour grid built above. Skipped entirely when off.
@@ -1271,7 +1570,14 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 foamU32[14] = foamSeed++;
                 device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
                 encoder.pushDebugGroup("foam");
+                // Viscosity rewrote vel[i], so re-fill the sortedVel mirror from the now-
+                // final velocities; foam then reads neighbour pos/vel/normals from the
+                // cell-sorted mirrors (coalesced) instead of sortedIdx-indirected arrays.
+                dispatch(encoder, "fluid-gather-vel", gatherVec4Pipeline, gatherVelBG, particleGroups);
                 dispatch(encoder, "fluid-foam-normals", foamNormalsPipeline!, foamNormalsBG!, particleGroups);
+                // Gather the just-written surface normals into cell-sorted order for the
+                // wave-crest term in foam-emit.
+                dispatch(encoder, "fluid-gather-normals", gatherVec4Pipeline, gatherNormalsBG!, particleGroups);
                 dispatch(encoder, "fluid-foam-emit", foamEmitPipeline!, foamEmitBG!, particleGroups);
                 dispatch(encoder, "fluid-foam-update", foamUpdatePipeline!, foamUpdateBG, foamPoolGroups);
                 encoder.popDebugGroup();
@@ -1375,12 +1681,19 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             deltaBuffer.destroy();
             debugBuffer.destroy();
             cellCountBuffer.destroy();
-            cellParticlesBuffer.destroy();
+            cellStartBuffer.destroy();
+            cellCursorBuffer.destroy();
+            partialSumsBuffer.destroy();
+            sortedIdxBuffer.destroy();
+            sortedPosBuffer.destroy();
+            sortedLambdaBuffer.destroy();
+            sortedVelBuffer.destroy();
             simBuffer.destroy();
             gridBuffer.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
             foamNormalBuffer?.destroy();
+            sortedNormalBuffer?.destroy();
             foamParamsBuffer?.destroy();
         },
     };
