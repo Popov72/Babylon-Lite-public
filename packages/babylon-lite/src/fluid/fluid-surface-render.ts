@@ -437,7 +437,7 @@ let r = ap.radius;
 let r2 = r * r;
 let base = cellCoordOf(xi, ap);
 var sumW = 0.0;
-var sumWx = vec3<f32>(0.0);
+var sumWd = vec3<f32>(0.0);
 var m00 = 0.0; var m11 = 0.0; var m22 = 0.0;
 var m01 = 0.0; var m02 = 0.0; var m12 = 0.0;
 var n = 0u;
@@ -451,37 +451,43 @@ let cnt = cellCount[bucket];
 for (var s = 0u; s < cnt; s = s + 1u) {
 let xj = sortedPos[start + s].xyz;
 if (any(cellCoordOf(xj, ap) != cell)) { continue; }
-let d = xi - xj;
-let d2 = dot(d, d);
+// Accumulate moments of the offset e = xj - xi (NOT absolute xj). The covariance is
+// translation-invariant, and centring at xi keeps every term small (|e| < r) instead of
+// forming a tiny covariance as the difference of two huge O(pos^2) sums — that catastrophic
+// cancellation (world coords reach tens of units in the Marble Tower) would jitter the shape
+// and hurt accuracy.
+let e = xj - xi;
+let d2 = dot(e, e);
 if (d2 >= r2) { continue; }
 let t = 1.0 - d2 / r2;
 let w = t * t * t;
 sumW = sumW + w;
-sumWx = sumWx + w * xj;
-m00 = m00 + w * xj.x * xj.x;
-m11 = m11 + w * xj.y * xj.y;
-m22 = m22 + w * xj.z * xj.z;
-m01 = m01 + w * xj.x * xj.y;
-m02 = m02 + w * xj.x * xj.z;
-m12 = m12 + w * xj.y * xj.z;
+sumWd = sumWd + w * e;
+m00 = m00 + w * e.x * e.x;
+m11 = m11 + w * e.y * e.y;
+m22 = m22 + w * e.z * e.z;
+m01 = m01 + w * e.x * e.y;
+m02 = m02 + w * e.x * e.z;
+m12 = m12 + w * e.y * e.z;
 n = n + 1u;
 }
 }
 }
 }
 let invW = 1.0 / max(sumW, 1e-9);
-let xw = sumWx * invW;
+let meanD = sumWd * invW;
+let xw = xi + meanD;
 let xs = mix(xi, xw, ap.lambda);
 let sr = ap.sphereRadius;
 let iso = mat3x3<f32>(vec3<f32>(sr, 0.0, 0.0), vec3<f32>(0.0, sr, 0.0), vec3<f32>(0.0, 0.0, sr));
 var M = iso;
 if (n > u32(ap.neps)) {
-let c00 = m00 * invW - xw.x * xw.x;
-let c11 = m11 * invW - xw.y * xw.y;
-let c22 = m22 * invW - xw.z * xw.z;
-let c01 = m01 * invW - xw.x * xw.y;
-let c02 = m02 * invW - xw.x * xw.z;
-let c12 = m12 * invW - xw.y * xw.z;
+let c00 = m00 * invW - meanD.x * meanD.x;
+let c11 = m11 * invW - meanD.y * meanD.y;
+let c22 = m22 * invW - meanD.z * meanD.z;
+let c01 = m01 * invW - meanD.x * meanD.y;
+let c02 = m02 * invW - meanD.x * meanD.z;
+let c12 = m12 * invW - meanD.y * meanD.z;
 let ev = eigenvalues(c00, c01, c02, c11, c12, c22);
 let e1 = ev.x;
 if (e1 > 1e-9 && (ev.x - ev.z) > 1e-7 * e1) {
