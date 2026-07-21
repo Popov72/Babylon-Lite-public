@@ -109,6 +109,16 @@ const ANISO_KR = 4.0; // eigenvalue clamp ratio (max variance anisotropy; length
 const ANISO_NEPS = 8.0; // neighbour count at/below which a particle stays isotropic (spray)
 const ANISO_MAX_GROW = 1.15; // cap on the volume-preserving growth of the longest semi-axis (× sphere)
 const ANISO_SURFSCALE_RADIUS = 0.5; // damped share of surfaceSizeScale applied to the WPCA search radius (1 = full)
+// Per-cell neighbour cap: the WPCA compute iterates EVERY particle in each of the 27 stencil cells, so its
+// cost grows with LOCAL density. Scenes that pile/trap water in complex geometry (e.g. Marble Tower) form
+// a few EXTREME cells (hundreds of particles) that make the pass blow up (measured ~13ms vs ~2ms for the
+// box at 500k MLS). A stable covariance only needs a few dozen neighbours, so the inner loop reads at most
+// this many particles per cell (the first N of the cell's contiguous sorted run). Normal fluid cells (~26
+// at rest density; the box's max sits below ~48, verified byte-identical at caps 48 and 64) stay UNDER the
+// cap, so their output is unchanged; only the pathological clumps are bounded (~13ms → ~9ms on Marble
+// Tower, and the worst case can no longer spike unboundedly as water clumps denser at higher counts/scale).
+// The remaining Marble-vs-box gap is a broad base of moderately-dense cells that no box-safe cap can touch.
+const ANISO_MAX_PER_CELL = 64;
 
 // ── Depth + thickness particle passes (sphere impostors) ──
 const PARTICLE_WGSL = /* wgsl */ `
@@ -228,7 +238,7 @@ kr: f32,          // eigenvalue clamp ratio
 neps: f32,        // isotropic-below neighbour count
 count: u32,
 numBuckets: u32,
-_pad0: u32,
+maxPerCell: u32,  // cap on particles iterated per hash cell in the WPCA loop (bounds cost in dense clumps)
 _pad1: u32,
 };
 fn cellCoordOf(p: vec3<f32>, ap: AP) -> vec3<i32> {
@@ -447,7 +457,10 @@ for (var dx = -1; dx <= 1; dx = dx + 1) {
 let cell = base + vec3<i32>(dx, dy, dz);
 let bucket = hashCell(cell, ap.numBuckets);
 let start = cellStart[bucket];
-let cnt = cellCount[bucket];
+// Cap the per-cell scan: bounds the WPCA cost in over-dense/clumped cells (Marble Tower) while
+// leaving normal fluid cells (occupancy < cap) byte-identical. Reads the first maxPerCell of the
+// cell's contiguous sorted run — a representative sample for a stable covariance.
+let cnt = min(cellCount[bucket], ap.maxPerCell);
 for (var s = 0u; s < cnt; s = s + 1u) {
 let xj = sortedPos[start + s].xyz;
 if (any(cellCoordOf(xj, ap) != cell)) { continue; }
@@ -1658,7 +1671,7 @@ export function createFluidSurfaceTask(
         apF32[7] = ANISO_NEPS;
         apU32[8] = currentSim.count;
         apU32[9] = anisoNumBuckets;
-        apU32[10] = 0;
+        apU32[10] = ANISO_MAX_PER_CELL; // per-cell WPCA neighbour cap
         apU32[11] = 0;
         device.queue.writeBuffer(apBuffer, 0, apData);
     }
