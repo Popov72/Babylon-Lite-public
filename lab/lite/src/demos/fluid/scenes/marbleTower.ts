@@ -68,6 +68,25 @@ const WHEEL_T = 0.4; // rim half-thickness (axial half-width ≈0.4; R+T is the 
 const WHEEL_HUB_R = 0.6; // axle / hub radius (centre cylinder — sized by eye per user)
 const WHEEL_HUB_HALF = 2.1; // hub / axle half-length along the axle
 const WHEEL_HUB_OFFSET = -1.63; // hub centre along the axle relative to C (shaft world X≈[0.05,4.24])
+// Overshot delivery: a dedicated nozzle pours onto the wheel's UPPER buckets offset to ONE Z side of
+// the axle (WHEEL_DRIVE_SIDE) so the caught-water weight stays asymmetric → a steady one-direction
+// (overshot) spin instead of the near-symmetric load that just rocks the wheel back and forth. The
+// torque gate below reads the SAME side, so the loaded side always descends; flip WHEEL_DRIVE_SIDE to
+// reverse which side the water pours on and hence the visual spin direction.
+const WHEEL_DRIVE_SIDE = -1; // −1 = the Z side away from the central niche (flip to +1 to mirror)
+const OVERSHOT_ABOVE = 1.05; // height of the nozzle above the rim top — sits just inside the tower box/niche
+// above the wheel and lets the water arc out onto the top buckets (lowered from 1.4 so the spawn is a bit
+// below the top of the square opening, not right at its lip).
+const OVERSHOT_FIXED = 3000; // particles dedicated to the overshot jet (count-independent — the LAST
+// emitter is fed only by indices [0, OVERSHOT_FIXED), so the wheel-driving stream looks the same at
+// 40k and 200k). See EmitterConfig.fixedStreamCount.
+const OVERSHOT_DRAIN = WHEEL_C[1] - WHEEL_R * 0.55; // world-Y drain height for the fixed overshot loop:
+// once a jet particle sinks this far below the axle (past mid-wheel) it teleports straight back to the
+// nozzle (EmitterConfig.fixedStreamDrainY), so the ~3k jet particles never reach the floor pool and cycle
+// in a tight loop over the wheel — the flow (and hence the torque) is essentially count-independent. Tuned
+// empirically: recycling any HIGHER (e.g. 0.35·R) yanks the sparse 40k stream off the buckets before a
+// drive-side load can build (wheel stays dry); this depth lets water ride down and load the buckets at
+// BOTH 40k and 200k (measured torque ≈3.9k @40k vs ≈5.5k @200k → both spin, ω≈1.0 vs 1.4 rad/s).
 
 // Mesh node carrying CPU geometry (present on glTF Mesh leaves, absent on TransformNodes).
 type CpuMeshNode = SceneNode & {
@@ -478,12 +497,28 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const ey = (topStructure.y - 0.25) * k;
         const speed = marbleParams.centralSpeed;
         const radius = marbleParams.nozzleRadius * k;
-        const emitters = ([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz]) => ({
-            pos: [topStructure.cx * k + sx * ox, ey, topStructure.cz * k + sz * oz] as [number, number, number],
-            dir: [0, -1, 0] as [number, number, number],
-            speed,
-            radius,
-        }));
+        // Overshot spout direction: nearly HORIZONTAL toward the drive side (WHEEL_DRIVE_SIDE·Z) with only
+        // a slight downward bias, so water arcs across onto the descending buckets like a flume (not a
+        // steep drop). Small -Y so gravity + the arc land it on the wheel a bit below the launch height.
+        const osRaw: [number, number, number] = [0, -0.15, WHEEL_DRIVE_SIDE];
+        const osLen = Math.hypot(osRaw[0], osRaw[1], osRaw[2]);
+        const emitters = [
+            ...([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz]) => ({
+                pos: [topStructure.cx * k + sx * ox, ey, topStructure.cz * k + sz * oz] as [number, number, number],
+                dir: [0, -1, 0] as [number, number, number],
+                speed,
+                radius,
+            })),
+            // Overshot spout (MUST be LAST — the dedicated fixedStreamCount stream routes here). Sits
+            // just above the wheel top and pours mostly sideways toward the drive side so the water
+            // lands on the descending buckets, keeping the gravity-torque load one-signed.
+            {
+                pos: [WHEEL_C[0] * k, (WHEEL_C[1] + WHEEL_R + OVERSHOT_ABOVE) * k, WHEEL_C[2] * k] as [number, number, number],
+                dir: [osRaw[0] / osLen, osRaw[1] / osLen, osRaw[2] / osLen] as [number, number, number],
+                speed,
+                radius,
+            },
+        ];
         return {
             emitters,
             // Pump intake: a thin slab across the whole domain floor. Settled water is pulled
@@ -492,6 +527,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             intakeMax: [DOMAIN_R * k, (FLOOR_Y + 0.8) * k, DOMAIN_R * k],
             rate: marbleParams.emitRate,
             spread: 0.2,
+            fixedStreamCount: OVERSHOT_FIXED, // ~3k particles cycle through the overshot spout, regardless of total count
+            fixedStreamDrainY: OVERSHOT_DRAIN * k, // tight self-contained loop → flow independent of total count
         };
     };
 
@@ -636,20 +673,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
     let meshScaleTimer: ReturnType<typeof setTimeout> | null = null; // debounce handle for the heavy rebuild
     let builtMeshScale = 1; // mesh scale the collision (WGSL + UBO + grid + sim bounds) was last built at
-    // ── STAGE 2: flux-driven wheel spin ────────────────────────────────────────────────────────
-    // Spin the REAL textured wheel mesh (via its "wheel" pivot node) driven by the amount of MOVING
-    // liquid that reaches the wheel. Each frame a tiny GPU reduction counts particles that are BOTH
-    // inside the wheel's CATCH cylinder (axle-local: perpendicular distance to the axle ≤ R+margin,
-    // |axial offset along the axle| ≤ T+margin) AND actually moving (normalized speed > SPEED_GATE),
-    // reducing to a single atomic<u32>. That count is copied to a double-buffered staging buffer and
-    // read back with mapAsync (NON-blocking — never awaited in the render path; frames with no fresh
-    // value reuse the last one). The count is EMA-smoothed, mapped to a target angular speed
-    // ωTarget = driveStrength·n (clamped to DRIVE_OMEGA_MAX), and the actual ω relaxes toward it; θ
-    // integrates ω and drives wheelNode.rotation.x (axle = local +X → the disk spins in place about
-    // the axle). This is fully DECOUPLED from collision: the analytic wheel SDF stays rotation-
-    // symmetric, so θ is a physical no-op there — it is still mirrored into the param block (float 35)
-    // for consistency. Because only MOVING water counts, the wheel coasts to a stop when the pour is
-    // off and the water pools.
+    // ── STAGE 2: torque-driven wheel spin (real fluid → rigid coupling) ──────────────────────────
+    // Spin the REAL textured wheel mesh (via its "wheel" pivot node) driven by the physical TORQUE the
+    // caught water exerts on the wheel. Each frame a tiny GPU reduction sums, over the moving upper-rim
+    // water (axle-local: perpendicular distance to the axle in the rim band, |axial offset| ≤ T+margin,
+    // perp.y>0, normalized speed > SPEED_GATE), the gravity lever arm perp.z — i.e. the net torque
+    // τ_x = Σ m·g·perp.z about the +X axle — into a signed fixed-point atomic<i32>. That value is copied
+    // to a double-buffered staging buffer and read back with mapAsync (NON-blocking — never awaited in
+    // the render path; frames with no fresh value reuse the last one). τ is EMA-smoothed and integrated
+    // as a rigid body: I·dω/dt = τ − friction·ω; θ integrates ω and drives wheelNode.rotation.x
+    // (axle = local +X → the disk spins in place about
+    // the axle). The analytic collision wheel SDF stays rotation-symmetric, so θ is a physical no-op
+    // there — it is still mirrored into the param block (float 35), and ω into float 37 so the spoke
+    // moving-boundary finite-difference carries the water. A symmetric water load nets ~0 torque, so
+    // the wheel only turns when the flow is asymmetric about the axle, and coasts to a stop when drained.
     const CATCH_MARGIN_R = 0.5; // radial slack beyond the rim radius R
     const CATCH_MARGIN_A = 0.6; // axial slack beyond the disk half-thickness T
     // Only water on the UPPER rim band drives the wheel: a particle counts when its offset from the
@@ -658,34 +695,54 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // count reflects water actually riding/striking the top of the wheel — it falls to ~0 when the
     // pour is off and the water drains, which is what stops the wheel.
     const RIM_BAND = 1.2; // radial depth of the rim catch band inward from R
-    const DRIVE_OMEGA_MAX = 3; // rad/s — hard safety clamp on the proportional drive
-    const DRIVE_RESPONSIVENESS = 2; // 1/s — how fast ω relaxes toward its target (~0.5 s time-constant)
-    const COUNT_EMA_RATE = 4; // 1/s — how fast the smoothed catch count tracks the async readback
-    // Proportional drive: the smoothed moving-particle count is mapped (above a small deadzone) LINEARLY
-    // to the target ω, so the wheel speed reflects HOW MUCH water reaches it. ω reaches driveStrength at
-    // the NOMINAL flow (COUNT_DEADZONE + COUNT_SPAN caught particles) and keeps growing proportionally
-    // beyond that — a heavier cascade spins the wheel faster — bounded only by the DRIVE_OMEGA_MAX clamp.
-    // (Previously `flow` was clamped to 1, so every catch above the nominal point saturated at the same
-    // ω: 6k and 26k both read 0.4 rad/s. The clamp is gone so more caught water → visibly faster.)
-    // Measured catch is ~5–7k in steady flow and near 0 when drained; nominal sits within that band so
-    // typical flow turns the wheel at driveStrength and surges/heavier pours push it faster.
-    const COUNT_DEADZONE = 250; // moving upper-rim particles below which the wheel is not driven (idle)
-    const COUNT_SPAN = 5750; // catch above the deadzone that reaches NOMINAL drive (ω = driveStrength)
-    // Normalized speed gate: a particle is only counted when it is actually MOVING (its normalized
-    // world speed `speed·debugNorm` exceeds this). Settled/pooled water the lower rim sits in reads
-    // ~0 and is ignored, so the wheel only turns when moving water reaches it and coasts to a stop
-    // when the pour is off. Resolution-independent (debugNorm ≈ 1/typical-max-speed).
-    const SPEED_GATE = 0.3;
+    // ── Real gravity-torque drive (prototype: fluid weight turns the wheel) ──────────────────────
+    // Instead of mapping a particle COUNT to ω, accumulate the physical torque the caught water exerts
+    // about the +X axle. Gravity (−Y) on a particle at wheel-plane offset (perp.y, perp.z) gives
+    // τ_x = perp.z · m·g (the horizontal Z lever arm is perp.z). Summing perp.z over the moving upper-
+    // rim water yields a signed net torque: an asymmetric water load (more mass on one Z side of the
+    // axle — e.g. filled descending-side buckets) spins the wheel that way; a symmetric load nets ~0.
+    // This is genuine two-way coupling — the water weight drives the wheel while the wheel SDF carries
+    // the water. τ is EMA-smoothed and integrated as I·dω/dt = gain·τ − friction·ω.
+    const TORQUE_FP = 256; // fixed-point scale for the signed atomic<i32> torque accumulation
+    const TORQUE_GAIN = 0.0002; // rad/s² per unit net torque (folds in m·g and the moment of inertia).
+    // The wheel is BISTABLE — a moving wheel drags water through the torque band and self-sustains, but a
+    // too-slow one lets the sparse 40k stream fall straight through and never catches. This gain (with the
+    // low DRIVE_FRICTION below) gives the initial spawn-load kick enough authority to cross that self-start
+    // threshold at BOTH 40k and 200k. Absolute drive-friction — not the gain/friction ratio — governs the
+    // catch, so the fast stop is delivered by a SEPARATE brake friction, not by raising this baseline.
+    const DRIVE_FRICTION = 0.4; // 1/s — LOW angular damping while the wheel is driven: it coasts (heavy /
+    // inertia feel) and, crucially, is low enough for the sparse 40k stream to spin the wheel up from rest
+    // (a higher constant friction stalls the 40k self-start — the bistable catch needs low absolute drag).
+    const BRAKE_FRICTION = 2.6; // 1/s — HIGH damping applied ONLY once the water load is gone while the
+    // wheel is already spinning (see updateWheelSpin): the wheel then bleeds off speed ~6.5× faster than
+    // the drive friction (decay time constant ≈0.4s vs 2.5s) → it "slows down faster when there's no water".
+    const TORQUE_ON = 250; // |smoothedTorque| above this means water IS loading the wheel. Comfortably below
+    // the driven torque (~2–5k at both counts) and above the dry-wheel residual (~10–80), so it cleanly
+    // distinguishes "driven" from "no water" — but only trusted once spinning (startup torque is also low).
+    const SPUN_UP = 0.15; // rad/s — above this the wheel is "up to speed", so a torque drop is genuinely
+    // water LEAVING (brake). Below it we stay on DRIVE_FRICTION so a stopped-but-wet wheel can still catch.
+    const TORQUE_EMA_RATE = 2.0; // 1/s — how fast the smoothed torque tracks the async readback
+    const OMEGA_MAX = 0.26; // rad/s — clamp on |ω|. Both counts generate more than enough torque to want
+    // to exceed this, so the clamp EQUALIZES them: the wheel settles at exactly OMEGA_MAX regardless of
+    // particle count → a slow, majestic, count-independent spin (~2.5 rpm). Lower for a heavier-looking
+    // wheel; raise it to let the count differences show.
+    // Normalized speed gate: a particle is only counted when its normalized world speed `speed·debugNorm`
+    // exceeds this. Kept LOW (0.05) so water that has settled into the top drive-side buckets still counts:
+    // an overshot wheel is driven by the WEIGHT of water sitting in its buckets, not only by fast-moving
+    // water, so a nearly-static gate lets the wheel self-start from the resting overshot load even at low
+    // particle counts and low clamp speeds (a high gate excluded that bucket water → the 40k wheel stalled
+    // at the slow 0.26 clamp). The upper-half + drive-side + rim-band gates already exclude the floor pool,
+    // and the BRAKE friction (not this gate) is what stops the wheel when the water is pushed away.
+    const SPEED_GATE = 0.05;
     const TWO_PI = Math.PI * 2;
     const FLUX_WG_SIZE = 256; // reduction workgroup size
     const FLUX_STAGING = 2; // double-buffered readback so mapAsync never stalls the render path
 
-    const spinEnabled = true; // the wheel ALWAYS spins (no toggle any more)
-    const driveStrength = 0.4; // wheel ω (rad/s) at NOMINAL flow; heavier catch spins proportionally faster
+    const spinEnabled = true; // the wheel spins when driven by the water torque (no toggle)
     let wheelTheta = 0; // current rotation angle about the axle (rad)
-    let wheelOmega = 0; // current angular speed (rad/s)
-    let smoothedCount = 0; // EMA of the catch count (de-jitters the async readback cadence)
-    let latestCount = 0; // last successfully read-back catch count
+    let wheelOmega = 0; // current angular speed (rad/s; signed — water torque can spin either way)
+    let smoothedTorque = 0; // EMA of the decoded net torque (de-jitters the async readback cadence)
+    let latestTorque = 0; // last successfully read-back net torque (decoded from fixed-point)
     let spinReadoutFrames = 0; // throttles the ω/count read-out DOM update
 
     // Lazily-built GPU reduction resources — created once, never per frame.
@@ -710,23 +767,34 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const fluxRimInner = (WHEEL_R - RIM_BAND) * k;
         const fluxAxHalf = (WHEEL_T + CATCH_MARGIN_A) * k;
         return `@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> outCount: atomic<u32>;
+@group(0) @binding(1) var<storage, read_write> outTorque: atomic<i32>;
 @group(0) @binding(2) var<storage, read> speeds: array<f32>;
 @group(0) @binding(3) var<uniform> fluxParams: vec4<f32>;
 @compute @workgroup_size(${FLUX_WG_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= arrayLength(&positions)) { return; }
+    if (i >= ${OVERSHOT_FIXED}u) { return; } // ONLY the dedicated overshot stream drives the wheel, so
+                                             // the torque (and spin) is independent of the total count —
+                                             // the abundant niche water at high counts is decorative here.
     let d = positions[i].xyz - vec3<f32>(${wgslF(WHEEL_C[0] * k)}, ${wgslF(WHEEL_C[1] * k)}, ${wgslF(WHEEL_C[2] * k)});
     let axis = vec3<f32>(${wgslF(WHEEL_AXLE[0])}, ${wgslF(WHEEL_AXLE[1])}, ${wgslF(WHEEL_AXLE[2])});
     let a = dot(d, axis);
     if (abs(a) > ${wgslF(fluxAxHalf)}) { return; }
     let perp = d - a * axis;              // offset within the disk (Y-Z) plane
     if (perp.y <= 0.0) { return; }        // upper half only — skip the submerged lower rim / base pool
+    if (${wgslF(WHEEL_DRIVE_SIDE)} * perp.z <= 0.0) { return; } // DRIVE side only (WHEEL_DRIVE_SIDE): the
+                                          // overshot feeds this side and its weight descends here, so the
+                                          // torque is one-signed → a steady spin. Water on the OTHER side
+                                          // (niche splash carried over the top) is ignored → no competing
+                                          // counter-torque, so the two sources can't fight the direction.
     let rad = length(perp);
     if (rad < ${wgslF(fluxRimInner)} || rad > ${wgslF(fluxRadCap)}) { return; } // rim band (water on the buckets)
     if (speeds[i] * fluxParams.x <= ${wgslF(SPEED_GATE)}) { return; }
-    atomicAdd(&outCount, 1u);
+    // Gravity torque about the +X axle from this particle's weight: τ_x = perp.z (× m·g, folded into
+    // the CPU gain). perp.z is SIGNED (one-signed here thanks to the gate), so the integration sign is
+    // side-independent. Fixed-point accumulate because WGSL atomics are integer-only.
+    atomicAdd(&outTorque, i32(perp.z * ${wgslF(TORQUE_FP)}));
 }`;
     };
 
@@ -757,7 +825,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     };
 
     // Dispatch the reduction over the active sim's positions and kick off a non-blocking readback.
-    // Skips entirely when both staging buffers are still in flight (reuses latestCount that frame).
+    // Skips entirely when both staging buffers are still in flight (reuses the last torque that frame).
     const runFluxPass = (sim: FluidSim): void => {
         ensureFluxResources();
         const slot = fluxStagingBusy.indexOf(false);
@@ -799,39 +867,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         void staging
             .mapAsync(GPUMapMode.READ)
             .then(() => {
-                latestCount = new Uint32Array(staging.getMappedRange())[0] ?? 0;
+                latestTorque = (new Int32Array(staging.getMappedRange())[0] ?? 0) / TORQUE_FP;
                 staging.unmap();
                 fluxStagingBusy[slot] = false;
             })
             .catch(() => {
-                fluxStagingBusy[slot] = false; // device lost / cancelled — free the slot, keep the stale count
+                fluxStagingBusy[slot] = false; // device lost / cancelled — free the slot, keep the stale torque
             });
     };
 
-    // Per-frame drive: measure flux (when on + active), smooth it, integrate ω→θ, spin the wheel node.
+    // Per-frame drive: measure the water torque (when active), smooth it, integrate ω→θ, spin the wheel.
     const updateWheelSpin = (dt: number): void => {
         if (spinEnabled && active) {
             runFluxPass(ctx.getActiveSim());
         }
-        // EMA-smooth the catch count so the spin doesn't jitter with the async readback cadence. The
-        // count is speed-gated + restricted to the UPPER rim band (only water riding/striking the top of
-        // the wheel), so the base pool the lower rim sits in is excluded.
-        const targetCount = spinEnabled ? latestCount : 0;
-        smoothedCount += (targetCount - smoothedCount) * Math.min(COUNT_EMA_RATE * dt, 1);
-        // Map the count (above a small deadzone) LINEARLY to the target ω: ω = driveStrength at the
-        // nominal flow and proportionally MORE for heavier flow (no upper clamp on `flow`, so a bigger
-        // cascade spins the wheel faster). Below the deadzone there is too little water to turn the
-        // wheel → ωTarget 0 → it coasts to a stop; DRIVE_OMEGA_MAX bounds the top for safety.
-        const flow = Math.max(0, (smoothedCount - COUNT_DEADZONE) / COUNT_SPAN);
-        const omegaTarget = spinEnabled ? Math.min(driveStrength * flow, DRIVE_OMEGA_MAX) : 0;
-        wheelOmega += (omegaTarget - wheelOmega) * Math.min(DRIVE_RESPONSIVENESS * dt, 1);
-        if (omegaTarget === 0 && wheelOmega < 1e-4) {
-            wheelOmega = 0; // fully at rest
+        // EMA-smooth the async-read torque so ω doesn't jitter with the readback cadence.
+        const torque = spinEnabled ? latestTorque : 0;
+        smoothedTorque += (torque - smoothedTorque) * Math.min(TORQUE_EMA_RATE * dt, 1);
+        // Rigid-body angular integration in θ-space. NOTE the wheel mesh's world rotation runs OPPOSITE
+        // to θ (dφ_world/dθ = −1, from the SDF/mesh calibration), so a physical torque τ that should turn
+        // the world angle φ one way must drive θ the OTHER way: angAcc_θ = −gain·τ − friction·ω. Without
+        // this negation the wheel spins backwards — the loaded (delivery) side rises instead of falling.
+        //
+        // State-dependent damping: use LOW drive-friction while water is loading the wheel (so it coasts,
+        // feels heavy, and — critically — can self-start from rest at low particle counts). Switch to the
+        // HIGH brake-friction ONLY when the water load has dropped away while the wheel is already spinning
+        // — that combination is unambiguously "the water is gone" (a stopped-but-wet startup wheel also
+        // reads low torque, so we must NOT brake below SPUN_UP or it could never catch). This makes the
+        // wheel slow down fast when the stream is pushed away, without stalling the fragile low-count catch.
+        const waterGone = Math.abs(smoothedTorque) < TORQUE_ON && Math.abs(wheelOmega) > SPUN_UP;
+        const friction = waterGone ? BRAKE_FRICTION : DRIVE_FRICTION;
+        const angAcc = -TORQUE_GAIN * smoothedTorque - friction * wheelOmega;
+        wheelOmega += angAcc * dt;
+        wheelOmega = Math.max(-OMEGA_MAX, Math.min(OMEGA_MAX, wheelOmega));
+        if (Math.abs(wheelOmega) < 1e-4 && Math.abs(smoothedTorque) < 1e-3) {
+            wheelOmega = 0; // fully at rest (no drive, no residual creep)
         }
         wheelTheta = (wheelTheta + wheelOmega * dt) % TWO_PI; // integrate + wrap
         if (wheelNode) {
-            // Spin the "wheel" TransformNode (repurposed as the axle pivot) — negative sense so the
-            // wheel turns the natural way for water falling onto it (the axle is local +X).
+            // Spin the "wheel" TransformNode (repurposed as the axle pivot) — the axle is local +X.
             wheelNode.rotation.x = -wheelTheta;
         }
         sdfData[35] = wheelTheta; // mirror θ into the wheel block (drives the rotating spokes)
@@ -841,7 +915,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Lightweight tuning read-out (throttled so it doesn't thrash layout every frame).
         if (++spinReadoutFrames >= 12) {
             spinReadoutFrames = 0;
-            spinReadoutEl.textContent = `ω ${wheelOmega.toFixed(2)} rad/s · catch ${Math.round(smoothedCount)}`;
+            spinReadoutEl.textContent = `ω ${wheelOmega.toFixed(2)} rad/s · torque ${smoothedTorque.toFixed(0)}`;
         }
     };
 
@@ -849,7 +923,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     //    ω / catch read-out remains, appended in extraControls. ──
     const spinReadoutEl = document.createElement("div");
     spinReadoutEl.style.cssText = "color:#9fb4cc;font-size:11px;margin:0 0 6px;";
-    spinReadoutEl.textContent = "ω 0.00 rad/s · catch 0";
+    spinReadoutEl.textContent = "ω 0.00 rad/s · torque 0";
 
     // ── SDF texture visualizer: a movable cutting plane that reveals the baked mesh-SDF's
     //    cross-section as a coloured slice (warm red/orange = inside the solid, near-white =
