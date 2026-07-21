@@ -34,6 +34,9 @@ export interface FluidSim {
     readonly surfaceSizeScale?: number;
     /** vec4<f32>-per-particle position buffer (STORAGE). Read by the renderer. */
     readonly positionBuffer: GPUBuffer;
+    /** vec4<f32>-per-particle WORLD velocity buffer (STORAGE), same indexing as
+     *  `positionBuffer`. Exposed for coupling (e.g. drag on a floating body). */
+    readonly velocityBuffer: GPUBuffer;
     /** f32-per-particle speed (Phase 3 debug). Read by the renderer to tint by motion. */
     readonly debugBuffer: GPUBuffer;
     /** Normalisation reciprocal for `debugBuffer` (≈ 1 / typical max speed). */
@@ -270,11 +273,26 @@ export interface EmitterConfig {
     rate: number;
     /** Random velocity spread added at launch (world units/s). Default 0. */
     spread?: number;
+    /** When positive, the LAST emitter becomes a DEDICATED stream fed only by particle indices
+     *  [0, fixedStreamCount); the other emitters serve indices [fixedStreamCount, count).
+     *  This gives that nozzle a roughly fixed-size stream INDEPENDENT of the total particle
+     *  count (e.g. a wheel-driving jet that looks the same at 40k and 200k). Default 0 (off:
+     *  all emitters share every recycled particle, the original behaviour). */
+    fixedStreamCount?: number;
+    /** Drain height for the fixed stream (only meaningful with fixedStreamCount positive). The
+     *  fixed-stream particles form a self-contained TIGHT LOOP: the instant one sinks below this
+     *  world-Y it relaunches DETERMINISTICALLY at the last emitter, never touching the shared
+     *  pump-intake or the main pool. So ~fixedStreamCount particles are always in flight over the
+     *  target, at a cadence set only by gravity + geometry — fully independent of the total count
+     *  or how deep the main pool is. Default 0 (fixed particles fall through to the shared intake). */
+    fixedStreamDrainY?: number;
 }
 
 // Emitters-UBO float layout: head, head2, intakeMin, intakeMax, then
 // MAX_EMITTERS × (pos+radius, dir+speed). packEmitters writes everything except
 // the sim-owned fields: head2.x (particle count) and head.z / head2.y (seed, dt).
+// head2.z = fixedStreamCount (dedicated last-emitter stream, 0 = off).
+// head2.w = fixedStreamDrainY (fixed-stream tight-loop drain height).
 export const EMITTERS_FLOATS = 16 + MAX_EMITTERS * 8;
 
 export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): void {
@@ -290,6 +308,8 @@ export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): voi
     data[1] = cfg.rate;
     // data[2] = seed and data[5] = dt are written per frame by the sim.
     data[3] = cfg.spread ?? 0;
+    data[6] = cfg.fixedStreamCount ?? 0; // head2.z — dedicated-stream particle count (0 = off)
+    data[7] = cfg.fixedStreamDrainY ?? 0; // head2.w — fixed-stream tight-loop drain height
     data[8] = cfg.intakeMin[0];
     data[9] = cfg.intakeMin[1];
     data[10] = cfg.intakeMin[2];

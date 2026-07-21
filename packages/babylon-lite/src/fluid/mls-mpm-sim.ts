@@ -696,6 +696,7 @@ struct Params2 { count: u32, debugScale: f32, live: u32, _b: f32, };
 @group(0) @binding(1) var<storage, read_write> renderPos: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> dbg: array<f32>;
 @group(0) @binding(3) var<uniform> pc: Params2;
+@group(0) @binding(4) var<storage, read_write> renderVel: array<vec4<f32>>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -705,10 +706,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // off-screen so it stays invisible until it is activated (see warmupFrames).
         renderPos[i] = vec4<f32>(0.0, -1.0e5, 0.0, 1.0);
         dbg[i] = 0.0;
+        renderVel[i] = vec4<f32>(0.0);
         return;
     }
     renderPos[i] = vec4<f32>(particles[i].position, 1.0);
     dbg[i] = length(particles[i].v);
+    renderVel[i] = vec4<f32>(particles[i].v, 0.0);
 }`;
 
 const EMIT_WGSL = /* wgsl */ `
@@ -716,7 +719,7 @@ ${PARTICLE_STRUCT}
 struct Emitter { p: vec4<f32>, d: vec4<f32> };
 struct Emitters {
     head: vec4<f32>,        // emitterCount, rate, seed, spread
-    head2: vec4<f32>,       // particleCount, dt, _, _
+    head2: vec4<f32>,       // particleCount, dt, fixedStreamCount, fixedStreamDrainY
     intakeMin: vec4<f32>,
     intakeMax: vec4<f32>,
     list: array<Emitter, ${MAX_EMITTERS}>,
@@ -734,10 +737,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ec = u32(em.head.x);
     if (ec == 0u) { return; }
     let p = particles[i].position;
+    let seed = u32(em.head.z) * 2654435761u + i;
+    let fixedN = u32(em.head2.z);
+    // Dedicated fixed-size stream (fixedN > 0): indices [0, fixedN) form a self-contained TIGHT
+    // LOOP through the LAST emitter. The instant such a particle sinks below the drain height
+    // (head2.w) it relaunches DETERMINISTICALLY — no rate throttle, no floor-intake test — so
+    // ~fixedN particles are always in flight at a cadence set only by gravity + geometry, fully
+    // INDEPENDENT of the total particle count or how deep the main pool is. These particles never
+    // touch the shared pump-intake, so the main pool can't dilute or starve the jet.
+    if (fixedN > 0u && i < fixedN) {
+        if (p.y < em.head2.w) {
+            let e = em.list[ec - 1u];
+            let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
+            let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
+            particles[i].position = e.p.xyz + jit;
+            particles[i].v = e.d.xyz * e.d.w + sj;
+            particles[i].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+        }
+        return;
+    }
+    // Everything else: the original probabilistic pump-intake recycle. When fixedN > 0 the last
+    // emitter is reserved for the fixed stream, so the general pool recycles through the first
+    // ec-1 emitters; when fixedN == 0 all emitters are shared (byte-identical original path).
     if (all(p >= em.intakeMin.xyz) && all(p <= em.intakeMax.xyz)) {
-        let seed = u32(em.head.z) * 2654435761u + i;
         if (rnd(seed) < em.head.y * em.head2.y) {
-            let e = em.list[hashU(seed) % ec];
+            var ei = hashU(seed) % ec;
+            if (fixedN > 0u) { ei = hashU(seed) % max(ec - 1u, 1u); }
+            let e = em.list[ei];
             let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
             let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
             particles[i].position = e.p.xyz + jit;
@@ -1065,6 +1091,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const particleBuffer = device.createBuffer({ label: "mpm-particles", size: count * PARTICLE_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const cellBuffer = device.createBuffer({ label: "mpm-cells", size: numCells * 16, usage: GPUBufferUsage.STORAGE });
     const positionBuffer = device.createBuffer({ label: "mpm-render-pos", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const velocityBuffer = device.createBuffer({ label: "mpm-render-vel", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const debugBuffer = device.createBuffer({ label: "mpm-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const paramsBuffer = device.createBuffer({ label: "mpm-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const copyParamsBuffer = device.createBuffer({ label: "mpm-copy-params", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -1165,6 +1192,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         device.queue.writeBuffer(debugBuffer, 0, new Float32Array(count));
         // Seed render positions so the first frame draws the spawn before any step.
         device.queue.writeBuffer(positionBuffer, 0, rp);
+        device.queue.writeBuffer(velocityBuffer, 0, new Float32Array(count * 4));
     }
     seed();
 
@@ -1338,6 +1366,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             { binding: 1, resource: { buffer: positionBuffer } },
             { binding: 2, resource: { buffer: debugBuffer } },
             { binding: 3, resource: { buffer: copyParamsBuffer } },
+            { binding: 4, resource: { buffer: velocityBuffer } },
         ],
     });
 
@@ -1476,12 +1505,21 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         // individual spheres. Enlarge them (and the blur) to match SPH smoothness.
         surfaceSizeScale: 1.5,
         positionBuffer,
+        velocityBuffer,
         debugBuffer,
         debugNorm: 1 / 6,
         get gpuBytes(): number {
             // Sum every GPU buffer this backend owns; the lazily-allocated foam pool +
             // uniforms are added only once foam has been enabled.
-            let b = particleBuffer.size + cellBuffer.size + positionBuffer.size + debugBuffer.size + paramsBuffer.size + copyParamsBuffer.size + emittersBuffer.size;
+            let b =
+                particleBuffer.size +
+                cellBuffer.size +
+                positionBuffer.size +
+                velocityBuffer.size +
+                debugBuffer.size +
+                paramsBuffer.size +
+                copyParamsBuffer.size +
+                emittersBuffer.size;
             // Block counting-sort buffers (always allocated).
             b += blockCountBuffer.size + blockStartBuffer.size + blockCursorBuffer.size + partialSumsBuffer.size + sortedIdxBuffer.size;
             if (diffuseBuffer) {
@@ -1668,6 +1706,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             particleBuffer.destroy();
             cellBuffer.destroy();
             positionBuffer.destroy();
+            velocityBuffer.destroy();
             debugBuffer.destroy();
             paramsBuffer.destroy();
             copyParamsBuffer.destroy();

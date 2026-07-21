@@ -672,7 +672,7 @@ const EMIT_WGSL = /* wgsl */ `
 struct Emitter { p: vec4<f32>, d: vec4<f32> };
 struct Emitters {
     head: vec4<f32>,        // emitterCount, rate, seed, spread
-    head2: vec4<f32>,       // particleCount, dt, _, _
+    head2: vec4<f32>,       // particleCount, dt, fixedStreamCount, fixedStreamDrainY
     intakeMin: vec4<f32>,
     intakeMax: vec4<f32>,
     list: array<Emitter, ${MAX_EMITTERS}>,
@@ -691,10 +691,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ec = u32(em.head.x);
     if (ec == 0u) { return; }
     let p = pos[i].xyz;
+    let seed = u32(em.head.z) * 2654435761u + i;
+    let fixedN = u32(em.head2.z);
+    // Dedicated fixed-size stream (fixedN > 0): indices [0, fixedN) form a self-contained TIGHT
+    // LOOP through the LAST emitter. The instant such a particle sinks below the drain height
+    // (head2.w) it relaunches DETERMINISTICALLY — no rate throttle, no floor-intake test — so
+    // ~fixedN particles are always in flight at a cadence set only by gravity + geometry, fully
+    // INDEPENDENT of the total particle count or how deep the main pool is. These particles never
+    // touch the shared pump-intake, so the main pool can't dilute or starve the jet.
+    if (fixedN > 0u && i < fixedN) {
+        if (p.y < em.head2.w) {
+            let e = em.list[ec - 1u];
+            let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
+            let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
+            pos[i] = vec4<f32>(e.p.xyz + jit, 1.0);
+            vel[i] = vec4<f32>(e.d.xyz * e.d.w + sj, 0.0);
+        }
+        return;
+    }
+    // Everything else: the original probabilistic pump-intake recycle. When fixedN > 0 the last
+    // emitter is reserved for the fixed stream, so the general pool recycles through the first
+    // ec-1 emitters; when fixedN == 0 all emitters are shared (byte-identical original path).
     if (all(p >= em.intakeMin.xyz) && all(p <= em.intakeMax.xyz)) {
-        let seed = u32(em.head.z) * 2654435761u + i;
         if (rnd(seed) < em.head.y * em.head2.y) {
-            let e = em.list[hashU(seed) % ec];
+            var ei = hashU(seed) % ec;
+            if (fixedN > 0u) { ei = hashU(seed) % max(ec - 1u, 1u); }
+            let e = em.list[ei];
             let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
             let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
             pos[i] = vec4<f32>(e.p.xyz + jit, 1.0);
@@ -1491,6 +1513,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         count,
         particleRadius,
         positionBuffer,
+        velocityBuffer,
         debugBuffer,
         // Speed colour normalisation: typical lively splash speed ≈ 5 world units/s.
         debugNorm: 1 / 5,
