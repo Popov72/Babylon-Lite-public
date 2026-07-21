@@ -6,7 +6,8 @@
 //     carries the water (the solver recovers the surface velocity from −∂sceneSdf/∂t).
 //   • fluid → mesh: a GPU reduction counts the fluid in a thin shell around each submerged hull →
 //     Archimedes buoyancy (∝ count, up, at the submerged centroid → self-righting) + a drag-carry that
-//     lerps the body toward the local current; a per-body 6-DOF integrator (quaternion) then floats it.
+//     lerps the body toward the local current; either the built-in 6-DOF integrator (quaternion) floats
+//     it, or an external rigid-body solver feeds the pose back through setBodyPose().
 //
 // Everything for up to `maxBodies` bodies lives in ONE storage buffer, so the demo needs no extra sim
 // bindings: it passes `system.sdfBuffer` as `SceneSdfSpec.sdfGrid`, prepends `system.sdfWgsl` to its
@@ -45,8 +46,17 @@ export interface FloatingBodyConfig {
     display?: SceneNode;
     /** Uniform display scale (defaults to 1). */
     scale?: number;
+    /** Signed per-axis scale of the display node itself, applied ON TOP of `scale` (defaults to
+     *  [1, 1, 1]). Use a negative-determinant value (e.g. [-1, 1, 1]) when the display node carries a
+     *  handedness mirror — such as a glTF `__root__` — so the system preserves it instead of clobbering
+     *  it with a positive uniform scale (which would render the mesh inside-out). The SDF must be baked
+     *  in the SAME mirrored frame for the fluid coupling to line up with the visible mesh. */
+    displayScale?: readonly [number, number, number];
     /** Display centre offset in the display node's own frame (defaults to 0). */
     centre?: readonly [number, number, number];
+    /** When true, this body is posed externally via setBodyPose(); update() only measures buoyancy and
+     *  poses the display node from the externally supplied pose. */
+    externalPose?: boolean;
 }
 
 export interface FloatingBodySystemOptions {
@@ -74,6 +84,23 @@ export interface FloatingBodySystemOptions {
     getBounds?: () => { min: readonly [number, number, number]; max: readonly [number, number, number] } | null;
     /** XZ inset from the bounds walls (world units). Default 0.5. */
     wallMargin?: number;
+    /** Default external-pose mode for added bodies. Per-body cfg.externalPose overrides it. */
+    externalPose?: boolean;
+}
+
+export interface FloatingBodyMeasure {
+    /** Raw count of fluid particles in this body's SDF shell from the latest GPU reduction. */
+    submergedCount: number;
+    /** Raw world-space centroid of the counted fluid shell particles. Falls back to the body pose when empty. */
+    submergedCentroid: [number, number, number];
+    /** Raw average fluid velocity at the counted shell particles. Zero when empty. */
+    fluidVelocity: [number, number, number];
+    /** Body mass supplied at addBody(). */
+    mass: number;
+    /** Body diagonal inertia supplied at addBody(). */
+    inertia: [number, number, number];
+    /** Body half-extents supplied at addBody(). */
+    half: [number, number, number];
 }
 
 export interface FloatingBodySystem {
@@ -83,12 +110,22 @@ export interface FloatingBodySystem {
     readonly bodyCount: number;
     /** Live pose + last read-back displaced-particle count for body `i` (for readouts/QA). */
     bodyState(i: number): { position: [number, number, number]; displaced: number } | null;
+    /** Latest raw GPU buoyancy reduction for body `i`, for an external physics solver to turn into forces. */
+    bodyMeasure(i: number): FloatingBodyMeasure | null;
+    /** Feed an externally integrated pose + velocities into the SDF header and display transform. */
+    setBodyPose(
+        i: number,
+        position: readonly [number, number, number],
+        quaternion: readonly [number, number, number, number],
+        linVel: readonly [number, number, number],
+        angVel: readonly [number, number, number]
+    ): void;
     /** Storage buffer to pass as `SceneSdfSpec.sdfGrid` (valid immediately). */
     readonly sdfBuffer: GPUBuffer;
     /** WGSL: quaternion helpers + `fn bodiesSdf(pt: vec3<f32>, dt: f32) -> f32` (reads `sceneSdfGrid`).
      *  Prepend to the scene `sdf` string, before the `sceneSdf` fn that calls `bodiesSdf`. */
     readonly sdfWgsl: string;
-    /** Per-frame: reduction → integrate every enabled body → write poses + pose display nodes. */
+    /** Per-frame: reduction → integrate internally posed bodies → write poses + pose display nodes. */
     update(dt: number, sim: FluidSim): void;
     /** Enable/disable physics for ALL bodies (active flag in the buffer). Display visibility is the
      *  caller's responsibility. */
@@ -123,7 +160,9 @@ interface Body {
     smCount: number; // EMA-smoothed displaced count
     display?: SceneNode;
     scale: number;
+    displayScale: [number, number, number];
     centre: [number, number, number];
+    externalPose: boolean;
 }
 
 const quatRotate = (q: readonly [number, number, number, number], v: readonly [number, number, number]): [number, number, number] => {
@@ -146,6 +185,7 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
     const BUOY_EMA = opts.buoyEma ?? 8;
     const DRAG_CARRY = opts.dragCarry ?? 0.004;
     const WALL_MARGIN = opts.wallMargin ?? 0.5;
+    const EXTERNAL_POSE = opts.externalPose ?? false;
     const getBounds = opts.getBounds;
     const GRID_BASE = HEADER_FLOATS + maxBodies * BODY_STRIDE;
     const gridArena = opts.gridFloats * maxBodies;
@@ -193,7 +233,9 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
             smCount: 0,
             display: cfg.display,
             scale: cfg.scale ?? 1,
+            displayScale: cfg.displayScale ? [cfg.displayScale[0], cfg.displayScale[1], cfg.displayScale[2]] : [1, 1, 1],
             centre: cfg.centre ? [cfg.centre[0], cfg.centre[1], cfg.centre[2]] : [0, 0, 0],
+            externalPose: cfg.externalPose ?? EXTERNAL_POSE,
         };
         bodies.push(b);
         syncDisplay(b);
@@ -240,10 +282,56 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
         if (!n) {
             return;
         }
-        n.scaling.set(b.scale, b.scale, b.scale);
+        const sx = b.scale * b.displayScale[0],
+            sy = b.scale * b.displayScale[1],
+            sz = b.scale * b.displayScale[2];
+        n.scaling.set(sx, sy, sz);
         n.rotationQuaternion.set(b.quat[0], b.quat[1], b.quat[2], b.quat[3]);
-        const r = quatRotate(b.quat, [b.scale * b.centre[0], b.scale * b.centre[1], b.scale * b.centre[2]]);
+        const r = quatRotate(b.quat, [sx * b.centre[0], sy * b.centre[1], sz * b.centre[2]]);
         n.position.set(b.pos[0] - r[0], b.pos[1] - r[1], b.pos[2] - r[2]);
+    };
+
+    const bodyMeasure = (i: number): FloatingBodyMeasure | null => {
+        const b = bodies[i];
+        if (!b) {
+            return null;
+        }
+        const s = i * RED_SLOTS;
+        const count = Math.max(0, disp[s] ?? 0);
+        const sx = (disp[s + 1] ?? 0) / RED_FP;
+        const sy = (disp[s + 2] ?? 0) / RED_FP;
+        const sz = (disp[s + 3] ?? 0) / RED_FP;
+        const vx = (disp[s + 4] ?? 0) / RED_FP;
+        const vy = (disp[s + 5] ?? 0) / RED_FP;
+        const vz = (disp[s + 6] ?? 0) / RED_FP;
+        return {
+            submergedCount: count,
+            submergedCentroid: count > 0 ? [sx / count, sy / count, sz / count] : [b.pos[0], b.pos[1], b.pos[2]],
+            fluidVelocity: count > 0 ? [vx / count, vy / count, vz / count] : [0, 0, 0],
+            mass: b.mass,
+            inertia: [b.inertia[0], b.inertia[1], b.inertia[2]],
+            half: [b.half[0], b.half[1], b.half[2]],
+        };
+    };
+
+    const setBodyPose = (
+        i: number,
+        position: readonly [number, number, number],
+        quaternion: readonly [number, number, number, number],
+        linVel: readonly [number, number, number],
+        angVel: readonly [number, number, number]
+    ): void => {
+        const b = bodies[i];
+        if (!b) {
+            return;
+        }
+        b.pos = [position[0], position[1], position[2]];
+        const ql = Math.hypot(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
+        b.quat = ql > 0 ? [quaternion[0] / ql, quaternion[1] / ql, quaternion[2] / ql, quaternion[3] / ql] : [0, 0, 0, 1];
+        b.linVel = [linVel[0], linVel[1], linVel[2]];
+        b.angVel = [angVel[0], angVel[1], angVel[2]];
+        syncDisplay(b);
+        writeHeader();
     };
 
     // ── GPU buoyancy reduction (all bodies in one dispatch) ──
@@ -387,62 +475,64 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     sz = (disp[s + 3] ?? 0) / RED_FP;
                 const vx = (disp[s + 4] ?? 0) / RED_FP,
                     vz = (disp[s + 6] ?? 0) / RED_FP;
-                b.smCount += (count - b.smCount) * Math.min(BUOY_EMA * dt, 1);
-                const buoy = BUOY_K * b.smCount;
-                const cx = count > 0 ? sx / count : b.pos[0];
-                const cz = count > 0 ? sz / count : b.pos[2];
-                // Vertical: gravity + buoyancy, heavily damped.
-                b.linVel[1] += ((buoy - b.mass * GRAVITY) / b.mass) * dt;
-                b.linVel[1] *= Math.max(0, 1 - LIN_DRAG * dt);
-                // Horizontal: carried by the local current.
-                if (count > 0) {
-                    const a = Math.min(DRAG_CARRY * count * dt, 0.6);
-                    b.linVel[0] += a * (vx / count - b.linVel[0]);
-                    b.linVel[2] += a * (vz / count - b.linVel[2]);
-                } else {
-                    const ad = Math.max(0, 1 - 0.5 * dt);
-                    b.linVel[0] *= ad;
-                    b.linVel[2] *= ad;
-                }
-                for (let k = 0; k < 3; k++) {
-                    b.linVel[k] = clampAbs(b.linVel[k]!, 12);
-                }
-                // Righting torque from the submerged centroid: tau = r × (0, buoy, 0).
-                const rx = cx - b.pos[0],
-                    rz = cz - b.pos[2];
-                b.angVel[0] += ((-rz * buoy) / b.inertia[0]) * dt;
-                b.angVel[2] += ((rx * buoy) / b.inertia[2]) * dt;
-                const angDamp = Math.max(0, 1 - ANG_DRAG * dt);
-                for (let k = 0; k < 3; k++) {
-                    b.angVel[k] = clampAbs(b.angVel[k]! * angDamp, 6);
-                }
-                // Integrate position + orientation.
-                b.pos[0] += b.linVel[0] * dt;
-                b.pos[1] += b.linVel[1] * dt;
-                b.pos[2] += b.linVel[2] * dt;
-                const [qx, qy, qz, qw] = b.quat;
-                const [wx, wy, wz] = b.angVel;
-                let nqx = qx + 0.5 * (wx * qw + wy * qz - wz * qy) * dt;
-                let nqy = qy + 0.5 * (wy * qw + wz * qx - wx * qz) * dt;
-                let nqz = qz + 0.5 * (wz * qw + wx * qy - wy * qx) * dt;
-                let nqw = qw + 0.5 * (-wx * qx - wy * qy - wz * qz) * dt;
-                const nl = Math.hypot(nqx, nqy, nqz, nqw) || 1;
-                nqx /= nl;
-                nqy /= nl;
-                nqz /= nl;
-                nqw /= nl;
-                b.quat[0] = nqx;
-                b.quat[1] = nqy;
-                b.quat[2] = nqz;
-                b.quat[3] = nqw;
-                // Wall + floor clamp.
-                if (bounds) {
-                    b.pos[0] = Math.max(bounds.min[0] + WALL_MARGIN, Math.min(bounds.max[0] - WALL_MARGIN, b.pos[0]));
-                    b.pos[2] = Math.max(bounds.min[2] + WALL_MARGIN, Math.min(bounds.max[2] - WALL_MARGIN, b.pos[2]));
-                    if (b.pos[1] < bounds.min[1] + b.half[1]) {
-                        b.pos[1] = bounds.min[1] + b.half[1];
-                        if (b.linVel[1] < 0) {
-                            b.linVel[1] = 0;
+                if (!b.externalPose) {
+                    b.smCount += (count - b.smCount) * Math.min(BUOY_EMA * dt, 1);
+                    const buoy = BUOY_K * b.smCount;
+                    const cx = count > 0 ? sx / count : b.pos[0];
+                    const cz = count > 0 ? sz / count : b.pos[2];
+                    // Vertical: gravity + buoyancy, heavily damped.
+                    b.linVel[1] += ((buoy - b.mass * GRAVITY) / b.mass) * dt;
+                    b.linVel[1] *= Math.max(0, 1 - LIN_DRAG * dt);
+                    // Horizontal: carried by the local current.
+                    if (count > 0) {
+                        const a = Math.min(DRAG_CARRY * count * dt, 0.6);
+                        b.linVel[0] += a * (vx / count - b.linVel[0]);
+                        b.linVel[2] += a * (vz / count - b.linVel[2]);
+                    } else {
+                        const ad = Math.max(0, 1 - 0.5 * dt);
+                        b.linVel[0] *= ad;
+                        b.linVel[2] *= ad;
+                    }
+                    for (let k = 0; k < 3; k++) {
+                        b.linVel[k] = clampAbs(b.linVel[k]!, 12);
+                    }
+                    // Righting torque from the submerged centroid: tau = r × (0, buoy, 0).
+                    const rx = cx - b.pos[0],
+                        rz = cz - b.pos[2];
+                    b.angVel[0] += ((-rz * buoy) / b.inertia[0]) * dt;
+                    b.angVel[2] += ((rx * buoy) / b.inertia[2]) * dt;
+                    const angDamp = Math.max(0, 1 - ANG_DRAG * dt);
+                    for (let k = 0; k < 3; k++) {
+                        b.angVel[k] = clampAbs(b.angVel[k]! * angDamp, 6);
+                    }
+                    // Integrate position + orientation.
+                    b.pos[0] += b.linVel[0] * dt;
+                    b.pos[1] += b.linVel[1] * dt;
+                    b.pos[2] += b.linVel[2] * dt;
+                    const [qx, qy, qz, qw] = b.quat;
+                    const [wx, wy, wz] = b.angVel;
+                    let nqx = qx + 0.5 * (wx * qw + wy * qz - wz * qy) * dt;
+                    let nqy = qy + 0.5 * (wy * qw + wz * qx - wx * qz) * dt;
+                    let nqz = qz + 0.5 * (wz * qw + wx * qy - wy * qx) * dt;
+                    let nqw = qw + 0.5 * (-wx * qx - wy * qy - wz * qz) * dt;
+                    const nl = Math.hypot(nqx, nqy, nqz, nqw) || 1;
+                    nqx /= nl;
+                    nqy /= nl;
+                    nqz /= nl;
+                    nqw /= nl;
+                    b.quat[0] = nqx;
+                    b.quat[1] = nqy;
+                    b.quat[2] = nqz;
+                    b.quat[3] = nqw;
+                    // Wall + floor clamp.
+                    if (bounds) {
+                        b.pos[0] = Math.max(bounds.min[0] + WALL_MARGIN, Math.min(bounds.max[0] - WALL_MARGIN, b.pos[0]));
+                        b.pos[2] = Math.max(bounds.min[2] + WALL_MARGIN, Math.min(bounds.max[2] - WALL_MARGIN, b.pos[2]));
+                        if (b.pos[1] < bounds.min[1] + b.half[1]) {
+                            b.pos[1] = bounds.min[1] + b.half[1];
+                            if (b.linVel[1] < 0) {
+                                b.linVel[1] = 0;
+                            }
                         }
                     }
                 }
@@ -535,6 +625,8 @@ fn bodiesSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             return { position: [b.pos[0], b.pos[1], b.pos[2]], displaced: disp[i * RED_SLOTS] ?? 0 };
         },
+        bodyMeasure,
+        setBodyPose,
         sdfBuffer,
         sdfWgsl,
         update,

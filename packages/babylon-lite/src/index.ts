@@ -700,6 +700,7 @@ export {
     setPhysicsBodyLinearVelocity,
     getPhysicsBodyLinearVelocity,
     setPhysicsBodyAngularVelocity,
+    getPhysicsBodyAngularVelocity,
     setPhysicsBodyMotionType,
     setPhysicsBodyTransform,
     removePhysicsBody,

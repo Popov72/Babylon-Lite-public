@@ -1157,6 +1157,14 @@ export function setPhysicsBodyAngularVelocity(world: PhysicsWorld, body: Physics
 }
 
 /**
+ * Get a body's current angular velocity (rad/s).
+ */
+export function getPhysicsBodyAngularVelocity(world: PhysicsWorld, body: PhysicsBody): Vec3 {
+    const v = world._hknp.HP_Body_GetAngularVelocity(body._hkBody)[1];
+    return { x: v[0], y: v[1], z: v[2] };
+}
+
+/**
  * Switch a body's motion type at runtime (e.g. ANIMATED/kinematic while a prop is grabbed, then
  * DYNAMIC on release). Mutates `body.motionType` so the per-frame step syncs it the right way
  * (ANIMATED: node → body before the step; DYNAMIC: body → node after).

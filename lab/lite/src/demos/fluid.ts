@@ -1422,7 +1422,7 @@ async function main(): Promise<void> {
     };
 
     // Build the demo registry (capsule default) and populate the demo dropdown.
-    const demos: FluidDemo[] = [createCapsuleDemo(ctx), createBoxDemo(ctx), createFountainDemo(ctx), createWaterfallDemo(ctx), createMarbleTowerDemo(ctx)];
+    const demos: FluidDemo[] = [createCapsuleDemo(ctx), await createBoxDemo(ctx), createFountainDemo(ctx), createWaterfallDemo(ctx), createMarbleTowerDemo(ctx)];
     for (const d of demos) {
         const opt = document.createElement("option");
         opt.value = d.key;
