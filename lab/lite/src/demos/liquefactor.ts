@@ -52,6 +52,7 @@ import {
 import type { AssetContainer, EnvironmentTextures, Mesh, Renderable, SceneNode } from "babylon-lite";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
+import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
@@ -517,6 +518,18 @@ async function main(): Promise<void> {
     // Default MLS-MPM (grid-transfer; robust for a free blob on the ground).
     let currentMethod = "MLS-MPM";
 
+    // PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on
+    // this — it selects WHICH physics (and which of the physics sliders) the solver applies, so
+    // it is the "hidden" parameter that makes e.g. viscoelastic behave unlike liquid at identical
+    // slider values. Ignored by PBF / MLS-MPM.
+    const PBMPM_MATERIAL_LABELS: [string, number][] = [
+        ["Liquid", 0],
+        ["Elastic", 1],
+        ["Sand", 2],
+        ["Viscoelastic", 3],
+    ];
+    let currentMaterial = 0;
+
     // Liquefactor tunes the shared PBF defaults for a FREE blob-on-ground melt (not a
     // confined tank): more XSPH viscosity so the fluid settles into a puddle instead of
     // splashing into a thin fast sheet on impact. MLS-MPM keeps the shared defaults (its
@@ -618,9 +631,31 @@ async function main(): Promise<void> {
                 restDensity: phys.restDensity,
                 boundaryDensity: phys.boundaryDensity,
             });
+        } else if (currentMethod === "PB-MPM") {
+            // Position-Based MPM (displacement-based, multi-material) in LIQUID mode for the melt.
+            // Seeded from the exact sampled fill and confined by the same ground SDF. dx tracks the
+            // particle spacing like MLS-MPM; the per-method physics sliders drive the projection.
+            realSim = createPbMpmSim(engine, {
+                count,
+                particleRadius: radius,
+                initialPositions: positions, // world-space exact fill (no random draw)
+                boundsMin,
+                boundsMax,
+                dx,
+                groundY: GROUND_Y,
+                material: currentMaterial,
+                gravity: phys.gravity,
+                substeps: phys.substeps,
+                iterations: phys.iterations,
+                liquidRelaxation: phys.liquidRelaxation,
+                liquidViscosity: phys.liquidViscosity,
+                elasticityRatio: phys.elasticityRatio,
+                elasticRelaxation: phys.elasticRelaxation,
+                frictionAngle: phys.frictionAngle,
+                plasticity: phys.plasticity,
+                restitution: phys.restitution,
+            });
         } else {
-            // MLS-MPM (grid-transfer): cell size dx set at creation; the ground SDF
-            // floors the puddle. Slider values drive the EOS + damping tuning.
             realSim = createMlsMpmSim(engine, {
                 count,
                 particleRadius: radius,
@@ -766,7 +801,13 @@ async function main(): Promise<void> {
         showFilled(cachedCount);
     }
 
-    // Switch the fluid solver (PBF ↔ MLS-MPM). If already liquefied, dispose the old
+    // Restrict the shared panel's physics sliders to those the current method/material actually
+    // uses (PB-MPM branches on material; PBF/MLS-MPM show all their sliders).
+    function refreshPhysicsParamVisibility(): void {
+        controls.setVisiblePhysicsParams(currentMethod === "PB-MPM" ? pbmpmParamKeysForMaterial(currentMaterial) : null);
+    }
+
+    // Switch the fluid solver (PBF / MLS-MPM / PB-MPM). If already liquefied, dispose the old
     // sim and rebuild the new-method sim from the CACHED fill (exact re-seed), pointing
     // both render tasks at it and returning to the paused "filled" state (user presses
     // Melt). If not yet liquefied, just record the method for the next Liquefy. Always
@@ -774,11 +815,12 @@ async function main(): Promise<void> {
     function switchMethod(method: string): void {
         if (method === currentMethod) {
             return;
-        }
-        currentMethod = method;
+        }        currentMethod = method;
         canvas.dataset.method = method;
         controls.setMethod(method); // sync the component's internal current method
         controls.rebuildPhysics(method); // rebuild the physics-slider block for the method
+        refreshMaterialRow(); // material selector is PB-MPM-only
+        refreshPhysicsParamVisibility(); // show only the sliders the method/material uses
         if (cachedPositions) {
             // Rebuild from a fresh copy so the cache stays pristine.
             buildRealSim(new Float32Array(cachedPositions), cachedCount, cachedRadius, cachedWorldTop);
@@ -865,6 +907,29 @@ async function main(): Promise<void> {
         opt.textContent = `${ENEMY_LABELS[key]} (unavailable)`;
     }
 
+    // PB-MPM material selector — only meaningful for PB-MPM (the solver branches on the material
+    // to pick liquid/elastic/sand/viscoelastic physics). Live-applied to the running sim and
+    // remembered for the next (re)build. The row is hidden unless PB-MPM is the active method.
+    const materialSelect = document.createElement("select");
+    styleSelect(materialSelect);
+    for (const [label, value] of PBMPM_MATERIAL_LABELS) {
+        const opt = document.createElement("option");
+        opt.value = String(value);
+        opt.textContent = label;
+        materialSelect.append(opt);
+    }
+    materialSelect.value = String(currentMaterial);
+    const materialRow = labelledRow("PB-MPM material", materialSelect);
+    materialSelect.onchange = () => {
+        currentMaterial = parseInt(materialSelect.value, 10) || 0;
+        canvas.dataset.material = String(currentMaterial);
+        realSim?.setMaterial?.(currentMaterial); // live switch (no-op for PBF / MLS-MPM)
+        refreshPhysicsParamVisibility(); // this material uses a different subset of sliders
+    };
+    const refreshMaterialRow = (): void => {
+        materialRow.style.display = currentMethod === "PB-MPM" ? "" : "none";
+    };
+
     // Kick off the two model loads in the BACKGROUND — startup stays synchronous on the
     // torus knot; each loaded enemy is merged into ONE mesh, added to the (already
     // registered) scene hidden, and unlocked when ready. Non-blocking: never awaited by
@@ -874,6 +939,21 @@ async function main(): Promise<void> {
             try {
                 const asset = await load();
                 const mesh = mergeAssetToEnemyMesh(asset, `enemy_${key}`);
+                // The Dude is a standing character — drop him so his FEET rest on the ground (lowest
+                // vertex at GROUND_Y) instead of floating centred at MESH_CENTER_Y. mergeAssetToEnemyMesh
+                // centres geometry at the local origin, so position.y = GROUND_Y - localMinY grounds it.
+                if (key === "dude") {
+                    const cpu = mesh._cpuPositions;
+                    if (cpu && cpu.length >= 3) {
+                        let minY = Infinity;
+                        for (let i = 1; i < cpu.length; i += 3) {
+                            if (cpu[i]! < minY) {
+                                minY = cpu[i]!;
+                            }
+                        }
+                        mesh.position.set(0, GROUND_Y - minY, 0);
+                    }
+                }
                 addToScene(scene, mesh); // dynamic add after boot → materialized via material-swap drain
                 setMeshVisible(mesh, false);
                 enemies[key] = mesh;
@@ -981,7 +1061,7 @@ async function main(): Promise<void> {
     // The surface-render tunables (Water color / Absorption / Particle size /
     // Refraction / Specular / depth+thickness blur / Surface filter / narrow-range /
     // Half rendering / Thickness downscale / Render-as-spheres) plus the GENERAL
-    // method dropdown (PBF ↔ MLS-MPM) and the per-method PHYSICS sliders are provided
+    // method dropdown (PBF / MLS-MPM / PB-MPM) and the per-method PHYSICS sliders are provided
     // by the shared component. The "Particles" dropdown, container toggle, Foam, Debug
     // and GPU panel are hidden; the "Physics particle size" control is hidden too
     // (Liquefactor's own "Particle radius" is its particle size). The mesh-sampling
@@ -997,7 +1077,7 @@ async function main(): Promise<void> {
         hideGpuTiming: true,
         panelStyle: PANEL_STYLE,
         schemas: LIQ_SCHEMAS,
-        methods: ["PBF", "MLS-MPM"],
+        methods: ["PBF", "MLS-MPM", "PB-MPM"],
         particleCounts: [],
         initial: {
             method: currentMethod,
@@ -1084,6 +1164,7 @@ async function main(): Promise<void> {
         subtitle,
         labelledRow("Enemy", enemySelect),
         labelledRow("Sampling mode", modeSelect),
+        materialRow,
         radiusRow,
         previewRow,
         liquefyBtn,
@@ -1094,6 +1175,8 @@ async function main(): Promise<void> {
     );
     document.body.append(controls.root);
     canvas.dataset.method = currentMethod;
+    refreshMaterialRow(); // hide the PB-MPM material selector unless PB-MPM is active
+    refreshPhysicsParamVisibility(); // hide physics sliders the current method/material doesn't use
     setStatus("solid — pick a shape, then Liquefy");
     computePreview(); // initial pre-Liquefy count preview
 

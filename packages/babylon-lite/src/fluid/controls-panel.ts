@@ -288,6 +288,9 @@ export interface FluidControlsHandle {
     getPhysicsValues(method: string): Record<string, number>;
     /** Rebuild the physics-slider block for a method (called on method change). */
     rebuildPhysics(method: string): void;
+    /** Restrict the physics sliders to the given param keys (e.g. those a PB-MPM material uses);
+     *  pass null to show all. Applies to the currently-built sliders. */
+    setVisiblePhysicsParams(keys: string[] | null): void;
 
     /** GPU-timing panel handle, or null when hidden / not configured. */
     gpu: FluidGpuHandle | null;
@@ -404,6 +407,17 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     particlesSel.onchange = () => on.onParticleCount?.(parseInt(particlesSel.value, 10));
 
     // ── RENDER controls ─────────────────────────────────────────────────────
+    // Controls that ONLY affect the screen-space fluid surface (depth/thickness/refraction
+    // shading). They are hidden in "Render as spheres" mode where they do nothing. Populated
+    // at panel-assembly time (all rows exist by then) and toggled by applySurfaceVisibility.
+    const surfaceOnlyRows: HTMLElement[] = [];
+    const applySurfaceVisibility = (spheres: boolean): void => {
+        const disp = spheres ? "none" : "";
+        for (const r of surfaceOnlyRows) {
+            r.style.display = disp;
+        }
+    };
+
     // Water color picker (Beer-Lambert diffuse tint; sRGB hex → non-sRGB UNORM RGB).
     const colorRow = document.createElement("label");
     colorRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:2px 0 8px;cursor:pointer;";
@@ -661,7 +675,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const renderChkText = document.createElement("span");
     renderChkText.textContent = "Render as spheres";
     renderRow.append(renderChk, renderChkText);
-    renderChk.onchange = () => on.onRenderMode?.(renderChk.checked);
+    renderChk.onchange = () => {
+        on.onRenderMode?.(renderChk.checked);
+        applySurfaceVisibility(renderChk.checked);
+    };
 
     // Surface debug (feature) dropdown.
     const debugTitle = document.createElement("div");
@@ -722,8 +739,19 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     physRow.append(physHead, physInput);
 
     const sliderHost = document.createElement("div");
+    // Per-method physics sliders can be filtered to only those relevant to the host's current
+    // config (e.g. a PB-MPM material only uses a subset). null = show all. paramRows maps each
+    // slider's param key → its DOM row so the filter is a cheap display toggle (no rebuild).
+    const paramRows = new Map<string, HTMLElement>();
+    let visibleParamKeys: Set<string> | null = null;
+    const applyParamVisibility = (): void => {
+        for (const [key, row] of paramRows) {
+            row.style.display = !visibleParamKeys || visibleParamKeys.has(key) ? "" : "none";
+        }
+    };
     function buildSliders(name: string): void {
         sliderHost.replaceChildren();
+        paramRows.clear();
         for (const p of schemas[name] ?? []) {
             const row = document.createElement("div");
             row.style.cssText = "margin:6px 0;";
@@ -750,7 +778,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             };
             row.append(head, input);
             sliderHost.appendChild(row);
+            paramRows.set(p.key, row);
         }
+        applyParamVisibility();
     }
     buildSliders(currentMethod);
 
@@ -1070,6 +1100,29 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     }
     root.append(...makeSection("Render", renderItems));
 
+    // Surface-only rows (hidden in "Render as spheres" mode). Water color + particle size affect
+    // both renderers and the spheres toggle itself must stay visible, so they are excluded.
+    surfaceOnlyRows.push(
+        absorbRow,
+        refractionRow,
+        specularRow,
+        surfDepthBlurRow,
+        surfDepthThreshRow,
+        surfThickBlurRow,
+        surfFilterTitle,
+        surfFilterSel,
+        nrDeltaRow,
+        nrMuRow,
+        halfRow,
+        anisoRow,
+        anisoDampRow,
+        thickDownRow
+    );
+    if (!opts.hideDebug) {
+        surfaceOnlyRows.push(debugTitle, debugSel);
+    }
+    applySurfaceVisibility(init.renderMode === "spheres");
+
     if (!opts.hideFoam) {
         root.append(...makeSection("Foam", foamControls));
     }
@@ -1199,6 +1252,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setRenderMode(spheres: boolean): void {
             renderChk.checked = spheres;
             on.onRenderMode?.(spheres);
+            applySurfaceVisibility(spheres);
         },
         setColor(hex: string): void {
             colorInput.value = hex;
@@ -1358,6 +1412,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         rebuildPhysics(method: string): void {
             buildSliders(method);
+        },
+        setVisiblePhysicsParams(keys: string[] | null): void {
+            visibleParamKeys = keys ? new Set(keys) : null;
+            applyParamVisibility();
         },
 
         gpu,

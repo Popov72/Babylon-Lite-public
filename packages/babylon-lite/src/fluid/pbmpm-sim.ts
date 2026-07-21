@@ -660,6 +660,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }`;
 
+/**
+ * The physics-slider keys a given PB-MPM material actually uses. The solver branches on the material
+ * (see the constraint/integrate passes), so the other sliders have no effect — hosts can hide them.
+ * `gravity`, `iterations`, `substeps`, `restitution` are common to every material.
+ */
+export function pbmpmParamKeysForMaterial(material: number): string[] {
+    const common = ["gravity", "iterations", "substeps", "restitution"];
+    if (material < 0.5) {
+        return [...common, "liquidRelaxation", "liquidViscosity"]; // liquid
+    }
+    if (material >= 1.5 && material < 2.5) {
+        return [...common, "elasticityRatio", "elasticRelaxation", "frictionAngle", "liquidViscosity"]; // sand
+    }
+    if (material > 2.5) {
+        return [...common, "elasticityRatio", "elasticRelaxation", "plasticity"]; // viscoelastic
+    }
+    return [...common, "elasticityRatio", "elasticRelaxation"]; // elastic
+}
+
 export interface PbMpmOptions extends FluidSimBaseOptions {
     /** Simulation box min corner. Default [-20, 0, -20]. */
     boundsMin?: [number, number, number];

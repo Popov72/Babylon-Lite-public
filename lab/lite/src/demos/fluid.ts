@@ -37,7 +37,7 @@ import {
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import type { FluidSim } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
-import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
+import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
@@ -1014,6 +1014,8 @@ async function main(): Promise<void> {
         applyProfiler(); // re-wire the GPU timing hook onto the rebuilt sims (tasks persist)
         controls.setMethod(name); // sync the method dropdown + component's current method (no side effect)
         controls.rebuildPhysics(name); // rebuild the physics-slider block for the new method
+        // Show only the physics sliders the current method/material uses (PB-MPM branches on material).
+        controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         refreshPbMpmMaterialUi();
         canvas.dataset.method = methodName;
     }
