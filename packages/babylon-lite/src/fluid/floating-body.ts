@@ -503,11 +503,21 @@ fn bodiesSdf(pt: vec3<f32>, dt: f32) -> f32 {
         let o = ${HEADER_FLOATS}u + b * ${BODY_STRIDE}u;
         if (sceneSdfGrid[o + 3u] < 0.5) { continue; }
         let pos = vec3<f32>(sceneSdfGrid[o], sceneSdfGrid[o + 1u], sceneSdfGrid[o + 2u]) + vec3<f32>(sceneSdfGrid[o + 8u], sceneSdfGrid[o + 9u], sceneSdfGrid[o + 10u]) * dt;
+        let invCell = sceneSdfGrid[o + 11u];
+        let dims = vec3<i32>(i32(sceneSdfGrid[o + 20u]), i32(sceneSdfGrid[o + 21u]), i32(sceneSdfGrid[o + 22u]));
+        // Cheap world-space bounding-sphere reject FIRST (a single length(), no quaternion): the grid
+        // box has half-diagonal 0.5·|dims/invCell|, so points beyond that from the body centre are far
+        // outside and can be skipped before paying for the quaternion transform + trilinear sample. This
+        // is what keeps N bodies cheap for many-eval solvers (PB-MPM evaluates sceneSdf per cell × its
+        // iteration loop) — the vast majority of cells reject here on the length() alone.
+        let boundR = 0.5 * length(vec3<f32>(dims) / invCell);
+        if (dot(pt - pos, pt - pos) > boundR * boundR) { continue; }
         let quat = fbQuatIntegrate(vec4<f32>(sceneSdfGrid[o + 4u], sceneSdfGrid[o + 5u], sceneSdfGrid[o + 6u], sceneSdfGrid[o + 7u]), vec3<f32>(sceneSdfGrid[o + 12u], sceneSdfGrid[o + 13u], sceneSdfGrid[o + 14u]), dt);
         let local = fbQuatRotate(fbQuatConj(quat), pt - pos);
         let origin = vec3<f32>(sceneSdfGrid[o + 16u], sceneSdfGrid[o + 17u], sceneSdfGrid[o + 18u]);
-        let dims = vec3<i32>(i32(sceneSdfGrid[o + 20u]), i32(sceneSdfGrid[o + 21u]), i32(sceneSdfGrid[o + 22u]));
-        let bd = fbSampleG(u32(sceneSdfGrid[o + 15u]), local, origin, sceneSdfGrid[o + 11u], dims);
+        let gmax = origin + vec3<f32>(dims) / invCell;
+        if (any(local < origin) || any(local > gmax)) { continue; }
+        let bd = fbSampleG(u32(sceneSdfGrid[o + 15u]), local, origin, invCell, dims);
         dmin = min(dmin, bd);
     }
     return dmin;
