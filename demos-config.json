@@ -55,7 +55,7 @@
     {
         "slug": "platformer",
         "name": "Platformer — Cosmic Run",
-        "description": "Super Mario Bros-style side-scrolling platformer built on Lite's pure-2D sprite path — no scene, camera, or mesh. A full level with run/jump physics, stompable enemies, mushroom/fire-flower/star power-ups, ?-blocks and breakable bricks, a pipe warp to an underground coin room, moving and one-way platforms, a castle boss, and a flagpole goal. Hand-rolled clean-room swept-AABB tile physics, keyboard/gamepad/touch input, DOM HUD, procedurally-synthesised Web Audio sound effects + music, and an optional CRT/scanline post-process (press C) that is a WGSL port of ichiaka's MIT-licensed CRTFilter. Ships a curated CC0 Kenney Platformer Art Deluxe asset subset — no Nintendo code or assets.",
+        "description": "Playable Lite 2D platformer with run/jump physics, enemies, power-ups, a boss fight, Web Audio, gamepad/touch input, and an optional CRT post-process. Ships curated CC0 Kenney art — no Nintendo code or assets.",
         "tags": ["game", "platformer", "2d", "showcase"],
         "mobile": true
     },
@@ -65,6 +65,13 @@
         "description": "A playable Tetris built on Babylon Lite. The 10×20 well renders Kenney's CC0 Cube Pets as the falling pieces — thin-instanced, one mesh per piece color — inside a stone-wall frame, keeping the whole playfield at a handful of draw calls; press M to cycle the block style between smooth rounded enamel cubes (default), classic chamfered arcade cubes, and the Cube Pets. Standard 7-bag randomizer, ghost piece, soft/hard drop, wall kicks, line clears and level-based gravity.",
         "tags": ["game", "showcase"],
         "mobile": false
+    },
+    {
+        "slug": "break-meshes",
+        "name": "Break Meshes",
+        "description": "Voronoi mesh fracture + physics: the Khronos BoomBox glTF is split into cell pieces via half-space clipping (ported from CedricGuillemet/64Kb5) with UV interpolation, then duplicated into eleven randomly-rotated instances scattered across the ground. Each boombox rests assembled on its own static convex-hull cells; click one to GPU-pick it and shatter just that model — its cells flip to dynamic and the picked cell is punched along the pick ray. Original surfaces keep the PBR material; the exposed interior cut faces use a separate 'fractured core' material, all lit by an HDR environment with soft shadows.",
+        "tags": ["pbr", "gltf", "physics", "showcase"],
+        "mobile": true
     },
     {
         "slug": "mosquito-amber",
@@ -93,6 +100,13 @@
         "name": "Liquefactor",
         "description": "Liquefy an enemy mesh into GPU fluid by sampling its interior volume into particles: the new volume sampler fills a procedural shape with particles that occupy its exact form, then MLS-MPM melts the fill into a flowing puddle on the ground.",
         "tags": ["compute", "simulation", "showcase"],
+        "mobile": false
+    },
+    {
+        "slug": "sandblox",
+        "name": "Sandblox",
+        "description": "Build-and-play sandbox for small block worlds. Drop blocks into a starter scene, reshape them with move, clone, resize, paint, and delete tools, then run your character through what you built.",
+        "tags": ["game", "sandbox", "showcase"],
         "mobile": false
     }
 ]

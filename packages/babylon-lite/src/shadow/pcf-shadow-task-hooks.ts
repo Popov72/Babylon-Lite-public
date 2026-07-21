@@ -34,10 +34,14 @@ export interface PcfTaskState extends ShadowTaskInternalState {
     _lastCasterVersion: number;
     /** @internal */
     _lastLightVersion: number;
+    /** @internal Floating-origin offset version (active camera worldMatrixVersion) at last shadow-map render; -1 when never rendered. */
+    _lastFoVersion: number;
     /** @internal */
     _shadowUboData: Float32Array;
     /** @internal */
     _casterMeshes: readonly Mesh[];
+    /** @internal Owning scene — used to read the live floating-origin offset (camera world position). */
+    _scene: SceneContext;
 }
 
 type StandardNoColorFactory = typeof import("../material/standard/no-color-view.js").createStandardNoColorMaterialView;
@@ -119,6 +123,7 @@ export function ensurePcfShadowTaskState(
                 rt,
                 clr: true,
                 cam: camera,
+                _skipClusteredLights: true,
             },
             engine,
             scene
@@ -127,8 +132,10 @@ export function ensurePcfShadowTaskState(
         _cameraVersion: 0,
         _lastCasterVersion: -1,
         _lastLightVersion: -1,
+        _lastFoVersion: -1,
         _shadowUboData: new F32(24),
         _casterMeshes: casterMeshes,
+        _scene: scene,
     };
 
     for (const mesh of casterMeshes) {
@@ -141,16 +148,29 @@ export function ensurePcfShadowTaskState(
     return state;
 }
 
-export function renderPcfShadowMap(engine: EngineContext, sg: ShadowGenerator, state: PcfTaskState, computeLightMatrix: (casterMeshes: readonly Mesh[]) => PcfLightMatrix): number {
+export function renderPcfShadowMap(
+    engine: EngineContext,
+    sg: ShadowGenerator,
+    state: PcfTaskState,
+    computeLightMatrix: (casterMeshes: readonly Mesh[], offX: number, offY: number, offZ: number) => PcfLightMatrix
+): number {
     const casterMeshes = state._casterMeshes;
     const casterVersion = casterVersionSum(casterMeshes);
     const lightVersion = sg._light.worldMatrixVersion;
-    if (!sg._config._forceRefreshEveryFrame && casterVersion === state._lastCasterVersion && lightVersion === state._lastLightVersion) {
+    // Floating-origin offset = active camera world position (mirrors the mesh-world packer
+    // and lights UBO). When the camera moves the offset changes, so every eye-relative GPU
+    // matrix shifts even if light/casters are static — fold its version into the dirty check.
+    const foCam = engine.useFloatingOrigin ? state._scene.camera : null;
+    const foVersion = foCam ? foCam.worldMatrixVersion : 0;
+    const offX = foCam ? foCam.worldMatrix[12]! : 0;
+    const offY = foCam ? foCam.worldMatrix[13]! : 0;
+    const offZ = foCam ? foCam.worldMatrix[14]! : 0;
+    if (!sg._config._forceRefreshEveryFrame && casterVersion === state._lastCasterVersion && lightVersion === state._lastLightVersion && foVersion === state._lastFoVersion) {
         return 0;
     }
 
-    const matrix = computeLightMatrix(casterMeshes);
-    const matrixChanged = sg._light.lightType === "directional" || lightVersion !== state._lastLightVersion;
+    const matrix = computeLightMatrix(casterMeshes, offX, offY, offZ);
+    const matrixChanged = sg._light.lightType === "directional" || lightVersion !== state._lastLightVersion || foVersion !== state._lastFoVersion;
     if (matrixChanged) {
         packMat4IntoF32(sg._lightMatrix, matrix._viewProj, 0);
         sg._version++;
@@ -161,6 +181,7 @@ export function renderPcfShadowMap(engine: EngineContext, sg: ShadowGenerator, s
 
     state._lastCasterVersion = casterVersion;
     state._lastLightVersion = lightVersion;
+    state._lastFoVersion = foVersion;
     return state._task.execute?.() ?? 0;
 }
 
@@ -185,6 +206,16 @@ export function getNoColorView(material: Material, cache: Map<Material, Material
     const cached = cache.get(material);
     if (cached) {
         return cached;
+    }
+    // Explicit caster override: this (receive) material casts its shadow through an ALTERNATE material (see
+    // Material._shadowCasterMaterial). Take the override's OWN no-colour view (recurse) so the same mesh casts
+    // with a sampler-free / alpha-clip caster instead of this material's shadow-map-aliasing view. Cache under
+    // THIS material so the lookup at the call site (keyed by the receive material) hits.
+    const override = material._shadowCasterMaterial;
+    if (override) {
+        const overrideView = getNoColorView(override, cache);
+        cache.set(material, overrideView);
+        return overrideView;
     }
     const family = material._buildGroup._materialFamily;
     let view: MaterialView;

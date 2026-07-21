@@ -14,9 +14,9 @@ import {
     startEngine,
     type RenderTask,
 } from "babylon-lite";
-import { addDdsEnvironmentBackground } from "../../../../packages/babylon-lite/src/material/pbr/background-dds-environment.js";
+import { addDdsEnvironmentBackground } from "babylon-lite/material/pbr/background-dds-environment.js";
 
-const MODEL_URL = "https://raw.githubusercontent.com/BabylonJS/Assets/master/meshes/FlightHelmetKTX/FlightHelmet.gltf";
+const MODEL_URL = "https://cdn.jsdelivr.net/gh/BabylonJS/Assets@master/meshes/FlightHelmetKTX/FlightHelmet.gltf";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
 
     addToScene(scene, createHemisphericLight([0, 1, 0], 1.0));
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.camAlpha = String(cam.alpha);

@@ -32,8 +32,8 @@ jobs on every PR targeting `master`.
 Standard unit tests for core logic (shader composer, shader integration, etc.).
 
 ```sh
-pnpm test:watch   # interactive
-npx vitest run     # single run
+pnpm test:watch        # interactive
+pnpm exec vitest run   # single run
 ```
 
 ---
@@ -51,7 +51,7 @@ Browser-based integration tests that exercise engine lifecycle:
 - `picking.spec.ts` — GPU picking
 
 ```sh
-npx playwright test tests/lite/plumbing/
+pnpm exec playwright test tests/lite/plumbing/
 ```
 
 ---
@@ -90,9 +90,21 @@ Requires `BROWSERSTACK_USERNAME` and `BROWSERSTACK_ACCESS_KEY` (set in
 `.env.local` or as environment variables). Azure Pipelines gets these from the
 `BabylonJS-BrowserStack` variable group.
 
+The cloud parity config connects to remote Chrome **directly over CDP**
+(`wss://cdp.browserstack.com/playwright`) — it does **not** use
+`browserstack-node-sdk`. Each Playwright worker is its own BrowserStack session,
+so specs shard across `CIWORKERS` parallel cloud browsers. The local Vite dev
+server is exposed to the remote browser through a BrowserStack Local tunnel
+started by the config's `globalSetup` (`config/browserstack-local-tunnel.ts`).
+
 ```sh
 pnpm build:bundle-scenes
+
+# One session (bare invocation never over-claims capacity):
 pnpm test:parity-cloud
+
+# Shard across up to N sessions (falls back to fewer when the plan is busy):
+BSTACK_SESSIONS_REQUIRED=2 bash scripts/browserstack-wait.sh pnpm test:parity-cloud
 ```
 
 ### Golden References
@@ -219,6 +231,28 @@ pnpm test:bundle-size
 
 ## BrowserStack Configuration
 
+Two jobs use BrowserStack differently:
+
+| Job             | How it connects                                  | Config                                     |
+| --------------- | ------------------------------------------------ | ------------------------------------------ |
+| Parity (Cloud)  | Direct **CDP** (no SDK), sharded across sessions | `config/playwright.parity-cloud.config.ts` |
+| Perf Regression | `browserstack-node-sdk` (SDK-managed tunnel)     | `config/browserstack.yml`                  |
+
+### Parity (CDP)
+
+| Setting           | Value                                                 |
+| ----------------- | ----------------------------------------------------- |
+| Platform          | macOS Sonoma                                          |
+| Browser           | Chrome latest                                         |
+| Parallel sessions | Up to `BSTACK_SESSIONS_REQUIRED` (CI default 2)       |
+| Local tunnel      | `browserstack-local`, started by config `globalSetup` |
+
+`scripts/browserstack-wait.sh` polls the BrowserStack plan, grabs up to the
+requested number of sessions (falling back to fewer when busy), and exports
+`CIWORKERS` so Playwright shards specs across exactly that many cloud browsers.
+
+### Perf (SDK)
+
 **Config file:** `config/browserstack.yml`
 
 | Setting           | Value                                |
@@ -302,8 +336,8 @@ Report locations after a run:
 To view the HTML report locally:
 
 ```sh
-npx playwright show-report test-results/parity-report
-npx playwright show-report test-results/perf-report
+pnpm exec playwright show-report test-results/parity-report
+pnpm exec playwright show-report test-results/perf-report
 ```
 
 In CI, test artifacts (including the HTML report) are uploaded as pipeline

@@ -57,8 +57,18 @@ async function getRuntimeAsync(): Promise<Csg2Runtime> {
 
     csg2RuntimePromise = (async () => {
         const [module, wasm] = await Promise.all([import("manifold-3d"), import("manifold-3d/manifold.wasm?url")]);
+        // Alias `import.meta.url` to a local before the `new URL(...)` below. Webpack's URL parser
+        // only resolves `new URL(<literal>, import.meta.url)` to an emitted asset; with our runtime
+        // first arg (`wasm.default`) it can't, so it emits a "Critical dependency: the request of a
+        // dependency is an expression" warning (fatal for consumers that treat warnings as errors).
+        // The alias hides that literal pattern from the heuristic. Nothing is lost: no bundler can
+        // statically resolve the runtime arg, so none was emitting an asset here — the wasm URL comes
+        // from the `?url` import above. `import.meta.url` is still substituted normally (it's a
+        // meta-property rewrite, not gated on the `new URL` position), so runtime behavior and
+        // relative-URL resolution are identical under webpack, Vite/Rollup, esbuild, and Parcel.
+        const moduleUrl = import.meta.url;
         const manifoldModule: ManifoldToplevel = await module.default({
-            locateFile: () => new URL(wasm.default, import.meta.url).href,
+            locateFile: () => new URL(wasm.default, moduleUrl).href,
         });
         manifoldModule.setup();
         const runtime = {
@@ -173,7 +183,15 @@ export function createCsg2FromMesh(mesh: Mesh, materialSlot = 0): Csg2Solid {
     manifoldMesh.merge();
 
     try {
-        return solidFromManifold(new runtime.Manifold(manifoldMesh), numProp);
+        // manifold-3d's `setup()` replaces `Manifold` with a factory function,
+        // `function (mesh) { const m = new ManifoldCtor(mesh); …; return m; }`, that has no
+        // `this` reference. A downstream esbuild/terser minifier (the dist build, or any
+        // consumer bundling `build/lib`) rewrites such a function expression into an arrow
+        // function, which is NOT constructable — so `new runtime.Manifold(mesh)` throws
+        // "Manifold is not a constructor". The wrapper returns the solid whether invoked with
+        // or without `new`, so call it as a plain factory to stay robust under minification.
+        const manifoldFactory = runtime.Manifold as unknown as (mesh: ManifoldMesh) => Manifold;
+        return solidFromManifold(manifoldFactory(manifoldMesh), numProp);
     } catch (err) {
         throw new Error(`Error while creating CSG2 from mesh "${mesh.name}".`, { cause: err });
     }

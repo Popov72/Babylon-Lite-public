@@ -118,7 +118,7 @@ async function main(): Promise<void> {
     // claimsPointer — the camera ignores those too. Everything else rotates (LMB) /
     // slides (RMB) / zooms (wheel) through the built-in arc control.
     const isForceGesture = (e: PointerEvent): boolean => e.button === 2 && e.shiftKey;
-    attachControl(cam, canvas, scene, (e) => !isForceGesture(e) && !activeDemo?.claimsPointer?.(e));
+    attachControl(cam, canvas, scene, { shouldHandlePointerDown: (e) => !isForceGesture(e) && !activeDemo?.claimsPointer?.(e) });
 
     addToScene(scene, createHemisphericLight([0.3, 1, 0.4], 0.75));
 
@@ -146,13 +146,13 @@ async function main(): Promise<void> {
 
     // Depth buffer owned by the scene task and re-used (loaded) by the particle
     // task so particles depth-test against the ground.
-    const depthRT = createRenderTarget({ lbl: "fluid-depth", dFormat: "depth24plus", samples: 1, size: "canvas" });
+    const depthRT = createRenderTarget({ lbl: "fluid-depth", dFormat: "depth24plus", samples: 1, size: engine });
 
     // The scene renders to an offscreen colour target (not directly the
     // swapchain) so the fluid surface pass can SAMPLE it for refraction. The
     // fluid task then presents to the swapchain (blit in sphere mode, or a
     // refraction composite in surface mode).
-    const sceneColorRT = createRenderTarget({ lbl: "fluid-scene-color", format: engine.format, samples: 1, size: "canvas" });
+    const sceneColorRT = createRenderTarget({ lbl: "fluid-scene-color", format: engine.format, samples: 1, size: engine });
 
     // The HDR skybox (loaded via loadEnvironment below) is pushed into the scene
     // as an order-0 renderable, so the scene task draws it FIRST. It fills the
@@ -376,7 +376,7 @@ async function main(): Promise<void> {
     // reverse-Z depthCompare) — no bespoke WGSL. It targets `engine.scRT` (loaded, not
     // cleared: clr=false) with a BORROWED depth: an `_eager` alias of `depthRT` so the
     // task loads (never clears/builds/disposes) the opaque depth the scene pass owns.
-    const overlayDepth = createRenderTarget({ lbl: "fluid-overlay-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: "canvas" });
+    const overlayDepth = createRenderTarget({ lbl: "fluid-overlay-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: engine });
     overlayDepth._eager = true; // task loads (loadOp "load") — never builds/clears/disposes it
     overlayDepth._ownsDepthTexture = false; // the shared depth texture is owned by the scene pass
     const overlayTask = createRenderTask({ name: "container-overlay", rt: engine.scRT, depth: overlayDepth, clr: false }, engine, scene);
@@ -1510,7 +1510,7 @@ async function main(): Promise<void> {
     // scene, so the HDR skybox renders as the sceneColorRT background from frame 0.
     await envReady;
     applyDemoEnv(activeDemo!); // install the initial (box) skybox + surface env before frame 0
-    await registerSceneWithShadowSupport(engine, scene);
+    await registerSceneWithShadowSupport(scene);
 
     // Shadow warmup done — the no-color caster module is now loaded (awaited by the
     // registration above). Detach the generator + clear casters so the default (box)

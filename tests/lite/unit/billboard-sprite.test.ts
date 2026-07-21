@@ -58,7 +58,7 @@ function makeMockEngine(): EngineContext {
         queue,
     } as unknown as GPUDevice;
 
-    return {
+    const eng = {
         canvas: { width: 800, height: 600 } as HTMLCanvasElement,
         msaaSamples: 4,
         drawCallCount: 0,
@@ -78,14 +78,17 @@ function makeMockEngine(): EngineContext {
             _colorTexture: {},
             _depthTexture: null,
             _depthView: null,
-            _descriptor: { format: "bgra8unorm", samples: 1, size: "canvas" },
+            _descriptor: { format: "bgra8unorm", samples: 1, size: { width: 800, height: 600 } },
             _width: 0,
             _height: 0,
             _eager: true,
         } as unknown as import("../../../packages/babylon-lite/src/engine/render-target").RenderTarget,
         _currentDelta: 0,
         _cbs: [],
-    } as EngineContext;
+    } as unknown as EngineContext;
+    const _surfaces = [eng];
+    Object.assign(eng, { engine: eng, surfaces: _surfaces, _surfaces });
+    return eng;
 }
 
 function makeMockAtlas(): SpriteAtlas {
@@ -327,7 +330,7 @@ describe("addFacingBillboardSystem", () => {
         const system = createFacingBillboardSystem(makeMockAtlas(), { order: 230 });
         addFacingBillboardSystem(scene, system);
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         expect(scene._renderables.length).toBe(1);
         expect(scene._renderables[0]!.isTransparent).toBe(true);
@@ -342,7 +345,7 @@ describe("addFacingBillboardSystem", () => {
         const system = createFacingBillboardSystem(makeMockAtlas(), { blendMode: billboardBlendCutout, order: 120 });
         addFacingBillboardSystem(scene, system);
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         expect(scene._renderables.length).toBe(1);
         expect(scene._renderables[0]!.isTransparent).toBe(false);
@@ -357,7 +360,7 @@ describe("addFacingBillboardSystem", () => {
         const system = createFacingBillboardSystem(makeMockAtlas(), { capacity: 1, blendMode: billboardBlendPremultiplied });
         addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [2, 2], frame: 0 });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as {
             createRenderPipeline: ReturnType<typeof vi.fn>;
@@ -378,10 +381,10 @@ describe("addFacingBillboardSystem", () => {
         expect((vertexBuffer.attributes as GPUVertexAttribute[]).map((attribute) => attribute.shaderLocation)).toEqual([0, 1, 2, 3, 4, 5, 6]);
 
         const shaderDescriptor = device.createShaderModule.mock.calls.find((call) =>
-            (call[0] as GPUShaderModuleDescriptor).code.includes("cameraRight")
+            (call[0] as GPUShaderModuleDescriptor).code.includes("basis")
         )![0] as GPUShaderModuleDescriptor;
         expect(shaderDescriptor.code).toContain("scene.viewProjection");
-        expect(shaderDescriptor.code).toContain("getBillboardBasis");
+        expect(shaderDescriptor.code).toContain("basis");
         expect(shaderDescriptor.code).toContain("scene.view[0][0]");
 
         device.queue.writeBuffer.mockClear();
@@ -396,7 +399,7 @@ describe("addFacingBillboardSystem", () => {
         const system = createFacingBillboardSystem(makeMockAtlas(), { capacity: 1, blendMode: billboardBlendCutout, alphaCutoff: 0.42 });
         addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [2, 2], frame: 0 });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as {
             createRenderPipeline: ReturnType<typeof vi.fn>;
@@ -419,7 +422,7 @@ describe("addFacingBillboardSystem", () => {
         const shaderDescriptor = device.createShaderModule.mock.calls.find((call) =>
             (call[0] as GPUShaderModuleDescriptor).code.includes("discard")
         )![0] as GPUShaderModuleDescriptor;
-        expect(shaderDescriptor.code).toContain("sampleColor.a < billboards.axisAndCutoff.w");
+        expect(shaderDescriptor.code).toContain("s.a < billboards.axisAndCutoff.w");
         expect(shaderDescriptor.code).toContain("discard");
 
         device.queue.writeBuffer.mockClear();
@@ -438,7 +441,7 @@ describe("addFacingBillboardSystem", () => {
         addBillboardSpriteIndex(system, { position: [100, 0, 2], sizeWorld: [1, 1], frame: 0 });
         addBillboardSpriteIndex(system, { position: [101, 0, 10], sizeWorld: [1, 1], frame: 0 });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as { queue: { writeBuffer: ReturnType<typeof vi.fn> } };
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth32float", _sampleCount: 1 });
@@ -472,7 +475,7 @@ describe("addFacingBillboardSystem", () => {
         const visibleIndex = addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [1, 1], frame: 0 });
         addBillboardSpriteIndex(system, { position: [1000, 0, 1000], sizeWorld: [1, 1], frame: 0, visible: false });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth32float", _sampleCount: 1 });
         const camera = makeIdentityCamera();
@@ -500,7 +503,7 @@ describe("addFacingBillboardSystem", () => {
         addBillboardSpriteIndex(system, { position: [20, 0, 2], sizeWorld: [1, 1], frame: 0 });
         addBillboardSpriteIndex(system, { position: [30, 0, 3], sizeWorld: [1, 1], frame: 0 });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as { queue: { writeBuffer: ReturnType<typeof vi.fn> } };
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth32float", _sampleCount: 1 });
@@ -520,7 +523,7 @@ describe("addFacingBillboardSystem", () => {
         addBillboardSpriteIndex(system, { position: [20, 0, 2], sizeWorld: [1, 1], frame: 0 });
         addBillboardSpriteIndex(system, { position: [30, 0, 3], sizeWorld: [1, 1], frame: 0 });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as { queue: { writeBuffer: ReturnType<typeof vi.fn> } };
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth32float", _sampleCount: 1 });
@@ -539,7 +542,7 @@ describe("addFacingBillboardSystem", () => {
         const system = createFacingBillboardSystem(makeMockAtlas(), { capacity: 1 });
         addBillboardSpriteIndex(system, { position: [0, 0, 0], sizeWorld: [1, 1] });
         addFacingBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth24plus-stencil8", _sampleCount: 1 });
         const pass = makeDrawPassMock();
@@ -586,19 +589,19 @@ describe("AxisLockedBillboardSpriteSystem", () => {
         const system = createAxisLockedBillboardSystem(makeMockAtlas(), [0, 1, 0], { capacity: 1 });
         addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [2, 2], frame: 0 });
         addAxisLockedBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         expect(scene._renderables.length).toBe(1);
         expect(scene._renderables[0]!.isTransparent).toBe(true);
     });
 
-    it("generates axis-locked shader with billboards.axisAndCutoff and projectedRight", async () => {
+    it("generates axis-locked shader with billboards.axisAndCutoff and projected right basis", async () => {
         const engine = makeMockEngine();
         const scene = createSceneContext(engine);
         const system = createAxisLockedBillboardSystem(makeMockAtlas(), [0, 1, 0], { capacity: 1 });
         addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [2, 2], frame: 0 });
         addAxisLockedBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as {
             createRenderPipeline: ReturnType<typeof vi.fn>;
@@ -615,9 +618,9 @@ describe("AxisLockedBillboardSpriteSystem", () => {
             (call[0] as GPUShaderModuleDescriptor).code.includes("billboards.axisAndCutoff")
         )![0] as GPUShaderModuleDescriptor;
         expect(shaderDescriptor.code).toContain("billboards.axisAndCutoff");
-        expect(shaderDescriptor.code).toContain("projectedRight");
-        expect(shaderDescriptor.code).toContain("lockAxis");
-        expect(shaderDescriptor.code).toContain("getBillboardBasis");
+        expect(shaderDescriptor.code).toContain("let pr = cr - a * dot(cr, a)");
+        expect(shaderDescriptor.code).toContain("cross(a, f)");
+        expect(shaderDescriptor.code).toContain("basis");
     });
 
     it("writes axis data to UBO after opacity", async () => {
@@ -626,7 +629,7 @@ describe("AxisLockedBillboardSpriteSystem", () => {
         const system = createAxisLockedBillboardSystem(makeMockAtlas(), [0.35, 1, 0.2], { capacity: 1, opacity: 0.75 });
         addBillboardSpriteIndex(system, { position: [1, 2, 3], sizeWorld: [2, 2], frame: 0 });
         addAxisLockedBillboardSystem(scene, system);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const device = engine._device as unknown as { queue: { writeBuffer: ReturnType<typeof vi.fn> } };
         const binding = scene._renderables[0]!.bind(engine, { _colorFormat: "bgra8unorm", _depthStencilFormat: "depth32float", _sampleCount: 1 });
@@ -674,18 +677,18 @@ return vec4<f32>(base.rgb * (0.5 + 0.5 * sin(fx.time + fx.params.x)), base.a);`;
 
         const facing = cs._composeWgsl("facing", "transparent");
         expect(facing).toContain("@group(1) @binding(3) var<uniform> fx: SpriteFx");
-        expect(facing).toContain("fn fs(in: VOut) -> @location(0) vec4<f32>");
+        expect(facing).toContain("fn fs(in: O) -> @location(0) vec4f");
         expect(facing).toContain(FX_FRAGMENT);
-        expect(facing).toContain("@location(3) vWorldPos: vec3<f32>");
-        expect(facing).toContain("out.vWorldPos = worldPos;");
-        expect(facing).toContain("getBillboardBasis");
-        expect(facing).toContain("cameraRight");
+        expect(facing).toContain("@location(3) vWorldPos: vec3f");
+        expect(facing).toContain("out.vWorldPos = wp;");
+        expect(facing).toContain("basis");
+        expect(facing).toContain("scene.view[0][0]");
 
         // Axis-locked uses a different basis but the same fragment contract.
         const axisLocked = cs._composeWgsl("axis-locked", "transparent");
-        expect(axisLocked).toContain("projectedRight");
-        expect(axisLocked).toContain("lockAxis");
-        expect(axisLocked).toContain("@location(3) vWorldPos: vec3<f32>");
+        expect(axisLocked).toContain("let pr = cr - a * dot(cr, a)");
+        expect(axisLocked).toContain("cross(a, f)");
+        expect(axisLocked).toContain("@location(3) vWorldPos: vec3f");
     });
 
     it("places the fx UBO after extra textures and binds them at group 1", () => {

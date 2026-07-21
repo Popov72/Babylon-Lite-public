@@ -12,7 +12,7 @@ import {
     startEngine,
 } from "babylon-lite";
 
-const SPLAT_URL = "https://raw.githubusercontent.com/CedricGuillemet/dump/master/Halo_Believe.splat";
+const SPLAT_URL = "https://cdn.jsdelivr.net/gh/CedricGuillemet/dump@master/Halo_Believe.splat";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
     splat.rotation.x = Math.PI * 0.25;
     bakeCurrentTransformIntoVertices(splat);
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
 
     await splat.firstSortReady;

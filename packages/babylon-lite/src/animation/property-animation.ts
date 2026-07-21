@@ -1,5 +1,5 @@
 import { F32 } from "../engine/typed-arrays.js";
-import { playAnimation } from "./animation-group.js";
+import { playAnimation, _installTickAnimation } from "./animation-group.js";
 import type { AnimationGroup, AnimationPropertyRuntimeTrack } from "./animation-group.js";
 import { addAnimationGroup } from "./animation-group-task.js";
 import type { AnimationManager } from "./animation-manager.js";
@@ -183,12 +183,14 @@ function createPointerAnimationGroup(
             }
         },
     };
+    _installTickAnimation();
     return {
         name,
         duration,
         frameRate: frameRate || DEFAULT_FRAME_RATE,
         isPlaying: false,
-        currentFrame: fromTime,
+        currentTime: fromTime,
+        targetedAnimations: tracks.map((track) => ({ target: track.mixTarget, path: track.mixProperty })),
         speedRatio: options?.speedRatio ?? 1,
         loopAnimation: options?.loop ?? true,
         weight: 1,

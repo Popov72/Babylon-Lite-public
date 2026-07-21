@@ -6,8 +6,10 @@
 import type { Texture2D } from "../../texture/texture-2d.js";
 import type { MeshGroupBuilder } from "../../render/renderable.js";
 import type { SceneContext } from "../../scene/scene.js";
-import type { Material } from "../material.js";
+import type { Material, StencilState } from "../material.js";
 import type { MaterialPlugin } from "../plugin/material-plugin.js";
+import { createSolidTexture2D } from "../../texture/solid-texture.js";
+import { _installPbrFallbackResolver } from "./pbr-pipeline.js";
 import {
     _getPbrExts,
     PBR2_HAS_BASE_COLOR_FACTOR,
@@ -27,18 +29,26 @@ import {
     PBR_HAS_SPEC_GLOSS,
 } from "./pbr-flags.js";
 
-/** Lazy-imports the PBR renderable builder and builds the pipeline.
- *  Thin instances are handled by the fragment composer automatically. */
-export const pbrGroupBuilder: MeshGroupBuilder = async (scene, meshes) => {
-    const envTex = (scene as SceneContext)._envTextures;
-    const renderableMod = await import("./pbr-renderable.js");
-    const result = await renderableMod.buildPbrRenderables(scene, meshes, envTex);
-    // Wire the per-mesh rebuild closure used by material swap + per-pass override.
-    pbrGroupBuilder._rebuildSingle = result.rebuildSingle;
-    return result;
-};
-
-pbrGroupBuilder._materialFamily = "pbr";
+/** Lazily-created singleton PBR {@link MeshGroupBuilder}. Lazy-imports the PBR
+ *  renderable builder and builds the pipeline. Thin instances are handled by the
+ *  fragment composer automatically. Lazy-init keeps the module free of top-level
+ *  side effects so a scene that uses no PBR material tree-shakes it away. */
+let _pbrGroupBuilder: MeshGroupBuilder | null = null;
+export function getPbrGroupBuilder(): MeshGroupBuilder {
+    if (_pbrGroupBuilder) {
+        return _pbrGroupBuilder;
+    }
+    const builder: MeshGroupBuilder = async (scene, meshes) => {
+        const envTex = (scene as SceneContext)._envTextures;
+        const renderableMod = await import("./pbr-renderable.js");
+        const result = await renderableMod.buildPbrRenderables(scene, meshes, envTex);
+        // Wire the per-mesh rebuild closure used by material swap + per-pass override.
+        builder._rebuildSingle = result.rebuildSingle;
+        return result;
+    };
+    builder._materialFamily = "pbr";
+    return (_pbrGroupBuilder = builder);
+}
 
 /** User-facing properties for a physically based (metallic-roughness) material.
  *  Create one manually via `createPbrMaterial()` or let `loadGltf()` build it.
@@ -87,8 +97,17 @@ export interface PbrMaterialProps extends Material {
     roughnessFactor?: number;
     /** Strength of ambient occlusion from ORM R channel. Default 1.0; 0.0 ignores R channel. */
     occlusionStrength?: number;
-    /** UV set index for the occlusion texture (0 = UV1, 1 = UV2). Default 0. */
+    /** glTF-derived UV set index for the occlusion texture: 0 = first UV set (TEXCOORD_0),
+     *  1 = second UV set (TEXCOORD_1). Default 0. Populated only by the glTF loader paths
+     *  (gltf-pbr-builder-ext and KHR_texture_basisu). It selects WHICH UV set occlusion samples;
+     *  whether UV2 gets plumbed at all is gated by `_uv2Mask` (occlusion contributes bit 32),
+     *  which the slow path computes from this same value — so every occlusion-on-UV1 glTF
+     *  material also carries `_uv2Mask`. Setting this alone (without `_uv2Mask`) does not force
+     *  UV2 plumbing. */
     occlusionTexCoord?: number;
+    /** @internal Per-channel UV1 (TEXCOORD_1) selection bitmask, precomputed at glTF build time by
+     *  the slow-path loader (gltf-pbr-builder-ext). Bit literals mirror pbr-template-ext's decode. */
+    _uv2Mask?: number;
     /** Separate occlusion texture sampled with UV2 when occlusionTexCoord=1.
      *  R channel is occlusion. When set, ORM.r is NOT used for occlusion. */
     occlusionTexture?: Texture2D;
@@ -146,10 +165,33 @@ export interface PbrMaterialProps extends Material {
      *  `baseColorFactor`). When omitted or [1,1,1], no tint is applied.
      *  Only bundled/bound when the unlit extension is active. */
     unlitColor?: [number, number, number];
+    /** When true, the material is a shadow-only receiver: the surface is invisible
+     *  except where a shadow is cast on it, where it appears in `shadowOnlyColor` (or
+     *  black when omitted). Mirrors BJS `BackgroundMaterial.shadowOnly`. Requires
+     *  `receiveShadows` on the mesh and at least one shadow-casting light in the scene.
+     *  Implies alpha-blended rendering. Only bundled/bound when at least one mesh in
+     *  the scene uses it. */
+    shadowOnly?: boolean;
+    /** Linear-RGB color shown where the shadow falls when `shadowOnly` is true.
+     *  Defaults to black (`[0, 0, 0]`). */
+    shadowOnlyColor?: [number, number, number];
+    /** Maximum opacity at the darkest part of the shadow (when `shadowOnly` is true).
+     *  Range [0, 1]. Default 1.0 (fully opaque at full shadow). Lower values produce
+     *  a lighter, more transparent shadow. Mirrors the `shadowLevel` parameter on BJS
+     *  `BackgroundMaterial.shadowOnly`. */
+    shadowOnlyOpacity?: number;
+    /** Falloff sharpness for the shadow's soft edges (when `shadowOnly` is true).
+     *  Default 1.0 (the natural ESM/PCF falloff from the shadow generator). Higher
+     *  values steepen the falloff (saturating closer to the model silhouette), giving
+     *  crisper visible edges. Mathematically: `alpha = saturate((1 - shadowFactor) * falloff) * opacity`. */
+    shadowOnlyFalloff?: number;
     /** @internal True when any of the material's textures carries `_hasTx=true`
      *  (KHR_texture_transform). Stamped once by the glTF loader's slow path
      *  so the renderer doesn't re-scan 5 textures per mesh. */
     _hasUvTx?: boolean;
+    /** Optional stencil-test state baked into the main-pass pipeline. Lets this material write the stencil buffer
+     *  where it draws (mask) or discard where another material wrote it. Default none. See `StencilState`. */
+    stencil?: StencilState;
 }
 
 /** @internal Compute PBR material-only feature bits. Mesh/pass bits are added per renderable. */
@@ -189,7 +231,14 @@ export function _computePbrMaterialFeatures(mat: PbrMaterialProps): { features: 
     if ((mat as { _hasUvTx?: boolean })._hasUvTx) {
         features2 |= PBR2_HAS_UV_TRANSFORM;
     }
-    if (mat.occlusionTexCoord) {
+    // Per-channel UV set selection (glTF texCoord). `_uv2Mask` is precomputed once at glTF build
+    // time by the lazy slow-path loader (gltf-pbr-builder-ext) — the only place a texture can carry
+    // texCoord:1 (occlusion included, as bit 32) — so the always-loaded fast path pays just one read
+    // here. This replaces master's `occlusionTexCoord` trigger: occlusion-on-UV1 always routes through
+    // the slow path (any texCoord:1 in the material JSON forces it, incl. KHR_texture_basisu), so its
+    // bit is already folded into `_uv2Mask`. Any channel on UV1 needs the uv2 vertex attribute +
+    // varying threaded through.
+    if ((mat as { _uv2Mask?: number })._uv2Mask) {
         features2 |= PBR2_HAS_UV2;
     }
     if (mat.baseColorFactor) {
@@ -235,6 +284,10 @@ export interface SheenProps {
     intensity?: number;
     /** Optional sheen tint texture (modulates sheen color). Loaded via loadTexture2D(). */
     texture?: Texture2D;
+    /** Optional separate sheen roughness texture (KHR_materials_sheen sheenRoughnessTexture).
+     *  When present, sheen roughness is read from this texture's A channel at its own UV
+     *  (with its own KHR_texture_transform, animatable) instead of the color texture's A. */
+    roughnessTexture?: Texture2D;
     /** When true (recommended for glTF), applies proper sheen albedo scaling
      *  on the base layer and treats the sheen texture as already-linear (no pow).
      *  When false (default, legacy), applies pow(rgb, 2.2) to the sheen texture
@@ -269,6 +322,10 @@ export interface AnisotropyProps {
     intensity?: number;
     /** Anisotropy direction in tangent space (u, v). Default [1, 0]. */
     direction?: [number, number];
+    /** KHR_materials_anisotropy anisotropyTexture (linear). RG = per-texel direction
+     *  (×2-1, rotated by `direction`), B = per-texel strength (multiplies `intensity`).
+     *  May carry a KHR_texture_transform that an animation pointer can drive. */
+    texture?: Texture2D;
 }
 
 /** Translucency sub-feature. Presence enables translucency (no isEnabled boolean). */
@@ -277,6 +334,12 @@ export interface TranslucencyProps {
     intensity?: number;
     /** Translucency color (linear RGB). Tints the transmitted light. Default [1,1,1]. */
     color?: [number, number, number];
+    /** Translucency color texture (sampled sRGB). RGB multiplies `color`.
+     *  KHR_materials_diffuse_transmission.diffuseTransmissionColorTexture. */
+    colorTexture?: Texture2D;
+    /** Translucency intensity texture. Alpha channel multiplies `intensity`.
+     *  KHR_materials_diffuse_transmission.diffuseTransmissionTexture. */
+    intensityTexture?: Texture2D;
     /** Diffusion distance for the Burley transmittance BRDF. Controls how far
      *  light travels through the material per RGB channel. Default [1,1,1]. */
     diffusionDistance?: [number, number, number];
@@ -352,9 +415,15 @@ export interface SubSurfaceProps {
 
 /** Create a PbrMaterialProps with optional overrides. */
 export function createPbrMaterial(props?: Partial<PbrMaterialProps>): PbrMaterialProps {
+    // A material may be created without baseColor / ORM textures (only factors). Both
+    // slots are always sampled, so install the resolver that lazily provides a shared
+    // 1×1 white default (white ORM → metallic = metallicFactor, roughness =
+    // roughnessFactor — the glTF defaults). Reachable only via createPbrMaterial, so
+    // loader-only PBR scenes (e.g. BoomBox) tree-shake it entirely.
+    _installPbrFallbackResolver((engine) => (engine._pbrFallbackTex ??= createSolidTexture2D(engine, 1, 1, 1)));
     const mat = {
         ...props,
-        _buildGroup: pbrGroupBuilder,
+        _buildGroup: getPbrGroupBuilder(),
         _uboVersion: 0,
     } as PbrMaterialProps;
     return mat;

@@ -1,6 +1,5 @@
 import { F32, U8 } from "../engine/typed-arrays.js";
 import type { SceneContext } from "../scene/scene.js";
-import type { EngineContext } from "../engine/engine.js";
 import { acquireGPUTexture, releaseGPUTexture } from "../resource/gpu-pool.js";
 import { assembleEnvironmentTextures } from "./env-helpers.js";
 import { mipLevelCount } from "../texture/mip-count.js";
@@ -50,7 +49,7 @@ export async function loadEnvironment(
         brdfUrl: string;
     }
 ): Promise<EnvironmentTextures> {
-    const engine = scene.engine as EngineContext;
+    const engine = scene.surface.engine;
 
     // Fetch .env and BRDF PNG in parallel
     const envPromise = fetch(url).then((r) => r.arrayBuffer());
@@ -64,14 +63,14 @@ export async function loadEnvironment(
     // Decode all face images in parallel (raw RGBD bytes — no color space conversion)
     const faceImages = await Promise.all(faceBlobs.map((blob) => createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none" })));
 
-    const { uploadCubemapRGBD, decodeBrdfPng } = await import("./rgbd-decode.js");
-    const specularCube = uploadCubemapRGBD(engine, faceImages, width, mipCount);
+    const rgbd = await import("./rgbd-decode.js");
+    const specularCube = rgbd.uploadCubemapRGBD(engine, faceImages, width, mipCount);
     for (const img of faceImages) {
         img.close();
     }
 
     const brdfImage = await brdfPromise;
-    const brdfLut = decodeBrdfPng(engine, brdfImage);
+    const brdfLut = rgbd.decodeBrdfPng(engine, brdfImage);
     brdfImage.close();
 
     const textures = assembleEnvironmentTextures(specularCube, brdfLut, irradianceSH, 0.8, engine);
@@ -119,20 +118,20 @@ export async function loadEnvironment(
         const skyHalfSize = autoSkyboxSize / 2;
 
         if (!bgOptions.skipSkybox) {
-            const { buildSolidSkyboxRenderable } = await import("../material/pbr/background-solid-skybox.js");
-            scene._renderables.push(buildSolidSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
+            const skybox = await import("../material/pbr/background-solid-skybox.js");
+            scene._renderables.push(skybox.buildSolidSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
         }
         if (!bgOptions.skipGround) {
-            const { buildGroundRenderable } = await import("../material/pbr/background-ground.js");
-            scene._renderables.push(await buildGroundRenderable(engine, groundSize, rootPosition, primaryColor, groundUrl, groundTexPromise));
+            const ground = await import("../material/pbr/background-ground.js");
+            scene._renderables.push(await ground.buildGroundRenderable(engine, groundSize, rootPosition, primaryColor, groundUrl, groundTexPromise));
         }
         if (skyboxIsDds) {
-            const { buildDdsSkyboxRenderable } = await import("../material/pbr/background-dds-skybox.js");
-            scene._renderables.push(await buildDdsSkyboxRenderable(scene, skyHalfSize, rootPosition, primaryColor, skyboxUrl));
+            const skybox = await import("../material/pbr/background-dds-skybox.js");
+            scene._renderables.push(await skybox.buildDdsSkyboxRenderable(scene, skyHalfSize, rootPosition, primaryColor, skyboxUrl));
         }
         if (skyboxIsEnv) {
-            const { buildHdrSkyboxRenderable } = await import("../material/pbr/background-hdr-skybox.js");
-            scene._renderables.push(buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
+            const skybox = await import("../material/pbr/background-hdr-skybox.js");
+            scene._renderables.push(skybox.buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
         }
     });
 

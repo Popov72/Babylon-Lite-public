@@ -70,14 +70,14 @@ async function main(): Promise<void> {
     const seekTime = parseFloat(new URLSearchParams(window.location.search).get("seekTime") || "");
     if (Number.isFinite(seekTime)) {
         for (const group of activeGroups) {
-            group.currentFrame = group === sadPose ? POSE_TIME : seekTime;
+            group.currentTime = group === sadPose ? POSE_TIME : seekTime;
             pauseAnimation(group);
         }
         canvas.dataset.animationFrozen = "true";
     }
     onBeforeRender(scene, (deltaMs) => updateAnimationManager(manager, deltaMs));
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);
@@ -97,7 +97,7 @@ function setAdditivePose(group: AnimationGroup, weight: number): void {
     playAnimation(group);
     setAnimationAdditive(group, { referenceFrame: 0 });
     setAnimationWeight(group, weight);
-    group.currentFrame = POSE_TIME;
+    group.currentTime = POSE_TIME;
     pauseAnimation(group);
 }
 

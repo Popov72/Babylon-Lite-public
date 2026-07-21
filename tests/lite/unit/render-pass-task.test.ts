@@ -1,14 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import type { Camera } from "../../../packages/babylon-lite/src/camera/camera";
 import type { EngineContext } from "../../../packages/babylon-lite/src/engine/engine";
+import type { Material } from "../../../packages/babylon-lite/src/material/material";
 import type { Mat4 } from "../../../packages/babylon-lite/src/math/types";
+import type { Mesh } from "../../../packages/babylon-lite/src/mesh/mesh";
 import type { DrawBinding, DrawUpdateContext, Renderable } from "../../../packages/babylon-lite/src/render/renderable";
+import { getUniformCopyBatch } from "../../../packages/babylon-lite/src/render/uniform-copy-batch";
 import { createSceneContext, registerScene } from "../../../packages/babylon-lite/src/scene/scene";
 import type { SceneContext } from "../../../packages/babylon-lite/src/scene/scene-core";
 import { createRenderTarget, type RenderTarget } from "../../../packages/babylon-lite/src/engine/render-target";
-import { createRenderTask, type RenderTask } from "../../../packages/babylon-lite/src/frame-graph/render-task";
+import { createRenderTask, removeMeshFromTask, type RenderTask } from "../../../packages/babylon-lite/src/frame-graph/render-task";
 import { enableRenderTaskTransmission, enableSceneTransmission } from "../../../packages/babylon-lite/src/frame-graph/transmission";
+import { getComputeDispatchBatch } from "../../../packages/babylon-lite/src/mesh/thin-instance-gpu-culling";
+import { invalidateRenderBundles } from "../../../packages/babylon-lite/src/mesh/mesh-factories";
 
 const gpuGlobals = globalThis as Omit<typeof globalThis, "GPUBufferUsage" | "GPUShaderStage" | "GPUTextureUsage"> & {
     GPUBufferUsage?: { UNIFORM: number; COPY_DST: number };
@@ -54,6 +59,13 @@ function makeMockEngine(options?: {
     samplers?: GPUSamplerDescriptor[];
     textures?: GPUTextureDescriptor[];
     bundleDescriptors?: GPURenderBundleEncoderDescriptor[];
+    computePasses?: {
+        pipelines: GPUComputePipeline[];
+        bindGroups: GPUBindGroup[];
+        dispatches: [number, number | undefined, number | undefined][];
+    }[];
+    onWriteBuffer?: (buffer: GPUBuffer, offset: number, data: AllowSharedBufferSource, dataOffset?: number, size?: number) => void;
+    bufferCopies?: [GPUBuffer, number, GPUBuffer, number, number][];
 }): EngineContext {
     let currentPipeline: GPURenderPipeline | null = null;
     const pass = {
@@ -105,11 +117,12 @@ function makeMockEngine(options?: {
             } as unknown as GPURenderBundleEncoder;
         },
         queue: {
-            writeBuffer: () => undefined,
+            writeBuffer: (buffer: GPUBuffer, offset: number, data: AllowSharedBufferSource, dataOffset?: number, size?: number) =>
+                options?.onWriteBuffer?.(buffer, offset, data, dataOffset, size),
         },
     } as unknown as GPUDevice;
 
-    return {
+    const eng = {
         canvas: { width: 800, height: 600 } as HTMLCanvasElement,
         msaaSamples: options?.msaaSamples ?? 4,
         drawCallCount: 0,
@@ -124,10 +137,26 @@ function makeMockEngine(options?: {
         _renderFn: null,
         _renderingContexts: [],
         _currentEncoder: {
+            beginComputePass: () => {
+                const record = {
+                    pipelines: [] as GPUComputePipeline[],
+                    bindGroups: [] as GPUBindGroup[],
+                    dispatches: [] as [number, number | undefined, number | undefined][],
+                };
+                options?.computePasses?.push(record);
+                return {
+                    setPipeline: (pipeline: GPUComputePipeline) => record.pipelines.push(pipeline),
+                    setBindGroup: (_index: number, bindGroup: GPUBindGroup) => record.bindGroups.push(bindGroup),
+                    dispatchWorkgroups: (x: number, y?: number, z?: number) => record.dispatches.push([x, y, z]),
+                    end: () => undefined,
+                } as unknown as GPUComputePassEncoder;
+            },
             beginRenderPass: (descriptor: GPURenderPassDescriptor) => {
                 options?.onBeginPass?.(descriptor);
                 return pass;
             },
+            copyBufferToBuffer: (source: GPUBuffer, sourceOffset: number, destination: GPUBuffer, destinationOffset: number, size: number) =>
+                options?.bufferCopies?.push([source, sourceOffset, destination, destinationOffset, size]),
             copyTextureToTexture: () => options?.onCopy?.(),
         } as unknown as GPUCommandEncoder,
         scRT: {
@@ -135,14 +164,61 @@ function makeMockEngine(options?: {
             _colorView: {},
             _depthTexture: null,
             _depthView: null,
-            _descriptor: { format: "bgra8unorm", samples: 1, size: "canvas" },
+            _descriptor: { format: "bgra8unorm", samples: 1, size: { width: 800, height: 600 } },
             _width: 800,
             _height: 600,
             _eager: true,
         } as unknown as RenderTarget,
         _currentDelta: 0,
         _cbs: [],
+    } as unknown as EngineContext;
+    const _surfaces = [eng];
+    Object.assign(eng, { engine: eng, surfaces: _surfaces, _surfaces });
+    return eng;
+}
+
+function makeComputeRenderable(id: string, pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, workgroupsX: number): Renderable {
+    const renderable: Renderable = {
+        order: 100,
+        isTransparent: false,
+        bind(_engine, signature): DrawBinding {
+            const batch = getComputeDispatchBatch(signature);
+            return {
+                renderable,
+                pipeline: { id } as unknown as GPURenderPipeline,
+                _updateBatches: [batch],
+                update(): void {
+                    batch.queue({ pipeline, bindGroup, workgroupsX });
+                },
+                draw(): number {
+                    return 1;
+                },
+            };
+        },
     };
+    return renderable;
+}
+
+function makeUniformCopyRenderable(id: string, buffer: GPUBuffer, data: Float32Array): Renderable {
+    const renderable: Renderable = {
+        order: 100,
+        isTransparent: false,
+        bind(_engine, signature): DrawBinding {
+            const batch = getUniformCopyBatch(signature);
+            return {
+                renderable,
+                pipeline: { id } as unknown as GPURenderPipeline,
+                _updateBatches: [batch],
+                update(): void {
+                    batch.queue(buffer, data);
+                },
+                draw(): number {
+                    return 1;
+                },
+            };
+        },
+    };
+    return renderable;
 }
 
 function makeTransparentRenderable(id: string, initialCenter: [number, number, number], updatedCenter: [number, number, number], drawOrder: string[]): Renderable {
@@ -188,6 +264,103 @@ function makeDrawOrderRenderable(id: string, flags: Partial<Pick<Renderable, "or
 }
 
 describe("RenderPassTask transparent sorting", () => {
+    it("drops a mesh removed before first record from pending task inputs", () => {
+        const engine = makeMockEngine();
+        const scene = createSceneContext(engine, { defaultRenderTask: false });
+        const rt = createRenderTarget({
+            lbl: "pending-removal",
+            dFormat: "depth24plus",
+            samples: 1,
+            size: { width: 16, height: 16 },
+        });
+        const task = createRenderTask({ name: "pending-removal", rt }, engine, scene);
+        const mesh = {} as Mesh;
+        const rebuildSingle = vi.fn(() => makeDrawOrderRenderable("removed", {}, []));
+        const material = {
+            _buildGroup: { _rebuildSingle: rebuildSingle },
+        } as unknown as Material;
+
+        task.addMesh(mesh, { material });
+        removeMeshFromTask(task, mesh);
+        task.record();
+
+        expect(rebuildSingle).not.toHaveBeenCalled();
+        expect(task._pendingMeshes).toHaveLength(0);
+        expect(task._renderables).toHaveLength(0);
+    });
+
+    it("re-records a cached bundle invalidated before scene registration", () => {
+        const bundleDescriptors: GPURenderBundleEncoderDescriptor[] = [];
+        const engine = makeMockEngine({ bundleDescriptors });
+        const scene = createSceneContext(engine);
+        scene.camera = makeCamera();
+        scene._renderables.push(makeDrawOrderRenderable("opaque", { order: 100 }, []));
+        const task = scene._frameGraph._tasks[0] as RenderTask;
+
+        task.record();
+        task.execute?.();
+        expect(bundleDescriptors).toHaveLength(1);
+        expect(engine._renderingContexts).toHaveLength(0);
+
+        invalidateRenderBundles(engine);
+        task.execute?.();
+
+        expect(bundleDescriptors).toHaveLength(2);
+    });
+
+    it("flushes binding compute work through one compute pass per render task", async () => {
+        const computePasses: NonNullable<Parameters<typeof makeMockEngine>[0]>["computePasses"] = [];
+        const engine = makeMockEngine({ computePasses });
+        const scene = createSceneContext(engine);
+        scene.camera = makeCamera();
+        const pipeline = { label: "thin-instance-cull" } as unknown as GPUComputePipeline;
+        const bindGroupA = { label: "a" } as unknown as GPUBindGroup;
+        const bindGroupB = { label: "b" } as unknown as GPUBindGroup;
+        scene._renderables.push(makeComputeRenderable("a", pipeline, bindGroupA, 2), makeComputeRenderable("b", pipeline, bindGroupB, 5));
+
+        await registerScene(scene);
+        scene._record();
+
+        expect(computePasses).toHaveLength(1);
+        expect(computePasses![0]!.pipelines).toEqual([pipeline]);
+        expect(computePasses![0]!.bindGroups).toEqual([bindGroupA, bindGroupB]);
+        expect(computePasses![0]!.dispatches).toEqual([
+            [2, undefined, undefined],
+            [5, undefined, undefined],
+        ]);
+    });
+
+    it("packs binding uniform updates into one task-local queue upload", async () => {
+        const writes: [GPUBuffer, number, AllowSharedBufferSource, number | undefined, number | undefined][] = [];
+        const copies: [GPUBuffer, number, GPUBuffer, number, number][] = [];
+        const engine = makeMockEngine({
+            onWriteBuffer: (buffer, offset, data, dataOffset, size) => writes.push([buffer, offset, data, dataOffset, size]),
+            bufferCopies: copies,
+        });
+        const scene = createSceneContext(engine);
+        scene.camera = makeCamera();
+        const destinationA = { label: "a" } as unknown as GPUBuffer;
+        const destinationB = { label: "b" } as unknown as GPUBuffer;
+        scene._renderables.push(
+            makeUniformCopyRenderable("a", destinationA, new Float32Array([1, 2, 3, 4])),
+            makeUniformCopyRenderable("b", destinationB, new Float32Array([5, 6, 7, 8, 9, 10, 11, 12]))
+        );
+
+        await registerScene(scene);
+        writes.length = 0;
+        scene._record();
+
+        const uploadWrites = writes.filter(([buffer]) => (buffer as unknown as { descriptor?: GPUBufferDescriptor }).descriptor?.label === "render-task-uniform-upload");
+        expect(uploadWrites).toHaveLength(1);
+        expect(uploadWrites[0]![4]).toBe(48);
+        expect(copies).toHaveLength(2);
+        expect(copies.map((copy) => [copy[1], copy[2], copy[4]])).toEqual([
+            [0, destinationA, 16],
+            [16, destinationB, 32],
+        ]);
+        expect(copies[0]![0]).toBe(copies[1]![0]);
+    });
+
     it("preserves custom depth compare when transmission retargets a render task", () => {
         const engine = makeMockEngine();
         const scene = createSceneContext(engine);
@@ -216,7 +389,7 @@ describe("RenderPassTask transparent sorting", () => {
             makeTransparentRenderable("near-after-update", [0, 0, 2], [0, 0, 2], drawOrder)
         );
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(drawOrder).toEqual(["far-after-update", "near-after-update"]);
@@ -233,7 +406,7 @@ describe("RenderPassTask transparent sorting", () => {
             makeTransparentRenderable("near-but-wide", [0, 0, 0], [100, 0, 2], drawOrder)
         );
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(drawOrder).toEqual(["far-in-view", "near-but-wide"]);
@@ -252,7 +425,7 @@ describe("RenderPassTask transparent sorting", () => {
             makeDrawOrderRenderable("transparent", { order: 200, isTransparent: true }, drawOrder)
         );
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(drawOrder).toEqual(["opaque", "dynamic-depth-write", "transmissive", "transparent"]);
@@ -270,7 +443,7 @@ describe("RenderPassTask transparent sorting", () => {
             makeDrawOrderRenderable("glass-b", { order: 150, _transmissive: true }, defaultOrder)
         );
         enableSceneTransmission(defaultScene, defaultEngine);
-        await registerScene(defaultEngine, defaultScene);
+        await registerScene(defaultScene);
         defaultScene._record();
         expect(defaultCopies).toBe(1);
 
@@ -286,7 +459,7 @@ describe("RenderPassTask transparent sorting", () => {
             makeDrawOrderRenderable("glass-b", { order: 150, _transmissive: true }, everyOrder)
         );
         enableSceneTransmission(everyScene, everyEngine);
-        await registerScene(everyEngine, everyScene);
+        await registerScene(everyScene);
         everyScene._record();
         expect(everyCopies).toBe(2);
     });
@@ -299,7 +472,7 @@ describe("RenderPassTask transparent sorting", () => {
         scene._renderables.push(makeDrawOrderRenderable("transmissive", { isTransparent: true, _transmissive: true }, []));
 
         enableSceneTransmission(scene, engine);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         expect(samplers).toContainEqual({
             magFilter: "linear",
@@ -320,7 +493,7 @@ describe("RenderPassTask transparent sorting", () => {
         scene._renderables.push(makeDrawOrderRenderable("glass", { _transmissive: true }, []));
 
         enableSceneTransmission(scene, engine);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const refractionTexture = textures.find(
             (descriptor) => descriptor.format === "rgba16float" && (descriptor.size as GPUExtent3DDict).width === 1024 && (descriptor.usage & GPUTextureUsage.COPY_DST) !== 0
@@ -337,7 +510,7 @@ describe("RenderPassTask transparent sorting", () => {
         scene._renderables.push(makeDrawOrderRenderable("glass", { _transmissive: true }, []));
 
         enableSceneTransmission(scene, engine);
-        await registerScene(engine, scene);
+        await registerScene(scene);
 
         const refractionTexture = textures.find(
             (descriptor) => descriptor.format === "rgba16float" && (descriptor.size as GPUExtent3DDict).width === 1024 && (descriptor.usage & GPUTextureUsage.COPY_DST) !== 0
@@ -364,7 +537,7 @@ describe("RenderPassTask transparent sorting", () => {
         scene._renderables.push(makeDrawOrderRenderable("opaque", { order: 100 }, []), makeDrawOrderRenderable("glass", { order: 150, _transmissive: true }, []));
 
         enableSceneTransmission(scene, engine);
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(textures.some((descriptor) => String(descriptor.label).includes("transmission-snapshot"))).toBe(false);
@@ -402,7 +575,7 @@ describe("RenderPassTask transparent sorting", () => {
         );
 
         enableSceneTransmission(scene, engine);
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(drawOrder).toEqual(["opaque", "glass-a", "glass-b", "glass-c"]);
@@ -423,7 +596,7 @@ describe("RenderPassTask transparent sorting", () => {
         });
         const scene = createSceneContext(engine) as SceneContext;
         scene.camera = makeCamera();
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         expect(seenDescriptors.length).toBeGreaterThan(0);
@@ -467,7 +640,7 @@ describe("RenderPassTask transparent sorting", () => {
         const task = createRenderTask({ name: "scene", rt: colorRt, depth: externalDepth }, engine, scene);
         scene._frameGraph._tasks.push(task);
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         const descriptor = seenDescriptors.find((d) => d.depthStencilAttachment);
@@ -507,7 +680,7 @@ describe("RenderPassTask transparent sorting", () => {
         const task = createRenderTask({ name: "scene", rt, clr: false }, engine, scene);
         scene._frameGraph._tasks.push(task);
 
-        await registerScene(engine, scene);
+        await registerScene(scene);
         scene._record();
 
         const descriptor = seenDescriptors.find((d) => d.depthStencilAttachment);

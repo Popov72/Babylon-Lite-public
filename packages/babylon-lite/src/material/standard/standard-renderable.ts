@@ -14,13 +14,20 @@ import type { StandardMaterialProps } from "./standard-material.js";
 import { _computeStandardMaterialFeatures, _standardShaderVariantKey } from "./standard-material.js";
 import { acquireTexture, releaseTexture, clearSamplerCache } from "../../resource/gpu-pool.js";
 import { createUniformBuffer } from "../../resource/gpu-buffers.js";
-import { getOrCreateStandardBindings, getOrCreateStandardPipeline, createStandardMeshBindGroup, clearStandardPipelineCache, writeStdMaterialData } from "./standard-pipeline.js";
+import {
+    getOrCreateStandardBindings,
+    getOrCreateStandardPipeline,
+    createStandardMeshBindGroup,
+    clearStandardPipelineCache,
+    writeStdMaterialData,
+    _stdVertexColorFragment,
+} from "./standard-pipeline.js";
 import { ESM_SHADOW_OUTPUT, NO_COLOR_OUTPUT, NEEDS_UV, NEEDS_UV2, HAS_OPACITY_TEXTURE, _getStdExts } from "./standard-flags.js";
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import type { ShadowGenerator } from "../../shadow/shadow-generator.js";
 import { writeMeshLightSelection } from "../../render/lights-ubo.js";
 import type { Material, MaterialRenderFeatures } from "../material.js";
-import { _computeMeshFeatures, MSH_HAS_INSTANCE_COLOR, MSH_HAS_THIN_INSTANCES, MSH_RECEIVE_SHADOWS } from "../mesh-features.js";
+import { _computeMeshFeatures, MSH_HAS_INSTANCE_COLOR, MSH_HAS_MORPH_TARGETS, MSH_HAS_THIN_INSTANCES, MSH_RECEIVE_SHADOWS } from "../mesh-features.js";
 import { packMat4IntoF32 } from "../../math/pack-mat4-into-f32.js";
 
 /** Scratch buffer for material UBO writes (24 floats = 96 bytes). Reused across
@@ -40,8 +47,12 @@ type ThinInstanceSync = (
 /** Fragment factories passed from the async group builder. */
 export interface StdFragmentFactories {
     tiSync?: ThinInstanceSync;
+    /** Uploads dirty thin-instance data and promotes cached draws to stable indirect args when their count changes. */
+    tiUpdate?: (engine: EngineContext, ti: any, hasColor: boolean, indexCount: number) => GPUBuffer | null;
     tiFragment?: (hasColor: boolean) => ShaderFragment;
     shadowFragment?: (shadowLights: import("./fragments/std-shadow-fragment.js").ShadowLightSlot[]) => ShaderFragment;
+    /** Present only when at least one mesh in the build has morph targets. */
+    morphFragment?: () => ShaderFragment;
     /** Present only when the scene has at least one culling-enabled thin-instance mesh. */
     cull?: typeof import("../../mesh/thin-instance-cull-binding.js");
 }
@@ -50,9 +61,9 @@ export interface StdFragmentFactories {
  *  The `rebuildSingle` closure is reused later (via `_rebuildSingle` on the group
  *  builder) for material swaps + per-pass material overrides. */
 export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[], factories: StdFragmentFactories): MeshGroupBuildResult {
-    const engine = scene.engine;
+    const engine = scene.surface.engine;
     const device = engine._device;
-    const { tiSync, tiFragment, shadowFragment, cull } = factories;
+    const { tiSync, tiUpdate, tiFragment, shadowFragment, cull, morphFragment } = factories;
 
     // Collect per-light shadow info.
     const shadowLights: { lightIndex: number; shadowType: "esm" | "pcf" | "csm"; gen: ShadowGenerator }[] = [];
@@ -79,6 +90,15 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
         const meshFeatures = _computeMeshFeatures(mesh, receiveShadows);
         // Build per-feature fragment list (deduped via pipeline cache).
         const frags: ShaderFragment[] = [];
+        // Keep morph first: composeStandardShader uses the first fragment's patch
+        // to switch the placeholder morph bindings to storage buffers.
+        if (meshFeatures & MSH_HAS_MORPH_TARGETS && morphFragment) {
+            frags.push(morphFragment());
+        }
+        const hasVertexColor = !!mesh._gpu.colorBuffer && !!_stdVertexColorFragment;
+        if (hasVertexColor) {
+            frags.push(_stdVertexColorFragment!());
+        }
         for (const ext of _getStdExts().values()) {
             if (features & ext._feature) {
                 const f = ext._frag(features);
@@ -110,7 +130,7 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
             }
         }
         const esmShadowDepthCode = (features & ESM_SHADOW_OUTPUT) !== 0 ? (mat as StandardMaterialProps & { readonly _esmShadowDepthCode: string })._esmShadowDepthCode : "";
-        const bindings = getOrCreateStandardBindings(engine, features, meshFeatures, frags, shaderKey, esmShadowDepthCode);
+        const bindings = getOrCreateStandardBindings(engine, features, meshFeatures, frags, shaderKey, esmShadowDepthCode, (mat as StandardMaterialProps).stencil ?? null);
 
         const meshShadowGens = receiveShadows ? shadowLights.map((sl) => sl.gen) : [];
 
@@ -123,7 +143,7 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
         const matData = new F32(24);
         writeStdMaterialData(matData, mat, textureLevel);
         const materialUBO = createUniformBuffer(engine, matData);
-        const meshBindGroup = createStandardMeshBindGroup(engine, bindings, meshUBO, materialUBO, mat);
+        const meshBindGroup = createStandardMeshBindGroup(engine, bindings, meshUBO, materialUBO, mat, mesh.morphTargets ?? null);
 
         // Shadow bind group (group 2) — shared across receiving meshes via shadowBGCache.
         let shadowBindGroup: GPUBindGroup | null = null;
@@ -163,6 +183,7 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
 
         let _lastWorldVersion = mesh.worldMatrixVersion;
         let _lastLightsCount = s.lights.length;
+        let thinDrawArgs: GPUBuffer | null = null;
         const sortCenter = [mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number];
         const _baseUpdate = (): void => {
             const worldVersion = mesh.worldMatrixVersion;
@@ -182,6 +203,10 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
                 _stdMatScratch.fill(0);
                 writeStdMaterialData(_stdMatScratch, mat, textureLevel);
                 device.queue.writeBuffer(materialUBO, 0, _stdMatScratch.buffer, 0, 96);
+            }
+            const ti = hasThinInstances ? mesh.thinInstances : null;
+            if (ti && tiUpdate) {
+                thinDrawArgs = tiUpdate(engine, ti, hasInstanceColor, mesh._gpu.indexCount);
             }
         };
         // FO-version wrapper applied only when the engine has floating-origin
@@ -211,6 +236,9 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
             if (needsUV2 && g.uv2Buffer) {
                 pass.setVertexBuffer(slot++, g.uv2Buffer, vb?._u2?._offset);
             }
+            if (hasVertexColor) {
+                pass.setVertexBuffer(slot++, g.colorBuffer!);
+            }
 
             const ti = hasThinInstances ? mesh.thinInstances : null;
             if (ti && tiSync) {
@@ -224,10 +252,10 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
             }
             if (cullBinding) {
                 cullBinding.draw(pass, g.indexCount, ti!.count);
-            } else if (ti && ti.count > 0) {
-                pass.drawIndexed(g.indexCount, ti.count);
+            } else if (ti && thinDrawArgs) {
+                pass.drawIndexedIndirect(thinDrawArgs, 0);
             } else {
-                pass.drawIndexed(g.indexCount);
+                pass.drawIndexed(g.indexCount, ti?.count);
             }
             return 1;
         };
@@ -239,10 +267,11 @@ export function buildStandardMeshRenderables(scene: SceneContext, meshes: Mesh[]
             bind(eng, sig) {
                 const pipeline = getOrCreateStandardPipeline(eng as EngineContext, sig, bindings);
                 // Opaque-only GPU culling (opt-in): tryBind gates on opt-in + transparency, returns the per-binding cull lifecycle.
-                const cb = cull?.tryBind(r, s, mesh, engine, hasInstanceColor, isTransparent, update);
+                const cb = cull?.tryBind(r, s, mesh, engine, hasInstanceColor, isTransparent, update, sig);
                 return {
                     renderable: r,
                     pipeline,
+                    ...(cb ? { _updateBatches: [cb._updateBatch] } : {}),
                     update: cb ? cb.update : update,
                     draw: (pass) => draw(pass, cb),
                 };

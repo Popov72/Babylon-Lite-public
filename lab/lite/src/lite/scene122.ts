@@ -6,7 +6,7 @@
 
 import { attachControl, createArcRotateCamera, createEngine, createSceneContext, loadSOG, registerScene, startEngine } from "babylon-lite";
 
-const SPLAT_URL = "https://raw.githubusercontent.com/CedricGuillemet/dump/master/hornedlizard/hornedlizard.sog";
+const SPLAT_URL = "https://cdn.jsdelivr.net/gh/CedricGuillemet/dump@master/hornedlizard/hornedlizard.sog";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
 
     const splat = await loadSOG(scene, SPLAT_URL);
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
 
     await splat.firstSortReady;

@@ -24,7 +24,7 @@ import {
     startEngine,
 } from "babylon-lite";
 
-const SPONZA_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/Sponza/glTF/Sponza.gltf";
+const SPONZA_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Assets@main/Models/Sponza/glTF/Sponza.gltf";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -56,20 +56,20 @@ async function main(): Promise<void> {
         format: engine.format,
         dFormat: "depth24plus-stencil8",
         samples: samples,
-        size: "canvas",
+        size: engine,
     });
     const ssIntermediate = createRenderTarget({
         lbl: "scene146-ss-intermediate",
         format: engine.format,
         samples: 1,
-        size: "canvas",
+        size: engine,
     });
     const scRT = engine.scRT;
     const realColorTarget = createRenderTarget({
         lbl: "scene146-real-color",
         format: engine.format,
         samples: samples,
-        size: "canvas",
+        size: engine,
     });
     const sceneTask = createRenderTask(
         {
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
         )
     );
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);

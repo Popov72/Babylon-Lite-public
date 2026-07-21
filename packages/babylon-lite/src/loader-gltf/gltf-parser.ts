@@ -4,7 +4,7 @@
  * - Image extraction (embedded or external)
  * - Node hierarchy traversal with memoized world-matrix computation
  */
-import { F32, U32, U16, U8 } from "../engine/typed-arrays.js";
+import { F32, U32, U16, U8, I16, I8 } from "../engine/typed-arrays.js";
 import type { Mat4 } from "../math/types.js";
 import { mat4ComposeInto } from "../math/mat4-compose-into.js";
 import { mat4MultiplyInto } from "../math/mat4-multiply-into.js";
@@ -41,26 +41,44 @@ export interface AccessorView {
 
 export function resolveAccessor(json: any, binChunk: DataView, accessorIdx: number): AccessorView {
     const accessor = json.accessors[accessorIdx];
-    const bufferView = json.bufferViews[accessor.bufferView];
     const componentCount = TYPE_SIZES[accessor.type] ?? 1;
-    const byteOffset = (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
     const count = accessor.count;
+    const len = count * componentCount;
 
-    const baseOffset = binChunk.byteOffset + byteOffset;
-    const ab = binChunk.buffer;
-
+    let Ctor: Float32ArrayConstructor | Uint16ArrayConstructor | Uint32ArrayConstructor | Uint8ArrayConstructor | Int16ArrayConstructor | Int8ArrayConstructor;
     switch (accessor.componentType) {
         case FLOAT:
-            return { _data: new F32(ab, baseOffset, count * componentCount), _count: count, _componentCount: componentCount };
+            Ctor = F32;
+            break;
         case UNSIGNED_SHORT:
-            return { _data: new U16(ab, baseOffset, count * componentCount), _count: count, _componentCount: componentCount };
+            Ctor = U16;
+            break;
         case UNSIGNED_INT:
-            return { _data: new U32(ab, baseOffset, count * componentCount), _count: count, _componentCount: componentCount };
+            Ctor = U32;
+            break;
         case UNSIGNED_BYTE:
-            return { _data: new U8(ab, baseOffset, count * componentCount), _count: count, _componentCount: componentCount };
+            Ctor = U8;
+            break;
+        case 5122: // SHORT
+            Ctor = I16;
+            break;
+        case 5120: // BYTE
+            Ctor = I8;
+            break;
         default:
             throw new Error(`Unsupported component type: ${accessor.componentType}`);
     }
+
+    // Spec: an accessor with no `bufferView` is zero-initialized (its values may be supplied by a `sparse`
+    // substitution or an extension) — return a zero-filled array instead of dereferencing a missing
+    // bufferView. Some skinned rigs ship all-zero morph-target POSITION/NORMAL accessors this way, which
+    // otherwise crashed the morph feature with `undefined.byteOffset`.
+    const data =
+        accessor.bufferView === undefined
+            ? new Ctor(len)
+            : new Ctor(binChunk.buffer as ArrayBuffer, binChunk.byteOffset + (json.bufferViews[accessor.bufferView].byteOffset ?? 0) + (accessor.byteOffset ?? 0), len);
+
+    return { _data: data, _count: count, _componentCount: componentCount };
 }
 
 // --- Image Extraction ---
@@ -116,15 +134,7 @@ export async function resolveImage(json: any, binChunk: DataView, imageIdx: numb
     }
 
     if (image.uri) {
-        // External URI (relative to .gltf base URL)
-        const imageUrl = new URL(image.uri, baseUrl + "x").href;
-        const response = await fetch(imageUrl);
-        if (!response.ok) {
-            throw new Error(`Failed to load image: ${response.status} ${response.statusText}`);
-        }
-        const blob = await response.blob();
-        const bmp = await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
-        return bmp;
+        return (await import("./gltf-json-asset.js")).resolveExternalImage(image.uri, baseUrl);
     }
 
     throw new Error("Image has neither bufferView nor uri");

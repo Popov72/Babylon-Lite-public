@@ -5,24 +5,26 @@ import type { Mesh } from "../mesh/mesh.js";
 import type { PickingInfo } from "./picking-info.js";
 import type { EngineContext } from "../engine/engine.js";
 import type * as DeformedGeometry from "./deformed-geometry.js";
-import type * as GsPickingPipeline from "./gs-picking-pipeline.js";
-import type { GaussianSplattingMesh } from "../mesh/GaussianSplatting/gaussian-splatting-mesh.js";
+import type { PickContributor, PickSource, PickPassContext } from "./pick-contributor.js";
 import { createEmptyPickingInfo } from "./picking-info.js";
 import { createPickingRay } from "./ray.js";
 import { mat4Invert } from "../math/mat4-invert.js";
-import { getPickingPipeline, getPickingTIPipeline, getPickingSceneBGL, getPickingMeshBGL, getPickingTIMeshBGL } from "./picking-pipeline.js";
+import { getPickingPipelineSet, getPickingSceneBGL } from "./picking-pipeline.js";
 import { getViewProjectionMatrix, getCameraPosition } from "../camera/camera.js";
 import { resolveCameraViewport } from "../camera/viewport.js";
 import { createEmptyUniformBuffer, createMappedBuffer, createUniformBuffer } from "../resource/gpu-buffers.js";
 
 // ─── Scratch arrays — allocated once, reused across all picks ──────
-const _pickVP = new F32(16);
-const _gsPickMatrix = new F32(16);
-const _uboScratch = new ArrayBuffer(80);
-const _uboF32 = new F32(_uboScratch, 0, 16);
-const _uboU32 = new U32(_uboScratch, 64, 1);
+const _pickVP = new F32(20);
+const PICK_MESH_UBO_BYTES = 80;
+const PICK_TI_UBO_BYTES = 16;
+const _uboScratch = new ArrayBuffer(PICK_MESH_UBO_BYTES);
+const _uboF32 = new F32(_uboScratch);
+const _uboU32 = new U32(_uboScratch);
 const _uboView = new U8(_uboScratch);
-const _tiUboScratch = new U32(4);
+const _tiUboScratch = new ArrayBuffer(PICK_TI_UBO_BYTES);
+const _tiUboU32 = new U32(_tiUboScratch);
+const _tiUboView = new U8(_tiUboScratch);
 
 /** GPU-based picker — pure state. Use pickAsync() and disposePicker() standalone functions. */
 export interface GpuPicker {
@@ -32,12 +34,16 @@ export interface GpuPicker {
     _scene: SceneContext;
     /** @internal 1×1 render targets (lazily created). */
     _rt: PickTargets1x1 | null;
-    /** @internal Reusable scene UBO (64 bytes). */
+    /** @internal Reusable scene UBO (80 bytes: pick VP + original framebuffer fragment coordinate). */
     _sceneUbo: GPUBuffer | null;
     /** @internal Reusable scene bind group. */
     _sceneBG: GPUBindGroup | null;
-    /** @internal Per-GS-mesh picking resources (created on demand). */
-    _gsMeshResources: Map<GaussianSplattingMesh, GsPickingPipeline.GsPickMeshResources> | null;
+    /** @internal Contributor built per pick source (once per picker) and cached, so each contributor's
+     *  GPU pick resources live in its closure and dispose generically — the picker never names an
+     *  entity type. */
+    _contributors: Map<PickSource, PickContributor> | null;
+    /** @internal Tail of the serialized pick queue for this picker — see pickAsync(). */
+    _pending: Promise<void> | null;
 }
 
 interface PickTargets1x1 {
@@ -59,7 +65,8 @@ export function createGpuPicker(scene: SceneContext): GpuPicker {
         _rt: null,
         _sceneUbo: null,
         _sceneBG: null,
-        _gsMeshResources: null,
+        _contributors: null,
+        _pending: null,
     };
 }
 
@@ -92,7 +99,7 @@ function ensureTargets(engine: EngineContext, picker: GpuPicker): PickTargets1x1
 function ensureSceneUbo(engine: EngineContext, picker: GpuPicker): GPUBuffer {
     const device = engine._device;
     if (!picker._sceneUbo) {
-        picker._sceneUbo = createEmptyUniformBuffer(engine, 64, "pick-scene-ubo");
+        picker._sceneUbo = createEmptyUniformBuffer(engine, 80, "pick-scene-ubo");
         const sceneBGL = getPickingSceneBGL(engine);
         picker._sceneBG = device.createBindGroup({ label: "pick-scene-bg", layout: sceneBGL, entries: [{ binding: 0, resource: { buffer: picker._sceneUbo } }] });
     }
@@ -123,15 +130,116 @@ export interface PickOptions {
      *  structure behind/around them. When omitted, every mesh is pickable (previous behaviour). Applied
      *  identically to the id-assignment and id-resolve passes so ids stay consistent. */
     filter?: (mesh: Mesh) => boolean;
+    /** Optional GPU fragment-discard extension for app-specific pick removal.
+     *
+     *  `wgsl` is injected into the regular and thin-instance picking shaders and must define:
+     *
+     *  `fn shouldDiscardPick(input: PickDiscardInput) -> bool`
+     *
+     *  The input exposes only generic picker data: `worldPos`, `fragmentCoord` (the selected pixel
+     *  centre in the original backing framebuffer), `pickId`, `thinInstanceIndex`,
+     *  `hasThinInstance`, and `instanceExtras` (the
+     *  original thin-instance matrix w lanes, zero for non-instanced meshes). Storage entries are
+     *  uploaded and bound by Lite for the current pick only. */
+    discard?: PickDiscardRule;
+    /** Dev-only diagnostics: logs the pick ray, pixel, pick id/depth and resolved mesh. */
+    debugLabel?: string;
 }
 
-/** Pick the mesh at CSS-space canvas coordinates, matching Babylon.js Scene.pick. Returns a PickingInfo. */
-export async function pickAsync(picker: GpuPicker, x: number, y: number, options?: PickOptions): Promise<PickingInfo> {
+/**
+ * Optional GPU-side discard rule for {@link pickAsync}.
+ *
+ * This lets apps remove pick hits with custom WGSL while keeping the main scene
+ * render untouched. The WGSL must define
+ * `fn shouldDiscardPick(input: PickDiscardInput) -> bool`.
+ */
+export interface PickDiscardRule {
+    /** Stable cache key for the generated picking pipeline set. Change it when the WGSL or layout changes. */
+    readonly key: string;
+    /** WGSL source that defines `shouldDiscardPick(input: PickDiscardInput) -> bool`. */
+    readonly wgsl: string;
+    /** Optional typed-array storage inputs exposed to the discard WGSL at group 2. */
+    readonly storage?: readonly PickDiscardStorage[];
+}
+
+/** Storage data for a pick discard rule. Lite injects the WGSL declaration and owns the GPU buffer upload. */
+export interface PickDiscardStorage {
+    /** WGSL variable name declared at `@group(2) @binding(index)`; must be unique within the rule. */
+    readonly name: string;
+    /** WGSL storage type, for example `array<vec4<f32>>`. */
+    readonly type: string;
+    /** Per-mesh data for the current pick. Return `null` to draw that mesh with the default picker. */
+    readonly data: (mesh: Mesh) => ArrayBufferView | null | undefined;
+}
+
+function createPickDiscardBindGroup(engine: EngineContext, layout: GPUBindGroupLayout, discard: PickDiscardRule, mesh: Mesh, tempBuffers: GPUBuffer[]): GPUBindGroup | null {
+    const storage = discard.storage;
+    if (!storage || storage.length === 0) {
+        return null;
+    }
+    const entries: GPUBindGroupEntry[] = [];
+    for (let i = 0; i < storage.length; i++) {
+        const data = storage[i]!.data(mesh);
+        if (!data) {
+            return null;
+        }
+        const buffer = createMappedBuffer(engine, data, BU.STORAGE, "pick-discard-storage");
+        tempBuffers.push(buffer);
+        entries.push({ binding: i, resource: { buffer } });
+    }
+    const device = engine._device;
+    return device.createBindGroup({
+        label: `pick-discard-${discard.key}-bg`,
+        layout,
+        entries,
+    });
+}
+
+/** Pick the mesh at CSS-space canvas coordinates, matching Babylon.js Scene.pick. Returns a PickingInfo.
+ *  Does the actual GPU render + readback for one pick — call `pickAsync` (below) instead; it serializes
+ *  concurrent calls on the same picker so their shared 1×1 staging buffers never race. */
+async function pickAsyncImpl(picker: GpuPicker, x: number, y: number, options?: PickOptions): Promise<PickingInfo> {
     const scene = picker._scene;
     const pickFilter = options?.filter ?? null;
-    const engine = scene.engine;
+    const pickDiscard = options?.discard ?? null;
+    const debugLabel = options?.debugLabel;
+    const engine = scene.surface.engine;
     const device = engine._device;
-    const canvas = engine.canvas;
+    if (!scene.camera) {
+        return createEmptyPickingInfo();
+    }
+
+    // Resolve every lazy dependency before opening a command encoder. Awaiting while a render pass is
+    // still unsubmitted lets the main frame resize and retire mesh buffers that the pick pass already
+    // captured; the eventual pick submission then references destroyed geometry.
+    const preparedContributors: { source: PickSource; contributor: PickContributor }[] = [];
+    if (scene._pickSources.length > 0) {
+        const sources = scene._pickSources.slice();
+        for (const source of sources) {
+            let contributor = picker._contributors?.get(source);
+            if (!contributor) {
+                const pipeline = await source.load();
+                if (!scene._pickSources.includes(source)) {
+                    continue;
+                }
+                contributor = pipeline.createPickContributor(source.entity);
+                (picker._contributors ??= new Map()).set(source, contributor);
+            }
+            preparedContributors.push({ source, contributor });
+        }
+    }
+
+    let deformedGeometry: typeof DeformedGeometry | null = null;
+    for (const mesh of scene.meshes) {
+        if ((mesh.morphTargets || mesh.skeleton) && mesh._cpuPositions) {
+            deformedGeometry = await import("./deformed-geometry.js");
+            break;
+        }
+    }
+
+    // Pick coordinates are relative to the scene's own surface canvas, not the engine's
+    // primary canvas — they differ when the scene renders into an auxiliary surface.
+    const canvas = scene.surface.canvas;
     const camera = scene.camera;
     if (!camera) {
         return createEmptyPickingInfo();
@@ -160,9 +268,16 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
     const py = Math.max(0, Math.min(Math.floor(pickY - viewport.y), h - 1));
     const aspect = w / h;
     const vp = getViewProjectionMatrix(camera, aspect);
+    const debugRay = debugLabel ? createPickingRay(px, py, vp, w, h) : null;
 
     // ── Compute pick-zoomed VP (renders single pixel to 1×1 target) ──
     computePickVP(_pickVP, vp as unknown as Float32Array, px, py, w, h);
+    // The pick renders into a 1x1 target, whose fragment position is always (0.5, 0.5). Preserve the
+    // selected pixel's coordinate in the original backing framebuffer so consumer discard rules can
+    // reproduce screen-space dithering exactly. Include the camera viewport origin because visible
+    // material fragment coordinates are surface-wide, while px/py above are viewport-local.
+    _pickVP[16] = viewport.x + px + 0.5;
+    _pickVP[17] = viewport.y + py + 0.5;
 
     const rt = ensureTargets(engine, picker);
     const sceneUbo = ensureSceneUbo(engine, picker);
@@ -172,14 +287,6 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
     const meshes = scene.meshes;
     const meshCount = meshes.length;
     let nextId = 1;
-    let deformedGeometry: typeof DeformedGeometry | null = null;
-    for (let mi = 0; mi < meshCount; mi++) {
-        const mesh = meshes[mi]!;
-        if ((mesh.morphTargets || mesh.skeleton) && mesh._cpuPositions) {
-            deformedGeometry = await import("./deformed-geometry.js");
-            break;
-        }
-    }
 
     // ── Render pass (1×1 target) ─────────────────────────────────────
     const encoder = device.createCommandEncoder({ label: "pick" });
@@ -191,58 +298,80 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
         depthStencilAttachment: { view: rt.depthView, depthClearValue: 0, depthLoadOp: "clear", depthStoreOp: "discard" },
     });
 
-    const regularPipeline = getPickingPipeline(engine);
-    const tiPipeline = getPickingTIPipeline(engine);
-    const meshBGL = getPickingMeshBGL(engine);
-    const tiMeshBGL = getPickingTIMeshBGL(engine);
+    const defaultPipelines = getPickingPipelineSet(engine);
+    const discardPipelines = pickDiscard ? getPickingPipelineSet(engine, pickDiscard) : null;
 
     const tempBuffers: GPUBuffer[] = [];
     for (let mi = 0; mi < meshCount; mi++) {
         const mesh = meshes[mi]!;
+        // Skip meshes explicitly marked non-pickable.  Mirrors BJS
+        // `isPickable = false` — lets gizmos toggle display-only helpers
+        // (e.g. the rotation-sector display plane) out of the picker without
+        // affecting their rendering or hiding them from picks via `visible`.
+        if (mesh.pickable === false) {
+            continue; // not drawn AND not given an id (skipped identically below)
+        }
         if (pickFilter && !pickFilter(mesh)) {
             continue; // excluded from picking → not drawn AND not given an id (skipped identically below)
         }
         const gpu = mesh._gpu;
         const ti = mesh.thinInstances;
+        const discardBG = pickDiscard && discardPipelines?.discardBGL ? createPickDiscardBindGroup(engine, discardPipelines.discardBGL, pickDiscard, mesh, tempBuffers) : null;
+        const pipelines = discardPipelines && (!discardPipelines.discardBGL || discardBG) ? discardPipelines : defaultPipelines;
 
-        if (ti && ti.count > 0 && ti._gpuBuffer) {
-            _tiUboScratch[0] = nextId;
-            const tiUbo = createUniformBuffer(engine, _tiUboScratch);
+        if (ti) {
+            if (ti.count <= 0 || !ti._gpuBuffer) {
+                continue;
+            }
+            _tiUboU32[0] = nextId;
+            const tiUbo = createUniformBuffer(engine, _tiUboView, "pick-thin-instance-ubo");
             tempBuffers.push(tiUbo);
 
-            pass.setPipeline(tiPipeline);
+            pass.setPipeline(pipelines.thinInstancePipeline);
             pass.setBindGroup(0, picker._sceneBG!);
             pass.setBindGroup(
                 1,
                 device.createBindGroup({
-                    layout: tiMeshBGL,
+                    layout: pipelines.thinInstancePipeline.getBindGroupLayout(1),
                     entries: [
                         { binding: 0, resource: { buffer: tiUbo } },
                         { binding: 1, resource: { buffer: ti._gpuBuffer } },
                     ],
                 })
             );
+            if (discardBG) {
+                pass.setBindGroup(2, discardBG);
+            }
             pass.setVertexBuffer(0, gpu.positionBuffer);
             pass.setIndexBuffer(gpu.indexBuffer, gpu.indexFormat);
             pass.drawIndexed(gpu.indexCount, ti.count);
             nextId += ti.count;
         } else {
-            _uboF32.set(mesh.worldMatrix);
-            _uboU32[0] = nextId;
-            const meshUbo = createUniformBuffer(engine, _uboView);
+            _uboF32.set(mesh.worldMatrix, 0);
+            _uboU32[16] = nextId;
+            const meshUbo = createUniformBuffer(engine, _uboView, "pick-mesh-ubo");
             tempBuffers.push(meshUbo);
             let positionBuffer = gpu.positionBuffer;
             if (deformedGeometry && (mesh.morphTargets || mesh.skeleton) && mesh._cpuPositions) {
                 const deformedPositions = deformedGeometry.computeDeformedPositions(mesh);
                 if (deformedPositions) {
-                    positionBuffer = createMappedBuffer(engine, deformedPositions, BU.VERTEX);
+                    positionBuffer = createMappedBuffer(engine, deformedPositions, BU.VERTEX, "pick-deformed-position");
                     tempBuffers.push(positionBuffer);
                 }
             }
 
-            pass.setPipeline(regularPipeline);
+            pass.setPipeline(pipelines.regularPipeline);
             pass.setBindGroup(0, picker._sceneBG!);
-            pass.setBindGroup(1, device.createBindGroup({ layout: meshBGL, entries: [{ binding: 0, resource: { buffer: meshUbo } }] }));
+            pass.setBindGroup(
+                1,
+                device.createBindGroup({
+                    layout: pipelines.regularPipeline.getBindGroupLayout(1),
+                    entries: [{ binding: 0, resource: { buffer: meshUbo } }],
+                })
+            );
+            if (discardBG) {
+                pass.setBindGroup(2, discardBG);
+            }
             pass.setVertexBuffer(0, positionBuffer);
             pass.setIndexBuffer(gpu.indexBuffer, gpu.indexFormat);
             pass.drawIndexed(gpu.indexCount);
@@ -250,28 +379,25 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
         }
     }
 
-    // ── Gaussian-splatting meshes ────────────────────────────────────
-    // Drawn from the same pass against the same depth target.  Each GS mesh
-    // gets one pick id (no thin-instance support — BJS GS picking is per-mesh
-    // too).  The GS picking pipeline applies an independent pickMatrix to the
-    // GS clip-space output so the EWA Jacobian / `u.focal` math stays intact.
-    const gsMeshes = (scene as unknown as { _gsMeshes: GaussianSplattingMesh[] })._gsMeshes;
-    const gsMeshCount = gsMeshes.length;
-    const gsNextIdStart = nextId;
-    if (gsMeshCount > 0) {
-        const gsModule = await import("./gs-picking-pipeline.js");
-        gsModule.computeGsPickMatrix(_gsPickMatrix, px, py, w, h);
-        gsModule.gsPickWritePickMatrixAndBind(pass, engine, _gsPickMatrix);
-        const resMap = picker._gsMeshResources ?? (picker._gsMeshResources = new Map());
-        for (let gi = 0; gi < gsMeshCount; gi++) {
-            const gsMesh = gsMeshes[gi]!;
-            let res = resMap.get(gsMesh);
-            if (!res) {
-                res = gsModule.createGsPickMeshResources(engine, gsMesh);
-                resMap.set(gsMesh, res);
+    // ── Pick contributors (optional entity types) ───────────────────
+    // Meshes above own ids 1..M. Each registered contributor (a GS mesh, a billboard system, …)
+    // then draws into the SAME pass against the SAME depth target — so contributor entities
+    // depth-sort against meshes and each other (an occluded one loses the pick) — and owns a
+    // contiguous id range [base, next). The picker names no entity type: the per-type draw,
+    // resolve, resources, and view math all live in the contributor's own (lazily imported)
+    // module, so a scene with no contributors fetches zero contributor pick bytes.
+    const contribRanges: { base: number; count: number; contributor: PickContributor }[] = [];
+    if (preparedContributors.length > 0) {
+        const pickCtx: PickPassContext = { picker, pass, engine, scene, camera, sceneBG: picker._sceneBG!, px, py, w, h };
+        for (const { source, contributor } of preparedContributors) {
+            if (!scene._pickSources.includes(source)) {
+                continue;
             }
-            gsModule.drawGsForPicking(pass, engine, scene, gsMesh, res, nextId, w, h);
-            nextId++;
+            const base = nextId;
+            nextId = contributor.draw(pickCtx, base);
+            if (nextId > base) {
+                contribRanges.push({ base, count: nextId - base, contributor });
+            }
         }
     }
     pass.end();
@@ -281,34 +407,52 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
     encoder.copyTextureToBuffer({ texture: rt.depthColorTex }, { buffer: rt.depthStaging, bytesPerRow: 256 }, { width: 1, height: 1 });
     device.queue.submit([encoder.finish()]);
 
-    await Promise.all([rt.colorStaging.mapAsync(GPUMapMode.READ), rt.depthStaging.mapAsync(GPUMapMode.READ)]);
+    let pickId: number;
+    let depth: number;
+    try {
+        await Promise.all([rt.colorStaging.mapAsync(GPUMapMode.READ), rt.depthStaging.mapAsync(GPUMapMode.READ)]);
 
-    const colorData = new U8(rt.colorStaging.getMappedRange());
-    const pickId = (colorData[0]! << 16) | (colorData[1]! << 8) | colorData[2]!;
-    const depth = new F32(rt.depthStaging.getMappedRange())[0]!;
-    rt.colorStaging.unmap();
-    rt.depthStaging.unmap();
-
-    // Destroy temp per-mesh UBOs
-    for (let i = 0; i < tempBuffers.length; i++) {
-        tempBuffers[i]!.destroy();
+        const colorData = new U8(rt.colorStaging.getMappedRange());
+        pickId = (colorData[0]! << 16) | (colorData[1]! << 8) | colorData[2]!;
+        depth = new F32(rt.depthStaging.getMappedRange())[0]!;
+        rt.colorStaging.unmap();
+        rt.depthStaging.unmap();
+    } finally {
+        for (let i = 0; i < tempBuffers.length; i++) {
+            tempBuffers[i]!.destroy();
+        }
     }
 
     // ── Resolve pick ID to mesh ──────────────────────────────────────
     if (pickId === 0) {
+        if (debugLabel) {
+            console.trace("pick-debug", {
+                label: debugLabel,
+                input: { x, y, pickX, pickY, px, py, backingWidth, backingHeight, clientWidth, clientHeight, viewport },
+                ray: debugRay,
+                pickId,
+                depth,
+                hit: false,
+            });
+        }
         return createEmptyPickingInfo();
     }
-    let hitMesh: Mesh | GaussianSplattingMesh | null = null;
+    let hitMesh: Mesh | null = null;
     let hitThinIdx = -1;
-    let hitIsGs = false;
     let scanId = 1;
     for (let mi = 0; mi < meshCount; mi++) {
         const mesh = meshes[mi]!;
+        if (mesh.pickable === false) {
+            continue; // skipped identically to the draw pass above so scanId stays aligned with the ids
+        }
         if (pickFilter && !pickFilter(mesh)) {
             continue; // skipped identically to the draw pass above so scanId stays aligned with the ids
         }
         const ti = mesh.thinInstances;
-        if (ti && ti.count > 0 && ti._gpuBuffer) {
+        if (ti) {
+            if (ti.count <= 0 || !ti._gpuBuffer) {
+                continue;
+            }
             if (pickId >= scanId && pickId < scanId + ti.count) {
                 hitMesh = mesh;
                 hitThinIdx = pickId - scanId;
@@ -323,14 +467,32 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
             scanId++;
         }
     }
-    if (!hitMesh && gsMeshCount > 0 && pickId >= gsNextIdStart) {
-        const gsIdx = pickId - gsNextIdStart;
-        if (gsIdx < gsMeshCount) {
-            hitMesh = gsMeshes[gsIdx]!;
-            hitIsGs = true;
+    // Contributor resolve: meshes own ids 1..M, so any unresolved id belongs to a contributor.
+    // Find the owning contributor by its id range (a numeric compare, no entity-type knowledge).
+    let hitContributor: PickContributor | null = null;
+    let contribLocalId = -1;
+    if (!hitMesh) {
+        for (let ri = 0; ri < contribRanges.length; ri++) {
+            const r = contribRanges[ri]!;
+            if (pickId >= r.base && pickId < r.base + r.count) {
+                hitContributor = r.contributor;
+                contribLocalId = pickId - r.base;
+                break;
+            }
         }
     }
-    if (!hitMesh) {
+    if (!hitMesh && !hitContributor) {
+        if (debugLabel) {
+            console.trace("pick-debug", {
+                label: debugLabel,
+                input: { x, y, pickX, pickY, px, py, backingWidth, backingHeight, clientWidth, clientHeight, viewport },
+                ray: debugRay,
+                pickId,
+                depth,
+                hit: false,
+                unresolved: true,
+            });
+        }
         return createEmptyPickingInfo();
     }
 
@@ -358,15 +520,61 @@ export async function pickAsync(picker: GpuPicker, x: number, y: number, options
         info.distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    if (picker._detailedPick && !hitIsGs) {
+    if (hitContributor) {
+        // The contributor attaches its own payload (GS sets pickedMesh; a billboard sets _spritePick).
+        // pickedPoint/distance were reconstructed above from the shared pick depth.
+        hitContributor.resolve(info, contribLocalId);
+    }
+
+    if (picker._detailedPick && hitMesh) {
         const ray = createPickingRay(pickX - viewport.x, pickY - viewport.y, vp, w, h);
         if (ray) {
             info.ray = ray;
             await picker._detailedPick(info, ray);
         }
     }
+    if (debugLabel) {
+        console.trace("pick-debug", {
+            label: debugLabel,
+            input: { x, y, pickX, pickY, px, py, backingWidth, backingHeight, clientWidth, clientHeight, viewport },
+            ray: info.ray ?? debugRay,
+            pickId,
+            depth,
+            hit: true,
+            mesh: hitMesh ? (hitMesh.name ?? "(unnamed)") : "(contributor)",
+            thinInstanceIndex: hitThinIdx,
+            pickedPoint: info.pickedPoint,
+            distance: info.distance,
+        });
+    }
 
     return info;
+}
+
+/**
+ * Pick the mesh at CSS-space canvas coordinates, matching Babylon.js Scene.pick. Returns a PickingInfo.
+ *
+ * A picker's 1×1 readback targets (`PickTargets1x1.colorStaging`/`depthStaging`) are lazily created ONCE
+ * and reused for every pick — cheap, but it means two overlapping `pickAsync` calls on the SAME picker
+ * race `mapAsync` on those shared buffers ("Buffer already has an outstanding map pending", since a
+ * GPUBuffer allows only one pending map at a time). This is easy to trigger from a consumer: e.g. a
+ * cursor-following hover preview that GPU-picks on every pointermove, racing a pick fired by a click that
+ * lands before the hover's pick has unmapped. Queue concurrent calls per-picker instead of rejecting: each
+ * pick's full map/unmap cycle completes before the next one starts.
+ */
+export function pickAsync(picker: GpuPicker, x: number, y: number, options?: PickOptions): Promise<PickingInfo> {
+    const prior = picker._pending ?? Promise.resolve();
+    const run = prior.then(
+        () => pickAsyncImpl(picker, x, y, options),
+        () => pickAsyncImpl(picker, x, y, options) // a prior pick's rejection must not wedge the queue for this caller
+    );
+    // Swallow so a rejection here doesn't propagate into the NEXT caller's chain (each caller gets its own
+    // `run` promise and observes the real rejection via the returned promise, not via `_pending`).
+    picker._pending = run.then(
+        () => undefined,
+        () => undefined
+    );
+    return run;
 }
 
 /** Dispose GPU resources owned by this picker. */
@@ -384,18 +592,12 @@ export function disposePicker(picker: GpuPicker): void {
         picker._sceneUbo = null;
         picker._sceneBG = null;
     }
-    if (picker._gsMeshResources) {
-        // Async dispose — destroy() is synchronous so we can run inline once
-        // the module is loaded.  If the module was never imported (no GS pick
-        // ever happened) the map is empty and there's nothing to do.
-        void import("./gs-picking-pipeline.js").then((m) => {
-            if (!picker._gsMeshResources) {
-                return;
-            }
-            for (const res of picker._gsMeshResources.values()) {
-                m.disposeGsPickMeshResources(res);
-            }
-            picker._gsMeshResources = null;
-        });
+    if (picker._contributors) {
+        // Each contributor was built once and cached here; it owns its GPU pick resources in its
+        // closure and frees them in dispose() — so cleanup is generic (the picker names no entity type).
+        for (const contributor of picker._contributors.values()) {
+            contributor.dispose?.();
+        }
+        picker._contributors = null;
     }
 }

@@ -83,8 +83,8 @@ async function main(): Promise<void> {
 
     const seekTime = parseFloat(new URLSearchParams(window.location.search).get("seekTime") || "");
     if (Number.isFinite(seekTime)) {
-        positiveGroup.currentFrame = seekTime;
-        negativeGroup.currentFrame = seekTime;
+        positiveGroup.currentTime = seekTime;
+        negativeGroup.currentTime = seekTime;
         pauseAnimation(positiveGroup);
         pauseAnimation(negativeGroup);
         updateAnimationManager(manager, 0);
@@ -94,7 +94,7 @@ async function main(): Promise<void> {
         startAnimationManager(manager);
     }
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.boxX = String(box.position.x);
     canvas.dataset.drawCalls = String(engine.drawCallCount);

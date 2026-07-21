@@ -41,18 +41,27 @@ import { sanitize, bjsTypeToNodeType, floatCount, extractDefault } from "./node-
 import { getAttrBuffer, writeAttributeFlags } from "./node-renderable.js";
 import type { NodeGeometryMaterialView } from "./node-geometry-view.js";
 
-/** Singleton {@link MeshGroupBuilder} that node geometry views point at via their
- *  overridden `_buildGroup`. The async builder body is unreachable — geometry
- *  views are dispatched per-mesh via the geometry renderer task which calls
- *  `_rebuildSingle` directly. */
-export const nodeGeometryGroupBuilder: MeshGroupBuilder = (async () => {
-    throw new Error("node-geometry view does not support scene group building");
-}) as MeshGroupBuilder;
-nodeGeometryGroupBuilder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
-    const view = (materialOverride ?? mesh.material) as NodeGeometryMaterialView;
-    return buildNodeGeometryRenderable(scene, mesh, view);
-};
-nodeGeometryGroupBuilder._materialFamily = "node";
+/** Lazily-created singleton {@link MeshGroupBuilder} that node geometry views point
+ *  at via their overridden `_buildGroup`. The async builder body is unreachable —
+ *  geometry views are dispatched per-mesh via the geometry renderer task which calls
+ *  `_rebuildSingle` directly. Lazy-init keeps the module free of top-level side
+ *  effects (the builder is built only when a node-geometry view is created), so an
+ *  unused node-geometry path tree-shakes away. */
+let _nodeGeometryGroupBuilder: MeshGroupBuilder | null = null;
+export function getNodeGeometryGroupBuilder(): MeshGroupBuilder {
+    if (_nodeGeometryGroupBuilder) {
+        return _nodeGeometryGroupBuilder;
+    }
+    const builder = (async () => {
+        throw new Error("node-geometry view does not support scene group building");
+    }) as MeshGroupBuilder;
+    builder._materialFamily = "node";
+    builder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
+        const view = (materialOverride ?? mesh.material) as NodeGeometryMaterialView;
+        return buildNodeGeometryRenderable(scene, mesh, view);
+    };
+    return (_nodeGeometryGroupBuilder = builder);
+}
 
 /** Shared per-view geometry resources, computed once and cached on the view. */
 interface NodeGeometryViewResources {
@@ -207,7 +216,7 @@ function ensureGeometryCompile(view: NodeGeometryMaterialView, res: NodeGeometry
             device.createRenderPipeline({
                 label: "node-material-geometry",
                 layout: device.createPipelineLayout({ bindGroupLayouts: [a._sceneBGL, a._meshBGL] }),
-                vertex: { module: a._shaderModule, entryPoint: "vs_main", buffers: a._vertexBuffers },
+                vertex: { module: a._shaderModule, entryPoint: "vs_main", buffers: [...a._vertexBuffers] },
                 fragment: { module: a._shaderModule, entryPoint: "fs_main", targets: colorFormats.map((f) => ({ format: f })) },
                 depthStencil: { format: a._depthFormat, depthCompare: a._depthCompare, depthWriteEnabled: true },
                 multisample: { count: a._msaaSamples },
@@ -314,7 +323,7 @@ function buildGeometryBindGroup(
 
 /** Build a {@link Renderable} for one mesh drawn through a NodeMaterial geometry view. */
 export function buildNodeGeometryRenderable(scene: SceneContext, mesh: Mesh, view: NodeGeometryMaterialView): Renderable {
-    const engine = scene.engine as EngineContext;
+    const engine = scene.surface.engine;
     const device = engine._device;
     const source = view.source as NodeMaterial;
     const res = ensureGeometryResources(view);

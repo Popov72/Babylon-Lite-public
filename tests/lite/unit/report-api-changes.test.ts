@@ -30,10 +30,122 @@ describe("API report breaking-change classifier", () => {
         expect(breakingApiLines(diff)).toEqual(["export declare function setColor(color: string): void;"]);
     });
 
+    it("treats a parameter widening to a union superset as additive", () => {
+        const diff = apiDiff(
+            "export declare function removeFromScene(scene: SceneContext, mesh: Mesh): void;",
+            "export declare function removeFromScene(scene: SceneContext, entity: Mesh | LightBase | Camera): void;"
+        );
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("treats a non-union parameter widening into a union as additive", () => {
+        const diff = apiDiff("export declare function add(entity: Mesh): void;", "export declare function add(entity: Mesh | LightBase): void;");
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("flags a parameter union that drops the original type as breaking", () => {
+        const diff = apiDiff("export declare function add(entity: Mesh): void;", "export declare function add(entity: LightBase | Camera): void;");
+
+        expect(breakingApiLines(diff)).toEqual(["export declare function add(entity: Mesh): void;"]);
+    });
+
+    it("flags a pure parameter rename (no widening) as breaking", () => {
+        const diff = apiDiff("export declare function add(mesh: Mesh): void;", "export declare function add(entity: Mesh): void;");
+
+        expect(breakingApiLines(diff)).toEqual(["export declare function add(mesh: Mesh): void;"]);
+    });
+
     it("flags return type changes as breaking", () => {
         const diff = apiDiff("export declare function createMesh(name: string): Mesh;", "export declare function createMesh(name: string): Promise<Mesh>;");
 
         expect(breakingApiLines(diff)).toEqual(["export declare function createMesh(name: string): Mesh;"]);
+    });
+
+    it("treats a const literal widening to its primitive base as additive", () => {
+        const diff = apiDiff('export const VERSION = "0.1.0";', "export const VERSION: string;");
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("treats numeric and boolean const literal widening as additive", () => {
+        expect(breakingApiLines(apiDiff("export const MAX = 100;", "export const MAX: number;"))).toEqual([]);
+        expect(breakingApiLines(apiDiff("export const ENABLED = true;", "export const ENABLED: boolean;"))).toEqual([]);
+    });
+
+    it("flags a const widening to an unrelated type as breaking", () => {
+        const diff = apiDiff('export const VERSION = "0.1.0";', "export const VERSION: number;");
+
+        expect(breakingApiLines(diff)).toEqual(['export const VERSION = "0.1.0";']);
+    });
+
+    it("flags a renamed const as breaking", () => {
+        const diff = apiDiff('export const VERSION = "0.1.0";', "export const REVISION: string;");
+
+        expect(breakingApiLines(diff)).toEqual(['export const VERSION = "0.1.0";']);
+    });
+
+    it("treats a TypedArray gaining its TS 5.7 buffer type argument as additive", () => {
+        expect(breakingApiLines(apiDiff("readonly weights: Float32Array;", "readonly weights: Float32Array<ArrayBuffer>;"))).toEqual([]);
+        expect(breakingApiLines(apiDiff("readonly weights: Float32Array<ArrayBuffer>;", "readonly weights: Float32Array;"))).toEqual([]);
+    });
+
+    it("treats TypedArray buffer-argument changes inside composite types as additive", () => {
+        const diff = apiDiff(
+            "readonly targets: readonly { positions: Float32Array; normals: Float32Array | null }[];",
+            "readonly targets: readonly { positions: Float32Array<ArrayBuffer>; normals: Float32Array<ArrayBuffer> | null }[];"
+        );
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("still flags a genuine TypedArray element-type change as breaking", () => {
+        const diff = apiDiff("readonly weights: Float32Array<ArrayBuffer>;", "readonly weights: Float64Array<ArrayBuffer>;");
+
+        expect(breakingApiLines(diff)).toEqual(["readonly weights: Float32Array<ArrayBuffer>;"]);
+    });
+
+    it("still flags a non-default backing-buffer change as breaking", () => {
+        const diff = apiDiff("readonly weights: Float32Array<ArrayBuffer>;", "readonly weights: Float32Array<SharedArrayBuffer>;");
+
+        expect(breakingApiLines(diff)).toEqual(["readonly weights: Float32Array<ArrayBuffer>;"]);
+    });
+
+    it("treats a union type alias gaining members as additive", () => {
+        const diff = apiDiff(
+            'export type ShaderAttributeName = "position" | "normal" | "uv" | "uv2" | "tangent" | "color";',
+            'export type ShaderAttributeName = "position" | "normal" | "uv" | "uv2" | "tangent" | "color" | "joints" | "weights" | "joints1" | "weights1";'
+        );
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("treats a `declare type` union gaining members as additive", () => {
+        const diff = apiDiff('export declare type Mode = "a" | "b";', 'export declare type Mode = "a" | "b" | "c";');
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("flags a union that drops a member as breaking", () => {
+        const removed = 'export type Mode = "a" | "b" | "c";';
+        const diff = apiDiff(removed, 'export type Mode = "a" | "b";');
+
+        expect(breakingApiLines(diff)).toEqual([removed]);
+    });
+
+    it("flags a union that renames a member as breaking", () => {
+        const removed = 'export type Mode = "a" | "b";';
+        const diff = apiDiff(removed, 'export type Mode = "a" | "c";');
+
+        expect(breakingApiLines(diff)).toEqual([removed]);
+    });
+
+    it("flags a renamed union alias as breaking even when it gains members", () => {
+        const removed = 'export type Mode = "a" | "b";';
+        const diff = apiDiff(removed, 'export type Kind = "a" | "b" | "c";');
+
+        expect(breakingApiLines(diff)).toEqual([removed]);
     });
 
     it("does not flag purely added API lines", () => {
@@ -46,5 +158,39 @@ describe("API report breaking-change classifier", () => {
         ].join("\n");
 
         expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("treats overloads collapsed into one widened union signature as additive", () => {
+        const diff = [
+            "diff --git a/target.api.md b/current.api.md",
+            "--- a/target.api.md",
+            "+++ b/current.api.md",
+            "@@",
+            "-export function loadGltf(engine: EngineContext, url: string): Promise<AssetContainer>;",
+            "-export function loadGltf(engine: EngineContext, data: ArrayBuffer | Blob): Promise<AssetContainer>;",
+            "+export function loadGltf(engine: EngineContext, source: string | ArrayBuffer | Blob): Promise<AssetContainer>;",
+        ].join("\n");
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("treats a widened single parameter type as additive", () => {
+        const diff = apiDiff("export declare function setColor(color: string): void;", "export declare function setColor(color: string | Color3): void;");
+
+        expect(breakingApiLines(diff)).toEqual([]);
+    });
+
+    it("flags a narrowed parameter union as breaking", () => {
+        const removed = "export declare function setColor(color: string | Color3): void;";
+        const diff = apiDiff(removed, "export declare function setColor(color: string): void;");
+
+        expect(breakingApiLines(diff)).toEqual([removed]);
+    });
+
+    it("does not treat a widened optional parameter as matching a required one", () => {
+        const removed = "export declare function setColor(color: string): void;";
+        const diff = apiDiff(removed, "export declare function setColor(color?: string | Color3): void;");
+
+        expect(breakingApiLines(diff)).toEqual([removed]);
     });
 });

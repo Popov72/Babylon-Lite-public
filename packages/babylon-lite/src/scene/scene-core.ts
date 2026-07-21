@@ -1,10 +1,14 @@
 import type { EngineContext, RenderingContext } from "../engine/engine.js";
 import { _vis, isRenderingContextRegistered, registerRenderingContext, unregisterRenderingContext } from "../engine/engine.js";
+import type { SurfaceContext } from "../engine/surface.js";
 import type { Camera } from "../camera/camera.js";
 import type { LightBase } from "../light/types.js";
 import type { Mesh } from "../mesh/mesh.js";
 import { disposeMeshGpu } from "../mesh/mesh-dispose.js";
+import { registerMeshScene, unregisterMeshScene, enqueueMaterialSwap } from "./mesh-scene-registry.js";
+import { processMaterialSwaps } from "./scene-material-swap.js";
 import type { AnimationGroup } from "../animation/animation-group.js";
+import { tickAnimation } from "../animation/animation-tick.js";
 import type { ShadowGenerator } from "../shadow/shadow-generator.js";
 import type { FogConfig } from "../material/standard/standard-material.js";
 import type { Renderable, PrePassRenderable, SceneUniformUpdater, MeshGroupBuilder } from "../render/renderable.js";
@@ -18,15 +22,24 @@ import { createRenderTarget } from "../engine/render-target.js";
 import type { AssetContainer } from "../asset-container.js";
 import type { SceneLightGpuState } from "../render/lights-ubo.js";
 import type { ClusteredLightContainer } from "../light/clustered.js";
-import type { GaussianSplattingMesh } from "../mesh/GaussianSplatting/gaussian-splatting-mesh.js";
+import type { PickSource } from "../picking/pick-contributor.js";
+import type { ToneMapping } from "../material/pbr/tone-mapping.js";
 
 /** Image processing configuration. */
 export interface ImageProcessingConfig {
     exposure: number;
     contrast: number;
     toneMappingEnabled: boolean;
-    /** "standard" (BJS TONEMAPPING_STANDARD, default) or "aces" (BJS TONEMAPPING_ACES). */
-    toneMappingType?: "standard" | "aces";
+    /**
+     * Tone mapping algorithm applied by PBR materials when `toneMappingEnabled` is true.
+     * Undefined means the default {@link StandardToneMapping} (exponential). Assign a
+     * built-in ({@link StandardToneMapping}, {@link AcesToneMapping}, {@link NeutralToneMapping})
+     * or a custom {@link ToneMapping}.
+     *
+     * This is baked into the PBR shaders at `registerScene()` time. To change it after
+     * registration, use `setSceneImageProcessing` so the affected pipelines are rebuilt.
+     */
+    toneMapping?: ToneMapping;
 }
 
 /** A clipping plane expressed as the coefficients `[a, b, c, d]` of `a·x + b·y + c·z + d`. */
@@ -34,7 +47,12 @@ export type ClipPlane = readonly [number, number, number, number];
 
 /** Top-level scene context — pure state, no attached methods. */
 export interface SceneContext extends RenderingContext {
-    readonly engine: EngineContext;
+    /** Surface this scene renders into. Set at scene-creation time and immutable
+     *  afterwards — the default render task is sized and MSAA-matched to this surface,
+     *  and `registerScene` attaches the scene to it. For the engine's primary surface
+     *  (the common single-canvas case) this is the engine itself. The owning engine is
+     *  reachable via `scene.surface.engine`. */
+    readonly surface: SurfaceContext;
     clearColor: GPUColorDict;
     camera: Camera | null;
     lights: LightBase[];
@@ -70,12 +88,12 @@ export interface SceneContext extends RenderingContext {
     _renderables: Renderable[];
     /** @internal Pre-pass work (shadow maps, compute, etc.). */
     _prePasses: PrePassRenderable[];
-    /** GaussianSplatting meshes attached to this scene.  Populated by
-     *  `attachGaussianSplattingMesh`.  Scene-core stays GS-agnostic apart from
-     *  this opaque registry (used by `gpu-picker` to iterate GS meshes without
-     *  scanning `_renderables`). */
+    /** Pick sources — one per optional pickable entity (GS mesh, billboard system, …). Registered by
+     *  the entity module via `registerPickSource` when the entity is added; each is pure data + a
+     *  dynamic-import thunk the GPU picker resolves (once) on the first pick, so rendering the entity
+     *  pulls no pick-pipeline bytes. Scene-core stays pick-agnostic apart from this opaque list. */
     /** @internal */
-    _gsMeshes: GaussianSplattingMesh[];
+    _pickSources: PickSource[];
     /** @internal Scene uniform updaters (one per shared UBO). */
     _uniformUpdaters: SceneUniformUpdater[];
     /** @internal Opt-in feature writers for the SceneUniforms UBO (fog, clip plane, env SH).
@@ -93,17 +111,34 @@ export interface SceneContext extends RenderingContext {
     _disposables: (() => void)[];
     /** @internal Per-mesh cleanup callbacks (mesh UBOs, bind groups). For material swap + dispose. */
     _meshDisposables: Map<Mesh, (() => void)[]>;
+    /** @internal Per-mesh cleanup callbacks for AUX (material-OVERRIDE) view packets that an explicit render
+     *  task registered on a mesh it does not own — e.g. a depth-prepass / SSAO no-colour view of a wall. Kept
+     *  SEPARATE from `_meshDisposables` because a MAIN-material swap (`processMaterialSwaps`, which rebuilds
+     *  only the main renderable) must NOT tear these down: they belong to another task, whose cached bundle
+     *  would then replay a destroyed system UBO ("used in submit while destroyed"). Drained only on a real mesh
+     *  removal (`removeFromScene`) and scene dispose, exactly like `_meshDisposables` minus the swap path. */
+    _meshAuxDisposables: Map<Mesh, (() => void)[]>;
     /** @internal Meshes whose material was changed via setter — drained before each render frame. */
     _materialSwapQueue: Mesh[];
     /** @internal Monotonic counter bumped when the renderable list changes (add/remove/rebuild). */
     _renderableVersion: number;
-    /** @internal Lazily-loaded processor; populated on first material reassignment. */
-    _processSwaps?: (scene: SceneContext) => void;
+    /** @internal Monotonic counter bumped ONLY when a material's renderables are rebuilt/swapped (material
+     *  swap drain or `rebuildMaterial`) — NOT on a geometry resize (which bumps `_renderableVersion` alone).
+     *  Lets consumers that cache material-view-derived GPU state (e.g. the CSM shadow tasks' no-color material
+     *  views) cheaply re-record on a geometry-only edit and only fully rebuild when a caster's material UBOs
+     *  were actually destroyed/recreated (which would otherwise leave their cached views dangling). */
+    _materialEpoch: number;
     /** True once the initial deferred build (buildScene) has run. Meshes added after
      *  this point are materialized via the per-frame swap drain rather than the
      *  boot-only deferred-builder path. */
     /** @internal */
     _built: boolean;
+    /** Builders whose deferred group build has COMPLETED. A mesh that joins one of these groups after the fact
+     *  (post-boot, or a glTF prop whose async load resolves DURING buildScene's drain and joins an already-built
+     *  group) is materialized via the per-frame swap drain: its group builder has already run and won't see it,
+     *  so without this it would cast shadows (it's in ctx.meshes) but never be drawn in the color pass. */
+    /** @internal */
+    _builtGroups: Set<MeshGroupBuilder>;
 
     // ─── Stashed internal state (typed to avoid `as any` casts) ────
     /** @internal */
@@ -129,50 +164,17 @@ export interface SceneContextOptions {
     defaultRenderTask?: boolean;
 }
 
-/** Queue a mesh for renderable (re)build on the next frame's material-swap drain.
- *  Shared by the material setter (runtime material change) and addToScene (runtime
- *  mesh add). Lazily loads the swap processor so scenes that never mutate at runtime
- *  don't pull it into their bundle. */
-function enqueueMaterialSwap(scene: SceneContext, mesh: Mesh): void {
-    const mi = mesh as Mesh;
-    if (mi._materialDirty) {
-        return;
-    }
-    mi._materialDirty = true;
-    scene._materialSwapQueue.push(mesh);
-    if (!scene._processSwaps) {
-        void import("./scene-material-swap.js").then((m) => {
-            scene._processSwaps = m.processMaterialSwaps;
-        });
-    }
-}
-
-/** Install a property setter on mesh.material that sets _materialDirty
- *  and pushes the mesh into the scene's swap queue for processing. */
-function installMaterialSetter(scene: SceneContext, mesh: Mesh): void {
-    let _mat = mesh.material;
-    Object.defineProperty(mesh, "material", {
-        get() {
-            return _mat;
-        },
-        set(v) {
-            if (v !== _mat) {
-                _mat = v;
-                enqueueMaterialSwap(scene, mesh);
-            }
-        },
-        configurable: true,
-        enumerable: true,
-    });
-}
-
-/** Create an empty scene context bound to the given engine. */
-export function createSceneContext(engine: EngineContext, options?: SceneContextOptions): SceneContext {
-    const eng = engine as EngineContext;
+/** Create an empty scene context bound to the given `surface`. The default render task
+ *  is built against the surface's format, MSAA configuration, and swapchain RT — the
+ *  scene is permanently bound to that surface. Pass `engine` directly (since
+ *  `EngineContext extends SurfaceContext`) for the common single-canvas case, or pass
+ *  an auxiliary surface created via `createSurface`. */
+export function createSceneContext(surface: SurfaceContext, options?: SceneContextOptions): SceneContext {
+    const eng = surface.engine;
 
     // Closures below capture `ctx` by-reference via this object.
     const ctxLocal: Omit<SceneContext, "_frameGraph"> = {
-        engine,
+        surface,
         clearColor: { r: 0.2, g: 0.2, b: 0.3, a: 1.0 },
         camera: null,
         lights: [],
@@ -184,7 +186,7 @@ export function createSceneContext(engine: EngineContext, options?: SceneContext
         imageProcessing: { exposure: 1.0, contrast: 1.0, toneMappingEnabled: false },
         _renderables: [],
         _prePasses: [],
-        _gsMeshes: [],
+        _pickSources: [],
         _uniformUpdaters: [],
         fixedDeltaMs: 0,
         _beforeRender: [],
@@ -192,9 +194,12 @@ export function createSceneContext(engine: EngineContext, options?: SceneContext
         _groups: new Map(),
         _disposables: [],
         _meshDisposables: new Map(),
+        _meshAuxDisposables: new Map(),
         _materialSwapQueue: [],
         _renderableVersion: 0,
+        _materialEpoch: 0,
         _built: false,
+        _builtGroups: new Set(),
         _drawCallsPre: 0,
 
         _update(): void {
@@ -216,7 +221,7 @@ export function createSceneContext(engine: EngineContext, options?: SceneContext
                 cb(d);
             }
             if (ctx._materialSwapQueue.length > 0) {
-                ctx._processSwaps?.(ctx);
+                processMaterialSwaps(ctx);
             }
             for (const pp of ctx._prePasses) {
                 draws += pp.execute(encoder, eng);
@@ -246,10 +251,13 @@ export function createSceneContext(engine: EngineContext, options?: SceneContext
         // MSAA: render into an MSAA colour RT (which owns depth) and resolve into the
         // single-sample scRT. No MSAA: render straight into the colour-only
         // scRT with a task-owned single-sample depth buffer it builds/clears/frees.
-        const msaa = eng.msaaSamples > 1;
-        const rt = msaa ? createRenderTarget({ lbl: "scene-color", format: eng.format, dFormat: "depth24plus-stencil8", samples: eng.msaaSamples, size: "canvas" }) : eng.scRT;
-        const depth = msaa ? undefined : createRenderTarget({ lbl: "scene-depth", dFormat: "depth24plus-stencil8", samples: 1, size: "canvas" });
-        _appendTask(fg, createRenderTask({ name: "scene", rt, rst: msaa ? eng.scRT : undefined, depth, clrColor: ctx.clearColor }, eng, ctx));
+        // All three reads (format / msaaSamples / scRT) come from the bound `surface`.
+        const msaa = surface.msaaSamples > 1;
+        const rt = msaa
+            ? createRenderTarget({ lbl: "scene-color", format: surface.format, dFormat: "depth24plus-stencil8", samples: surface.msaaSamples, size: surface })
+            : surface.scRT;
+        const depth = msaa ? undefined : createRenderTarget({ lbl: "scene-depth", dFormat: "depth24plus-stencil8", samples: 1, size: surface });
+        _appendTask(fg, createRenderTask({ name: "scene", rt, rst: msaa ? surface.scRT : undefined, depth, clrColor: ctx.clearColor }, eng, ctx));
     }
     ctx._disposables.push(() => fg.dispose());
     return ctx;
@@ -283,7 +291,7 @@ export function addDeferredSceneRenderables(
 ): void {
     const ctx = scene as SceneContext;
     ctx._deferredBuilders.push(async () => {
-        const built = await build(ctx.engine as EngineContext, ctx);
+        const built = await build(ctx.surface.engine, ctx);
         ctx._renderables.push(...built.renderables);
         if (built.dispose) {
             ctx._disposables.push(built.dispose);
@@ -315,23 +323,27 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
             ctx.camera = result.camera;
         }
         if (result.animationGroups?.length) {
-            const engine = ctx.engine as EngineContext;
+            const engine = ctx.surface.engine;
             const groups = result.animationGroups;
             ctx.animationGroups.push(...groups);
-            ctx._beforeRender.push((deltaMs: number) => {
+            const hook = (deltaMs: number): void => {
                 for (const g of groups) {
-                    if (!g._stopped && g._ctrl) {
-                        g._ctrl.tick(deltaMs, engine);
-                    }
+                    tickAnimation(g, deltaMs, engine);
                 }
-            });
+            };
+            result._beforeRenderHook = hook;
+            ctx._beforeRender.push(hook);
         }
+        // Feature-owned scene wiring (e.g. EXT_lights_image_based installs its IBL
+        // environment). Runs synchronously so the environment is registered before
+        // registerScene() builds the scene UBO / PBR renderables.
+        result._sceneSetup?.(ctx);
         return;
     }
     if ("_gpu" in entity && "material" in entity) {
         const mesh = entity as unknown as Mesh;
         ctx.meshes.push(mesh);
-        installMaterialSetter(ctx, mesh);
+        registerMeshScene(ctx, mesh);
         const build = mesh.material ? (mesh.material as unknown as { _buildGroup?: MeshGroupBuilder })._buildGroup : undefined;
         if (build) {
             let group = ctx._groups.get(build);
@@ -344,13 +356,19 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
                     if (result.updater) {
                         ctx._uniformUpdaters.push(result.updater);
                     }
+                    // This group's meshes now have renderables; a mesh that joins it LATER (post-boot or
+                    // mid-drain) won't be seen by this builder and must be materialized via a swap instead.
+                    ctx._builtGroups.add(build);
                 });
             }
             group.push(mesh);
-            // Added after the initial build: the deferred builder for this group has
-            // already run (and only runs at boot), so materialize this mesh's renderable
-            // through the per-frame material-swap drain instead.
-            if (ctx._built) {
+            // Materialize this mesh's renderable through the per-frame material-swap drain when the boot-only
+            // deferred builder won't cover it: either after the initial build (`_built`), or when joining a group
+            // whose builder has ALREADY completed (`_builtGroups`) — e.g. a glTF prop whose async load resolves
+            // mid-drain and joins an already-built group. A mesh joining a group whose builder has NOT yet run (a
+            // brand-new group, or one still pending in the drain) is built by that builder, so it must NOT enqueue
+            // here — that would insert a SECOND renderable for it. buildScene drains the queue at the end.
+            if (ctx._built || ctx._builtGroups.has(build)) {
                 enqueueMaterialSwap(ctx, mesh);
             }
         }
@@ -370,7 +388,7 @@ export function addToScene(scene: SceneContext, entity: Mesh | LightBase | Camer
 /** Release all GPU resources owned by this scene. */
 export function disposeScene(scene: SceneContext): void {
     const ctx = scene as SceneContext;
-    unregisterRenderingContext(ctx.engine, ctx);
+    unregisterRenderingContext(ctx.surface, ctx);
     for (const fn of ctx._disposables) {
         fn();
     }
@@ -380,13 +398,22 @@ export function disposeScene(scene: SceneContext): void {
         }
     }
     ctx._meshDisposables.clear();
+    for (const fns of ctx._meshAuxDisposables.values()) {
+        for (const fn of fns) {
+            fn();
+        }
+    }
+    ctx._meshAuxDisposables.clear();
     for (const mesh of ctx.meshes) {
-        disposeMeshGpu(mesh);
+        // Free the mesh's shared GPU buffers only when this was its LAST owning scene.
+        if (unregisterMeshScene(ctx, mesh)) {
+            disposeMeshGpu(mesh);
+        }
     }
     ctx.meshes.length = 0;
     ctx._renderables.length = 0;
     ctx._prePasses.length = 0;
-    ctx._gsMeshes.length = 0;
+    ctx._pickSources.length = 0;
     ctx._uniformUpdaters.length = 0;
     ctx._beforeRender.length = 0;
     ctx._deferredBuilders.length = 0;
@@ -401,66 +428,85 @@ export function disposeScene(scene: SceneContext): void {
 /** @internal Run all deferred builders (called by registerScene's boot step before the first frame). */
 export async function buildScene(scene: SceneContext): Promise<void> {
     const ctx = scene as SceneContext;
+    // Discard material-swap requests enqueued during scene SETUP — a mesh added, then re-materialed before boot
+    // via the mesh.material setter (e.g. scene12 assigns each row's material AFTER addToScene). The deferred
+    // builders below build every group's meshes fresh with their FINAL material, so those swaps are redundant;
+    // processing them would insert a SECOND renderable per mesh (double-draw). Only swaps enqueued DURING the
+    // drain below — an async mesh that joins an already-built group (see addToScene/_builtGroups) — must survive.
+    ctx._materialSwapQueue.length = 0;
     while (ctx._deferredBuilders.length > 0) {
         const builders = [...ctx._deferredBuilders];
         ctx._deferredBuilders = [];
         await Promise.all(builders.map(async (b) => b()));
     }
-    for (const mesh of ctx._materialSwapQueue) {
-        (mesh as Mesh)._materialDirty = false;
-    }
-    ctx._materialSwapQueue.length = 0;
+    // Build the renderables for any meshes that joined an already-built group mid-drain (queued above) before
+    // the first frame, instead of leaving them casting shadows but invisible in the color pass.
+    processMaterialSwaps(ctx);
     ctx._renderableVersion++;
     ctx._built = true;
 }
 
 /**
  * Register a scene with the engine. Builds deferred work, sorts renderables by order,
- * and adds the scene to the engine's render list in overlay order.
+ * and adds the scene to its bound surface's render list in overlay order. The scene is
+ * always attached to `scene.surface` (which equals the engine itself in the
+ * single-canvas case).
  */
-export async function registerScene(engine: EngineContext, scene: SceneContext): Promise<void> {
-    const ctx = scene as SceneContext;
-    if (isRenderingContextRegistered(engine, ctx)) {
+export async function registerScene(scene: SceneContext): Promise<void> {
+    const ctx = scene;
+    const surface = ctx.surface;
+    if (isRenderingContextRegistered(surface, ctx)) {
         return;
     }
     await buildScene(scene);
     ctx._renderables.sort(byOrder);
     await Promise.all(ctx._frameGraph._tasks.map((task) => task._preload?.()).filter((preload): preload is Promise<void> => preload !== undefined));
     ctx._frameGraph.build();
-    if ((engine as EngineContext)._renderingContexts.length > 0) {
-        (await import("./swapchain-overlay.js")).configureSwapchainOverlayScene(engine as EngineContext, ctx);
+    if (surface._renderingContexts.length > 0) {
+        const overlay = await import("./swapchain-overlay.js");
+        overlay.configureSwapchainOverlayScene(surface, ctx);
     }
-    registerRenderingContext(engine, ctx);
+    registerRenderingContext(surface, ctx);
 }
 
 /**
  * Register a scene with the engine and install the scene-owned shadow frame-graph task.
- * Use only for scenes that generate shadow maps.
+ * Use only for scenes that generate shadow maps. Like {@link registerScene}, the scene
+ * is attached to `scene.surface` (and its owning engine is `scene.surface.engine`).
  */
-export async function registerSceneWithShadowSupport(engine: EngineContext, scene: SceneContext): Promise<void> {
+export async function registerSceneWithShadowSupport(scene: SceneContext): Promise<void> {
     const ctx = scene as SceneContext;
-    if (isRenderingContextRegistered(engine, ctx)) {
+    const surface = ctx.surface;
+    if (isRenderingContextRegistered(surface, ctx)) {
         return;
     }
     await buildScene(scene);
     ctx._renderables.sort(byOrder);
-    await ensureShadowTask(engine as EngineContext, ctx);
+    await ensureShadowTask(surface.engine, ctx);
     await Promise.all(ctx._frameGraph._tasks.map((task) => task._preload?.()).filter((preload): preload is Promise<void> => preload !== undefined));
     ctx._frameGraph.build();
-    if ((engine as EngineContext)._renderingContexts.length > 0) {
-        (await import("./swapchain-overlay.js")).configureSwapchainOverlayScene(engine as EngineContext, ctx);
+    if (surface._renderingContexts.length > 0) {
+        const overlay = await import("./swapchain-overlay.js");
+        overlay.configureSwapchainOverlayScene(surface, ctx);
     }
-    registerRenderingContext(engine, ctx);
+    registerRenderingContext(surface, ctx);
 }
 
 const byOrder = (a: Renderable, b: Renderable): number => a.order - b.order;
 
 async function ensureShadowTask(engine: EngineContext, scene: SceneContext): Promise<void> {
+    // Idempotent: the scene keeps its `_frameGraph` (and its `_tasks`) across unregister/re-register
+    // cycles, and `buildScene` does not clear the task list — so a plain unshift would stack a new
+    // shadow task on every re-registration. Only add one when the scene has none.
+    if (scene._frameGraph._tasks.some((task) => task.name === "shadow")) {
+        return;
+    }
     const { createShadowTask } = await import("../frame-graph/shadow-task.js");
     scene._frameGraph._tasks.unshift(createShadowTask(engine, scene));
 }
 
-/** Remove a previously-registered scene. Idempotent. Does not dispose scene resources. */
-export function unregisterScene(engine: EngineContext, scene: SceneContext): void {
-    unregisterRenderingContext(engine, scene as SceneContext);
+/** Remove a previously-registered scene. Idempotent. Does not dispose scene resources.
+ *  The scene is always removed from `scene.surface`. */
+export function unregisterScene(scene: SceneContext): void {
+    unregisterRenderingContext(scene.surface, scene as SceneContext);
 }

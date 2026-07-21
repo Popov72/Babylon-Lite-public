@@ -1,0 +1,139 @@
+import { describe, expect, it } from "vitest";
+
+import { LiteCompatError, unsupported } from "../src/error";
+import {
+    MultiMaterial,
+    ShaderMaterial,
+    RectAreaLight,
+    ClusteredLightContainer,
+    ParticleSystem,
+    GPUParticleSystem,
+    SolidParticleSystem,
+    HighlightLayer,
+    GlowLayer,
+    LinesMesh,
+    GreasedLineMesh,
+    EdgesRenderer,
+    OutlineRenderer,
+    MirrorTexture,
+    HtmlTexture,
+    HtmlInteractionManager,
+    HtmlRaycastInteractionManager,
+    IsHtmlInCanvasUploadSupported,
+    UploadHtmlElementToTexture,
+    ComputeOverlayCssTransform,
+    GetElementPixelFromUv,
+    IsHtmlInCanvasSupportedNatively,
+    InstallHtmlInCanvasPolyfill,
+    UninstallHtmlInCanvasPolyfill,
+    Sound,
+    PointerDragBehavior,
+    BaseSixDofDragBehavior,
+    SixDofDragBehavior,
+    MultiPointerScaleBehavior,
+    AttachToBoxBehavior,
+    FadeInOutBehavior,
+    SurfaceMagnetismBehavior,
+    FollowBehavior,
+    HandConstraintBehavior,
+    InterpolatingBehavior,
+    GeospatialClippingBehavior,
+    SceneSerializer,
+} from "../src/unsupported/unsupported-apis";
+import { MeshBuilder } from "../src/meshes/meshes";
+import { SceneLoader } from "../src/loading/scene-loader";
+
+describe("LiteCompatError", () => {
+    it("formats a message with the API name", () => {
+        const err = new LiteCompatError("Foo.bar");
+        expect(err).toBeInstanceOf(Error);
+        expect(err.name).toBe("LiteCompatError");
+        expect(err.message).toContain("'Foo.bar'");
+    });
+
+    it("appends the detail when provided", () => {
+        const err = new LiteCompatError("Foo.bar", "Use baz instead.");
+        expect(err.message).toContain("Use baz instead.");
+    });
+
+    it("unsupported() throws a LiteCompatError and never returns", () => {
+        expect(() => unsupported("X")).toThrow(LiteCompatError);
+    });
+});
+
+describe("Unsupported API stubs throw on construction", () => {
+    const cases: Array<[string, () => unknown]> = [
+        ["MultiMaterial", () => new MultiMaterial()],
+        ["ShaderMaterial", () => new ShaderMaterial()],
+        ["RectAreaLight", () => new RectAreaLight()],
+        ["ClusteredLightContainer", () => new ClusteredLightContainer()],
+        ["ParticleSystem", () => new ParticleSystem()],
+        ["GPUParticleSystem", () => new GPUParticleSystem()],
+        ["SolidParticleSystem", () => new SolidParticleSystem()],
+        ["HighlightLayer", () => new HighlightLayer()],
+        ["GlowLayer", () => new GlowLayer()],
+        ["LinesMesh", () => new LinesMesh()],
+        ["GreasedLineMesh", () => new GreasedLineMesh()],
+        ["EdgesRenderer", () => new EdgesRenderer()],
+        ["OutlineRenderer", () => new OutlineRenderer()],
+        ["MirrorTexture", () => new MirrorTexture()],
+        ["HtmlTexture", () => new HtmlTexture()],
+        ["HtmlInteractionManager", () => new HtmlInteractionManager()],
+        ["HtmlRaycastInteractionManager", () => new HtmlRaycastInteractionManager()],
+        ["Sound", () => new Sound()],
+        ["PointerDragBehavior", () => new PointerDragBehavior()],
+        ["BaseSixDofDragBehavior", () => new BaseSixDofDragBehavior()],
+        ["SixDofDragBehavior", () => new SixDofDragBehavior()],
+        ["MultiPointerScaleBehavior", () => new MultiPointerScaleBehavior()],
+        ["AttachToBoxBehavior", () => new AttachToBoxBehavior()],
+        ["FadeInOutBehavior", () => new FadeInOutBehavior()],
+        ["SurfaceMagnetismBehavior", () => new SurfaceMagnetismBehavior()],
+        ["FollowBehavior", () => new FollowBehavior()],
+        ["HandConstraintBehavior", () => new HandConstraintBehavior()],
+        ["InterpolatingBehavior", () => new InterpolatingBehavior()],
+        ["GeospatialClippingBehavior", () => new GeospatialClippingBehavior()],
+    ];
+
+    it.each(cases)("%s throws LiteCompatError naming the API", (name, construct) => {
+        expect(construct).toThrow(LiteCompatError);
+        expect(construct).toThrow(new RegExp(name));
+    });
+});
+
+describe("HTML-texture function stubs throw on call", () => {
+    const cases: Array<[string, () => unknown]> = [
+        ["IsHtmlInCanvasUploadSupported", () => IsHtmlInCanvasUploadSupported()],
+        ["UploadHtmlElementToTexture", () => UploadHtmlElementToTexture()],
+        ["ComputeOverlayCssTransform", () => ComputeOverlayCssTransform()],
+        ["GetElementPixelFromUv", () => GetElementPixelFromUv()],
+        ["IsHtmlInCanvasSupportedNatively", () => IsHtmlInCanvasSupportedNatively()],
+        ["InstallHtmlInCanvasPolyfill", () => InstallHtmlInCanvasPolyfill()],
+        ["UninstallHtmlInCanvasPolyfill", () => UninstallHtmlInCanvasPolyfill()],
+    ];
+
+    it.each(cases)("%s throws LiteCompatError naming the API", (name, call) => {
+        expect(call).toThrow(LiteCompatError);
+        expect(call).toThrow(new RegExp(name));
+    });
+});
+
+describe("SceneSerializer", () => {
+    it("throws on Serialize and SerializeMesh", () => {
+        expect(() => SceneSerializer.Serialize()).toThrow(LiteCompatError);
+        expect(() => SceneSerializer.SerializeMesh()).toThrow(LiteCompatError);
+    });
+});
+
+describe("MeshBuilder unsupported primitives", () => {
+    it.each(["CreateLines", "CreateLineSystem", "CreateDashedLines", "CreateDecal", "CreateText"] as const)("%s throws LiteCompatError", (method) => {
+        const fn = MeshBuilder[method] as () => never;
+        expect(fn).toThrow(LiteCompatError);
+        expect(fn).toThrow(new RegExp(method));
+    });
+});
+
+describe("SceneLoader.RegisterPlugin", () => {
+    it("throws (out of scope, side-effectful registry)", () => {
+        expect(() => SceneLoader.RegisterPlugin()).toThrow(LiteCompatError);
+    });
+});

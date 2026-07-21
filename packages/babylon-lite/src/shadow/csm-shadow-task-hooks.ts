@@ -15,12 +15,21 @@ import type { Material, MaterialView } from "../material/material.js";
 import type { Mesh } from "../mesh/mesh.js";
 import type { RenderTarget } from "../engine/render-target.js";
 import type { SceneContext } from "../scene/scene-core.js";
-import { createRenderTask, type RenderTask } from "../frame-graph/render-task.js";
+import { createRenderTask, removeMeshFromTask, type RenderTask } from "../frame-graph/render-task.js";
 import { getViewProjectionMatrix } from "../camera/camera.js";
 import { mat4Invert } from "../math/mat4-invert.js";
 import { buildLightViewMatrix, casterVersionSum, createShadowCamera, multiply4x4, updateShadowCameraBase } from "./shadow-base.js";
 import { getNoColorView, preloadPcfShadowTaskState } from "./pcf-shadow-task-hooks.js";
 import type { ShadowGenerator, ShadowTaskInternalState } from "./shadow-generator.js";
+import { retireGpuResources } from "../engine/gpu-resource-retirement.js";
+
+/** Generation of the material that ACTUALLY casts this caster mesh's shadow — the explicit
+ *  `_shadowCasterMaterial` override when set, else the mesh's own material. Lets the caster-set diff detect a
+ *  rebuild of the override caster material (which would otherwise be invisible to a check on the receive material). */
+function effectiveCasterGen(material: Material): number {
+    const eff = material._shadowCasterMaterial ?? material;
+    return (eff as { _csmGen?: number })._csmGen ?? 0;
+}
 
 /** CSM configuration captured by the generator and consumed by these hooks. */
 export interface CsmConfig {
@@ -38,6 +47,8 @@ export interface CsmConfig {
     _shadowMaxZ: number | null;
     /** @internal */
     _bias: number;
+    /** @internal */
+    _worldSpaceBias: number | null;
     /** @internal */
     _darkness: number;
     /** @internal */
@@ -67,6 +78,25 @@ export interface CsmTaskState extends ShadowTaskInternalState {
     _uboData: Float32Array;
     /** @internal */
     _casterMeshes: readonly Mesh[];
+    /** @internal Scene renderable version the cascade material views were built against. A material
+     *  swap (plugin/receiver variant change) rebuilds the swapped mesh's renderable + UBOs but leaves
+     *  this task's cached no-color material views pointing at the now-destroyed UBOs, so we rebuild when
+     *  the MATERIAL EPOCH changes — not on every renderable-version bump (a geometry resize bumps the
+     *  renderable version without touching materials, and is handled by a cheap re-record instead). */
+    _renderableVersion: number;
+    /** @internal Scene material epoch the cascade material views were built against (see `_renderableVersion`). */
+    _materialEpoch: number;
+    /** @internal Cached per-material no-color depth views, reused when a caster is added incrementally so a pure
+     *  caster-set change updates the existing cascade tasks instead of rebuilding and re-resolving every caster
+     *  (which leaked ~casters×cascades UBO handles each time the caster list was re-supplied). */
+    _materialViews: Map<Material, MaterialView>;
+    /** @internal Per-caster-material generation (`_csmGen`) snapshot at build. The incremental path is taken only
+     *  while every current caster's material gen is unchanged — i.e. no CASTER material was rebuilt (which would
+     *  leave its cached no-color view dangling). This is precise, unlike the global `_materialEpoch` which also
+     *  bumps for swaps of unrelated (non-caster) materials. */
+    _casterMatGens: Map<Material, number>;
+    /** @internal Per-caster cascade-cap snapshot used to update task membership incrementally. */
+    _casterMaxCascades: Map<Mesh, number | undefined>;
 }
 
 export const preloadCsmShadowTaskState = preloadPcfShadowTaskState;
@@ -82,10 +112,87 @@ export function ensureCsmShadowTaskState(
 ): CsmTaskState {
     const existing = existingState as CsmTaskState | null;
     if (existing) {
-        if (existing._casterMeshes === casterMeshes) {
+        if (existing._casterMeshes === casterMeshes && existing._renderableVersion === scene._renderableVersion) {
             return existing;
         }
-        existing._task.dispose();
+        // The caster set is unchanged and NO material was rebuilt/swapped since these tasks were built (the
+        // material epoch matches): the only thing that changed is geometry (e.g. resizeMeshGeometry reallocated
+        // a caster's GPU buffers, bumping the renderable version). The cascade tasks' cached no-color material
+        // views are still valid — only the bundles need refreshing to pick up the new buffer handles, which the
+        // shadow scheduler's execute() already does (it re-records when the renderable version moves). So adopt
+        // the new state markers and REUSE the existing tasks instead of recreating them — recreating tasks every
+        // geometry edit re-compiles pipelines + churns bind-groups/bundles for the whole caster set (multi-MB,
+        // never returned by the GPU allocator). Only a real material change (epoch bump) needs a full rebuild,
+        // because that destroys the caster UBOs the cached views point at.
+        if (existing._casterMeshes === casterMeshes && existing._materialEpoch === scene._materialEpoch) {
+            existing._renderableVersion = scene._renderableVersion;
+            return existing;
+        }
+        // The caster SET changed (different array). Decide INCREMENTAL vs full rebuild by whether any CURRENT
+        // caster's OWN material was rebuilt since we built (its cached no-color view would dangle) — tracked via
+        // a precise per-material gen, NOT the global `_materialEpoch` (which also bumps when an UNRELATED, non-
+        // caster material is swapped, e.g. a lit scene mesh added near a caster set re-supply). If NO caster
+        // material changed, update the cascade tasks IN PLACE: keep the unchanged casters' resolved depth packets
+        // (so nothing is destroyed — no "buffer used in submit while destroyed" — and nothing leaks — the old
+        // code re-resolved EVERY caster into fresh per-cascade UBO packets and never freed the prior ones,
+        // leaking ~casters×cascades handles every time the caster list was re-supplied, which a consumer may do
+        // per frame). Only add the new casters / drop departed ones (a regenerated caster's old packet is freed
+        // by removeFromScene when its mesh is disposed; a persistent caster simply keeps its packet).
+        let casterMatChanged = false;
+        for (const m of casterMeshes) {
+            const mat = m.material;
+            if (!mat) {
+                continue;
+            }
+            const stored = existing._casterMatGens.get(mat);
+            if (stored !== undefined && stored !== effectiveCasterGen(mat)) {
+                casterMatChanged = true;
+                break;
+            }
+        }
+        if (!casterMatChanged) {
+            const nextSet = new Set(casterMeshes);
+            const views = existing._materialViews;
+            const gens = existing._casterMatGens;
+            const caps = existing._casterMaxCascades;
+            const tasks = existing._tasks;
+            for (const m of existing._casterMeshes) {
+                if (!nextSet.has(m) || m._shadowMaxCascade !== caps.get(m)) {
+                    caps.delete(m);
+                    for (const t of tasks) {
+                        removeMeshFromTask(t, m);
+                    }
+                }
+            }
+            for (const m of casterMeshes) {
+                const maxCascade = m._shadowMaxCascade;
+                if (!caps.has(m) && m.material) {
+                    const view = getNoColorView(m.material, views);
+                    for (let c = 0; c < tasks.length; c++) {
+                        if (c <= (maxCascade ?? c)) {
+                            tasks[c]!.addMesh(m, { material: view });
+                        }
+                    }
+                    gens.set(m.material, effectiveCasterGen(m.material));
+                }
+                caps.set(m, maxCascade);
+            }
+            // Force each cascade to re-resolve its newly-added pending casters + re-bucket its binding lists.
+            for (const t of tasks) {
+                t._lastVersion = -1;
+            }
+            existing._casterMeshes = casterMeshes;
+            existing._renderableVersion = scene._renderableVersion;
+            return existing;
+        }
+        // A CASTER material was actually rebuilt (a material swap rebuilds its renderable + UBOs but
+        // leaves our cached no-color material views dangling at the destroyed UBOs — the
+        // "Buffer used in submit while destroyed" flood seen when a caster's material swaps variant on first
+        // render). Rebuild the cascade tasks below with the casters' CURRENT materials and return the NEW
+        // state — the caller swaps to it, so the OLD task is never recorded again. Its GPU buffers may still
+        // be referenced by the next frame command buffer, especially during async pre-first-frame construction,
+        // so retire it only after that frame has submitted and drained. Mirrors resizeMeshGeometry.
+        retireGpuResources(engine, existing._task.dispose);
     }
 
     const materialViews = new Map<Material, MaterialView>();
@@ -112,10 +219,12 @@ export function ensureCsmShadowTaskState(
             _ownsDepthTexture: false, // borrowed: the shared CSM depth array is owned by the generator
         };
         const camera = createShadowCamera(sg);
-        const task = createRenderTask({ name: `csm${i}`, rt, clr: true, cam: camera }, engine, scene);
+        const task = createRenderTask({ name: `csm${i}`, rt, clr: true, cam: camera, _skipClusteredLights: true }, engine, scene);
         for (const mesh of casterMeshes) {
             const material = mesh.material;
-            if (material) {
+            // Per-caster cascade cap: a capped caster renders only into layers 0..maxCascade (its far-layer
+            // shadow is sub-texel anyway), saving the excluded layers' draws + pipeline switches.
+            if (material && i <= (mesh._shadowMaxCascade ?? i)) {
                 task.addMesh(mesh, { material: getNoColorView(material, materialViews) });
             }
         }
@@ -143,6 +252,16 @@ export function ensureCsmShadowTaskState(
         },
     };
 
+    // Snapshot each caster material's gen so the next caster-set change can tell whether a CASTER material was
+    // rebuilt (→ full rebuild) or only the set changed (→ incremental, keeping unchanged casters' packets).
+    const casterMatGens = new Map<Material, number>();
+    const casterMaxCascades = new Map<Mesh, number | undefined>();
+    for (const m of casterMeshes) {
+        casterMaxCascades.set(m, m._shadowMaxCascade);
+        if (m.material) {
+            casterMatGens.set(m.material, effectiveCasterGen(m.material));
+        }
+    }
     return {
         _task: compositeTask,
         _tasks: tasks,
@@ -154,6 +273,11 @@ export function ensureCsmShadowTaskState(
         _lastCamVersion: -1,
         _uboData: new Float32Array(80),
         _casterMeshes: casterMeshes,
+        _renderableVersion: scene._renderableVersion,
+        _materialEpoch: scene._materialEpoch,
+        _materialViews: materialViews,
+        _casterMatGens: casterMatGens,
+        _casterMaxCascades: casterMaxCascades,
     };
 }
 
@@ -195,7 +319,8 @@ export function renderCsmShadowMap(engine: EngineContext, sg: ShadowGenerator, s
     for (let i = 0; i < cascades._transforms.length; i++) {
         const cam = state._cameras[i]!;
         cam.fov = 1;
-        updateShadowCameraBase(cam, state._cameraVersion, cascades._near[i]!, cascades._far[i]!, cascades._views[i]!, _biasViewProjection(cascades._biased[i]!, cfg._bias));
+        const clipBias = cfg._worldSpaceBias === null ? cfg._bias * 0.5 : csmWorldBiasClipOffset(cfg._worldSpaceBias, cascades._near[i]!, cascades._far[i]!);
+        updateShadowCameraBase(cam, state._cameraVersion, cascades._near[i]!, cascades._far[i]!, cascades._views[i]!, _biasViewProjection(cascades._biased[i]!, clipBias));
     }
 
     state._lastCasterVersion = casterVersion;
@@ -341,12 +466,14 @@ function _computeCsmCascades(engine: EngineContext, camera: Camera, light: Direc
         cz /= 8;
 
         let minX: number, maxX: number, minY: number, maxY: number, minEz: number, maxEz: number;
+        let stableRadius = 0;
         if (cfg._stabilizeCascades) {
             let radius = 0;
             for (const p of corners) {
                 radius = Math.max(radius, Math.hypot(p[0] - cx, p[1] - cy, p[2] - cz));
             }
             radius = Math.ceil(radius * 16) / 16;
+            stableRadius = radius;
             minX = minY = minEz = -radius;
             maxX = maxY = maxEz = radius;
         } else {
@@ -391,14 +518,63 @@ function _computeCsmCascades(engine: EngineContext, camera: Camera, light: Direc
                 viewMinZ = Math.min(viewMinZ, cMinZ);
                 viewMaxZ = Math.min(viewMaxZ, cMaxZ);
             }
+
+            // Z is intentionally NOT quantized here. The caster-AABB fit (cMinZ/cMaxZ) is C0-continuous in the
+            // light direction — each is a min/max of linear functions of the light vector, so it has kinks but no
+            // jumps — meaning the near/far drift SMOOTHLY as the light rotates. A constant NDC depth bias maps to a
+            // WORLD bias of bias·(far−near), and the stored depths are likewise normalised by (far−near); the old
+            // `zq = max(0.5, radius/128)` floor/ceil snapped that range to a grid, so both the effective bias AND
+            // the stored depth STEPPED at each quantum boundary as the light direction changed — appearing as
+            // self-shadow acne that VIBRATES. Removing the quantize makes those steps a sub-millimetre, imperceptible
+            // drift, and still covers the moving-caster case it was added for (the range drifts, it never pops).
+        }
+
+        // The caster matrix adds the world-space bias toward clip Z=1. Reserve the same distance at the far plane
+        // so geometry on the tightly fitted caster bound remains inside the clip volume after that offset.
+        if (cfg._worldSpaceBias) {
+            viewMaxZ += cfg._worldSpaceBias;
         }
 
         const proj0 = orthoOffCenterLH(minX, maxX, minY, maxY, viewMinZ, viewMaxZ);
         let transform = multiply4x4(proj0, view);
 
-        // Texel-snap: round the world origin to a shadow-map texel (always applied in BJS).
-        const ox = transform[12]! * (cfg._mapSize / 2);
-        const oy = transform[13]! * (cfg._mapSize / 2);
+        // Texel-snap: lock the shadow grid to world space so it does not crawl as the camera moves, by rounding a
+        // fixed WORLD anchor onto the shadow-map texel grid. BJS anchors the WORLD ORIGIN. With a STILL camera and
+        // a slowly ROTATING light that is the cause of the visible "vibration": the eye is recentred on the cascade
+        // centre every frame, so the snap residual is the anchor's offset from the centre measured along the light
+        // axes — and the world origin's offset from the centre is large (≈ the cascade's distance from origin), so
+        // its projection sweeps many texels per degree of light rotation and Math.round trips a full-texel correction
+        // again and again → the whole map pops/boils. We instead anchor the world-grid point NEAREST the cascade
+        // centre (cell = one texel in world units): it is still a fixed world point (a translating camera only ever
+        // sees whole-cell anchor switches, ≤ a sub-texel grid wiggle that PCF hides), but its offset from the centre
+        // is < 1 texel, so a full light rotation sweeps it < 1 texel → effectively no rotation pop. Non-stabilized
+        // path keeps the origin anchor (no stableRadius → no texel-world size to build the world grid from).
+        let aClipX = transform[12]!;
+        let aClipY = transform[13]!;
+        if (cfg._stabilizeCascades && stableRadius > 0) {
+            const texelWorld = (2 * stableRadius) / cfg._mapSize;
+            // Align the world anchor grid to the LIGHT's right/up axes (R,U), not world x/y/z. A translating camera then
+            // switches cells by exactly ONE texel along R/U -> an integer texel shift in clip space (no crawl). The old
+            // world-axis grid jumped texelWorld along a world axis, which projects to a NON-integer texel count (R,U are
+            // not the world axes) -> the sub-texel wiggle that crawled during translation. R,U = view rows 0,1.
+            const rX = view[0]!,
+                rY = view[4]!,
+                rZ = view[8]!;
+            const uX = view[1]!,
+                uY = view[5]!,
+                uZ = view[9]!;
+            // Project the centre onto R,U, round to the texel grid, rebuild the world anchor in the R-U plane (the
+            // light-dir component only affects clip Z, so dropping it leaves clip X/Y, which depend on R,U, exact).
+            const sr = Math.round((rX * cx + rY * cy + rZ * cz) / texelWorld) * texelWorld;
+            const tr = Math.round((uX * cx + uY * cy + uZ * cz) / texelWorld) * texelWorld;
+            const ax = sr * rX + tr * uX;
+            const ay = sr * rY + tr * uY;
+            const az = sr * rZ + tr * uZ;
+            aClipX = transform[0]! * ax + transform[4]! * ay + transform[8]! * az + transform[12]!;
+            aClipY = transform[1]! * ax + transform[5]! * ay + transform[9]! * az + transform[13]!;
+        }
+        const ox = aClipX * (cfg._mapSize / 2);
+        const oy = aClipY * (cfg._mapSize / 2);
         const offX = (Math.round(ox) - ox) * (2 / cfg._mapSize);
         const offY = (Math.round(oy) - oy) * (2 / cfg._mapSize);
         const snap = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, offX, offY, 0, 1]);
@@ -430,6 +606,24 @@ function _castersWorldAabb(casterMeshes: readonly Mesh[]): { _min: [number, numb
         maxY = -Infinity,
         maxZ = -Infinity;
     for (const mesh of casterMeshes) {
+        // Thin-instanced casters are drawn at `finalWorld = mesh.world * instanceMatrix` (see
+        // thin-instance-fragment.ts), so a single `mesh.worldMatrix × boundMin/Max` box ignores the per-instance
+        // spread entirely — one prototype-sized box wrecks the cascade Z-fit (an off-world herd collapsed every
+        // shadow). Bound the caster by the union of every drawn instance instead, using the SAME composition the
+        // shader uses.
+        const ti = mesh.thinInstances;
+        if (ti && ti.count > 0 && ti.matrices) {
+            const a = _thinInstanceWorldAabb(mesh, ti);
+            if (a) {
+                minX = Math.min(minX, a._min[0]);
+                maxX = Math.max(maxX, a._max[0]);
+                minY = Math.min(minY, a._min[1]);
+                maxY = Math.max(maxY, a._max[1]);
+                minZ = Math.min(minZ, a._min[2]);
+                maxZ = Math.max(maxZ, a._max[2]);
+            }
+            continue;
+        }
         const world = mesh.worldMatrix;
         const bmin = mesh.boundMin ?? [-0.5, -0.5, -0.5];
         const bmax = mesh.boundMax ?? [0.5, 0.5, 0.5];
@@ -454,6 +648,98 @@ function _castersWorldAabb(casterMeshes: readonly Mesh[]): { _min: [number, numb
     return { _min: [minX, minY, minZ], _max: [maxX, maxY, maxZ] };
 }
 
+interface ThinCasterAabb {
+    _min: [number, number, number];
+    _max: [number, number, number];
+}
+
+/** Per-mesh cache of a thin-instanced caster's world AABB. It keys on instance data, prototype
+ *  transform, and the shared non-transform caster epoch.
+ *  Lazily allocated so this module keeps zero import-time side effects and stays tree-shakable. */
+let _thinCasterAabbCache: WeakMap<Mesh, { _version: number; _worldVersion: number; _aabb: ThinCasterAabb | null }> | null = null;
+function _getThinCasterAabbCache(): WeakMap<Mesh, { _version: number; _worldVersion: number; _aabb: ThinCasterAabb | null }> {
+    if (!_thinCasterAabbCache) {
+        _thinCasterAabbCache = new WeakMap();
+    }
+    return _thinCasterAabbCache;
+}
+
+/** World AABB of a thin-instanced caster. Matches the shader's `finalWorld = mesh.world * instanceMatrix`
+ *  exactly: each local bound corner is transformed by the per-instance matrix, then by the prototype mesh
+ *  world matrix. Parked/degenerate instances (zero linear part — drawn as zero-area, used to hide an unused
+ *  tail) are skipped so a tail parked far off-world can't balloon the box. */
+function _thinInstanceWorldAabb(mesh: Mesh, ti: NonNullable<Mesh["thinInstances"]>): ThinCasterAabb | null {
+    const cache = _getThinCasterAabbCache();
+    const worldVersion = mesh.worldMatrixVersion;
+    const cached = cache.get(mesh);
+    if (cached && cached._version === ti._version && cached._worldVersion === worldVersion) {
+        return cached._aabb;
+    }
+    // Hoist the prototype world matrix once (worldMatrix is a getter) — it is constant across all instances.
+    const world = mesh.worldMatrix;
+    const bmin = mesh.boundMin ?? [-0.5, -0.5, -0.5];
+    const bmax = mesh.boundMax ?? [0.5, 0.5, 0.5];
+    const mats = ti.matrices;
+    const count = Math.min(ti.count, (mats.length / 16) | 0);
+    let minX = Infinity,
+        minY = Infinity,
+        minZ = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity,
+        maxZ = -Infinity;
+    for (let i = 0; i < count; i++) {
+        const o = i * 16;
+        // Skip parked instances (zero 3×3 linear part → zero-area triangles that rasterize to nothing).
+        const lin =
+            Math.abs(mats[o]!) +
+            Math.abs(mats[o + 1]!) +
+            Math.abs(mats[o + 2]!) +
+            Math.abs(mats[o + 4]!) +
+            Math.abs(mats[o + 5]!) +
+            Math.abs(mats[o + 6]!) +
+            Math.abs(mats[o + 8]!) +
+            Math.abs(mats[o + 9]!) +
+            Math.abs(mats[o + 10]!);
+        if (lin < 1e-9) {
+            continue;
+        }
+        for (let k = 0; k < 8; k++) {
+            const lx = k & 1 ? bmax[0]! : bmin[0]!;
+            const ly = k & 2 ? bmax[1]! : bmin[1]!;
+            const lz = k & 4 ? bmax[2]! : bmin[2]!;
+            // 1) instance-local: ip = instanceMatrix * localCorner
+            const ix = mats[o]! * lx + mats[o + 4]! * ly + mats[o + 8]! * lz + mats[o + 12]!;
+            const iy = mats[o + 1]! * lx + mats[o + 5]! * ly + mats[o + 9]! * lz + mats[o + 13]!;
+            const iz = mats[o + 2]! * lx + mats[o + 6]! * ly + mats[o + 10]! * lz + mats[o + 14]!;
+            // 2) world: wp = mesh.world * ip  (matches finalWorld = mesh.world * instanceMatrix)
+            const wx = world[0]! * ix + world[4]! * iy + world[8]! * iz + world[12]!;
+            const wy = world[1]! * ix + world[5]! * iy + world[9]! * iz + world[13]!;
+            const wz = world[2]! * ix + world[6]! * iy + world[10]! * iz + world[14]!;
+            if (wx < minX) {
+                minX = wx;
+            }
+            if (wx > maxX) {
+                maxX = wx;
+            }
+            if (wy < minY) {
+                minY = wy;
+            }
+            if (wy > maxY) {
+                maxY = wy;
+            }
+            if (wz < minZ) {
+                minZ = wz;
+            }
+            if (wz > maxZ) {
+                maxZ = wz;
+            }
+        }
+    }
+    const aabb: ThinCasterAabb | null = Number.isFinite(minX) ? { _min: [minX, minY, minZ], _max: [maxX, maxY, maxZ] } : null;
+    cache.set(mesh, { _version: ti._version, _worldVersion: worldVersion, _aabb: aabb });
+    return aabb;
+}
+
 function _writeCsmUbo(out: Float32Array, cascades: CsmCascades, cfg: CsmConfig): void {
     out.fill(0);
     const n = cascades._transforms.length;
@@ -472,13 +758,21 @@ function _writeCsmUbo(out: Float32Array, cascades: CsmCascades, cfg: CsmConfig):
     out[77] = cfg._cascadeBlendPercentage === 0 ? 10000 : 1 / cfg._cascadeBlendPercentage;
 }
 
-function _biasViewProjection(viewProj: Float32Array, bias: number): Float32Array {
+/** @internal Convert a physical caster offset to the clip-space Z offset for one orthographic cascade. */
+export function csmWorldBiasClipOffset(worldSpaceBias: number, near: number, far: number): number {
+    const range = far - near;
+    if (!Number.isFinite(worldSpaceBias) || worldSpaceBias <= 0 || !Number.isFinite(range) || range <= 0) {
+        return 0;
+    }
+    return worldSpaceBias / range;
+}
+
+function _biasViewProjection(viewProj: Float32Array, clipOffset: number): Float32Array {
     const biased = new Float32Array(viewProj);
-    const b = bias * 0.5;
     for (let col = 0; col < 4; col++) {
         const z = 2 + col * 4;
         const w = 3 + col * 4;
-        biased[z] = biased[z]! + b * biased[w]!;
+        biased[z] = biased[z]! + clipOffset * biased[w]!;
     }
     return biased;
 }

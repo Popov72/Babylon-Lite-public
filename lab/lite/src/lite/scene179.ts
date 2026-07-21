@@ -15,7 +15,7 @@ import {
 } from "babylon-lite";
 import { addClusteredLightContainer, createClusteredLightContainer, createClusteredPointLight } from "babylon-lite/light/clustered";
 
-const MODEL_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Sponza/glTF/Sponza.gltf";
+const MODEL_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/Sponza/glTF/Sponza.gltf";
 
 function seededRandom(seed: number): () => number {
     let s = seed >>> 0;
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     }
     addClusteredLightContainer(scene, clustered);
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.ready = "true";

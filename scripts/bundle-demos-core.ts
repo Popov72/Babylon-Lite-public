@@ -21,12 +21,12 @@
 import { build, type Plugin } from "vite";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import { cpSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, statSync } from "fs";
 import {
     labDir,
     srcDir,
     outDir,
-    wgslMinifyPlugin,
     terserPropertyManglePlugin,
     isLiteBundleExternal,
     writeBundleInfo,
@@ -36,6 +36,7 @@ import {
     LITE_BUNDLE_TARGET,
     NAME_POLYFILL,
 } from "./bundle-scenes-core";
+import { wgslMinifyPlugin } from "./wgsl-minify-plugin";
 import { fetchDemoAssets } from "./demo-fetchers";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,7 +49,24 @@ const FREECIV_SRC = resolve(labDir, "public/freeciv");
 const LITTLEST_TOKYO_SRC = resolve(labDir, "public/littlest-tokyo");
 const TETRIS_SRC = resolve(labDir, "public/tetris");
 const PLATFORMER_SRC = resolve(labDir, "public/platformer");
+const SANDBLOX_SRC = resolve(labDir, "public/sandblox");
 const DRACO_FILES = ["draco_decoder.js", "draco_decoder.wasm"];
+
+const _demoRequire = createRequire(import.meta.url);
+
+/** Absolute path to the ESM build of `@babylonjs/havok`, or null if unavailable.
+ *  Scenes externalize Havok to `/vendor/havok.js` via an import map, but standalone
+ *  demo bundles have no import map — so we alias Havok to this ESM file and bundle
+ *  it inline (its WASM is still fetched at runtime via the caller's `locateFile`). */
+function havokEsmEntry(): string | null {
+    try {
+        const havokMain = _demoRequire.resolve("@babylonjs/havok");
+        const esm = resolve(dirname(dirname(havokMain)), "esm/HavokPhysics_es.js");
+        return existsSync(esm) ? esm : null;
+    } catch {
+        return null;
+    }
+}
 
 interface DemoConfigEntry {
     slug: string;
@@ -69,6 +87,7 @@ interface DemoManifestEntry {
 const demosDir = resolve(outDir, "demos");
 const DEMOS_MANIFEST_FILE = resolve(outDir, "demos-manifest.json");
 const DEMO_SUPPORT_BUNDLES = ["landing-bg"] as const;
+const DEMO_SOURCE_BASE_URL = "https://github.com/BabylonJS/Babylon-Lite/blob/master/lab/lite/src/demos/";
 
 /** Stub Vite's preload helper so it doesn't add bytes to measured bundles. */
 function minimalVitePreloadPlugin(): Plugin {
@@ -100,14 +119,28 @@ function rewriteDemoHtmlForBundle(html: string): string {
     return html.replace(/(["'])\/(?:lite\/)?bundle\/demos\//g, "$1./");
 }
 
+/**
+ * Inject the measured engine/code size (the same KB shown on the gallery card)
+ * into a built demo page so its loading overlay can reiterate it next to the
+ * asset estimate. `installFetchProgress` reads `window.__DEMO_ENGINE_KB`; the
+ * pre-hydration `.loading-size` text is rewritten to match.
+ */
+function injectDemoEngineSize(html: string, rawKB: number): string {
+    const tag = `<script>window.__DEMO_ENGINE_KB=${rawKB};</script>`;
+    const out = html.includes("</head>") ? html.replace("</head>", `  ${tag}\n</head>`) : `${tag}\n${html}`;
+    return out.replace(/Estimated demo assets:\s*/g, `Engine ${rawKB} KB · Assets `);
+}
+
 function renderCard(demo: DemoConfigEntry, size: DemoManifestEntry | undefined): string {
     const tagList = demo.tags ?? [];
     const tags = tagList.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
     const sizeRow = size
         ? `<div class="size" title="Engine + demo code only — excludes external assets (textures, game data, etc.)"><strong>${size.rawKB} KB</strong> · ${size.gzipKB} KB gzip</div>`
         : "";
+    const sourceHref = `${DEMO_SOURCE_BASE_URL}${encodeURIComponent(demo.slug)}.ts`;
     return [
-        `<a class="card" href="./demo-${demo.slug}.html" data-tags="${escapeHtml(tagList.join(" "))}" data-mobile="${demo.mobile === false ? "false" : "true"}">`,
+        `<article class="card" data-tags="${escapeHtml(tagList.join(" "))}" data-mobile="${demo.mobile === false ? "false" : "true"}">`,
+        `<a class="card-main" href="./demo-${demo.slug}.html" aria-label="Open ${escapeHtml(demo.name)} demo">`,
         `<div class="card-image">`,
         `<img src="thumbnails/demo-${demo.slug}.jpg" alt="${escapeHtml(demo.name)} thumbnail" loading="lazy" decoding="async" onerror="this.remove()" />`,
         `</div>`,
@@ -118,6 +151,8 @@ function renderCard(demo: DemoConfigEntry, size: DemoManifestEntry | undefined):
         sizeRow,
         `<span class="card-disabled-badge">Requires WebGPU</span>`,
         `</div></a>`,
+        `<div class="card-links"><a class="source-link" href="${escapeHtml(sourceHref)}" target="_blank" rel="noopener noreferrer">Source code</a></div>`,
+        `</article>`,
     ].join("");
 }
 
@@ -201,6 +236,11 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
         copyRequiredDir(LITTLEST_TOKYO_SRC, resolve(demosDir, "littlest-tokyo"), "Littlest Tokyo");
     }
 
+    if (demos.some((demo) => demo.slug === "sandblox")) {
+        // Default world map JSON, fetched at runtime via demoAssetUrl.
+        copyRequiredDir(SANDBLOX_SRC, resolve(demosDir, "sandblox"), "Sandblox");
+    }
+
     if (demos.some((demo) => demo.slug === "bath-day")) {
         const glb = resolve(labDir, "public", "bath_day.glb");
         if (existsSync(glb)) {
@@ -219,7 +259,7 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
         }
     }
 
-    for (const file of [...DRACO_FILES, "meshopt_decoder.js", "brdf-lut.png"]) {
+    for (const file of [...DRACO_FILES, "meshopt_decoder.js", "brdf-lut.png", "HavokPhysics.wasm"]) {
         const src = resolve(labDir, "public", file);
         if (existsSync(src)) {
             cpSync(src, resolve(demosDir, file));
@@ -233,7 +273,9 @@ function writeDemoHtml(demos: DemoConfigEntry[], manifest: Record<string, DemoMa
         if (!existsSync(source)) {
             throw new Error(`Missing demo HTML: ${source}`);
         }
-        writeFileSync(resolve(demosDir, `demo-${demo.slug}.html`), rewriteDemoHtmlForBundle(readFileSync(source, "utf-8")));
+        const html = rewriteDemoHtmlForBundle(readFileSync(source, "utf-8"));
+        const rawKB = manifest[demo.slug]?.rawKB;
+        writeFileSync(resolve(demosDir, `demo-${demo.slug}.html`), rawKB != null ? injectDemoEngineSize(html, rawKB) : html);
     }
     copyDemoIndexAssets(demos);
     copyDemoRuntimeAssets(demos);
@@ -244,6 +286,10 @@ export async function buildDemo(slug: string): Promise<void> {
     const demoOutDir = resolve(demosDir, slug);
     rmSync(demoOutDir, { recursive: true, force: true });
 
+    // Standalone demos have no import map, so Havok can't be externalized to
+    // /vendor/havok.js like scenes do — bundle its ESM build inline instead.
+    const havokEsm = havokEsmEntry();
+
     const buildResult = await build({
         root: labDir,
         configFile: false,
@@ -252,7 +298,12 @@ export async function buildDemo(slug: string): Promise<void> {
         logLevel: "warn",
         plugins: [wgslMinifyPlugin({ mangle: false }), terserPropertyManglePlugin(), minimalVitePreloadPlugin()],
         resolve: {
-            alias: { "babylon-lite": srcDir },
+            // Demos resolve `babylon-lite` to the TS SOURCE (not `build/lib`) on purpose:
+            // demos have no bundle-size ceilings, and using source keeps the dev iteration
+            // loop fast (no package rebuild required to see demo changes). Demo sizes could
+            // therefore differ slightly from a real consumer's, but the scene bundle-size
+            // tests (which DO build against `build/lib`) are what guard against size drift.
+            alias: { "babylon-lite": srcDir, ...(havokEsm ? { "@babylonjs/havok": havokEsm } : {}) },
             dedupe: ["@babylonjs/core"],
         },
         build: {
@@ -264,7 +315,8 @@ export async function buildDemo(slug: string): Promise<void> {
             modulePreload: { polyfill: false, resolveDependencies: () => [] },
             rollupOptions: {
                 input: { [slug]: resolve(labDir, `lite/src/demos/${slug}.ts`) },
-                external: isLiteBundleExternal,
+                // Bundle Havok inline (aliased above); keep the other vendor runtimes external.
+                external: (id: string) => id !== "@babylonjs/havok" && isLiteBundleExternal(id),
                 output: {
                     format: "es",
                     entryFileNames: "[name].js",
@@ -347,11 +399,6 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
     await buildDemo(slug);
     copyDemoRuntimeAssets([demo]);
 
-    const source = resolve(labDir, "lite", `demo-${slug}.html`);
-    if (existsSync(source)) {
-        writeFileSync(resolve(demosDir, `demo-${slug}.html`), rewriteDemoHtmlForBundle(readFileSync(source, "utf-8")));
-    }
-
     if (options.measure) {
         const { chromium } = await import("@playwright/test");
         const { server, port } = await startStaticServer(labDir);
@@ -371,6 +418,16 @@ export async function buildSingleDemo(slug: string, options: { measure?: boolean
         } finally {
             server.close();
         }
+    }
+
+    const source = resolve(labDir, "lite", `demo-${slug}.html`);
+    if (existsSync(source)) {
+        const html = rewriteDemoHtmlForBundle(readFileSync(source, "utf-8"));
+        const manifest: Record<string, DemoManifestEntry> = existsSync(DEMOS_MANIFEST_FILE)
+            ? (JSON.parse(readFileSync(DEMOS_MANIFEST_FILE, "utf-8")) as Record<string, DemoManifestEntry>)
+            : {};
+        const rawKB = manifest[slug]?.rawKB;
+        writeFileSync(resolve(demosDir, `demo-${slug}.html`), rawKB != null ? injectDemoEngineSize(html, rawKB) : html);
     }
 
     console.log(`Demo "${slug}" ready → lab/public/bundle/demos/${slug}.js`);

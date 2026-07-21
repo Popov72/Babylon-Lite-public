@@ -44,17 +44,26 @@ import type { PbrGeometryMaterialView } from "./pbr-geometry-view.js";
 import { composePbrGeometryShader, _ensurePbrGeometryExt } from "./pbr-geometry-output-shader.js";
 import { _setActivePbrGeometryAttachments } from "./pbr-geometry-view.js";
 
-/** Singleton {@link MeshGroupBuilder} that geometry views point at via their
- *  overridden `_buildGroup`. The async builder body is unreachable —
- *  geometry views are dispatched per-mesh via `_rebuildSingle` directly. */
-export const pbrGeometryGroupBuilder: MeshGroupBuilder = (async () => {
-    throw new Error("pbr-geometry view does not support scene group building");
-}) as MeshGroupBuilder;
-pbrGeometryGroupBuilder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
-    const view = (materialOverride ?? mesh.material) as PbrGeometryMaterialView;
-    return buildPbrGeometryRenderable(scene, mesh, view);
-};
-pbrGeometryGroupBuilder._materialFamily = "pbr";
+/** Lazily-created singleton {@link MeshGroupBuilder} that geometry views point at
+ *  via their overridden `_buildGroup`. The async builder body is unreachable —
+ *  geometry views are dispatched per-mesh via `_rebuildSingle` directly. Lazy-init
+ *  keeps the module free of top-level side effects so an unused geometry path
+ *  tree-shakes away. */
+let _pbrGeometryGroupBuilder: MeshGroupBuilder | null = null;
+export function getPbrGeometryGroupBuilder(): MeshGroupBuilder {
+    if (_pbrGeometryGroupBuilder) {
+        return _pbrGeometryGroupBuilder;
+    }
+    const builder = (async () => {
+        throw new Error("pbr-geometry view does not support scene group building");
+    }) as MeshGroupBuilder;
+    builder._materialFamily = "pbr";
+    builder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
+        const view = (materialOverride ?? mesh.material) as PbrGeometryMaterialView;
+        return buildPbrGeometryRenderable(scene, mesh, view);
+    };
+    return (_pbrGeometryGroupBuilder = builder);
+}
 
 interface PbrGeometryViewResources {
     _composed: ComposedShader;
@@ -77,7 +86,7 @@ function _variantKey(meshFeatures: number, lightMode: number, singleLightType: s
 
 /** Build a {@link Renderable} for one mesh drawn through a PBR geometry view. */
 export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view: PbrGeometryMaterialView): Renderable {
-    const engine = scene.engine as EngineContext;
+    const engine = scene.surface.engine;
     const device = engine._device;
 
     const ctx = (scene as SceneContext & { _pbrGeomContext?: _PbrGeometryContext })._pbrGeomContext;
@@ -177,8 +186,10 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
     const hasTI = (meshFeatures & MSH_HAS_THIN_INSTANCES) !== 0;
     const hasTIColor = (meshFeatures & MSH_HAS_INSTANCE_COLOR) !== 0;
     const syncThinInstanceBuffers = ctx._syncThinInstanceBuffers;
+    const syncThinInstanceForDraw = ctx._syncThinInstanceForDraw;
     const isAlphaBlend = res._alphaBlend;
     const sortCenter = [mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number];
+    let thinDrawArgs: GPUBuffer | null = null;
 
     let _lastWorldVersion = mesh.worldMatrixVersion;
     let _lastLightsCount = scene.lights.length;
@@ -202,6 +213,10 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
             _writePbrMaterialData(matScratch, source, materialSpec);
             device.queue.writeBuffer(materialUBO, 0, matScratch.buffer, 0, matScratch.byteLength);
         }
+        const ti = hasTI ? mesh.thinInstances : null;
+        if (ti && syncThinInstanceForDraw) {
+            thinDrawArgs = syncThinInstanceForDraw(engine, ti, hasTIColor, mesh._gpu.indexCount);
+        }
     };
     const _invalidate = (): void => {
         _lastWorldVersion = -1;
@@ -218,25 +233,31 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
             pass.setBindGroup(2, shadowBindGroup);
         }
         let slot = 0;
-        const vb = gpu._vbLayout;
-        pass.setVertexBuffer(slot++, gpu.positionBuffer, vb?._p?._offset);
-        pass.setVertexBuffer(slot++, gpu.normalBuffer, vb?._n?._offset);
+        // Bind every attribute at offset 0 — the per-attribute byte offset is baked into the
+        // pipeline vertex layout (see pbr-template). A non-zero setVertexBuffer bind offset
+        // corrupts vertex fetch on some AMD/Dawn paths; this mirrors the color pass and BJS.
+        pass.setVertexBuffer(slot++, gpu.positionBuffer);
+        pass.setVertexBuffer(slot++, gpu.normalBuffer);
         if (hasNormalMap && gpu.tangentBuffer) {
-            pass.setVertexBuffer(slot++, gpu.tangentBuffer, vb?._t?._offset);
+            pass.setVertexBuffer(slot++, gpu.tangentBuffer);
         }
-        pass.setVertexBuffer(slot++, gpu.uvBuffer, vb?._u?._offset);
+        pass.setVertexBuffer(slot++, gpu.uvBuffer);
         if (hasUV2 && gpu.uv2Buffer) {
-            pass.setVertexBuffer(slot++, gpu.uv2Buffer, vb?._u2?._offset);
+            pass.setVertexBuffer(slot++, gpu.uv2Buffer);
         }
         if (hasVertexColor && gpu.colorBuffer) {
-            pass.setVertexBuffer(slot++, gpu.colorBuffer, vb?._c?._offset);
+            pass.setVertexBuffer(slot++, gpu.colorBuffer);
         }
-        if (mesh.skeleton) {
-            pass.setVertexBuffer(slot++, mesh.skeleton.jointsBuffer);
-            pass.setVertexBuffer(slot++, mesh.skeleton.weightsBuffer);
-            if (mesh.skeleton.joints1Buffer && mesh.skeleton.weights1Buffer) {
-                pass.setVertexBuffer(slot++, mesh.skeleton.joints1Buffer);
-                pass.setVertexBuffer(slot++, mesh.skeleton.weights1Buffer);
+        // Skinning vertex buffers: live skeleton OR baked VAT (same field names, mutually exclusive).
+        // Mirrors the main PBR renderable — without the VAT branch, VAT-animated thin instances leave the
+        // pipeline's joint/weight vertex slots unbound (invalid command buffer, black frame).
+        const skin = mesh.skeleton ?? mesh.vat;
+        if (skin) {
+            pass.setVertexBuffer(slot++, skin.jointsBuffer);
+            pass.setVertexBuffer(slot++, skin.weightsBuffer);
+            if (skin.joints1Buffer && skin.weights1Buffer) {
+                pass.setVertexBuffer(slot++, skin.joints1Buffer);
+                pass.setVertexBuffer(slot++, skin.weights1Buffer);
             }
         }
         const ti = hasTI ? mesh.thinInstances : null;
@@ -244,10 +265,10 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
             slot = syncThinInstanceBuffers(engine, ti, pass, slot, hasTIColor);
         }
         pass.setIndexBuffer(gpu.indexBuffer, gpu.indexFormat);
-        if (ti && ti.count > 0) {
-            pass.drawIndexed(gpu.indexCount, ti.count);
+        if (ti && thinDrawArgs) {
+            pass.drawIndexedIndirect(thinDrawArgs, 0);
         } else {
-            pass.drawIndexed(gpu.indexCount);
+            pass.drawIndexed(gpu.indexCount, ti?.count);
         }
         return 1;
     };
@@ -298,6 +319,7 @@ function _ensureViewResources(
     const source = view.source as PbrMaterialProps;
     const vbLayout = (source as unknown as { _vbLayout?: import("../../mesh/mesh.js").MeshVbLayout })._vbLayout;
     const vbKey = "";
+    const uv2Mask = (source as { _uv2Mask?: number })._uv2Mask ?? 0;
 
     // Compose with the active-attachment scope set so the registered ext
     // sees the right list when contributing the geometry-params fragment.
@@ -316,7 +338,8 @@ function _ensureViewResources(
             vbLayout,
             vbKey,
             view._geometryAttachments,
-            view._emitColor
+            view._emitColor,
+            uv2Mask
         );
     } finally {
         _setActivePbrGeometryAttachments(prev);

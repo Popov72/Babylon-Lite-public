@@ -416,12 +416,12 @@ async function main(): Promise<void> {
     // ── Render pipeline (demo-fluid screen-space fluid surface) ──────────────
     // Depth buffer owned by the scene task; the particle + surface tasks load +
     // test against it so the fluid depth-tests against the ground.
-    const depthRT = createRenderTarget({ lbl: "liq-depth", dFormat: "depth24plus", samples: 1, size: "canvas" });
+    const depthRT = createRenderTarget({ lbl: "liq-depth", dFormat: "depth24plus", samples: 1, size: engine });
     // The scene renders to an OFFSCREEN colour target (not the swapchain) so the
     // fluid surface pass can SAMPLE it for refraction. clr:true keeps a valid
     // background even if the HDR skybox fails to load; the skybox (order-0
     // renderable) overwrites every pixel when present.
-    const sceneColorRT = createRenderTarget({ lbl: "liq-scene-color", format: engine.format, samples: 1, size: "canvas" });
+    const sceneColorRT = createRenderTarget({ lbl: "liq-scene-color", format: engine.format, samples: 1, size: engine });
     const sceneTask = createRenderTask(
         { name: "scene", rt: sceneColorRT, depth: depthRT, clr: true, clrColor: { r: 0.05, g: 0.06, b: 0.1, a: 1 } },
         engine,
@@ -1122,7 +1122,7 @@ async function main(): Promise<void> {
     // Ensure the env finished loading (skybox + surface reflections wired) before we
     // build the scene, so the HDR skybox renders as the background from frame 0.
     await envReady;
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
 
     canvas.dataset.particleCount = String(particleCount);

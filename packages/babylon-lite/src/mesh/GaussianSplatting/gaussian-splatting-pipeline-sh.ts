@@ -37,6 +37,7 @@ import { getViewMatrix, getProjectionMatrix, getCameraPosition } from "../../cam
 import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import { getRenderTargetSize } from "../../engine/engine.js";
 import { disposeGaussianSplattingMesh, type GaussianSplattingMesh, type GsShaderFragment } from "./gaussian-splatting-mesh.js";
+import { registerPickSource } from "../../picking/pick-contributor.js";
 import { applyGsFragments } from "./gaussian-splatting-pipeline.js";
 
 interface PipelineEntry {
@@ -365,7 +366,7 @@ function getOrCreateShPipeline(engine: EngineContext, sig: RenderTargetSignature
  *  Mirrors `buildGaussianSplattingRenderable` but adds eyePosition to the UBO
  *  and binds the SH textures. */
 export function buildGaussianSplattingRenderableSH(scene: SceneContext, mesh: GaussianSplattingMesh, fragments?: readonly GsShaderFragment[]): Renderable {
-    const engine = scene.engine;
+    const engine = scene.surface.engine;
     const device = engine._device;
 
     // 3 mat4 + 8 floats (viewport,focal,dataSize,alpha,pad) + 4 floats (eyePosition + pad) = 240 bytes.
@@ -513,7 +514,7 @@ export function buildGaussianSplattingRenderableSH(scene: SceneContext, mesh: Ga
  *  the `rgba32uint` SH textures (1..5 depending on degree), patches
  *  `mesh._gs` in place, and installs the SH renderable. */
 export function attachGaussianSplattingMeshSH(scene: SceneContext, mesh: GaussianSplattingMesh, shFlat: Uint8Array, fragments?: readonly GsShaderFragment[]): void {
-    const engine = scene.engine;
+    const engine = scene.surface.engine;
     const device = engine._device;
     const shDegree = mesh.shDegree;
     const shVectorCount = (shDegree + 1) * (shDegree + 1) - 1;
@@ -551,14 +552,11 @@ export function attachGaussianSplattingMeshSH(scene: SceneContext, mesh: Gaussia
     mesh._gs._shTextures = textures;
     mesh._gs._shViews = views;
 
-    const ctx = scene as unknown as { _renderables: Renderable[]; _disposables: (() => void)[]; _gsMeshes: GaussianSplattingMesh[] };
+    const ctx = scene as unknown as { _renderables: Renderable[]; _disposables: (() => void)[] };
     ctx._renderables.push(buildGaussianSplattingRenderableSH(scene, mesh, fragments));
-    ctx._gsMeshes.push(mesh);
+    const unregisterPick = registerPickSource(scene, mesh, () => import("../../picking/gs-picking-pipeline.js"));
     ctx._disposables.push(() => {
-        const i = ctx._gsMeshes.indexOf(mesh);
-        if (i >= 0) {
-            ctx._gsMeshes.splice(i, 1);
-        }
+        unregisterPick();
         disposeGaussianSplattingMesh(mesh);
     });
 }

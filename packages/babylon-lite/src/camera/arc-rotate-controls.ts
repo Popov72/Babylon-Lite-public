@@ -1,6 +1,33 @@
 import type { ArcRotateCamera } from "./arc-rotate.js";
 import type { SceneContext } from "../scene/scene.js";
 
+/**
+ * Optional hooks that let an {@link attachControl} caller defer pointer
+ * gestures to an external interactor (typically a gizmo pointer-drag
+ * dispatcher) so the camera doesn't orbit when the user is interacting with
+ * something else on top of it.  All fields are optional; omit them to keep
+ * the default behavior (the camera always handles its own pointer input).
+ */
+export interface AttachControlOptions {
+    /** Optional predicate consulted on every pointer-down.  When it returns
+     *  false the camera ignores that gesture (no rotate / pan).  Used to defer
+     *  to gizmo interaction so pressing or dragging a gizmo doesn't also orbit
+     *  the camera. */
+    shouldHandlePointerDown?: (event: PointerEvent) => boolean;
+    /** Optional predicate consulted on pointer-move while a camera drag is in
+     *  progress.  When it returns true the camera ABORTS the current drag.
+     *  Because gizmo picking is async, a press on a gizmo may not be known at
+     *  pointer-down time (so the camera optimistically starts orbiting); once
+     *  the gizmo drag is recognised a frame later this lets the gizmo reclaim
+     *  the gesture and undo the (not-yet-applied) orbit. */
+    isExternalDragActive?: () => boolean;
+    /** Optional predicate consulted on pointer-move.  While it returns true the
+     *  camera DEFERS its orbit (consumes the move without applying it) — used
+     *  to wait out an in-flight async gizmo pick so a press that lands on a
+     *  gizmo never produces a stray orbit, regardless of pick latency. */
+    isExternalPickPending?: () => boolean;
+}
+
 /** Orbit limits for an {@link ArcRotateCamera}. Omit a field to leave that bound
  *  unbounded; pass an explicit `undefined` to clear a previously-set bound. */
 export interface ArcRotateCameraLimits {
@@ -125,19 +152,45 @@ export function setCameraLimits(camera: ArcRotateCamera, limits: ArcRotateCamera
  * Orbit/zoom limits are entirely opt-in via {@link setCameraLimits}; the camera
  * self-clamps in its setters, so this loop carries no limit code.
  *
- * The optional `shouldHandlePointer` predicate gates every pointerdown: when it
- * returns `false` the camera fully ignores that gesture — no pointer capture, no
- * rotate/pan — so a caller can claim specific buttons/modifiers for its own use
- * (e.g. Shift+RMB to push fluid, or a click that hits a pickable object). Omit it
- * to keep the original always-handle behavior; existing callers are unchanged.
- *
  * Camera stays plain data — this function reads/writes its properties.
- * Returns a cleanup function to remove all listeners and the beforeRender hook.
+ *
+ * ### Lifecycle / cleanup (important)
+ *
+ * The returned function detaches everything this call attached: it removes the
+ * canvas DOM listeners (pointer/wheel/contextmenu/touch/gesture) and, when a `scene` was
+ * supplied, its `_beforeRender` inertia hook. It is idempotent — calling it more
+ * than once is safe (the hook is removed only if still present, and removing a
+ * DOM listener twice is a no-op).
+ *
+ * The controls are **not** automatically tied to the scene's lifetime. Passing a
+ * `scene` only enables inertia (it registers the per-frame hook); it does **not**
+ * register this cleanup for scene disposal. Because the DOM listeners live on the
+ * `canvas` rather than on the scene, {@link disposeScene} clears scene-owned state
+ * (including `_beforeRender`) but does **not** remove the canvas listeners added
+ * here. The caller owns the controls' lifetime and must detach them explicitly:
+ *
+ * ```ts
+ * const detachCameraControl = attachControl(camera, canvas, scene);
+ * // Later — detach controls yourself before/after disposing the scene:
+ * detachCameraControl();
+ * disposeScene(scene);
+ * ```
+ *
+ * To tie the controls to the scene so `disposeScene(scene)` also detaches them,
+ * register the returned cleanup with {@link onSceneDispose}:
+ *
+ * ```ts
+ * onSceneDispose(scene, attachControl(camera, canvas, scene));
+ * // Now disposeScene(scene) removes the canvas listeners too.
+ * ```
+ *
+ * @returns A cleanup function that removes all canvas listeners and the
+ * `_beforeRender` inertia hook. Safe to call multiple times.
  */
-export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext, shouldHandlePointer?: (e: PointerEvent) => boolean): () => void {
-    const angularSensibility = 1000; // Babylon default
-    const panningSensibility = 50; // Babylon default (pixels per unit)
-    const wheelPrecision = 3; // Babylon default
+export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement, scene?: SceneContext, options?: AttachControlOptions): () => void {
+    const angularSensibility = camera.angularSensibility ?? 1000; // Babylon default; HIGHER = slower orbit
+    const panningSensibility = camera.panningSensibility ?? 50; // Babylon default (pixels per unit); LOWER = faster pan
+    const wheelPrecision = camera.wheelPrecision ?? 3; // Babylon default; HIGHER = slower zoom
 
     const ROTATION_EPSILON = 0.001;
     const RADIUS_EPSILON = 0.001;
@@ -154,11 +207,9 @@ export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement
     let pinchStartRadius = 0;
 
     function onPointerDown(e: PointerEvent): void {
-        // A caller-supplied gate can claim a gesture (e.g. Shift+RMB, or a click
-        // over a pickable object): if it rejects this pointerdown, ignore the
-        // gesture entirely — no capture, no rotate/pan — so the claiming code owns
-        // the pointer.
-        if (shouldHandlePointer && !shouldHandlePointer(e)) {
+        // Defer to gizmo interaction (or any other guard) when requested — the
+        // camera shouldn't orbit when the press lands on a gizmo.
+        if (options?.shouldHandlePointerDown && !options.shouldHandlePointerDown(e)) {
             return;
         }
         canvas.setPointerCapture(e.pointerId);
@@ -189,6 +240,26 @@ export function attachControl(camera: ArcRotateCamera, canvas: HTMLCanvasElement
         }
 
         if (!isDragging && !isPanning) {
+            return;
+        }
+
+        // A gizmo drag was recognised (asynchronously) after we optimistically
+        // started orbiting — abort and discard any pending inertial offset so
+        // the camera doesn't move on top of the gizmo interaction.
+        if (options?.isExternalDragActive?.()) {
+            isDragging = false;
+            isPanning = false;
+            camera.inertialAlphaOffset = 0;
+            camera.inertialBetaOffset = 0;
+            camera.inertialPanningX = 0;
+            camera.inertialPanningY = 0;
+            return;
+        }
+        // A gizmo pointer-down pick is still in flight — defer (consume this
+        // move without orbiting) until we know whether the press hit a gizmo.
+        // lastX/Y are already advanced above so no delta is applied once it
+        // resolves.
+        if (options?.isExternalPickPending?.()) {
             return;
         }
 

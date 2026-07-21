@@ -25,7 +25,7 @@ import {
     startEngine,
 } from "babylon-lite";
 
-const SPLAT_URL = "https://raw.githubusercontent.com/CedricGuillemet/dump/master/Halo_Believe.splat";
+const SPLAT_URL = "https://cdn.jsdelivr.net/gh/CedricGuillemet/dump@master/Halo_Believe.splat";
 const NEAR = 0.03;
 const FAR = 15;
 
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     splat.position.y = 3;
     splat.position.z = 0;
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
 
     await splat.firstSortReady;

@@ -1,5 +1,5 @@
 import { F32, I32, U8 } from "../engine/typed-arrays.js";
-import { tickAnimation } from "./animation-group.js";
+import { tickAnimationCore } from "./animation-group.js";
 import type { AnimationGltfMixer, AnimationGroup } from "./animation-group.js";
 import { ANIMATION_GROUP_TASK_CATEGORY, getAnimationGroupOwner, getAnimationGroups } from "./animation-group-task.js";
 import { setAnimationTaskCategoryHandler } from "./animation-manager.js";
@@ -129,7 +129,7 @@ function updateWeightedGltfAnimations(manager: AnimationManager, deltaMs: number
             continue;
         }
 
-        tickAnimation(group, deltaMs, manager.engine);
+        tickAnimationCore(group, deltaMs, manager.engine);
     }
 
     for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
@@ -206,7 +206,7 @@ function accumulateAdditiveGroup(scratch: WeightedGltfScratch, group: AnimationG
 
     const target = getTarget(scratch, mixer);
     const clip = mixer[GLTF_CLIP];
-    const t = group.currentFrame;
+    const t = group.currentTime;
     for (let channelIndex = 0; channelIndex < clip.channels.length; channelIndex++) {
         const ch = clip.channels[channelIndex]!;
         const sampler = clip.samplers[ch.samplerIdx]!;
@@ -316,7 +316,7 @@ function advanceGroupTime(group: AnimationGroup, mixer: AnimationGltfMixer, delt
     const clip = mixer[GLTF_CLIP];
     const isPlaying = group.isPlaying;
     if (isPlaying) {
-        group.currentFrame += (deltaMs / 1000) * group.speedRatio;
+        group.currentTime += (deltaMs / 1000) * group.speedRatio;
     }
 
     if (clip.duration <= 0) {
@@ -324,14 +324,14 @@ function advanceGroupTime(group: AnimationGroup, mixer: AnimationGltfMixer, delt
     }
 
     if (group.loopAnimation && isPlaying) {
-        group.currentFrame %= clip.duration;
-        if (group.currentFrame < 0) {
-            group.currentFrame += clip.duration;
+        group.currentTime %= clip.duration;
+        if (group.currentTime < 0) {
+            group.currentTime += clip.duration;
         }
     } else {
-        group.currentFrame = Math.min(Math.max(group.currentFrame, 0), clip.duration);
+        group.currentTime = Math.min(Math.max(group.currentTime, 0), clip.duration);
     }
-    return group.currentFrame;
+    return group.currentTime;
 }
 
 function uploadTarget(manager: AnimationManager, target: WeightedGltfTarget): void {

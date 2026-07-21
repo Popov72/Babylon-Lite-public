@@ -56,31 +56,29 @@ function getDepthModeEntry(depthMode: BillboardDepthMode): (typeof DEPTH_MODE_TA
 export function makeBillboardBasisWgsl(orientation: BillboardOrientation): string {
     switch (orientation) {
         case "facing":
-            return `struct BillboardBasis {
-right: vec3<f32>,
-up: vec3<f32>,
+            return `struct B {
+r: vec3f,
+u: vec3f,
 };
-fn getBillboardBasis(_anchor: vec3<f32>) -> BillboardBasis {
-let cameraRight = normalize(vec3<f32>(scene.view[0][0], scene.view[1][0], scene.view[2][0]));
-let cameraUp = normalize(vec3<f32>(scene.view[0][1], scene.view[1][1], scene.view[2][1]));
-return BillboardBasis(cameraRight, -cameraUp);
+fn basis(_a: vec3f) -> B {
+let r = normalize(vec3f(scene.view[0][0], scene.view[1][0], scene.view[2][0]));
+let u = normalize(vec3f(scene.view[0][1], scene.view[1][1], scene.view[2][1]));
+return B(r, -u);
 }`;
         case "axis-locked":
-            return `struct BillboardBasis {
-right: vec3<f32>,
-up: vec3<f32>,
+            return `struct B {
+r: vec3f,
+u: vec3f,
 };
-fn getBillboardBasis(_anchor: vec3<f32>) -> BillboardBasis {
-let lockAxis = normalize(billboards.axisAndCutoff.xyz);
-let cameraRight = normalize(vec3<f32>(scene.view[0][0], scene.view[1][0], scene.view[2][0]));
-let projectedRight = cameraRight - lockAxis * dot(cameraRight, lockAxis);
-let projectedRightLen = length(projectedRight);
-let safeProjectedRightLen = max(projectedRightLen, 1e-4);
-let fallbackSeed = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(lockAxis.z) > 0.999);
-let fallbackRightRaw = cross(lockAxis, fallbackSeed);
-let fallbackRight = fallbackRightRaw / max(length(fallbackRightRaw), 1e-4);
-let right = select(fallbackRight, projectedRight / safeProjectedRightLen, projectedRightLen > 1e-4);
-return BillboardBasis(right, -lockAxis);
+fn basis(_a: vec3f) -> B {
+let a = normalize(billboards.axisAndCutoff.xyz);
+let cr = normalize(vec3f(scene.view[0][0], scene.view[1][0], scene.view[2][0]));
+let pr = cr - a * dot(cr, a);
+let pl = length(pr);
+let f = select(vec3f(0, 0, 1), vec3f(1, 0, 0), abs(a.z) > 0.999);
+let fr = cross(a, f);
+let r = select(fr / max(length(fr), 1e-4), pr / max(pl, 1e-4), pl > 1e-4);
+return B(r, -a);
 }`;
     }
 }
@@ -88,59 +86,59 @@ return BillboardBasis(right, -lockAxis);
 function makeBillboardFragmentWgsl(depthMode: BillboardDepthMode): string {
     if (depthMode === "cutout") {
         return `@fragment
-fn fs(in: VOut) -> @location(0) vec4<f32> {
-let sampleColor = textureSample(atlasTex, atlasSamp, in.uv);
-if (sampleColor.a < billboards.axisAndCutoff.w) {
+fn fs(in: O) -> @location(0) vec4f {
+let s = textureSample(atlasTex, atlasSamp, in.uv);
+if (s.a < billboards.axisAndCutoff.w) {
 discard;
 }
-return sampleColor * in.tint * billboards.opacityMul;
+return s * in.tint * billboards.opacityMul;
 }`;
     }
     return `@fragment
-fn fs(in: VOut) -> @location(0) vec4<f32> {
-let sampleColor = textureSample(atlasTex, atlasSamp, in.uv);
-return sampleColor * in.tint * billboards.opacityMul;
+fn fs(in: O) -> @location(0) vec4f {
+let s = textureSample(atlasTex, atlasSamp, in.uv);
+return s * in.tint * billboards.opacityMul;
 }`;
 }
 
 function makeBillboardWgsl(orientation: BillboardOrientation, depthMode: BillboardDepthMode): string {
     return `${SCENE_UBO_WGSL}
-struct BillboardSystem {
-opacityMul: vec4<f32>,
-axisAndCutoff: vec4<f32>,
+struct S {
+opacityMul: vec4f,
+axisAndCutoff: vec4f,
 };
-@group(1) @binding(0) var<uniform> billboards: BillboardSystem;
+@group(1) @binding(0) var<uniform> billboards: S;
 @group(1) @binding(1) var atlasTex: texture_2d<f32>;
 @group(1) @binding(2) var atlasSamp: sampler;
 ${makeBillboardBasisWgsl(orientation)}
-struct VIn {
+struct I {
 @builtin(vertex_index) vid: u32,
-@location(0) iPos: vec3<f32>,
-@location(1) iSize: vec2<f32>,
-@location(2) iUvMin: vec2<f32>,
-@location(3) iUvMax: vec2<f32>,
-@location(4) iRot: f32,
-@location(5) iPivot: vec2<f32>,
-@location(6) iColor: vec4<f32>,
+@location(0) p: vec3f,
+@location(1) s: vec2f,
+@location(2) a: vec2f,
+@location(3) b: vec2f,
+@location(4) r: f32,
+@location(5) o: vec2f,
+@location(6) c: vec4f,
 };
-struct VOut {
-@builtin(position) pos: vec4<f32>,
-@location(0) uv: vec2<f32>,
-@location(1) tint: vec4<f32>,
+struct O {
+@builtin(position) p: vec4f,
+@location(0) uv: vec2f,
+@location(1) tint: vec4f,
 };
 @vertex
-fn vs(in: VIn) -> VOut {
-let corner = vec2<f32>(select(0.0, 1.0, in.vid == 1u || in.vid == 2u), select(0.0, 1.0, in.vid >= 2u));
-let local = (corner - in.iPivot) * in.iSize;
-let cosRot = cos(in.iRot);
-let sinRot = sin(in.iRot);
-let rotated = vec2<f32>(local.x * cosRot - local.y * sinRot, local.x * sinRot + local.y * cosRot);
-let basis = getBillboardBasis(in.iPos);
-let worldPos = in.iPos + basis.right * rotated.x + basis.up * rotated.y;
-var out: VOut;
-out.pos = scene.viewProjection * vec4<f32>(worldPos, 1.0);
-out.uv = mix(in.iUvMin, in.iUvMax, corner);
-out.tint = in.iColor;
+fn vs(in: I) -> O {
+let q = vec2f(select(0.0, 1.0, in.vid == 1u || in.vid == 2u), select(0.0, 1.0, in.vid >= 2u));
+let l = (q - in.o) * in.s;
+let cr = cos(in.r);
+let sr = sin(in.r);
+let r = vec2f(l.x * cr - l.y * sr, l.x * sr + l.y * cr);
+let b = basis(in.p);
+let wp = in.p + b.r * r.x + b.u * r.y;
+var out: O;
+out.p = scene.viewProjection * vec4f(wp, 1);
+out.uv = mix(in.a, in.b, q);
+out.tint = in.c;
 return out;
 }
 ${makeBillboardFragmentWgsl(depthMode)}`;
@@ -200,7 +198,10 @@ export function uploadSortedBillboardInstances(
     system: BillboardSpriteSystem,
     instanceBuffer: GPUBuffer,
     scratch: BillboardInstanceSortScratch,
-    cameraViewMatrix: Mat4
+    cameraViewMatrix: Mat4,
+    foX = 0,
+    foY = 0,
+    foZ = 0
 ): void {
     const count = system.count;
     if (count === 0) {
@@ -213,11 +214,15 @@ export function uploadSortedBillboardInstances(
     const sortedData = scratch._sortedInstanceData;
     const indices = scratch._sortIndices;
     const depths = scratch._sortDepths;
+    // Under floating origin the camera offset (foX/foY/foZ) is subtracted from each
+    // anchor so the GPU receives eye-relative positions that match the eye-relative
+    // view-projection. The sort depth is computed from the same eye-relative anchor.
+    // With a zero offset this is identical to the raw-anchor path.
     for (let index = 0; index < count; index++) {
         const base = index * BILLBOARD_INSTANCE_FLOATS_PER_SPRITE;
-        const anchorX = sourceData[base]!;
-        const anchorY = sourceData[base + 1]!;
-        const anchorZ = sourceData[base + 2]!;
+        const anchorX = sourceData[base]! - foX;
+        const anchorY = sourceData[base + 1]! - foY;
+        const anchorZ = sourceData[base + 2]! - foZ;
         indices[index] = index;
         depths[index] = cameraViewMatrix[2]! * anchorX + cameraViewMatrix[6]! * anchorY + cameraViewMatrix[10]! * anchorZ + cameraViewMatrix[14]!;
     }
@@ -225,7 +230,10 @@ export function uploadSortedBillboardInstances(
     for (let outIndex = 0; outIndex < count; outIndex++) {
         const sourceBase = indices[outIndex]! * BILLBOARD_INSTANCE_FLOATS_PER_SPRITE;
         const destBase = outIndex * BILLBOARD_INSTANCE_FLOATS_PER_SPRITE;
-        for (let field = 0; field < BILLBOARD_INSTANCE_FLOATS_PER_SPRITE; field++) {
+        sortedData[destBase] = sourceData[sourceBase]! - foX;
+        sortedData[destBase + 1] = sourceData[sourceBase + 1]! - foY;
+        sortedData[destBase + 2] = sourceData[sourceBase + 2]! - foZ;
+        for (let field = 3; field < BILLBOARD_INSTANCE_FLOATS_PER_SPRITE; field++) {
             sortedData[destBase + field] = sourceData[sourceBase + field]!;
         }
     }
@@ -248,11 +256,43 @@ export function ensureBillboardInstanceBuffer(
     return { buffer: createBillboardInstanceBuffer(device, system, label), capacity: system._capacity, reallocated: true };
 }
 
-export function uploadBillboardInstances(device: GPUDevice, system: BillboardSpriteSystem, instanceBuffer: GPUBuffer, uploadedVersion: number): number {
+export function uploadBillboardInstances(
+    device: GPUDevice,
+    system: BillboardSpriteSystem,
+    instanceBuffer: GPUBuffer,
+    uploadedVersion: number,
+    foX = 0,
+    foY = 0,
+    foZ = 0,
+    foScratch: BillboardInstanceSortScratch | null = null
+): number {
     if (uploadedVersion === system._version) {
         return uploadedVersion;
     }
     if (system.count === 0) {
+        system._dirtyMin = 0;
+        system._dirtyMax = 0;
+        return system._version;
+    }
+    // Floating-origin path: anchors live at world scale (~5e6), so they must be made
+    // eye-relative (offset subtracted) before upload — otherwise the eye-relative
+    // view-projection in the shader would cancel catastrophically in F32. The whole
+    // range is re-uploaded because every anchor depends on the live camera offset.
+    if ((foX !== 0 || foY !== 0 || foZ !== 0) && foScratch) {
+        const count = system.count;
+        ensureBillboardInstanceSortScratch(foScratch, count);
+        const sourceData = system._instanceData;
+        const dest = foScratch._sortedInstanceData;
+        for (let index = 0; index < count; index++) {
+            const base = index * BILLBOARD_INSTANCE_FLOATS_PER_SPRITE;
+            dest[base] = sourceData[base]! - foX;
+            dest[base + 1] = sourceData[base + 1]! - foY;
+            dest[base + 2] = sourceData[base + 2]! - foZ;
+            for (let field = 3; field < BILLBOARD_INSTANCE_FLOATS_PER_SPRITE; field++) {
+                dest[base + field] = sourceData[base + field]!;
+            }
+        }
+        device.queue.writeBuffer(instanceBuffer, 0, dest.buffer, dest.byteOffset, count * BILLBOARD_INSTANCE_STRIDE_BYTES);
         system._dirtyMin = 0;
         system._dirtyMax = 0;
         return system._version;

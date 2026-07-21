@@ -14,6 +14,8 @@ import type { PbrTemplateExt } from "./pbr-template-ext.js";
 import type { MeshVbLayout } from "../../mesh/mesh.js";
 import { appendMeshLightUboFields, meshLightIndexWGSL } from "../../render/lights-ubo.js";
 
+type PbrGammaTemplate = typeof import("./pbr-template-gamma.js");
+
 const STAGE_FRAGMENT = 0x2;
 
 // ── BRDF functions (always present in PBR) ──────────────────────
@@ -62,6 +64,10 @@ export interface PbrTemplateConfig {
     /** Normal map mode (default: "none") */
     /** @internal */
     readonly _normalMode?: "tangent" | "cotangent" | "none";
+    /** @internal Mesh has no NORMAL attribute → flat-shade via screen-space derivatives (glTF spec). */
+    readonly _flatGeometricNormal?: boolean;
+    /** @internal Flat-normal WGSL (from flat-normal-wgsl.ts), lazily supplied only when a no-NORMAL mesh exists. */
+    readonly _flatNormalWgsl?: string;
     /** Has emissive texture */
     /** @internal */
     readonly _hasEmissiveTexture?: boolean;
@@ -81,12 +87,12 @@ export interface PbrTemplateConfig {
     /** Fog blend WGSL, emitted just before the tonemap block; "" for non-fog scenes. */
     /** @internal */
     readonly _fogBlock?: string;
-    /** ACES WGSL: tonemap helper functions (dynamically imported). Empty string = standard exponential tonemap. */
+    /** Tone mapping WGSL: module-scope helper functions/consts. Empty string = inline default (no helpers). */
     /** @internal */
-    readonly _acesHelpers?: string;
-    /** ACES WGSL: tonemap call block replacing the default exponential one. */
+    readonly _toneMappingHelpers?: string;
+    /** Tone mapping WGSL: per-fragment call block. Empty string = default standard exponential. */
     /** @internal */
-    readonly _acesTonemapCall?: string;
+    readonly _toneMappingCall?: string;
     /** Has alpha blending */
     /** @internal */
     readonly _hasAlphaBlend?: boolean;
@@ -127,6 +133,8 @@ export interface PbrTemplateConfig {
      *  When undefined, base template defaults to master-like behavior (no feature strings). */
     /** @internal */
     readonly _ext?: PbrTemplateExt;
+    /** @internal */
+    readonly _gammaTemplate?: PbrGammaTemplate | null;
     /** Generate a fragment stage that runs discard/alpha-test logic and writes no color. */
     /** @internal */
     readonly _noColorOutput?: boolean;
@@ -155,14 +163,16 @@ export function createPbrTemplate(config: PbrTemplateConfig): ShaderTemplate {
         _multiLightWGSL = "",
         _multiLightLoop = "",
         _normalMode = "none",
+        _flatGeometricNormal = false,
+        _flatNormalWgsl = "",
         _hasEmissiveTexture = false,
         _hasSpecGloss = false,
         _hasDoubleSided = false,
         _hasTonemap = false,
         _fogHelper = "",
         _fogBlock = "",
-        _acesHelpers = "",
-        _acesTonemapCall = "",
+        _toneMappingHelpers = "",
+        _toneMappingCall = "",
         _hasAlphaBlend = false,
         _hasSpecularAA = false,
         _hasGammaAlbedo = false,
@@ -176,6 +186,7 @@ export function createPbrTemplate(config: PbrTemplateConfig): ShaderTemplate {
         _anisoBrdfFunctions = "",
         _anisoTBBlock = "",
         _ext,
+        _gammaTemplate,
         _noColorOutput = false,
         _esmShadowOutput = false,
         _esmShadowDepthCode = "",
@@ -187,15 +198,25 @@ export function createPbrTemplate(config: PbrTemplateConfig): ShaderTemplate {
 
     // ── Base vertex attributes ──────────────────────────────────
     // arrayStride defaults to the canonical tight element size; interleaved meshes
-    // override it (e.g. 24 for POSITION+NORMAL sharing one stride-24 bufferView).
+    // override it (e.g. 48 for POSITION+NORMAL+UV+TANGENT sharing one stride-48
+    // bufferView). `_offset` is the attribute's byte offset WITHIN that shared
+    // buffer (0 for tight meshes); it is baked into the pipeline vertex layout so
+    // the draw can bind the shared buffer at offset 0 (matches Babylon.js WebGPU —
+    // a non-zero setVertexBuffer bind offset corrupts vertex fetch on some AMD/Dawn paths).
     const _baseVertexAttributes: VertexAttribute[] = [
-        { _name: "position", _type: "vec3<f32>", _gpuFormat: "float32x3", _arrayStride: _vbStrides?._p?._stride ?? 12 },
-        { _name: "normal", _type: "vec3<f32>", _gpuFormat: "float32x3", _arrayStride: _vbStrides?._n?._stride ?? 12 },
+        { _name: "position", _type: "vec3<f32>", _gpuFormat: "float32x3", _arrayStride: _vbStrides?._p?._stride ?? 12, _offset: _vbStrides?._p?._offset ?? 0 },
+        { _name: "normal", _type: "vec3<f32>", _gpuFormat: "float32x3", _arrayStride: _vbStrides?._n?._stride ?? 12, _offset: _vbStrides?._n?._offset ?? 0 },
     ];
     if (hasNormal) {
-        _baseVertexAttributes.push({ _name: "tangent", _type: "vec4<f32>", _gpuFormat: "float32x4", _arrayStride: _vbStrides?._t?._stride ?? 16 });
+        _baseVertexAttributes.push({
+            _name: "tangent",
+            _type: "vec4<f32>",
+            _gpuFormat: "float32x4",
+            _arrayStride: _vbStrides?._t?._stride ?? 16,
+            _offset: _vbStrides?._t?._offset ?? 0,
+        });
     }
-    _baseVertexAttributes.push({ _name: "uv", _type: "vec2<f32>", _gpuFormat: "float32x2", _arrayStride: _vbStrides?._u?._stride ?? 8 });
+    _baseVertexAttributes.push({ _name: "uv", _type: "vec2<f32>", _gpuFormat: "float32x2", _arrayStride: _vbStrides?._u?._stride ?? 8, _offset: _vbStrides?._u?._offset ?? 0 });
     if (_ext) {
         _baseVertexAttributes.push(..._ext.extraVertexAttributes);
     }
@@ -313,12 +334,12 @@ return out;
     if (hasNormal) {
         normalBlock = `let normalMapRaw=textureSample(normalTexture,normalSampler_,${normalUV}).rgb*2.0-1.0;
 ${normalScaleMod}let normalMapNorm=normalize(${normalRef});
-let N_geom=normalize(input.worldNormal);
+var N_geom=normalize(input.worldNormal);
 let TBN=mat3x3<f32>(input.worldTangent,input.worldBitangent,input.worldNormal);
 var N=normalize(TBN*normalMapNorm);`;
     } else if (hasCotangentNormal) {
         normalBlock = `let normalMapSample=textureSample(normalTexture,normalSampler_,${normalUV}).rgb*2.0-1.0;
-${normalScaleMod.replace(/normalMapRaw/g, "normalMapSample").replace(/scaledNormal/g, "scaledNormalCT")}let N_geom=normalize(input.worldNormal);
+${normalScaleMod.replace(/normalMapRaw/g, "normalMapSample").replace(/scaledNormal/g, "scaledNormalCT")}var N_geom=normalize(input.worldNormal);
 let dp1=dpdx(input.worldPos);
 let dp2=dpdy(input.worldPos);
 let duv1=dpdx(${normalUV});
@@ -331,8 +352,14 @@ let det=max(dot(tangent_ct,tangent_ct),dot(bitangent_ct,bitangent_ct));
 let invmax=select(inverseSqrt(det),0.0,det==0.0);
 let cotangentFrame=mat3x3<f32>(tangent_ct*invmax,bitangent_ct*invmax,N_geom);
 var N=normalize(cotangentFrame*normalize(${normalRefCt}));`;
+    } else if (_flatGeometricNormal && _flatNormalWgsl) {
+        // glTF spec: a primitive without a NORMAL attribute MUST be flat-shaded.
+        // WGSL (face normal from screen-space derivatives, oriented to the viewer)
+        // is supplied lazily by pbr-renderable from flat-normal-wgsl.ts — kept out
+        // of this shared template so normal-having scenes pay zero bundle cost.
+        normalBlock = `${_flatNormalWgsl}`;
     } else {
-        normalBlock = `let N_geom=normalize(input.worldNormal);
+        normalBlock = `var N_geom=normalize(input.worldNormal);
 var N=N_geom;`;
     }
 
@@ -344,8 +371,7 @@ var N=N_geom;`;
     const baseColorFactorRgb = _hasBaseColorFactor ? "*material.baseColorFactor.rgb" : "";
     const baseColorFactorAlpha = _hasBaseColorFactor ? "*material.baseColorFactor.a" : "";
     const baseColorDecode = _hasGammaAlbedo
-        ? `var baseColor=pow(baseColorSample.rgb,vec3<f32>(2.2))${baseColorFactorRgb};
-var alpha=baseColorSample.a${baseColorFactorAlpha};${vertexColorMod}`
+        ? _gammaTemplate!.gammaBaseColor(baseColorFactorRgb, baseColorFactorAlpha, vertexColorMod)
         : `var baseColor=baseColorSample.rgb${baseColorFactorRgb};
 var alpha=baseColorSample.a${baseColorFactorAlpha};${vertexColorMod}`;
 
@@ -358,13 +384,9 @@ let metallic=0.0;`
         : `let roughness=clamp(orm.g*material.roughnessFactor,0.0,1.0);
 let metallic=orm.b*material.metallicFactor;`;
 
-    // Emissive default (overridden by emissive-color fragment's AT slot)
+    // Material-view / pass variants can skip extension slots while still compiling the colour path.
     const emissiveUV = _ext?.uvForEmissive ?? "input.uv";
-    const emissiveDefault = _hasEmissiveColor
-        ? ``
-        : _hasEmissiveTexture
-          ? `let emissive=textureSample(emissiveTexture,emissiveSampler,${emissiveUV}).rgb;`
-          : `let emissive=vec3<f32>(0.0);`;
+    const emissiveDefault = _hasEmissiveColor || !_hasEmissiveTexture ? `var emissive:vec3f;` : `let emissive=textureSample(emissiveTexture,emissiveSampler,${emissiveUV}).rgb;`;
 
     // Occlusion default (overridden by reflectance fragment's AT slot or ext occlusion override)
     const occlusionDefault = _hasReflectanceExt ? `` : _ext?.occlusionOverride ? _ext.occlusionOverride : _hasOcclusion ? `let occlusion=orm.r;` : `let occlusion=1.0;`;
@@ -409,16 +431,11 @@ var AA_factor_y=0.0;`;
 var directSpecular=vec3<f32>(0.0);
 /*BL*/`;
 
-    // Tonemap: BJS TONEMAPPING_STANDARD (exponential) by default; caller-supplied
-    // ACES WGSL (from pbr-aces-wgsl.ts) is used when provided.
-    const useAces = _hasTonemap && _acesTonemapCall !== "";
-    const acesBlock = useAces ? _acesHelpers : "";
-    const tonemapBlock = _hasTonemap
-        ? useAces
-            ? _acesTonemapCall
-            : `color*=scene.vImageInfos.x;
-color=1.0-exp2(-1.590579*color);`
-        : `color*=scene.vImageInfos.x;`;
+    // Tonemap: when enabled, the resolved tone mapping's WGSL (imageProcessing.toneMapping, defaulted to
+    // StandardToneMapping upstream in pbr-renderable — so _toneMappingCall is always non-empty here when
+    // _hasTonemap). When disabled, only exposure is applied. Helpers are emitted alongside the call.
+    const toneMappingHelpersBlock = _hasTonemap ? _toneMappingHelpers : "";
+    const tonemapBlock = _hasTonemap ? _toneMappingCall : `color*=scene.vImageInfos.x;`;
 
     // Fog (opt-in via scene.fog). The fog WGSL — `_fogHelper` (calcFogFactor) and `_fogBlock`
     // (the blend, emitted just before the tonemap block) — is supplied by pbr-renderable, which
@@ -436,13 +453,21 @@ var luminanceOverAlpha=0.0;
 /*BA*/
 luminanceOverAlpha+=dot(${_hasIbl ? `finalSpecularScaled` : `directSpecular`},vec3<f32>(0.2126,0.7152,0.0722));
 finalAlpha=saturate(finalAlpha+luminanceOverAlpha*luminanceOverAlpha);
+/*FA*/
 return vec4<f32>(color,finalAlpha);`
           : `return vec4<f32>(color,alpha*material.materialAlpha);`;
 
     const doubleSidedEntry = _hasDoubleSided
         ? `@fragment fn main(input: FragmentInput, @builtin(front_facing) frontFacing: bool)${_noColorOutput ? "" : " -> @location(0) vec4<f32>"} {`
         : `@fragment fn main(input: FragmentInput)${_noColorOutput ? "" : " -> @location(0) vec4<f32>"} {`;
-    const doubleSidedFlip = _hasDoubleSided ? `if (!frontFacing) { N = -N; }` : "";
+    // On a double-sided backface, flip the shading normal to face the viewer.
+    // The geometric normal (`N_geom`) must flip with it so view-dependent terms
+    // that consume it (e.g. specular environment horizon occlusion) stay consistent
+    // — matching Babylon.js's `geometricNormalW` flip under TWOSIDEDLIGHTING && NORMAL.
+    // The flat-shaded path (no vertex NORMAL) already orients N_geom to the viewer via
+    // the eye vector, so it is excluded here (mirrors BJS gating on `defined(NORMAL)`).
+    const doubleSidedGeomFlip = _flatGeometricNormal ? "" : " N_geom = -N_geom;";
+    const doubleSidedFlip = _hasDoubleSided ? `if (!frontFacing) { N = -N;${doubleSidedGeomFlip} }` : "";
 
     const lightDecls = _hasMultiLight ? _multiLightWGSL : _hasSingleLight ? _singleLightWGSL : "";
     const lightBindingDecl = _hasSingleLight || _hasMultiLight ? `@group(0) @binding(1) var<uniform> lights: lightsUniforms;` : "";
@@ -463,7 +488,7 @@ ${_esmShadowOutput ? "struct shadowParamsUniforms { biasAndScale: vec4<f32>, dep
 /*FB*/
 /*FI*/
 ${BRDF_FUNCTIONS}
-${acesBlock}
+${toneMappingHelpersBlock}
 ${fogHelper}
 ${anisoBrdfBlock}
 ${lightDecls}
@@ -479,8 +504,16 @@ ${occlusionDefault}
 ${roughnessMetallic}
 ${emissiveDefault}
 /*AT*/
-${_noColorOutput ? "return;" : _esmShadowOutput ? _esmShadowDepthCode : ""}
-${normalBlock}
+${
+    // When the fragment terminates early (no color output, or ESM shadow
+    // depth output), emit only the terminating return. Appending the
+    // color-path body after the return would make it unreachable and
+    // trigger a "code is unreachable" shader compilation warning.
+    _noColorOutput
+        ? "return;"
+        : _esmShadowOutput
+          ? _esmShadowDepthCode
+          : `${normalBlock}
 ${doubleSidedFlip}
 ${anisotropyTBBlock}
 /*AC*/
@@ -504,7 +537,8 @@ if(scene.vImageInfos.y<1.0){color=mix(vec3<f32>(0.5),color,scene.vImageInfos.y);
 else{color=mix(color,highContrast,scene.vImageInfos.y-1.0);}
 color=max(color,vec3<f32>(0.0));
 /*BC*/
-${alphaBlock}
+${alphaBlock}`
+}
 }`;
 
     return {

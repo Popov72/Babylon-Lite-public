@@ -1,0 +1,290 @@
+/**
+ * Stubs for Babylon.js core/loader APIs that are **known but not supported** by
+ * Babylon Lite.
+ *
+ * Every entry here throws {@link LiteCompatError} on use (construction or call),
+ * so a ported scene fails loudly with a clear pointer instead of either a
+ * confusing "X is not exported from the compat package" error or, worse, a
+ * silently-wrong render. These mirror the `❌ Not supported` /
+ * `⛔ Out of scope` rows in `COMPAT-STATUS.md`.
+ *
+ * As Babylon Lite gains a capability, the corresponding stub here should be
+ * replaced by a real wrapper (and its `COMPAT-STATUS.md` row upgraded).
+ */
+
+import { unsupported } from "../error.js";
+
+// ─── Materials ───────────────────────────────────────────────────────
+export class MultiMaterial {
+    public constructor() {
+        unsupported("MultiMaterial", "Babylon Lite uses one material per renderable. Split the mesh geometry by material into separate meshes instead.");
+    }
+}
+
+export class ShaderMaterial {
+    public constructor() {
+        unsupported("ShaderMaterial", "Babylon Lite is WGSL-only. Use the native `createShaderMaterial` (WGSL) API; there is no automatic GLSL translation.");
+    }
+}
+
+export class BackgroundMaterial {
+    public constructor() {
+        unsupported("BackgroundMaterial", "Standalone BackgroundMaterial is not wrapped. Use the compat `Scene` environment helpers / native `loadEnvironment` instead.");
+    }
+}
+
+// ─── Lights ──────────────────────────────────────────────────────────
+export class RectAreaLight {
+    public constructor() {
+        unsupported("RectAreaLight", "Area lights are not implemented in Babylon Lite. Use Point/Spot/Directional/Hemispheric lights.");
+    }
+}
+
+export class ClusteredLightContainer {
+    public constructor() {
+        unsupported("ClusteredLightContainer", "Clustered lighting is not exposed by the Babylon Lite public API; the compat layer cannot wrap it.");
+    }
+}
+
+// ─── Particles ───────────────────────────────────────────────────────
+export class ParticleSystem {
+    public constructor() {
+        unsupported("ParticleSystem", "Particle systems are not implemented in Babylon Lite.");
+    }
+}
+
+export class GPUParticleSystem {
+    public constructor() {
+        unsupported("GPUParticleSystem", "Particle systems are not implemented in Babylon Lite.");
+    }
+}
+
+export class SolidParticleSystem {
+    public constructor() {
+        unsupported("SolidParticleSystem", "Solid particle systems are not implemented in Babylon Lite. Consider native thin instances for many-copies use cases.");
+    }
+}
+
+// ─── Effect layers ───────────────────────────────────────────────────
+export class HighlightLayer {
+    public constructor() {
+        unsupported("HighlightLayer", "Effect layers are not implemented in Babylon Lite.");
+    }
+}
+
+export class GlowLayer {
+    public constructor() {
+        unsupported("GlowLayer", "Effect layers are not implemented in Babylon Lite. For a bloom-style glow, use the native bloom post-process task.");
+    }
+}
+
+// ─── Mesh-attached renderers / projectors ────────────────────────────
+export class LinesMesh {
+    public constructor() {
+        unsupported("LinesMesh", "Line meshes are not implemented in Babylon Lite.");
+    }
+}
+
+export class GreasedLineMesh {
+    public constructor() {
+        unsupported("GreasedLineMesh", "Greased-line meshes are not implemented in Babylon Lite.");
+    }
+}
+
+export class EdgesRenderer {
+    public constructor() {
+        unsupported("EdgesRenderer", "Edge rendering is not implemented in Babylon Lite.");
+    }
+}
+
+export class OutlineRenderer {
+    public constructor() {
+        unsupported("OutlineRenderer", "Mesh outline rendering is not implemented in Babylon Lite.");
+    }
+}
+
+// ─── Textures ────────────────────────────────────────────────────────
+export class MirrorTexture {
+    public constructor() {
+        unsupported("MirrorTexture", "Mirror/reflection textures are not implemented in Babylon Lite. Build one from a native render-target texture + clip plane if required.");
+    }
+}
+
+// ─── HTML textures (DOM/CSS overlay interop) ─────────────────────────
+// New in BJS: `Materials/Textures/HTML/*` — uploads a live DOM element into a
+// texture and forwards pointer/raycast interaction onto an overlaid HTML layer.
+// This is a DOM-driven, host-page feature with no Babylon Lite equivalent (Lite
+// is a WebGPU renderer with no HTML overlay / interaction subsystem),
+// so every entry throws.
+
+/** Options accepted by Babylon.js `HtmlTexture` (shape-only stub for type parity). */
+export interface IHtmlTextureOptions {
+    [key: string]: unknown;
+}
+
+/** Options accepted by Babylon.js `HtmlInteractionManager` (shape-only stub). */
+export interface IHtmlInteractionManagerOptions {
+    [key: string]: unknown;
+}
+
+/** Options accepted by Babylon.js `HtmlRaycastInteractionManager` (shape-only stub). */
+export interface IHtmlRaycastInteractionManagerOptions {
+    [key: string]: unknown;
+}
+
+/** Module shape of an HTML-in-canvas polyfill (shape-only stub). */
+export interface IHtmlInCanvasPolyfillModule {
+    [key: string]: unknown;
+}
+
+/** Options accepted by `InstallHtmlInCanvasPolyfill` (shape-only stub). */
+export interface IInstallHtmlInCanvasPolyfillOptions {
+    [key: string]: unknown;
+}
+
+export class HtmlTexture {
+    public constructor() {
+        unsupported("HtmlTexture", "Rendering a live DOM element into a texture is a host-page/DOM feature with no Babylon Lite equivalent.");
+    }
+}
+
+export class HtmlInteractionManager {
+    public constructor() {
+        unsupported("HtmlInteractionManager", "HTML overlay interaction is not part of Babylon Lite's WebGPU renderer.");
+    }
+}
+
+export class HtmlRaycastInteractionManager {
+    public constructor() {
+        unsupported("HtmlRaycastInteractionManager", "HTML overlay raycast interaction is not part of Babylon Lite's WebGPU renderer.");
+    }
+}
+
+/** Babylon.js `IsHtmlInCanvasUploadSupported` — HTML texture upload is unsupported by the compat layer. */
+export function IsHtmlInCanvasUploadSupported(): never {
+    return unsupported("IsHtmlInCanvasUploadSupported", "HTML-element texture upload is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `UploadHtmlElementToTexture` — HTML texture upload is unsupported by the compat layer. */
+export function UploadHtmlElementToTexture(): never {
+    return unsupported("UploadHtmlElementToTexture", "HTML-element texture upload is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `ComputeOverlayCssTransform` — HTML overlay interaction is unsupported by the compat layer. */
+export function ComputeOverlayCssTransform(): never {
+    return unsupported("ComputeOverlayCssTransform", "HTML overlay interaction is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `GetElementPixelFromUv` — HTML overlay raycast interaction is unsupported by the compat layer. */
+export function GetElementPixelFromUv(): never {
+    return unsupported("GetElementPixelFromUv", "HTML overlay raycast interaction is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `IsHtmlInCanvasSupportedNatively` — the HTML-in-canvas feature is unsupported by the compat layer. */
+export function IsHtmlInCanvasSupportedNatively(): never {
+    return unsupported("IsHtmlInCanvasSupportedNatively", "The HTML-in-canvas feature is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `InstallHtmlInCanvasPolyfill` — the HTML-in-canvas polyfill is unsupported by the compat layer. */
+export function InstallHtmlInCanvasPolyfill(): never {
+    return unsupported("InstallHtmlInCanvasPolyfill", "The HTML-in-canvas polyfill is not supported by Babylon Lite.");
+}
+
+/** Babylon.js `UninstallHtmlInCanvasPolyfill` — the HTML-in-canvas polyfill is unsupported by the compat layer. */
+export function UninstallHtmlInCanvasPolyfill(): never {
+    return unsupported("UninstallHtmlInCanvasPolyfill", "The HTML-in-canvas polyfill is not supported by Babylon Lite.");
+}
+
+// ─── Audio ───────────────────────────────────────────────────────────
+export class Sound {
+    public constructor() {
+        unsupported("Sound", "Audio is not part of Babylon Lite. Use the Web Audio API directly.");
+    }
+}
+
+// ─── Behaviors (mesh + camera) ───────────────────────────────────────
+// Babylon Lite exposes a utility-layer pointer-drag dispatcher
+// (`createPointerDrag` / `registerPointerDrag`) used by its gizmos, but it does
+// not expose the main-scene mesh-dragging, XR/multi-pointer, follow, or
+// geospatial camera behaviors these BJS classes provide, so each is a throwing
+// stub. The camera behaviors that Lite *can* back (`AutoRotationBehavior`,
+// `BouncingBehavior`, `FramingBehavior`) live in `behaviors/behaviors.ts`.
+export class PointerDragBehavior {
+    public constructor() {
+        unsupported(
+            "PointerDragBehavior",
+            "Babylon Lite's pointer-drag (`createPointerDrag`) only drives utility-layer gizmo colliders, not arbitrary main-scene meshes, so mesh drag-behaviors cannot be wrapped."
+        );
+    }
+}
+
+export class BaseSixDofDragBehavior {
+    public constructor() {
+        unsupported("BaseSixDofDragBehavior", "Six-DoF mesh dragging is not implemented in Babylon Lite.");
+    }
+}
+
+export class SixDofDragBehavior {
+    public constructor() {
+        unsupported("SixDofDragBehavior", "Six-DoF mesh dragging is not implemented in Babylon Lite.");
+    }
+}
+
+export class MultiPointerScaleBehavior {
+    public constructor() {
+        unsupported("MultiPointerScaleBehavior", "Multi-pointer scaling is not implemented in Babylon Lite.");
+    }
+}
+
+export class AttachToBoxBehavior {
+    public constructor() {
+        unsupported("AttachToBoxBehavior", "Bounding-box attachment (app-bar UI) is not implemented in Babylon Lite.");
+    }
+}
+
+export class FadeInOutBehavior {
+    public constructor() {
+        unsupported("FadeInOutBehavior", "Mesh fade-in/out visibility tweening is not implemented in Babylon Lite.");
+    }
+}
+
+export class SurfaceMagnetismBehavior {
+    public constructor() {
+        unsupported("SurfaceMagnetismBehavior", "Surface magnetism (mesh snapping) is not implemented in Babylon Lite.");
+    }
+}
+
+export class FollowBehavior {
+    public constructor() {
+        unsupported("FollowBehavior", "Camera-follow behavior is not implemented in Babylon Lite.");
+    }
+}
+
+export class HandConstraintBehavior {
+    public constructor() {
+        unsupported("HandConstraintBehavior", "WebXR hand-constraint behavior is out of scope for Babylon Lite.");
+    }
+}
+
+export class InterpolatingBehavior {
+    public constructor() {
+        unsupported("InterpolatingBehavior", "The interpolating camera behavior is not implemented in Babylon Lite.");
+    }
+}
+
+export class GeospatialClippingBehavior {
+    public constructor() {
+        unsupported("GeospatialClippingBehavior", "Geospatial camera clipping is not implemented in Babylon Lite.");
+    }
+}
+
+// ─── Serialization ───────────────────────────────────────────────────
+/** Babylon.js scene serializer. Babylon Lite uses different data structures and does not round-trip `.babylon`. */
+export const SceneSerializer = {
+    Serialize(): never {
+        return unsupported("SceneSerializer.Serialize", "Babylon Lite does not implement `.babylon` scene serialization.");
+    },
+    SerializeMesh(): never {
+        return unsupported("SceneSerializer.SerializeMesh", "Babylon Lite does not implement mesh serialization.");
+    },
+};

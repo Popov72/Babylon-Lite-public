@@ -37,31 +37,39 @@ import { acquireTexture, releaseTexture } from "../../resource/gpu-pool.js";
 import type { ComposedShader, ShaderFragment } from "../../shader/fragment-types.js";
 import { targetSignatureKey } from "../../engine/render-target.js";
 import { createThinInstanceFragment } from "../../shader/fragments/thin-instance-fragment.js";
-import { syncThinInstanceBuffers } from "../../mesh/thin-instance-gpu.js";
+import { syncThinInstanceBuffers, syncThinInstanceForDraw } from "../../mesh/thin-instance-gpu.js";
 
 import type { Material } from "../material.js";
 import type { StandardMaterialProps } from "./standard-material.js";
 import { _getStdExtsSorted, DOUBLE_SIDED, HAS_DIFFUSE_TEXTURE, HAS_OPACITY_TEXTURE, NEEDS_UV, NEEDS_UV2 } from "./standard-flags.js";
-import { writeStdMaterialData } from "./standard-pipeline.js";
+import { writeStdMaterialData, _stdVertexColorFragment } from "./standard-pipeline.js";
 import { composeStandardGeometryShader } from "./standard-geometry-output-shader.js";
 import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import { collectStdBoundTextures } from "./collect-std-bound-textures.js";
-import { _computeMeshFeatures, MSH_HAS_INSTANCE_COLOR, MSH_HAS_THIN_INSTANCES } from "../mesh-features.js";
+import { _computeMeshFeatures, MSH_HAS_INSTANCE_COLOR, MSH_HAS_THIN_INSTANCES, MSH_HAS_VERTEX_COLOR } from "../mesh-features.js";
 import type { StandardGeometryMaterialView } from "./geometry-view.js";
 
-/** Singleton {@link MeshGroupBuilder} that geometry views point at via their
- *  overridden `_buildGroup`. The async builder body is unreachable — geometry
- *  views are dispatched per-mesh via {@link RenderTask.addMesh} which calls
+/** Lazily-created singleton {@link MeshGroupBuilder} that geometry views point at
+ *  via their overridden `_buildGroup`. The async builder body is unreachable —
+ *  geometry views are dispatched per-mesh via {@link RenderTask.addMesh} which calls
  *  `_rebuildSingle` directly. Centralizing the per-mesh factory here means
- *  `resolvePendingMeshes` doesn't need any view-aware branching. */
-export const standardGeometryGroupBuilder: MeshGroupBuilder = (async () => {
-    throw new Error("standard-geometry view does not support scene group building");
-}) as MeshGroupBuilder;
-standardGeometryGroupBuilder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
-    const view = (materialOverride ?? mesh.material) as StandardGeometryMaterialView;
-    return buildStandardGeometryRenderable(scene, mesh, view);
-};
-standardGeometryGroupBuilder._materialFamily = "standard";
+ *  `resolvePendingMeshes` doesn't need any view-aware branching. Lazy-init keeps the
+ *  module free of top-level side effects so an unused geometry path tree-shakes away. */
+let _standardGeometryGroupBuilder: MeshGroupBuilder | null = null;
+export function getStandardGeometryGroupBuilder(): MeshGroupBuilder {
+    if (_standardGeometryGroupBuilder) {
+        return _standardGeometryGroupBuilder;
+    }
+    const builder = (async () => {
+        throw new Error("standard-geometry view does not support scene group building");
+    }) as MeshGroupBuilder;
+    builder._materialFamily = "standard";
+    builder._rebuildSingle = (scene: SceneContext, mesh: Mesh, materialOverride?: Material): Renderable => {
+        const view = (materialOverride ?? mesh.material) as StandardGeometryMaterialView;
+        return buildStandardGeometryRenderable(scene, mesh, view);
+    };
+    return (_standardGeometryGroupBuilder = builder);
+}
 
 /** Per-(task, source-material, mesh-variant) shared resources lazily attached
  *  to the view. Cached on `view._geometry` (Map keyed by mesh-variant bits) to
@@ -87,7 +95,7 @@ interface StandardGeometryViewResources {
 }
 
 /** Pack the mesh-feature bits that change shader composition / pipeline
- *  into a 2-bit variant key. At most 4 variants per view in the worst case. */
+ *  into a 3-bit variant key. At most 8 variants per view in the worst case. */
 function _variantKey(meshFeatures: number): number {
     let k = 0;
     if (meshFeatures & MSH_HAS_THIN_INSTANCES) {
@@ -96,13 +104,16 @@ function _variantKey(meshFeatures: number): number {
     if (meshFeatures & MSH_HAS_INSTANCE_COLOR) {
         k |= 2;
     }
+    if (_stdVertexColorFragment && meshFeatures & MSH_HAS_VERTEX_COLOR) {
+        k |= 4;
+    }
     return k;
 }
 
 /** Build a {@link Renderable} for one mesh drawn through a Standard geometry view.
  *  Reuses or creates per-(view, mesh-variant) shared resources on `view._geometry`. */
 export function buildStandardGeometryRenderable(scene: SceneContext, mesh: Mesh, view: StandardGeometryMaterialView): Renderable {
-    const engine = scene.engine as EngineContext;
+    const engine = scene.surface.engine;
     const device = engine._device;
     const source = view.source as StandardMaterialProps;
     // Geometry pass has no receiver path — pass receiveShadows=false.
@@ -142,9 +153,11 @@ export function buildStandardGeometryRenderable(scene: SceneContext, mesh: Mesh,
     const needsUV = (features & NEEDS_UV) !== 0;
     const needsUV2 = (features & NEEDS_UV2) !== 0;
     const isAlphaBlend = res._alphaBlend;
+    const hasVertexColor = !!_stdVertexColorFragment && (meshFeatures & MSH_HAS_VERTEX_COLOR) !== 0;
     const hasThinInstances = (meshFeatures & MSH_HAS_THIN_INSTANCES) !== 0;
     const hasInstanceColor = (meshFeatures & MSH_HAS_INSTANCE_COLOR) !== 0;
     const sortCenter = [mesh.worldMatrix[12]!, mesh.worldMatrix[13]!, mesh.worldMatrix[14]!] as [number, number, number];
+    let thinDrawArgs: GPUBuffer | null = null;
 
     const update = (): void => {
         if (mesh.worldMatrixVersion !== _lastWorldVersion || scene.lights.length !== _lastLightsCount) {
@@ -164,6 +177,10 @@ export function buildStandardGeometryRenderable(scene: SceneContext, mesh: Mesh,
             writeStdMaterialData(res._matData, source, textureLevel);
             device.queue.writeBuffer(res._matUBO, 0, res._matData.buffer, 0, 96);
         }
+        const ti = hasThinInstances ? mesh.thinInstances : null;
+        if (ti) {
+            thinDrawArgs = syncThinInstanceForDraw(engine, ti, hasInstanceColor, mesh._gpu.indexCount);
+        }
     };
 
     const draw = (pass: GPURenderPassEncoder | GPURenderBundleEncoder): number => {
@@ -181,15 +198,18 @@ export function buildStandardGeometryRenderable(scene: SceneContext, mesh: Mesh,
         if (needsUV2 && g.uv2Buffer) {
             pass.setVertexBuffer(slot++, g.uv2Buffer);
         }
+        if (hasVertexColor) {
+            pass.setVertexBuffer(slot++, g.colorBuffer!);
+        }
         const ti = hasThinInstances ? mesh.thinInstances : null;
         if (ti) {
             slot = syncThinInstanceBuffers(engine, ti, pass, slot, hasInstanceColor);
         }
         pass.setIndexBuffer(g.indexBuffer, g.indexFormat);
-        if (ti && ti.count > 0) {
-            pass.drawIndexed(g.indexCount, ti.count);
+        if (ti && thinDrawArgs) {
+            pass.drawIndexedIndirect(thinDrawArgs, 0);
         } else {
-            pass.drawIndexed(g.indexCount);
+            pass.drawIndexed(g.indexCount, ti?.count);
         }
         return 1;
     };
@@ -239,6 +259,9 @@ function _ensureViewResources(view: StandardGeometryMaterialView, engine: Engine
                 usedExts.push({ _ext: ext });
             }
         }
+    }
+    if (_stdVertexColorFragment && meshFeatures & MSH_HAS_VERTEX_COLOR) {
+        frags.push(_stdVertexColorFragment());
     }
 
     // Thin instances. Mirror standard-renderable: when per-instance colour is

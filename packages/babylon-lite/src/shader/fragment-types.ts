@@ -99,8 +99,17 @@ export interface BindingDecl {
  *   HOOK_NO_LIGHT_VARS  → BL
  *   HOOK_AI      → AI
  *   HOOK_NI  → NI
+ *
+ * Additional slots without a legacy HOOK_ equivalent:
+ *   AT → alpha-test discard (before shading)
+ *   AC → alpha-cutoff clip
+ *   BC → override color/alpha before the alpha-blend block (e.g. shadow-only)
+ *   BA → luminance-over-alpha accumulation inside the alpha-blend block
+ *   FA → final-alpha override, emitted just before the alpha-blend return so a
+ *        fragment can bypass the luminance-into-alpha bleed (e.g. shadow-only).
+ *        Only present when the template's alpha-blend branch is active.
  */
-export type FragmentSlot = "HF" | "SV" | "AT" | "AC" | "MF" | "BL" | "AS" | "AD" | "AI" | "NI" | "BC" | "BA";
+export type FragmentSlot = "HF" | "SV" | "AT" | "AC" | "MF" | "BL" | "AS" | "AD" | "AI" | "NI" | "BC" | "BA" | "FA";
 
 // ── Vertex injection points ─────────────────────────────────────
 
@@ -159,6 +168,9 @@ export interface ShaderFragment {
 
     /** @internal Code injected at named fragment slots */
     readonly _fragmentSlots?: Partial<Record<FragmentSlot, string>>;
+
+    /** @internal Optional material-owned post-compose patch. */
+    readonly _pc?: (composed: ComposedShader) => ComposedShader;
 }
 
 // ── Shader template ─────────────────────────────────────────────

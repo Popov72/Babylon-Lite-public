@@ -72,7 +72,9 @@ async function main(): Promise<void> {
         const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
         setThinInstances(mesh, identity, 1);
         if (swim) {
-            handle.setInstances(frozenParams(swim, 0));
+            // Free-running playback: fps = the clip's fps so handle.update() advances the frame each
+            // frame. (?seekTime overrides this in onBeforeRender with a frozen, fps=0 params set.)
+            handle.setInstances(new Float32Array([swim.fromRow, swim.fromRow + swim.frameCount - 1, 0, swim.fps]));
         }
         canvas.dataset.vatBones = String(baked.boneCount);
         canvas.dataset.vatFrames = String(baked.frameCount);
@@ -109,7 +111,7 @@ async function main(): Promise<void> {
         handle?.update(dt);
     });
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);

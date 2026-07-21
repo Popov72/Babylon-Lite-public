@@ -11,7 +11,7 @@ import {
     type RenderTask,
 } from "babylon-lite";
 
-const MODEL_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/MosquitoInAmber/glTF/MosquitoInAmber.gltf";
+const MODEL_URL = "https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/MosquitoInAmber/glTF/MosquitoInAmber.gltf";
 const ENV_URL = "https://assets.babylonjs.com/environments/studio.env";
 
 // Fixed camera pose framing the amber from the sandbox cameraPosition
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     onBeforeRender(scene, syncSkybox);
     addToScene(scene, skybox);
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.camAlpha = String(cam.alpha);

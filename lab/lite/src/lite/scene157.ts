@@ -68,14 +68,14 @@ async function main(): Promise<void> {
     const seekTime = parseFloat(new URLSearchParams(window.location.search).get("seekTime") || "");
     if (Number.isFinite(seekTime)) {
         for (const group of [walk, run]) {
-            group.currentFrame = seekTime;
+            group.currentTime = seekTime;
             pauseAnimation(group);
         }
         canvas.dataset.animationFrozen = "true";
     }
     onBeforeRender(scene, (deltaMs) => updateAnimationManager(manager, deltaMs));
 
-    await registerScene(engine, scene);
+    await registerScene(scene);
     await startEngine(engine);
     canvas.dataset.drawCalls = String(engine.drawCallCount);
     canvas.dataset.initMs = String(performance.now() - __initStart);

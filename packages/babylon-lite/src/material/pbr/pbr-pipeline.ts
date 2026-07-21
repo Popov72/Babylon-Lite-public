@@ -9,6 +9,8 @@
 
 import { CW } from "../../engine/gpu-flags.js";
 import type { PbrMaterialProps } from "./pbr-material.js";
+import type { ResolvedStencil } from "../stencil-state.js";
+import type { StencilState } from "../material.js";
 import type { EnvironmentTextures } from "../../loader-env/load-env.js";
 import type { ComposedShader } from "../../shader/fragment-types.js";
 import type { EngineContext } from "../../engine/engine.js";
@@ -23,6 +25,38 @@ import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 
 // ─── Shader Bindings (sig-independent) ──────────────────────────────
 
+/** Stencil resolver, installed only by `enableMaterialStencil`. Module-local with a single exported setter:
+ *  when `enableMaterialStencil` is absent from the bundle the setter tree-shakes, the bundler proves this is
+ *  always null, and every stencil branch below folds away — stencil-free PBR scenes stay byte-identical. */
+let _stencilResolver: ((stencil: StencilState) => ResolvedStencil) | null = null;
+/** @internal Install the stencil resolver into the PBR pipeline (called by `enableMaterialStencil`). */
+export function _installPbrStencilResolver(resolve: (stencil: StencilState) => ResolvedStencil): void {
+    _stencilResolver = resolve;
+}
+
+/** Fallback-texture resolver, installed only by `createPbrMaterial` (called on every
+ *  use). Provides the shared 1×1 white default for a factor-only material's baseColor /
+ *  ORM slots (the shader always samples both). Module-local with a single exported setter:
+ *  glTF-only scenes never call `createPbrMaterial`, so the setter tree-shakes, the bundler
+ *  proves this is always null, and the `?? _pbrFallbackResolver?.(engine)` reads below fold
+ *  away — loader-driven PBR scenes (e.g. BoomBox) stay byte-identical. */
+let _pbrFallbackResolver: ((engine: EngineContext) => Texture2D) | null = null;
+/** @internal Install the factor-only fallback-texture resolver (called by `createPbrMaterial`). */
+export function _installPbrFallbackResolver(resolve: (engine: EngineContext) => Texture2D): void {
+    _pbrFallbackResolver = resolve;
+}
+
+/** Primitive-state resolver, installed only by the glTF primitive feature (non-triangle topology
+ *  or negative-winding meshes). Module-local with a single exported setter: when no such mesh is in
+ *  the bundle the setter tree-shakes, the bundler proves this is always null, and the
+ *  `_primitiveResolver ? … : { topology: "triangle-list", … }` ternary below folds to the plain
+ *  triangle-list default — every triangle-list PBR scene (e.g. BoomBox) stays byte-identical. */
+let _primitiveResolver: ((meshFeatures: number, hasDoubleSided: boolean) => GPUPrimitiveState) | null = null;
+/** @internal Install the primitive-state resolver (called by the glTF primitive feature). */
+export function _installPbrPrimitiveResolver(resolve: (meshFeatures: number, hasDoubleSided: boolean) => GPUPrimitiveState): void {
+    _primitiveResolver = resolve;
+}
+
 interface _PbrShaderBindings {
     _features: number;
     _features2: number;
@@ -30,6 +64,10 @@ interface _PbrShaderBindings {
     _meshBGL: GPUBindGroupLayout;
     _shadowBGL: GPUBindGroupLayout | null;
     _composed: ComposedShader;
+    /** Pre-baked partial depth-stencil descriptor for this material's stencil state. Present (and the cache
+     *  key carries the resolved `_key`) only when `enableMaterialStencil` was called — otherwise the field is
+     *  never assigned and the whole stencil path folds out of stencil-free bundles. */
+    _stencil?: Partial<GPUDepthStencilState>;
     /** Per-sig pipeline cache. Key = `targetSignatureKey(sig)`. */
     _pipelines: Map<string, GPURenderPipeline>;
 }
@@ -61,10 +99,15 @@ export function getOrCreatePbrBindings(
     meshFeatures: number,
     sceneFeatures: number,
     composed: ComposedShader,
-    shaderKey = ""
+    shaderKey = "",
+    stencil: StencilState | null = null
 ): _PbrShaderBindings {
     ensureDevice(engine);
-    const key = `${features}:${features2}:${meshFeatures}:${sceneFeatures}:${shaderKey}`;
+    // Stencil state is baked into the GPU pipeline (no dynamic stencil ref), so two materials that differ only in
+    // stencil must NOT share bindings/pipelines — fold the resolved stencil token into the cache key. Resolution
+    // goes through the opt-in `_stencilResolver` hook, so non-stencil scenes fold this whole block away.
+    const resolvedStencil = stencil && _stencilResolver ? _stencilResolver(stencil) : null;
+    const key = `${features}:${features2}:${meshFeatures}:${sceneFeatures}:${shaderKey}${resolvedStencil ? resolvedStencil._key : ""}`;
     const cached = _bindingsCache.get(key);
     if (cached) {
         return cached;
@@ -85,6 +128,10 @@ export function getOrCreatePbrBindings(
         _composed: composed,
         _pipelines: new Map(),
     };
+    // Gated by the opt-in resolver so the field assignment folds out of stencil-free bundles entirely.
+    if (resolvedStencil) {
+        bindings._stencil = resolvedStencil._desc;
+    }
     _bindingsCache.set(key, bindings);
     return bindings;
 }
@@ -99,7 +146,7 @@ export function getOrCreatePbrPipeline(engine: EngineContext, sig: RenderTargetS
     }
 
     const device = engine._device;
-    const { _features: features, _features2: features2, _composed: composed } = bindings;
+    const { _features: features, _features2: features2, _composed: composed, _meshFeatures: meshFeatures } = bindings;
     const esmShadowOutput = (features2 & PBR2_ESM_SHADOW_OUTPUT) !== 0;
     const hasAlpha = !esmShadowOutput && (features & PBR_HAS_ALPHA_BLEND) !== 0;
     const hasDoubleSided = (features & PBR_HAS_DOUBLE_SIDED) !== 0;
@@ -129,11 +176,18 @@ export function getOrCreatePbrPipeline(engine: EngineContext, sig: RenderTargetS
                       format: sig._depthStencilFormat,
                       depthCompare: sig._depthCompare ?? REVERSE_DEPTH_COMPARE,
                       depthWriteEnabled: noColorOutput || esmShadowOutput || !hasAlpha,
+                      // Pre-baked stencil sub-fields, applied only on a stencil-capable target — the same
+                      // material in the depth32float shadow/depth pass keeps plain depth state (no stencil → no
+                      // format mismatch). Gated on `_stencilResolver` (the opt-in hook) so the entire branch —
+                      // including the `bindings._stencil` reads — folds out of stencil-free bundles.
+                      ...(_stencilResolver && bindings._stencil && sig._depthStencilFormat.includes("stencil") ? bindings._stencil : {}),
                   },
               }
             : {}),
         multisample: { count: sig._sampleCount },
-        primitive: { topology: "triangle-list", cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", frontFace: "ccw" },
+        primitive: _primitiveResolver
+            ? _primitiveResolver(meshFeatures, hasDoubleSided)
+            : { topology: "triangle-list", cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", frontFace: "ccw" },
     });
     bindings._pipelines.set(key, pipeline);
     return pipeline;
@@ -149,7 +203,7 @@ export function createPbrMeshBindGroup(
     materialUBO: GPUBuffer,
     material: PbrMaterialProps,
     env: EnvironmentTextures | null,
-    meshCtx: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { texture: GPUTexture; weightsBuffer?: GPUBuffer } | null } | null,
+    meshCtx: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null } | null,
     refractionTexture?: Texture2D | null
 ): GPUBindGroup {
     const device = engine._device;
@@ -192,12 +246,12 @@ export function createPbrMeshBindGroup(
             b = ext.bind(ctx, entries, b);
         }
     }
-    addTex(material.baseColorTexture!);
+    addTex(material.baseColorTexture ?? _pbrFallbackResolver?.(engine)!);
     if (hasAnyNormal) {
         addTex(material.normalTexture!);
     }
-    addTex(material.ormTexture!);
-    if ((features2 & PBR2_HAS_UV2) !== 0 && (meshFeatures & MSH_HAS_UV2) !== 0 && material.occlusionTexture) {
+    addTex(material.ormTexture ?? _pbrFallbackResolver?.(engine)!);
+    if ((features2 & PBR2_HAS_UV2) !== 0 && (meshFeatures & MSH_HAS_UV2) !== 0 && material.occlusionTexture && material.occlusionTexCoord === 1) {
         addTex(material.occlusionTexture);
     }
     if (hasEmissive) {

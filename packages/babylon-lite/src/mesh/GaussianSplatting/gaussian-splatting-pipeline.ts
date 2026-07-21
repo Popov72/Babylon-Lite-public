@@ -27,6 +27,7 @@ import { getViewMatrix, getProjectionMatrix, getCameraPosition } from "../../cam
 import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import { getRenderTargetSize } from "../../engine/engine.js";
 import { disposeGaussianSplattingMesh, type GaussianSplattingMesh, type GsShaderFragment } from "./gaussian-splatting-mesh.js";
+import { registerPickSource } from "../../picking/pick-contributor.js";
 import WGSL from "../../../shaders/gaussian-splatting.wgsl?raw";
 
 interface PipelineEntry {
@@ -192,7 +193,7 @@ function getOrCreatePipeline(engine: EngineContext, sig: RenderTargetSignature, 
  *  builder installed by `addToScene`. Owns the per-mesh UBO and a per-signature
  *  bind-group cache. */
 export function buildGaussianSplattingRenderable(scene: SceneContext, mesh: GaussianSplattingMesh, fragments?: readonly GsShaderFragment[]): Renderable {
-    const engine = scene.engine;
+    const engine = scene.surface.engine;
     const device = engine._device;
 
     const UBO_BYTES = 16 * 4 * 3 + 8 * 4; // 3 mat4 + viewport,focal,dataSize,alpha,pad → 224 bytes
@@ -344,14 +345,11 @@ export function buildGaussianSplattingRenderable(scene: SceneContext, mesh: Gaus
  *  registers a disposer that frees per-mesh GPU buffers and the worker.
  *  Called from the deferred builder installed by `addToScene`. */
 export function attachGaussianSplattingMesh(scene: SceneContext, mesh: GaussianSplattingMesh, fragments?: readonly GsShaderFragment[]): void {
-    const ctx = scene as unknown as { _renderables: Renderable[]; _disposables: (() => void)[]; _gsMeshes: GaussianSplattingMesh[] };
+    const ctx = scene as unknown as { _renderables: Renderable[]; _disposables: (() => void)[] };
     ctx._renderables.push(buildGaussianSplattingRenderable(scene, mesh, fragments));
-    ctx._gsMeshes.push(mesh);
+    const unregisterPick = registerPickSource(scene, mesh, () => import("../../picking/gs-picking-pipeline.js"));
     ctx._disposables.push(() => {
-        const i = ctx._gsMeshes.indexOf(mesh);
-        if (i >= 0) {
-            ctx._gsMeshes.splice(i, 1);
-        }
+        unregisterPick();
         disposeGaussianSplattingMesh(mesh);
     });
 }

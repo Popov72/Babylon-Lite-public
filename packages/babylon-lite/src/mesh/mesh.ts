@@ -4,14 +4,12 @@
 import { BU } from "../engine/gpu-flags.js";
 import type { EngineContext } from "../engine/engine.js";
 import { createMappedBuffer } from "../resource/gpu-buffers.js";
-import { mat4Compose } from "../math/mat4-compose.js";
-import { mat4Identity } from "../math/mat4-identity.js";
 import type { Material } from "../material/material.js";
 import type { SkeletonData, MorphTargetData, VatData } from "../animation/types.js";
 import { ObservableVec3 } from "../math/observable-vec3.js";
 import { ObservableQuat } from "../math/observable-quat.js";
 import type { ThinInstanceData } from "./thin-instance.js";
-import { createWorldMatrixState, attachWorldMatrixState } from "../scene/world-matrix-state.js";
+import { createWorldMatrixState, attachWorldMatrixState, composeTrsLocalMatrix } from "../scene/world-matrix-state.js";
 import type { SceneNode } from "../scene/scene-node.js";
 import { eulerToQuat, createEulerProxy } from "../scene/scene-node.js";
 
@@ -19,13 +17,16 @@ import { eulerToQuat, createEulerProxy } from "../scene/scene-node.js";
 
 /** Per-attribute interleave override. When present, the attribute's GPU buffer
  *  is a shared interleaved slice: the pipeline uses `_stride` as the vertex
- *  buffer arrayStride and the draw binds the buffer at byte offset `_offset`.
+ *  buffer arrayStride and `_offset` as the layout `attributes[].offset`, while the
+ *  draw binds the buffer at offset 0 (mirrors Babylon.js WebGPU; a non-zero
+ *  setVertexBuffer bind offset corrupts vertex fetch on some AMD/Dawn paths).
  *  Absent attributes use the canonical tight layout (own buffer, default stride,
  *  offset 0) — byte-identical to non-interleaved meshes. */
 export interface MeshVbAttr {
     /** @internal Vertex buffer arrayStride for this attribute's pipeline layout entry. */
     readonly _stride: number;
-    /** @internal Byte offset passed to setVertexBuffer (bind offset into the shared buffer). */
+    /** @internal Byte offset within the shared buffer, encoded in the pipeline vertex
+     *  layout `attributes[].offset` (the buffer is bound at offset 0). */
     readonly _offset: number;
 }
 
@@ -61,12 +62,21 @@ export interface MeshGPU {
     readonly indexBuffer: GPUBuffer;
     readonly indexCount: number;
     readonly indexFormat: GPUIndexFormat;
+    /** @internal Reserved vertex capacity for grow-only procedural geometry. */
+    _vertexCapacity?: number;
+    /** @internal Reserved index capacity for grow-only procedural geometry. */
+    _indexCapacity?: number;
+    /** @internal Reused padded indices whose inactive tail is degenerate. */
+    _indexScratch?: Uint32Array;
     /** @internal Per-attribute interleave layout. Undefined → all attributes tight (default). */
     readonly _vbLayout?: MeshVbLayout;
     /** @internal Precomputed pipeline cache-key suffix for this mesh's interleave layout.
      *  Built once by the interleave module so the hot render path never assembles
      *  it. Undefined → tight mesh (empty suffix, byte-identical pipeline key). */
     readonly _vbKey?: string;
+    /** @internal Extra-owner count when shared with a clone via `cloneTransformNode` — see
+     *  resource/ref-count.ts. Absent/undefined means exactly one (implicit) owner. */
+    _refCount?: number;
 }
 
 // ─── Mesh ────────────────────────────────────────────────────────────
@@ -100,13 +110,18 @@ export interface Mesh extends SceneNode {
     renderOnTop?: boolean;
     /** Thin instance data (CPU-side). GPU buffer managed by render system. */
     thinInstances?: ThinInstanceData | null;
+    /** When `false`, the GPU picker skips this mesh.  Defaults to `true`
+     *  (undefined behaves as pickable).  Mirrors BJS `AbstractMesh.isPickable`. */
+    pickable?: boolean;
     // name, children, position, rotation, rotationQuaternion, scaling,
     // parent, worldMatrix, worldMatrixVersion — all inherited from SceneNode
 
     /** @internal */
-    _materialDirty: boolean;
-    /** @internal */
     _gpu: MeshGPU;
+    /** @internal Reason cloning this mesh is currently forbidden. */
+    _clone?: string;
+    /** @internal Highest CSM cascade this mesh casts into; undefined means all cascades. */
+    _shadowMaxCascade?: number;
     /** @internal */
     _cpuPositions?: Float32Array;
     /** @internal */
@@ -130,13 +145,7 @@ export interface Mesh extends SceneNode {
 /** Wire ObservableVec3/ObservableQuat TRS and children onto a partially-built mesh object.
  *  Used by all mesh creation paths (factories, loaders). */
 export function initMeshTransform(mesh: Mesh, px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1): void {
-    const wm = createWorldMatrixState(() => {
-        const p = mesh.position,
-            rq = mesh.rotationQuaternion,
-            s = mesh.scaling;
-        const isIdentity = p.x === 0 && p.y === 0 && p.z === 0 && rq.x === 0 && rq.y === 0 && rq.z === 0 && rq.w === 1 && s.x === 1 && s.y === 1 && s.z === 1;
-        return isIdentity ? mat4Identity() : mat4Compose(p.x, p.y, p.z, rq.x, rq.y, rq.z, rq.w, s.x, s.y, s.z);
-    });
+    const wm = createWorldMatrixState(() => composeTrsLocalMatrix(mesh.position, mesh.rotationQuaternion, mesh.scaling));
     const onWmDirty = () => wm.markLocalDirty();
 
     const [iqx, iqy, iqz, iqw] = eulerToQuat(rx, ry, rz);

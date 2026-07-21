@@ -22,6 +22,8 @@ export interface _PbrFragCtx {
     readonly _features2: number;
     /** @internal Mesh feature bits, separate from material feature bits. */
     readonly _meshFeatures: number;
+    /** @internal Per-channel UV1 (TEXCOORD_1) selection bitmask (see pbr-material.ts). */
+    readonly _uv2Mask?: number;
     /** @internal */
     readonly _hasIbl: boolean;
     /** @internal */
@@ -47,7 +49,7 @@ export interface _PbrBindCtx {
     /** @internal */
     readonly _material: unknown;
     /** @internal Populated for "vertex" phase (skeleton, morph). */
-    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { texture: GPUTexture; weightsBuffer?: GPUBuffer } | null };
+    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null };
     /** @internal Populated for "ibl" phase. */
     readonly _env?: { brdfLutView: GPUTextureView; brdfSampler: GPUSampler; specularCubeView: GPUTextureView; cubeSampler: GPUSampler } | null;
     /** @internal Per-render-task scene-color snapshot for transmissive RTT refraction. */
