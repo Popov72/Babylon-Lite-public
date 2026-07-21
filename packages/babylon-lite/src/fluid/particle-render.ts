@@ -34,6 +34,7 @@ struct Cam {
     right: vec4<f32>,
     up: vec4<f32>,
     misc: vec4<f32>,   // x = particle radius, y = debug normalisation reciprocal
+    tint: vec4<f32>,   // rgb = base particle colour (settable, e.g. blue liquid / tan sand)
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
@@ -56,10 +57,12 @@ struct VOut {
     var o: VOut;
     o.clip = cam.vp * vec4<f32>(world, 1.0);
     o.uv = c;
-    // Colour by speed (Phase 3): slow/settled liquid is deep blue, fast-moving
-    // splashes tend toward bright cyan-white.
+    // Colour by speed from the settable base tint: settled particles use the base colour, fast-moving
+    // splashes brighten toward white by cam.tint.w (0 = no brightening, e.g. sand; 1 = full, e.g. water).
     let t = clamp(dbg[ii] * cam.misc.y, 0.0, 1.0);
-    o.color = mix(vec3<f32>(0.10, 0.35, 0.85), vec3<f32>(0.85, 0.95, 1.0), t);
+    let base = cam.tint.rgb;
+    let hot = mix(base, min(base + vec3<f32>(0.5), vec3<f32>(1.0)), cam.tint.w);
+    o.color = mix(base, hot, t);
     return o;
 }
 
@@ -84,14 +87,23 @@ export function createParticleRenderTask(
     engine: EngineContext,
     scene: SceneContext,
     opts: ParticleRenderOptions
-): Task & { setSim(s: FluidSim): void; setEnabled(on: boolean): void; setSizeScale(s: number): void; setProfiler(p: FluidProfiler | null): void } {
+): Task & {
+    setSim(s: FluidSim): void;
+    setEnabled(on: boolean): void;
+    setSizeScale(s: number): void;
+    setTint(rgb: [number, number, number]): void;
+    setVelocityBrighten(v: number): void;
+    setProfiler(p: FluidProfiler | null): void;
+} {
     const device = engine._device;
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
     let enabled = true;
     let sizeScale = 1; // user-controlled visual particle-size multiplier
+    const tint: [number, number, number] = [0.1, 0.35, 0.85]; // base particle colour (deep-blue liquid default)
+    let velocityBrighten = 1; // how much fast particles brighten toward white (0 = uniform, e.g. sand)
 
-    const camData = new Float32Array(28); // mat4 (16) + right (4) + up (4) + misc (4)
+    const camData = new Float32Array(32); // mat4 (16) + right (4) + up (4) + misc (4) + tint (4)
     const camBuffer = device.createBuffer({
         label: "fluid-particle-cam",
         size: camData.byteLength,
@@ -157,6 +169,10 @@ export function createParticleRenderTask(
         camData[25] = currentSim.debugNorm;
         camData[26] = 0;
         camData[27] = 0;
+        camData[28] = tint[0];
+        camData[29] = tint[1];
+        camData[30] = tint[2];
+        camData[31] = velocityBrighten;
         device.queue.writeBuffer(camBuffer, 0, camData);
     }
 
@@ -177,6 +193,16 @@ export function createParticleRenderTask(
         /** Visual particle-size multiplier (does not affect the physics). */
         setSizeScale(s: number): void {
             sizeScale = s;
+        },
+        /** Base particle colour (rgb 0..1). Fast particles brighten toward white from this. */
+        setTint(rgb: [number, number, number]): void {
+            tint[0] = rgb[0];
+            tint[1] = rgb[1];
+            tint[2] = rgb[2];
+        },
+        /** How much fast particles brighten toward white (0 = uniform colour, e.g. sand; 1 = water). */
+        setVelocityBrighten(v: number): void {
+            velocityBrighten = v;
         },
         setProfiler(p: FluidProfiler | null): void {
             profiler = p;

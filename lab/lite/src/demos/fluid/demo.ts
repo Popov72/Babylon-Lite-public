@@ -46,6 +46,8 @@ export interface PairState {
     size: number;
     physScale: number;
     count: number;
+    /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
+    material?: number;
     /** Optional ArcRotate camera framing (alpha/beta/radius). A demo's preset can set
      *  it to frame the scene on the first visit to that (demo, method) pair; it is also
      *  captured live so switching pairs remembers each one's viewpoint. */
@@ -124,7 +126,7 @@ export interface FluidCtx {
     /** Shared scene-SDF uniform buffer. Demos pack their params into offset 0..;
      *  the hole ring (offset 32) is managed by the core via addSceneHole/clear. */
     readonly sceneSdfBuffer: GPUBuffer;
-    /** The currently-selected backend (PBF or MLS-MPM). */
+    /** The currently-selected backend (PBF, MLS-MPM or PB-MPM). */
     getActiveSim(): FluidSim;
     /** Re-seed the active sim (does NOT clear holes — call clearSceneHoles too). */
     resetActiveSim(): void;

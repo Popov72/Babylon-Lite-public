@@ -51,6 +51,8 @@ export interface FluidSim {
     reset(): void;
     /** Live-update a named simulation parameter (for the demo's tuning UI). */
     setParam(key: string, value: number): void;
+    /** Optional PB-MPM material selector: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
+    setMaterial?(material: number): void;
     /** Inject the per-demo scene SDF used for collision (or null to disable it).
      *  Rebuilds the confinement pipeline; compiled variants are cached by source. */
     setSceneSdf(spec: SceneSdfSpec | null): void;

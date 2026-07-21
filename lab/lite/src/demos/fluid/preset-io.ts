@@ -19,6 +19,8 @@ export interface FluidExportJson {
     showContainer: boolean;
     physicsParticleSize: number;
     particleCount: number;
+    /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
+    material?: number;
     /** Optional camera framing — omitted for pure-default pairs that pin no viewpoint. */
     camera?: { alpha: number; beta: number; radius: number };
     render: {
@@ -74,6 +76,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         showContainer: ps.showContainer ?? true,
         physicsParticleSize: ps.physScale,
         particleCount: ps.count,
+        ...(ps.material !== undefined ? { material: ps.material } : {}),
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
         render: {
             renderAsSpheres: ps.renderMode === "spheres",
@@ -131,6 +134,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         size: r.particleSize,
         physScale: j.physicsParticleSize,
         count: j.particleCount,
+        material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),
         renderMode: r.renderAsSpheres ? "spheres" : "surface",
         refraction: r.refractionStrength,

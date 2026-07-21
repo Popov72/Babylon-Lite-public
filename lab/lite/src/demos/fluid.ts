@@ -1,4 +1,4 @@
-// Fluid demo — GPU fluid simulation (PBF / MLS-MPM) with SDF scene collision.
+// Fluid demo — GPU fluid simulation (PBF / MLS-MPM / PB-MPM) with SDF scene collision.
 //
 // This module is the GENERIC CORE. It owns the engine/scene/camera, the shared
 // scene-SDF UBO + hole ring, both sims + their lifecycle, the render tasks
@@ -37,6 +37,7 @@ import {
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import type { FluidSim } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
+import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
@@ -77,10 +78,24 @@ const PBF_MIN_SCALE = 0.5;
 const PBF_MAX_SCALE = 2;
 const MPM_MIN_SCALE = 0.5;
 const MPM_MAX_SCALE = 3;
+const PBMPM_MIN_SCALE = 0.5;
+const PBMPM_MAX_SCALE = 3;
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
 const FORCE_RADIUS = 3.5;
 const clampScale = (s: number, lo: number, hi: number): number => Math.min(Math.max(s, lo), hi);
+const PBMPM_MATERIALS = [
+    { value: 0, label: "Liquid" },
+    { value: 1, label: "Elastic (jelly)" },
+    { value: 2, label: "Sand" },
+    { value: 3, label: "Viscoelastic" },
+];
+// Material 2 = sand. Sand renders as opaque grainy spheres (no water surface) with no velocity
+// brightening (uniform grains); its colour comes from the per-material sand preset.
+const PBMPM_SAND_MATERIAL = 2;
+// Only these demos expose the PB-MPM material selector (sand / jelly / viscoelastic need a container to
+// hold their shape); every other demo is a liquid flow/jet showcase and is liquid-only.
+const MATERIAL_DEMO_KEYS = ["box"];
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -236,7 +251,7 @@ async function main(): Promise<void> {
     // resize the GPU buffers (the only way to change count is to reallocate). The
     // capsule tank geometry seeds the sims' built-in fallback confinement (a legacy
     // default; the demo's injected sceneSdf always overrides it).
-    function createSims(count: number, scale: number): { pbf: FluidSim; mpm: FluidSim } {
+    function createSims(count: number, scale: number): { pbf: FluidSim; mpm: FluidSim; pbmpm: FluidSim } {
         // `scale` is the physics particle-size multiplier. The particle COUNT is
         // the user's choice and stays fixed, so each particle is a bigger (or
         // smaller) blob of fluid and the liquid VOLUME scales with the size: the
@@ -254,6 +269,7 @@ async function main(): Promise<void> {
         // (CFL), and PBF over-compresses the closed box above ~2×.
         const pbfScale = clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE);
         const mpmScale = clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE);
+        const pbmpmScale = clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE);
         // Domain scale grows the WORLD (bounds + dx + particle/smoothing radius + spawn) uniformly,
         // leaving the grid dimensions (bounds/dx) — and hence GPU memory — constant. It is a
         // separate axis from the physics particle-size `scale` above (which changes per-particle
@@ -265,6 +281,7 @@ async function main(): Promise<void> {
         const boundsMax = scaleTriple(BOUNDS_MAX);
         const pbfSpawn = scaledSpawn(pbfScale);
         const mpmSpawn = scaledSpawn(mpmScale);
+        const pbmpmSpawn = scaledSpawn(pbmpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createPbfSim(engine, {
             count,
@@ -314,15 +331,60 @@ async function main(): Promise<void> {
             groundDampHeight: 1.5,
         });
 
-        return { pbf, mpm };
+        // Backend 3 — Position-Based MPM (liquid-only PB-MPM phase 1).
+        const pbmpm = createPbMpmSim(engine, {
+            count,
+            particleRadius: 0.09 * pbmpmScale * ds,
+            spawnMin: scaleTriple(pbmpmSpawn.min),
+            spawnMax: scaleTriple(pbmpmSpawn.max),
+            groundY: 0,
+            boundsMin: [boundsMin[0], -1 * ds, boundsMin[2]],
+            boundsMax,
+            dx: 0.22 * pbmpmScale * ds,
+            gravity: 9.8,
+            substeps: 3,
+            iterations: 5,
+            liquidRelaxation: 1.5,
+            liquidViscosity: 0.01,
+            elasticityRatio: 0.3,
+            elasticRelaxation: 0.3,
+            frictionAngle: 35,
+            plasticity: 0.8,
+            material: pbmpmMaterial,
+            restitution: 0,
+        });
+
+        return { pbf, mpm, pbmpm };
     }
 
     let particleCount = DEFAULT_PARTICLE_COUNT;
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
-    let { pbf: pbfSim, mpm: mpmSim } = createSims(particleCount, physicsScale);
+    let pbmpmMaterial = 0;
+    let { pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
     let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
+    function simForMethod(name: string): FluidSim {
+        if (name === "PBF") {
+            return pbfSim;
+        }
+        if (name === "PB-MPM") {
+            return pbmpmSim;
+        }
+        return mpmSim;
+    }
+    let pbmpmMaterialRow: HTMLElement | null = null;
+    let pbmpmMaterialSel: HTMLSelectElement | null = null;
+    function refreshPbMpmMaterialUi(): void {
+        if (pbmpmMaterialRow) {
+            // Material selector only for PB-MPM on a material-capable demo (the box container).
+            const show = methodName === "PB-MPM" && !!activeDemo && MATERIAL_DEMO_KEYS.includes(activeDemo.key);
+            pbmpmMaterialRow.style.display = show ? "block" : "none";
+        }
+        if (pbmpmMaterialSel) {
+            pbmpmMaterialSel.value = String(pbmpmMaterial);
+        }
+    }
     // Interactive push force (Shift+RMB mouse-stir): a ready-made injectable force
     // field shared by both backends. The frame loop drives it via setRay + toggles
     // it on the ACTIVE sim via setForceField, so it dispatches its own dedicated
@@ -432,6 +494,7 @@ async function main(): Promise<void> {
         const p = timingEnabled ? profiler : null;
         pbfSim.setProfiler?.(p);
         mpmSim.setProfiler?.(p);
+        pbmpmSim.setProfiler?.(p);
         particleTask.setProfiler(p);
         surfaceTask.setProfiler(p);
         foamTask.setProfiler(p);
@@ -570,6 +633,7 @@ async function main(): Promise<void> {
         const emit = activeDemo!.emitters();
         pbfSim.setEmitters(emit);
         mpmSim.setEmitters(emit);
+        pbmpmSim.setEmitters(emit);
     }
 
     // Inject the active demo's scene SDF, emitters and spawn into both sims.
@@ -580,16 +644,20 @@ async function main(): Promise<void> {
         demo.writeSdfParams();
         pbfSim.setSceneSdf(demo.sdf);
         mpmSim.setSceneSdf(demo.sdf);
+        pbmpmSim.setSceneSdf(demo.sdf);
         const emit = demo.emitters();
         pbfSim.setEmitters(emit);
         mpmSim.setEmitters(emit);
+        pbmpmSim.setEmitters(emit);
         const s = demo.spawn();
         pbfSim.setSpawn(s.min, s.max, s.accept);
         mpmSim.setSpawn(s.min, s.max, s.accept);
+        pbmpmSim.setSpawn(s.min, s.max, s.accept);
         // Per-demo start-of-sim warm-up (MLS-MPM only; PBF no-ops via ?.). Applied on
         // the next reset()/seed() — switchPair resets the active sim right after this.
         pbfSim.setWarmup?.(s.warmupFrames ?? 0);
         mpmSim.setWarmup?.(s.warmupFrames ?? 0);
+        pbmpmSim.setWarmup?.(s.warmupFrames ?? 0);
     }
 
     // ── Live tuning UI ───────────────────────────────────────────────
@@ -636,6 +704,28 @@ async function main(): Promise<void> {
     const demoQualityRow = document.createElement("div");
     demoQualityRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
     demoQualityRow.append(containerSel, qualitySel);
+    pbmpmMaterialRow = document.createElement("div");
+    pbmpmMaterialRow.style.cssText = "display:none;margin:2px 0 8px;";
+    const pbmpmMaterialLabel = document.createElement("div");
+    pbmpmMaterialLabel.textContent = "Material";
+    pbmpmMaterialLabel.style.cssText = "font-weight:600;margin-bottom:6px;";
+    pbmpmMaterialSel = document.createElement("select");
+    pbmpmMaterialSel.style.cssText = DEMO_SEL_CSS;
+    for (const mat of PBMPM_MATERIALS) {
+        const opt = document.createElement("option");
+        opt.value = String(mat.value);
+        opt.textContent = mat.label;
+        pbmpmMaterialSel.appendChild(opt);
+    }
+    pbmpmMaterialSel.value = String(pbmpmMaterial);
+    pbmpmMaterialSel.onchange = () => {
+        // Each PB-MPM material is its own pair (physics + render + colour differ), so switching material
+        // snapshots the current material's state and loads the target material's preset/state — exactly
+        // like switching quality. The render mode + colour then come from that material's preset.
+        const m = parseInt(pbmpmMaterialSel!.value, 10);
+        switchPair(activeDemo!, methodName, quality, m);
+    };
+    pbmpmMaterialRow.append(pbmpmMaterialLabel, pbmpmMaterialSel);
     // Host for the active demo's live tunables ("Demo parameters") + its demo-specific
     // panel controls.
     const demoParamsHost = document.createElement("div");
@@ -694,7 +784,10 @@ async function main(): Promise<void> {
             onMethod: (name) => switchPair(activeDemo!, name),
             onParticleCount: (n) => setParticleCount(n),
             onRenderMode: (spheres) => applyRenderMode(spheres),
-            onColor: (rgb) => surfaceTask.setFluidColor(rgb),
+            onColor: (rgb) => {
+                surfaceTask.setFluidColor(rgb);
+                particleTask.setTint(rgb);
+            },
             onAbsorption: (v) => surfaceTask.setAbsorption(v),
             onParticleSize: (s) => {
                 surfaceTask.setSizeScale(s);
@@ -773,7 +866,7 @@ async function main(): Promise<void> {
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, demoParamsHost, controls.containerToggleRow!]));
+    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -900,8 +993,16 @@ async function main(): Promise<void> {
     }
 
     function applyMethod(name: string): void {
-        activeSim = name === "PBF" ? pbfSim : mpmSim;
+        activeSim = simForMethod(name);
         methodName = name;
+        if (name === "PB-MPM") {
+            pbmpmSim.setMaterial?.(pbmpmMaterial);
+        }
+        // Sand renders as uniformly-coloured grains (no velocity brightening); water/jelly keep the
+        // speed-based highlight. This is a render characteristic derived from the material — NOT forced
+        // here on the colour or render MODE (those come from the per-material preset / pair state, so a
+        // count-change re-applyMethod doesn't reset a user's colour).
+        particleTask.setVelocityBrighten(name === "PB-MPM" && pbmpmMaterial === PBMPM_SAND_MATERIAL ? 0 : 1);
         for (const [key, value] of Object.entries(controls.getPhysicsValues(name))) {
             applyParam(activeSim, key, value);
         }
@@ -913,6 +1014,7 @@ async function main(): Promise<void> {
         applyProfiler(); // re-wire the GPU timing hook onto the rebuilt sims (tasks persist)
         controls.setMethod(name); // sync the method dropdown + component's current method (no side effect)
         controls.rebuildPhysics(name); // rebuild the physics-slider block for the new method
+        refreshPbMpmMaterialUi();
         canvas.dataset.method = methodName;
     }
     // Toggle between the sphere-impostor renderer and the screen-space surface.
@@ -954,7 +1056,8 @@ async function main(): Promise<void> {
         particleCount = n;
         pbfSim.dispose();
         mpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim } = createSims(n, physicsScale));
+        pbmpmSim.dispose();
+        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(n, physicsScale));
         applySceneSdf();
         applyMethod(methodName);
         canvas.dataset.particleCount = String(n);
@@ -968,7 +1071,8 @@ async function main(): Promise<void> {
         physicsScale = s;
         pbfSim.dispose();
         mpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim } = createSims(particleCount, physicsScale));
+        pbmpmSim.dispose();
+        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale));
         applySceneSdf();
         applyMethod(methodName);
     }
@@ -981,7 +1085,8 @@ async function main(): Promise<void> {
         physicsScale = scale;
         pbfSim.dispose();
         mpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim } = createSims(count, scale));
+        pbmpmSim.dispose();
+        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(count, scale));
         builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
         applyMethod(methodName);
@@ -1048,6 +1153,7 @@ async function main(): Promise<void> {
             size: RENDER_DEFAULTS.size,
             physScale: RENDER_DEFAULTS.physScale,
             count: RENDER_DEFAULTS.count,
+            material: method === "PB-MPM" ? 0 : undefined,
             renderMode: RENDER_DEFAULTS.renderMode,
             refraction: RENDER_DEFAULTS.refraction,
             specular: RENDER_DEFAULTS.specular,
@@ -1065,9 +1171,9 @@ async function main(): Promise<void> {
     }
     // First-visit state: the on-disk quality preset for this (demo, method, quality),
     // if any, merged over the core defaults. Pairs with no file use pure defaults.
-    function presetOrDefault(demo: FluidDemo, method: string, q: Quality): PairState {
+    function presetOrDefault(demo: FluidDemo, method: string, q: Quality, material = 0): PairState {
         const base = defaultPairState(demo, method);
-        const p = getQualityPreset(demo.key, method, q);
+        const p = getQualityPreset(demo.key, method, q, material);
         if (!p) {
             return base;
         }
@@ -1081,6 +1187,7 @@ async function main(): Promise<void> {
             size: p.size ?? base.size,
             physScale: p.physScale ?? base.physScale,
             count: p.count ?? base.count,
+            material: p.material ?? base.material,
             camera: p.camera ?? base.camera,
             renderMode: p.renderMode ?? base.renderMode,
             refraction: p.refraction ?? base.refraction,
@@ -1115,6 +1222,7 @@ async function main(): Promise<void> {
             size: v.size,
             physScale: physicsScale,
             count: particleCount,
+            material: method === "PB-MPM" ? pbmpmMaterial : undefined,
             camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius },
             renderMode: v.renderMode,
             refraction: v.refraction,
@@ -1143,6 +1251,10 @@ async function main(): Promise<void> {
         // target method here — switchPair set it before calling loadPairState).
         controls.setMethod(methodName);
         controls.setPhysics(st.schema);
+        if (typeof st.material === "number") {
+            pbmpmMaterial = st.material;
+        }
+        refreshPbMpmMaterialUi();
         for (const k of Object.keys(st.demoParams)) {
             demo.applyParam(k, st.demoParams[k]!);
         }
@@ -1240,7 +1352,7 @@ async function main(): Promise<void> {
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
     // demo visuals if the demo changed, then load the target pair's state.
-    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality): void {
+    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality, nextMaterial: number = pbmpmMaterial): void {
         // Switching demo or fluid method resumes the sim if it was paused.
         if (paused) {
             paused = false;
@@ -1264,8 +1376,15 @@ async function main(): Promise<void> {
         }
         methodName = nextMethod;
         quality = nextQuality;
-        const key = `${nextDemo.key}:${nextMethod}:${nextQuality}`;
-        const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality);
+        // PB-MPM keeps a SEPARATE pair (physics/render/colour) per material — but ONLY on material-capable
+        // demos (the box). Every other demo is liquid-only, so material is forced to 0 there and the key
+        // carries no material axis.
+        const withMaterial = nextMethod === "PB-MPM" && MATERIAL_DEMO_KEYS.includes(nextDemo.key);
+        if (nextMethod === "PB-MPM") {
+            pbmpmMaterial = withMaterial ? nextMaterial : 0;
+        }
+        const key = withMaterial ? `${nextDemo.key}:${nextMethod}:${nextQuality}:m${pbmpmMaterial}` : `${nextDemo.key}:${nextMethod}:${nextQuality}`;
+        const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial);
         currentPairKey = key;
         // Propagate the target demo's domain (world) scale BEFORE loading the pair state, so the
         // pair-state rebuild guard fires when it differs from the built scale — switching AWAY from a
@@ -1476,7 +1595,9 @@ async function main(): Promise<void> {
             activeSim.reset();
             clearSceneHoles();
         } else if (e.key === "m" || e.key === "M") {
-            switchPair(activeDemo!, activeSim === pbfSim ? "MLS-MPM" : "PBF");
+            const methods = Object.keys(DEFAULT_FLUID_SCHEMAS);
+            const nextMethod = methods[(methods.indexOf(methodName) + 1) % methods.length] ?? "PBF";
+            switchPair(activeDemo!, nextMethod);
         } else if (e.key === "p" || e.key === "P") {
             paused = !paused;
             canvas.dataset.paused = paused ? "true" : "false";
@@ -1492,7 +1613,7 @@ async function main(): Promise<void> {
     // Load the on-disk quality presets (served from lab/public/fluid-presets) BEFORE the first
     // switchPair, so first-visit lookups see them. Runtime fetch → editing a preset + reloading
     // the page applies it with no bundle rebuild.
-    await loadQualityPresets(demos.map((d) => d.key));
+    await loadQualityPresets(demos.map((d) => d.key), MATERIAL_DEMO_KEYS);
     switchPair(boxDemo, "MLS-MPM", quality); // box + MLS-MPM at the default quality
     containerSel.value = boxDemo.key;
     qualitySel.value = quality;

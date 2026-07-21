@@ -34,7 +34,7 @@ export interface PhysSchemaEntry {
  * entry mirrors the corresponding solver default and remembers the last value the
  * user set. Both the fluid demo and the Liquefactor demo pass this as `schemas`
  * (the component deep-copies it, so the shared constant is never mutated). Kept as
- * an exported constant so any host can reuse the exact same PBF / MLS-MPM tunables.
+ * an exported constant so any host can reuse the exact same per-backend tunables.
  */
 export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
     PBF: [
@@ -56,6 +56,18 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
         { key: "groundDamp", label: "Ground damping", min: 0.7, max: 1, step: 0.01, value: 0.85 },
         { key: "groundDampHeight", label: "Ground damp height", min: 0, max: 10, step: 0.1, value: 1.5 },
         { key: "restitution", label: "Restitution (bounce)", min: 0, max: 1, step: 0.05, value: 0.3 },
+        { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
+    ],
+    "PB-MPM": [
+        { key: "gravity", label: "Gravity", min: 0, max: 200, step: 0.1, value: 9.8 },
+        { key: "iterations", label: "PB iterations", min: 1, max: 12, step: 1, value: 5 },
+        { key: "liquidRelaxation", label: "Liquid relaxation", min: 0.1, max: 3, step: 0.05, value: 1.5 },
+        { key: "liquidViscosity", label: "Liquid viscosity", min: 0, max: 0.2, step: 0.005, value: 0.01 },
+        { key: "elasticityRatio", label: "Elasticity ratio", min: 0, max: 1, step: 0.01, value: 0.3 },
+        { key: "elasticRelaxation", label: "Elastic relaxation", min: 0.05, max: 1, step: 0.01, value: 0.3 },
+        { key: "frictionAngle", label: "Sand friction angle", min: 0, max: 60, step: 1, value: 35 },
+        { key: "plasticity", label: "Visco plasticity", min: 0, max: 1, step: 0.01, value: 0.8 },
+        { key: "restitution", label: "Restitution (bounce)", min: 0, max: 1, step: 0.05, value: 0 },
         { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
     ],
 };
