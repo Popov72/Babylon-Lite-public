@@ -250,6 +250,7 @@ export { AcesToneMapping } from "./material/pbr/pbr-aces-wgsl.js";
 export { NeutralToneMapping } from "./material/pbr/pbr-neutral-wgsl.js";
 export type { MaterialPlugin, MaterialPluginPoint, PluginUboField, PluginSamplerDecl, PluginTextureBinding } from "./material/plugin/material-plugin.js";
 export { enableMaterialPlugins } from "./material/plugin/enable-material-plugins.js";
+export { bakeStdPluginMaterial } from "./material/plugin/std-plugin-bridge.js";
 export { enableMaterialStencil } from "./material/enable-material-stencil.js";
 export { enableMaterialTracking } from "./material/observable-material.js";
 
@@ -498,6 +499,7 @@ export type { PickingInfo } from "./picking/picking-info.js";
 export { enableDetailedPicking } from "./picking/detailed-picking.js";
 export { getPickedNormal, getPickedUV } from "./picking/picking-helpers.js";
 export { computeDeformedPositionToRef } from "./picking/deformed-vertex.js";
+export { computeDeformedPositions, computeDeformedNormals, hasCpuDeformation } from "./picking/deformed-geometry.js";
 
 // ─── Gizmos ──────────────────────────────────────────────────────────
 export { createUtilityLayer, registerUtilityLayer, disposeUtilityLayer } from "./gizmo/utility-layer.js";

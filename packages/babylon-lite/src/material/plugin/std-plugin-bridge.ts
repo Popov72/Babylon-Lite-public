@@ -20,7 +20,7 @@ import type { StdExt } from "../standard/standard-flags.js";
 import type { StandardMaterialProps } from "../standard/standard-material.js";
 import { _computeStandardMaterialFeatures, getStandardGroupBuilder } from "../standard/standard-material.js";
 import type { Mesh } from "../../mesh/mesh.js";
-import type { ShaderFragment } from "../../shader/fragment-types.js";
+import type { ShaderFragment, UboSpec } from "../../shader/fragment-types.js";
 import { createUniformBuffer } from "../../resource/gpu-buffers.js";
 import type { MaterialPlugin } from "./material-plugin.js";
 import { bindPluginTextures, buildPluginFragment, enabledPlugins, pluginSignature, writePluginUbo } from "./plugin-bridge-shared.js";
@@ -33,6 +33,10 @@ interface PluginEntry {
     readonly _fragment: ShaderFragment;
     /** Self-managed plugin uniform buffer, or null when the plugins declare no uniforms. */
     readonly _uboBuffer: GPUBuffer | null;
+    /** UBO layout for the self-managed buffer (for per-frame re-uploads of dynamic plugins). */
+    readonly _uboSpec: UboSpec | null;
+    /** True when at least one enabled plugin is `dynamic` — its UBO is re-uploaded every frame. */
+    readonly _dynamic: boolean;
 }
 
 let _sigToIndex: Map<string, number> | null = null;
@@ -53,19 +57,43 @@ function _indexFor(plugins: readonly MaterialPlugin[], engine: EngineContext): n
         idx = ++_counter;
         map.set(sig, idx);
         const built = buildPluginFragment(plugins, idx, true);
-        // Build the self-managed plugin UBO once per signature. Uniform values
-        // come from the plugins themselves (constant for a given signature), so
-        // the buffer is filled at registration time and shared by every material
-        // carrying that signature.
+        // Build the self-managed plugin UBO once per signature. For STATIC plugins the values are
+        // constant, so the buffer is filled once at registration and shared by every material with
+        // that signature. DYNAMIC plugins (values change every frame) are re-uploaded each frame by
+        // `refreshStdPluginUbos` (registered from `enableMaterialPlugins`).
         let uboBuffer: GPUBuffer | null = null;
         if (built._stdUboSpec && built._stdUboSpec._totalBytes > 0) {
             const data = new Float32Array(built._stdUboSpec._totalBytes / 4);
             writePluginUbo(plugins, data, built._stdUboSpec._offsets);
             uboBuffer = createUniformBuffer(engine, data, "plugin-ubo");
         }
-        (_indexToEntry ??= new Map()).set(idx, { _plugins: plugins, _fragment: built._fragment, _uboBuffer: uboBuffer });
+        const dynamic = enabledPlugins(plugins).some((p) => p.dynamic === true);
+        (_indexToEntry ??= new Map()).set(idx, { _plugins: plugins, _fragment: built._fragment, _uboBuffer: uboBuffer, _uboSpec: built._stdUboSpec, _dynamic: dynamic });
     }
     return idx;
+}
+
+/** Re-upload every DYNAMIC Standard plugin's self-managed UBO from its plugins' current state.
+ *  Registered as a per-frame before-render step by `enableMaterialPlugins`; a no-op when no dynamic
+ *  Standard plugin exists (so static-plugin scenes stay byte-identical). */
+let _uboScratch: Float32Array | null = null;
+export function refreshStdPluginUbos(engine: EngineContext): void {
+    if (!_indexToEntry) {
+        return;
+    }
+    for (const entry of _indexToEntry.values()) {
+        if (!entry._dynamic || !entry._uboBuffer || !entry._uboSpec) {
+            continue;
+        }
+        const floats = entry._uboSpec._totalBytes / 4;
+        if (!_uboScratch || _uboScratch.length < floats) {
+            _uboScratch = new Float32Array(floats);
+        } else {
+            _uboScratch.fill(0, 0, floats);
+        }
+        writePluginUbo(entry._plugins, _uboScratch, entry._uboSpec._offsets);
+        engine._device.queue.writeBuffer(entry._uboBuffer, 0, _uboScratch.buffer, 0, entry._uboSpec._totalBytes);
+    }
 }
 
 function _entryFor(plugins: readonly MaterialPlugin[]): PluginEntry | undefined {
@@ -116,10 +144,19 @@ export function registerStdPlugins(meshes: readonly Mesh[], engine: EngineContex
     _resetState();
     register(stdPluginExt);
     for (const m of meshes) {
-        const mat = m.material as (StandardMaterialProps & { plugins?: MaterialPlugin[]; _renderFeatures?: { features: number }; _buildGroup?: unknown }) | null;
-        if (mat?.plugins?.length && mat._buildGroup === getStandardGroupBuilder()) {
-            const idx = _indexFor(mat.plugins, engine);
-            mat._renderFeatures = { features: _computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT) };
-        }
+        bakeStdPluginMaterial(m.material as StandardMaterialProps | null, engine);
     }
+}
+
+/** Bake the Standard material-plugin signature bits into a material loaded after
+ *  `enableMaterialPlugins(scene)` walked the scene. Call after assigning
+ *  `mat.plugins` and before the material's mesh first renders. PBR materials do
+ *  not need this helper because their plugin bridge detects signatures during
+ *  renderable construction. */
+export function bakeStdPluginMaterial(mat: StandardMaterialProps | null | undefined, engine: EngineContext): void {
+    if (!mat?.plugins?.length || mat._buildGroup !== getStandardGroupBuilder()) {
+        return;
+    }
+    const idx = _indexFor(mat.plugins, engine);
+    mat._renderFeatures = { features: _computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT) };
 }

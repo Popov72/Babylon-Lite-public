@@ -95,6 +95,7 @@ const BLUR_MAX_FILTER_SIZE = 64;
 const BLUR_DEPTH_DEPTH_SCALE = 10;
 const BLUR_THICKNESS_FILTER_SIZE = 10;
 const PARTICLE_SIZE_SCALE = 3.5; // impostor diameter = particleRadius * this
+const COLOR_BLUR_SCALE = 1.2; // per-particle colour blur radius as a multiple of the particle's on-screen radius
 
 // ── Anisotropic surface (Yu & Turk 2010) tunables ──
 // Each particle is splatted as an oriented ellipsoid derived from a weighted PCA of its
@@ -130,6 +131,12 @@ struct Cam {
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> dbg: array<f32>;
+// Per-particle alpha (opt-in). Only consulted when cam.misc.z > 0.5, otherwise a=1 and the
+// binding is a harmless dummy so the OFF path is byte-identical.
+@group(0) @binding(4) var<storage, read> palpha: array<f32>;
+// Per-particle RGBA colour (opt-in). Read by the fsColor accumulation pass (mesh-tinted water);
+// unused by fsDepth/fsThick, so the surface shape is unaffected. Dummy buffer when disabled.
+@group(0) @binding(5) var<storage, read> pcolor: array<vec4<f32>>;
 // Scene opaque depth (reverse-Z). Sampled per-fragment so fluid hidden BEHIND opaque
 // geometry (ground / paddle / wheel) is discarded from BOTH the depth and thickness
 // passes. Without this the additive thickness integral counts occluded particles and the
@@ -142,6 +149,8 @@ struct VOut {
     @location(1) @interpolate(flat) viewPos: vec3<f32>,
     @location(2) @interpolate(flat) speed: f32,
     @location(3) ndc: vec4<f32>,
+    @location(4) @interpolate(flat) alpha: f32,
+    @location(5) @interpolate(flat) col: vec3<f32>,
 };
 
 // True when the sphere-surface point (eye-space Z fragEyeZ, positive = away from the
@@ -178,6 +187,8 @@ fn corner(vi: u32) -> vec2<f32> {
     o.viewPos = viewPos;
     o.speed = dbg[ii];
     o.ndc = o.clip;
+    o.alpha = select(1.0, palpha[ii], cam.misc.z > 0.5);
+    o.col = pcolor[ii].rgb;
     return o;
 }
 
@@ -190,6 +201,7 @@ struct DepthOut {
     let nxy = i.uv * 2.0 - 1.0;
     let r2 = dot(nxy, nxy);
     if (r2 > 1.0) { discard; }
+    if (i.alpha < 0.004) { discard; } // fully-faded particles don't mark the surface
     // LH: front-facing sphere normal points toward camera (negative view z).
     let normal = vec3<f32>(nxy, -sqrt(1.0 - r2));
     let realViewPos = i.viewPos + normal * cam.misc.y;
@@ -213,7 +225,38 @@ struct DepthOut {
     let realViewPos = i.viewPos + normal * cam.misc.y;
     if (occludedByScene(realViewPos.z, i.ndc)) { discard; }
     let thickness = sqrt(1.0 - r2);
-    return vec4<f32>(vec3<f32>(cam.misc.w * thickness), 1.0);
+    // .r = alpha-weighted thickness (what the water shows), .g = UNWEIGHTED thickness. The
+    // composite divides r/g to recover the per-pixel particle alpha and fades the WHOLE
+    // surface (refraction + reflection + specular) to the background as it → 0. When no
+    // per-particle alpha is used (i.alpha == 1) r == g, so the composite fade is a no-op.
+    let wt = cam.misc.w * i.alpha * thickness;
+    return vec4<f32>(wt, cam.misc.w * thickness, wt, 1.0);
+}
+
+// Per-particle colour (opt-in, own pass — depth/thickness passes untouched). Rejects particles
+// whose eye-Z is behind the front surface (depth pass output, sampled by screen UV) by more than a
+// small band, so only the NEAR side of a hollow shell contributes (no far-side bleed-through that
+// inverts a barrel's bands). Runs at FULL resolution — independent of the half-res depth/thickness
+// — so fine texture detail (a logo) survives. The composite recovers a per-pixel colour = rgb/a.
+@group(1) @binding(0) var frontDepthTex: texture_2d<f32>;
+@fragment fn fsColor(i: VOut) -> @location(0) vec4<f32> {
+    let nxy = i.uv * 2.0 - 1.0;
+    let r2 = dot(nxy, nxy);
+    if (r2 > 1.0) { discard; }
+    let normal = vec3<f32>(nxy, -sqrt(1.0 - r2));
+    let realViewPos = i.viewPos + normal * cam.misc.y;
+    if (occludedByScene(realViewPos.z, i.ndc)) { discard; }
+    // Drop particles beyond the near shell: eye-Z increases with distance, so a far wall's Z is >
+    // the front surface Z by roughly the shell/volume depth (≫ a few particle radii).
+    let uv = i.ndc.xy / i.ndc.w;
+    let sUV = vec2<f32>(uv.x * 0.5 + 0.5, 0.5 - uv.y * 0.5);
+    let ddim = vec2<f32>(textureDimensions(frontDepthTex));
+    let dcoord = vec2<i32>(clamp(sUV, vec2<f32>(0.0), vec2<f32>(1.0)) * ddim);
+    let frontEyeZ = textureLoad(frontDepthTex, dcoord, 0).r;
+    if (realViewPos.z > frontEyeZ + cam.misc.y * 6.0) { discard; }
+    let thickness = sqrt(1.0 - r2);
+    let w = cam.misc.w * thickness;
+    return vec4<f32>(i.col * w, w);
 }`;
 
 // ── Anisotropic neighbour grid (renderer-side counting-sort spatial HASH) ──
@@ -906,6 +949,34 @@ struct Blur { p: vec4<f32>, q: vec4<f32> }; // p: stepX, stepY, filterSize, _
     return vec4<f32>(sum.rgb / wsum, 1.0);
 }`;
 
+// Separable Gaussian blur of the per-particle colour target. Unlike the thickness blur it blurs
+// ALL FOUR channels (premultiplied colour·weight + weight) and does NOT drop alpha, so the
+// composite's rgb/a recovers a spatially-BLENDED colour — smoothing away visible particle blobs.
+const COLOR_BLUR_WGSL = /* wgsl */ `
+${FULLSCREEN_VS}
+struct Blur { p: vec4<f32> }; // stepX, stepY, filterSize, _
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<uniform> b: Blur;
+
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let pix = vec2<i32>(floor(pos.xy));
+    let dim = vec2<i32>(textureDimensions(src));
+    let filterSize = i32(b.p.z);
+    let sigma = max(b.p.z / 3.0, 1.0e-3);
+    let twoSigma2 = 2.0 * sigma * sigma;
+    let step = vec2<i32>(i32(b.p.x), i32(b.p.y));
+    var sum = vec4<f32>(0.0);
+    var wsum = 0.0;
+    for (var x = -filterSize; x <= filterSize; x = x + 1) {
+        let c = pix + step * x;
+        if (any(c < vec2<i32>(0)) || any(c >= dim)) { continue; }
+        let w = exp(-f32(x * x) / twoSigma2);
+        sum = sum + textureLoad(src, c, 0) * w;
+        wsum = wsum + w;
+    }
+    return sum / max(wsum, 1.0e-5);
+}`;
+
 // Plain copy of the background to the swapchain (sphere-impostor mode).
 const BLIT_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
@@ -957,6 +1028,9 @@ struct Comp {
 @group(0) @binding(9) var thickRawTex: texture_2d<f32>;
 @group(0) @binding(10) var<uniform> u: Comp;
 @group(0) @binding(11) var sceneDepthTex: texture_depth_2d;
+// Per-particle colour target (opt-in). Only sampled when u.diffuse.w > 0.5; otherwise a dummy
+// texture is bound and the branch is skipped, so the OFF path is byte-identical.
+@group(0) @binding(12) var pcolorTex: texture_2d<f32>;
 
 fn computeViewPosFromUVDepth(texCoord: vec2<f32>, depth: f32) -> vec3<f32> {
     // Direct perspective unproject (equivalent to invProj * ndc for a standard
@@ -1076,7 +1150,22 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
         return vec4<f32>(normal * 0.5 + 0.5, 1.0);
     }
 
-    let diffuseColor = u.diffuse.rgb;
+    var diffuseColor = u.diffuse.rgb;
+    // Per-particle mesh colour: replace the uniform water colour with the thickness-weighted
+    // average of the liquefied mesh's particle colours (rgb/a from the accumulation pass), then
+    // SATURATE it — the column average desaturates toward grey, so boost it back so distinct mesh
+    // colours (a red barrel, a green alien) read clearly through the water.
+    var meshColored = false;
+    if (u.diffuse.w > 0.5) {
+        let cc = textureSampleLevel(pcolorTex, thickSamp, texCoord, 0.0);
+        if (cc.a > 1.0e-4) {
+            var mc = cc.rgb / cc.a;
+            let lum = dot(mc, vec3<f32>(0.299, 0.587, 0.114));
+            mc = clamp(mix(vec3<f32>(lum), mc, 1.8), vec3<f32>(0.0), vec3<f32>(1.0));
+            diffuseColor = mc;
+            meshColored = true;
+        }
+    }
     let lightDir = normalize((u.view * vec4<f32>(-u.b.xyz, 0.0)).xyz);
     let H = normalize(lightDir - rayDir);
     let specular = pow(max(0.0, dot(H, normal)), u.c.y);
@@ -1103,6 +1192,19 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
 
     let fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - max(dot(normal, -rayDir), 0.0), 5.0), 0.0, u.c.x);
     var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
+    // Overlay the (saturated) mesh colour so the liquefied model's colours clearly show — the faint
+    // Beer-Lambert tint alone washes out to grey. Keeps some specular/refraction for a wet look.
+    if (meshColored) {
+        finalColor = mix(finalColor, diffuseColor, 0.72) + specular * 0.4;
+    }
+
+    // Fade the whole surface toward the background by the per-pixel particle alpha
+    // (alpha-weighted thickness / unweighted thickness). This makes a fading blob's
+    // reflection + specular vanish smoothly instead of popping at the thickness cutoff.
+    // A no-op (=1) when per-particle alpha is unused, so other scenes are unaffected.
+    let thicknessU = textureSampleLevel(thickTex, thickSamp, texCoord, 0.0).y;
+    let fadeAlpha = clamp(thickness / max(thicknessU, 1.0e-6), 0.0, 1.0);
+    finalColor = mix(backColor.rgb, finalColor, fadeAlpha);
 
     return vec4<f32>(finalColor, 1.0);
 }`;
@@ -1113,6 +1215,9 @@ export function createFluidSurfaceTask(
     opts: FluidSurfaceOptions
 ): Task & {
     setSim(s: FluidSim): void;
+    setParticleAlpha(buf: GPUBuffer | null): void;
+    setParticleColor(buf: GPUBuffer | null): void;
+    setUseParticleColor(on: boolean): void;
     setMode(m: "surface" | "blit" | "ellipsoidDebug"): void;
     setEnvMap(e: EnvMap): void;
     setDebug(d: FluidDebug): void;
@@ -1208,6 +1313,9 @@ export function createFluidSurfaceTask(
     const blurDepthCleanupBuf = device.createBuffer({ label: "fluid-surf-blur-dc", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurThickXBuf = device.createBuffer({ label: "fluid-surf-blur-tx", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurThickYBuf = device.createBuffer({ label: "fluid-surf-blur-ty", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    // Per-particle colour blur (X then Y) uniforms; filter radius couples to the particle screen size.
+    const colorBlurXBuf = device.createBuffer({ label: "fluid-surf-cblur-x", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const colorBlurYBuf = device.createBuffer({ label: "fluid-surf-cblur-y", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const compBuffer = device.createBuffer({ label: "fluid-surf-comp", size: 16 * 13 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     // Non-filtering sampler for the RG32F depth (32-float textures aren't filterable).
     const nearestSampler = device.createSampler({ label: "fluid-surf-nearest" });
@@ -1292,6 +1400,20 @@ export function createFluidSurfaceTask(
     let compPipe: GPURenderPipeline | null = null;
     let particleBGL: GPUBindGroupLayout | null = null;
     let particleBG: GPUBindGroup | null = null;
+    let particleAlphaBuf: GPUBuffer | null = null; // opt-in per-particle alpha (null = disabled, byte-identical)
+    let particleColorBuf: GPUBuffer | null = null; // opt-in per-particle RGBA colour (null = disabled)
+    let useParticleColor = false; // render toggle: tint the water by per-particle mesh colour
+    let particleColorActive = false; // resolved per-frame (on + buffer present + not aniso)
+    let colorTex: GPUTexture | null = null; // front-most per-particle colour target (lazy)
+    let colorView: GPUTextureView | null = null;
+    let colorTmp: GPUTexture | null = null; // ping-pong target for the separable colour blur
+    let colorTmpView: GPUTextureView | null = null;
+    let colorW = 0;
+    let colorH = 0;
+    let colorPipe: GPURenderPipeline | null = null;
+    let colorBlurPipe: GPURenderPipeline | null = null;
+    let colorDepthBGL: GPUBindGroupLayout | null = null; // group 1 for the colour pass (front-depth texture)
+    let colorDepthBG: GPUBindGroup | null = null;
     let partPL: GPUPipelineLayout | null = null;
 
     // ── Anisotropic surface resources (all null until the toggle is first enabled) ──
@@ -1353,8 +1475,33 @@ export function createFluidSurfaceTask(
                 { binding: 1, resource: { buffer: currentSim.positionBuffer } },
                 { binding: 2, resource: { buffer: currentSim.debugBuffer } },
                 { binding: 3, resource: depthRT._depthView },
+                { binding: 4, resource: { buffer: particleAlphaBuf ?? currentSim.debugBuffer } },
+                { binding: 5, resource: { buffer: particleColorBuf ?? currentSim.positionBuffer } },
             ],
         });
+    }
+
+    function ensureColorTarget(): void {
+        // Full resolution (independent of the half-res depth/thickness) so fine texture detail
+        // survives; the front-depth test is done in the shader by sampling depthTex via screen UV.
+        if (colorTex && colorW === fullW && colorH === fullH) {
+            return;
+        }
+        colorTex?.destroy();
+        colorTmp?.destroy();
+        colorW = fullW;
+        colorH = fullH;
+        const mk = (label: string): GPUTexture =>
+            device.createTexture({
+                label,
+                size: { width: fullW, height: fullH },
+                format: "rgba16float",
+                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+            });
+        colorTex = mk("fluid-surf-color");
+        colorTmp = mk("fluid-surf-colorTmp");
+        colorView = colorTex.createView();
+        colorTmpView = colorTmp.createView();
     }
 
     function blurPipeline(label: string, code: string): GPURenderPipeline {
@@ -1385,6 +1532,8 @@ export function createFluidSurfaceTask(
                 { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
                 { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
                 { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
+                { binding: 4, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+                { binding: 5, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
             ],
         });
         const partPLLocal = device.createPipelineLayout({ bindGroupLayouts: [particleBGL] });
@@ -1412,6 +1561,26 @@ export function createFluidSurfaceTask(
             // the nearest surface — cull all back-of-volume particles, collapsing
             // thickness to a single layer.)
             multisample: { count: samples },
+        });
+        colorDepthBGL = device.createBindGroupLayout({
+            label: "fluid-surf-colorDepth",
+            entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } }],
+        });
+        colorPipe = device.createRenderPipeline({
+            label: "fluid-surf-color",
+            layout: device.createPipelineLayout({ bindGroupLayouts: [particleBGL, colorDepthBGL] }),
+            vertex: { module: partMod, entryPoint: "vs" },
+            fragment: { module: partMod, entryPoint: "fsColor", targets: [{ format: "rgba16float", blend: addBlend }] },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+            multisample: { count: samples },
+        });
+        const colorBlurMod = device.createShaderModule({ label: "fluid-surf-colorBlur", code: COLOR_BLUR_WGSL });
+        colorBlurPipe = device.createRenderPipeline({
+            label: "fluid-surf-colorBlur",
+            layout: "auto",
+            vertex: { module: colorBlurMod, entryPoint: "vs" },
+            fragment: { module: colorBlurMod, entryPoint: "fs", targets: [{ format: "rgba16float" }] },
+            primitive: { topology: "triangle-list" },
         });
         bilateralPipe = blurPipeline("fluid-surf-bilateral", BILATERAL_WGSL);
         narrowRangePipe = blurPipeline("fluid-surf-narrow", NARROW_RANGE_WGSL);
@@ -1640,6 +1809,8 @@ export function createFluidSurfaceTask(
                 { binding: 1, resource: { buffer: anisoBuffer } },
                 { binding: 2, resource: { buffer: currentSim.debugBuffer } },
                 { binding: 3, resource: depthRT._depthView },
+                { binding: 4, resource: { buffer: particleAlphaBuf ?? currentSim.debugBuffer } },
+                { binding: 5, resource: { buffer: particleColorBuf ?? currentSim.positionBuffer } },
             ],
         });
     }
@@ -1727,7 +1898,7 @@ export function createFluidSurfaceTask(
         }
         camData[32] = size;
         camData[33] = size / 2;
-        camData[34] = 0; // unused
+        camData[34] = particleAlphaBuf ? 1 : 0; // per-particle alpha enable (misc.z)
         camData[35] = PARTICLE_THICKNESS_ALPHA;
         device.queue.writeBuffer(camBuffer, 0, camData);
 
@@ -1778,7 +1949,7 @@ export function createFluidSurfaceTask(
         comp[o + 12] = fluidColor[0];
         comp[o + 13] = fluidColor[1];
         comp[o + 14] = fluidColor[2];
-        comp[o + 15] = 0; // diffuse
+        comp[o + 15] = particleColorActive ? 1 : 0; // diffuse.w = per-particle mesh-colour enable
         o += 16;
         comp[o] = 1 / depthW;
         comp[o + 1] = 1 / depthH;
@@ -1842,6 +2013,22 @@ export function createFluidSurfaceTask(
             currentSim = s;
             buildParticleBG();
             anisoBGSim = null; // grid bind groups reference the sim's position buffer — rebuild lazily
+        },
+        setParticleAlpha(buf: GPUBuffer | null): void {
+            // Opt-in per-particle alpha (f32 per particle, same indexing as positionBuffer). When
+            // null the OFF path is byte-identical. Scales each particle's thickness contribution,
+            // so the composite fades the water to the background as alpha → 0.
+            particleAlphaBuf = buf;
+            buildParticleBG();
+        },
+        setParticleColor(buf: GPUBuffer | null): void {
+            // Opt-in per-particle RGBA colour (vec4 per particle, same indexing as positionBuffer).
+            // Only consumed when setUseParticleColor(true); the accumulation pass tints the water.
+            particleColorBuf = buf;
+            buildParticleBG();
+        },
+        setUseParticleColor(on: boolean): void {
+            useParticleColor = on;
         },
         setMode(m: "surface" | "blit" | "ellipsoidDebug"): void {
             mode = m;
@@ -1923,6 +2110,31 @@ export function createFluidSurfaceTask(
             }
             const enc = engine._currentEncoder;
 
+            // No particles: skip ALL fluid passes (depth/thickness/blur/composite) and just
+            // present the background (scene) with one cheap fullscreen blit. Deliberately NOT
+            // tagged with the "Surface" profiler pass, so the timing pane reports 0 for the
+            // surface stage while idle (the blit is scene presentation, not fluid work).
+            if (currentSim.count === 0) {
+                const bg = device.createBindGroup({
+                    layout: blitPipe.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: bgView },
+                        { binding: 1, resource: linearSampler },
+                    ],
+                });
+                enc.pushDebugGroup("Fluid surface (idle passthrough)");
+                const pass = enc.beginRenderPass({
+                    label: "fluid-surf-idle",
+                    colorAttachments: [{ view: outView, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+                });
+                pass.setPipeline(blitPipe);
+                pass.setBindGroup(0, bg);
+                pass.draw(3);
+                pass.end();
+                enc.popDebugGroup();
+                return 0;
+            }
+
             if (mode === "blit") {
                 const bg = device.createBindGroup({
                     layout: blitPipe.getBindGroupLayout(0),
@@ -1998,6 +2210,10 @@ export function createFluidSurfaceTask(
                 return 0;
             }
             allocTargets();
+            // Resolve the per-particle colour toggle for this frame (before the uniform write).
+            // The colour accumulation pass runs on the sphere path only, so it's disabled when
+            // the anisotropic surface is active.
+            particleColorActive = useParticleColor && particleColorBuf !== null && !anisotropic;
             updateUniforms();
             // Rebuild the particle bind group each frame: it references the SCENE depth
             // view (binding 3), which is recreated on resize — a cached group would stale.
@@ -2047,8 +2263,44 @@ export function createFluidSurfaceTask(
                 pass.draw(6, currentSim.count);
                 pass.end();
             }
-            // 3. Depth smoothing (X then Y), and — unless skipped — a standard
-            // thickness blur (X then Y). Each pass uses its OWN uniform buffer.
+            // 2b. Per-particle colour (opt-in, sphere path only): the FRONT-most particle per pixel
+            // writes its mesh colour (read-only depth test vs the depth pass's buffer), so a hollow
+            // shell shows its NEAR side (not the far side bleeding through). Off → colorTex untouched.
+            const colorPassOn = particleColorActive && !useAniso && colorPipe !== null;
+            if (colorPassOn) {
+                ensureColorTarget();
+                const pass = enc.beginRenderPass({
+                    label: "fluid-surf-color",
+                    colorAttachments: [{ view: colorView!, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+                    timestampWrites: profiler?.pass("Surface"),
+                });
+                colorDepthBG = device.createBindGroup({
+                    label: "fluid-surf-colorDepth",
+                    layout: colorDepthBGL!,
+                    entries: [{ binding: 0, resource: views.depth! }],
+                });
+                pass.setPipeline(colorPipe!);
+                pass.setBindGroup(0, particleBGUsed);
+                pass.setBindGroup(1, colorDepthBG);
+                pass.draw(6, currentSim.count);
+                pass.end();
+                // Blend visible per-particle blobs into a smooth surface colour: separable Gaussian
+                // (X → colorTmp, Y → colorTex) over the premultiplied colour·weight. Radius tracks the
+                // on-screen particle size, so a smaller particle radius (higher resolution) blurs less
+                // and keeps fine texture detail (a logo).
+                if (colorBlurPipe) {
+                    const wm = camera.worldMatrix as unknown as ArrayLike<number>;
+                    const camDist = Math.max(1, Math.hypot(wm[12] ?? 0, wm[13] ?? 0, wm[14] ?? 0));
+                    const worldSize = currentSim.particleRadius * PARTICLE_SIZE_SCALE * (currentSim.surfaceSizeScale ?? 1) * sizeScale;
+                    const tanHalf = Math.max(0.05, Math.tan(camera.fov / 2));
+                    const pxRadius = ((worldSize * 0.5) / camDist) * (fullH / (2 * tanHalf));
+                    const cfs = Math.min(16, Math.max(2, Math.round(pxRadius * COLOR_BLUR_SCALE)));
+                    device.queue.writeBuffer(colorBlurXBuf, 0, new Float32Array([1, 0, cfs, 0, 0, 0, 0, 0]));
+                    device.queue.writeBuffer(colorBlurYBuf, 0, new Float32Array([0, 1, cfs, 0, 0, 0, 0, 0]));
+                    blurPass("fluid-surf-colorBlurX", colorBlurPipe, colorBlurXBuf, colorView!, colorTmpView!);
+                    blurPass("fluid-surf-colorBlurY", colorBlurPipe, colorBlurYBuf, colorTmpView!, colorView!);
+                }
+            }
             enc.pushDebugGroup("surface blur (depth + thickness)");
             if (surfaceFilter === "narrowRange") {
                 // Narrow-Range Filter: two 1D separable passes (depth → depthTmp →
@@ -2094,6 +2346,7 @@ export function createFluidSurfaceTask(
                     { binding: 9, resource: views.thick! },
                     { binding: 10, resource: { buffer: compBuffer } },
                     { binding: 11, resource: depthRT._depthView! },
+                    { binding: 12, resource: particleColorActive && colorView ? colorView : views.thick! },
                 ],
             });
             const cpass = enc.beginRenderPass({
@@ -2119,6 +2372,10 @@ export function createFluidSurfaceTask(
             for (const t of [depthTex, depthTmp, depthBlur, depthNrTmp, fluidDepthBuf, thickTex, thickTmp, thickBlur]) {
                 t?.destroy();
             }
+            colorTex?.destroy();
+            colorTmp?.destroy();
+            colorBlurXBuf.destroy();
+            colorBlurYBuf.destroy();
             // Anisotropic-surface resources (present only if the toggle was ever enabled).
             disposeAnisoBuffers();
             apBuffer?.destroy();

@@ -1033,7 +1033,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const scorrN = 4;
 
     // ── Buffers ──────────────────────────────────────────────────────
-    const positionBuffer = device.createBuffer({ label: "fluid-positions", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const positionBuffer = device.createBuffer({ label: "fluid-positions", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     const velocityBuffer = device.createBuffer({ label: "fluid-velocities", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const predictedBuffer = device.createBuffer({ label: "fluid-predicted", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const debugBuffer = device.createBuffer({ label: "fluid-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });

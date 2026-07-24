@@ -1,90 +1,68 @@
-// Liquefactor demo — VOLUME-SAMPLING VERIFICATION with a screen-space fluid surface.
+// Liquefactor demo — MULTI-TARGET shooting gallery with concurrent GPU fluid sims.
 //
-// Fills the interior of a procedural "enemy" mesh with particles using the
-// `sampleMeshVolume` CPU volume sampler (packages/babylon-lite/src/fluid/
-// volume-sampling), then "liquefies" the fill into flowing GPU fluid rendered
-// through demo-fluid's screen-space surface pipeline (refraction + Beer-Lambert
-// absorption + fresnel env reflection + specular).
+// Three "enemy" meshes float over the ground. Click one to LIQUEFY it: its surface
+// dissolves radially from the hit point (the material clips inside a growing world-space
+// "front"), the interior is CPU volume-sampled into particles, and an independent GPU
+// fluid sim (grid centred on THAT mesh, at ground level) launches the blob upward and
+// melts it into a puddle. Multiple meshes can be dissolving / running at the same time —
+// each mesh owns its own sim (grid, particle count, physics). A few seconds after a mesh
+// liquefies, its sim fades away (sinks through the floor) and the mesh is gone for good.
+// "Restart" stops every sim and restores all three solid meshes.
 //
-// Flow:
-//   • Pick an enemy shape / sampling mode / radius. A LIVE particle-count PREVIEW
-//     (`createVolumeSampler` → SDF + lattice seed, no SPH) shows the predicted
-//     count WITHOUT liquefying — so you can dial the fill before committing.
-//   • Liquefy → runs the full sampler, seeds a PAUSED MLS-MPM sim from the sampled
-//     points (the static fill in the mesh's exact shape — THIS is the
-//     verification) and CACHES the world-space seed.
-//   • Melt → steps the sim (gravity pulls the fill into a puddle); pressing again
-//     pauses. There is NO auto-melt.
-//   • Reset → rebuilds the sim from the CACHED seed and returns to the paused fill
-//     (no re-sample, no solid mesh). With no cache yet it falls back to the solid
-//     mesh.
-//
-// Render setup mirrors demo-fluid: the scene (ground + enemy + HDR skybox) draws
-// into an OFFSCREEN colour target (`sceneColorRT`) that a `createFluidSurfaceTask`
-// composites into the swapchain, reconstructing the liquid surface. MSAA/depth
-// handling matches fluid.ts (msaaSamples:1 + a shared single-sample depth buffer).
+// Rendering keeps demo-fluid's screen-space surface but composites ALL live sims in ONE
+// pass: every frame each sim's render positions are copied into a shared "combined" buffer
+// and a single fluid-surface task reconstructs the water from it. The scene (ground + HDR
+// skybox, minus any dissolving foe) draws into `sceneColorRT`; the surface pass composites
+// that into the swapchain; then a single foe-overlay pass draws every dissolving foe on top,
+// each clipping inside its own front to reveal the one water render beneath.
 
 import {
+    addAnimationGroups,
     addTask,
     addToScene,
     attachControl,
+    computeDeformedPositions,
+    createAnimationManager,
     createArcRotateCamera,
     createDirectionalLight,
     createEngine,
+    createGpuPicker,
     createGround,
     createHemisphericLight,
-    createMeshFromData,
     createRenderTarget,
     createRenderTask,
     createSceneContext,
-    createSphere,
     createStandardMaterial,
-    createTorus,
-    createTorusKnot,
-    loadBabylon,
+    createTransformNode,
+    enableMaterialPlugins,
+    isPbrMaterial,
     loadEnvironment,
     loadGltf,
     onBeforeRender,
+    pauseAnimation,
+    pickAsync,
+    playAnimation,
     registerScene,
     setMeshVisible,
     startEngine,
+    updateAnimationManager,
 } from "babylon-lite";
-import type { AssetContainer, EnvironmentTextures, Mesh, Renderable, SceneNode } from "babylon-lite";
+import type { AnimationGroup, EnvironmentTextures, Material, Mesh, Renderable, SceneNode } from "babylon-lite";
+import { createLiquefyPlugin } from "./liquefy-plugin.js";
+import type { LiquefyState } from "./liquefy-plugin.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
-import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
+import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
-import { createVolumeSampler, sampleMeshVolume } from "babylon-lite/fluid/volume-sampling/index.js";
+import { sampleMeshVolume } from "babylon-lite/fluid/volume-sampling/index.js";
 import type { VolumeSamplingMode } from "babylon-lite/fluid/volume-sampling/index.js";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import type { PhysSchemaEntry } from "babylon-lite/fluid/controls-panel.js";
+import { createFluidProfiler } from "./fluid/gpu-profiler.js";
+import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
-
-// World layout. The enemy floats at MESH_CENTER_Y above a ground plane at y = 0;
-// the sim grid drops one unit below ground so the ground BC isn't fighting the
-// grid's own domain-border wall (mirrors the fluid demo's rationale).
-const MESH_CENTER_Y = 5;
-const GROUND_Y = 0;
-const DOMAIN_HALF = 11; // horizontal half-extent of the MLS grid (puddle spread room)
-
-// Studio HDR environment — drives the fluid-surface reflections + the skybox
-// background (loaded exactly as demo-fluid does).
-const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
-const SUN_DIR: [number, number, number] = [-0.4, -0.82, -0.45];
-
-// LOADED-ASSET enemies — real models fetched over the network and merged into ONE
-// origin-centred Mesh each (see mergeAssetToEnemyMesh) so they plug into the exact
-// same sample → fill → melt flow as the procedural shapes.
-//   • Dude          — a skinned .babylon character (sampled at its bind pose).
-//   • Haunted House  — a multi-mesh .glb building (open/non-manifold; fill is best-effort).
-const DUDE_URL = "https://assets.babylonjs.com/meshes/Dude/dude.babylon";
-const HAUNTED_HOUSE_URL = "https://assets.babylonjs.com/meshes/haunted_house.glb";
-// Largest-extent (world units) each loaded model is uniformly scaled to — comparable
-// to the procedural enemies (~5–6 units) — before being centred at the local origin.
-const LOADED_MODEL_EXTENT = 6.5;
 
 // Box-preset render defaults (fluid/scenes/box.ts MLS-MPM preset).
 const DEF_COLOR = "#16a3c3";
@@ -101,71 +79,110 @@ const DEF_SURFACE_FILTER: "bilateral" | "narrowRange" = "narrowRange";
 const DEF_NARROW_DELTA = 10;
 const DEF_NARROW_MU = 1;
 
-type EnemyKey = "torusKnot" | "sphere" | "torus" | "dude" | "hauntedHouse";
+// World layout. Foes rest on the ground plane at y = 0; each sim grid drops one unit below
+// ground so the ground BC isn't fighting the grid's own border.
+const GROUND_Y = 0;
+const SPREAD_MARGIN = 9; // extra half-width (world units) around a mesh footprint for puddle spread
+const LIQUEFY_SPEED = 6; // dissolve front growth (world units / s)
+const LIFETIME = 5.0; // seconds a running sim lives before it starts fading
+const FADE_DUR = 1.2; // seconds the alpha fade-out takes before dispose
+const WRIGGLE_AMP = 0.04; // cartoon "pain" jitter amplitude (world units)
+const IMPULSE_RADIAL_BASE = 18; // outward explosion accel from the volume centre, all directions (× impulse intensity)
+const IMPULSE_UP_BASE = 6; // gentle uniform upward lift so the burst arcs up a little (× impulse intensity)
+const MAX_TOTAL = 600000; // combined render-buffer capacity (particles across all live sims)
 
-const ENEMY_LABELS: Record<EnemyKey, string> = {
-    torusKnot: "Torus Knot",
-    sphere: "Sphere",
-    torus: "Torus",
-    dude: "Dude",
-    hauntedHouse: "Haunted House",
-};
+// Studio HDR environment — drives the fluid-surface reflections + the skybox background.
+const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
+const SUN_DIR: [number, number, number] = [-0.4, -0.82, -0.45];
 
-// Loaded enemies whose <option> is disabled until their async load resolves.
-const LOADED_ENEMY_KEYS: EnemyKey[] = ["dude", "hauntedHouse"];
+// Textured glTF foes — each is loaded, auto-fit to a common size, sat on the ground, and (when the
+// model is skinned/animated) played + sampled in its CURRENT deformed pose. Their diffuse textures
+// drive the per-particle "Use mesh colours" render. Alien + CesiumMan are animated (skinned).
+const MODEL_FOES: { key: string; url: string; x: number; ry?: number; surfaceOnly?: boolean; scale?: number }[] = [
+    { key: "alien", url: "https://playground.babylonjs.com/scenes/Alien/Alien.gltf", x: -15 },
+    { key: "barrel", url: "https://assets.babylonjs.com/meshes/ExplodingBarrel.glb", x: -5, ry: -Math.PI / 2, surfaceOnly: true },
+    { key: "house", url: "https://assets.babylonjs.com/meshes/haunted_house.glb", x: 5, surfaceOnly: true, scale: 4 },
+    { key: "cesium", url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb", x: 15 },
+];
+const MODEL_TARGET_SIZE = 7; // auto-fit: scale each model so its largest dimension ≈ this many world units
+
+// PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on it.
+const PBMPM_MATERIAL_LABELS: [string, number][] = [
+    ["Liquid", 0],
+    ["Elastic", 1],
+    ["Sand", 2],
+    ["Viscoelastic", 3],
+];
+
+// Impulse force field: an EXPLOSION FROM THE INSIDE. Every particle inside the blast radius is
+// pushed radially OUTWARD from the volume centre (push.x, ~uniform through the core), plus a gentle
+// uniform upward lift (push.y) so the burst arcs up a little. center.xyz = volume centre, center.w =
+// blast radius (set well beyond the blob so the whole volume is in the flat region).
+const IMPULSE_WGSL = /* wgsl */ `
+fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
+    let center = forceFieldParams.center.xyz;
+    let radius = max(forceFieldParams.center.w, 1.0e-4);
+    let toParticle = pos - center;
+    let dist = length(toParticle);
+    var f = vec3<f32>(0.0, forceFieldParams.push.y, 0.0); // uniform upward lift
+    if (dist < radius) {
+        let dir = select(vec3<f32>(0.0, 1.0, 0.0), toParticle / max(dist, 1.0e-4), dist > 1.0e-4);
+        // ~uniform outward blast through the core; ramp up over the innermost 15% to avoid a hard
+        // direction flip on particles sitting right at the centre.
+        let core = smoothstep(0.0, 0.15, dist / radius);
+        f += dir * forceFieldParams.push.x * core;
+    }
+    return f * dt;
+}`;
 
 function hexToRgb(hex: string): [number, number, number] {
     return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
 }
 
-/** Recompute smooth vertex normals from merged triangles (fallback for source meshes
- *  that ship no normals). Accumulates face normals per vertex, then normalizes —
- *  matching the engine's ComputeNormals for the default left-handed case. */
-function computeMergedNormals(positions: Float32Array, indices: Uint32Array): Float32Array {
-    const normals = new Float32Array(positions.length);
-    for (let f = 0; f < indices.length; f += 3) {
-        const i0 = indices[f]! * 3;
-        const i1 = indices[f + 1]! * 3;
-        const i2 = indices[f + 2]! * 3;
-        const ax = positions[i0]!,
-            ay = positions[i0 + 1]!,
-            az = positions[i0 + 2]!;
-        const e1x = positions[i1]! - ax,
-            e1y = positions[i1 + 1]! - ay,
-            e1z = positions[i1 + 2]! - az;
-        const e2x = positions[i2]! - ax,
-            e2y = positions[i2 + 1]! - ay,
-            e2z = positions[i2 + 2]! - az;
-        const nx = e1y * e2z - e1z * e2y;
-        const ny = e1z * e2x - e1x * e2z;
-        const nz = e1x * e2y - e1y * e2x;
-        normals[i0] = normals[i0]! + nx;
-        normals[i0 + 1] = normals[i0 + 1]! + ny;
-        normals[i0 + 2] = normals[i0 + 2]! + nz;
-        normals[i1] = normals[i1]! + nx;
-        normals[i1 + 1] = normals[i1 + 1]! + ny;
-        normals[i1 + 2] = normals[i1 + 2]! + nz;
-        normals[i2] = normals[i2]! + nx;
-        normals[i2 + 1] = normals[i2 + 1]! + ny;
-        normals[i2 + 2] = normals[i2 + 2]! + nz;
-    }
-    for (let i = 0; i < normals.length; i += 3) {
-        const x = normals[i]!,
-            y = normals[i + 1]!,
-            z = normals[i + 2]!;
-        const len = Math.hypot(x, y, z) || 1;
-        normals[i] = x / len;
-        normals[i + 1] = y / len;
-        normals[i + 2] = z / len;
-    }
-    return normals;
+type InstancePhase = "solid" | "dissolving" | "fluid" | "fading" | "gone";
+
+type TexInfo = { view: GPUTextureView; width: number; height: number };
+
+interface Instance {
+    readonly key: string;
+    readonly meshes: Mesh[]; // display sub-meshes (1 procedural, N for the skinned model)
+    readonly materials: Material[]; // clip-plugin hosts + per-frame UBO bump
+    readonly root: SceneNode; // wriggle / placement target (the mesh itself, or a parent transform)
+    readonly deformable: boolean; // sample the CURRENT animated pose (skinned model) instead of static geometry
+    readonly surfaceOnly: boolean; // skip volume sampling (hollow prop) → dense barycentric-UV surface shell
+    readonly x: number;
+    readonly baseY: number; // world Y the mesh rests at (used for the static-sample world offset)
+    readonly homePos: [number, number, number]; // resting root position (auto-fit centred); Restart resets here
+    readonly diffuseTexs: TexInfo[]; // distinct base-colour textures across the sub-meshes (per-particle colour source)
+    readonly meshTexIndex: number[]; // per display sub-mesh: its index into diffuseTexs (-1 if untextured)
+    readonly baseColor: [number, number, number]; // fallback per-particle colour when there's no texture
+    colorBuffer: GPUBuffer | null; // per-particle RGBA colour (filled once at shot time), fed to the surface renderer
+    animation: AnimationGroup | null; // looping walk (paused on shot, resumed on Restart)
+    readonly liquefyState: LiquefyState;
+    readonly impulseBuffer: GPUBuffer;
+    readonly impulseSpec: ForceFieldSpec;
+    sim: FluidSim | null;
+    phase: InstancePhase;
+    sampling: boolean; // true while the worker is volume-sampling this foe (before dissolve starts)
+    sampleId: number; // id of the in-flight sample request (stale results are ignored)
+    maxR: number;
+    volCenter: [number, number, number]; // world-space centre of the sampled volume (explosion origin)
+    volRadius: number; // half-diagonal of the sampled AABB (explosion reach)
+    count: number;
+    radius: number;
+    impulseRemaining: number;
+    fluidElapsed: number;
+    fadeElapsed: number;
+    // wriggle
+    wriggling: boolean; // mesh pain-shake active (starts on click, before the sim exists)
+    wriggleBase: [number, number, number];
+    wriggleWaterBase: Float32Array | null;
+    wriggleWaterScratch: Float32Array | null;
 }
 
 async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 
-    // Request the adapter's max storage/buffer limits so fine grids (small radius →
-    // many cells) still fit; harmless when they're not needed.
     let requiredLimits: Record<string, number> | undefined;
     try {
         const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
@@ -179,12 +196,10 @@ async function main(): Promise<void> {
         // Fall back to default limits.
     }
 
-    // Single-sample so the particle task can share one single-sample depth buffer
-    // with the scene pass (same as demo-fluid).
     const engine = await createEngine(canvas, { msaaSamples: 1, requiredLimits });
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
-    const cam = createArcRotateCamera(-Math.PI / 2, 1.05, 18, { x: 0, y: MESH_CENTER_Y, z: 0 });
+    const cam = createArcRotateCamera(-Math.PI / 2, 1.05, 46, { x: -4, y: 3.5, z: 0 });
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
     scene.camera = cam;
@@ -195,285 +210,378 @@ async function main(): Promise<void> {
     sun.position.set(12, 20, 10);
     addToScene(scene, sun);
 
-    const ground = createGround(engine, { width: 40, height: 40, subdivisions: 1 });
+    const ground = createGround(engine, { width: 60, height: 60, subdivisions: 1 });
     const groundMat = createStandardMaterial();
     groundMat.diffuseColor = [0.22, 0.24, 0.28];
     groundMat.specularColor = [0.04, 0.04, 0.05];
     ground.material = groundMat;
     addToScene(scene, ground);
 
-    // Menacing "enemy" material — an opaque, sickly-green alien surface.
-    const enemyMat = createStandardMaterial();
-    enemyMat.diffuseColor = [0.16, 0.62, 0.24];
-    enemyMat.specularColor = [0.35, 0.45, 0.35];
+    const device = engine._device;
 
-    // Build all three enemy shapes up front and add them to the scene; only one is
-    // visible at a time. This keeps their CPU geometry (`_cpuPositions/_cpuIndices`)
-    // resident for sampling + preview and avoids scene add/remove churn on selection.
-    function buildEnemy(key: EnemyKey): Mesh {
-        let mesh: Mesh;
-        if (key === "sphere") {
-            mesh = createSphere(engine, { diameter: 5, segments: 32 });
-        } else if (key === "torus") {
-            mesh = createTorus(engine, { diameter: 6, thickness: 2, tessellation: 32 });
-        } else {
-            mesh = createTorusKnot(engine, { radius: 2, tube: 0.6, radialSegments: 32, tubularSegments: 64 });
-        }
-        mesh.material = enemyMat;
-        mesh.position.set(0, MESH_CENTER_Y, 0);
-        return mesh;
+    // Opt-in GPU timing (timestamp-query). Null when the host GPU lacks the feature — the panel's
+    // GPU section then shows "unavailable". Wired onto every sim + the surface task.
+    let profiler: FluidProfilerImpl | null = null;
+    try {
+        profiler = createFluidProfiler(device);
+    } catch {
+        profiler = null;
     }
 
-    // Node shape used to read a loaded asset's CPU geometry (present on Mesh nodes,
-    // absent on pure TransformNodes / lights).
-    type CpuMeshNode = SceneNode & {
-        _cpuPositions?: Float32Array;
-        _cpuNormals?: Float32Array;
-        _cpuIndices?: Uint32Array | Uint16Array;
-    };
+    // ── Enemy instances (loaded glTF models) ─────────────────────────────────
+    // Each instance owns its OWN material + liquefy state so its dissolve clip is independent.
+    function makeImpulse(key: string): { impulseBuffer: GPUBuffer; impulseSpec: ForceFieldSpec } {
+        const impulseBuffer = device.createBuffer({ label: `liq-impulse-${key}`, size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const impulseSpec: ForceFieldSpec = { struct: "struct ForceFieldParams { center: vec4<f32>, push: vec4<f32>, };", wgsl: IMPULSE_WGSL, buffer: impulseBuffer };
+        return { impulseBuffer, impulseSpec };
+    }
 
-    // ── Merge a loaded AssetContainer into ONE origin-centred enemy Mesh ─────────
-    // Walk the loaded node tree, bake every sub-mesh's vertices into world space via
-    // its `worldMatrix`, concatenate them, then uniformly scale + centre the result
-    // at the local origin. The output is an ordinary Mesh that RETAINS
-    // `_cpuPositions`/`_cpuIndices` (via createMeshFromData) and sits at y=MESH_CENTER_Y
-    // — indistinguishable from a procedural enemy to runSample()/computePreview().
-    //
-    // World-matrix convention (VERIFIED against math/compute-aabb.ts): Mat4 is
-    // COLUMN-MAJOR, m[col*4 + row], translation in m[12..14]. A position (w=1) maps to
-    //   x' = m0*x + m4*y + m8*z + m12   (and likewise for y'/z' using rows 1/2)
-    // — identical to computeAabb's transform path. Normals use the upper-3×3; for a
-    // reflection (glTF's __root__ bakes scale [-1,1,1] for RH→LH) the plain 3×3 gives
-    // the wrong SIGN, so we multiply by sign(det(3×3)) to recover outward normals
-    // (exact for rotation + uniform-scale + reflection).
-    function mergeAssetToEnemyMesh(asset: AssetContainer, name: string): Mesh {
-        type Part = { pos: Float32Array; nrm: Float32Array | null; idx: Uint32Array | Uint16Array; w: Mesh["worldMatrix"] };
-        const parts: Part[] = [];
+    const isMeshNode = (node: SceneNode): node is Mesh => "_gpu" in node && "material" in node;
 
+    const instances: Instance[] = [];
+    const meshToInstance = new Map<Mesh, Instance>();
+    const instanceOf = (m: unknown): Instance | undefined => meshToInstance.get(m as Mesh);
+    const animManager = createAnimationManager({ engine });
+
+    // Load a textured glTF model as a foe: parent it under an auto-fit root (scaled so its largest
+    // dimension ≈ MODEL_TARGET_SIZE, centred on cfg.x and sat on the ground), attach the radial-clip
+    // liquefy plugin per PBR material, play its first animation if any, and capture its diffuse
+    // texture for per-particle colouring. Sampled in its CURRENT deformed pose on a shot.
+    async function loadModelInstance(cfg: { key: string; url: string; x: number; ry?: number; surfaceOnly?: boolean; scale?: number }): Promise<void> {
+        let asset;
+        try {
+            asset = await loadGltf(engine, cfg.url);
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[liquefactor] ${cfg.key} load failed`, err);
+            return;
+        }
+        const liquefyState: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: 0.6, enabled: false };
+        const ry = cfg.ry ?? 0; // optional Y spin so a labelled face (e.g. the barrel logo) points at the camera
+        const root = createTransformNode(`${cfg.key}_root`, 0, 0, 0, 0, Math.sin(ry / 2), 0, Math.cos(ry / 2), 1, 1, 1);
+        const meshes: Mesh[] = [];
+        const materials = new Set<Material>();
         const visit = (node: SceneNode): void => {
-            const cm = node as CpuMeshNode;
-            const pos = cm._cpuPositions;
-            const idx = cm._cpuIndices;
-            if (pos && pos.length > 0 && idx && idx.length > 0) {
-                const nrm = cm._cpuNormals;
-                // Read the FULL world matrix (parent chain already wired below).
-                parts.push({ pos, nrm: nrm && nrm.length === pos.length ? nrm : null, idx, w: node.worldMatrix });
-            }
-            const kids = node.children;
-            if (Array.isArray(kids)) {
-                for (const child of kids) {
-                    // glTF leaves parent links for addToScene(); wire them here so
-                    // worldMatrix chains correctly. The .babylon loader already sets
-                    // them — the setter is idempotent. We never addToScene these source
-                    // nodes (only the merged mesh), so this has no scene side-effect.
-                    child.parent = node;
-                    visit(child);
+            if (isMeshNode(node) && node._cpuPositions && node._cpuIndices) {
+                meshes.push(node);
+                // Attach the radial-clip liquefy plugin (PBR host). This works on SKINNED models
+                // because they are materialized in the INITIAL scene build (loaded before registerScene);
+                // a dynamic post-boot add leaves the plugin UBO uninitialised and the mesh invisible.
+                if (node.material && isPbrMaterial(node.material) && !node.material.plugins?.some((p) => p.name === "liquefy")) {
+                    node.material.plugins = [...(node.material.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")];
                 }
+                if (node.material) materials.add(node.material);
             }
+            for (const c of node.children ?? []) visit(c);
         };
-        for (const entity of asset.entities) {
-            const sn = entity as Partial<SceneNode>;
-            if (Array.isArray(sn.children)) {
-                visit(entity as SceneNode);
+        for (const e of asset.entities) {
+            if (!("position" in e)) continue; // skip non-node entities (e.g. lights)
+            e.parent = root;
+            root.children.push(e);
+            visit(e);
+        }
+        if (meshes.length === 0) {
+            // eslint-disable-next-line no-console
+            console.warn(`[liquefactor] ${cfg.key} has no CPU-geometry meshes`);
+            return;
+        }
+        // Add to the scene FIRST so the world-matrix state is wired up — reading worldMatrix before
+        // this yields a partial (pre-hierarchy) transform and mis-fits the model.
+        addToScene(scene, root);
+        // Auto-fit: world AABB at scale 1 (root at origin) → uniform scale so the largest extent ≈
+        // MODEL_TARGET_SIZE, then centre on cfg.x and sit the model's base on the ground.
+        let minx = Infinity,
+            miny = Infinity,
+            minz = Infinity,
+            maxx = -Infinity,
+            maxy = -Infinity,
+            maxz = -Infinity;
+        for (const m of meshes) {
+            const p = m._cpuPositions!;
+            const w = m.worldMatrix as unknown as ArrayLike<number>;
+            for (let i = 0; i < p.length; i += 3) {
+                const lx = p[i]!,
+                    ly = p[i + 1]!,
+                    lz = p[i + 2]!;
+                const wx = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
+                const wy = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
+                const wz = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
+                if (wx < minx) minx = wx;
+                if (wx > maxx) maxx = wx;
+                if (wy < miny) miny = wy;
+                if (wy > maxy) maxy = wy;
+                if (wz < minz) minz = wz;
+                if (wz > maxz) maxz = wz;
             }
         }
-        if (parts.length === 0) {
-            throw new Error("asset contains no meshes with CPU geometry");
+        const extent = Math.max(maxx - minx, maxy - miny, maxz - minz, 1e-3);
+        const scale = (MODEL_TARGET_SIZE / extent) * (cfg.scale ?? 1); // optional per-model size multiplier
+        const cx = (minx + maxx) / 2;
+        const cz = (minz + maxz) / 2;
+        const homePos: [number, number, number] = [cfg.x - cx * scale, GROUND_Y - miny * scale, -cz * scale];
+        root.scaling.set(scale, scale, scale);
+        root.position.set(homePos[0], homePos[1], homePos[2]);
+        const anim = asset.animationGroups?.find((g) => /walk|run|idle/i.test(g.name)) ?? asset.animationGroups?.[0] ?? null;
+        if (anim) {
+            anim.loopAnimation = true;
+            playAnimation(anim);
+            addAnimationGroups(animManager, [anim]);
         }
-
-        // Size the combined buffers.
-        let totalVerts = 0;
-        let totalIndices = 0;
-        for (const p of parts) {
-            totalVerts += p.pos.length / 3;
-            totalIndices += p.idx.length;
+        const { impulseBuffer, impulseSpec } = makeImpulse(cfg.key);
+        // Collect the DISTINCT base-colour textures across sub-meshes (a model may use several — the
+        // haunted house has two) and record which texture each sub-mesh uses, so every particle can be
+        // coloured from ITS OWN mesh's texture. Only real images (>1x1) count; a 1x1 is a flat factor.
+        const diffuseTexs: TexInfo[] = [];
+        const meshTexIndex: number[] = [];
+        for (const m of meshes) {
+            const t = (m.material as unknown as { baseColorTexture?: TexInfo } | undefined)?.baseColorTexture;
+            if (!t?.view || t.width <= 1 || t.height <= 1) {
+                meshTexIndex.push(-1);
+                continue;
+            }
+            let idx = diffuseTexs.findIndex((d) => d.view === t.view);
+            if (idx < 0) {
+                idx = diffuseTexs.length;
+                diffuseTexs.push({ view: t.view, width: t.width, height: t.height });
+            }
+            meshTexIndex.push(idx);
         }
-        const positions = new Float32Array(totalVerts * 3);
-        const normals = new Float32Array(totalVerts * 3);
-        const indices = new Uint32Array(totalIndices);
-
-        let vBase = 0; // vertices written so far
-        let iCur = 0; // index-write cursor
-        let missingNormals = false;
-
-        for (const p of parts) {
-            const w = p.w;
-            const m0 = w[0]!,
-                m1 = w[1]!,
-                m2 = w[2]!;
-            const m4 = w[4]!,
-                m5 = w[5]!,
-                m6 = w[6]!;
-            const m8 = w[8]!,
-                m9 = w[9]!,
-                m10 = w[10]!;
-            const m12 = w[12]!,
-                m13 = w[13]!,
-                m14 = w[14]!;
-            // Sign of the upper-3×3 determinant: negative for a reflected transform.
-            const det = m0 * (m5 * m10 - m9 * m6) - m4 * (m1 * m10 - m9 * m2) + m8 * (m1 * m6 - m5 * m2);
-            const nSign = det < 0 ? -1 : 1;
-
-            const vCount = p.pos.length / 3;
-            const nrm = p.nrm;
-            if (!nrm) {
-                missingNormals = true;
-            }
-            for (let v = 0; v < vCount; v++) {
-                const s = v * 3;
-                const lx = p.pos[s]!,
-                    ly = p.pos[s + 1]!,
-                    lz = p.pos[s + 2]!;
-                const o = (vBase + v) * 3;
-                positions[o] = m0 * lx + m4 * ly + m8 * lz + m12;
-                positions[o + 1] = m1 * lx + m5 * ly + m9 * lz + m13;
-                positions[o + 2] = m2 * lx + m6 * ly + m10 * lz + m14;
-                if (nrm) {
-                    const nx = nrm[s]!,
-                        ny = nrm[s + 1]!,
-                        nz = nrm[s + 2]!;
-                    const tx = m0 * nx + m4 * ny + m8 * nz;
-                    const ty = m1 * nx + m5 * ny + m9 * nz;
-                    const tz = m2 * nx + m6 * ny + m10 * nz;
-                    const len = Math.hypot(tx, ty, tz) || 1;
-                    const k = nSign / len;
-                    normals[o] = tx * k;
-                    normals[o + 1] = ty * k;
-                    normals[o + 2] = tz * k;
-                }
-            }
-            const idx = p.idx;
-            for (let k = 0; k < idx.length; k++) {
-                indices[iCur + k] = vBase + idx[k]!;
-            }
-            vBase += vCount;
-            iCur += idx.length;
-        }
-
-        // Uniform scale + centre so the largest extent ≈ LOADED_MODEL_EXTENT and the
-        // model is centred at the LOCAL origin (like the procedural enemies' geometry).
-        let minX = Infinity,
-            minY = Infinity,
-            minZ = Infinity;
-        let maxX = -Infinity,
-            maxY = -Infinity,
-            maxZ = -Infinity;
-        for (let i = 0; i < positions.length; i += 3) {
-            const x = positions[i]!,
-                y = positions[i + 1]!,
-                z = positions[i + 2]!;
-            if (x < minX) {
-                minX = x;
-            }
-            if (x > maxX) {
-                maxX = x;
-            }
-            if (y < minY) {
-                minY = y;
-            }
-            if (y > maxY) {
-                maxY = y;
-            }
-            if (z < minZ) {
-                minZ = z;
-            }
-            if (z > maxZ) {
-                maxZ = z;
-            }
-        }
-        const cx = (minX + maxX) / 2,
-            cy = (minY + maxY) / 2,
-            cz = (minZ + maxZ) / 2;
-        const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) || 1;
-        const scale = LOADED_MODEL_EXTENT / extent;
-        for (let i = 0; i < positions.length; i += 3) {
-            positions[i] = (positions[i]! - cx) * scale;
-            positions[i + 1] = (positions[i + 1]! - cy) * scale;
-            positions[i + 2] = (positions[i + 2]! - cz) * scale;
-        }
-        // (Uniform positive scale + translation leaves normal directions unchanged.)
-
-        const mergedNormals = missingNormals ? computeMergedNormals(positions, indices) : normals;
-        const mesh = createMeshFromData(engine, name, positions, mergedNormals, indices);
-        mesh.material = enemyMat;
-        mesh.position.set(0, MESH_CENTER_Y, 0);
-        return mesh;
+        const inst: Instance = {
+            key: cfg.key,
+            meshes,
+            materials: [...materials],
+            root,
+            deformable: true,
+            surfaceOnly: cfg.surfaceOnly ?? false,
+            x: cfg.x,
+            baseY: GROUND_Y,
+            homePos,
+            diffuseTexs,
+            meshTexIndex,
+            baseColor: [0.8, 0.8, 0.8],
+            colorBuffer: null,
+            animation: anim,
+            liquefyState,
+            impulseBuffer,
+            impulseSpec,
+            sim: null,
+            phase: "solid",
+            sampling: false,
+            sampleId: 0,
+            maxR: 0,
+            volCenter: [0, 0, 0],
+            volRadius: 1,
+            count: 0,
+            radius: 0.08,
+            impulseRemaining: 0,
+            fluidElapsed: 0,
+            fadeElapsed: 0,
+            wriggling: false,
+            wriggleBase: [0, 0, 0],
+            wriggleWaterBase: null,
+            wriggleWaterScratch: null,
+        };
+        instances.push(inst);
+        for (const m of meshes) meshToInstance.set(m, inst);
+        invalidateFilteredSceneTasks();
+        setStatus();
     }
 
-    const enemies: Partial<Record<EnemyKey, Mesh>> = {
-        torusKnot: buildEnemy("torusKnot"),
-        sphere: buildEnemy("sphere"),
-        torus: buildEnemy("torus"),
-    };
-    for (const key of ["torusKnot", "sphere", "torus"] as EnemyKey[]) {
-        const m = enemies[key]!;
-        addToScene(scene, m);
-        setMeshVisible(m, false);
-    }
-    let currentKey: EnemyKey = "torusKnot";
-    let currentEnemy: Mesh = enemies.torusKnot!;
-    setMeshVisible(currentEnemy, true);
+    const picker = createGpuPicker(scene);
 
-    // ── Render pipeline (demo-fluid screen-space fluid surface) ──────────────
-    // Depth buffer owned by the scene task; the particle + surface tasks load +
-    // test against it so the fluid depth-tests against the ground.
+    // ── Render pipeline ──────────────────────────────────────────────────────
     const depthRT = createRenderTarget({ lbl: "liq-depth", dFormat: "depth24plus", samples: 1, size: engine });
-    // The scene renders to an OFFSCREEN colour target (not the swapchain) so the
-    // fluid surface pass can SAMPLE it for refraction. clr:true keeps a valid
-    // background even if the HDR skybox fails to load; the skybox (order-0
-    // renderable) overwrites every pixel when present.
     const sceneColorRT = createRenderTarget({ lbl: "liq-scene-color", format: engine.format, samples: 1, size: engine });
+    // Scene bg excludes any DISSOLVING foe (drawn later as a clipping overlay); solid instances
+    // render normally so the water refracts them; fluid/fading/gone instances have hidden meshes.
     const sceneTask = createRenderTask(
-        { name: "scene", rt: sceneColorRT, depth: depthRT, clr: true, clrColor: { r: 0.05, g: 0.06, b: 0.1, a: 1 } },
+        {
+            name: "scene",
+            rt: sceneColorRT,
+            depth: depthRT,
+            clr: true,
+            clrColor: { r: 0.05, g: 0.06, b: 0.1, a: 1 },
+            _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase !== "dissolving",
+        },
         engine,
         scene
     );
     addTask(scene, sceneTask);
 
-    // Ground-plane scene SDF for the sim: positive above the floor, negative below.
-    const groundSdfBuffer = engine._device.createBuffer({
-        label: "liq-scene-sdf",
-        size: 16,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    engine._device.queue.writeBuffer(groundSdfBuffer, 0, new Float32Array([GROUND_Y, 0, 0, 0]));
+    // Ground-plane scene SDF for every sim: positive above the floor, negative below.
+    const groundSdfBuffer = device.createBuffer({ label: "liq-scene-sdf", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(groundSdfBuffer, 0, new Float32Array([GROUND_Y, 0, 0, 0]));
     const groundSdf: SceneSdfSpec = {
         struct: "struct SceneSdfParams { ground: vec4<f32>, };",
         sdf: "fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return pt.y - sceneSdfParams.ground.x; }",
         buffer: groundSdfBuffer,
     };
 
-    // A tiny placeholder sim so the particle/surface render tasks have valid buffers
-    // to bind at boot. Disabled + parked off-screen until the first Liquefy replaces
-    // it with the real, volume-seeded sim via `setSim`.
-    const placeholderSim = createMlsMpmSim(engine, {
-        count: 1,
+    // Combined render buffer aggregating every live sim's particles into ONE surface pass.
+    const combinedPos = device.createBuffer({ label: "liq-combined-pos", size: MAX_TOTAL * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    const combinedDebug = device.createBuffer({ label: "liq-combined-debug", size: MAX_TOTAL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    // Per-particle alpha (opt-in on the surface renderer) — 1 for running blobs, ramped 1→0
+    // for a blob that is fading out, so ONLY the fading blob's water fades (the shared render
+    // can't fade globally). Seeded to 1 so untouched slots stay opaque.
+    const combinedAlpha = device.createBuffer({ label: "liq-combined-alpha", size: MAX_TOTAL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const alphaScratch = new Float32Array(MAX_TOTAL).fill(1);
+    device.queue.writeBuffer(combinedAlpha, 0, alphaScratch);
+    // Per-particle RGBA colour aggregated across sims (opt-in "Use mesh colours" render toggle).
+    const combinedColor = device.createBuffer({ label: "liq-combined-color", size: MAX_TOTAL * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    let useMeshColors = false; // UI toggle: tint the water by the liquefied mesh's texture/vertex colours
+    // A virtual sim the surface renderer reads live (count + positionBuffer refreshed each frame).
+    // When count is 0 (no active sims) the surface task skips all fluid passes and just presents
+    // the scene, so the GPU "Surface" timing is 0 while idle.
+    const virtualSim = {
+        count: 0,
         particleRadius: 0.08,
-        initialPositions: new Float32Array([0, -1e5, 0]),
-        boundsMin: [-2, -2, -2],
-        boundsMax: [2, 2, 2],
-        dx: 1,
-    });
+        surfaceSizeScale: 1,
+        positionBuffer: combinedPos,
+        velocityBuffer: combinedPos,
+        debugBuffer: combinedDebug,
+        debugNorm: 1,
+        gpuBytes: 0,
+        step: () => {},
+        reset: () => {},
+        setParam: () => {},
+        setSceneSdf: () => {},
+        setEmitters: () => {},
+        setSpawn: () => {},
+        setForceField: () => {},
+        dispose: () => {},
+    };
 
-    // Particle impostors draw into the OFFSCREEN colour (only shown in "Spheres"
-    // mode; in "Surface" mode this task is disabled and the surface pass
-    // reconstructs the liquid from the sim's particle buffer directly).
-    const particleTask = createParticleRenderTask(engine, scene, { colorRT: sceneColorRT, depthRT, camera: cam, sim: placeholderSim });
-    particleTask.setEnabled(false);
-    addTask(scene, particleTask);
-
-    // Fluid surface renderer + frame presenter: reads the offscreen scene colour and
-    // writes the swapchain. Surface mode reconstructs + shades the liquid (refraction
-    // + absorption + reflection); blit mode just blits the scene (with impostors).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: placeholderSim });
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: virtualSim as unknown as FluidSim });
+    surfaceTask.setSim(virtualSim as unknown as FluidSim);
+    surfaceTask.setProfiler(profiler);
+    surfaceTask.setParticleAlpha(combinedAlpha);
+    surfaceTask.setParticleColor(combinedColor);
     addTask(scene, surfaceTask);
 
-    // Initialize the surface task + particle size to the box-preset defaults.
+    // Per-particle colour: for each DISTINCT sub-mesh texture, a compute pass samples that texture at
+    // the particle's UV (from the worker) for the particles that belong to it (texIdx == T), gamma-
+    // encoding into the instance colour buffer. Particles with no texture keep a baseColor fill. The
+    // buffers are aggregated into combinedColor each frame (same layout as combinedPos).
+    const COLOR_SAMPLE_WGSL = /* wgsl */ `
+struct P { count: u32, tsel: u32 };
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> uvs: array<vec2<f32>>;
+@group(0) @binding(2) var tex: texture_2d<f32>;
+@group(0) @binding(3) var<storage, read_write> outCol: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> texIdx: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= p.count) { return; }
+    if (texIdx[i] != p.tsel) { return; }          // this pass only fills particles using texture tsel
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let w = fract(uvs[i]);                         // repeat-wrap
+    let coord = vec2<i32>(clamp(w * dims, vec2<f32>(0.0), dims - vec2<f32>(1.0)));
+    let c = textureLoad(tex, coord, 0);            // sRGB views decode to linear on load
+    // Gamma-ENCODE back to display space: the fluid composite outputs gamma-encoded colour, but the
+    // Beer-Lambert tint + overlay use this value directly, so a linear sample renders too dark.
+    outCol[i] = vec4<f32>(pow(max(c.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), 1.0);
+}`;
+    const colorPipe = device.createComputePipeline({
+        label: "liq-color-sample",
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label: "liq-color-sample", code: COLOR_SAMPLE_WGSL }), entryPoint: "main" },
+    });
+
+    function fillInstanceColor(inst: Instance, uvs: Float32Array | null, texIndices: Uint32Array | null, count: number): void {
+        inst.colorBuffer?.destroy();
+        const buf = device.createBuffer({ label: `liq-color-${inst.key}`, size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        inst.colorBuffer = buf;
+        // baseColor fill first: untextured particles (texIdx == NO_TEX) and any not overwritten below.
+        const [r, g, b] = inst.baseColor;
+        const scratch = new Float32Array(count * 4);
+        for (let i = 0; i < count; i++) {
+            scratch[i * 4] = r;
+            scratch[i * 4 + 1] = g;
+            scratch[i * 4 + 2] = b;
+            scratch[i * 4 + 3] = 1;
+        }
+        device.queue.writeBuffer(buf, 0, scratch);
+        if (!inst.diffuseTexs.length || !uvs || !texIndices || uvs.length < count * 2 || texIndices.length < count) return;
+        const uvBuf = device.createBuffer({ label: `liq-uv-${inst.key}`, size: count * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(uvBuf, 0, uvs, 0, count * 2);
+        const tiBuf = device.createBuffer({ label: `liq-ti-${inst.key}`, size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(tiBuf, 0, texIndices, 0, count);
+        const enc = device.createCommandEncoder();
+        const cbufs: GPUBuffer[] = [];
+        for (let t = 0; t < inst.diffuseTexs.length; t++) {
+            const cbuf = device.createBuffer({ label: `liq-colcount-${inst.key}-${t}`, size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(cbuf, 0, new Uint32Array([count, t, 0, 0]));
+            cbufs.push(cbuf);
+            const bg = device.createBindGroup({
+                layout: colorPipe.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: cbuf } },
+                    { binding: 1, resource: { buffer: uvBuf } },
+                    { binding: 2, resource: inst.diffuseTexs[t]!.view },
+                    { binding: 3, resource: { buffer: buf } },
+                    { binding: 4, resource: { buffer: tiBuf } },
+                ],
+            });
+            const pass = enc.beginComputePass();
+            pass.setPipeline(colorPipe);
+            pass.setBindGroup(0, bg);
+            pass.dispatchWorkgroups(Math.ceil(count / 64));
+            pass.end();
+        }
+        device.queue.submit([enc.finish()]);
+        uvBuf.destroy();
+        tiBuf.destroy();
+        for (const c of cbufs) c.destroy();
+    }
+
+
+    // Foe overlay: after the single water render presents into scRT, draw ALL dissolving foes
+    // on top (each clips inside its own front). Depth-aliases the scene-minus-foes depth.
+    const foeDepth = createRenderTarget({ lbl: "liq-foe-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: engine });
+    foeDepth._eager = true;
+    foeDepth._ownsDepthTexture = false;
+    const foeTask = createRenderTask({ name: "liq-foe", rt: engine.scRT, depth: foeDepth, clr: false, _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase === "dissolving" }, engine, scene);
+    const foeRecord = foeTask.record.bind(foeTask);
+    foeTask.record = (): void => {
+        foeDepth._depthTexture = depthRT._depthTexture;
+        foeDepth._depthView = depthRT._depthView;
+        foeDepth._width = depthRT._width;
+        foeDepth._height = depthRT._height;
+        foeRecord();
+    };
+    addTask(scene, foeTask);
+
+    // Encoder-level GPU-timing resolve: after every other pass, close the whole-frame envelope and
+    // resolve the timestamp queries. Draws nothing. Must be the LAST task added.
+    if (profiler) {
+        const prof = profiler;
+        addTask(scene, {
+            name: "liq-timing-resolve",
+            engine,
+            scene,
+            _passes: [],
+            record: (): void => {},
+            execute: (): number => {
+                prof.frameStop(engine._currentEncoder);
+                prof.resolveInto(engine._currentEncoder);
+                return 0;
+            },
+            dispose: (): void => {},
+        });
+    }
+
+    const invalidateFilteredSceneTasks = (): void => {
+        for (const task of [sceneTask, foeTask]) {
+            task._lastVersion = -1;
+            task._opaqueBundles.length = 0;
+        }
+    };
+
     surfaceTask.setDirLight(SUN_DIR);
     surfaceTask.setFluidColor(hexToRgb(DEF_COLOR));
     surfaceTask.setAbsorption(DEF_ABSORPTION);
     surfaceTask.setSizeScale(DEF_SIZE);
-    particleTask.setSizeScale(DEF_SIZE);
     surfaceTask.setRefractionStrength(DEF_REFRACTION);
     surfaceTask.setSpecularPower(DEF_SPECULAR);
     surfaceTask.setDepthBlur(DEF_DEPTH_BLUR, DEF_DEPTH_BLUR_THRESHOLD);
@@ -484,9 +592,8 @@ async function main(): Promise<void> {
     surfaceTask.setNarrowRange(DEF_NARROW_DELTA, DEF_NARROW_MU);
     surfaceTask.setMode("surface");
 
-    // Load the studio HDR env (non-fatal): feeds the surface reflections and pushes
-    // an order-0 HDR skybox renderable that the scene task draws as the background
-    // into sceneColorRT. demoAssetUrl resolves the BRDF LUT next to the bundled demo.
+    enableMaterialPlugins(scene);
+
     const brdfUrl = demoAssetUrl("./brdf-lut.png", import.meta.url);
     let studioSky: Renderable | null = null;
     const envReady = loadEnvironment(scene, ENV_STUDIO_URL, { brdfUrl, skipGround: true, skipSkybox: true })
@@ -503,49 +610,19 @@ async function main(): Promise<void> {
             console.warn("[liquefactor] env load failed", err);
         });
 
-    // ── Demo state ────────────────────────────────────────────────────────
-    type State = "solid" | "sampling" | "filled" | "melting";
-    let state: State = "solid";
-    let realSim: FluidSim | null = null;
-    let melting = false;
-    let particleCount = 0;
+    // ── Global tuning state (applied to newly built sims) ────────────────────
     let radiusValue = 0.08;
     let modeValue: VolumeSamplingMode = "dense";
-    let renderSpheres = false; // false = fluid surface (default), true = sphere impostors
-
-    // Active solver for the melt. Both backends are seeded from the SAME cached fill
-    // (exact per-particle positions), so switching method re-melts the identical blob.
-    // Default MLS-MPM (grid-transfer; robust for a free blob on the ground).
+    let impulseIntensity = 1.0;
     let currentMethod = "MLS-MPM";
-
-    // PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on
-    // this — it selects WHICH physics (and which of the physics sliders) the solver applies, so
-    // it is the "hidden" parameter that makes e.g. viscoelastic behave unlike liquid at identical
-    // slider values. Ignored by PBF / MLS-MPM.
-    const PBMPM_MATERIAL_LABELS: [string, number][] = [
-        ["Liquid", 0],
-        ["Elastic", 1],
-        ["Sand", 2],
-        ["Viscoelastic", 3],
-    ];
     let currentMaterial = 0;
 
-    // Liquefactor tunes the shared PBF defaults for a FREE blob-on-ground melt (not a
-    // confined tank): more XSPH viscosity so the fluid settles into a puddle instead of
-    // splashing into a thin fast sheet on impact. MLS-MPM keeps the shared defaults (its
-    // ground damping already contains the melt). These become the demo's slider defaults
-    // AND the "Reset" targets; the shared DEFAULT_FLUID_SCHEMAS (fluid demo) is untouched.
     const LIQ_SCHEMAS: Record<string, PhysSchemaEntry[]> = Object.fromEntries(
         Object.entries(DEFAULT_FLUID_SCHEMAS).map(([m, entries]) => [
             m,
             entries.map((e) => (m === "PBF" && e.key === "viscosity" ? { ...e, value: 0.35 } : { ...e })),
         ])
     );
-
-    // Per-method physics-slider values (seeded from the schema defaults). The physics
-    // panel writes here live (onPhysicsParam) and a freshly (re)built sim reads these so
-    // it starts from the current slider values. SCHEMA_DEFAULTS holds the pristine
-    // defaults the physics "Reset" button restores.
     const SCHEMA_DEFAULTS: Record<string, Record<string, number>> = {};
     const physValues: Record<string, Record<string, number>> = {};
     for (const m of Object.keys(LIQ_SCHEMAS)) {
@@ -557,67 +634,22 @@ async function main(): Promise<void> {
         }
     }
 
-    // Cached world-space seed from the last successful Liquefy — replayed by Reset
-    // (no re-sample). Everything buildRealSim needs.
-    let cachedPositions: Float32Array | null = null;
-    let cachedCount = 0;
-    let cachedRadius = 0.08;
-    let cachedWorldTop = 8;
-
-    // Live pre-Liquefy particle-count preview.
-    let previewCount = 0;
-    let previewTimer = 0;
-
-    // Toggle between the sphere-impostor renderer and the screen-space surface.
-    // Impostors only draw when a real sim exists AND spheres mode is selected.
-    function applyRenderMode(spheres: boolean): void {
-        renderSpheres = spheres;
-        particleTask.setEnabled(spheres && realSim !== null);
-        surfaceTask.setMode(spheres ? "blit" : "surface");
-        canvas.dataset.render = spheres ? "spheres" : "surface";
-    }
-
-    function disposeRealSim(): void {
-        if (realSim) {
-            // Rebind BOTH render tasks OFF the real sim before destroying its buffers.
-            particleTask.setSim(placeholderSim);
-            surfaceTask.setSim(placeholderSim);
-            realSim.dispose();
-            realSim = null;
-        }
-    }
-
-    // Build the active-method sim from a world-space seed and point both render tasks
-    // at it. Both backends are seeded with the EXACT sampled positions (initialPositions)
-    // so the melt starts from the identical blob regardless of solver; the per-method
-    // physics-slider values drive the solver params (physValues[currentMethod]).
-    function buildRealSim(positions: Float32Array, count: number, radius: number, worldTop: number): void {
-        disposeRealSim();
-        // Grid cell / smoothing radius ≈ 2.4× particle radius (the fluid demo's
-        // dx/radius ratio), floored so a very small radius can't explode the cell
-        // count. Used as the MLS grid cell AND the PBF smoothing radius h (both scale
-        // with particle spacing).
+    // ── Per-instance sim construction (grid centred on the sampled foe, at ground) ──
+    function buildInstanceSim(inst: Instance, positions: Float32Array, count: number, radius: number, wMin: readonly [number, number, number], wMax: readonly [number, number, number]): void {
         const dx = Math.max(radius * 2.4, 0.18);
         const phys = physValues[currentMethod]!;
-        // Bounds cover the fall + spread region and drop one unit BELOW ground so the
-        // ground BC (scene SDF) isn't fighting the grid's own domain-border wall.
-        const boundsMin: [number, number, number] = [-DOMAIN_HALF, -1, -DOMAIN_HALF];
-        const boundsMax: [number, number, number] = [DOMAIN_HALF, Math.max(worldTop + 3, 8), DOMAIN_HALF];
+        const cx = (wMin[0] + wMax[0]) / 2;
+        const cz = (wMin[2] + wMax[2]) / 2;
+        const half = Math.max(wMax[0] - wMin[0], wMax[2] - wMin[2]) / 2 + SPREAD_MARGIN;
+        const boundsMin: [number, number, number] = [cx - half, -1, cz - half];
+        const boundsMax: [number, number, number] = [cx + half, Math.max(wMax[1] + 3, 8), cz + half];
+        let sim: FluidSim;
         if (currentMethod === "PBF") {
-            // Position-Based Fluids configured for a FREE blob-on-ground melt (PBF is
-            // normally used for confined tanks): the scene SDF confines each particle
-            // against the ground per-step; there is no tank wall. PBF needs a WIDER
-            // kernel than the MLS grid cell for a stable poly6 density estimate — ~4×
-            // particle radius (matching the fluid demo's h≈0.4 at radius 0.09), so each
-            // particle sees ~40+ neighbours. Too small an h (e.g. the MLS dx≈2.4r) leaves
-            // the density noisy → the constraint solver over-corrects and the dense
-            // lattice fill EXPLODES. restDensity comes from the slider (default 341 ≈ the
-            // poly6 rest density n≈1/cellVol for this packing) — see report notes.
             const pbfH = Math.max(radius * 4.0, 0.3);
-            realSim = createPbfSim(engine, {
+            sim = createPbfSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions, // world-space exact fill (no random draw)
+                initialPositions: positions,
                 smoothingRadius: pbfH,
                 boundsMin,
                 boundsMax,
@@ -632,13 +664,10 @@ async function main(): Promise<void> {
                 boundaryDensity: phys.boundaryDensity,
             });
         } else if (currentMethod === "PB-MPM") {
-            // Position-Based MPM (displacement-based, multi-material) in LIQUID mode for the melt.
-            // Seeded from the exact sampled fill and confined by the same ground SDF. dx tracks the
-            // particle spacing like MLS-MPM; the per-method physics sliders drive the projection.
-            realSim = createPbMpmSim(engine, {
+            sim = createPbMpmSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions, // world-space exact fill (no random draw)
+                initialPositions: positions,
                 boundsMin,
                 boundsMax,
                 dx,
@@ -656,10 +685,10 @@ async function main(): Promise<void> {
                 restitution: phys.restitution,
             });
         } else {
-            realSim = createMlsMpmSim(engine, {
+            sim = createMlsMpmSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions, // world-space (offset applied by caller)
+                initialPositions: positions,
                 boundsMin,
                 boundsMax,
                 dx,
@@ -676,181 +705,364 @@ async function main(): Promise<void> {
                 restitution: phys.restitution,
             });
         }
-        realSim.setSceneSdf(groundSdf);
-        particleTask.setSim(realSim);
-        surfaceTask.setSim(realSim);
-        applyRenderMode(renderSpheres); // (re)enable impostors iff spheres mode
+        sim.setSceneSdf(groundSdf);
+        sim.setProfiler?.(profiler);
+        inst.sim = sim;
+        inst.count = count;
+        inst.radius = radius;
+        virtualSim.particleRadius = radius;
+        virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
     }
 
-    // Enter the paused "filled" state: liquid shown, sim held static, Melt armed.
-    function showFilled(count: number): void {
-        setMeshVisible(currentEnemy, false);
-        melting = false;
-        particleCount = count;
-        canvas.dataset.particleCount = String(count);
-        countValue.textContent = String(count);
-        state = "filled";
-        liquefyBtn.disabled = false;
-        meltBtn.disabled = false;
-        meltBtn.textContent = "Melt";
-        setStatus(`filled (paused): ${count} pts — press Melt`);
-    }
+    type SampleGeom = { positions: Float32Array; indices: Uint32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; ox: number; oy: number; oz: number };
+    type SampledFill = { positions: Float32Array; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number]; uvs?: Float32Array | null; texIndices?: Uint32Array | null };
+    const LIQUEFY_EDGE = 0.6;
+    const NO_TEX = 0xffffffff; // per-vertex/particle texIndex sentinel: no texture → baseColor fill
 
-    function resetToSolid(): void {
-        melting = false;
-        disposeRealSim();
-        particleTask.setEnabled(false);
-        setMeshVisible(currentEnemy, true);
-        state = "solid";
-        particleCount = 0;
-        canvas.dataset.particleCount = "0";
-        countValue.textContent = "0";
-        meltBtn.textContent = "Melt";
-        meltBtn.disabled = true;
-        liquefyBtn.disabled = false;
-        setStatus("solid — pick a shape, then Liquefy");
-    }
-
-    function selectEnemy(key: EnemyKey): void {
-        const mesh = enemies[key];
-        if (!mesh) {
-            // Loaded enemy not ready (or failed) — ignore and keep the current shape.
-            enemySelect.value = currentKey;
-            return;
+    // Geometry to feed the volume sampler: LOCAL + a world offset (procedural), or the CURRENT
+    // deformed pose already in WORLD space with a zero offset (skinned model). Also emits per-vertex
+    // UVs + a per-vertex texture index (which sub-mesh texture to sample) when the instance is textured.
+    function sampleGeometry(inst: Instance): SampleGeom | null {
+        const wantUv = inst.diffuseTexs.length > 0;
+        if (!inst.deformable) {
+            const m = inst.meshes[0]!;
+            if (!m._cpuPositions || !m._cpuIndices) return null;
+            const uvs = wantUv && m._cpuUvs ? m._cpuUvs.slice() : null;
+            return { positions: m._cpuPositions.slice(), indices: (m._cpuIndices as Uint32Array).slice(), uvs, texIndices: null, ox: inst.x, oy: inst.baseY, oz: 0 };
         }
-        resetToSolid();
-        setMeshVisible(currentEnemy, false);
-        currentKey = key;
-        currentEnemy = mesh;
-        setMeshVisible(currentEnemy, true);
-        cachedPositions = null; // a new shape invalidates the cached fill
-        computePreview();
+        let totalV = 0;
+        let totalI = 0;
+        let allHaveUv = wantUv;
+        const parts: { pos: Float32Array; idx: Uint32Array; uv: Float32Array | null; ti: number; w: ArrayLike<number> }[] = [];
+        for (let mi = 0; mi < inst.meshes.length; mi++) {
+            const m = inst.meshes[mi]!;
+            if (!m._cpuPositions || !m._cpuIndices) continue;
+            const local = computeDeformedPositions(m) ?? m._cpuPositions;
+            const uv = m._cpuUvs ?? null;
+            if (!uv) allHaveUv = false;
+            parts.push({ pos: local, idx: m._cpuIndices as Uint32Array, uv, ti: inst.meshTexIndex[mi] ?? -1, w: m.worldMatrix as unknown as ArrayLike<number> });
+            totalV += local.length / 3;
+            totalI += m._cpuIndices.length;
+        }
+        if (totalV === 0) return null;
+        const positions = new Float32Array(totalV * 3);
+        const indices = new Uint32Array(totalI);
+        const uvs = allHaveUv ? new Float32Array(totalV * 2) : null;
+        const texIndices = wantUv ? new Uint32Array(totalV) : null;
+        let vb = 0;
+        let ic = 0;
+        for (const p of parts) {
+            const w = p.w;
+            const n = p.pos.length / 3;
+            const ti = p.ti >= 0 ? p.ti >>> 0 : NO_TEX;
+            for (let v = 0; v < n; v++) {
+                const s = v * 3;
+                const lx = p.pos[s]!,
+                    ly = p.pos[s + 1]!,
+                    lz = p.pos[s + 2]!;
+                const o = (vb + v) * 3;
+                positions[o] = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
+                positions[o + 1] = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
+                positions[o + 2] = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
+                if (uvs && p.uv) {
+                    uvs[(vb + v) * 2] = p.uv[v * 2]!;
+                    uvs[(vb + v) * 2 + 1] = p.uv[v * 2 + 1]!;
+                }
+                if (texIndices) texIndices[vb + v] = ti;
+            }
+            for (let k = 0; k < p.idx.length; k++) indices[ic + k] = vb + p.idx[k]!;
+            vb += n;
+            ic += p.idx.length;
+        }
+        return { positions, indices, uvs, texIndices, ox: 0, oy: 0, oz: 0 };
     }
 
-    function toggleMelt(): void {
-        if (!realSim) {
-            return;
-        }
-        melting = !melting;
-        state = melting ? "melting" : "filled";
-        meltBtn.textContent = melting ? "Pause" : "Melt";
-        setStatus(`${melting ? "melting" : "paused"}: ${particleCount} pts`);
-    }
-
-    // The full CPU volume fill (Liquefy). Recomputes from the CURRENT enemy / mode /
-    // radius, refreshes the cache, and enters the paused "filled" state.
-    function runSample(): void {
-        const mesh = currentEnemy;
-        const positions = mesh._cpuPositions!;
-        const indices = mesh._cpuIndices!;
-        const t0 = performance.now();
-        // Sample in the mesh's LOCAL space (factory geometry is centred at the
-        // origin; the enemy is only translated, never scaled/rotated).
-        const result = sampleMeshVolume({ positions, indices, radius: radiusValue, mode: modeValue });
-        const elapsed = performance.now() - t0;
-        // eslint-disable-next-line no-console
-        console.info(`[liquefactor] ${currentKey}: sampled ${result.count} particles (mode=${modeValue}, radius=${radiusValue.toFixed(3)}) in ${elapsed.toFixed(1)} ms`);
-
-        if (result.count === 0) {
-            state = "solid";
-            liquefyBtn.disabled = false;
-            setStatus("0 particles — decrease radius and retry");
-            return;
-        }
-
-        // Bake the mesh world offset into the sampled positions → world-space seed.
-        const off = mesh.position;
+    // Bake a sampler result's world offset into the points → world-space seed + world AABB.
+    function bakeFill(ox: number, oy: number, oz: number, result: ReturnType<typeof sampleMeshVolume>): SampledFill {
         const p = result.positions;
         for (let i = 0; i < p.length; i += 3) {
-            p[i] = p[i]! + off.x;
-            p[i + 1] = p[i + 1]! + off.y;
-            p[i + 2] = p[i + 2]! + off.z;
+            p[i] = p[i]! + ox;
+            p[i + 1] = p[i + 1]! + oy;
+            p[i + 2] = p[i + 2]! + oz;
         }
-        const worldTop = result.bounds.max[1] + off.y;
-
-        // Cache a PRISTINE copy of the world-space seed for Reset (no re-sample).
-        cachedPositions = new Float32Array(p);
-        cachedCount = result.count;
-        cachedRadius = result.radius;
-        cachedWorldTop = worldTop;
-
-        buildRealSim(p, result.count, result.radius, worldTop);
-        showFilled(result.count);
+        return {
+            positions: p,
+            count: result.count,
+            radius: result.radius,
+            boundsMin: [result.bounds.min[0] + ox, result.bounds.min[1] + oy, result.bounds.min[2] + oz],
+            boundsMax: [result.bounds.max[0] + ox, result.bounds.max[1] + oy, result.bounds.max[2] + oz],
+        };
     }
 
-    function liquefy(): void {
-        if (state === "sampling") {
-            return; // re-entrancy guard during the synchronous CPU sample
-        }
-        state = "sampling";
-        liquefyBtn.disabled = true;
-        setStatus("sampling… (CPU volume fill)");
-        // Defer so the "sampling…" label paints before the synchronous CPU work blocks.
-        requestAnimationFrame(() => requestAnimationFrame(() => runSample()));
+    function computeMaxR(hit: readonly [number, number, number], bMin: readonly [number, number, number], bMax: readonly [number, number, number]): number {
+        let maxD = 0;
+        for (const cx of [bMin[0], bMax[0]]) for (const cy of [bMin[1], bMax[1]]) for (const cz of [bMin[2], bMax[2]]) maxD = Math.max(maxD, Math.hypot(cx - hit[0], cy - hit[1], cz - hit[2]));
+        return maxD + LIQUEFY_EDGE + 0.5;
     }
 
-    // Reset replays the CACHED sample (no re-sample, no solid mesh). Falls back to the
-    // solid mesh only when nothing has been liquefied yet.
-    function reset(): void {
-        if (!cachedPositions) {
-            resetToSolid();
+    // ── Wriggle (cartoon pain shake) ─────────────────────────────────────────
+    // The MESH jitter starts the instant the foe is clicked (before the async volume-sample
+    // finishes) for immediate feedback; the WATER jitter is added once the sim exists.
+    function startWriggle(inst: Instance): void {
+        inst.wriggleBase[0] = inst.root.position.x;
+        inst.wriggleBase[1] = inst.root.position.y;
+        inst.wriggleBase[2] = inst.root.position.z;
+        inst.wriggleWaterBase = null;
+        inst.wriggleWaterScratch = null;
+        inst.wriggling = true;
+    }
+
+    function setWaterWriggle(inst: Instance, sampled: Float32Array, count: number): void {
+        const base = new Float32Array(count * 4);
+        for (let i = 0; i < count; i++) {
+            base[i * 4] = sampled[i * 3]!;
+            base[i * 4 + 1] = sampled[i * 3 + 1]!;
+            base[i * 4 + 2] = sampled[i * 3 + 2]!;
+            base[i * 4 + 3] = 1;
+        }
+        inst.wriggleWaterBase = base;
+        inst.wriggleWaterScratch = new Float32Array(count * 4);
+    }
+
+    function stopWriggle(inst: Instance): void {
+        if (inst.wriggling) inst.root.position.set(inst.wriggleBase[0], inst.wriggleBase[1], inst.wriggleBase[2]);
+        inst.wriggling = false;
+        inst.wriggleWaterBase = null;
+        inst.wriggleWaterScratch = null;
+    }
+
+    function applyWriggle(inst: Instance): void {
+        const ox = (Math.random() * 2 - 1) * WRIGGLE_AMP;
+        const oy = (Math.random() * 2 - 1) * WRIGGLE_AMP;
+        const oz = (Math.random() * 2 - 1) * WRIGGLE_AMP;
+        inst.root.position.set(inst.wriggleBase[0] + ox, inst.wriggleBase[1] + oy, inst.wriggleBase[2] + oz);
+        const base = inst.wriggleWaterBase;
+        const scratch = inst.wriggleWaterScratch;
+        if (base && scratch && inst.sim) {
+            for (let i = 0; i < base.length; i += 4) {
+                scratch[i] = base[i]! + ox;
+                scratch[i + 1] = base[i + 1]! + oy;
+                scratch[i + 2] = base[i + 2]! + oz;
+                scratch[i + 3] = 1;
+            }
+            device.queue.writeBuffer(inst.sim.positionBuffer, 0, scratch);
+        }
+    }
+
+    // ── Impulse / fade force fields ──────────────────────────────────────────
+    const impulseData = new Float32Array(8);
+    function startImpulse(inst: Instance): void {
+        if (!inst.sim) return;
+        // Explode from INSIDE: centre on the volume, radius reaches past the whole blob so every
+        // particle is in the ~uniform-outward core (see IMPULSE_WGSL).
+        impulseData[0] = inst.volCenter[0];
+        impulseData[1] = inst.volCenter[1];
+        impulseData[2] = inst.volCenter[2];
+        impulseData[3] = Math.max(inst.volRadius * 2.0, inst.radius * 8, 1);
+        impulseData[4] = IMPULSE_RADIAL_BASE * impulseIntensity;
+        impulseData[5] = IMPULSE_UP_BASE * impulseIntensity;
+        impulseData[6] = 0;
+        impulseData[7] = 0;
+        device.queue.writeBuffer(inst.impulseBuffer, 0, impulseData);
+        inst.sim.setForceField(inst.impulseSpec);
+        inst.impulseRemaining = 0.35;
+    }
+
+    function beginFade(inst: Instance): void {
+        // Fade the blob out in place by ramping its per-particle alpha 1→0 (handled in the
+        // per-frame loop); the sim keeps settling under gravity meanwhile. No sink force.
+        inst.phase = "fading";
+        inst.fadeElapsed = 0;
+        inst.impulseRemaining = 0;
+        inst.sim?.setForceField(null);
+    }
+
+    const bumpUbo = (inst: Instance): void => {
+        for (const m of inst.materials) m._uboVersion++;
+    };
+    const setVisible = (inst: Instance, v: boolean): void => {
+        for (const m of inst.meshes) setMeshVisible(m, v);
+    };
+
+    function disposeInstanceSim(inst: Instance): void {
+        inst.sim?.setForceField(null);
+        inst.sim?.dispose();
+        inst.sim = null;
+        inst.colorBuffer?.destroy();
+        inst.colorBuffer = null;
+        inst.phase = "gone";
+        inst.count = 0;
+    }
+
+    // ── Shot lifecycle ───────────────────────────────────────────────────────
+    // Volume-sampling runs in a worker (see liquefactor-worker.ts) so the ~1 s dense sample
+    // doesn't freeze the frame at the shot. requestSample() fires the job (foe stays solid,
+    // marked `sampling`); applySample() builds the sim + starts the dissolve when it returns.
+    let liveShots = 0;
+    let sampleSeq = 0;
+    const pendingSamples = new Map<number, { inst: Instance; hit: [number, number, number] }>();
+
+    // A small pool of sampling workers so several foes can convert to particles IN PARALLEL: a
+    // second shot while one conversion is in flight goes to a free worker instead of queueing behind
+    // it. `pendingSamples` (keyed by id) routes each reply to the right foe regardless of worker.
+    type WorkerMsg = { id: number; positions: Float32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number] };
+    interface PoolWorker {
+        worker: Worker;
+        pending: number;
+    }
+    const workerPool: PoolWorker[] = [];
+    const onSampleMessage = (ev: MessageEvent<WorkerMsg>): void => {
+        const { id, positions, uvs, texIndices, count, radius, boundsMin, boundsMax } = ev.data;
+        const entry = pendingSamples.get(id);
+        pendingSamples.delete(id);
+        if (!entry) return;
+        if (count === 0) {
+            entry.inst.sampling = false;
+            stopWriggle(entry.inst);
+            setStatus();
             return;
         }
-        // Rebuild from a fresh copy so the cache stays pristine for future resets.
-        buildRealSim(new Float32Array(cachedPositions), cachedCount, cachedRadius, cachedWorldTop);
-        showFilled(cachedCount);
+        applySample(entry.inst, id, entry.hit, { positions, count, radius, boundsMin, boundsMax, uvs, texIndices });
+    };
+    try {
+        if (typeof Worker !== "undefined") {
+            const poolSize = Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+            for (let i = 0; i < poolSize; i++) {
+                const worker = new Worker(new URL("./liquefactor-worker.ts", import.meta.url), { type: "module" });
+                const pw: PoolWorker = { worker, pending: 0 };
+                worker.addEventListener("message", (ev: MessageEvent<WorkerMsg>) => {
+                    pw.pending = Math.max(0, pw.pending - 1);
+                    onSampleMessage(ev);
+                });
+                worker.addEventListener("error", (e) => {
+                    // eslint-disable-next-line no-console
+                    console.warn("[liquefactor] sample worker error", e.message);
+                    const idx = workerPool.indexOf(pw);
+                    if (idx >= 0) workerPool.splice(idx, 1); // drop the faulty worker; sync fallback once the pool empties
+                });
+                workerPool.push(pw);
+            }
+        }
+    } catch {
+        workerPool.length = 0;
+    }
+    // Least-loaded worker (fewest in-flight jobs) so concurrent conversions spread across the pool.
+    const pickWorker = (): PoolWorker | null => {
+        let best: PoolWorker | null = null;
+        for (const pw of workerPool) if (!best || pw.pending < best.pending) best = pw;
+        return best;
+    };
+
+    function requestSample(inst: Instance, hit: readonly [number, number, number]): boolean {
+        if (inst.phase !== "solid" || inst.sampling) return false;
+        const id = ++sampleSeq;
+        inst.sampling = true;
+        inst.sampleId = id;
+        const h: [number, number, number] = [hit[0], hit[1], hit[2]];
+        pendingSamples.set(id, { inst, hit: h });
+        startWriggle(inst); // pain shake begins immediately on click, before the async sample finishes
+        setStatus();
+        const geom = sampleGeometry(inst);
+        if (!geom) {
+            pendingSamples.delete(id);
+            inst.sampling = false;
+            stopWriggle(inst);
+            setStatus();
+            return false;
+        }
+        // Freeze a walking foe so the dissolve shows the exact pose we just sampled.
+        if (inst.animation) pauseAnimation(inst.animation);
+        const pw = pickWorker();
+        if (pw) {
+            const transfer: Transferable[] = [geom.positions.buffer, geom.indices.buffer];
+            if (geom.uvs) transfer.push(geom.uvs.buffer);
+            if (geom.texIndices) transfer.push(geom.texIndices.buffer);
+            pw.pending++;
+            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
+        } else {
+            // No worker available — sample synchronously on the main thread (blocks). No per-particle
+            // UVs are computed here, so colours fall back to the instance baseColor.
+            pendingSamples.delete(id);
+            const result = sampleMeshVolume({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue });
+            if (result.count > 0) {
+                applySample(inst, id, h, { ...bakeFill(geom.ox, geom.oy, geom.oz, result), uvs: null, texIndices: null });
+            } else {
+                inst.sampling = false;
+                stopWriggle(inst);
+                setStatus();
+            }
+        }
+        return true;
     }
 
-    // Restrict the shared panel's physics sliders to those the current method/material actually
-    // uses (PB-MPM branches on material; PBF/MLS-MPM show all their sliders).
-    function refreshPhysicsParamVisibility(): void {
-        controls.setVisiblePhysicsParams(currentMethod === "PB-MPM" ? pbmpmParamKeysForMaterial(currentMaterial) : null);
-    }
-
-    // Switch the fluid solver (PBF / MLS-MPM / PB-MPM). If already liquefied, dispose the old
-    // sim and rebuild the new-method sim from the CACHED fill (exact re-seed), pointing
-    // both render tasks at it and returning to the paused "filled" state (user presses
-    // Melt). If not yet liquefied, just record the method for the next Liquefy. Always
-    // resyncs the physics sliders to the new method.
-    function switchMethod(method: string): void {
-        if (method === currentMethod) {
+    function applySample(inst: Instance, id: number, hit: readonly [number, number, number], fill: SampledFill): void {
+        // Ignore stale results (a Restart or re-shape happened while sampling).
+        if (inst.sampleId !== id || !inst.sampling || inst.phase !== "solid") {
+            inst.sampling = false;
             return;
-        }        currentMethod = method;
-        canvas.dataset.method = method;
-        controls.setMethod(method); // sync the component's internal current method
-        controls.rebuildPhysics(method); // rebuild the physics-slider block for the method
-        refreshMaterialRow(); // material selector is PB-MPM-only
-        refreshPhysicsParamVisibility(); // show only the sliders the method/material uses
-        if (cachedPositions) {
-            // Rebuild from a fresh copy so the cache stays pristine.
-            buildRealSim(new Float32Array(cachedPositions), cachedCount, cachedRadius, cachedWorldTop);
-            showFilled(cachedCount); // fresh sim is paused → filled; user presses Melt
         }
+        inst.sampling = false;
+        buildInstanceSim(inst, fill.positions, fill.count, fill.radius, fill.boundsMin, fill.boundsMax);
+        fillInstanceColor(inst, fill.uvs ?? null, fill.texIndices ?? null, fill.count); // per-particle mesh colours (per-mesh texture sample or baseColor)
+        inst.liquefyState.hit = [hit[0], hit[1], hit[2]];
+        inst.liquefyState.frontR = 0;
+        inst.liquefyState.enabled = true;
+        inst.maxR = computeMaxR(hit, fill.boundsMin, fill.boundsMax);
+        // Explosion origin = centre of the sampled volume; reach = half the AABB diagonal. The sim
+        // does NOT step during "dissolving", so these still match the particles at explosion time.
+        inst.volCenter = [(fill.boundsMin[0] + fill.boundsMax[0]) / 2, (fill.boundsMin[1] + fill.boundsMax[1]) / 2, (fill.boundsMin[2] + fill.boundsMax[2]) / 2];
+        inst.volRadius = Math.max(0.5 * Math.hypot(fill.boundsMax[0] - fill.boundsMin[0], fill.boundsMax[1] - fill.boundsMin[1], fill.boundsMax[2] - fill.boundsMin[2]), 0.5);
+        inst.phase = "dissolving";
+        setWaterWriggle(inst, fill.positions, fill.count); // add the water jitter; the mesh shake is already running
+        bumpUbo(inst);
+        liveShots++;
+        invalidateFilteredSceneTasks();
+        setStatus();
     }
 
-    // Predicted particle count for the current enemy / mode / radius, WITHOUT
-    // liquefying. createVolumeSampler builds only the SDF + lattice seed (no SPH),
-    // so this is fast for every mode.
-    function computePreview(): void {
-        const mesh = currentEnemy;
-        const positions = mesh._cpuPositions!;
-        const indices = mesh._cpuIndices!;
-        try {
-            previewCount = createVolumeSampler({ positions, indices, radius: radiusValue, mode: modeValue }).count;
-        } catch (err) {
-            previewCount = 0;
-            // eslint-disable-next-line no-console
-            console.warn("[liquefactor] preview sample failed", err);
-        }
-        previewValue.textContent = `≈ ${previewCount.toLocaleString()} particles`;
-        canvas.dataset.previewCount = String(previewCount);
+    function finishShot(inst: Instance): void {
+        stopWriggle(inst);
+        setVisible(inst, false);
+        inst.liquefyState.enabled = false;
+        inst.liquefyState.frontR = inst.maxR;
+        bumpUbo(inst);
+        inst.phase = "fluid";
+        inst.fluidElapsed = 0;
+        startImpulse(inst);
+        invalidateFilteredSceneTasks();
+        setStatus();
     }
 
-    // ── Control panel ──────────────────────────────────────────────────────
-    // The RENDER section is provided by the shared reusable component
-    // (./fluid/controls-panel.ts); this demo owns only the mesh-sampling controls
-    // (Enemy / mode / radius / preview / Liquefy / Melt / Reset / count), mounted into
-    // the component's top "Demo" slot below.
+    function restart(): void {
+        pendingSamples.clear();
+        for (const inst of instances) {
+            inst.sim?.setForceField(null);
+            inst.sim?.dispose();
+            inst.sim = null;
+            inst.colorBuffer?.destroy();
+            inst.colorBuffer = null;
+            inst.phase = "solid";
+            inst.sampling = false;
+            inst.liquefyState.enabled = false;
+            inst.liquefyState.frontR = 0;
+            inst.impulseRemaining = 0;
+            inst.fluidElapsed = 0;
+            inst.fadeElapsed = 0;
+            inst.wriggling = false;
+            inst.wriggleWaterBase = null;
+            inst.wriggleWaterScratch = null;
+            inst.root.position.set(inst.homePos[0], inst.homePos[1], inst.homePos[2]);
+            setVisible(inst, true);
+            bumpUbo(inst);
+            if (inst.animation) playAnimation(inst.animation); // resume the walk on the restored foe
+        }
+        liveShots = 0;
+        virtualSim.count = 0;
+        invalidateFilteredSceneTasks();
+        setStatus();
+    }
+
+    // ── Control panel ────────────────────────────────────────────────────────
     const PANEL_STYLE =
         "position:fixed;top:12px;left:12px;z-index:10;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;" +
         "font-size:0.8rem;color:#dfe6ee;background:rgba(12,16,24,0.82);padding:12px 14px;border-radius:10px;" +
@@ -860,7 +1072,7 @@ async function main(): Promise<void> {
     title.textContent = "Liquefactor";
     title.style.cssText = "font-weight:700;font-size:0.95rem;margin-bottom:2px;";
     const subtitle = document.createElement("div");
-    subtitle.textContent = "sampleMeshVolume → GPU fluid surface";
+    subtitle.textContent = "click a foe → its own fluid sim";
     subtitle.style.cssText = "color:#8fa4bc;margin-bottom:10px;";
 
     function labelledRow(text: string, control: HTMLElement): HTMLDivElement {
@@ -872,101 +1084,9 @@ async function main(): Promise<void> {
         row.append(lab, control);
         return row;
     }
-
     function styleSelect(sel: HTMLSelectElement): void {
         sel.style.cssText = "width:100%;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
     }
-
-    // Enemy selector. Procedural shapes are ready immediately; the two LOADED-ASSET
-    // enemies start DISABLED (" (loading…)") and become selectable once their async
-    // fetch + merge completes (or flip to " (unavailable)" if the load fails).
-    const enemySelect = document.createElement("select");
-    styleSelect(enemySelect);
-    const enemyOptions = {} as Record<EnemyKey, HTMLOptionElement>;
-    for (const key of Object.keys(ENEMY_LABELS) as EnemyKey[]) {
-        const opt = document.createElement("option");
-        opt.value = key;
-        opt.textContent = ENEMY_LABELS[key];
-        if (LOADED_ENEMY_KEYS.includes(key)) {
-            opt.disabled = true;
-            opt.textContent = `${ENEMY_LABELS[key]} (loading…)`;
-        }
-        enemyOptions[key] = opt;
-        enemySelect.append(opt);
-    }
-    enemySelect.onchange = () => selectEnemy(enemySelect.value as EnemyKey);
-
-    function markEnemyReady(key: EnemyKey): void {
-        const opt = enemyOptions[key];
-        opt.disabled = false;
-        opt.textContent = ENEMY_LABELS[key];
-    }
-    function markEnemyUnavailable(key: EnemyKey): void {
-        const opt = enemyOptions[key];
-        opt.disabled = true;
-        opt.textContent = `${ENEMY_LABELS[key]} (unavailable)`;
-    }
-
-    // PB-MPM material selector — only meaningful for PB-MPM (the solver branches on the material
-    // to pick liquid/elastic/sand/viscoelastic physics). Live-applied to the running sim and
-    // remembered for the next (re)build. The row is hidden unless PB-MPM is the active method.
-    const materialSelect = document.createElement("select");
-    styleSelect(materialSelect);
-    for (const [label, value] of PBMPM_MATERIAL_LABELS) {
-        const opt = document.createElement("option");
-        opt.value = String(value);
-        opt.textContent = label;
-        materialSelect.append(opt);
-    }
-    materialSelect.value = String(currentMaterial);
-    const materialRow = labelledRow("PB-MPM material", materialSelect);
-    materialSelect.onchange = () => {
-        currentMaterial = parseInt(materialSelect.value, 10) || 0;
-        canvas.dataset.material = String(currentMaterial);
-        realSim?.setMaterial?.(currentMaterial); // live switch (no-op for PBF / MLS-MPM)
-        refreshPhysicsParamVisibility(); // this material uses a different subset of sliders
-    };
-    const refreshMaterialRow = (): void => {
-        materialRow.style.display = currentMethod === "PB-MPM" ? "" : "none";
-    };
-
-    // Kick off the two model loads in the BACKGROUND — startup stays synchronous on the
-    // torus knot; each loaded enemy is merged into ONE mesh, added to the (already
-    // registered) scene hidden, and unlocked when ready. Non-blocking: never awaited by
-    // main(), so registerScene/startEngine are not gated on the network fetch.
-    function loadEnemyAsset(key: EnemyKey, load: () => Promise<AssetContainer>): void {
-        void (async () => {
-            try {
-                const asset = await load();
-                const mesh = mergeAssetToEnemyMesh(asset, `enemy_${key}`);
-                // The Dude is a standing character — drop him so his FEET rest on the ground (lowest
-                // vertex at GROUND_Y) instead of floating centred at MESH_CENTER_Y. mergeAssetToEnemyMesh
-                // centres geometry at the local origin, so position.y = GROUND_Y - localMinY grounds it.
-                if (key === "dude") {
-                    const cpu = mesh._cpuPositions;
-                    if (cpu && cpu.length >= 3) {
-                        let minY = Infinity;
-                        for (let i = 1; i < cpu.length; i += 3) {
-                            if (cpu[i]! < minY) {
-                                minY = cpu[i]!;
-                            }
-                        }
-                        mesh.position.set(0, GROUND_Y - minY, 0);
-                    }
-                }
-                addToScene(scene, mesh); // dynamic add after boot → materialized via material-swap drain
-                setMeshVisible(mesh, false);
-                enemies[key] = mesh;
-                markEnemyReady(key);
-            } catch (err) {
-                // eslint-disable-next-line no-console
-                console.warn(`[liquefactor] failed to load "${key}" enemy`, err);
-                markEnemyUnavailable(key);
-            }
-        })();
-    }
-    loadEnemyAsset("dude", () => loadBabylon(engine, DUDE_URL));
-    loadEnemyAsset("hauntedHouse", () => loadGltf(engine, HAUNTED_HOUSE_URL));
 
     // Sampling mode selector.
     const modeSelect = document.createElement("select");
@@ -980,11 +1100,29 @@ async function main(): Promise<void> {
     modeSelect.value = modeValue;
     modeSelect.onchange = () => {
         modeValue = modeSelect.value as VolumeSamplingMode;
-        computePreview(); // mode change recomputes immediately
     };
 
-    // Particle radius slider — updates the label live, DEBOUNCES the count preview so
-    // dragging stays smooth (and recomputes on release via `change`).
+    // PB-MPM material selector (only meaningful for PB-MPM; applied to the next shot).
+    const materialSelect = document.createElement("select");
+    styleSelect(materialSelect);
+    for (const [label, value] of PBMPM_MATERIAL_LABELS) {
+        const opt = document.createElement("option");
+        opt.value = String(value);
+        opt.textContent = label;
+        materialSelect.append(opt);
+    }
+    materialSelect.value = String(currentMaterial);
+    const materialRow = labelledRow("PB-MPM material", materialSelect);
+    materialSelect.onchange = () => {
+        currentMaterial = parseInt(materialSelect.value, 10) || 0;
+        for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
+        refreshPhysicsParamVisibility();
+    };
+    const refreshMaterialRow = (): void => {
+        materialRow.style.display = currentMethod === "PB-MPM" ? "" : "none";
+    };
+
+    // Particle radius slider.
     const radiusInput = document.createElement("input");
     radiusInput.type = "range";
     radiusInput.min = "0.01";
@@ -998,12 +1136,6 @@ async function main(): Promise<void> {
     radiusInput.oninput = () => {
         radiusValue = parseFloat(radiusInput.value);
         radiusVal.textContent = radiusValue.toFixed(3);
-        window.clearTimeout(previewTimer);
-        previewTimer = window.setTimeout(() => computePreview(), 180);
-    };
-    radiusInput.onchange = () => {
-        window.clearTimeout(previewTimer);
-        computePreview();
     };
     const radiusLabelWrap = document.createElement("div");
     radiusLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
@@ -1012,60 +1144,77 @@ async function main(): Promise<void> {
     radiusRow.style.cssText = "margin-bottom:8px;";
     radiusRow.append(radiusLabelWrap, radiusInput);
 
-    // Live pre-Liquefy count preview (distinct from the post-Liquefy "Particles:").
-    const previewRow = document.createElement("div");
-    previewRow.style.cssText = "margin:4px 0 6px;padding:5px 7px;background:rgba(43,108,176,0.18);border-radius:6px;";
-    const previewValue = document.createElement("span");
-    previewValue.style.cssText = "color:#8fd0ff;font-weight:700;";
-    previewValue.textContent = "≈ 0 particles";
-    previewRow.append(previewValue);
+    // Impulse intensity slider — scales the hand-off launch (0 = none, 1 = tuned default).
+    const impulseInput = document.createElement("input");
+    impulseInput.type = "range";
+    impulseInput.id = "liq-impulse";
+    impulseInput.min = "0";
+    impulseInput.max = "3";
+    impulseInput.step = "0.05";
+    impulseInput.value = String(impulseIntensity);
+    impulseInput.style.cssText = "width:100%;";
+    const impulseVal = document.createElement("span");
+    impulseVal.style.cssText = "color:#9fb4cc;float:right;";
+    impulseVal.textContent = `${impulseIntensity.toFixed(2)}×`;
+    impulseInput.oninput = () => {
+        impulseIntensity = parseFloat(impulseInput.value);
+        impulseVal.textContent = `${impulseIntensity.toFixed(2)}×`;
+    };
+    const impulseLabelWrap = document.createElement("div");
+    impulseLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    impulseLabelWrap.append(document.createTextNode("Impulse intensity"), impulseVal);
+    const impulseRow = document.createElement("div");
+    impulseRow.style.cssText = "margin-bottom:8px;";
+    impulseRow.append(impulseLabelWrap, impulseInput);
 
-    function makeButton(text: string): HTMLButtonElement {
-        const b = document.createElement("button");
-        b.textContent = text;
-        b.style.cssText =
-            "width:100%;padding:6px;margin-top:4px;border:0;border-radius:6px;cursor:pointer;" + "background:#2b6cb0;color:#fff;font-weight:600;";
-        return b;
-    }
+    // "Use mesh colours" — tint the water by the liquefied mesh's texture/vertex colours
+    // (per-particle) instead of the uniform water colour.
+    const meshColorInput = document.createElement("input");
+    meshColorInput.type = "checkbox";
+    meshColorInput.id = "liq-mesh-colors";
+    meshColorInput.checked = useMeshColors;
+    meshColorInput.style.cssText = "margin-right:6px;vertical-align:middle;";
+    meshColorInput.onchange = () => {
+        useMeshColors = meshColorInput.checked;
+        surfaceTask.setUseParticleColor(useMeshColors);
+    };
+    const meshColorRow = document.createElement("label");
+    meshColorRow.style.cssText = "display:block;margin-bottom:8px;color:#b6c4d6;cursor:pointer;";
+    meshColorRow.append(meshColorInput, document.createTextNode("Use mesh colours"));
 
-    const liquefyBtn = makeButton("Liquefy");
-    liquefyBtn.id = "liq-liquefy";
-    liquefyBtn.onclick = () => liquefy();
-
-    const meltBtn = makeButton("Melt");
-    meltBtn.id = "liq-melt";
-    meltBtn.style.background = "#805ad5";
-    meltBtn.disabled = true;
-    meltBtn.onclick = () => toggleMelt();
-
-    const resetBtn = makeButton("Reset");
-    resetBtn.id = "liq-reset";
-    resetBtn.style.background = "#4a5568";
-    resetBtn.onclick = () => reset();
-
-    const countRow = document.createElement("div");
-    countRow.style.cssText = "margin-top:10px;color:#b6c4d6;";
-    const countValue = document.createElement("span");
-    countValue.style.cssText = "color:#e6edf5;font-weight:700;";
-    countValue.textContent = "0";
-    countRow.append(document.createTextNode("Particles: "), countValue);
+    const restartBtn = document.createElement("button");
+    restartBtn.id = "liq-restart";
+    restartBtn.textContent = "Restart (reset all foes)";
+    restartBtn.style.cssText = "width:100%;padding:6px;margin-top:4px;border:0;border-radius:6px;cursor:pointer;background:#4a5568;color:#fff;font-weight:600;";
+    restartBtn.onclick = () => restart();
 
     const status = document.createElement("div");
-    status.style.cssText = "margin-top:6px;color:#8fa4bc;min-height:1.1em;";
-    function setStatus(text: string): void {
-        status.textContent = text;
-        canvas.dataset.state = state;
+    status.style.cssText = "margin-top:8px;color:#8fa4bc;min-height:1.1em;";
+    const partCount = document.createElement("div");
+    partCount.style.cssText = "margin-top:2px;color:#8fa4bc;min-height:1.1em;";
+    partCount.textContent = "0 particles";
+    function setStatus(): void {
+        const solid = instances.filter((i) => i.phase === "solid" && !i.sampling).length;
+        const active = instances.filter((i) => i.sampling || i.phase === "dissolving" || i.phase === "fluid" || i.phase === "fading").length;
+        status.textContent = `${solid} solid · ${active} liquefying · click a foe`;
+        canvas.dataset.solid = String(solid);
+        canvas.dataset.active = String(active);
     }
 
-    // ── Shared RENDER + GENERAL + PHYSICS controls (reusable component) ───────
-    // The surface-render tunables (Water color / Absorption / Particle size /
-    // Refraction / Specular / depth+thickness blur / Surface filter / narrow-range /
-    // Half rendering / Thickness downscale / Render-as-spheres) plus the GENERAL
-    // method dropdown (PBF / MLS-MPM / PB-MPM) and the per-method PHYSICS sliders are provided
-    // by the shared component. The "Particles" dropdown, container toggle, Foam, Debug
-    // and GPU panel are hidden; the "Physics particle size" control is hidden too
-    // (Liquefactor's own "Particle radius" is its particle size). The mesh-sampling
-    // controls above are mounted into the component's top "Demo" slot.
+    function refreshPhysicsParamVisibility(): void {
+        controls.setVisiblePhysicsParams(currentMethod === "PB-MPM" ? pbmpmParamKeysForMaterial(currentMaterial) : null);
+    }
+
+    function switchMethod(method: string): void {
+        if (method === currentMethod) return;
+        currentMethod = method;
+        canvas.dataset.method = method;
+        controls.setMethod(method);
+        controls.rebuildPhysics(method);
+        refreshMaterialRow();
+        refreshPhysicsParamVisibility();
+    }
+
     const controls = createFluidControlsPanel({
         hideParticles: true,
         hideMethod: false,
@@ -1074,7 +1223,7 @@ async function main(): Promise<void> {
         hidePhysics: false,
         hidePhysScale: true,
         hideDebug: true,
-        hideGpuTiming: true,
+        hideGpuTiming: false,
         panelStyle: PANEL_STYLE,
         schemas: LIQ_SCHEMAS,
         methods: ["PBF", "MLS-MPM", "PB-MPM"],
@@ -1121,15 +1270,13 @@ async function main(): Promise<void> {
                 subsurfaceStrength: 0.4,
             },
         },
+        gpu: { stages: ["Simulation", "Surface"], supported: profiler !== null },
         on: {
             onMethod: (m) => switchMethod(m),
-            onRenderMode: (spheres) => applyRenderMode(spheres),
+            onRenderMode: () => {}, // surface only in the multi-target demo
             onColor: (rgb) => surfaceTask.setFluidColor(rgb),
             onAbsorption: (v) => surfaceTask.setAbsorption(v),
-            onParticleSize: (s) => {
-                surfaceTask.setSizeScale(s);
-                particleTask.setSizeScale(s);
-            },
+            onParticleSize: (s) => surfaceTask.setSizeScale(s),
             onRefraction: (v) => surfaceTask.setRefractionStrength(v),
             onSpecular: (v) => surfaceTask.setSpecularPower(v),
             onDepthBlur: (size, threshold) => surfaceTask.setDepthBlur(size, threshold),
@@ -1138,77 +1285,204 @@ async function main(): Promise<void> {
             onSurfaceFilter: (m) => surfaceTask.setSurfaceFilter(m),
             onNarrowRange: (delta, mu) => surfaceTask.setNarrowRange(delta, mu),
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
-            // Physics sliders: apply LIVE to the running sim AND remember per-method so a
-            // freshly (re)built sim starts from the current slider values.
+            // Physics sliders apply LIVE to every running sim AND seed the next shot.
             onPhysicsParam: (key, value) => {
                 physValues[currentMethod]![key] = value;
-                realSim?.setParam(key, value);
+                for (const inst of instances) inst.sim?.setParam(key, value);
             },
-            // Physics "Reset" button: restore this method's physics to the schema
-            // defaults, push them to the live sim, and refresh the sliders.
             onReset: () => {
                 const defaults = SCHEMA_DEFAULTS[currentMethod]!;
                 physValues[currentMethod] = { ...defaults };
-                for (const [k, v] of Object.entries(defaults)) {
-                    realSim?.setParam(k, v);
-                }
-                controls.setPhysics(defaults); // sync the component's internal schema values
-                controls.rebuildPhysics(currentMethod); // refresh the DOM sliders to the defaults
+                for (const inst of instances) for (const [k, v] of Object.entries(defaults)) inst.sim?.setParam(k, v);
+                controls.setPhysics(defaults);
+                controls.rebuildPhysics(currentMethod);
             },
         },
     });
 
-    // Mount the demo-specific mesh-sampling controls into the component's top "Demo" slot.
-    controls.demoSlot.append(
-        title,
-        subtitle,
-        labelledRow("Enemy", enemySelect),
-        labelledRow("Sampling mode", modeSelect),
-        materialRow,
-        radiusRow,
-        previewRow,
-        liquefyBtn,
-        meltBtn,
-        resetBtn,
-        countRow,
-        status
-    );
+    controls.demoSlot.append(title, subtitle, labelledRow("Sampling mode", modeSelect), materialRow, radiusRow, impulseRow, meshColorRow, restartBtn, status, partCount);
     document.body.append(controls.root);
+    if (controls.gpu) {
+        // The demo's own panel is top-left, so pin the GPU pane top-right to avoid overlap.
+        controls.gpu.panel.style.left = "auto";
+        controls.gpu.panel.style.right = "12px";
+        document.body.appendChild(controls.gpu.panel);
+    }
+    canvas.dataset.timing = profiler ? "on" : "unavailable";
     canvas.dataset.method = currentMethod;
-    refreshMaterialRow(); // hide the PB-MPM material selector unless PB-MPM is active
-    refreshPhysicsParamVisibility(); // hide physics sliders the current method/material doesn't use
-    setStatus("solid — pick a shape, then Liquefy");
-    computePreview(); // initial pre-Liquefy count preview
+    refreshMaterialRow();
+    refreshPhysicsParamVisibility();
+    setStatus();
 
-    // Expose handlers for headless smoke tests / programmatic driving.
+    // ── Programmatic hooks for headless QA ───────────────────────────────────
     (window as unknown as { __liquefactor?: unknown }).__liquefactor = {
-        liquefy,
-        toggleMelt,
-        reset: () => reset(),
-        setMethod: (m: string) => switchMethod(m),
-        getMethod: () => currentMethod,
-        getCount: () => particleCount,
-        getState: () => state,
-        getPreviewCount: () => previewCount,
-        getEnemy: () => currentKey,
-        getTriCount: () => (currentEnemy._cpuIndices ? currentEnemy._cpuIndices.length / 3 : 0),
+        getInstances: () => instances.map((i) => ({ key: i.key, phase: i.phase, count: i.count, sampling: i.sampling, tex: i.diffuseTexs.map((t) => [t.width, t.height]) })),
+        usesWorker: () => workerPool.length > 0,
+        workerCount: () => workerPool.length,
+        getTotalParticles: () => virtualSim.count,
+        getInstancePos: (key: string) => {
+            const inst = instances.find((i) => i.key === key);
+            return inst ? ([inst.root.position.x, inst.root.position.y, inst.root.position.z] as [number, number, number]) : null;
+        },
+        restart: () => restart(),
+        setImpulse: (v: number) => {
+            impulseIntensity = v;
+            impulseInput.value = String(v);
+            impulseVal.textContent = `${v.toFixed(2)}×`;
+        },
+        setUseMeshColors: (on: boolean) => {
+            useMeshColors = on;
+            meshColorInput.checked = on;
+            surfaceTask.setUseParticleColor(on);
+        },
+        readColors: async (key: string, n = 12, stride = 1): Promise<number[] | null> => {
+            const inst = instances.find((i) => i.key === key);
+            if (!inst || !inst.colorBuffer || inst.count === 0) return null;
+            const step = Math.max(1, Math.floor(stride));
+            const count = Math.min(n, Math.floor(inst.count / step) || 1);
+            const rb = device.createBuffer({ label: "liq-color-readback", size: inst.count * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+            const enc = device.createCommandEncoder();
+            enc.copyBufferToBuffer(inst.colorBuffer, 0, rb, 0, inst.count * 16);
+            device.queue.submit([enc.finish()]);
+            await rb.mapAsync(GPUMapMode.READ);
+            const all = new Float32Array(rb.getMappedRange().slice(0));
+            rb.unmap();
+            rb.destroy();
+            const out: number[] = [];
+            for (let i = 0; i < count; i++) {
+                const p = i * step * 4;
+                out.push(all[p]!, all[p + 1]!, all[p + 2]!, all[p + 3]!);
+            }
+            return out;
+        },
+        shootAt: (px: number, py: number) =>
+            pickAsync(picker, px, py, { filter: (m) => instanceOf(m)?.phase === "solid" && !instanceOf(m)?.sampling }).then((info) => {
+                const inst = info.pickedMesh ? instanceOf(info.pickedMesh) : undefined;
+                const onEnemy = !!info.hit && !!info.pickedPoint && !!inst && inst.phase === "solid" && !inst.sampling;
+                let dissolveStarted = false;
+                if (onEnemy && info.pickedPoint) dissolveStarted = requestSample(inst!, info.pickedPoint);
+                return { hit: info.hit, onEnemy, dissolveStarted, key: inst?.key ?? null };
+            }),
     };
 
-    // ── Per-frame loop ─────────────────────────────────────────────────────
+    // Click a foe to liquefy it from the hit point (left-drag still orbits via attachControl).
+    canvas.addEventListener("pointerdown", (ev) => {
+        if (ev.button !== 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
+        const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
+        void pickAsync(picker, px, py, { filter: (m) => instanceOf(m)?.phase === "solid" && !instanceOf(m)?.sampling }).then((info) => {
+            if (!info.hit || !info.pickedPoint || !info.pickedMesh) return;
+            const inst = instanceOf(info.pickedMesh);
+            if (inst && inst.phase === "solid" && !inst.sampling) requestSample(inst, info.pickedPoint);
+        });
+    });
+
+    // ── Per-frame loop ───────────────────────────────────────────────────────
+    let lastRenderableCount = -1;
+    let fpsAccumMs = 0;
+    let fpsFrames = 0;
     onBeforeRender(scene, (deltaMs: number) => {
-        if (melting && realSim) {
-            const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
-            realSim.step(engine._currentEncoder, dt);
+        // Open the whole-frame GPU-timing envelope BEFORE any pass is encoded this frame.
+        if (profiler) {
+            profiler.beginFrame();
+            profiler.frameStart(engine._currentEncoder);
+        }
+        // The model is a dynamic (post-boot) add; its renderables materialize a few frames later.
+        // Rebuild the filtered scene/foe draw lists whenever the renderable set changes so the
+        // model appears in sceneColorRT (not just in the picker) once it drains in.
+        if (scene._renderables.length !== lastRenderableCount) {
+            lastRenderableCount = scene._renderables.length;
+            invalidateFilteredSceneTasks();
+        }
+        updateAnimationManager(animManager, deltaMs); // advance the model's walk (skeleton pose)
+        const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
+        const growDt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
+        for (const inst of instances) {
+            if (inst.wriggling) applyWriggle(inst); // pain shake — active from click through the dissolve
+            if (inst.phase === "dissolving") {
+                inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + LIQUEFY_SPEED * growDt, inst.maxR);
+                bumpUbo(inst);
+                if (inst.liquefyState.frontR >= inst.maxR) finishShot(inst);
+            } else if (inst.phase === "fluid" || inst.phase === "fading") {
+                // Dispose BEFORE stepping so we never destroy a sim's buffers after having
+                // already encoded a step into this frame's (not-yet-submitted) encoder.
+                if (inst.phase === "fading") {
+                    inst.fadeElapsed += dt;
+                    if (inst.fadeElapsed >= FADE_DUR) {
+                        disposeInstanceSim(inst);
+                        liveShots = Math.max(0, liveShots - 1);
+                        setStatus();
+                        continue;
+                    }
+                }
+                inst.sim?.step(engine._currentEncoder, dt);
+                if (inst.impulseRemaining > 0) {
+                    inst.impulseRemaining = Math.max(0, inst.impulseRemaining - dt);
+                    if (inst.impulseRemaining === 0) inst.sim?.setForceField(null);
+                }
+                if (inst.phase === "fluid") {
+                    inst.fluidElapsed += dt;
+                    if (inst.fluidElapsed >= LIFETIME) {
+                        beginFade(inst);
+                        setStatus();
+                    }
+                }
+            }
+        }
+
+        // Aggregate every live sim's render positions into the combined buffer (after stepping),
+        // and fill the matching per-particle alpha (1 for running blobs, ramped for fading ones).
+        // When "Use mesh colours" is on, also aggregate each sim's per-particle colour buffer.
+        let off = 0;
+        for (const inst of instances) {
+            if (inst.sim && inst.phase !== "solid" && inst.phase !== "gone") {
+                const n = inst.sim.count;
+                if (off + n <= MAX_TOTAL) {
+                    engine._currentEncoder.copyBufferToBuffer(inst.sim.positionBuffer, 0, combinedPos, off * 16, n * 16);
+                    if (useMeshColors && inst.colorBuffer) {
+                        engine._currentEncoder.copyBufferToBuffer(inst.colorBuffer, 0, combinedColor, off * 16, n * 16);
+                    }
+                    const a = inst.phase === "fading" ? Math.max(0, 1 - inst.fadeElapsed / FADE_DUR) : 1;
+                    alphaScratch.fill(a, off, off + n);
+                    off += n;
+                }
+            }
+        }
+        if (off > 0) {
+            // Keep the whole active range in sync so a slot reused after a fade isn't left dim.
+            device.queue.writeBuffer(combinedAlpha, 0, alphaScratch, 0, off);
+            virtualSim.count = off;
+        } else {
+            virtualSim.count = 0;
+        }
+        canvas.dataset.particleCount = String(off);
+        partCount.textContent = `${off.toLocaleString()} particles`;
+
+        // GPU timing + memory read-outs on a ~2 Hz cadence (same as the FPS counter).
+        fpsAccumMs += deltaMs;
+        fpsFrames++;
+        if (fpsAccumMs >= 500) {
+            const gpu = controls.gpu;
+            if (gpu) {
+                gpu.fpsLabel.textContent = `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
+                gpu.refreshTiming(profiler ? profiler.results() : null);
+                let simBytes = 0;
+                for (const inst of instances) if (inst.sim) simBytes += inst.sim.gpuBytes;
+                gpu.refreshMemory(simBytes, engine.canvas.width, engine.canvas.height);
+            }
+            fpsAccumMs = 0;
+            fpsFrames = 0;
         }
     });
 
-    // Ensure the env finished loading (skybox + surface reflections wired) before we
-    // build the scene, so the HDR skybox renders as the background from frame 0.
     await envReady;
+    // Load all glTF foes BEFORE the scene build so they materialize reliably (a dynamic post-boot
+    // add leaves the clip-plugin UBO uninitialised). The 39 MB haunted house dominates this wait.
+    await Promise.all(MODEL_FOES.map((cfg) => loadModelInstance(cfg)));
     await registerScene(scene);
     await startEngine(engine);
 
-    canvas.dataset.particleCount = String(particleCount);
     canvas.dataset.ready = "true";
 }
 
@@ -1216,7 +1490,5 @@ main().catch((err) => {
     // eslint-disable-next-line no-console
     console.error(err);
     const c = document.getElementById("renderCanvas") as HTMLCanvasElement | null;
-    if (c) {
-        c.dataset.error = String(err);
-    }
+    if (c) c.dataset.error = String(err);
 });
