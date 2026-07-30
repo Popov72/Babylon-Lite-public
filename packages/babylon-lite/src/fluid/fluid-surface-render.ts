@@ -1002,6 +1002,18 @@ const F0: f32 = 0.02;
 // scene.imageProcessing values.
 const ENV_EXPOSURE: f32 = 1.0;
 const ENV_CONTRAST: f32 = 1.1;
+// Depth-discontinuity limit for normal reconstruction, in depth-texel world heights. Above
+// this the neighbour is treated as a different surface (see axisDiff). Generous enough that
+// even near-grazing water keeps its real normal.
+const NORMAL_MAX_SLOPE: f32 = 4.0;
+// Specular is a mirror reflection off a body of water, so it fades in with the water column.
+// Sparse mist is a single splat deep (thickness well under 0.2) and must not produce one: an
+// isolated impostor's rim is grazing by construction, and a grazing normal that happens to
+// line up with the light adds a full 1.0 to the pixel — the saturated white speckle that
+// appears once the camera pulls back. Sheets and pools run an order of magnitude thicker and
+// keep their highlights untouched.
+const SPECULAR_THICKNESS_MIN: f32 = 0.15;
+const SPECULAR_THICKNESS_FULL: f32 = 0.45;
 
 struct Comp {
     view: mat4x4<f32>,
@@ -1014,7 +1026,7 @@ struct Comp {
     b: vec4<f32>,       // dirLight.xyz, refractionStrength
     c: vec4<f32>,       // fresnelClamp, specularPower, minimumThickness, debugMode
     diffuse: vec4<f32>, // diffuseColor.rgb, _
-    extra: vec4<f32>,   // depthTexel.xy (for normal offsets), _, _
+    extra: vec4<f32>,   // depthTexel.xy (for normal offsets), envRotationY, _
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthSamp: sampler;
@@ -1045,6 +1057,43 @@ fn computeViewPosFromUVDepth(texCoord: vec2<f32>, depth: f32) -> vec3<f32> {
 fn getViewPos(texCoord: vec2<f32>) -> vec3<f32> {
     let d = textureSampleLevel(depthTex, depthSamp, texCoord, 0.0).x;
     return computeViewPosFromUVDepth(texCoord, d);
+}
+
+struct AxisDiff {
+    d: vec3<f32>,   // one-sided view-space derivative across this axis
+    ok: f32,        // 1 when at least one side belongs to the same surface, else 0
+};
+
+// One-sided view-space derivative across the +/- off neighbours, preferring the side that
+// belongs to the SAME surface and, when both do, the side with the smaller depth step (the
+// silhouette rule).
+//
+// A neighbour further than maxStep in eye-Z is a different surface, not a slope on this one:
+// either the background (which reads the depth target's 1e6 clear value, a ~1e6-unit cliff)
+// or an unrelated particle metres away. Differencing across such a gap makes ddx/ddy two
+// near-parallel giants whose cross product is a RANDOM normal, and fresnel plus the narrow
+// specular lobe turn that into a full-strength white dot. That is the speckle that appears
+// once the camera pulls back far enough for particles to shrink below one depth texel and
+// stop overlapping. There is no slope to recover across a gap, so fall back to a flat surface
+// (the neighbour re-projected at the centre's own depth, i.e. a camera-facing normal) and
+// report ok = 0. Overlapping particles keep at least one in-range neighbour per axis and are
+// completely unaffected.
+fn axisDiff(nTC: vec2<f32>, off: vec2<f32>, centre: vec3<f32>, maxStep: f32) -> AxisDiff {
+    let dp = textureSampleLevel(depthTex, depthSamp, nTC + off, 0.0).x;
+    let dn = textureSampleLevel(depthTex, depthSamp, nTC - off, 0.0).x;
+    let okP = abs(dp - centre.z) <= maxStep;
+    let okN = abs(dn - centre.z) <= maxStep;
+    var o: AxisDiff;
+    if (!okP && !okN) {
+        o.d = computeViewPosFromUVDepth(nTC + off, centre.z) - centre;
+        o.ok = 0.0;
+        return o;
+    }
+    let dPos = computeViewPosFromUVDepth(nTC + off, dp) - centre;
+    let dNeg = centre - computeViewPosFromUVDepth(nTC - off, dn);
+    o.d = select(dPos, dNeg, !okP || (okN && abs(dPos.z) > abs(dNeg.z)));
+    o.ok = 1.0;
+    return o;
 }
 
 // High-contrast eye-depth visualisation for the debug views. A raw depth/cameraFar map is
@@ -1115,12 +1164,18 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
     let depthDim = vec2<f32>(1.0) / depthTexel;
     let nTC = (floor(texCoord * depthDim) + vec2<f32>(0.5)) * depthTexel;
     let viewPosN = getViewPos(nTC);
-    var ddx = getViewPos(nTC + vec2<f32>(depthTexel.x, 0.0)) - viewPosN;
-    var ddy = getViewPos(nTC + vec2<f32>(0.0, depthTexel.y)) - viewPosN;
-    let ddx2 = viewPosN - getViewPos(nTC + vec2<f32>(-depthTexel.x, 0.0));
-    if (abs(ddx.z) > abs(ddx2.z)) { ddx = ddx2; }
-    let ddy2 = viewPosN - getViewPos(nTC + vec2<f32>(0.0, -depthTexel.y));
-    if (abs(ddy.z) > abs(ddy2.z)) { ddy = ddy2; }
+    // Largest eye-Z step that can still be a slope on THIS surface rather than a jump to a
+    // different one, expressed as a multiple of the depth texel's own world height (which is
+    // perspective-correct, so the limit holds at any distance and zoom).
+    let maxStep = depth * u.camR.w * depthTexel.y * 2.0 * NORMAL_MAX_SLOPE;
+    let ax = axisDiff(nTC, vec2<f32>(depthTexel.x, 0.0), viewPosN, maxStep);
+    let ay = axisDiff(nTC, vec2<f32>(0.0, depthTexel.y), viewPosN, maxStep);
+    let ddx = ax.d;
+    let ddy = ay.d;
+    // 0 only when NEITHER axis found a same-surface neighbour, i.e. a splat floating on its
+    // own. Its normal is the flat fallback, which is a fine stand-in for shading but must not
+    // be allowed to catch the specular lobe head-on and flare to white.
+    let surfaceOk = max(ax.ok, ay.ok);
     // Guard against a degenerate cross product (fast/noisy depth under a force
     // can make ddx∥ddy → normalize(0) = NaN → dark specular/fresnel artefacts).
     // Deterministic winding gives a camera-facing normal in our LH view space
@@ -1168,7 +1223,8 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
     }
     let lightDir = normalize((u.view * vec4<f32>(-u.b.xyz, 0.0)).xyz);
     let H = normalize(lightDir - rayDir);
-    let specular = pow(max(0.0, dot(H, normal)), u.c.y);
+    let specular = pow(max(0.0, dot(H, normal)), u.c.y) * surfaceOk
+        * smoothstep(SPECULAR_THICKNESS_MIN, SPECULAR_THICKNESS_FULL, thickness);
 
     // Refraction of the scene background. refract() returns 0 on total internal
     // reflection — fall back to the straight-through ray so no dark hole appears.
@@ -1181,7 +1237,16 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
 
     // Environment reflection (transform the view-space reflected ray to world).
     let reflViewDir = reflect(rayDir, normal);
-    let reflW = reflViewDir.x * u.camR.xyz + reflViewDir.y * u.camU.xyz + reflViewDir.z * u.camF.xyz;
+    var reflW = reflViewDir.x * u.camR.xyz + reflViewDir.y * u.camU.xyz + reflViewDir.z * u.camF.xyz;
+    // Apply the scene's environment yaw to the WORLD direction before this pass's own
+    // world→cube mapping, exactly as the PBR IBL does — otherwise rotating the environment
+    // would turn the sky and the rock's lighting but leave the water reflecting the old one.
+    let er = u.extra.z;
+    if (er != 0.0) {
+        let ec = cos(er);
+        let es = sin(er);
+        reflW = vec3<f32>(reflW.x * ec + reflW.z * es, reflW.y, -reflW.x * es + reflW.z * ec);
+    }
     let reflLin = textureSampleLevel(envTex, envSamp, vec3<f32>(reflW.x, reflW.y, -reflW.z), 0.0).rgb;
     var reflC = reflLin * ENV_EXPOSURE;
     reflC = pow(reflC, vec3<f32>(1.0 / 2.2));
@@ -1236,6 +1301,9 @@ export function createFluidSurfaceTask(
     /** Select the screen-space depth smoother: the default separable bilateral
      *  filter, or the Narrow-Range Filter (Truong & Yuksel 2018) — a clamped,
      *  bias-corrected filter that preserves depth discontinuities better. */
+    /** Scene environment yaw (radians) — keeps the water's reflections in register with the
+     *  skybox and the PBR IBL when the environment is rotated. */
+    setEnvRotationY(v: number): void;
     setSurfaceFilter(m: "bilateral" | "narrowRange"): void;
     /** Narrow-range params (multipliers of the impostor `size`): `delta` = the
      *  base accepted depth range (δ, edge preservation) and `mu` = the front-clamp
@@ -1290,6 +1358,7 @@ export function createFluidSurfaceTask(
     let thicknessFilterSize = BLUR_THICKNESS_FILTER_SIZE; // standard thickness-blur half-size
     // Narrow-range filter selection + params (multipliers of the impostor `size`).
     let surfaceFilter: "bilateral" | "narrowRange" = "bilateral";
+    let envRotationY = 0; // scene environment yaw, mirrored into the composite uniform
     let nrDelta = 10; // δ / size — base accepted depth range (edge preservation)
     let nrMu = 1; // µ / size — front-clamp offset
     // Anisotropic surface (Yu & Turk 2010) — default OFF. When ON the depth + thickness
@@ -1953,8 +2022,8 @@ export function createFluidSurfaceTask(
         o += 16;
         comp[o] = 1 / depthW;
         comp[o + 1] = 1 / depthH;
-        comp[o + 2] = 0;
-        comp[o + 3] = 0; // extra: depth texel, _, _
+        comp[o + 2] = envRotationY;
+        comp[o + 3] = 0; // extra: depth texel, env yaw, _
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -2070,6 +2139,9 @@ export function createFluidSurfaceTask(
         setDepthBlur(filterSize: number, scale: number): void {
             depthFilterSize = Math.max(0, filterSize);
             depthScale = Math.max(0, scale);
+        },
+        setEnvRotationY(v: number): void {
+            envRotationY = v;
         },
         setSurfaceFilter(m: "bilateral" | "narrowRange"): void {
             surfaceFilter = m;

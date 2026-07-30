@@ -54,6 +54,7 @@ export interface FluidExportJson {
         foamSoftness: number;
         foamDensity: number;
         subsurfaceBubbleStrength: number;
+        subsurfaceBubbleColor: string;
         foamBlurRadius: number;
         foamLightIntensity: number;
         foamAmbient: number;
@@ -108,6 +109,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             foamSoftness: f?.softness ?? 0,
             foamDensity: f?.density ?? 0,
             subsurfaceBubbleStrength: f?.subsurfaceStrength ?? 0,
+            subsurfaceBubbleColor: f?.subsurfaceColor ?? "#b8d1f2",
             foamBlurRadius: f?.blurRadius ?? 0,
             foamLightIntensity: f?.lightIntensity ?? 0,
             foamAmbient: f?.ambient ?? 0,
@@ -165,6 +167,9 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
             softness: fm.foamSoftness,
             density: fm.foamDensity,
             subsurfaceStrength: fm.subsurfaceBubbleStrength,
+            // Presets written before the tint was configurable have no field — fall back to
+            // the pale blue that used to be hardcoded so they restore byte-identically.
+            subsurfaceColor: fm.subsurfaceBubbleColor ?? "#b8d1f2",
             size: fm.foamSize ?? 1,
         },
         demoState: { ...j.demoState },

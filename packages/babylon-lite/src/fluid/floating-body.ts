@@ -130,6 +130,17 @@ export interface FloatingBodySystem {
     /** Enable/disable physics for ALL bodies (active flag in the buffer). Display visibility is the
      *  caller's responsibility. */
     setEnabled(on: boolean): void;
+    /**
+     * Include/exclude ONE body in the `bodiesSdf` union, without touching its pose, display node or
+     * buoyancy measurement. Use to stop a specific solid from blocking the fluid — e.g. a door frame
+     * whose opening the water must pour through — while the prop stays visible and collidable.
+     *
+     * Independent of {@link setEnabled}: a body contributes only when both are on.
+     *
+     * @param i - body index returned by addBody.
+     * @param on - false to drop this body from the SDF union.
+     */
+    setBodySdfActive(i: number, on: boolean): void;
     /** Whether physics is currently enabled. */
     readonly enabled: boolean;
     /** Re-drop every body at its start pose with zero velocity. */
@@ -163,6 +174,9 @@ interface Body {
     displayScale: [number, number, number];
     centre: [number, number, number];
     externalPose: boolean;
+    /** Per-body SDF participation. False removes ONLY this body from the `bodiesSdf` union; its pose,
+     *  display node and buoyancy measurement are untouched. */
+    sdfActive: boolean;
 }
 
 const quatRotate = (q: readonly [number, number, number, number], v: readonly [number, number, number]): [number, number, number] => {
@@ -236,6 +250,7 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
             displayScale: cfg.displayScale ? [cfg.displayScale[0], cfg.displayScale[1], cfg.displayScale[2]] : [1, 1, 1],
             centre: cfg.centre ? [cfg.centre[0], cfg.centre[1], cfg.centre[2]] : [0, 0, 0],
             externalPose: cfg.externalPose ?? EXTERNAL_POSE,
+            sdfActive: true,
         };
         bodies.push(b);
         syncDisplay(b);
@@ -252,7 +267,7 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
             sdfHeader[o] = b.pos[0];
             sdfHeader[o + 1] = b.pos[1];
             sdfHeader[o + 2] = b.pos[2];
-            sdfHeader[o + 3] = enabled ? 1 : 0;
+            sdfHeader[o + 3] = enabled && b.sdfActive ? 1 : 0;
             sdfHeader[o + 4] = b.quat[0];
             sdfHeader[o + 5] = b.quat[1];
             sdfHeader[o + 6] = b.quat[2];
@@ -547,6 +562,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         writeHeader();
     };
 
+    const setBodySdfActive = (i: number, on: boolean): void => {
+        const b = bodies[i];
+        if (!b || b.sdfActive === on) {
+            return;
+        }
+        b.sdfActive = on;
+        writeHeader();
+    };
+
     const reset = (): void => {
         for (const b of bodies) {
             b.pos = [...b.start];
@@ -631,6 +655,7 @@ fn bodiesSdf(pt: vec3<f32>, dt: f32) -> f32 {
         sdfWgsl,
         update,
         setEnabled,
+        setBodySdfActive,
         get enabled(): boolean {
             return enabled;
         },

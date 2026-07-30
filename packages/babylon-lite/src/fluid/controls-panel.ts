@@ -27,6 +27,8 @@ export interface PhysSchemaEntry {
     max: number;
     step: number;
     value: number;
+    /** One-line explanation shown in a hover tooltip behind an "i" next to the label. */
+    info?: string;
 }
 
 /**
@@ -38,37 +40,253 @@ export interface PhysSchemaEntry {
  */
 export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
     PBF: [
-        { key: "gravity", label: "Gravity", min: 0, max: 200, step: 0.1, value: 9.8 },
-        { key: "viscosity", label: "Viscosity (XSPH)", min: 0, max: 1, step: 0.005, value: 0.08 },
-        { key: "relaxation", label: "Relaxation \u03b5", min: 1, max: 300, step: 1, value: 50 },
-        { key: "scorr", label: "Artificial pressure", min: 0, max: 0.1, step: 0.001, value: 0.02 },
-        { key: "iterations", label: "Solver iterations", min: 1, max: 8, step: 1, value: 3 },
-        { key: "restDensity", label: "Rest density", min: 100, max: 2000, step: 10, value: 341 },
-        { key: "boundaryDensity", label: "Boundary density", min: 0, max: 1, step: 0.05, value: 0 },
+        {
+            key: "gravity",
+            label: "Gravity",
+            min: 0,
+            max: 200,
+            step: 0.1,
+            value: 9.8,
+            info: "Downward acceleration applied to every particle, in world units per second squared. Raising it makes the fluid fall and settle faster.",
+        },
+        {
+            key: "viscosity",
+            label: "Viscosity (XSPH)",
+            min: 0,
+            max: 3,
+            step: 0.005,
+            value: 0.08,
+            info: "XSPH velocity smoothing: each particle is nudged toward the average velocity of its neighbours. Higher = thicker, more syrup-like, less splashy. 0 disables the smoothing pass entirely.",
+        },
+        {
+            key: "relaxation",
+            label: "Relaxation \u03b5",
+            min: 1,
+            max: 1000,
+            step: 1,
+            value: 50,
+            info: "Constraint-force denominator softening. Larger values make the incompressibility solve gentler and more stable, but let the fluid compress more.",
+        },
+        {
+            key: "scorr",
+            label: "Artificial pressure",
+            min: 0,
+            max: 0.5,
+            step: 0.001,
+            value: 0.02,
+            info: "Repulsion added between close neighbours to stop particles clumping into strings (the classic PBF surface-tension hack). Too high looks grainy; 0 turns the correction off.",
+        },
+        {
+            key: "iterations",
+            label: "Solver iterations",
+            min: 1,
+            max: 8,
+            step: 1,
+            value: 3,
+            info: "Density-constraint solves per frame. More iterations = less compressible, better-behaved fluid, at a directly proportional GPU cost.",
+        },
+        {
+            key: "restDensity",
+            label: "Rest density",
+            min: 100,
+            max: 2000,
+            step: 10,
+            value: 341,
+            info: "The density the solver drives the fluid toward. It sets the natural particle spacing, so it must be consistent with the particle size.",
+        },
+        {
+            key: "boundaryDensity",
+            label: "Boundary density",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: 0,
+            info: "Phantom density contributed by walls, compensating the SPH density deficit there. Above zero it stops particles piling up against a boundary, at the cost of a thin gap. 0 disables the correction entirely.",
+        },
     ],
     "MLS-MPM": [
-        { key: "gravity", label: "Gravity", min: 0, max: 200, step: 0.1, value: 9.8 },
-        { key: "stiffness", label: "Stiffness (EOS)", min: 10, max: 5000, step: 10, value: 350 },
-        { key: "viscosity", label: "Viscosity", min: 0, max: 1, step: 0.01, value: 0.3 },
-        { key: "restDensity", label: "Rest density (/cell)", min: 1, max: 100, step: 0.5, value: 3 },
-        { key: "damping", label: "Velocity damping", min: 0.9, max: 1, step: 0.001, value: 0.995 },
-        { key: "affineDamping", label: "Affine damping (\u2192PIC)", min: 0.1, max: 1, step: 0.005, value: 0.9 },
-        { key: "groundDamp", label: "Ground damping", min: 0.7, max: 1, step: 0.01, value: 0.85 },
-        { key: "groundDampHeight", label: "Ground damp height", min: 0, max: 10, step: 0.1, value: 1.5 },
-        { key: "restitution", label: "Restitution (bounce)", min: 0, max: 1, step: 0.05, value: 0.3 },
-        { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
+        {
+            key: "gravity",
+            label: "Gravity",
+            min: 0,
+            max: 200,
+            step: 0.1,
+            value: 9.8,
+            info: "Downward acceleration applied to every particle, in world units per second squared. Raising it makes the fluid fall and settle faster.",
+        },
+        {
+            key: "stiffness",
+            label: "Stiffness (EOS)",
+            min: 10,
+            max: 5000,
+            step: 10,
+            value: 350,
+            info: "Equation-of-state pressure gain: how hard the fluid pushes back when compressed. Higher resists compression but needs more substeps to stay stable.",
+        },
+        {
+            key: "viscosity",
+            label: "Viscosity",
+            min: 0,
+            max: 1,
+            step: 0.01,
+            value: 0.3,
+            info: "Resistance to shear. Higher = thicker and more sluggish, and it damps out fine splashes. 0 removes the viscous stress term entirely.",
+        },
+        {
+            key: "restDensity",
+            label: "Rest density (/cell)",
+            min: 1,
+            max: 100,
+            step: 0.5,
+            value: 3,
+            info: "Target mass per grid cell. Together with stiffness it sets the pressure response — it is a per-CELL quantity, not the SPH rest density.",
+        },
+        {
+            key: "damping",
+            label: "Velocity damping",
+            min: 0.9,
+            max: 1,
+            step: 0.001,
+            value: 0.995,
+            info: "Per-substep velocity multiplier that bleeds off energy. 1 disables damping, and the fluid sloshes forever; drop it too far and the fluid goes visibly sluggish.",
+        },
+        {
+            key: "affineDamping",
+            label: "Affine damping (\u2192PIC)",
+            min: 0.1,
+            max: 1,
+            step: 0.005,
+            value: 0.9,
+            info: "Damps each particle's affine velocity field, blending APIC toward plain PIC. 1 disables it (pure APIC); lower = smoother and more dissipative, losing swirl detail.",
+        },
+        {
+            key: "groundDamp",
+            label: "Ground damping",
+            min: 0.7,
+            max: 1,
+            step: 0.01,
+            value: 0.85,
+            info: "Extra velocity damping applied near the floor, used to stop a pool jittering forever once it should have settled. 1 disables it.",
+        },
+        {
+            key: "groundDampHeight",
+            label: "Ground damp height",
+            min: 0,
+            max: 10,
+            step: 0.1,
+            value: 1.5,
+            info: "Height above the floor over which ground damping fades out, in world units. 0 collapses the layer, which disables ground damping altogether.",
+        },
+        {
+            key: "restitution",
+            label: "Restitution (bounce)",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: 0.3,
+            info: "How much normal velocity survives a collision with the scene. 0 sticks, 1 bounces perfectly.",
+        },
+        {
+            key: "substeps",
+            label: "Substeps / frame",
+            min: 1,
+            max: 8,
+            step: 1,
+            value: 3,
+            info: "Simulation steps per rendered frame. More substeps allow higher stiffness and faster flow without blowing up, at a proportional GPU cost.",
+        },
     ],
     "PB-MPM": [
-        { key: "gravity", label: "Gravity", min: 0, max: 200, step: 0.1, value: 9.8 },
-        { key: "iterations", label: "PB iterations", min: 1, max: 12, step: 1, value: 5 },
-        { key: "liquidRelaxation", label: "Liquid relaxation", min: 0.1, max: 3, step: 0.05, value: 1.5 },
-        { key: "liquidViscosity", label: "Liquid viscosity", min: 0, max: 0.2, step: 0.005, value: 0.01 },
-        { key: "elasticityRatio", label: "Elasticity ratio", min: 0, max: 1, step: 0.01, value: 0.3 },
-        { key: "elasticRelaxation", label: "Elastic relaxation", min: 0.05, max: 1, step: 0.01, value: 0.3 },
-        { key: "frictionAngle", label: "Sand friction angle", min: 0, max: 60, step: 1, value: 35 },
-        { key: "plasticity", label: "Visco plasticity", min: 0, max: 1, step: 0.01, value: 0.8 },
-        { key: "restitution", label: "Restitution (bounce)", min: 0, max: 1, step: 0.05, value: 0 },
-        { key: "substeps", label: "Substeps / frame", min: 1, max: 8, step: 1, value: 3 },
+        {
+            key: "gravity",
+            label: "Gravity",
+            min: 0,
+            max: 200,
+            step: 0.1,
+            value: 9.8,
+            info: "Downward acceleration applied to every particle, in world units per second squared. Raising it makes the fluid fall and settle faster.",
+        },
+        {
+            key: "iterations",
+            label: "PB iterations",
+            min: 1,
+            max: 12,
+            step: 1,
+            value: 5,
+            info: "Position-based constraint iterations per substep. More = stiffer, less compressible material, at a directly proportional GPU cost.",
+        },
+        {
+            key: "liquidRelaxation",
+            label: "Liquid relaxation",
+            min: 0.1,
+            max: 3,
+            step: 0.05,
+            value: 1.5,
+            info: "Over-relaxation factor for the liquid volume constraint. Higher converges faster toward incompressibility but can overshoot and ring.",
+        },
+        {
+            key: "liquidViscosity",
+            label: "Liquid viscosity",
+            min: 0,
+            max: 0.2,
+            step: 0.005,
+            value: 0.01,
+            info: "Resistance to shear in the liquid phase. Higher = thicker and more sluggish flow. 0 disables the viscosity projection.",
+        },
+        {
+            key: "elasticityRatio",
+            label: "Elasticity ratio",
+            min: 0,
+            max: 1,
+            step: 0.01,
+            value: 0.3,
+            info: "Blend between fluid and elastic-solid behaviour. 0 is pure liquid, 1 is a springy solid. Only meaningful for the non-liquid materials.",
+        },
+        {
+            key: "elasticRelaxation",
+            label: "Elastic relaxation",
+            min: 0.05,
+            max: 1,
+            step: 0.01,
+            value: 0.3,
+            info: "How strongly the elastic material is pulled back toward its rest shape each iteration.",
+        },
+        {
+            key: "frictionAngle",
+            label: "Sand friction angle",
+            min: 0,
+            max: 60,
+            step: 1,
+            value: 35,
+            info: "Internal friction angle of the sand material, in degrees — effectively the steepest slope a pile can hold before it collapses.",
+        },
+        {
+            key: "plasticity",
+            label: "Visco plasticity",
+            min: 0,
+            max: 1,
+            step: 0.01,
+            value: 0.8,
+            info: "How readily the viscoelastic material forgets its rest shape and stays deformed, rather than springing back.",
+        },
+        {
+            key: "restitution",
+            label: "Restitution (bounce)",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: 0,
+            info: "How much normal velocity survives a collision with the scene. 0 sticks, 1 bounces perfectly.",
+        },
+        {
+            key: "substeps",
+            label: "Substeps / frame",
+            min: 1,
+            max: 8,
+            step: 1,
+            value: 3,
+            info: "Simulation steps per rendered frame. More substeps allow stiffer settings and faster flow without blowing up, at a proportional GPU cost.",
+        },
     ],
 };
 
@@ -93,6 +311,8 @@ export interface FluidFoamValues {
     softness: number;
     density: number;
     subsurfaceStrength: number;
+    /** Submerged-bubble tint as an sRGB hex string (e.g. "#b8d1f2"). */
+    subsurfaceColor: string;
 }
 
 /** Snapshot of every control the component owns (for pair-state capture / export). */
@@ -180,6 +400,7 @@ export interface FluidControlsCallbacks {
     onFoamBuoyancy?(v: number): void;
     onFoamDrag?(v: number): void;
     onFoamPool?(v: number): void;
+    onFoamSubColor?(rgb: [number, number, number]): void;
     // Foam screen-space look — always applied to the foam renderer.
     onFoamThresholds?(t0: number, t1: number): void;
     onFoamSubsurface?(v: number): void;
@@ -212,7 +433,7 @@ export interface FluidControlsOptions {
     hideGpuTiming?: boolean;
     hidePhysics?: boolean;
     /** When true, the "Physics simulation" section OMITS the "Physics particle size"
-     *  control (title + slider) but KEEPS the per-method sliders + reset button. Use
+     *  row but KEEPS the per-method sliders + reset button. Use
      *  when the host owns its own particle-size control (so physScale would conflict).
      *  The reported physScale (getValues / setPhysScale) still reflects the initial /
      *  last value — only the DOM row is dropped. */
@@ -321,13 +542,41 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
     // ── Labelled render-slider helper (mirrors the fluid demo's makeRenderSlider). ──
     type RenderSliderRow = HTMLDivElement & { set(v: number): void };
-    function makeRenderSlider(label: string, min: number, max: number, step: number, value: number, fmt: (v: number) => string, onInput: (v: number) => void): RenderSliderRow {
+    /** A hoverable "i" appended after a setting's name, explaining what the setting does.
+     *  Uses the native `title` tooltip: no positioning code, no stacking-context fights with
+     *  the panel's own scroll container, and it works unchanged if the panel is ever reparented. */
+    function infoIcon(text: string): HTMLSpanElement {
+        const i = document.createElement("span");
+        i.textContent = "ⓘ";
+        i.title = text;
+        i.style.cssText = "margin-left:5px;color:#6d7f95;cursor:help;";
+        return i;
+    }
+    /** Label text plus its info icon, for the left-hand side of a control's header row. */
+    function labelWithInfo(text: string, info?: string): HTMLSpanElement {
+        const lab = document.createElement("span");
+        lab.textContent = text;
+        if (info) {
+            lab.appendChild(infoIcon(info));
+        }
+        return lab;
+    }
+
+    function makeRenderSlider(
+        label: string,
+        min: number,
+        max: number,
+        step: number,
+        value: number,
+        fmt: (v: number) => string,
+        onInput: (v: number) => void,
+        info?: string
+    ): RenderSliderRow {
         const row = document.createElement("div") as RenderSliderRow;
         row.style.cssText = "margin:2px 0 8px;";
         const head = document.createElement("div");
         head.style.cssText = "display:flex;justify-content:space-between;";
-        const lab = document.createElement("span");
-        lab.textContent = label;
+        const lab = labelWithInfo(label, info);
         const val = document.createElement("span");
         val.style.cssText = "color:#9fb4cc;";
         val.textContent = fmt(value);
@@ -411,10 +660,40 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     // shading). They are hidden in "Render as spheres" mode where they do nothing. Populated
     // at panel-assembly time (all rows exist by then) and toggled by applySurfaceVisibility.
     const surfaceOnlyRows: HTMLElement[] = [];
+    /** Each row's ORIGINAL inline `display`, captured the first time it is toggled.
+     *
+     *  Restoring `""` instead would DELETE the property rather than restore it, dropping the
+     *  element back to its default display. Several of these rows are <label>s carrying
+     *  `display:flex`, and a label defaults to `inline` — so un-hiding them that way silently
+     *  collapsed "Half rendering" and "Anisotropic surface" onto one shared line. */
+    const originalDisplay = new WeakMap<HTMLElement, string>();
+    const setRowVisible = (row: HTMLElement, visible: boolean): void => {
+        if (!originalDisplay.has(row)) {
+            originalDisplay.set(row, row.style.display);
+        }
+        row.style.display = visible ? originalDisplay.get(row)! : "none";
+    };
     const applySurfaceVisibility = (spheres: boolean): void => {
-        const disp = spheres ? "none" : "";
+        // Most of these rows sit ABOVE the "Render as spheres" checkbox that drives them, so
+        // collapsing them shortens the panel above the click point and yanks the toggle — and
+        // everything the user was looking at — hundreds of pixels up (or down, on the way
+        // back). Browsers only sometimes absorb that with scroll anchoring, so pin it here:
+        // measure the toggle, apply the change, then take the scroll position back by however
+        // far it moved. A no-op when the panel is not scrollable or nothing shifted.
+        const before = renderRow.getBoundingClientRect().top;
         for (const r of surfaceOnlyRows) {
-            r.style.display = disp;
+            setRowVisible(r, !spheres);
+        }
+        // Showing the surface rows again must not resurrect the ones the CURRENT surface
+        // filter / anisotropic state says are irrelevant — this is the single place that
+        // decides what is on screen, so it re-applies those rules on the way out.
+        if (!spheres) {
+            applyFilterVisibility(surfFilterSel.value);
+            applyAnisoVisibility(anisoChk.checked);
+        }
+        const delta = renderRow.getBoundingClientRect().top - before;
+        if (delta !== 0) {
+            root.scrollTop += delta;
         }
     };
 
@@ -563,7 +842,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         surfFilterSel.appendChild(opt);
     }
     surfFilterSel.value = init.surfaceFilter;
-    surfFilterSel.onchange = () => on.onSurfaceFilter?.(surfFilterSel.value as "bilateral" | "narrowRange");
+    surfFilterSel.onchange = () => {
+        applyFilterVisibility(surfFilterSel.value);
+        on.onSurfaceFilter?.(surfFilterSel.value as "bilateral" | "narrowRange");
+    };
     let nrDelta = init.narrowDelta;
     let nrMu = init.narrowMu;
     const nrDeltaRow = makeRenderSlider(
@@ -611,7 +893,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const anisoText = document.createElement("span");
     anisoText.textContent = "Anisotropic surface";
     anisoRow.append(anisoChk, anisoText);
-    anisoChk.onchange = () => on.onAnisotropic?.(anisoChk.checked);
+    anisoChk.onchange = () => {
+        applyAnisoVisibility(anisoChk.checked);
+        on.onAnisotropic?.(anisoChk.checked);
+    };
 
     // Anisotropic WPCA radius damping (0 = ignore surfaceSizeScale → tightest neighbourhood,
     // fastest, most sphere-like discs; 1 = full radius → widest/strongest, slowest). Only
@@ -655,7 +940,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const thickDownInput = document.createElement("input");
     thickDownInput.type = "range";
     thickDownInput.min = "1";
-    thickDownInput.max = "8";
+    thickDownInput.max = "16";
     thickDownInput.step = "1";
     thickDownInput.value = String(init.thicknessDownscale);
     thickDownInput.style.cssText = "width:100%;";
@@ -714,17 +999,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     containerChk.onchange = () => on.onShowContainer?.(containerChk.checked);
 
     // ── PHYSICS ─────────────────────────────────────────────────────────────
-    const physTitle = document.createElement("div");
-    physTitle.textContent = "Physics particle size";
-    physTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    // Laid out like every other slider: ONE flex head carrying the label on the left and the
+    // value on the right, then the input. This used to be a separate bold title div above a
+    // head that held only the right-aligned value, which pushed the name a whole line higher
+    // than every neighbouring row and made it read as a section heading.
     const physRow = document.createElement("div");
     physRow.style.cssText = "margin:2px 0 8px;";
     const physHead = document.createElement("div");
-    physHead.style.cssText = "display:flex;justify-content:flex-end;";
+    physHead.style.cssText = "display:flex;justify-content:space-between;";
+    const physLab = labelWithInfo(
+        "Physics particle size",
+        "Scales the SIMULATION particle radius and the neighbour-grid spacing derived from it. Smaller resolves finer detail at a steeply higher cost; changing it rebuilds both backends, so the fluid restarts."
+    );
     const physVal = document.createElement("span");
     physVal.style.cssText = "color:#9fb4cc;";
     physVal.textContent = `${init.physScale.toFixed(1)}\u00d7`;
-    physHead.append(physVal);
+    physHead.append(physLab, physVal);
     const physInput = document.createElement("input");
     physInput.type = "range";
     physInput.min = String(physMin);
@@ -757,8 +1047,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             row.style.cssText = "margin:6px 0;";
             const head = document.createElement("div");
             head.style.cssText = "display:flex;justify-content:space-between;";
-            const lab = document.createElement("span");
-            lab.textContent = p.label;
+            const lab = labelWithInfo(p.label, p.info);
             const val = document.createElement("span");
             val.style.cssText = "color:#9fb4cc;";
             val.textContent = String(p.value);
@@ -824,9 +1113,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         on.onFoamEnable?.(foamEnabled);
     };
     const foamKtaRow = makeRenderSlider(
-        "Trapped-air rate k_ta",
+        "Trapped-air rate",
         0,
-        120,
+        500,
         1,
         foamCfg.kTa,
         (v) => String(Math.round(v)),
@@ -836,9 +1125,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         }
     );
     const foamKwcRow = makeRenderSlider(
-        "Wave-crest rate k_wc",
+        "Wave-crest rate",
         0,
-        120,
+        500,
         1,
         foamCfg.kWc,
         (v) => String(Math.round(v)),
@@ -850,7 +1139,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamLifeRow = makeRenderSlider(
         "Foam lifetime (s)",
         0.3,
-        6,
+        20,
         0.1,
         foamCfg.tMax,
         (v) => v.toFixed(1),
@@ -860,9 +1149,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         }
     );
     const foamBuoyRow = makeRenderSlider(
-        "Bubble buoyancy k_b",
+        "Bubble buoyancy",
         0,
-        3,
+        8,
         0.05,
         foamCfg.kb,
         (v) => v.toFixed(2),
@@ -872,7 +1161,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         }
     );
     const foamDragRow = makeRenderSlider(
-        "Bubble drag k_d",
+        "Bubble drag",
         0,
         1,
         0.05,
@@ -896,9 +1185,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         }
     );
     const foamSoftRow = makeRenderSlider(
-        "Foam softness t0 (edge)",
+        "Foam softness",
         0,
-        2,
+        10,
         0.02,
         foamT0,
         (v) => v.toFixed(2),
@@ -908,9 +1197,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         }
     );
     const foamDensityRow = makeRenderSlider(
-        "Foam density t1 (opaque)",
+        "Foam density",
         0.2,
-        50,
+        200,
         0.05,
         foamT1,
         (v) => v.toFixed(2),
@@ -931,6 +1220,19 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             on.onFoamSubsurface?.(v);
         }
     );
+    // Submerged-bubble tint. A swatch rather than a slider triple: it is a look choice, and
+    // it sits directly under the strength slider it modulates.
+    const foamSubColorRow = document.createElement("label");
+    foamSubColorRow.style.cssText = "display:flex;align-items:center;gap:8px;margin:2px 0 8px;cursor:pointer;";
+    const foamSubColorLab = document.createElement("span");
+    foamSubColorLab.textContent = "Subsurface bubble color";
+    const foamSubColorInput = document.createElement("input");
+    foamSubColorInput.type = "color";
+    foamSubColorInput.value = init.foam.subsurfaceColor;
+    foamSubColorInput.style.cssText = "width:36px;height:22px;padding:0;border:1px solid #33415a;border-radius:4px;background:#1a2230;cursor:pointer;";
+    foamSubColorRow.append(foamSubColorLab, foamSubColorInput);
+    foamSubColorInput.oninput = () => on.onFoamSubColor?.(hexToRgb(foamSubColorInput.value));
+
     const foamSizeRow = makeRenderSlider(
         "Foam size",
         0.1,
@@ -970,7 +1272,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamAmbientRow = makeRenderSlider(
         "Foam ambient",
         0,
-        1,
+        2,
         0.02,
         foamAmbient,
         (v) => v.toFixed(2),
@@ -1042,16 +1344,20 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamLifeRow,
         foamBuoyRow,
         foamDragRow,
+        foamSubRow,
+        foamSubColorRow,
         foamPoolRow,
         foamSoftRow,
         foamDensityRow,
-        foamSubRow,
         foamSizeRow,
         foamBlurRow,
         foamLightRow,
         foamAmbientRow,
         foamAORow,
-        foamNormalRow,
+        // foamNormalRow is deliberately NOT listed: the fake normals it scales barely register
+        // in the final image, so the slider was dead weight in the panel. The row is still
+        // built and still round-trips through the foam values/presets — only the control is
+        // hidden, so a preset written before this change still restores exactly.
         foamDebugRow,
         foamDebugTexTitle,
         foamDebugTexSel,
@@ -1074,31 +1380,121 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         root.append(...makeSection("General", generalItems));
     }
 
-    const renderItems: HTMLElement[] = [
-        colorRow,
+    // ── Tooltips ────────────────────────────────────────────────────────────
+    // Attached after construction rather than threaded through every factory call, so the
+    // explanations live in one readable table instead of being scattered across ~25 call
+    // sites. Each row's FIRST <span> is its label (the value read-out is the second), and
+    // that holds for the slider rows, the checkbox labels and the colour row alike.
+    for (const [row, text] of [
+        [colorRow, "Beer-Lambert absorption tint of the water body. This is the colour light is TINTED toward as it travels through the fluid, not a surface paint."],
+        [
+            sizeRow,
+            "Visual radius multiplier for the impostors the surface is built from. Larger blobs merge into a smoother, fatter surface; smaller ones read as more separate droplets. Purely cosmetic — the simulation is unaffected.",
+        ],
+        [absorbRow, "How strongly the water colour saturates with depth. Higher makes thin sheets read as tinted and deep water go opaque; 0 leaves the fluid clear."],
+        [refractionRow, "How far the background is displaced when seen through the fluid, scaled by the water's thickness. 0 disables refraction."],
+        [specularRow, "Tightness of the specular highlight. Higher values give a smaller, sharper glint; lower values spread it into a broad sheen."],
+        [
+            surfDepthBlurRow,
+            "Radius of the blur applied to the fluid's depth buffer. This is the main smoothness control: low values leave a bumpy blob surface, high values give a calm, glassy one. At 0 the bilateral filter becomes a pass-through; narrow-range still applies its fixed 5\u00d75 clean-up pass.",
+        ],
+        [thickDownRow, "Resolution divisor for the thickness buffer. Thickness is low-frequency, so a higher divisor costs little visually and saves fill rate."],
+        [
+            surfFilterSel,
+            "Algorithm used to smooth the depth buffer. Bilateral is a depth-weighted blur; Narrow-range is edge-aware and holds thin features and silhouettes better.",
+        ],
+        [
+            surfDepthThreshRow,
+            "BILATERAL ONLY. How far apart in depth two samples can be and still be blurred together. Lower preserves edges more sharply but leaves the surface noisier.",
+        ],
+        [nrDeltaRow, "NARROW-RANGE ONLY. Depth window, in impostor radii, that counts as the same surface. Wider smooths more but starts merging separate sheets of water."],
+        [
+            nrMuRow,
+            "NARROW-RANGE ONLY. How far a front-facing outlier is clamped toward the centre sample, in impostor radii. Suppresses spikes from stray particles; 0 clamps them exactly onto the centre depth.",
+        ],
+        [surfThickBlurRow, "Radius of the blur applied to the thickness buffer, which drives absorption and refraction. 0 skips the pass entirely."],
+        [halfRow, "Render the depth/thickness buffers at half resolution. Much cheaper, at the cost of a slightly softer surface and coarser silhouettes."],
+        [anisoRow, "Stretch each particle's impostor along the local flow (Yu & Turk). Thin sheets and jets read as sheets instead of strings of beads, at extra GPU cost."],
+        [anisoDampRow, "How strongly the anisotropic stretch is reined in. Lower allows longer, flatter ellipsoids; higher keeps them closer to spheres."],
+        [renderRow, "Draw the raw particles as shaded spheres instead of building a fluid surface. Useful for seeing what the simulation is actually doing."],
+        [
+            foamKtaRow,
+            "How much foam is generated by air being dragged under, e.g. where a jet plunges into a pool. The main source of churn in a waterfall. 0 turns this source off; with the wave-crest rate also at 0 no foam is created at all.",
+        ],
+        [
+            foamKwcRow,
+            "How much foam is generated at wave crests \u2014 sharply curved, fast-moving surfaces. Raise it for spray off breaking waves. 0 turns this source off; with the trapped-air rate also at 0 no foam is created at all.",
+        ],
+        [foamLifeRow, "How long foam particles survive, in seconds. Longer leaves persistent trails and rafts of foam; shorter makes it flash and vanish."],
+        [
+            foamBuoyRow,
+            "Upward acceleration on SUBMERGED foam (bubbles), as a fraction of gravity. Only affects particles currently classified as bubbles, so it does nothing in a scene without submerged churn.",
+        ],
+        [foamDragRow, "How strongly submerged bubbles are pulled toward the surrounding fluid's velocity. At 1 they simply follow the flow."],
+        [
+            foamPoolRow,
+            "Size of the foam particle pool, as a multiple of the fluid particle count. Caps how much foam can exist at once. Changing it reallocates the buffer (32 bytes per slot), so the GPU panel's memory read-out moves with it.",
+        ],
+        [foamSoftRow, "Accumulation level at which foam starts to appear. Raise it to keep sparse spray from fogging the image."],
+        [foamDensityRow, "Accumulation level at which foam becomes fully opaque. Bring it closer to the softness value for a harder, more defined foam edge."],
+        [foamSubRow, "How visible bubbles below the surface are through the water. 0 hides the submerged component entirely."],
+        [
+            foamSubColorRow,
+            "Tint of the submerged bubbles seen through the water. Independent of the surface foam, which stays white — use it to match the bubbles to the water colour.",
+        ],
+        [foamSizeRow, "Splat radius multiplier for foam particles. Larger merges foam into continuous sheets; smaller keeps it granular."],
+        [foamBlurRow, "Blur radius applied to the foam accumulation buffer. Higher turns speckle into smooth mist. 0 skips the blur passes entirely."],
+        [foamLightRow, "Strength of directional lighting on foam. Higher gives foam more shaded, three-dimensional relief. 0 leaves foam lit only by the ambient floor."],
+        [foamAmbientRow, "Ambient light floor for foam, filling the parts the directional term leaves dark."],
+        [foamAORow, "Self-shadowing within thick foam. Higher darkens the interior of dense clumps and adds depth. 0 disables the darkening."],
+    ] as [HTMLElement, string][]) {
+        row.querySelector("span")?.appendChild(infoIcon(text));
+    }
+
+    // Order here is the order in the panel: colour, then the particle/surface toggle pair, then
+    // the surface-shading knobs, each blur next to the buffer it acts on, and the filter
+    // immediately followed by the parameters that belong to it.
+    const renderItems: HTMLElement[] = [colorRow, sizeRow];
+    if (!opts.hideRenderAsSpheres) {
+        renderItems.push(renderRow);
+    }
+    renderItems.push(
         absorbRow,
-        sizeRow,
         refractionRow,
         specularRow,
         surfDepthBlurRow,
-        surfDepthThreshRow,
+        thickDownRow,
         surfThickBlurRow,
         surfFilterTitle,
         surfFilterSel,
+        surfDepthThreshRow,
         nrDeltaRow,
         nrMuRow,
         halfRow,
         anisoRow,
-        anisoDampRow,
-        thickDownRow,
-    ];
-    if (!opts.hideRenderAsSpheres) {
-        renderItems.push(renderRow);
-    }
+        anisoDampRow
+    );
     if (!opts.hideDebug) {
         renderItems.push(debugTitle, debugSel);
     }
     root.append(...makeSection("Render", renderItems));
+
+    // Rows that only apply to ONE surface filter, hidden when the other one is selected: the
+    // bilateral blur reads the edge threshold and ignores delta/mu, and the narrow-range
+    // filter does the reverse (see writeBilateral / writeNarrow in fluid-surface-render).
+    const applyFilterVisibility = (filter: string): void => {
+        const narrow = filter === "narrowRange";
+        setRowVisible(surfDepthThreshRow, !narrow);
+        setRowVisible(nrDeltaRow, narrow);
+        setRowVisible(nrMuRow, narrow);
+    };
+    /** The damping slider only means anything while the anisotropic surface is on. */
+    const applyAnisoVisibility = (on: boolean): void => {
+        setRowVisible(anisoDampRow, on);
+    };
+    // Single entry point, now that all three rules exist: hides the surface rows in spheres
+    // mode and otherwise applies the filter + anisotropic rules.
+    applySurfaceVisibility(init.renderMode === "spheres");
 
     // Surface-only rows (hidden in "Render as spheres" mode). Water color + particle size affect
     // both renderers and the spheres toggle itself must stay visible, so they are excluded.
@@ -1121,15 +1517,14 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hideDebug) {
         surfaceOnlyRows.push(debugTitle, debugSel);
     }
-    applySurfaceVisibility(init.renderMode === "spheres");
 
     if (!opts.hideFoam) {
         root.append(...makeSection("Foam", foamControls));
     }
     if (!opts.hidePhysics) {
-        // The "Physics particle size" control (physTitle + physRow) is dropped when the
-        // host owns its own particle-size slider; the per-method sliders + reset stay.
-        const physItems = opts.hidePhysScale ? [sliderHost, resetBtn] : [physTitle, physRow, sliderHost, resetBtn];
+        // The "Physics particle size" row is dropped when the host owns its own particle-size
+        // slider; the per-method sliders + reset stay.
+        const physItems = opts.hidePhysScale ? [sliderHost, resetBtn] : [physRow, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
 
@@ -1351,6 +1746,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamDensityRow.set(foam.density);
             foamSoftRow.set(foam.softness);
             foamSubRow.set(foam.subsurfaceStrength);
+            foamSubColorInput.value = foam.subsurfaceColor;
+            on.onFoamSubColor?.(hexToRgb(foam.subsurfaceColor));
         },
 
         getValues(): FluidControlValues {
@@ -1400,6 +1797,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                     softness: foamT0,
                     density: foamT1,
                     subsurfaceStrength: foamSubStrength,
+                    subsurfaceColor: foamSubColorInput.value,
                 },
             };
         },

@@ -5,7 +5,7 @@
 // plain data+behaviour object (a `FluidDemo`) built from a `FluidCtx` of the
 // services the core hands it. No demo references the core module directly.
 
-import type { ArcRotateCamera, DirectionalLight, EngineContext, Mat4, Mesh, SceneContext, ShadowGenerator } from "babylon-lite";
+import type { ArcRotateCamera, DirectionalLight, EngineContext, Mat4, Mesh, SceneContext } from "babylon-lite";
 import type { EmitterConfig, FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 
 /** Default (capsule / box) spawn box: a tall central column that drops in to
@@ -14,20 +14,24 @@ export const DEFAULT_SPAWN_MIN: [number, number, number] = [-2, 6, -2];
 export const DEFAULT_SPAWN_MAX: [number, number, number] = [2, 12, 2];
 
 // Per-demo HDR environment maps. Each demo declares which one it wants via
-// {@link FluidDemo.envUrl}; the core loads BOTH up front and swaps the skybox
+// {@link FluidDemo.envUrl}; the core loads both up front and swaps the skybox
 // background + the fluid-surface reflection cube when the active demo changes.
-/** Neutral studio HDR — used by the capsule / box / fountain demos. */
+/** Neutral studio HDR — used by the capsule / box / fountain / marble-tower demos. */
 export const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
-/** Green countryside HDR — used by the waterfall demo (also feeds its terrain IBL). */
-export const ENV_COUNTRY_URL = "https://playground.babylonjs.com/textures/country.env";
+// The waterfall's open-sky `.hdr` is declared next to that demo's own assets, as
+// `WATERFALL_ENV_URL` in scenes/waterfall.ts.
 
 // A demo exposes a typed list of live tunables; the core's "Demo parameters"
 // section renders a control per type (number → slider, boolean → checkbox,
 // color → picker) and calls the demo's handler on change.
-export type DemoParam =
+/** A `hidden` param keeps its place in the pair-state bag — so preset files still drive it and
+ *  it round-trips when switching between (demo, method) pairs — but gets no control in the
+ *  panel. Use it to retire a knob from the UI without freezing its value. */
+export type DemoParam = { hidden?: boolean } & (
     | { key: string; label: string; type: "number"; min: number; max: number; step: number; value: number }
     | { key: string; label: string; type: "boolean"; value: boolean }
-    | { key: string; label: string; type: "color"; value: string };
+    | { key: string; label: string; type: "color"; value: string }
+);
 
 // Per-(demo, simulation) parameter snapshot. The core stores one of these per
 // (demo, method) pair so e.g. SPH-fountain and MLS-fountain keep independent
@@ -93,6 +97,9 @@ export interface PairState {
         softness?: number;
         density?: number;
         subsurfaceStrength?: number;
+        /** Submerged-bubble tint as an sRGB hex string. Optional so presets/states
+         *  predating it fall back to the pale blue that used to be hardcoded. */
+        subsurfaceColor?: string;
         /** Visual foam splat-size multiplier ("Foam size"). Optional so presets/states
          *  predating it fall back to the core foam default (1). */
         size?: number;
@@ -132,19 +139,25 @@ export interface FluidCtx {
     resetActiveSim(): void;
     /** Push new emitters (from the active demo) to BOTH backends. */
     refreshEmitters(): void;
+    /** Re-read the active demo's `spawn()` and push it (plus its warm-up) to every backend.
+     *  Needed when a demo's seed volume is only known asynchronously — the waterfall derives
+     *  its from a height map that lands after the demo is already on screen, and without this
+     *  a following `resetActiveSim()` would re-seed against the stale volume. */
+    refreshSpawn(): void;
     /** Carve a drain hole into the scene-SDF hole ring (offset 32 region). */
     addSceneHole(center: [number, number, number], radius: number): void;
     /** Clear all drain holes (zero the hole ring). */
     clearSceneHoles(): void;
-    /** Directional "sun" light (always in the scene). A demo that wants cast shadows
-     *  attaches `sunShadow` to it on enter (`sun.shadowGenerator = ctx.sunShadow`) and
-     *  detaches it on leave (`sun.shadowGenerator = undefined`) so other demos never
-     *  render a shadow map. */
+    /** Directional "sun" light (always in the scene). No fluid demo casts shadows, so it
+     *  carries no shadow generator and no shadow map is ever rendered. */
     readonly sun: DirectionalLight;
-    /** Sun (directional) CSM shadow generator, created up-front but attached to the
-     *  sun only while a shadow-casting demo is active. Register caster meshes via
-     *  `setShadowTaskCasterMeshes(ctx.sunShadow, ...)` in `onEnter`. */
-    readonly sunShadow: ShadowGenerator;
+
+    /** Half-extent of the fluid-sim domain along X and Z at domain scale 1, in world units.
+     *  A demo that scales its world multiplies this by its own scale (see `getDomainScale`).
+     *  Exposed so a demo can size a pump intake to the whole simulated floor without
+     *  hard-coding the core's bounds: particles that drift outside the intake can never be
+     *  recycled, and since the domain wall stops them they pile up against it forever. */
+    readonly simHalfExtentXZ: number;
     /** View-projection matrix for screen picking / rays. */
     viewProjection(): Mat4;
     /** The active GPU timing profiler (or null when timing is off / unsupported). A demo
@@ -158,6 +171,14 @@ export interface FluidCtx {
      *  by the marble-tower "Mesh scale" slider so a larger tower gets a proportionally larger
      *  water domain instead of hitting the fixed-grid cap. */
     setDomainScale(s: number): void;
+
+    /** Configure the shared bloom post-process. The whole fluid chain composites into an
+     *  offscreen target, which is then presented to the swapchain either through bloom or a
+     *  plain blit — so `enabled: false` costs nothing beyond that blit. `intensity` is the
+     *  merge weight (how much glow is added on top) and `threshold` is the luminance above
+     *  which a pixel starts to bloom. Demo-scoped: a demo that offers bloom must turn it off
+     *  again in `onLeave`, since the stage itself is shared by every demo. */
+    setBloom(cfg: { enabled: boolean; intensity: number; threshold: number }): void;
 }
 
 // A single fluid demo (capsule / box / fountain). The core drives the active
@@ -168,9 +189,25 @@ export interface FluidDemo {
     /** Dropdown label. */
     readonly label: string;
     /** HDR environment this demo shows as its skybox background AND reflects in the
-     *  fluid surface (one of {@link ENV_STUDIO_URL} / {@link ENV_COUNTRY_URL}). The
+     *  fluid surface (one of {@link ENV_STUDIO_URL} / the waterfall's own
+     *  `WATERFALL_ENV_URL`). The
      *  core loads both up front and swaps to this one when the demo becomes active. */
     readonly envUrl: string;
+    /** Key of the environment-picker entry this demo defaults to (see the core's
+     *  `ENV_CHOICES`). Omit → the studio environment. A picker selection overrides it. */
+    readonly envKey?: string;
+    /** Environment yaw this demo wants, in degrees. Applied (and shown on the
+     *  "Environment rotation" slider) whenever the demo becomes active, so a scene can
+     *  aim the sun/horizon of its backdrop. Omit → 0°. */
+    readonly envRotationDeg?: number;
+    /** Method this demo should open on the FIRST time it is picked from the dropdown (e.g. the
+     *  waterfall is authored around PB-MPM). Omit to carry the current method over. Later
+     *  visits keep whatever the user last chose, and the method/quality selectors themselves
+     *  are never overridden. */
+    readonly defaultMethod?: string;
+    /** Quality tier this demo should open on the first time it is picked. Omit to carry the
+     *  current tier over. Same first-visit-only rule as {@link defaultMethod}. */
+    readonly defaultQuality?: "low" | "middle" | "high";
     /** Injected scene SDF. `gridConfine` affects the MLS-MPM backend ONLY (the PBF/SPH
      *  backend ignores it and always confines per-particle): for MLS-MPM, a spec with
      *  `gridConfine === false` uses per-particle push-out confinement (for thin curved
@@ -212,15 +249,11 @@ export interface FluidDemo {
      *  Omit → this demo has no translucent overlay meshes. The core wires an overlay
      *  render task from these and strips them out of the scene-colour pass. */
     containerMeshes?(): Mesh[];
-    /** Meshes this demo wants the sun to cast CSM shadows from (terrain + boulders in
-     *  the waterfall). The core collects these BEFORE registerScene to warm up the
-     *  shadow-caster pipeline preload; the demo itself re-registers them (and attaches
-     *  `ctx.sunShadow` to `ctx.sun`) in onEnter. Omit → this demo casts no shadows. */
-    shadowCasters?(): Mesh[];
     /** Snapshot this demo's extra-control state (box: size/paddle) as a flat bag. */
     snapshotState?(): Record<string, number | boolean>;
     /** Restore extra-control state; MUST also update the extra-control UI to match. */
-    restoreState?(state: Record<string, number | boolean>): void;
+    restoreState?(state: Record<string, number | boolean>): void;
+
     /** Return true if this demo will handle the pointerdown itself, so the
      *  built-in arc-camera control should ignore it (e.g. capsule: LMB over the
      *  tank punches a hole instead of rotating). Omit → camera always handles. */

@@ -1,69 +1,75 @@
 {
-  "meta": {
-    "demo": "waterfall",
-    "method": "MLS-MPM"
-  },
-  "physics": {
-    "gravity": 21,
-    "stiffness": 260,
-    "viscosity": 0.04,
-    "restDensity": 2.5,
-    "damping": 0.997,
-    "affineDamping": 0.75,
-    "groundDamp": 0.9,
-    "groundDampHeight": 1,
-    "restitution": 0.4,
-    "substeps": 2
-  },
-  "demoParams": {
-    "sourceSpeed": 1.8,
-    "emitRate": 7,
-    "sourceDown": 1,
-    "spread": 0.35
-  },
-  "demoState": {},
-  "showContainer": true,
-  "physicsParticleSize": 0.5,
-  "particleCount": 150000,
-  "camera": {
-    "alpha": -1.3,
-    "beta": 1.12,
-    "radius": 45
-  },
-  "render": {
-    "renderAsSpheres": false,
-    "waterColor": "#cfe8f2",
-    "absorption": 0.5,
-    "particleSize": 0.5,
-    "refractionStrength": 0.1,
-    "specularPower": 250,
-    "surfaceDepthBlur": 20,
-    "depthBlurEdgeThreshold": 10,
-    "surfaceThicknessBlur": 10,
-    "halfRendering": true,
-    "thicknessDownscale": 6,
-    "surfaceFilter": "narrowRange",
-    "narrowRangeDelta": 10,
-    "narrowRangeMu": 1
-  },
-  "foam": {
-    "enableFoam": true,
-    "trappedAirRate": 113,
-    "waveCrestRate": 108,
-    "foamLifetime": 2.5,
-    "foamLifetimeMin": 0.45,
-    "bubbleBuoyancy": 1.65,
-    "bubbleDrag": 0.8,
-    "poolSize": 3.5,
-    "foamSoftness": 0.12,
-    "foamDensity": 23.4,
-    "subsurfaceBubbleStrength": 1,
-    "foamBlurRadius": 4,
-    "foamLightIntensity": 0.25,
-    "foamAmbient": 1,
-    "foamAO": 0.15,
-    "foamNormalStrength": 1.5,
-    "foamDebug": "off",
-    "foamSize": 1
-  }
+    "meta": {
+        "demo": "waterfall",
+        "method": "MLS-MPM"
+    },
+    "physics": {
+        "gravity": 16.6,
+        "stiffness": 150,
+        "viscosity": 0.01,
+        "restDensity": 2,
+        "damping": 0.996,
+        "affineDamping": 1,
+        "groundDamp": 0.7,
+        "groundDampHeight": 1,
+        "restitution": 1,
+        "substeps": 1
+    },
+    "demoParams": {
+        "sourceSpeed": 0,
+        "emitRate": 6,
+        "spread": 0,
+        "frontBias": 8.5,
+        "bloomIntensity": 0.25,
+        "bloomThreshold": 0
+    },
+    "demoState": {
+        "bloom": false
+    },
+    "showContainer": true,
+    "physicsParticleSize": 0.8,
+    "particleCount": 40000,
+    "camera": {
+        "alpha": -2.017695550245583,
+        "beta": 1.4123362767020209,
+        "radius": 62.965727191577955
+    },
+    "render": {
+        "renderAsSpheres": false,
+        "waterColor": "#ffffff",
+        "absorption": 0.5,
+        "particleSize": 0.19,
+        "refractionStrength": 0,
+        "specularPower": 250,
+        "surfaceDepthBlur": 0,
+        "depthBlurEdgeThreshold": 10,
+        "surfaceThicknessBlur": 0,
+        "halfRendering": true,
+        "thicknessDownscale": 8,
+        "surfaceFilter": "narrowRange",
+        "narrowRangeDelta": 1,
+        "narrowRangeMu": 0,
+        "anisotropicSurface": false,
+        "anisoRadiusDamping": 0.5
+    },
+    "foam": {
+        "enableFoam": true,
+        "trappedAirRate": 100,
+        "waveCrestRate": 0,
+        "foamLifetime": 1.1,
+        "foamLifetimeMin": 0.45,
+        "bubbleBuoyancy": 1.3,
+        "bubbleDrag": 0.65,
+        "poolSize": 3.5,
+        "foamSoftness": 0,
+        "foamDensity": 4.55,
+        "subsurfaceBubbleStrength": 0.25,
+        "foamBlurRadius": 4,
+        "foamLightIntensity": 0,
+        "foamAmbient": 1,
+        "foamAO": 0,
+        "foamNormalStrength": 0,
+        "foamDebug": "off",
+        "foamSize": 0.25
+    }
 }

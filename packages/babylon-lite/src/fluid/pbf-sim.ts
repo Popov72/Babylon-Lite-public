@@ -46,7 +46,17 @@
 
 import type { EngineContext } from "../engine/engine.js";
 import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
-import { EMITTERS_FLOATS, FOAM_BYTES, FOAM_COMMON_WGSL, MAX_EMITTERS, packEmitters, SCENE_NORMAL_WGSL, SCENE_SDF_GRID_WGSL } from "./sim-common.js";
+import {
+    EMITTERS_FLOATS,
+    SPAWN_ACCEPT_TRIES,
+    EMITTER_STRUCT_WGSL,
+    EMITTER_SPAWN_WGSL,
+    FOAM_BYTES,
+    FOAM_COMMON_WGSL,
+    packEmitters,
+    SCENE_NORMAL_WGSL,
+    SCENE_SDF_GRID_WGSL,
+} from "./sim-common.js";
 
 // Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
 // null by default so `profiler?.pass(...)` is undefined and timing costs nothing.
@@ -669,20 +679,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 // continuous streams), at a random emitter nozzle with its jet velocity.
 // (EmitterConfig / MAX_EMITTERS / EMITTERS_FLOATS / packEmitters live in sim-common.)
 const EMIT_WGSL = /* wgsl */ `
-struct Emitter { p: vec4<f32>, d: vec4<f32> };
-struct Emitters {
-    head: vec4<f32>,        // emitterCount, rate, seed, spread
-    head2: vec4<f32>,       // particleCount, dt, fixedStreamCount, fixedStreamDrainY
-    intakeMin: vec4<f32>,
-    intakeMax: vec4<f32>,
-    list: array<Emitter, ${MAX_EMITTERS}>,
-};
+${EMITTER_STRUCT_WGSL}
 @group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> em: Emitters;
 
 fn hashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
 fn rnd(x: u32) -> f32 { return f32(hashU(x)) / 4294967296.0; }
+${EMITTER_SPAWN_WGSL}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -702,9 +706,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (fixedN > 0u && i < fixedN) {
         if (p.y < em.head2.w) {
             let e = em.list[ec - 1u];
-            let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
             let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
-            pos[i] = vec4<f32>(e.p.xyz + jit, 1.0);
+            pos[i] = vec4<f32>(spawnPoint(e, seed), 1.0);
             vel[i] = vec4<f32>(e.d.xyz * e.d.w + sj, 0.0);
         }
         return;
@@ -717,9 +720,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var ei = hashU(seed) % ec;
             if (fixedN > 0u) { ei = hashU(seed) % max(ec - 1u, 1u); }
             let e = em.list[ei];
-            let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
             let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
-            pos[i] = vec4<f32>(e.p.xyz + jit, 1.0);
+            pos[i] = vec4<f32>(spawnPoint(e, seed), 1.0);
             vel[i] = vec4<f32>(e.d.xyz * e.d.w + sj, 0.0);
         }
     }
@@ -858,7 +860,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ek = 0.5 * speed * speed;
     let ik = phi(ek, foam.tauKMin, foam.tauKMax);
     let ndf = ik * (foam.kTa * ita + foam.kWc * iwc) * sim.dt;
-    var nd = i32(floor(ndf + 0.5));
+    // Stochastic rounding: nd must have EXPECTED value ndf (Ihmsen 2012). Rounding to nearest
+    // instead turned the generation rates into a step function — dt is clamped to 1/60, so every
+    // particle shares it, and ndf crossed 0.5 for the whole population at the same rate value
+    // (kTa = 30 at 60fps). The control jumped from "no foam at all" to "one per particle per
+    // frame" in a single slider step. Carrying the fraction as a spawn PROBABILITY spreads that
+    // crossing across the population, so the rate responds continuously.
+    let ndWhole = floor(ndf);
+    var nd = i32(ndWhole) + select(0, 1, fRnd((i * 2246822519u) ^ (foam.frameSeed * 22695477u) ^ 0x9e3779b9u) < (ndf - ndWhole));
     if (nd <= 0) { return; }
     nd = min(nd, 8);
 
@@ -907,7 +916,10 @@ ${FOAM_COMMON_WGSL}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+    // Pool slots can exceed one dispatch dimension, in which case dispatch() spills into y
+    // with an x extent of exactly MAX_WORKGROUPS groups — fold that back into a flat index.
+    // gid.y is 0 whenever the dispatch fits in x, so this is a no-op for small pools.
+    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
     if (i >= arrayLength(&diffuse)) { return; }
     let p0 = diffuse[i].p;
     if (p0.w <= 0.0) { return; }
@@ -1118,6 +1130,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         // off-screen to their stored spawn position as they activate.
         liveCount = warmupFrames > 0 ? Math.min(count, warmupStep) : count;
         const positions = new Float32Array(count * 4);
+        // Last position that passed `spawnAccept`, reused when a particle exhausts its retries.
+        let lastOkX = 0;
+        let lastOkY = 0;
+        let lastOkZ = 0;
+        let haveLastOk = false;
         for (let i = 0; i < count; i++) {
             const o = i * 4;
             let x: number;
@@ -1136,11 +1153,25 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
                 if (spawnAccept) {
                     // Reject-sample so particles fit a non-box container shape: redraw
-                    // uniformly in the box until accepted (or keep the last try after 30).
-                    for (let tries = 0; tries < 30 && !spawnAccept(x, y, z); tries++) {
+                    // uniformly in the box until accepted. On exhaustion reuse the last
+                    // ACCEPTED point rather than keeping a rejected one, which would place
+                    // particles outside the container (see the note in mls-mpm-sim).
+                    let ok = spawnAccept(x, y, z);
+                    for (let tries = 0; !ok && tries < SPAWN_ACCEPT_TRIES; tries++) {
                         x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
                         y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
                         z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
+                        ok = spawnAccept(x, y, z);
+                    }
+                    if (ok) {
+                        lastOkX = x;
+                        lastOkY = y;
+                        lastOkZ = z;
+                        haveLastOk = true;
+                    } else if (haveLastOk) {
+                        x = lastOkX;
+                        y = lastOkY;
+                        z = lastOkZ;
                     }
                 }
             }
@@ -1403,7 +1434,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     // a sim that never turns foam on pays nothing (no buffers, no compiled shaders).
     // The ring buffer is sized D = poolScale × count (capped) and reused: foam-emit
     // overwrites the oldest slots via an atomic write-head modulo D.
-    const FOAM_CAP_LIMIT = MAX_WORKGROUPS * WORKGROUP_SIZE; // keep the pool dispatch in one workgroup dimension
+    // The pool is sized purely from poolScale × count — no arbitrary ceiling. The only
+    // bounds left are the device's: the pool is ONE storage buffer bound to the compute and
+    // render passes (so it cannot exceed maxStorageBufferBindingSize), and the update pass
+    // dispatches over it in a 2D-spilled grid (MAX_WORKGROUPS² groups, effectively boundless).
+    const FOAM_CAP_LIMIT = Math.min(Math.floor(device.limits.maxStorageBufferBindingSize / 32), MAX_WORKGROUPS * MAX_WORKGROUPS * WORKGROUP_SIZE);
     const foamData = new ArrayBuffer(FOAM_BYTES);
     const foamF32 = new Float32Array(foamData);
     const foamU32 = new Uint32Array(foamData);
@@ -1476,7 +1511,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             diffuseHeadBuffer = device.createBuffer({ label: "fluid-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
         let cap = Math.round(count * (cfg.poolScale ?? 3));
-        cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? 1_500_000, FOAM_CAP_LIMIT));
+        cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? Infinity, FOAM_CAP_LIMIT));
         if (cap !== foamCapacity || !diffuseBuffer) {
             diffuseBuffer?.destroy();
             diffuseBuffer = device.createBuffer({ label: "fluid-foam-pool", size: cap * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });

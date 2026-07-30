@@ -59,6 +59,8 @@ export interface FoamRenderOptions {
 // accumulated into RGBA16F (R foam / G submerged bubble / B spray), depth-
 // classified against the fluid-surface eye-Z and occluded by the scene depth.
 const SPLAT_WGSL = /* wgsl */ `
+// Smallest accumulation-buffer radius, in pixels, a splat is allowed to project to.
+const MIN_SPLAT_PX: f32 = 1.5;
 struct Splat {
     view: mat4x4<f32>,
     proj: mat4x4<f32>,
@@ -108,6 +110,18 @@ struct VOut {
         sz = baseSize * 1.1;
         gain = u.gains.z;
     }
+    let centreEyeZ = (u.view * vec4<f32>(d.p.xyz, 1.0)).z;
+    // Minimum screen footprint. A splat projecting to less than a pixel only ever lights the
+    // one accumulation texel its centre lands in, and it does so at full strength — so distant
+    // mist stops being mist and turns into hard, aliased white dots (very visible once the
+    // camera pulls back). Grow such splats to MIN_SPLAT_PX and divide the gain by the area
+    // ratio, which leaves the total accumulated energy unchanged while spreading it over a
+    // real footprint: the dot becomes the faint soft blob it should have been. Splats already
+    // larger than the minimum are untouched (grow == 1).
+    let pxRadius = sz * u.proj[1].y / max(centreEyeZ, 1.0e-4) * 0.5 / u.texel.y;
+    let grow = max(1.0, MIN_SPLAT_PX / max(pxRadius, 1.0e-4));
+    sz = sz * grow;
+    gain = gain / (grow * grow);
     let c = corners[vi];
     let world = d.p.xyz + u.right.xyz * (c.x * sz) + u.up.xyz * (c.y * sz);
     let eye = (u.view * vec4<f32>(world, 1.0)).xyz;
@@ -115,7 +129,7 @@ struct VOut {
     o.uv = c;
     o.kind = f32(kind);
     o.gain = gain;
-    o.eyeZ = (u.view * vec4<f32>(d.p.xyz, 1.0)).z;   // particle-centre eye Z
+    o.eyeZ = centreEyeZ;   // particle-centre eye Z
     return o;
 }
 
@@ -202,6 +216,7 @@ struct Comp {
     texel: vec4<f32>,    // 1/fullW, 1/fullH, smoothOn, debugByKind
     light: vec4<f32>,    // lightIntensity, ambient, aoStrength, normalStrength
     ldir: vec4<f32>,     // lightDir.xyz, specStrength
+    sub: vec4<f32>,      // submerged-bubble tint rgb, _
 };
 @group(0) @binding(0) var accumRaw: texture_2d<f32>;
 @group(0) @binding(1) var accumBlur: texture_2d<f32>;
@@ -287,7 +302,7 @@ fn surfAt(uv: vec2<f32>) -> f32 {
     // Submerged bubbles: faint, slightly bluish, but shaded by the same normal so
     // they inherit the thickness variation instead of reading as a flat tint.
     let subShade = ambient + diffuse * 0.5;
-    let subColor = vec3<f32>(0.72, 0.82, 0.95) * clamp(subShade + 0.15, 0.35, 1.1);
+    let subColor = u.sub.rgb * clamp(subShade + 0.15, 0.35, 1.1);
     let subAlpha = smoothstep(u.params.x, u.params.y, subT) * u.params.z;
 
     // Composite the (opaque) foam over the (faint) bubble layer, non-premultiplied.
@@ -332,6 +347,7 @@ export function createFoamRenderTask(
     setDebugByKind(on: boolean): void;
     setThresholds(t0: number, t1: number): void;
     setSubsurfaceStrength(v: number): void;
+    setSubsurfaceColor(rgb: [number, number, number]): void;
     setBlurRadius(n: number): void;
     setDebugTexture(m: FoamDebugTexture): void;
     setLightIntensity(v: number): void;
@@ -352,6 +368,9 @@ export function createFoamRenderTask(
     let t0 = 0.25;
     let t1 = 1.6;
     let subStrength = 0.4;
+    /** Submerged-bubble tint. Was a hardcoded pale blue; now host-settable so a scene can
+     *  match the bubbles to its water colour (murky green, night-time steel, ...). */
+    let subColor: [number, number, number] = [0.72, 0.82, 0.95];
     let blurRadius = FOAM_BLUR_DEFAULT;
     let debugTexIndex = 0; // FoamDebugTexture -> composite `debugTex` uniform (0 = off)
     // Screen-space froth shading knobs (fake-normal directional light + AO).
@@ -367,7 +386,7 @@ export function createFoamRenderTask(
     const splatBuf = device.createBuffer({ label: "fluid-foam-splat", size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurXBuf = device.createBuffer({ label: "fluid-foam-blur-x", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const blurYBuf = device.createBuffer({ label: "fluid-foam-blur-y", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const compBuf = device.createBuffer({ label: "fluid-foam-comp", size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const compBuf = device.createBuffer({ label: "fluid-foam-comp", size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const nearestSampler = device.createSampler({ label: "fluid-foam-nearest" });
     const linearSampler = device.createSampler({ label: "fluid-foam-linear", magFilter: "linear", minFilter: "linear" });
 
@@ -500,6 +519,11 @@ export function createFoamRenderTask(
                 lightDir[1],
                 lightDir[2],
                 specStrength,
+                // sub: submerged-bubble tint rgb, _
+                subColor[0],
+                subColor[1],
+                subColor[2],
+                0,
             ])
         );
     }
@@ -628,6 +652,10 @@ export function createFoamRenderTask(
         /** Screen-space submerged-bubble opacity (0 = hidden, ~0.4 default). */
         setSubsurfaceStrength(v: number): void {
             subStrength = v;
+        },
+        /** Submerged-bubble tint, linear RGB in 0..1 (default pale blue 0.72/0.82/0.95). */
+        setSubsurfaceColor(rgb: [number, number, number]): void {
+            subColor = rgb;
         },
         /** Screen-space accumulation blur half-size (0 = off/raw, ~4 default). The single
          *  froth-smoothing control: 0 skips the separable blur passes and composites the

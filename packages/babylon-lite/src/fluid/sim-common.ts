@@ -122,7 +122,9 @@ export interface FoamConfig {
     tMax?: number;
     /** Pool capacity as a multiple of the fluid particle count. Default 3. */
     poolScale?: number;
-    /** Hard ceiling on the pool capacity, in slots. Default 1_500_000. */
+    /** Optional hard ceiling on the pool capacity, in slots. Default: none — the pool is
+     *  sized purely from `poolScale` × particle count, bounded only by the device's own
+     *  storage-buffer and dispatch limits. */
     poolCapMax?: number;
 }
 
@@ -262,11 +264,42 @@ export const DEFAULT_FORCE_FIELD_WGSL = "fn externalForce(pos: vec3<f32>, vel: v
 // pump-intake box, probabilistically (rand < rate·dt, to throttle so jets are
 // continuous streams), at a random emitter nozzle with its jet velocity.
 export const MAX_EMITTERS = 16;
+/** Triangles available to polygon emitters, shared across every emitter in the config. */
+export const MAX_EMITTER_TRIS = 64;
+
+/** Rejection-sampling attempts per particle when `setSpawn` carries an `accept` predicate.
+ *  Shapes that fill little of their bounding box (two small prisms on a summit fill only a few
+ *  percent of it) reject often, so this needs headroom — the seeders additionally fall back to
+ *  the last ACCEPTED point rather than a rejected one, so exhausting it can never place a
+ *  particle outside the container. */
+export const SPAWN_ACCEPT_TRIES = 64;
 
 export interface EmitterConfig {
-    /** Jet nozzles. Each relaunches recycled particles at `dir`·`speed` from
-     *  `pos` (± a `radius` position jitter). */
-    emitters: { pos: [number, number, number]; dir: [number, number, number]; speed: number; radius: number }[];
+    /** Jet nozzles. Each relaunches recycled particles at `dir`·`speed` from a random point in
+     *  its spawn volume. That volume is a BOX: `halfExtents` when given, otherwise a cube of
+     *  half-extent `radius` (so a nozzle stays a point-ish jet unless it opts in). A box emitter
+     *  lets a source cover a real surface — e.g. the flat shelves on top of a waterfall — instead
+     *  of pretending to be a point. `polygon` generalises that to an arbitrary outline. */
+    emitters: {
+        pos: [number, number, number];
+        dir: [number, number, number];
+        speed: number;
+        radius: number;
+        /** Per-axis half-extents (width/2, height/2, depth/2) of the spawn box, world units.
+         *  Defaults to `(radius, radius, radius)`. */
+        halfExtents?: [number, number, number];
+        /** Spawn area as a simple closed polygon in the world XZ plane — the vertices only, with
+         *  no repeated closing vertex; either winding works. When set it REPLACES the box's X/Z
+         *  extents, so the source can match a real surface (e.g. a terrace on a rock) instead of
+         *  the bounding box around it; `pos[0]`/`pos[2]` are then ignored. Height still comes from
+         *  `halfExtents[1]` about `pos[1]`, which is what gives the outline its "small height".
+         *
+         *  Triangulated here on the CPU (ear clipping) and uploaded as an area-weighted triangle
+         *  list, so the shader samples it uniformly in O(triangles) with no rejection sampling —
+         *  rejection would both waste relaunches and bias density when the outline fills little of
+         *  its bounding box. Polygons are shared out of a {@link MAX_EMITTER_TRIS} budget. */
+        polygon?: [number, number][];
+    }[];
     /** Axis-aligned pump-intake box min: particles inside are eligible to recycle. */
     intakeMin: [number, number, number];
     /** Axis-aligned pump-intake box max. */
@@ -291,11 +324,89 @@ export interface EmitterConfig {
 }
 
 // Emitters-UBO float layout: head, head2, intakeMin, intakeMax, then
-// MAX_EMITTERS × (pos+radius, dir+speed). packEmitters writes everything except
-// the sim-owned fields: head2.x (particle count) and head.z / head2.y (seed, dt).
+// MAX_EMITTERS × (pos+radius, dir+speed, halfExtents+pad, triStart+triCount+pad2), then a
+// shared triangle table of MAX_EMITTER_TRIS × (ax,az,bx,bz | cx,cz,cumArea,pad) for polygon
+// emitters. packEmitters writes everything except the sim-owned fields: head2.x (particle
+// count) and head.z / head2.y (seed, dt).
 // head2.z = fixedStreamCount (dedicated last-emitter stream, 0 = off).
 // head2.w = fixedStreamDrainY (fixed-stream tight-loop drain height).
-export const EMITTERS_FLOATS = 16 + MAX_EMITTERS * 8;
+export const EMITTERS_FLOATS = 16 + MAX_EMITTERS * 16 + MAX_EMITTER_TRIS * 8;
+
+/** Twice the signed area of a closed polygon (positive when counter-clockwise in XZ). */
+function polyArea2(poly: readonly [number, number][]): number {
+    let a = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        a += poly[j]![0] * poly[i]![1] - poly[i]![0] * poly[j]![1];
+    }
+    return a;
+}
+
+function inTriangle(px: number, py: number, ax: number, ay: number, bx: number, by: number, cx: number, cy: number): boolean {
+    const d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+    const d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+    const d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
+}
+
+/** Ear-clipping triangulation of a SIMPLE polygon (no holes, no self-intersections), returning
+ *  flat index triples into `poly`. Ear clipping rather than a triangle fan because a fan is only
+ *  correct for convex outlines — a hand-drawn terrace is routinely concave, and a fan would then
+ *  spawn particles outside the shape. Bails out returning what it has if the input turns out not
+ *  to be simple, so bad authoring degrades instead of hanging. */
+function triangulatePolygon(poly: readonly [number, number][]): number[] {
+    const n = poly.length;
+    if (n < 3) {
+        return [];
+    }
+    // Work counter-clockwise so the convexity test has one consistent sign.
+    const idx: number[] = [];
+    for (let i = 0; i < n; i++) {
+        idx.push(i);
+    }
+    if (polyArea2(poly) < 0) {
+        idx.reverse();
+    }
+    const out: number[] = [];
+    let guard = n * n + 8;
+    while (idx.length > 3 && guard-- > 0) {
+        let clipped = false;
+        for (let k = 0; k < idx.length; k++) {
+            const i0 = idx[(k + idx.length - 1) % idx.length]!;
+            const i1 = idx[k]!;
+            const i2 = idx[(k + 1) % idx.length]!;
+            const [ax, ay] = poly[i0]!;
+            const [bx, by] = poly[i1]!;
+            const [cx, cy] = poly[i2]!;
+            // Reflex corner (or collinear) — not an ear.
+            if ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay) <= 0) {
+                continue;
+            }
+            let contains = false;
+            for (const m of idx) {
+                if (m !== i0 && m !== i1 && m !== i2 && inTriangle(poly[m]![0], poly[m]![1], ax, ay, bx, by, cx, cy)) {
+                    contains = true;
+                    break;
+                }
+            }
+            if (contains) {
+                continue;
+            }
+            out.push(i0, i1, i2);
+            idx.splice(k, 1);
+            clipped = true;
+            break;
+        }
+        if (!clipped) {
+            break;
+        }
+    }
+    if (idx.length === 3) {
+        out.push(idx[0]!, idx[1]!, idx[2]!);
+    }
+    return out;
+}
 
 export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): void {
     // Preserve head2.x (particle count) written by the sim; clear the rest.
@@ -318,8 +429,10 @@ export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): voi
     data[12] = cfg.intakeMax[0];
     data[13] = cfg.intakeMax[1];
     data[14] = cfg.intakeMax[2];
+    const triBase = 16 + MAX_EMITTERS * 16;
+    let triCursor = 0;
     for (let k = 0; k < n; k++) {
-        const o = 16 + k * 8;
+        const o = 16 + k * 16;
         const e = cfg.emitters[k]!;
         data[o] = e.pos[0];
         data[o + 1] = e.pos[1];
@@ -329,5 +442,101 @@ export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): voi
         data[o + 5] = e.dir[1];
         data[o + 6] = e.dir[2];
         data[o + 7] = e.speed;
+        // Spawn-box half-extents. A plain nozzle keeps the historical CUBE of half-extent
+        // `radius`, so omitting halfExtents reproduces the original jitter exactly.
+        const h = e.halfExtents;
+        data[o + 8] = h ? h[0] : e.radius;
+        data[o + 9] = h ? h[1] : e.radius;
+        data[o + 10] = h ? h[2] : e.radius;
+        // Polygon spawn area: triangulate, then store each triangle with the RUNNING FRACTION of
+        // the outline's area it completes. The shader picks with a single uniform random against
+        // those fractions, so big triangles are chosen proportionally more often and the outline
+        // fills evenly — a uniform pick would crowd particles into the slivers.
+        const poly = e.polygon;
+        if (!poly || poly.length < 3) {
+            continue;
+        }
+        const tris = triangulatePolygon(poly);
+        const budget = Math.min(tris.length / 3, MAX_EMITTER_TRIS - triCursor);
+        let total = 0;
+        for (let t = 0; t < budget; t++) {
+            const a = poly[tris[t * 3]!]!;
+            const b = poly[tris[t * 3 + 1]!]!;
+            const c = poly[tris[t * 3 + 2]!]!;
+            total += Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
+        }
+        if (budget < 1 || total <= 0) {
+            continue; // degenerate outline — fall back to the box extents above
+        }
+        const start = triCursor;
+        let acc = 0;
+        for (let t = 0; t < budget; t++) {
+            const a = poly[tris[t * 3]!]!;
+            const b = poly[tris[t * 3 + 1]!]!;
+            const c = poly[tris[t * 3 + 2]!]!;
+            acc += Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
+            const to = triBase + (start + t) * 8;
+            data[to] = a[0];
+            data[to + 1] = a[1];
+            data[to + 2] = b[0];
+            data[to + 3] = b[1];
+            data[to + 4] = c[0];
+            data[to + 5] = c[1];
+            // Last triangle pinned to exactly 1 so a random of 1.0 can never fall through.
+            data[to + 6] = t === budget - 1 ? 1 : acc / total;
+        }
+        triCursor += budget;
+        data[o + 12] = start;
+        data[o + 13] = budget;
     }
 }
+
+/** Emitter UBO declarations for the backends' emit shaders. Shared so the three sims can never
+ *  drift from each other or from {@link packEmitters} — the layout is written in one place only.
+ *  On PB-MPM `intakeMin.w` additionally carries subDt. */
+export const EMITTER_STRUCT_WGSL = /* wgsl */ `
+struct Emitter {
+    p: vec4<f32>,           // pos.xyz, radius
+    d: vec4<f32>,           // dir.xyz, speed
+    e: vec4<f32>,           // spawn-box half-extents.xyz
+    q: vec4<f32>,           // triStart, triCount (polygon spawn area; triCount 0 = plain box)
+};
+struct Emitters {
+    head: vec4<f32>,        // emitterCount, rate, seed, spread
+    head2: vec4<f32>,       // particleCount, dt, fixedStreamCount, fixedStreamDrainY
+    intakeMin: vec4<f32>,
+    intakeMax: vec4<f32>,
+    list: array<Emitter, ${MAX_EMITTERS}>,
+    // Polygon triangles: pairs of vec4 = (ax, az, bx, bz) then (cx, cz, cumAreaFraction, pad).
+    tris: array<vec4<f32>, ${MAX_EMITTER_TRIS * 2}>,
+};`;
+
+/** Spawn-point sampling shared by the three emit shaders. Requires `em` and `rnd` in scope.
+ *  Returns an ABSOLUTE world position: polygon emitters take X/Z from the outline (so `p.xz` is
+ *  unused), everything else keeps the historical box jitter about `p.xyz` — and consumes the very
+ *  same random stream in that case, so non-polygon emitters are bit-for-bit unchanged. */
+export const EMITTER_SPAWN_WGSL = /* wgsl */ `
+fn spawnPoint(e: Emitter, seed: u32) -> vec3<f32> {
+    let tc = u32(e.q.y);
+    if (tc > 0u) {
+        // Area-weighted triangle pick: cumulative fractions ascend to exactly 1 on the last one.
+        let t0 = u32(e.q.x);
+        let r = rnd(seed * 23u);
+        var pick = tc - 1u;
+        for (var k = 0u; k < tc; k = k + 1u) {
+            if (r <= em.tris[(t0 + k) * 2u + 1u].z) { pick = k; break; }
+        }
+        let ab = em.tris[(t0 + pick) * 2u];
+        let cc = em.tris[(t0 + pick) * 2u + 1u];
+        // Uniform barycentric sample; folding u+v>1 back mirrors the far half of the
+        // parallelogram into the triangle, which keeps the distribution even.
+        var u = rnd(seed * 3u);
+        var v = rnd(seed * 7u);
+        if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+        let x = ab.x + u * (ab.z - ab.x) + v * (cc.x - ab.x);
+        let z = ab.y + u * (ab.w - ab.y) + v * (cc.y - ab.y);
+        return vec3<f32>(x, e.p.y + (rnd(seed * 5u) - 0.5) * (2.0 * e.e.y), z);
+    }
+    let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.e.xyz);
+    return e.p.xyz + jit;
+}`;

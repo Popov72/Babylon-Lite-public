@@ -5,7 +5,17 @@
 
 import type { EngineContext } from "../engine/engine.js";
 import type { DiffusePool, EmitterConfig, FluidProfiler, FluidSim, FluidSimBaseOptions, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "./sim-common.js";
-import { FOAM_BYTES, FOAM_COMMON_WGSL, MAX_EMITTERS, EMITTERS_FLOATS, packEmitters, SCENE_NORMAL_WGSL, SCENE_SDF_GRID_WGSL } from "./sim-common.js";
+import {
+    FOAM_BYTES,
+    FOAM_COMMON_WGSL,
+    EMITTERS_FLOATS,
+    SPAWN_ACCEPT_TRIES,
+    EMITTER_STRUCT_WGSL,
+    EMITTER_SPAWN_WGSL,
+    packEmitters,
+    SCENE_NORMAL_WGSL,
+    SCENE_SDF_GRID_WGSL,
+} from "./sim-common.js";
 import { SVD3_WGSL } from "./svd3.js";
 
 const WORKGROUP_SIZE = 64;
@@ -509,7 +519,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let iwc = phi(WC_SCALE * surfaceness * dvn * crest, foam.tauWcMin, foam.tauWcMax);
 
     let ndf = ik * (foam.kTa * ita + foam.kWc * iwc) * frameDt;
-    var nd = i32(floor(ndf + 0.5));
+    // Stochastic rounding: nd must have EXPECTED value ndf (Ihmsen 2012). Rounding to nearest
+    // instead turned the generation rates into a step function — frameDt is clamped to 1/60, so
+    // every particle shares it, and ndf crossed 0.5 for the whole population at the same rate
+    // value (kTa = 30 at 60fps). The control jumped from "no foam at all" to "one per particle
+    // per frame" in a single slider step. Carrying the fraction as a spawn PROBABILITY spreads
+    // that crossing across the population, so the rate responds continuously.
+    let ndWhole = floor(ndf);
+    var nd = i32(ndWhole) + select(0, 1, fRnd((i * 2246822519u) ^ (foam.frameSeed * 22695477u) ^ 0x9e3779b9u) < (ndf - ndWhole));
     if (nd <= 0) { return; }
     nd = min(nd, 8);
 
@@ -553,7 +570,10 @@ const VOL_BUBBLE: f32 = 0.9;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
+    // Pool slots can exceed one dispatch dimension, in which case dispatch() spills into y
+    // with an x extent of exactly MAX_WORKGROUPS groups — fold that back into a flat index.
+    // gid.y is 0 whenever the dispatch fits in x, so this is a no-op for small pools.
+    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
     if (i >= arrayLength(&diffuse)) { return; }
     let p0 = diffuse[i].p;
     if (p0.w <= 0.0) { return; }
@@ -612,23 +632,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const EMIT_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
-struct Emitter { p: vec4<f32>, d: vec4<f32> };
-struct Emitters {
-    head: vec4<f32>,        // emitterCount, rate, seed, spread
-    head2: vec4<f32>,       // particleCount, frameDt, fixedStreamCount, fixedStreamDrainY
-    intakeMin: vec4<f32>,   // xyz = intake min; w = subDt
-    intakeMax: vec4<f32>,
-    list: array<Emitter, ${MAX_EMITTERS}>,
-};
+${EMITTER_STRUCT_WGSL}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> em: Emitters;
 fn hashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
 fn rnd(x: u32) -> f32 { return f32(hashU(x)) / 4294967296.0; }
+${EMITTER_SPAWN_WGSL}
 fn relaunch(i: u32, e: Emitter, seed: u32, spread: f32, subDt: f32) {
-    let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.p.w);
     let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * spread);
     let vel = e.d.xyz * e.d.w + sj;
-    particles[i].position = e.p.xyz + jit;
+    particles[i].position = spawnPoint(e, seed);
     particles[i].displacement = vel * subDt;
     particles[i].D = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     particles[i].F = ident3();
@@ -745,8 +758,24 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         Math.max(4, Math.ceil((boundsMax[2] - boundsMin[2]) / dx)),
     ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
-    const particleGroups = Math.ceil(count / WORKGROUP_SIZE);
+    // Start-of-sim WARM-UP ramp (mirrors MLS-MPM): only `liveCount` particles are simulated
+    // each frame, growing by `warmupStep`. Dormant particles are skipped by every particle pass
+    // — the passes all guard on Params.counts.x, which carries liveCount, and they are not even
+    // dispatched — and are parked off-screen by seed() so nothing renders until they activate.
+    // Lets a demo seed its pool into a volume far smaller than the pool itself (the waterfall
+    // fills its summit springs) without an instant density spike. 0 = release everything.
+    let warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 0));
+    let warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
+    let liveCount = count;
+    let particleGroups = Math.ceil(count / WORKGROUP_SIZE);
     const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
+
+    /** Re-derive the dispatch size + the shader-visible particle count from `liveCount`. */
+    function applyLiveCount(): void {
+        particleGroups = Math.max(1, Math.ceil(liveCount / WORKGROUP_SIZE));
+        pu[COUNTS_OFFSET_F32] = liveCount;
+        emitData[4] = liveCount; // head2.x — the emit pass must not relaunch dormant particles
+    }
 
     const particleBuffer = device.createBuffer({ label: "pbmpm-particles", size: count * PARTICLE_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const cellBuffer = device.createBuffer({ label: "pbmpm-cells", size: numCells * 16, usage: GPUBufferUsage.STORAGE });
@@ -789,9 +818,18 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     }
 
     function seed(): void {
+        // Reset the warm-up ramp: start with just the first batch live (or everything, when
+        // warm-up is disabled). step() grows liveCount back up to count.
+        liveCount = warmupFrames > 0 ? Math.min(count, warmupStep) : count;
+        applyLiveCount();
         const buf = new ArrayBuffer(count * PARTICLE_STRIDE);
         const f = new Float32Array(buf);
         const rp = new Float32Array(count * 4);
+        // Last position that passed `spawnAccept`, reused when a particle exhausts its retries.
+        let lastOkX = 0;
+        let lastOkY = 0;
+        let lastOkZ = 0;
+        let haveLastOk = false;
         for (let i = 0; i < count; i++) {
             const o = (i * PARTICLE_STRIDE) / 4;
             let x: number;
@@ -806,10 +844,25 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                 y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
                 z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
                 if (spawnAccept) {
-                    for (let tries = 0; tries < 30 && !spawnAccept(x, y, z); tries++) {
+                    // Reject-sample so particles fit a non-box container shape. On exhaustion
+                    // reuse the last ACCEPTED point rather than keeping a rejected one, which
+                    // would place particles outside the container (see mls-mpm-sim).
+                    let ok = spawnAccept(x, y, z);
+                    for (let tries = 0; !ok && tries < SPAWN_ACCEPT_TRIES; tries++) {
                         x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
                         y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
                         z = spawnMin[2] + Math.random() * (spawnMax[2] - spawnMin[2]);
+                        ok = spawnAccept(x, y, z);
+                    }
+                    if (ok) {
+                        lastOkX = x;
+                        lastOkY = y;
+                        lastOkZ = z;
+                        haveLastOk = true;
+                    } else if (haveLastOk) {
+                        x = lastOkX;
+                        y = lastOkY;
+                        z = lastOkZ;
                     }
                 }
             }
@@ -822,9 +875,12 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             f[o + 32] = 1;
             f[o + 33] = 1;
             f[o + 34] = currentMaterial;
-            rp[i * 4] = x;
-            rp[i * 4 + 1] = y;
-            rp[i * 4 + 2] = z;
+            // The particle keeps its real spawn position; only the RENDER position is parked
+            // off-screen while dormant, so activating it needs no teleport.
+            const live = i < liveCount;
+            rp[i * 4] = live ? x : 0;
+            rp[i * 4 + 1] = live ? y : -1.0e5;
+            rp[i * 4 + 2] = live ? z : 0;
             rp[i * 4 + 3] = 1;
         }
         device.queue.writeBuffer(particleBuffer, 0, buf);
@@ -952,7 +1008,11 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
 
-    const FOAM_CAP_LIMIT = MAX_WORKGROUPS * WORKGROUP_SIZE;
+    // The pool is sized purely from poolScale × count — no arbitrary ceiling. The only
+    // bounds left are the device's: the pool is ONE storage buffer bound to the compute and
+    // render passes (so it cannot exceed maxStorageBufferBindingSize), and the update pass
+    // dispatches over it in a 2D-spilled grid (MAX_WORKGROUPS² groups, effectively boundless).
+    const FOAM_CAP_LIMIT = Math.min(Math.floor(device.limits.maxStorageBufferBindingSize / 32), MAX_WORKGROUPS * MAX_WORKGROUPS * WORKGROUP_SIZE);
     const foamData = new ArrayBuffer(FOAM_BYTES);
     const foamF32 = new Float32Array(foamData);
     const foamU32 = new Uint32Array(foamData);
@@ -1001,7 +1061,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             diffuseHeadBuffer = device.createBuffer({ label: "pbmpm-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
         let cap = Math.round(count * (cfg.poolScale ?? 3));
-        cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? 1_500_000, FOAM_CAP_LIMIT));
+        cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? Infinity, FOAM_CAP_LIMIT));
         if (cap !== foamCapacity || !diffuseBuffer) {
             diffuseBuffer?.destroy();
             diffuseBuffer = device.createBuffer({ label: "pbmpm-foam-pool", size: cap * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -1071,6 +1131,11 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         step(encoder: GPUCommandEncoder, dt: number): void {
             const frameDt = dt > 0 ? dt : 1 / 60;
             const subDt = Math.min(frameDt / substepsMut, maxSubDt);
+            if (liveCount < count) {
+                // Release the next slice BEFORE writing params, so this frame simulates it.
+                liveCount = Math.min(count, liveCount + warmupStep);
+                applyLiveCount();
+            }
             writeDynamicParams(subDt, frameDt);
             encoder.pushDebugGroup("PB-MPM sim step");
             if (emitEnabled) {
@@ -1162,8 +1227,11 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             spawnMax[2] = max[2];
             spawnAccept = accept ?? null;
         },
-        setWarmup(_frames: number): void {
-            // Optional FluidSim hook; PB-MPM phase 1 seeds all particles immediately.
+        setWarmup(frames: number): void {
+            // Number of frames over which reset()/seed() gradually releases particles
+            // (0 = release all at once). Takes effect on the next seed()/reset().
+            warmupFrames = Math.max(0, Math.floor(frames));
+            warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
         setForceField(spec: ForceFieldSpec | null): void {
             if (!spec) {

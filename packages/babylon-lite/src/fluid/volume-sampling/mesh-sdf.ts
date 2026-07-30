@@ -48,6 +48,20 @@ export interface MeshDistance {
     windingNumber(px: number, py: number, pz: number): number;
     /** Brute-force winding number (exact solid angle summed over ALL triangles). Cross-checks the fast path in tests. */
     windingNumberBrute(px: number, py: number, pz: number): number;
+    /**
+     * Global winding ORIENTATION of the mesh: `+1` when triangles are wound outward (the glTF/CCW
+     * convention, generalized winding number ~+1 inside), `-1` when the mesh is wound inside-out
+     * (~-1 inside, which is also what a MIRRORING world transform produces). Taken from the
+     * divergence-theorem signed volume, trusted while the mesh is closed enough for that sign to
+     * mean something (near-zero vector area); a clearly open shell has no well-defined interior and
+     * defaults to `+1`.
+     *
+     * Consumers testing inside/outside must use `windingNumber(p) * orientation > 0.5` rather than
+     * `|windingNumber(p)| > 0.5`: the absolute value also accepts CONFIDENTLY-EXTERIOR points of an
+     * open shell, whose winding number is a large NEGATIVE fraction (e.g. -0.74 in the empty corner
+     * of an L-shaped wall panel), filling empty space with particles.
+     */
+    readonly orientation: number;
 }
 
 /** A trilinear signed-distance grid sampled over a padded domain box. Inside is POSITIVE (unless built with `invert`). */
@@ -126,6 +140,19 @@ export function buildMeshDistance(positions: Float32Array, indices: Uint32Array 
     // Angle-weighted per-vertex pseudonormals (accumulated below).
     const vertexPN = new Float32Array(numVerts * 3);
 
+    // Divergence-theorem accumulators, summed over the triangle loop below.
+    //   `signedVolume` — its SIGN is the mesh's global winding orientation (positive = outward/CCW).
+    //   `vecArea*` — the VECTOR AREA (sum of area-weighted normals). It vanishes exactly for a
+    //     CLOSED surface and is significant for an open shell, which is what makes it a reliable,
+    //     welding-independent closedness test (unlike counting edges by vertex index, which
+    //     misreports meshes whose vertices are duplicated across faces).
+    // Orientation is only meaningful when the mesh is closed, so an open shell defaults to +1.
+    let signedVolume = 0;
+    let vecAreaX = 0;
+    let vecAreaY = 0;
+    let vecAreaZ = 0;
+    let totalArea = 0;
+
     // Edge pseudonormals: one slot per unique undirected edge; `triEdgeSlot[3t+e]` maps a
     // triangle edge (e = 0,1,2) to its slot. Each slot accumulates the adjacent face normals.
     const edgeMap = new Map<number, number>();
@@ -175,6 +202,13 @@ export function buildMeshDistance(positions: Float32Array, indices: Uint32Array 
         triAN[3 * t + 1] = 0.5 * ny;
         triAN[3 * t + 2] = 0.5 * nz;
         triArea[t] = 0.5 * nlen;
+        // Signed volume of the tetrahedron (origin, a, b, c) = dot(a, cross(b, c)) / 6.
+        signedVolume += (ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx)) / 6;
+        // Vector area / total area (accumulated BEFORE `n` is normalized just below).
+        vecAreaX += 0.5 * nx;
+        vecAreaY += 0.5 * ny;
+        vecAreaZ += 0.5 * nz;
+        totalArea += 0.5 * nlen;
         if (nlen > 0) {
             nx /= nlen;
             ny /= nlen;
@@ -747,7 +781,15 @@ export function buildMeshDistance(positions: Float32Array, indices: Uint32Array 
         return w * INV_FOUR_PI;
     };
 
-    return { signedDistance, signedDistanceBrute, windingNumber, windingNumberBrute };
+    // The vector area vanishes for a CLOSED surface, so its normalized magnitude is roughly the
+    // fraction of the enclosing surface that is missing. A mesh only slightly open (a prop with a
+    // couple of missing edge quads) still has a well-defined interior and a meaningful signed-volume
+    // sign, so the orientation is trusted up to a tolerance rather than only at exactly zero — this
+    // matters because callers may pass geometry through a MIRRORING transform (the Aquanova ship is
+    // negated on X), which flips the interior winding sign and must flip `orientation` with it.
+    const OPEN_TOLERANCE = 0.1;
+    const isClosed = totalArea > 0 && Math.hypot(vecAreaX, vecAreaY, vecAreaZ) / totalArea < OPEN_TOLERANCE;
+    return { signedDistance, signedDistanceBrute, windingNumber, windingNumberBrute, orientation: isClosed && signedVolume < 0 ? -1 : 1 };
 }
 
 /**
@@ -781,11 +823,16 @@ export function buildSignedDistanceGrid(
     const data = new Float32Array(nvx * nvy * nvz);
     // Inside/outside SIGN comes from the generalized (fast) winding number, which is robust for
     // OPEN / non-manifold meshes (unlike angle-weighted pseudonormals). A node is inside iff
-    // |windingNumber| > 0.5 — the |·| makes it independent of triangle winding orientation, so this
-    // subsumes the old domain-corner auto-orient hack. The DISTANCE MAGNITUDE still comes from the
-    // exact pseudonormal path (correct unsigned distance + smooth gradient the SPH boundary needs);
-    // we store it with the winding-number sign. Default (invert=false): inside POSITIVE.
+    // `w * orientation > 0.5`, where `orientation` (+1/-1) is the mesh's global winding direction
+    // taken from its divergence-theorem signed volume — so an inside-out mesh still fills its
+    // interior, without the orientation-independent `|w| > 0.5` test that ALSO accepts the
+    // confidently-EXTERIOR points of an open shell (large negative fractional winding numbers,
+    // e.g. -0.74 in the empty corner of an L-shaped wall panel) and floods empty space.
+    // The DISTANCE MAGNITUDE still comes from the exact pseudonormal path (correct unsigned
+    // distance + smooth gradient the SPH boundary needs); we store it with the winding sign.
+    // Default (invert=false): inside POSITIVE.
     const outSign = invert ? -1 : 1;
+    const orient = dist.orientation;
     for (let k = 0; k < nvz; k++) {
         const z = domainMin[2] + csz * k;
         for (let j = 0; j < nvy; j++) {
@@ -794,7 +841,7 @@ export function buildSignedDistanceGrid(
             for (let i = 0; i < nvx; i++) {
                 const x = domainMin[0] + csx * i;
                 const absDist = Math.abs(dist.signedDistance(x, y, z).distance);
-                const inside = Math.abs(dist.windingNumber(x, y, z)) > 0.5;
+                const inside = dist.windingNumber(x, y, z) * orient > 0.5;
                 data[rowBase + i] = outSign * (inside ? absDist : -absDist);
             }
         }

@@ -17,7 +17,6 @@ import {
     addToScene,
     attachControl,
     createArcRotateCamera,
-    createCsmDirectionalShadowGenerator,
     createDirectionalLight,
     createEngine,
     createGround,
@@ -29,9 +28,10 @@ import {
     getEffectiveAspectRatio,
     getViewProjectionMatrix,
     loadEnvironment,
+    loadHdrEnvironment,
+    createBlurPostProcessTask,
     onBeforeRender,
-    registerSceneWithShadowSupport,
-    setShadowTaskCasterMeshes,
+    registerScene,
     startEngine,
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
@@ -45,6 +45,10 @@ import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
 import type { Mesh, Task, EnvironmentTextures, Renderable } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
+// Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
+// re-exported from the package root, so the factory comes from its own module (the same
+// deep-import convention the fluid sim + HDR skybox already use here).
+import { createPostProcessTask } from "babylon-lite/frame-graph/post-process-task.js";
 import { createFluidProfiler } from "./fluid/gpu-profiler.js";
 import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
@@ -52,33 +56,36 @@ import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, PairState, PendingForce } from "./fluid/demo.js";
 import { exportJsonFromPairState } from "./fluid/preset-io.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
-import { ENV_COUNTRY_URL, ENV_STUDIO_URL } from "./fluid/demo.js";
+import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import { screenRay } from "./fluid/pick.js";
 import { CAP_A, CAP_B, CAP_R, createCapsuleDemo } from "./fluid/scenes/capsule.js";
 import { createBoxDemo } from "./fluid/scenes/box.js";
 import { createFountainDemo } from "./fluid/scenes/fountain.js";
 import { createMarbleTowerDemo } from "./fluid/scenes/marbleTower.js";
-import { createWaterfallDemo } from "./fluid/scenes/waterfall.js";
+import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_QUARRY_ENV_URL } from "./fluid/scenes/waterfall.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
 // packing density; MLS-MPM uses the same count so the two methods fill the tank
 // comparably. Recreating the sims (createSims) is the only way to resize the
 // GPU particle buffers, so the dropdown disposes and rebuilds both backends.
-const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000, 750000, 1000000];
+const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000, 750000, 1000000, 1200000, 1500000, 1800000, 2000000];
 const DEFAULT_PARTICLE_COUNT = 80000;
 
 // Physics particle-size range (matches the spirit of the visual "Particle size"
-// slider). Min is 0.5×; going lower makes the fluid stiff for a 60 fps timestep
-// (CFL) and spray-prone. PBF over-compresses the closed box above ~2×, so PBF is
-// capped at 2× (MLS-MPM handles the larger overfill gracefully up to 3×).
-const PHYS_MIN_SCALE = 0.5;
+// slider). Min is 0.1× so fine-grained fluid is reachable for detail-heavy scenes
+// (e.g. the waterfall's rock terraces); below ~0.5× the fluid gets stiff for a
+// 60 fps timestep (CFL) and more spray-prone, so treat the low end as opt-in.
+// PBF over-compresses the closed box above ~2×, so PBF is capped at 2× (MLS-MPM
+// handles the larger overfill gracefully up to 3×). The per-backend floors match
+// the slider floor so the slider is never silently clamped into a no-op.
+const PHYS_MIN_SCALE = 0.1;
 const PHYS_MAX_SCALE = 3;
-const PBF_MIN_SCALE = 0.5;
+const PBF_MIN_SCALE = 0.1;
 const PBF_MAX_SCALE = 2;
-const MPM_MIN_SCALE = 0.5;
+const MPM_MIN_SCALE = 0.1;
 const MPM_MAX_SCALE = 3;
-const PBMPM_MIN_SCALE = 0.5;
+const PBMPM_MIN_SCALE = 0.1;
 const PBMPM_MAX_SCALE = 3;
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
@@ -137,18 +144,13 @@ async function main(): Promise<void> {
 
     addToScene(scene, createHemisphericLight([0.3, 1, 0.4], 0.75));
 
-    // Directional "sun" — casts CSM (cascaded) shadows so the Waterfall demo's
-    // terrain + boulders read with real depth. The PBR terrain/boulders + outdoor
-    // HDR IBL already carry the lighting, so the sun's intensity is tuned NOT to
-    // blow the scene out; its main job is the cascaded shadow map. The sun stays a
-    // scene light for every demo, but the shadow GENERATOR is attached only while
-    // the Waterfall demo is active (it attaches on enter, detaches on leave) so the
-    // box/capsule/fountain demos never render a shadow map — keeping their custom
-    // frame graph untouched.
+    // Directional "sun". The PBR meshes + outdoor HDR IBL already carry most of the
+    // lighting, so its intensity is tuned to add shape without blowing the scene out.
+    // No fluid demo casts shadows, so the sun has no generator attached and no shadow
+    // map is ever rendered — every demo's custom frame graph stays untouched.
     const sun = createDirectionalLight([-0.5, -0.72, -0.48], 2.4);
     sun.position.set(16, 24, 15);
     addToScene(scene, sun);
-    const sunShadow = createCsmDirectionalShadowGenerator(engine, sun, { mapSize: 2048, numCascades: 4, lambda: 0.6, cascadeBlendPercentage: 0.1, bias: 0.00006 });
 
     // Ground plane the escaping liquid falls onto (hidden by the box demo, whose
     // floor replaces it).
@@ -364,6 +366,9 @@ async function main(): Promise<void> {
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
     let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
+    /** Demos the user has already opened once, so FluidDemo.defaultMethod/defaultQuality are
+     *  honoured on the first visit only. Seeded with the start-up demo below. */
+    const visitedDemos = new Set<string>();
     function simForMethod(name: string): FluidSim {
         if (name === "PBF") {
             return pbfSim;
@@ -394,13 +399,19 @@ async function main(): Promise<void> {
     // every consumer below runs only after that, so the `!` reads are safe.
     let activeDemo: FluidDemo | null = null;
 
+    // Composite target for the whole fluid chain. The surface / foam / container-overlay
+    // passes write HERE instead of straight to the swapchain, so a post-process stage can
+    // read the finished frame and present it. `size: engine` keeps it canvas-sized across
+    // resizes, and the format matches the swapchain so the final pass is a 1:1 resample.
+    const postRT = createRenderTarget({ lbl: "fluid-post-color", format: engine.format, samples: 1, size: engine });
+
     const particleTask = createParticleRenderTask(engine, scene, { colorRT: sceneColorRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, particleTask);
-    // Fluid surface renderer + frame presenter: reads the offscreen scene colour
-    // and writes the swapchain. In sphere mode it just blits the scene (with the
+    // Fluid surface renderer + frame compositor: reads the offscreen scene colour
+    // and writes the composite target. In sphere mode it just blits the scene (with the
     // impostors already drawn into it); in surface mode it reconstructs and
     // shades the liquid surface (refraction of the scene).
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT, camera: cam, sim: activeSim });
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: postRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
 
     // Foam (diffuse-particle) renderer — draws the active sim's spray/foam/bubble pool
@@ -408,7 +419,7 @@ async function main(): Promise<void> {
     // tested against the shared scene depth so opaque geometry occludes it. Only the
     // PBF backend generates foam for now (setFoam is a no-op / undefined on MLS-MPM).
     const foamTask = createFoamRenderTask(engine, scene, {
-        colorRT: engine.scRT,
+        colorRT: postRT,
         depthRT,
         camera: cam,
         sim: activeSim,
@@ -421,12 +432,12 @@ async function main(): Promise<void> {
     addTask(scene, foamTask);
 
     // Container-glass overlay — draws each demo's TRANSLUCENT container mesh (capsule
-    // pill, box tank glass) AFTER the fluid surface + foam, straight into the swapchain
-    // `engine.scRT`, depth-tested (compare, no write) against the shared opaque
+    // pill, box tank glass) AFTER the fluid surface + foam, straight into the composite
+    // target `postRT`, depth-tested (compare, no write) against the shared opaque
     // `depthRT`. Those glass meshes have alpha < 1 and skip depth writes, so if they
     // were drawn (as usual) into the offscreen scene-colour target the fluid surface
     // pass would composite the liquid OVER them. Drawing them last instead means:
-    //   • interior fluid (already in scRT) shows THROUGH the translucent glass;
+    // interior fluid (already in postRT) shows THROUGH the translucent glass;
     //   • ground liquid drained BEHIND the pill is correctly occluded/tinted by the
     //     glass in front of it (the reported bug — liquid was drawn over the capsule);
     //   • opaque geometry in front of the glass still occludes it via the depth test.
@@ -441,7 +452,7 @@ async function main(): Promise<void> {
     const overlayDepth = createRenderTarget({ lbl: "fluid-overlay-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: engine });
     overlayDepth._eager = true; // task loads (loadOp "load") — never builds/clears/disposes it
     overlayDepth._ownsDepthTexture = false; // the shared depth texture is owned by the scene pass
-    const overlayTask = createRenderTask({ name: "container-overlay", rt: engine.scRT, depth: overlayDepth, clr: false }, engine, scene);
+    const overlayTask = createRenderTask({ name: "container-overlay", rt: postRT, depth: overlayDepth, clr: false }, engine, scene);
     // Re-point the borrowed depth view at the scene pass's (possibly resize-rebuilt)
     // depth texture before the task bakes it into its pass descriptor. The scene task
     // is recorded first (added first), so `depthRT._depthView` is already current here.
@@ -454,6 +465,115 @@ async function main(): Promise<void> {
         overlayRecord();
     };
     addTask(scene, overlayTask);
+
+    // ── Presentation stage: postRT → swapchain, either through BLOOM or a plain blit ──
+    // Both paths stay registered in the frame graph for their whole life so each is recorded
+    // (and re-recorded on canvas resize) even while inactive; only the active one does any
+    // GPU work per frame. That is cheaper and far less fragile than splicing tasks in and out
+    // of a live graph.
+    //
+    // The bloom chain is hand-rolled rather than `createBloomPostProcessTask` because the glow
+    // must come from the FLUID ONLY — a stock bloom reads the finished frame, so the bright
+    // HDR sky blooms as hard as the water and the whole image hazes over. The mask falls out
+    // of two targets the demo already owns: `sceneColorRT` is the background (sky + rock +
+    // ground) as it was BEFORE the fluid pass, and `postRT` is the same frame WITH the water,
+    // foam and glass composited in. Any pixel the fluid did not touch is byte-identical in
+    // both, so `|postRT - sceneColorRT|` is a free, exact "is this the waterfall?" mask —
+    // no extra pass, no G-buffer, and it costs one texture fetch in the extract shader.
+    // Each intermediate is the target of EXACTLY ONE task — no ping-ponging. `buildRenderTarget`
+    // destroys and recreates the texture on every `record()`, so if two tasks targeted the same
+    // RT the second one's record would invalidate the view the first one's bind group already
+    // captured; sampling that destroyed texture kills the whole command encoder and the frame
+    // presents black. Hence three targets: extract → A, blur X → B, blur Y → C, merge(postRT, C).
+    const bloomA = createRenderTarget({ lbl: "fluid-bloom-extract", format: engine.format, samples: 1, size: engine });
+    const bloomB = createRenderTarget({ lbl: "fluid-bloom-blur-x", format: engine.format, samples: 1, size: engine });
+    const bloomC = createRenderTarget({ lbl: "fluid-bloom-blur-y", format: engine.format, samples: 1, size: engine });
+    const bloomParams = { intensity: 0.6, threshold: 0.75 };
+    /** Luma difference above which a pixel counts as "the fluid drew here". Just above 8-bit
+     *  quantisation noise (1/255 ≈ 0.004) so untouched background reliably reads as 0. */
+    const BLOOM_FLUID_EPS = 0.02;
+    const bloomExtract = createPostProcessTask(
+        {
+            name: "fluid-bloom-extract",
+            sourceTexture: postRT,
+            targetTexture: bloomA,
+            _shader: {
+                extraTextures: [sceneColorRT],
+                extraTextureWGSL: "@group(0) @binding(2) var bloomBackground:texture_2d<f32>;",
+                uniformWGSL: "struct P{threshold:f32,fluidEps:f32,p0:f32,p1:f32}\n@group(0) @binding(3) var<uniform> bloomExtractParams:P;",
+                uniformBinding: 3,
+                uniformByteLength: 16,
+                writeUniforms(data) {
+                    // Match the stock extract pass: the threshold slider is authored in linear
+                    // space but compared against a gamma-space luma.
+                    data[0] = Math.pow(bloomParams.threshold, 1 / 2.2);
+                    data[1] = BLOOM_FLUID_EPS;
+                },
+                // Gate the usual luminance threshold on the fluid mask. Thresholding the
+                // DIFFERENCE itself would be wrong: white water over a bright sky has a small
+                // difference and would stop blooming exactly where it is brightest.
+                fragmentWGSL: `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
+let bg=textureSampleLevel(bloomBackground,sourceSampler,clamp(uv,vec2f(0),vec2f(1)),0).rgb;
+let d=abs(color.rgb-bg);
+let isFluid=step(bloomExtractParams.fluidEps,max(d.r,max(d.g,d.b)));
+let luma=dot(vec3f(0.2126,0.7152,0.0722),color.rgb);
+return vec4f(isFluid*step(bloomExtractParams.threshold,luma)*color.rgb,color.a);}`,
+            },
+        },
+        engine,
+        scene
+    );
+    const bloomBlurX = createBlurPostProcessTask(
+        { name: "fluid-bloom-blur-x", sourceTexture: bloomA, sourceSamplingMode: "linear", targetTexture: bloomB, direction: { x: 1, y: 0 }, kernel: 48 },
+        engine,
+        scene
+    );
+    const bloomBlurY = createBlurPostProcessTask(
+        { name: "fluid-bloom-blur-y", sourceTexture: bloomB, sourceSamplingMode: "linear", targetTexture: bloomC, direction: { x: 0, y: 1 }, kernel: 48 },
+        engine,
+        scene
+    );
+    const bloomMerge = createPostProcessTask(
+        {
+            name: "fluid-bloom-merge",
+            sourceTexture: postRT,
+            targetTexture: engine.scRT,
+            _shader: {
+                extraTextures: [bloomC],
+                extraTextureWGSL: "@group(0) @binding(2) var bloomBlur:texture_2d<f32>;",
+                uniformWGSL: "struct M{weight:f32,p0:f32,p1:f32,p2:f32}\n@group(0) @binding(3) var<uniform> bloomMergeParams:M;",
+                uniformBinding: 3,
+                uniformByteLength: 16,
+                writeUniforms(data) {
+                    // Weight 0 makes the merge an exact passthrough, which is what "bloom off"
+                    // is: this task ALWAYS runs because it is the single owner of the swapchain.
+                    data[0] = bloomEnabled ? bloomParams.intensity : 0;
+                },
+                fragmentWGSL: `fn applyPostProcess(color:vec4f, uv:vec2f)->vec4f{
+let b=textureSampleLevel(bloomBlur,sourceSampler,clamp(uv,vec2f(0),vec2f(1)),0).rgb;
+return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
+            },
+        },
+        engine,
+        scene
+    );
+    let bloomEnabled = false;
+    /** Register `task` but let it execute only while `active()` holds. Keeps it in the graph
+     *  (so it is recorded + resized normally) while costing nothing when switched off. */
+    const gateTask = (task: Task, active: () => boolean): void => {
+        const run = task.execute!.bind(task);
+        task.execute = (): number => (active() ? run() : 0);
+        addTask(scene, task);
+    };
+    // Only the highlight extraction and the two blurs are switchable. The MERGE is always
+    // registered and always executes: it is the one and only task that writes the swapchain,
+    // and with weight 0 it is a plain blit. (Handing the swapchain to two alternating
+    // post-process tasks does NOT work — the inactive one still owns a recorded pass against
+    // the same surface and the visible result is a black frame.)
+    for (const t of [bloomExtract, bloomBlurX, bloomBlurY]) {
+        gateTask(t, () => bloomEnabled);
+    }
+    addTask(scene, bloomMerge);
 
     // Foam (diffuse-particle) config lives in the shared controls panel (component-owned,
     // per-(demo, method)). `pushFoam` reads its live snapshot and (re)applies it to the
@@ -548,66 +668,206 @@ async function main(): Promise<void> {
     // are set here (matching the old baked exposure 2.0 / contrast 1.2 look). We
     // await `envReady` before registerScene so the deferred skybox builder and the
     // imageProcessing values are in place before the scene is built.
-    // Per-demo HDR environments. box/capsule/fountain reflect the neutral studio
-    // env (environment.env); the waterfall keeps the green countryside (country.env),
-    // which ALSO feeds its PBR terrain/boulder IBL. Both cubes are loaded up front
-    // with NO internal skybox (skipSkybox) — the core instead builds one HDR-skybox
-    // renderable per cube (identical output to loadEnvironment's own deferred builder:
-    // the skybox shader normalizes the cube direction, so size/position/primaryColor
-    // are irrelevant) and, on demo switch, swaps which skybox is in scene._renderables
-    // (bumping the renderable version so the scene task rebuilds its opaque bundle) and
-    // which cube feeds the fluid surface reflections. country.env is left as
-    // scene._envTextures so the waterfall terrain IBL is unchanged. The skybox
-    // snapshots scene.imageProcessing at build time, so exposure/contrast are set
-    // (matching the old baked look) BEFORE the renderables are built. We await
-    // `envReady` before registerScene so the initial (box) skybox is in the scene set
-    // and rendered from frame 0.
+    // Per-demo HDR environments. box/capsule/fountain/marble-tower reflect the neutral studio
+    // env (environment.env); the waterfall — and ONLY the waterfall — gets an open-sky
+    // panorama (Poly Haven "quarry_04_puresky"), declared with that demo's own assets as
+    // WATERFALL_ENV_URL. The studio map is a pre-filtered `.env` (loadEnvironment); the sky is
+    // a raw Radiance `.hdr`, so it goes through loadHdrEnvironment, which parses RGBE and
+    // prefilters the GGX cube on the GPU. Both are loaded with NO internal skybox (skipSkybox)
+    // — the core instead builds one HDR-skybox renderable per cube (identical output to either
+    // loader's own deferred builder: the skybox shader normalizes the cube direction, so
+    // size/position/primaryColor are irrelevant) and, on demo switch, swaps which skybox is in
+    // scene._renderables (bumping the renderable version so the scene task rebuilds its opaque
+    // bundle), which cube feeds the fluid surface reflections, and which exposure the scene is
+    // graded at. We await `envReady` before registerScene so the initial (box) skybox is in
+    // the scene set and rendered from frame 0.
+    //
+    // The two maps are loaded INDEPENDENTLY and a failure of either is survivable: the scene
+    // colour target is deliberately never cleared (the skybox is guaranteed to cover every
+    // pixel), so a missing background is not a missing sky — it is a pure BLACK frame. A
+    // rejected Promise.all would take both skyboxes down and blank every demo, so each load
+    // has its own catch and the survivor is shared.
     const brdfUrl = demoAssetUrl("./brdf-lut.png", import.meta.url);
-    let studioEnv: EnvironmentTextures | null = null;
-    let countryEnv: EnvironmentTextures | null = null;
-    let studioSky: Renderable | null = null;
-    let countrySky: Renderable | null = null;
+    /** One loaded environment: its cube, its background skybox and the grade it is viewed at.
+     *  The open-sky HDR is far brighter than the studio .env (bare sun + sky vs. an interior
+     *  probe), so they cannot share one exposure. Materials read exposure/contrast from the
+     *  scene UBO, which is repacked every frame — so applyDemoEnv just re-points them. The
+     *  SKYBOX is the exception: it snapshots imageProcessing into its per-mesh UBO at build
+     *  time, hence each one is built under its own grade below. */
+    interface EnvSlot {
+        env: EnvironmentTextures;
+        sky: Renderable;
+        exposure: number;
+        contrast: number;
+    }
+    let studioSlot: EnvSlot | null = null;
+    let skySlot: EnvSlot | null = null;
     let activeSky: Renderable | null = null;
-    const envReady = Promise.all([
-        loadEnvironment(scene, ENV_STUDIO_URL, { brdfUrl, skipGround: true, skipSkybox: true }),
-        loadEnvironment(scene, ENV_COUNTRY_URL, { brdfUrl, skipGround: true, skipSkybox: true }),
-    ])
-        .then(([studio, country]) => {
-            studioEnv = studio;
-            countryEnv = country;
-            // country.env drives the waterfall's PBR terrain/boulder IBL — make it the
-            // scene env (the last-loaded env otherwise wins non-deterministically).
-            scene._envTextures = country;
-            scene.imageProcessing.exposure = 1.0;
-            scene.imageProcessing.contrast = 1.1;
-            studioSky = buildHdrSkyboxRenderable(scene, studio, 10, [0, 0, 0], [0, 0, 0]);
-            countrySky = buildHdrSkyboxRenderable(scene, country, 10, [0, 0, 0], [0, 0, 0]);
-        })
-        .catch((err) => console.warn("[fluid] env load failed", err));
 
-    // Install the active demo's environment: swap the background skybox renderable in
-    // the scene render set + point the fluid surface reflections at the matching cube.
-    // No-op until the envs finish loading (the first switchPair runs before
-    // `await envReady`; the initial install then happens right after it, below).
-    function applyDemoEnv(demo: FluidDemo): void {
-        if (!studioSky || !countrySky || !studioEnv || !countryEnv) {
+    // ── Environment picker (TEMPORARY: a shortlist to audition backdrops) ────────────────
+    // Every demo can be viewed under any of these. The first two are the demos' own defaults
+    // and are bundled; the rest are pulled straight from Poly Haven's CDN at runtime (it
+    // serves `Access-Control-Allow-Origin: *`), so auditioning them costs the repo nothing and
+    // deleting the entries below is the whole removal. `exposure`/`contrast` are the grade the
+    // scene is viewed at — the night maps need a much higher exposure than the midday skies,
+    // and these are starting points rather than tuned values.
+    // NB: built by concatenation, NOT a template literal — the WGSL minifier that runs over
+    // emitted chunks treats every backtick template as shader source and strips `//` to
+    // end-of-line, which silently truncates a URL at the scheme separator. Quoted strings are
+    // skipped by that pass, so they are the safe way to hold a URL here.
+    const POLY_HAVEN_2K = (slug: string): string => "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/2k/" + slug + "_2k.hdr";
+    interface EnvChoice {
+        key: string;
+        label: string;
+        url: string;
+        /** Pre-filtered `.env` (loadEnvironment) vs raw Radiance `.hdr` (loadHdrEnvironment). */
+        hdr: boolean;
+        exposure: number;
+        contrast: number;
+    }
+    const ENV_CHOICES: EnvChoice[] = [
+        { key: "studio", label: "Studio (default)", url: ENV_STUDIO_URL, hdr: false, exposure: 1.0, contrast: 1.1 },
+        { key: "belfast", label: "Belfast sunset sky", url: WATERFALL_ENV_URL, hdr: true, exposure: 0.8, contrast: 1.15 },
+        { key: "quarry", label: "Quarry pure sky", url: WATERFALL_QUARRY_ENV_URL, hdr: true, exposure: 0.55, contrast: 1.15 },
+        { key: "driveway", label: "Tree-lined driveway", url: POLY_HAVEN_2K("tree_lined_driveway"), hdr: true, exposure: 1.0, contrast: 1.1 },
+        { key: "drackenstein", label: "Drackenstein quarry sky", url: POLY_HAVEN_2K("drackenstein_quarry_puresky"), hdr: true, exposure: 0.6, contrast: 1.15 },
+        { key: "dikhololo", label: "Dikhololo night", url: POLY_HAVEN_2K("dikhololo_night"), hdr: true, exposure: 1.2, contrast: 1.1 },
+        { key: "rogland", label: "Rogland clear night", url: POLY_HAVEN_2K("rogland_clear_night"), hdr: true, exposure: 1.2, contrast: 1.1 },
+        { key: "minedump", label: "Minedump flats", url: POLY_HAVEN_2K("minedump_flats"), hdr: true, exposure: 0.7, contrast: 1.15 },
+        { key: "qwantani", label: "Qwantani night sky", url: POLY_HAVEN_2K("qwantani_night_puresky"), hdr: true, exposure: 1.2, contrast: 1.1 },
+        { key: "industrial", label: "Industrial sunset sky", url: POLY_HAVEN_2K("industrial_sunset_02_puresky"), hdr: true, exposure: 0.9, contrast: 1.15 },
+    ];
+    /** Loaded slots by choice key. `null` marks a load that FAILED, so it is not retried. */
+    const envSlots = new Map<string, EnvSlot | null>();
+    /** Picker override; null = follow the active demo's own `envUrl`. */
+    let envOverride: string | null = null;
+    const envKeyFor = (demo: FluidDemo): string => envOverride ?? demo.envKey ?? "studio";
+
+    const envReady = Promise.all([
+        loadEnvironment(scene, ENV_STUDIO_URL, { brdfUrl, skipGround: true, skipSkybox: true }).catch((err: unknown) => {
+            console.warn("[fluid] studio env load failed", err);
+            return null;
+        }),
+        // 512² faces (vs the 256 default): the panorama is the waterfall's full-screen
+        // backdrop, not just an IBL source, so mip 0 has to hold up at viewport resolution.
+        loadHdrEnvironment(scene, WATERFALL_ENV_URL, { faceSize: 512, skipGround: true, skipSkybox: true }).catch((err: unknown) => {
+            console.warn(`[fluid] waterfall sky HDR load failed (${WATERFALL_ENV_URL}) — falling back to the studio environment`, err);
+            return null;
+        }),
+    ]).then(([studio, sky]) => {
+        // The loaders disagree on tone mapping (loadEnvironment enables it, loadHdrEnvironment
+        // disables it) and Promise.all gives no ordering guarantee, so pin it explicitly.
+        scene.imageProcessing.toneMappingEnabled = true;
+        studioSlot = studio ? makeSlot(studio, 1.0, 1.1) : null;
+        // `sky` is the waterfall's own env (WATERFALL_ENV_URL). Take its grade from the matching
+        // picker entry rather than repeating the numbers, so the eager slot and the picker can
+        // never disagree about how the same map is exposed.
+        const skyChoice = ENV_CHOICES.find((c) => c.url === WATERFALL_ENV_URL);
+        skySlot = sky ? makeSlot(sky, skyChoice?.exposure ?? 0.8, skyChoice?.contrast ?? 1.15) : null;
+        studioSlot ??= skySlot;
+        skySlot ??= studioSlot;
+        // Cache AFTER the cross-fallback, so a failed map resolves to its survivor rather than
+        // being remembered as "load failed" and leaving that demo with no sky at all.
+        envSlots.set("studio", studioSlot);
+        envSlots.set(skyChoice?.key ?? "belfast", skySlot);
+        if (!skySlot) {
+            console.warn("[fluid] no environment loaded — the scene has no skybox and will render black");
             return;
         }
-        const useCountry = demo.envUrl === ENV_COUNTRY_URL;
-        const nextSky = useCountry ? countrySky : studioSky;
-        const nextEnv = useCountry ? countryEnv : studioEnv;
-        if (activeSky !== nextSky) {
+        // ONE global IBL cube: the PBR group builder captures scene._envTextures at
+        // registerScene and bakes it into every material's bind group, so it cannot be swapped
+        // per demo. The waterfall's rock is the only PBR geometry whose lighting must match
+        // its background, so the sky cube wins (as country.env used to).
+        scene._envTextures = skySlot.env;
+    });
+
+    /** Build a slot for an already-loaded cube. The skybox snapshots scene.imageProcessing at
+     *  build time, so the grade must be set FIRST — that is why this is not just an object
+     *  literal, and why every slot carries the grade it was built under. */
+    function makeSlot(env: EnvironmentTextures, exposure: number, contrast: number): EnvSlot {
+        scene.imageProcessing.exposure = exposure;
+        scene.imageProcessing.contrast = contrast;
+        return { env, sky: buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
+    }
+
+    /** Fetch + prefilter a choice the first time it is picked, then cache it (including a
+     *  failure, as null, so a dead URL is not re-fetched on every switch). */
+    async function loadEnvChoice(choice: EnvChoice): Promise<EnvSlot | null> {
+        if (envSlots.has(choice.key)) {
+            return envSlots.get(choice.key) ?? null;
+        }
+        try {
+            const env = choice.hdr
+                ? await loadHdrEnvironment(scene, choice.url, { faceSize: 512, skipGround: true, skipSkybox: true })
+                : await loadEnvironment(scene, choice.url, { brdfUrl, skipGround: true, skipSkybox: true });
+            scene.imageProcessing.toneMappingEnabled = true;
+            const slot = makeSlot(env, choice.exposure, choice.contrast);
+            envSlots.set(choice.key, slot);
+            return slot;
+        } catch (err: unknown) {
+            console.warn(`[fluid] environment "${choice.key}" failed to load (${choice.url})`, err);
+            envSlots.set(choice.key, null);
+            return null;
+        }
+    }
+
+    // Install the active demo's environment: swap the background skybox renderable in
+    // the scene render set, re-grade the scene, and point the fluid surface reflections at
+    // the matching cube. No-op until the envs finish loading (the first switchPair runs
+    // before `await envReady`; the initial install then happens right after it, below).
+    function applyDemoEnv(demo: FluidDemo): void {
+        const key = envKeyFor(demo);
+        if (envSlots.has(key)) {
+            // Already attempted. A cached `null` means the load failed — leave whatever sky is
+            // currently up rather than blanking the scene.
+            const cached = envSlots.get(key) ?? null;
+            if (cached) {
+                installEnvSlot(cached);
+            }
+            return;
+        }
+        // The two built-ins are reachable through their eager slots before envReady has
+        // populated the cache (the very first switchPair runs before it resolves).
+        const builtin = key === "studio" ? studioSlot : key === "belfast" ? skySlot : null;
+        if (builtin) {
+            installEnvSlot(builtin);
+            return;
+        }
+        // A picker choice on its first use: fetch it, then install — but only if it is still
+        // the current choice by the time it lands.
+        const choice = ENV_CHOICES.find((c) => c.key === key);
+        if (!choice) {
+            return;
+        }
+        void loadEnvChoice(choice).then((loaded) => {
+            if (loaded && envKeyFor(activeDemo ?? demo) === key) {
+                installEnvSlot(loaded);
+            }
+        });
+    }
+
+    /** Swap the background skybox renderable in the scene render set, re-grade the scene, and
+     *  point the fluid surface reflections at the matching cube. */
+    function installEnvSlot(slot: EnvSlot): void {
+        scene.imageProcessing.exposure = slot.exposure;
+        scene.imageProcessing.contrast = slot.contrast;
+        // Diffuse IBL: the scene UBO is repacked every frame from scene._envTextures, so
+        // re-pointing it makes ambient lighting follow the picker. The SPECULAR cube is a
+        // different story — the PBR group builder bakes it into each material's bind group at
+        // registerScene, so already-built materials keep the startup cube's reflections.
+        scene._envTextures = slot.env;
+        if (activeSky !== slot.sky) {
             if (activeSky) {
                 const i = scene._renderables.indexOf(activeSky);
                 if (i >= 0) {
                     scene._renderables.splice(i, 1);
                 }
             }
-            scene._renderables.push(nextSky);
+            scene._renderables.push(slot.sky);
             scene._renderableVersion++;
-            activeSky = nextSky;
+            activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: nextEnv.specularCubeView, sampler: nextEnv.cubeSampler });
+        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
     }
 
     // On-screen FPS accumulators (smoothed over ~0.5 s windows). The FPS read-out element
@@ -639,6 +899,21 @@ async function main(): Promise<void> {
     // Inject the active demo's scene SDF, emitters and spawn into both sims.
     // Re-applied after any sim rebuild. The demo packs its own params into the UBO
     // (offset 0); the hole ring (offset 32) is managed here.
+    // Push the active demo's seed volume + warm-up to every backend. Split out of
+    // applySceneSdf so a demo whose spawn volume resolves asynchronously can re-push it
+    // (see ctx.refreshSpawn) without redoing the whole SDF/emitter apply.
+    function applySpawn(): void {
+        const s = activeDemo!.spawn();
+        pbfSim.setSpawn(s.min, s.max, s.accept);
+        mpmSim.setSpawn(s.min, s.max, s.accept);
+        pbmpmSim.setSpawn(s.min, s.max, s.accept);
+        // Per-demo start-of-sim warm-up (PB-MPM no-ops it). Applied on the next
+        // reset()/seed() — switchPair resets the active sim right after this.
+        pbfSim.setWarmup?.(s.warmupFrames ?? 0);
+        mpmSim.setWarmup?.(s.warmupFrames ?? 0);
+        pbmpmSim.setWarmup?.(s.warmupFrames ?? 0);
+    }
+
     function applySceneSdf(): void {
         const demo = activeDemo!;
         demo.writeSdfParams();
@@ -649,15 +924,7 @@ async function main(): Promise<void> {
         pbfSim.setEmitters(emit);
         mpmSim.setEmitters(emit);
         pbmpmSim.setEmitters(emit);
-        const s = demo.spawn();
-        pbfSim.setSpawn(s.min, s.max, s.accept);
-        mpmSim.setSpawn(s.min, s.max, s.accept);
-        pbmpmSim.setSpawn(s.min, s.max, s.accept);
-        // Per-demo start-of-sim warm-up (MLS-MPM only; PBF no-ops via ?.). Applied on
-        // the next reset()/seed() — switchPair resets the active sim right after this.
-        pbfSim.setWarmup?.(s.warmupFrames ?? 0);
-        mpmSim.setWarmup?.(s.warmupFrames ?? 0);
-        pbmpmSim.setWarmup?.(s.warmupFrames ?? 0);
+        applySpawn();
     }
 
     // ── Live tuning UI ───────────────────────────────────────────────
@@ -680,7 +947,16 @@ async function main(): Promise<void> {
     containerSel.onchange = () => {
         const demo = demos.find((d) => d.key === containerSel.value);
         if (demo) {
-            switchPair(demo, methodName, quality);
+            // A demo may ask to open on its own method/quality the first time it is picked
+            // (see FluidDemo.defaultMethod). Only ever on the first visit, so coming back to a
+            // demo keeps whatever the user last set it to.
+            const first = !visitedDemos.has(demo.key);
+            visitedDemos.add(demo.key);
+            switchPair(demo, (first && demo.defaultMethod) || methodName, (first && demo.defaultQuality) || quality);
+            // switchPair adopts the pair it actually loaded — mirror that back into the two
+            // selectors so the panel never disagrees with the running sim.
+            qualitySel.value = quality;
+            controls.setMethod(methodName);
         }
     };
     // Quality tier (low / middle / high) — sits NEXT TO the demo dropdown. Each
@@ -726,6 +1002,67 @@ async function main(): Promise<void> {
         switchPair(activeDemo!, methodName, quality, m);
     };
     pbmpmMaterialRow.append(pbmpmMaterialLabel, pbmpmMaterialSel);
+
+    // Environment picker — applies to EVERY demo, overriding its own `envUrl` default.
+    const envRow = document.createElement("div");
+    envRow.style.cssText = "margin-bottom:8px;";
+    const envLabel = document.createElement("div");
+    envLabel.textContent = "Environment";
+    envLabel.style.cssText = "font-weight:600;margin-bottom:4px;";
+    const envSel = document.createElement("select");
+    envSel.style.cssText = DEMO_SEL_CSS;
+    {
+        const auto = document.createElement("option");
+        auto.value = "";
+        auto.textContent = "Auto (per demo)";
+        envSel.appendChild(auto);
+    }
+    for (const c of ENV_CHOICES) {
+        const opt = document.createElement("option");
+        opt.value = c.key;
+        opt.textContent = c.label;
+        envSel.appendChild(opt);
+    }
+    envSel.value = "";
+    envSel.onchange = () => {
+        envOverride = envSel.value || null;
+        if (activeDemo) {
+            applyDemoEnv(activeDemo);
+        }
+    };
+    envRow.append(envLabel, envSel);
+
+    // Environment yaw. Turns the backdrop, the PBR image-based lighting and the fluid's own
+    // reflections together: `scene.envRotationY` is repacked into the scene UBO every frame
+    // (the skybox and the PBR IBL read it from there) and mirrored into the fluid surface
+    // pass, which owns a separate uniform block.
+    let envRotationDeg = 0;
+    const envRotRow = document.createElement("div");
+    const envRotHead = document.createElement("div");
+    envRotHead.style.cssText = "display:flex;justify-content:space-between;";
+    const envRotLab = document.createElement("span");
+    envRotLab.textContent = "Environment rotation";
+    const envRotVal = document.createElement("span");
+    envRotVal.style.cssText = "color:#9fb4cc;";
+    envRotVal.textContent = "0\u00b0";
+    envRotHead.append(envRotLab, envRotVal);
+    const envRotInput = document.createElement("input");
+    envRotInput.type = "range";
+    envRotInput.min = "0";
+    envRotInput.max = "360";
+    envRotInput.step = "1";
+    envRotInput.value = "0";
+    envRotInput.style.cssText = "width:100%;";
+    const applyEnvRotation = (deg: number): void => {
+        envRotationDeg = deg;
+        envRotVal.textContent = `${Math.round(deg)}\u00b0`;
+        const rad = (deg * Math.PI) / 180;
+        scene.envRotationY = rad;
+        surfaceTask.setEnvRotationY(rad);
+    };
+    envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
+    envRotRow.append(envRotHead, envRotInput);
+    void envRotationDeg;
     // Host for the active demo's live tunables ("Demo parameters") + its demo-specific
     // panel controls.
     const demoParamsHost = document.createElement("div");
@@ -777,6 +1114,7 @@ async function main(): Promise<void> {
                 softness: 0.25,
                 density: 1.6,
                 subsurfaceStrength: 0.4,
+                subsurfaceColor: "#b8d1f2",
             },
         },
         gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"], supported: profiler !== null },
@@ -853,6 +1191,7 @@ async function main(): Promise<void> {
             },
             onFoamThresholds: (t0, t1) => foamTask.setThresholds(t0, t1),
             onFoamSubsurface: (v) => foamTask.setSubsurfaceStrength(v),
+            onFoamSubColor: (rgb) => foamTask.setSubsurfaceColor(rgb),
             onFoamSize: (v) => foamTask.setSizeScale(v),
             onFoamBlur: (v) => foamTask.setBlurRadius(v),
             onFoamLight: (v) => foamTask.setLightIntensity(v),
@@ -866,7 +1205,7 @@ async function main(): Promise<void> {
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
+    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -897,6 +1236,27 @@ async function main(): Promise<void> {
     // Mount the shared panel (right side) + the GPU-timing panel (top-left). The
     // `canvas.dataset.timing` flag lets tests read whether per-stage timing is active.
     document.body.appendChild(controls.root);
+    // F8 hides/shows every overlay so the demo can be looked at (or captured) unobstructed:
+    // the control panel, the GPU-timing panel and the page's own key hint. Collected lazily
+    // because the GPU panel only exists when timestamp queries are available.
+    let uiHidden = false;
+    const uiOverlays = (): HTMLElement[] => {
+        const list: HTMLElement[] = [controls.root];
+        if (controls.gpu) {
+            list.push(controls.gpu.panel);
+        }
+        const hintEl = document.querySelector<HTMLElement>(".hint");
+        if (hintEl) {
+            list.push(hintEl);
+        }
+        return list;
+    };
+    const setUiHidden = (hidden: boolean): void => {
+        uiHidden = hidden;
+        for (const el of uiOverlays()) {
+            el.style.display = hidden ? "none" : "";
+        }
+    };
     if (controls.gpu) {
         document.body.appendChild(controls.gpu.panel);
     }
@@ -909,6 +1269,9 @@ async function main(): Promise<void> {
     function buildDemoParamsUI(host: HTMLElement, params: DemoParam[], onChange: (k: string, v: number | boolean | string) => void): void {
         host.replaceChildren();
         for (const p of params) {
+            if (p.hidden) {
+                continue; // still snapshotted + preset-driven, just not exposed as a control
+            }
             if (p.type === "number") {
                 const row = document.createElement("div");
                 row.style.cssText = "margin:6px 0;";
@@ -963,7 +1326,7 @@ async function main(): Promise<void> {
     function refreshDemoParams(): void {
         const params = activeDemo!.demoParams();
         const extras = activeDemo!.extraControls();
-        if (params.length === 0 && extras.length === 0) {
+        if (!params.some((p) => !p.hidden) && extras.length === 0) {
             const none = document.createElement("div");
             none.textContent = "No tunable parameters for this demo.";
             none.style.cssText = "color:#7c8aa0;font-size:12px;margin:2px 0;";
@@ -1323,6 +1686,7 @@ async function main(): Promise<void> {
                 softness: f.softness ?? cur.softness,
                 density: f.density ?? cur.density,
                 subsurfaceStrength: f.subsurfaceStrength ?? cur.subsurfaceStrength,
+                subsurfaceColor: f.subsurfaceColor ?? cur.subsurfaceColor,
             });
         }
         // Demo extra-control state (box size / paddle) — before applySceneSdf so the
@@ -1363,6 +1727,11 @@ async function main(): Promise<void> {
         if (currentPairKey !== null) {
             pairStates.set(currentPairKey, readLivePairState(methodName));
         }
+        // Adopt the target method BEFORE anything reads the demo back (the demo-change branch
+        // below calls applySceneSdf, which asks the demo for its spawn and emitters). Those can
+        // legitimately depend on the method, so they must not be answering for the one we are
+        // leaving.
+        methodName = nextMethod;
         if (activeDemo !== nextDemo || currentPairKey === null) {
             if (activeDemo) {
                 activeDemo.onLeave();
@@ -1370,13 +1739,14 @@ async function main(): Promise<void> {
             activeDemo = nextDemo;
             activeDemo.onEnter(); // meshes, camera mode
             applyDemoEnv(activeDemo); // swap skybox background + surface-reflection cube
+            applyEnvRotation(activeDemo.envRotationDeg ?? 0); // aim the backdrop the way this demo wants it
+            envRotInput.value = String(activeDemo.envRotationDeg ?? 0);
             applySceneSdf(); // scene bounds + emitters + spawn
             refreshDemoParams();
             pendingForce = null;
             activeSim.reset();
             clearSceneHoles();
         }
-        methodName = nextMethod;
         quality = nextQuality;
         // PB-MPM keeps a SEPARATE pair (physics/render/colour) per material — but ONLY on material-capable
         // demos (the box). Every other demo is liquid-only, so material is forced to 0 there and the key
@@ -1408,10 +1778,11 @@ async function main(): Promise<void> {
         getActiveSim: () => activeSim,
         resetActiveSim: () => activeSim.reset(),
         refreshEmitters: applyEmitters,
+        refreshSpawn: applySpawn,
         addSceneHole,
         clearSceneHoles,
         sun,
-        sunShadow,
+        simHalfExtentXZ: BOUNDS_MAX[0],
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         getProfiler: () => (timingEnabled ? profiler : null),
         setDomainScale: (s: number) => {
@@ -1420,6 +1791,15 @@ async function main(): Promise<void> {
             // set inside rebuildSims.
             domainScale = s;
             rebuildSims(particleCount, physicsScale);
+        },
+        setBloom: (cfg: { enabled: boolean; intensity: number; threshold: number }) => {
+            bloomEnabled = cfg.enabled;
+            bloomParams.intensity = cfg.intensity;
+            bloomParams.threshold = cfg.threshold;
+            // Both live in per-pass uniform buffers that are only written on demand —
+            // without this the sliders would do nothing.
+            bloomExtract.updateUniforms();
+            bloomMerge.updateUniforms();
         },
     };
 
@@ -1449,27 +1829,6 @@ async function main(): Promise<void> {
             overlayMeshes.push(m);
             overlayTask.addMesh(m);
         }
-    }
-
-    // Warm up the sun's CSM shadow-caster pipeline for every demo that casts shadows
-    // (only the waterfall does). The no-color caster material view is loaded via a
-    // dynamic import kicked off by the shadow task's _preload, which registerScene
-    // awaits — but ONLY for a light whose generator is attached with casters at that
-    // point. So we temporarily attach the generator + register the union of caster
-    // meshes here (before registerScene) to force that preload; otherwise the first
-    // frame after switching to a shadow demo at runtime would race the import and the
-    // shadow task's execute() would throw. Reset back to the default (box) demo's
-    // no-shadow state right after registerScene (below); each shadow demo re-attaches
-    // the generator + its casters in onEnter.
-    const shadowCasters: Mesh[] = [];
-    for (const d of demos) {
-        for (const m of d.shadowCasters?.() ?? []) {
-            shadowCasters.push(m);
-        }
-    }
-    if (shadowCasters.length > 0) {
-        sun.shadowGenerator = sunShadow;
-        setShadowTaskCasterMeshes(sunShadow, shadowCasters);
     }
 
     let paused = false;
@@ -1592,7 +1951,12 @@ async function main(): Promise<void> {
             e.preventDefault(); // prevent page scroll in every demo
             return;
         }
-        // Global shortcuts: R resets (refills), M toggles the backend, P pauses.
+        if (e.key === "F8") {
+            e.preventDefault(); // some browsers bind F8 to the debugger
+            setUiHidden(!uiHidden);
+            return;
+        }
+        // Global shortcuts: R resets (refills), M toggles the backend, P pauses, F8 hides the UI.
         if (e.key === "r" || e.key === "R") {
             activeSim.reset();
             clearSceneHoles();
@@ -1615,8 +1979,12 @@ async function main(): Promise<void> {
     // Load the on-disk quality presets (served from lab/public/fluid-presets) BEFORE the first
     // switchPair, so first-visit lookups see them. Runtime fetch → editing a preset + reloading
     // the page applies it with no bundle rebuild.
-    await loadQualityPresets(demos.map((d) => d.key), MATERIAL_DEMO_KEYS);
+    await loadQualityPresets(
+        demos.map((d) => d.key),
+        MATERIAL_DEMO_KEYS
+    );
     switchPair(boxDemo, "MLS-MPM", quality); // box + MLS-MPM at the default quality
+    visitedDemos.add(boxDemo.key); // the start-up demo counts as visited
     containerSel.value = boxDemo.key;
     qualitySel.value = quality;
     controls.setMethod("MLS-MPM");
@@ -1625,7 +1993,7 @@ async function main(): Promise<void> {
     const hint = document.querySelector(".hint");
     if (hint) {
         hint.textContent =
-            "Drag rotate · RMB slide · Shift+RMB push fluid · wheel zoom — Capsule: LMB on tank punches hole · Space random hole · R refill · M switch method · P pause";
+            "Drag rotate · RMB slide · Shift+RMB push fluid · wheel zoom — Capsule: LMB on tank punches hole · Space random hole · R refill · M switch method · P pause · F8 hide UI";
     }
 
     // Ensure the environment finished loading (skybox builder registered + specular
@@ -1633,16 +2001,7 @@ async function main(): Promise<void> {
     // scene, so the HDR skybox renders as the sceneColorRT background from frame 0.
     await envReady;
     applyDemoEnv(activeDemo!); // install the initial (box) skybox + surface env before frame 0
-    await registerSceneWithShadowSupport(scene);
-
-    // Shadow warmup done — the no-color caster module is now loaded (awaited by the
-    // registration above). Detach the generator + clear casters so the default (box)
-    // demo starts with no shadow map; each shadow-casting demo re-attaches the
-    // generator + its own casters in onEnter.
-    if (shadowCasters.length > 0) {
-        sun.shadowGenerator = undefined;
-        setShadowTaskCasterMeshes(sunShadow, []);
-    }
+    await registerScene(scene);
 
     // Strip the translucent container meshes out of the auto-mirrored scene-colour
     // pass: they are now drawn only by the container-glass overlay task (after the

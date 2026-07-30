@@ -16,17 +16,23 @@ export interface DecomposedTransform {
 
 /**
  * Decompose a column-major 4×4 affine matrix into translation, rotation (unit
- * quaternion), and scale. Assumes a TRS matrix (no shear). Mirror image (negative
- * determinant) matrices are not specially handled — the returned scale is always
- * non-negative, matching the rest of the engine's decompose usage.
+ * quaternion), and scale. Assumes a TRS matrix (no shear).
+ *
+ * MIRRORED input (negative determinant) has no rotation + positive-scale form: stripping a
+ * positive scale would leave a REFLECTION basis, and the quaternion extracted from a reflection is
+ * meaningless (it silently yields a wrong orientation). The reflection is therefore folded into the
+ * X scale — matching Babylon.js — so the remaining basis is a proper rotation and
+ * `translation × rotation × scale` reproduces the input exactly. Callers that only want a magnitude
+ * should take `Math.abs(scale.x)`.
  * @param m - Column-major 4×4 matrix.
  * @returns A new translation/rotation/scale triple.
  */
 export function mat4Decompose(m: Mat4): DecomposedTransform {
-    const sx = Math.hypot(m[0]!, m[1]!, m[2]!);
+    const det = m[0]! * (m[5]! * m[10]! - m[6]! * m[9]!) - m[4]! * (m[1]! * m[10]! - m[2]! * m[9]!) + m[8]! * (m[1]! * m[6]! - m[2]! * m[5]!);
+    const sx = (det < 0 ? -1 : 1) * Math.hypot(m[0]!, m[1]!, m[2]!);
     const sy = Math.hypot(m[4]!, m[5]!, m[6]!);
     const sz = Math.hypot(m[8]!, m[9]!, m[10]!);
-    const invSx = sx > 1e-8 ? 1 / sx : 0;
+    const invSx = Math.abs(sx) > 1e-8 ? 1 / sx : 0;
     const invSy = sy > 1e-8 ? 1 / sy : 0;
     const invSz = sz > 1e-8 ? 1 / sz : 0;
     // Strip scale from the basis columns, then extract the rotation quaternion.
