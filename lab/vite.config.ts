@@ -324,6 +324,11 @@ function serveReferenceImages(): Plugin {
                         ".bin": "application/octet-stream",
                         ".glb": "model/gltf-binary",
                         ".env": "application/octet-stream",
+                        // Radiance HDR environment panorama (waterfall demo), fetched as an
+                        // ArrayBuffer and parsed by loadHdrEnvironment. Same trap as `.spec`
+                        // below: without an entry the SPA fallback returns index.html with a
+                        // 200, and the RGBE parser fails on "missing #? signature".
+                        ".hdr": "image/vnd.radiance",
                         ".wad": "application/octet-stream",
                         ".txt": "text/plain; charset=utf-8",
                         ".md": "text/markdown; charset=utf-8",

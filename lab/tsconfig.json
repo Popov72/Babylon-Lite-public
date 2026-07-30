@@ -1,8 +1,21 @@
 {
+  // The project an EDITOR picks up for lab/ (there is no tsconfig at the repo root), and the
+  // one `pnpm lint` checks through tsconfig.typecheck.json, which extends this file — so the
+  // two can never drift apart and leave the editor reporting errors CI does not see.
+  //
+  // The `babylon-lite` → source mappings are the load-bearing part: without them every
+  // `babylon-lite/<subpath>.js` import in lab/lite/src resolves to nothing and the editor
+  // reports TS2307 across files that build and typecheck perfectly well. Type-check only
+  // (nothing compiles the lab through tsc — Vite bundles it), hence no outDir/rootDir; a
+  // rootDir of "lab" would in fact reject the mapped package sources as outside it.
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "./dist",
-    "rootDir": "."
+    "noEmit": true,
+    "paths": {
+      "babylon-lite": ["../packages/babylon-lite/src/index.ts"],
+      "babylon-lite/*": ["../packages/babylon-lite/src/*"],
+      "babylon-lite-gl": ["../packages/babylon-lite-gl/src/index.ts"]
+    }
   },
-  "include": ["lite/src", "gl/src"]
+  "include": ["lite/src", "gl/src", "../packages/babylon-lite/src/vite-env.d.ts"]
 }

@@ -20,10 +20,12 @@ import {
     addAnimationGroups,
     addTask,
     addToScene,
-    attachControl,
     computeDeformedPositions,
     createAnimationManager,
-    createArcRotateCamera,
+    createFreeCamera,
+    createHavokWorld,
+    createPhysicsBody,
+    createPhysicsShape,
     createDirectionalLight,
     createEngine,
     createGpuPicker,
@@ -35,8 +37,22 @@ import {
     createStandardMaterial,
     createTransformNode,
     enableMaterialPlugins,
+    getPhysicsBodyLinearVelocity,
+    getProjectionMatrix,
+    getViewMatrix,
+    getViewProjectionMatrix,
     isPbrMaterial,
+    onPhysicsAfterStep,
+    PhysicsMotionType,
+    PhysicsShapeType,
+    setParent,
+    setPhysicsBodyAngularVelocity,
+    setPhysicsBodyLinearVelocity,
+    setPhysicsBodyShape,
+    setPhysicsBodyTransform,
+    setPhysicsTimestepMs,
     loadEnvironment,
+    loadHdrEnvironment,
     loadGltf,
     onBeforeRender,
     pauseAnimation,
@@ -47,25 +63,46 @@ import {
     startEngine,
     updateAnimationManager,
 } from "babylon-lite";
-import type { AnimationGroup, EnvironmentTextures, Material, Mesh, Renderable, SceneNode } from "babylon-lite";
+import type { AnimationGroup, EnvironmentTextures, Material, Mesh, PhysicsBody, PhysicsWorld, Renderable, SceneNode } from "babylon-lite";
+import HavokPhysics from "@babylonjs/havok";
 import { createLiquefyPlugin } from "./liquefy-plugin.js";
+import { buildLitParticleColors } from "./particle-lit-colors.js";
+import type { LitColorScene } from "./particle-lit-colors.js";
+import {
+    DEFAULT_SHIP_IBL_STRENGTH,
+    findEntityWithBehavior,
+    isDynamicBehavior,
+    isLiquefiableBehavior,
+    linkedMeshNames,
+    PLAYER_START_BEHAVIOR,
+    resolveBehavior,
+    resolveExposure,
+    resolveToneMapping,
+    WEAPON_START_BEHAVIOR,
+} from "./ship-manifest.js";
+import type { ShipBehavior, ShipBehaviorLibrary, ShipEntities, ShipEnvironment } from "./ship-manifest.js";
 import type { LiquefyState } from "./liquefy-plugin.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
-import { sampleMeshVolume } from "babylon-lite/fluid/volume-sampling/index.js";
+import { fillMeshParticles } from "./particle-fill.js";
+import type { MeshFillStrategy, MeshParticleFill } from "./particle-fill.js";
 import type { VolumeSamplingMode } from "babylon-lite/fluid/volume-sampling/index.js";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import type { PhysSchemaEntry } from "babylon-lite/fluid/controls-panel.js";
 import { createFluidProfiler } from "./fluid/gpu-profiler.js";
 import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
+import { exportJsonFromPairState, presetFromExportJson } from "./fluid/preset-io.js";
+import type { FluidExportJson } from "./fluid/preset-io.js";
+import type { PairState } from "./fluid/demo.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 
 // Box-preset render defaults (fluid/scenes/box.ts MLS-MPM preset).
 const DEF_COLOR = "#16a3c3";
+
 const DEF_ABSORPTION = 0.4;
 const DEF_SIZE = 0.7;
 const DEF_REFRACTION = 0.06;
@@ -84,6 +121,9 @@ const DEF_NARROW_MU = 1;
 const GROUND_Y = 0;
 const SPREAD_MARGIN = 9; // extra half-width (world units) around a mesh footprint for puddle spread
 const LIQUEFY_SPEED = 6; // dissolve front growth (world units / s)
+// Ship modules are dense and read as architecture rather than a single prop, so the dissolve front
+// sweeping across them at gallery speed looks like a pop rather than a melt — run it a third as fast.
+const LIQUEFY_SPEED_SHIP = LIQUEFY_SPEED / 3;
 const LIFETIME = 5.0; // seconds a running sim lives before it starts fading
 const FADE_DUR = 1.2; // seconds the alpha fade-out takes before dispose
 const WRIGGLE_AMP = 0.04; // cartoon "pain" jitter amplitude (world units)
@@ -93,18 +133,38 @@ const MAX_TOTAL = 600000; // combined render-buffer capacity (particles across a
 
 // Studio HDR environment — drives the fluid-surface reflections + the skybox background.
 const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
+// The interior HDRI used by the Aquanova demo — offered in the env picker so the water look can be
+// auditioned under the exact same lighting (to diagnose colour differences between the two demos).
+const BANK_VAULT_ENV_URL = "/aquanova/bank_vault_2k.hdr";
 const SUN_DIR: [number, number, number] = [-0.4, -0.82, -0.45];
 
 // Textured glTF foes — each is loaded, auto-fit to a common size, sat on the ground, and (when the
 // model is skinned/animated) played + sampled in its CURRENT deformed pose. Their diffuse textures
 // drive the per-particle "Use mesh colours" render. Alien + CesiumMan are animated (skinned).
-const MODEL_FOES: { key: string; url: string; x: number; ry?: number; surfaceOnly?: boolean; scale?: number }[] = [
-    { key: "alien", url: "https://playground.babylonjs.com/scenes/Alien/Alien.gltf", x: -15 },
-    { key: "barrel", url: "https://assets.babylonjs.com/meshes/ExplodingBarrel.glb", x: -5, ry: -Math.PI / 2, surfaceOnly: true },
-    { key: "house", url: "https://assets.babylonjs.com/meshes/haunted_house.glb", x: 5, surfaceOnly: true, scale: 4 },
-    { key: "cesium", url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb", x: 15 },
+const MODEL_FOES: { key: string; url: string; x: number; z?: number; ry?: number; surfaceOnly?: boolean; scale?: number }[] = [
+    { key: "alien", url: "https://playground.babylonjs.com/scenes/Alien/Alien.gltf", x: -15, z: 6 },
+    { key: "barrel", url: "https://assets.babylonjs.com/meshes/ExplodingBarrel.glb", x: -5, z: 6, ry: -Math.PI / 2, surfaceOnly: true },
+    { key: "house", url: "https://assets.babylonjs.com/meshes/haunted_house.glb", x: 5, z: 6, surfaceOnly: true, scale: 4 },
+    { key: "cesium", url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb", x: 15, z: 6 },
 ];
 const MODEL_TARGET_SIZE = 7; // auto-fit: scale each model so its largest dimension ≈ this many world units
+
+// ── Foe set: the sample models, or the Aquanova ship's own liquefiable meshes ──────────────────
+// `?foes=ship` swaps the gallery for the EXACT ship the Aquanova demo liquefies (ship.glb at its
+// authored scale, every mesh made a foe). Same geometry, materials and trim atlas as Aquanova, but
+// under Liquefactor's lighting, camera and controls — so the water look can be compared directly
+// between the two demos.
+//
+// This is a URL param rather than a live toggle on purpose: the radial-clip liquefy plugin only
+// materialises for meshes present in the INITIAL scene build (see loadModelInstance), so foes
+// cannot be swapped after boot without leaving them invisible. The picker below reloads the page.
+const SHIP_URL = "/aquanova/ship.glb";
+const SHIP_MANIFEST_URL = "/aquanova/ship_manifest.json";
+const FOE_SETS = [
+    { key: "props", label: "Sample props (default)" },
+    { key: "ship", label: "Aquanova ship meshes" },
+] as const;
+const FOE_SET: string = new URLSearchParams(location.search).get("foes") === "ship" ? "ship" : "props";
 
 // PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on it.
 const PBMPM_MATERIAL_LABELS: [string, number][] = [
@@ -152,7 +212,7 @@ interface Instance {
     readonly surfaceOnly: boolean; // skip volume sampling (hollow prop) → dense barycentric-UV surface shell
     readonly x: number;
     readonly baseY: number; // world Y the mesh rests at (used for the static-sample world offset)
-    readonly homePos: [number, number, number]; // resting root position (auto-fit centred); Restart resets here
+    homePos: [number, number, number]; // resting root position (auto-fit centred); Restart resets here. Rewritten if the root is later reparented under a physics display root.
     readonly diffuseTexs: TexInfo[]; // distinct base-colour textures across the sub-meshes (per-particle colour source)
     readonly meshTexIndex: number[]; // per display sub-mesh: its index into diffuseTexs (-1 if untextured)
     readonly baseColor: [number, number, number]; // fallback per-particle colour when there's no texture
@@ -164,6 +224,7 @@ interface Instance {
     sim: FluidSim | null;
     phase: InstancePhase;
     sampling: boolean; // true while the worker is volume-sampling this foe (before dissolve starts)
+    shell: boolean; // which path produced the CURRENT particles: surface shell (true) or volume fill (false)
     sampleId: number; // id of the in-flight sample request (stale results are ignored)
     maxR: number;
     volCenter: [number, number, number]; // world-space centre of the sampled volume (explosion origin)
@@ -199,16 +260,79 @@ async function main(): Promise<void> {
     const engine = await createEngine(canvas, { msaaSamples: 1, requiredLimits });
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
-    const cam = createArcRotateCamera(-Math.PI / 2, 1.05, 46, { x: -4, y: 3.5, z: 0 });
+    // Free-fly camera: WASD strafes in the view plane, Space/C rise and fall, and RIGHT-drag looks
+    // around — LMB stays free for shooting. An arc-rotate camera made the ship interior a chore to
+    // navigate (orbiting around a target you cannot see past). Shift is deliberately NOT the descend
+    // key: ship mode uses Shift+LMB to liquefy.
+    const cam = createFreeCamera({ x: -3, y: 31.6, z: -40.7 }, { x: -3, y: 2.5, z: 0 }); // the old arc-rotate vantage (alpha -PI/2, beta 0.95, radius 50)
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
+    cam.speed = FOE_SET === "ship" ? 8.8 : 36; // the ship interior is metres across, the gallery tens
     scene.camera = cam;
-    attachControl(cam, canvas, scene);
 
-    addToScene(scene, createHemisphericLight([0.2, 1, 0.3], 0.8));
+    // Yaw/pitch are the camera's own state; we drive them from RMB drag and rebuild `target` each
+    // frame. `position`/`target` are ObservableVec3 — assign COMPONENTS, never replace the objects,
+    // or the view matrix stops being flagged dirty.
+    let camYaw = 0;
+    let camPitch = 0;
+    {
+        const dx = cam.target.x - cam.position.x;
+        const dy = cam.target.y - cam.position.y;
+        const dz = cam.target.z - cam.position.z;
+        camYaw = Math.atan2(dx, dz);
+        camPitch = Math.atan2(dy, Math.hypot(dx, dz));
+    }
+    const camKeys = new Set<string>();
+    let looking = false;
+    const LOOK_SENS = 1 / 350;
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // RMB is the look button
+    canvas.addEventListener("pointerdown", (e) => {
+        if (e.button !== 2) return;
+        looking = true;
+        canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener("pointerup", (e) => {
+        if (e.button !== 2) return;
+        looking = false;
+        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    });
+    canvas.addEventListener("pointermove", (e) => {
+        if (!looking) return;
+        camYaw += e.movementX * LOOK_SENS;
+        camPitch = Math.max(-1.45, Math.min(1.45, camPitch - e.movementY * LOOK_SENS));
+    });
+    window.addEventListener("keydown", (e) => {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+        camKeys.add(e.code);
+    });
+    window.addEventListener("keyup", (e) => camKeys.delete(e.code));
+    window.addEventListener("blur", () => camKeys.clear());
+    const updateCamera = (deltaMs: number): void => {
+        const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
+        const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
+        const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+        const fwdZ = (camKeys.has("KeyW") ? 1 : 0) - (camKeys.has("KeyS") ? 1 : 0);
+        const strafe = (camKeys.has("KeyD") ? 1 : 0) - (camKeys.has("KeyA") ? 1 : 0);
+        const rise = (camKeys.has("Space") ? 1 : 0) - (camKeys.has("KeyC") ? 1 : 0);
+        if (fwdZ || strafe || rise) {
+            const spd = cam.speed * (camKeys.has("ShiftLeft") || camKeys.has("ShiftRight") ? 4 : 1) * dt;
+            cam.position.x += (sy * cp * fwdZ + cy * strafe) * spd;
+            cam.position.y += (sp * fwdZ + rise) * spd;
+            cam.position.z += (cy * cp * fwdZ - sy * strafe) * spd;
+        }
+        cam.target.x = cam.position.x + sy * cp;
+        cam.target.y = cam.position.y + sp;
+        cam.target.z = cam.position.z + cy * cp;
+    };
+
+    // Ship mode is lit purely by the HDRI, exactly as Aquanova is. The lights are not merely dimmed —
+    // they are never registered, because a PBR material compiled with lights present renders brighter
+    // than one compiled without, regardless of intensity.
+    const hemiLight = createHemisphericLight([0.2, 1, 0.3], 0.8);
+    if (FOE_SET !== "ship") addToScene(scene, hemiLight);
     const sun = createDirectionalLight(SUN_DIR, 2.0);
     sun.position.set(12, 20, 10);
-    addToScene(scene, sun);
+    if (FOE_SET !== "ship") addToScene(scene, sun);
 
     const ground = createGround(engine, { width: 60, height: 60, subdivisions: 1 });
     const groundMat = createStandardMaterial();
@@ -247,7 +371,7 @@ async function main(): Promise<void> {
     // dimension ≈ MODEL_TARGET_SIZE, centred on cfg.x and sat on the ground), attach the radial-clip
     // liquefy plugin per PBR material, play its first animation if any, and capture its diffuse
     // texture for per-particle colouring. Sampled in its CURRENT deformed pose on a shot.
-    async function loadModelInstance(cfg: { key: string; url: string; x: number; ry?: number; surfaceOnly?: boolean; scale?: number }): Promise<void> {
+    async function loadModelInstance(cfg: { key: string; url: string; x: number; z?: number; ry?: number; surfaceOnly?: boolean; scale?: number }): Promise<void> {
         let asset;
         try {
             asset = await loadGltf(engine, cfg.url);
@@ -261,33 +385,50 @@ async function main(): Promise<void> {
         const root = createTransformNode(`${cfg.key}_root`, 0, 0, 0, 0, Math.sin(ry / 2), 0, Math.cos(ry / 2), 1, 1, 1);
         const meshes: Mesh[] = [];
         const materials = new Set<Material>();
-        const visit = (node: SceneNode): void => {
-            if (isMeshNode(node) && node._cpuPositions && node._cpuIndices) {
-                meshes.push(node);
-                // Attach the radial-clip liquefy plugin (PBR host). This works on SKINNED models
-                // because they are materialized in the INITIAL scene build (loaded before registerScene);
-                // a dynamic post-boot add leaves the plugin UBO uninitialised and the mesh invisible.
-                if (node.material && isPbrMaterial(node.material) && !node.material.plugins?.some((p) => p.name === "liquefy")) {
-                    node.material.plugins = [...(node.material.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")];
-                }
-                if (node.material) materials.add(node.material);
-            }
-            for (const c of node.children ?? []) visit(c);
-        };
         for (const e of asset.entities) {
             if (!("position" in e)) continue; // skip non-node entities (e.g. lights)
             e.parent = root;
             root.children.push(e);
-            visit(e);
+            collectFoeMeshes(e, meshes, materials, liquefyState);
         }
         if (meshes.length === 0) {
             // eslint-disable-next-line no-console
             console.warn(`[liquefactor] ${cfg.key} has no CPU-geometry meshes`);
             return;
         }
+        const anim = asset.animationGroups?.find((g) => /walk|run|idle/i.test(g.name)) ?? asset.animationGroups?.[0] ?? null;
+        registerFoeInstance(cfg, root, meshes, materials, liquefyState, anim);
+    }
+
+    // Walk a loaded subtree, gathering its CPU-geometry meshes + materials and attaching the
+    // radial-clip liquefy plugin. Shared by the per-model loader and the ship-mesh loader.
+    function collectFoeMeshes(node: SceneNode, meshes: Mesh[], materials: Set<Material>, liquefyState: LiquefyState): void {
+        if (isMeshNode(node) && node._cpuPositions && node._cpuIndices) {
+            meshes.push(node);
+            // Attach the radial-clip liquefy plugin (PBR host). This works on SKINNED models
+            // because they are materialized in the INITIAL scene build (loaded before registerScene);
+            // a dynamic post-boot add leaves the plugin UBO uninitialised and the mesh invisible.
+            if (node.material && isPbrMaterial(node.material) && !node.material.plugins?.some((p) => p.name === "liquefy")) {
+                node.material.plugins = [...(node.material.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")];
+            }
+            if (node.material) materials.add(node.material);
+        }
+        for (const c of node.children ?? []) collectFoeMeshes(c, meshes, materials, liquefyState);
+    }
+
+    // Fit an assembled foe root onto the gallery row and register it as a live Instance.
+    function registerFoeInstance(
+        cfg: { key: string; x: number; z?: number; surfaceOnly?: boolean; scale?: number; inPlace?: boolean },
+        root: SceneNode,
+        meshes: Mesh[],
+        materials: Set<Material>,
+        liquefyState: LiquefyState,
+        anim: AnimationGroup | null
+    ): void {
         // Add to the scene FIRST so the world-matrix state is wired up — reading worldMatrix before
-        // this yields a partial (pre-hierarchy) transform and mis-fits the model.
-        addToScene(scene, root);
+        // this yields a partial (pre-hierarchy) transform and mis-fits the model. `inPlace` foes are
+        // already inside an added hierarchy (the ship), so adding again would double-register them.
+        if (!cfg.inPlace) addToScene(scene, root);
         // Auto-fit: world AABB at scale 1 (root at origin) → uniform scale so the largest extent ≈
         // MODEL_TARGET_SIZE, then centre on cfg.x and sit the model's base on the ground.
         let minx = Infinity,
@@ -296,32 +437,38 @@ async function main(): Promise<void> {
             maxx = -Infinity,
             maxy = -Infinity,
             maxz = -Infinity;
-        for (const m of meshes) {
-            const p = m._cpuPositions!;
-            const w = m.worldMatrix as unknown as ArrayLike<number>;
-            for (let i = 0; i < p.length; i += 3) {
-                const lx = p[i]!,
-                    ly = p[i + 1]!,
-                    lz = p[i + 2]!;
-                const wx = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
-                const wy = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
-                const wz = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
-                if (wx < minx) minx = wx;
-                if (wx > maxx) maxx = wx;
-                if (wy < miny) miny = wy;
-                if (wy > maxy) maxy = wy;
-                if (wz < minz) minz = wz;
-                if (wz > maxz) maxz = wz;
+        const measure = (): void => {
+            minx = miny = minz = Infinity;
+            maxx = maxy = maxz = -Infinity;
+            for (const m of meshes) {
+                const p = m._cpuPositions!;
+                const w = m.worldMatrix as unknown as ArrayLike<number>;
+                for (let i = 0; i < p.length; i += 3) {
+                    const lx = p[i]!,
+                        ly = p[i + 1]!,
+                        lz = p[i + 2]!;
+                    const wx = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
+                    const wy = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
+                    const wz = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
+                    if (wx < minx) minx = wx;
+                    if (wx > maxx) maxx = wx;
+                    if (wy < miny) miny = wy;
+                    if (wy > maxy) maxy = wy;
+                    if (wz < minz) minz = wz;
+                    if (wz > maxz) maxz = wz;
+                }
             }
-        }
+        };
+        measure();
         const extent = Math.max(maxx - minx, maxy - miny, maxz - minz, 1e-3);
-        const scale = (MODEL_TARGET_SIZE / extent) * (cfg.scale ?? 1); // optional per-model size multiplier
+        // `inPlace` foes are already posed by their own hierarchy — their root is an identity node that
+        // exists only so wriggle/restart can jitter them without touching the surrounding ship.
+        const scale = cfg.inPlace ? 1 : (MODEL_TARGET_SIZE / extent) * (cfg.scale ?? 1);
         const cx = (minx + maxx) / 2;
         const cz = (minz + maxz) / 2;
-        const homePos: [number, number, number] = [cfg.x - cx * scale, GROUND_Y - miny * scale, -cz * scale];
+        const homePos: [number, number, number] = cfg.inPlace ? [0, 0, 0] : [cfg.x - cx * scale, GROUND_Y - miny * scale, (cfg.z ?? 0) - cz * scale];
         root.scaling.set(scale, scale, scale);
         root.position.set(homePos[0], homePos[1], homePos[2]);
-        const anim = asset.animationGroups?.find((g) => /walk|run|idle/i.test(g.name)) ?? asset.animationGroups?.[0] ?? null;
         if (anim) {
             anim.loopAnimation = true;
             playAnimation(anim);
@@ -367,6 +514,7 @@ async function main(): Promise<void> {
             sim: null,
             phase: "solid",
             sampling: false,
+            shell: false,
             sampleId: 0,
             maxR: 0,
             volCenter: [0, 0, 0],
@@ -385,6 +533,306 @@ async function main(): Promise<void> {
         for (const m of meshes) meshToInstance.set(m, inst);
         invalidateFilteredSceneTasks();
         setStatus();
+    }
+
+    // Ship mode: primitives of one glTF node are one object to the player, so a shot melts the whole
+    // group (mirroring Aquanova). Empty for the gallery, where each foe is already a single instance.
+    const nodeGroups = new Map<SceneNode, Instance[]>();
+    const groupOfInstance = new Map<Instance, Instance[]>();
+    // Ship mode also mirrors Aquanova's MANIFEST semantics, so the same click melts the same group:
+    // a node's `behaviors` supply its linked partners. The FLUID itself always comes from the demo's
+    // own panel — auditioning settings is the point of this demo.
+    const behaviorOfInstance = new Map<Instance, ShipBehavior>();
+    const instancesByNodeName = new Map<string, Instance[]>();
+    // Display roots driven by a Havok body (one per `dynamic` node). `rest` is the spawn pose, which
+    // Restart teleports the body back to.
+    const dynDisplays: { proxy: SceneNode; body: PhysicsBody; disp: SceneNode; rest: [number, number, number] }[] = [];
+    let physWorld: PhysicsWorld | null = null;
+
+    // ── Aquanova ship foes (?foes=ship) ──────────────────────────────────────
+    // Load the FULL ship.glb exactly as Aquanova does and make every ship mesh a foe, IN PLACE inside
+    // the ship. Geometry, materials, trim atlas, world transforms and the particle-fill path are all
+    // identical to Aquanova, so the only variables left are Liquefactor's lighting, camera and fluid
+    // controls. ship_manifest.json's `entities` names are used only to pick which room to frame.
+    async function loadShipFoes(): Promise<void> {
+        await shipManifestReady;
+        const chunkFocus = (c: { aabb: { min: number[]; max: number[] } }): [number, number, number] => [
+            -(c.aabb.min[0]! + c.aabb.max[0]!) / 2, // glTF space → Lite negates X
+            1.5,
+            (c.aabb.min[2]! + c.aabb.max[2]!) / 2,
+        ];
+        const iblStrength = shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
+        const chunks = shipManifest?.chunks ?? [];
+        const liqNames = new Set(Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name))));
+        let focus: [number, number, number] = chunks[0] ? chunkFocus(chunks[0]) : [0, 1.5, 0];
+        let asset;
+        try {
+            asset = await loadGltf(engine, SHIP_URL);
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn("[liquefactor] ship.glb load failed", err);
+            return;
+        }
+        const shipRoot = createTransformNode("ship_root", 0, 0, 0, 0, 0, 0, 1, 1, 1);
+        for (const e of asset.entities) {
+            if (!("position" in e)) continue; // skip non-node entities (e.g. lights)
+            e.parent = shipRoot;
+            shipRoot.children.push(e);
+        }
+        addToScene(scene, shipRoot);
+
+        // Match Aquanova's material setup on the ship:
+        //  • Drop KHR_materials_transmission. Both demos composite the fluid surface into the swapchain
+        //    AFTER the scene renders, but transmission retargets the scene task to an offscreen HDR
+        //    buffer and appends a tonemap pass that would hide the water. (It also keeps the refraction
+        //    fragment out of the composed shader, which otherwise collides with Liquefactor's punctual
+        //    lights and aborts the material build.)
+        //  • environmentIntensity from the manifest — the ship is authored for a dimmed IBL, and at the
+        //    default 1.0 the interior reads roughly twice as bright as it does in Aquanova.
+        const seenMats = new Set<object>();
+        const prepMaterials = (node: SceneNode): void => {
+            const mat = (node as Mesh).material;
+            if (mat && isPbrMaterial(mat) && !seenMats.has(mat)) {
+                seenMats.add(mat);
+                const ss = (mat as unknown as { subsurface?: { refraction?: unknown } }).subsurface;
+                if (ss?.refraction) ss.refraction = undefined;
+                (mat as unknown as { environmentIntensity?: number }).environmentIntensity = iblStrength;
+            }
+            for (const c of node.children ?? []) prepMaterials(c);
+        };
+        prepMaterials(shipRoot);
+
+        // Every ship mesh is a foe — click anything to liquefy it. `owner` is the glTF node the mesh
+        // belongs to, collapsing the `_primitiveN` wrapper nodes a Babylon re-export bakes in (a
+        // mesh-less "storageDoorL" holding "storageDoorL_primitive0"), so a node's primitives group
+        // under one entity exactly as they do in Aquanova.
+        const PRIMITIVE_WRAPPER = /_primitive\d+$/;
+        const found: { mesh: Mesh; parent: SceneNode; owner: SceneNode }[] = [];
+        const seen = new Set<Mesh>();
+        const walk = (node: SceneNode, owner: SceneNode): void => {
+            for (const c of [...(node.children ?? [])]) {
+                if (isMeshNode(c) && c._cpuPositions && c._cpuIndices && !seen.has(c)) {
+                    seen.add(c);
+                    found.push({ mesh: c, parent: node, owner });
+                    continue;
+                }
+                const wrapper = PRIMITIVE_WRAPPER.test(c.name) && c.name.replace(PRIMITIVE_WRAPPER, "") === node.name;
+                walk(c, wrapper ? owner : c);
+            }
+        };
+        walk(shipRoot, shipRoot);
+        if (!found.length) {
+            // eslint-disable-next-line no-console
+            console.warn("[liquefactor] ship.glb contained no sampleable meshes");
+            return;
+        }
+
+        // Frame the room that actually holds a node Aquanova marks liquefiable. The manifest's
+        // `entities` map is keyed by glTF NODE name (what the sandbox shows), so the room is
+        // resolved from a listed node's position rather than read off a chunk entry.
+        const marked = found.find(({ owner }) => liqNames.has(owner.name));
+        const mn = marked?.mesh.boundMin;
+        const mx = marked?.mesh.boundMax;
+        if (mn && mx) {
+            const gx = -(mn[0]! + mx[0]!) / 2; // Lite → glTF (negate X)
+            const gz = (mn[2]! + mx[2]!) / 2;
+            const room = chunks.find((c) => gx >= c.aabb.min[0]! && gx <= c.aabb.max[0]! && gz >= c.aabb.min[2]! && gz <= c.aabb.max[2]!);
+            if (room) focus = chunkFocus(room);
+        }
+
+        let n = 0;
+        const behaviorOfNode = (name: string): ShipBehavior | undefined => resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name);
+        // Placement markers are not scenery: Aquanova hides them and spawns on them, so do the same
+        // here rather than letting the player shoot an invisible floor strip.
+        const markerNames = new Set(
+            [PLAYER_START_BEHAVIOR, WEAPON_START_BEHAVIOR]
+                .map((bh) => findEntityWithBehavior(shipManifest?.entities, bh)?.name)
+                .filter((v): v is string => !!v)
+        );
+        for (const { mesh, parent, owner } of found) {
+            if (markerNames.has(owner.name)) {
+                setMeshVisible(mesh, false);
+                (mesh as { pickable?: boolean }).pickable = false;
+                continue;
+            }
+            const liquefyState: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
+            // Splice an identity root ABOVE the mesh: the wriggle/restart logic moves that node, which
+            // jitters the foe locally without disturbing the rest of the ship hierarchy.
+            const root = createTransformNode(`${mesh.name}_${n}_root`, 0, 0, 0, 0, 0, 0, 1, 1, 1);
+            const at = parent.children.indexOf(mesh);
+            parent.children[at] = root;
+            root.parent = parent;
+            root.children.push(mesh);
+            mesh.parent = root;
+            // Ship materials are SHARED across hundreds of kit modules, so the liquefy plugin has to go
+            // on a per-foe CLONE — mutating the shared material would clip every door in the ship at once.
+            const materials = new Set<Material>();
+            if (mesh.material && isPbrMaterial(mesh.material) && !mesh.material.plugins?.some((p) => p.name === "liquefy")) {
+                const src = mesh.material as unknown as { plugins?: { name: string }[] };
+                mesh.material = { ...(mesh.material as object), _uboVersion: 0, plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")] } as unknown as Material;
+            }
+            if (mesh.material) materials.add(mesh.material);
+            registerFoeInstance({ key: `${owner.name}#${n}`, x: 0, inPlace: true }, root, [mesh], materials, liquefyState, null);
+            // Group the instance with the other primitives of its node so a shot melts the node whole,
+            // and index it by node name so the manifest's `linked` lists resolve.
+            const inst = instances[instances.length - 1]!;
+            const siblings = nodeGroups.get(owner);
+            if (siblings) siblings.push(inst);
+            else nodeGroups.set(owner, [inst]);
+            groupOfInstance.set(inst, nodeGroups.get(owner)!);
+            const byName = instancesByNodeName.get(owner.name);
+            if (byName) byName.push(inst);
+            else instancesByNodeName.set(owner.name, [inst]);
+            const bh = behaviorOfNode(owner.name);
+            if (bh) behaviorOfInstance.set(inst, bh);
+            n++;
+        }
+
+        // ── Havok: chunk shells + a rigid body per `dynamic` node ────────────────────────
+        // Aquanova collides against clean per-chunk BOXES from the manifest rather than a trimesh of
+        // the raw ship (568 overlapping kit modules make a trimesh riddled with coplanar triangles).
+        // Same here: each chunk becomes a floor + ceiling + 4 walls, which is what the dynamic props
+        // rest on and rattle around inside. There is no character controller in this demo — the free
+        // camera flies through everything — so the portal cut-outs Aquanova needs are not required.
+        const dynNodes = [...nodeGroups.entries()].filter(([node]) => isDynamicBehavior(behaviorOfNode(node.name)));
+        if (chunks.length || dynNodes.length) {
+            try {
+                const hknp = await HavokPhysics({ locateFile: () => "/HavokPhysics.wasm" });
+                physWorld = createHavokWorld(scene, hknp, { x: 0, y: -9.8, z: 0 });
+                // Fixed step, as Aquanova does: the default variable step advances physics by the real
+                // frame delta, so a prop's resting pose depends on how slow the frames around it were.
+                setPhysicsTimestepMs(physWorld, 1000 / 60);
+            } catch (err) {
+                // A missing/broken WASM must not cost the demo its ship: fall through with everything
+                // static instead of aborting the rest of the ship setup (ground, lights, camera).
+                // eslint-disable-next-line no-console
+                console.warn("[liquefactor] Havok unavailable — dynamic behaviours stay static", err);
+            }
+        }
+        if (physWorld) {
+            const world = physWorld;
+            let cn = 0;
+            // glTF-space centre + full extents; X is negated into Lite scene space. Dynamic props are
+            // added ASLEEP, exactly as Aquanova does: a prop must hold the pose the artist authored until
+            // something actually disturbs it. Awake, each door immediately sags onto the chunk floor
+            // (measured: 8.8 cm) because its collider is a coarse AABB, not the real door geometry.
+            const addBox = (gx: number, gy: number, gz: number, ex: number, ey: number, ez: number, motion: PhysicsMotionType): { node: SceneNode; body: PhysicsBody } | null => {
+                if (ex <= 1e-3 || ey <= 1e-3 || ez <= 1e-3) return null;
+                const node = createTransformNode(`liqCol_${cn++}`, -gx, gy, gz);
+                const shape = createPhysicsShape(world, { type: PhysicsShapeType.BOX, parameters: { extents: { x: ex, y: ey, z: ez } } });
+                const body = createPhysicsBody(world, node, motion, motion === PhysicsMotionType.DYNAMIC);
+                setPhysicsBodyShape(world, body, shape);
+                return { node, body };
+            };
+            const WALL_T = 0.4;
+            for (const c of chunks) {
+                const [x0, y0, z0] = c.aabb.min as [number, number, number];
+                const [x1, y1, z1] = c.aabb.max as [number, number, number];
+                const cx = (x0 + x1) / 2;
+                const cz = (z0 + z1) / 2;
+                const sx = x1 - x0;
+                const sz = z1 - z0;
+                const h = y1 - y0;
+                const midY = (y0 + y1) / 2;
+                addBox(cx, y0 - WALL_T / 2, cz, sx, WALL_T, sz, PhysicsMotionType.STATIC); // floor
+                addBox(cx, y1 + WALL_T / 2, cz, sx, WALL_T, sz, PhysicsMotionType.STATIC); // ceiling
+                addBox(x0 - WALL_T / 2, midY, cz, WALL_T, h, sz, PhysicsMotionType.STATIC);
+                addBox(x1 + WALL_T / 2, midY, cz, WALL_T, h, sz, PhysicsMotionType.STATIC);
+                addBox(cx, midY, z0 - WALL_T / 2, sx, h, WALL_T, PhysicsMotionType.STATIC);
+                addBox(cx, midY, z1 + WALL_T / 2, sx, h, WALL_T, PhysicsMotionType.STATIC);
+            }
+
+            // One body per NODE (not per primitive): a node's primitives are one object, so they are
+            // reparented under a single display root that the body drives. `setParent` preserves each
+            // one's world transform.
+            //
+            // The props are ANIMATED (kinematic), not DYNAMIC. A door's collider is its coarse world
+            // AABB, and that box floats ~8.8 cm above the deck in the authored art, so a free rigid body
+            // immediately falls onto the chunk floor: measured asleep at spawn (vel 0) but awake by
+            // t = 0.08 s, dropping 1.796 -> 1.708 by t = 0.48 s. `startsAsleep` does not prevent it —
+            // something wakes the body within the first frames. Aquanova's equivalent bodies never move,
+            // so kinematic reproduces the reference exactly: the prop holds the pose the artist gave it,
+            // still collides, and never sags. Switch back to DYNAMIC if props should be knockable.
+            for (const [node, group] of dynNodes) {
+                let mn: number[] | null = null;
+                let mx: number[] | null = null;
+                for (const inst of group) {
+                    for (const m of inst.meshes) {
+                        const a = m.boundMin;
+                        const bb = m.boundMax;
+                        if (!a || !bb) continue;
+                        mn = mn ? [Math.min(mn[0]!, a[0]!), Math.min(mn[1]!, a[1]!), Math.min(mn[2]!, a[2]!)] : [a[0]!, a[1]!, a[2]!];
+                        mx = mx ? [Math.max(mx[0]!, bb[0]!), Math.max(mx[1]!, bb[1]!), Math.max(mx[2]!, bb[2]!)] : [bb[0]!, bb[1]!, bb[2]!];
+                    }
+                }
+                if (!mn || !mx) continue;
+                const centre: [number, number, number] = [(mn[0]! + mx[0]!) / 2, (mn[1]! + mx[1]!) / 2, (mn[2]! + mx[2]!) / 2];
+                const half: [number, number, number] = [Math.max((mx[0]! - mn[0]!) / 2, 0.03), Math.max((mx[1]! - mn[1]!) / 2, 0.03), Math.max((mx[2]! - mn[2]!) / 2, 0.03)];
+                const disp = createTransformNode(`dyn_disp_${node.name}`, centre[0], centre[1], centre[2]);
+                addToScene(scene, disp);
+                for (const inst of group) {
+                    setParent(inst.root, disp);
+                    // `setParent` rewrites the root's LOCAL transform to preserve its world pose, so the
+                    // home captured at registration (identity, pre-reparenting) is now stale. Without this,
+                    // Restart collapses every primitive of the node onto the display root's origin.
+                    inst.homePos = [inst.root.position.x, inst.root.position.y, inst.root.position.z];
+                }
+                const box = addBox(-centre[0], centre[1], centre[2], half[0] * 2, half[1] * 2, half[2] * 2, PhysicsMotionType.ANIMATED);
+                if (box) dynDisplays.push({ proxy: box.node, body: box.body, disp, rest: centre });
+            }
+            // Each step, copy the body pose onto the display root so the visible primitives follow.
+            onPhysicsAfterStep(world, () => {
+                for (const d of dynDisplays) {
+                    d.disp.position.set(d.proxy.position.x, d.proxy.position.y, d.proxy.position.z);
+                    d.disp.rotationQuaternion.set(d.proxy.rotationQuaternion.x, d.proxy.rotationQuaternion.y, d.proxy.rotationQuaternion.z, d.proxy.rotationQuaternion.w);
+                }
+            });
+            // eslint-disable-next-line no-console
+            console.warn(`[liquefactor] havok: ${cn} colliders, ${dynDisplays.length} dynamic node(s)`);
+        }
+
+        // The gallery ground would slice through the ship's decks — the ship brings its own floors.
+        setMeshVisible(ground, false);
+        // Aquanova is lit purely by the HDRI (its glTF carries no punctual lights). The lights are kept
+        // OUT of the scene entirely in ship mode (see createHemisphericLight above) rather than merely
+        // zeroed: a material compiled with >= 1 light takes a different PBR permutation than one
+        // compiled with none, and that permutation renders the ship ~1.2x brighter even when every
+        // light's contribution is zero. Measured against Aquanova at a matched camera, muting by
+        // intensity left the side panels 1.23x / 1.60x too bright; not registering them lands at 1.00x.
+        // Stand where Aquanova spawns the player — the `player_startpos` marker node — facing its
+        // `direction` (glTF space → Lite negates X), so both demos open on the same view. Falls back
+        // to the marked room's centre. `position` is an ObservableVec3 — assign the COMPONENTS, never
+        // the object, or the view matrix stops being flagged dirty.
+        const startEntity = findEntityWithBehavior(shipManifest?.entities, PLAYER_START_BEHAVIOR);
+        const startMeshes = startEntity ? found.filter(({ owner }) => owner.name === startEntity.name) : [];
+        let eye: [number, number, number] = [focus[0] + 3, focus[1], focus[2]];
+        if (startMeshes.length) {
+            let mn: number[] | null = null;
+            let mx: number[] | null = null;
+            for (const { mesh } of startMeshes) {
+                const a = mesh.boundMin;
+                const bb = mesh.boundMax;
+                if (!a || !bb) continue;
+                mn = mn ? [Math.min(mn[0]!, a[0]!), Math.min(mn[1]!, a[1]!), Math.min(mn[2]!, a[2]!)] : [a[0]!, a[1]!, a[2]!];
+                mx = mx ? [Math.max(mx[0]!, bb[0]!), Math.max(mx[1]!, bb[1]!), Math.max(mx[2]!, bb[2]!)] : [bb[0]!, bb[1]!, bb[2]!];
+            }
+            // Match Aquanova's SETTLED eye height. Aquanova drops a Havok capsule on top of the marker;
+            // the marker is a thin non-collidable slab, so gravity pulls the capsule past it down to the
+            // chunk floor, which Aquanova pins at FLOOR_Y = 0. The capsule comes to rest with a 0.1333
+            // stand-off (the character controller's keepDistance solve at the fixed 1/60 step), so the
+            // eye lands at 0 + 0.1333 stand-off + 0.9 capsule half-height + 0.62 eye offset = 1.6533.
+            // Both demos fix the physics step, so that stand-off is reproducible rather than depending
+            // on how slow the first frames after load happen to be.
+            if (mn && mx) eye = [(mn[0]! + mx[0]!) / 2, 1.6533, (mn[2]! + mx[2]!) / 2];
+        }
+        cam.position.x = eye[0];
+        cam.position.y = eye[1];
+        cam.position.z = eye[2];
+        const dir = startEntity?.ref.direction;
+        camYaw = dir && (dir[0] || dir[2]) ? Math.atan2(-dir[0]!, dir[2]!) : -Math.PI / 2;
+        camPitch = 0;
+        // eslint-disable-next-line no-console
+        console.warn(`[liquefactor] ship foes: ${found.length} mesh(es), ibl ${iblStrength}`);
     }
 
     const picker = createGpuPicker(scene);
@@ -535,6 +983,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (const c of cbufs) c.destroy();
     }
 
+    // Where the scene was last drawn, plus that draw's matrices — the source for per-particle LIT
+    // colours (see particle-lit-colors.ts). The scene target still holds the solid foe at the moment
+    // it is liquefied, so the water inherits how the foe actually looked rather than a raw (unlit)
+    // texture read.
+    const litScene = (): LitColorScene | null => {
+        // The scene colour/depth textures are allocated lazily on first render. Until then there is
+        // no rendered image to promote the albedo against, so skip the lit pass for that shot rather
+        // than binding null views (which throws inside createBindGroup).
+        if (!sceneColorRT._colorView || !depthRT._depthView) return null;
+        const aspect = engine.canvas.width / Math.max(1, engine.canvas.height);
+        const proj = getProjectionMatrix(cam, aspect);
+        return {
+            colorView: sceneColorRT._colorView,
+            depthView: depthRT._depthView,
+            view: getViewMatrix(cam),
+            viewProj: getViewProjectionMatrix(cam, aspect),
+            projZW: proj[14]!,
+            projZZ: proj[10]!,
+        };
+    };
+
 
     // Foe overlay: after the single water render presents into scRT, draw ALL dissolving foes
     // on top (each clips inside its own front). Depth-aliases the scene-minus-foes depth.
@@ -595,24 +1064,124 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     enableMaterialPlugins(scene);
 
     const brdfUrl = demoAssetUrl("./brdf-lut.png", import.meta.url);
-    let studioSky: Renderable | null = null;
-    const envReady = loadEnvironment(scene, ENV_STUDIO_URL, { brdfUrl, skipGround: true, skipSkybox: true })
-        .then((env: EnvironmentTextures) => {
-            scene.imageProcessing.exposure = 1.0;
-            scene.imageProcessing.contrast = 1.1;
-            studioSky = buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]);
-            scene._renderables.push(studioSky);
-            scene._renderableVersion++;
-            surfaceTask.setEnvMap({ view: env.specularCubeView, sampler: env.cubeSampler });
-        })
-        .catch((err) => {
+
+    // ── Environment picker ────────────────────────────────────────────────────
+    // ── Ship manifest (ship mode only) ───────────────────────────────────────
+    // Fetched ONCE, before the environment slots are graded: the manifest carries the Blender view
+    // transform the ship was authored with (tone mapping + exposure in stops) and the IBL strength,
+    // and Aquanova reads exactly the same values — so the two demos render the interior identically.
+    interface ShipManifestData {
+        environment?: ShipEnvironment;
+        behaviors?: ShipBehaviorLibrary; // behaviour name → definition
+        entities?: ShipEntities; // mesh name → assigned behaviours
+        chunks?: { aabb: { min: number[]; max: number[] } }[];
+    }
+    let shipManifest: ShipManifestData | null = null;
+    const shipManifestReady: Promise<void> =
+        FOE_SET === "ship"
+            ? fetch(SHIP_MANIFEST_URL)
+                  .then((r) => r.json() as Promise<ShipManifestData>)
+                  .then((j) => {
+                      shipManifest = j;
+                  })
+                  .catch((err: unknown) => {
+                      // eslint-disable-next-line no-console
+                      console.warn("[liquefactor] ship manifest load failed", err);
+                  })
+            : Promise.resolve();
+
+    // Audition backdrops for the fluid-surface reflections + skybox. `bank_vault` is the Aquanova
+    // demo's HDRI, so the water look can be compared under identical lighting. Switching envs updates
+    // the diffuse IBL + the fluid surface reflections live; foe SPECULAR reflections stay on the
+    // startup (studio) cube (the PBR builder bakes the specular cube per material at registerScene).
+    interface EnvSlot {
+        env: EnvironmentTextures;
+        sky: Renderable;
+        exposure: number;
+        contrast: number;
+    }
+    const ENV_CHOICES = [
+        { key: "studio", label: "Studio (default)", url: ENV_STUDIO_URL, hdr: false, exposure: 1.0, contrast: 1.1 },
+        { key: "bank_vault", label: "Bank vault (Aquanova)", url: BANK_VAULT_ENV_URL, hdr: true, exposure: 2.0, contrast: 1.1 },
+    ] as const;
+    const envSlots = new Map<string, EnvSlot | null>();
+    let activeSky: Renderable | null = null;
+    // Ship mode STARTS on the Aquanova HDRI, not just switchable to it: the PBR builder bakes each
+    // material's specular cube at registerScene, so a later switch would leave the whole ship
+    // reflecting the studio env — noticeably brighter and cooler than Aquanova.
+    let currentEnvKey = FOE_SET === "ship" ? "bank_vault" : "studio";
+    // Ship mode reproduces Aquanova's grading — the tone mapping and exposure recorded in
+    // ship_manifest.json's `environment` block — instead of the per-env gallery grading, so the two
+    // demos can be compared at matching brightness. Applied wherever a slot's exposure/contrast
+    // would otherwise be used.
+    const SHIP_CONTRAST = 1.05;
+    const gradedExposure = (v: number): number => (FOE_SET === "ship" ? resolveExposure(shipManifest?.environment?.exposure) : v);
+    const gradedContrast = (v: number): number => (FOE_SET === "ship" ? SHIP_CONTRAST : v);
+    const makeEnvSlot = (env: EnvironmentTextures, exposure: number, contrast: number): EnvSlot => {
+        // The skybox snapshots scene.imageProcessing at build time, so grade FIRST.
+        scene.imageProcessing.exposure = gradedExposure(exposure);
+        scene.imageProcessing.contrast = gradedContrast(contrast);
+        return { env, sky: buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
+    };
+    const loadEnvSlot = async (c: (typeof ENV_CHOICES)[number]): Promise<EnvSlot | null> => {
+        if (envSlots.has(c.key)) return envSlots.get(c.key) ?? null;
+        try {
+            const env = c.hdr
+                ? await loadHdrEnvironment(scene, c.url, { faceSize: 512, skipGround: true, skipSkybox: true })
+                : await loadEnvironment(scene, c.url, { brdfUrl, skipGround: true, skipSkybox: true });
+            scene.imageProcessing.toneMappingEnabled = true;
+            // Ship mode uses the view transform named in the manifest (Aquanova reads the same
+            // field); the gallery keeps the default transform.
+            if (FOE_SET === "ship") {
+                const tone = resolveToneMapping(shipManifest?.environment?.toneMapping);
+                scene.imageProcessing.toneMappingEnabled = tone !== null;
+                if (tone) scene.imageProcessing.toneMapping = tone;
+            }
+            const slot = makeEnvSlot(env, c.exposure, c.contrast);
+            envSlots.set(c.key, slot);
+            return slot;
+        } catch (err) {
             // eslint-disable-next-line no-console
-            console.warn("[liquefactor] env load failed", err);
-        });
+            console.warn(`[liquefactor] env "${c.key}" failed to load (${c.url})`, err);
+            envSlots.set(c.key, null);
+            return null;
+        }
+    };
+    const installEnvSlot = (slot: EnvSlot): void => {
+        scene.imageProcessing.exposure = gradedExposure(slot.exposure);
+        scene.imageProcessing.contrast = gradedContrast(slot.contrast);
+        scene._envTextures = slot.env; // diffuse IBL (repacked into the scene UBO each frame)
+        if (activeSky !== slot.sky) {
+            if (activeSky) {
+                const i = scene._renderables.indexOf(activeSky);
+                if (i >= 0) scene._renderables.splice(i, 1);
+            }
+            scene._renderables.push(slot.sky);
+            scene._renderableVersion++;
+            activeSky = slot.sky;
+        }
+        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+    };
+    const applyEnv = async (key: string): Promise<void> => {
+        await shipManifestReady; // ship grading comes from the manifest — read it before building a slot
+        currentEnvKey = key;
+        const c = ENV_CHOICES.find((x) => x.key === key);
+        if (!c) return;
+        const slot = await loadEnvSlot(c);
+        if (slot && currentEnvKey === key) installEnvSlot(slot);
+    };
+    const envReady = applyEnv(currentEnvKey);
 
     // ── Global tuning state (applied to newly built sims) ────────────────────
     let radiusValue = 0.08;
     let modeValue: VolumeSamplingMode = "dense";
+    // Volume lattice vs surface shell. `auto` is the shipped behaviour (openness + thickness gates,
+    // plus the per-prop hollow hint in MODEL_FOES); the other two force the choice so the difference
+    // can be auditioned on the same prop.
+    let fillStrategy: MeshFillStrategy = "auto";
+    // Point spacing shared by BOTH fill paths, in units of the particle radius. 2 = one particle
+    // diameter (neighbours just touch), which is the convention the volume lattice already uses.
+    let fillSpacing = 2;
     let impulseIntensity = 1.0;
     let currentMethod = "MLS-MPM";
     let currentMaterial = 0;
@@ -715,7 +1284,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     type SampleGeom = { positions: Float32Array; indices: Uint32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; ox: number; oy: number; oz: number };
-    type SampledFill = { positions: Float32Array; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number]; uvs?: Float32Array | null; texIndices?: Uint32Array | null };
+    type SampledFill = { positions: Float32Array; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number]; uvs?: Float32Array | null; texIndices?: Uint32Array | null; shell?: boolean };
     const LIQUEFY_EDGE = 0.6;
     const NO_TEX = 0xffffffff; // per-vertex/particle texIndex sentinel: no texture → baseColor fill
 
@@ -778,7 +1347,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Bake a sampler result's world offset into the points → world-space seed + world AABB.
-    function bakeFill(ox: number, oy: number, oz: number, result: ReturnType<typeof sampleMeshVolume>): SampledFill {
+    function bakeFill(ox: number, oy: number, oz: number, result: MeshParticleFill): SampledFill {
         const p = result.positions;
         for (let i = 0; i < p.length; i += 3) {
             p[i] = p[i]! + ox;
@@ -791,6 +1360,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             radius: result.radius,
             boundsMin: [result.bounds.min[0] + ox, result.bounds.min[1] + oy, result.bounds.min[2] + oz],
             boundsMax: [result.bounds.max[0] + ox, result.bounds.max[1] + oy, result.bounds.max[2] + oz],
+            shell: result.shell,
         };
     }
 
@@ -895,7 +1465,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── Shot lifecycle ───────────────────────────────────────────────────────
-    // Volume-sampling runs in a worker (see liquefactor-worker.ts) so the ~1 s dense sample
+    // Volume-sampling runs in a worker (see particle-fill-worker.ts) so the ~1 s dense sample
     // doesn't freeze the frame at the shot. requestSample() fires the job (foe stays solid,
     // marked `sampling`); applySample() builds the sim + starts the dissolve when it returns.
     let liveShots = 0;
@@ -905,14 +1475,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // A small pool of sampling workers so several foes can convert to particles IN PARALLEL: a
     // second shot while one conversion is in flight goes to a free worker instead of queueing behind
     // it. `pendingSamples` (keyed by id) routes each reply to the right foe regardless of worker.
-    type WorkerMsg = { id: number; positions: Float32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number] };
+    type WorkerMsg = { id: number; positions: Float32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; count: number; radius: number; shell: boolean; boundsMin: [number, number, number]; boundsMax: [number, number, number] };
     interface PoolWorker {
         worker: Worker;
         pending: number;
     }
     const workerPool: PoolWorker[] = [];
     const onSampleMessage = (ev: MessageEvent<WorkerMsg>): void => {
-        const { id, positions, uvs, texIndices, count, radius, boundsMin, boundsMax } = ev.data;
+        const { id, positions, uvs, texIndices, count, radius, shell, boundsMin, boundsMax } = ev.data;
         const entry = pendingSamples.get(id);
         pendingSamples.delete(id);
         if (!entry) return;
@@ -922,13 +1492,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             setStatus();
             return;
         }
-        applySample(entry.inst, id, entry.hit, { positions, count, radius, boundsMin, boundsMax, uvs, texIndices });
+        applySample(entry.inst, id, entry.hit, { positions, count, radius, shell, boundsMin, boundsMax, uvs, texIndices });
     };
     try {
         if (typeof Worker !== "undefined") {
             const poolSize = Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
             for (let i = 0; i < poolSize; i++) {
-                const worker = new Worker(new URL("./liquefactor-worker.ts", import.meta.url), { type: "module" });
+                const worker = new Worker(new URL("./particle-fill-worker.ts", import.meta.url), { type: "module" });
                 const pw: PoolWorker = { worker, pending: 0 };
                 worker.addEventListener("message", (ev: MessageEvent<WorkerMsg>) => {
                     pw.pending = Math.max(0, pw.pending - 1);
@@ -978,12 +1548,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (geom.uvs) transfer.push(geom.uvs.buffer);
             if (geom.texIndices) transfer.push(geom.texIndices.buffer);
             pw.pending++;
-            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
+            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: fillSpacing, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
         } else {
             // No worker available — sample synchronously on the main thread (blocks). No per-particle
             // UVs are computed here, so colours fall back to the instance baseColor.
             pendingSamples.delete(id);
-            const result = sampleMeshVolume({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue });
+            const result = fillMeshParticles({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: fillSpacing });
             if (result.count > 0) {
                 applySample(inst, id, h, { ...bakeFill(geom.ox, geom.oy, geom.oz, result), uvs: null, texIndices: null });
             } else {
@@ -1002,8 +1572,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return;
         }
         inst.sampling = false;
+        inst.shell = fill.shell ?? false;
         buildInstanceSim(inst, fill.positions, fill.count, fill.radius, fill.boundsMin, fill.boundsMax);
         fillInstanceColor(inst, fill.uvs ?? null, fill.texIndices ?? null, fill.count); // per-particle mesh colours (per-mesh texture sample or baseColor)
+        // Promote the albedo to the foe's CURRENTLY RENDERED colours (lit + tone-mapped).
+        if (inst.colorBuffer) {
+            const ls = litScene();
+            if (ls) {
+                const lit = buildLitParticleColors(device, fill.count, fill.positions, inst.colorBuffer, ls);
+                inst.colorBuffer.destroy();
+                inst.colorBuffer = lit;
+            }
+        }
         inst.liquefyState.hit = [hit[0], hit[1], hit[2]];
         inst.liquefyState.frontR = 0;
         inst.liquefyState.enabled = true;
@@ -1043,6 +1623,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             inst.colorBuffer = null;
             inst.phase = "solid";
             inst.sampling = false;
+            inst.count = 0;
+            inst.shell = false;
             inst.liquefyState.enabled = false;
             inst.liquefyState.frontR = 0;
             inst.impulseRemaining = 0;
@@ -1055,6 +1637,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             setVisible(inst, true);
             bumpUbo(inst);
             if (inst.animation) playAnimation(inst.animation); // resume the walk on the restored foe
+        }
+        // Restoring the meshes is not enough for a `dynamic` prop: its Havok body keeps whatever pose it
+        // toppled into and would re-impose it on the next step. Teleport each body home, kill its
+        // velocities, and sync the display root so there's no one-frame flash before the next step.
+        // Props that never moved are skipped — they are asleep, and teleporting them would wake them for
+        // nothing (an awake door immediately sags onto the chunk floor).
+        if (physWorld) {
+            for (const d of dynDisplays) {
+                const q = d.disp.rotationQuaternion;
+                const off = Math.max(Math.abs(d.disp.position.x - d.rest[0]), Math.abs(d.disp.position.y - d.rest[1]), Math.abs(d.disp.position.z - d.rest[2]));
+                if (off < 1e-4 && Math.abs(q.x) < 1e-4 && Math.abs(q.y) < 1e-4 && Math.abs(q.z) < 1e-4) continue;
+                setPhysicsBodyTransform(physWorld, d.body, { x: d.rest[0], y: d.rest[1], z: d.rest[2] }, { x: 0, y: 0, z: 0, w: 1 });
+                setPhysicsBodyLinearVelocity(physWorld, d.body, { x: 0, y: 0, z: 0 });
+                setPhysicsBodyAngularVelocity(physWorld, d.body, { x: 0, y: 0, z: 0 });
+                d.disp.position.set(d.rest[0], d.rest[1], d.rest[2]);
+                d.disp.rotationQuaternion.set(0, 0, 0, 1);
+            }
         }
         liveShots = 0;
         virtualSim.count = 0;
@@ -1072,7 +1671,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     title.textContent = "Liquefactor";
     title.style.cssText = "font-weight:700;font-size:0.95rem;margin-bottom:2px;";
     const subtitle = document.createElement("div");
-    subtitle.textContent = "click a foe → its own fluid sim";
+    subtitle.textContent = FOE_SET === "ship" ? "WASD/Space/C to fly · RMB-drag to look · click a node → its own fluid sim" : "WASD/Space/C to fly · RMB-drag to look · click a foe → its own fluid sim";
     subtitle.style.cssText = "color:#8fa4bc;margin-bottom:10px;";
 
     function labelledRow(text: string, control: HTMLElement): HTMLDivElement {
@@ -1101,6 +1700,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     modeSelect.onchange = () => {
         modeValue = modeSelect.value as VolumeSamplingMode;
     };
+
+    // Environment picker — swaps the skybox + fluid-surface reflection cube (audition backdrops;
+    // "Bank vault" is the Aquanova HDRI, for comparing the water look under identical lighting).
+    const envSelect = document.createElement("select");
+    styleSelect(envSelect);
+    for (const c of ENV_CHOICES) {
+        const opt = document.createElement("option");
+        opt.value = c.key;
+        opt.textContent = c.label;
+        envSelect.append(opt);
+    }
+    envSelect.value = currentEnvKey;
+    envSelect.onchange = () => {
+        void applyEnv(envSelect.value);
+    };
+    const envRow = labelledRow("Environment", envSelect);
+
+    // Foe-set picker — see FOE_SET: swaps between the sample models and the Aquanova ship's own
+    // liquefiable meshes. Reloads the page because the liquefy plugin only materialises for meshes
+    // present in the initial scene build.
+    const foeSelect = document.createElement("select");
+    styleSelect(foeSelect);
+    for (const f of FOE_SETS) {
+        const opt = document.createElement("option");
+        opt.value = f.key;
+        opt.textContent = f.label;
+        foeSelect.append(opt);
+    }
+    foeSelect.value = FOE_SET;
+    foeSelect.onchange = () => {
+        const url = new URL(location.href);
+        if (foeSelect.value === "ship") {
+            url.searchParams.set("foes", "ship");
+        } else {
+            url.searchParams.delete("foes");
+        }
+        location.href = url.toString();
+    };
+    const foeRow = labelledRow("Foes", foeSelect);
 
     // PB-MPM material selector (only meaningful for PB-MPM; applied to the next shot).
     const materialSelect = document.createElement("select");
@@ -1143,6 +1781,56 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const radiusRow = document.createElement("div");
     radiusRow.style.cssText = "margin-bottom:8px;";
     radiusRow.append(radiusLabelWrap, radiusInput);
+
+    // Fill strategy — how a mesh becomes particles: a filled interior, or points scattered over the
+    // surface. `auto` picks per mesh (most ship geometry is open single-sided panels with no interior
+    // to fill); the forced options make the difference visible on the same prop.
+    const fillSelect = document.createElement("select");
+    fillSelect.id = "liq-fill";
+    styleSelect(fillSelect);
+    for (const [value, label] of [
+        ["auto", "auto (per mesh)"],
+        ["volume", "volume (fill interior)"],
+        ["surface", "surface (shell only)"],
+    ] as [MeshFillStrategy, string][]) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        fillSelect.append(opt);
+    }
+    fillSelect.value = fillStrategy;
+    fillSelect.onchange = () => {
+        fillStrategy = fillSelect.value as MeshFillStrategy;
+        setStatus();
+    };
+    const fillRow = labelledRow("Fill strategy", fillSelect);
+
+    // Sample spacing — the distance between adjacent particles, in units of the particle radius, used
+    // by BOTH fill paths so volume and surface counts mean the same thing. 2.0 = one diameter.
+    const spacingInput = document.createElement("input");
+    spacingInput.type = "range";
+    spacingInput.id = "liq-spacing";
+    spacingInput.min = "0.5";
+    spacingInput.max = "4";
+    spacingInput.step = "0.1";
+    spacingInput.value = String(fillSpacing);
+    spacingInput.style.cssText = "width:100%;";
+    const spacingVal = document.createElement("span");
+    spacingVal.style.cssText = "color:#9fb4cc;float:right;";
+    const showSpacing = (): void => {
+        spacingVal.textContent = `${fillSpacing.toFixed(1)}×r${Math.abs(fillSpacing - 2) < 0.05 ? " (touching)" : ""}`;
+    };
+    showSpacing();
+    spacingInput.oninput = () => {
+        fillSpacing = parseFloat(spacingInput.value);
+        showSpacing();
+    };
+    const spacingLabelWrap = document.createElement("div");
+    spacingLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    spacingLabelWrap.append(document.createTextNode("Sample spacing"), spacingVal);
+    const spacingRow = document.createElement("div");
+    spacingRow.style.cssText = "margin-bottom:8px;";
+    spacingRow.append(spacingLabelWrap, spacingInput);
 
     // Impulse intensity slider — scales the hand-off launch (0 = none, 1 = tuned default).
     const impulseInput = document.createElement("input");
@@ -1196,9 +1884,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     function setStatus(): void {
         const solid = instances.filter((i) => i.phase === "solid" && !i.sampling).length;
         const active = instances.filter((i) => i.sampling || i.phase === "dissolving" || i.phase === "fluid" || i.phase === "fading").length;
-        status.textContent = `${solid} solid · ${active} liquefying · click a foe`;
+        // Which path the live particles actually came from — the interesting readout when `auto` is on,
+        // since it decides per mesh and most ship geometry has no interior to fill.
+        const live = instances.filter((i) => i.phase === "dissolving" || i.phase === "fluid" || i.phase === "fading");
+        const shells = live.filter((i) => i.shell).length;
+        const fillNote = live.length ? ` · ${live.length - shells} volume / ${shells} surface` : "";
+        status.textContent = `${solid} solid · ${active} liquefying${fillNote} · ${FOE_SET === "ship" ? "click a node" : "click a foe"}`;
         canvas.dataset.solid = String(solid);
         canvas.dataset.active = String(active);
+        canvas.dataset.shells = String(shells);
+        canvas.dataset.volumes = String(live.length - shells);
     }
 
     function refreshPhysicsParamVisibility(): void {
@@ -1268,6 +1963,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 softness: 0.25,
                 density: 1.6,
                 subsurfaceStrength: 0.4,
+                subsurfaceColor: "#b8d1f2",
             },
         },
         gpu: { stages: ["Simulation", "Surface"], supported: profiler !== null },
@@ -1300,7 +1996,131 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         },
     });
 
-    controls.demoSlot.append(title, subtitle, labelledRow("Sampling mode", modeSelect), materialRow, radiusRow, impulseRow, meshColorRow, restartBtn, status, partCount);
+    // ── Export / import fluid settings ───────────────────────────────────────
+    // Reuse the fluid demo's grouped JSON shape (fluid/preset-io.js): serialise the live
+    // physics + surface-render params so a setting authored here can be dropped straight
+    // into another demo (e.g. aquanova's FLUID_SETTING) or re-imported below to iterate.
+    const IO_BTN_STYLE = "flex:1;padding:6px;border:0;border-radius:6px;cursor:pointer;background:#4a5568;color:#fff;font-weight:600;";
+    function liqPairState(): PairState {
+        const v = controls.getValues();
+        return {
+            schema: { ...physValues[currentMethod]! },
+            demoParams: { particleRadius: radiusValue, useMeshColors: useMeshColors ? 1 : 0 },
+            color: v.color,
+            half: v.half,
+            thicknessDownscale: v.thicknessDownscale,
+            absorption: v.absorption,
+            size: v.size,
+            physScale: 1,
+            count: 0,
+            material: currentMethod === "PB-MPM" ? currentMaterial : undefined,
+            renderMode: "surface",
+            refraction: v.refraction,
+            specular: v.specular,
+            depthBlur: v.depthBlur,
+            depthBlurThreshold: v.depthBlurThreshold,
+            thicknessBlur: v.thicknessBlur,
+            surfaceFilter: v.surfaceFilter,
+            narrowDelta: v.narrowDelta,
+            narrowMu: v.narrowMu,
+            anisotropic: v.anisotropic,
+            anisoSurfScale: v.anisoSurfScale,
+            foam: v.foam,
+            demoState: {},
+            showContainer: v.showContainer,
+        };
+    }
+    function applyImportedPreset(j: FluidExportJson): void {
+        // Switch to the file's method first so the physics sliders target the right block.
+        const method = j.meta?.method;
+        if (method && LIQ_SCHEMAS[method]) switchMethod(method);
+        const p = presetFromExportJson(j);
+        // Physics: update the seed values, the sliders AND every running sim.
+        if (p.schema) {
+            const merged = { ...SCHEMA_DEFAULTS[currentMethod], ...p.schema };
+            physValues[currentMethod] = merged;
+            controls.setPhysics(merged);
+            controls.rebuildPhysics(currentMethod);
+            for (const inst of instances) for (const [k, val] of Object.entries(merged)) inst.sim?.setParam(k, val);
+        }
+        if (typeof p.material === "number" && currentMethod === "PB-MPM") {
+            currentMaterial = p.material;
+            materialSelect.value = String(currentMaterial);
+            for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
+        }
+        // Particle radius rides in demoParams. It's a construction-time param (like the slider, it can't
+        // change a running sim) so restore the value + its slider; it takes effect on the next spawn.
+        const pr = p.demoParams?.particleRadius;
+        if (typeof pr === "number" && isFinite(pr)) {
+            radiusValue = pr;
+            radiusInput.value = String(radiusValue);
+            radiusVal.textContent = radiusValue.toFixed(3);
+        }
+        // "Use mesh colours" also rides in demoParams (encoded 0/1). Restore state + checkbox and apply LIVE.
+        const umc = p.demoParams?.useMeshColors;
+        if (typeof umc === "number") {
+            useMeshColors = umc !== 0;
+            meshColorInput.checked = useMeshColors;
+            surfaceTask.setUseParticleColor(useMeshColors);
+        }
+        // Surface render — these setters fire their host callbacks, applying LIVE to surfaceTask.
+        if (p.color !== undefined) controls.setColor(p.color);
+        if (p.absorption !== undefined) controls.setAbsorption(p.absorption);
+        if (p.size !== undefined) controls.setParticleSize(p.size);
+        if (p.refraction !== undefined) controls.setRefraction(p.refraction);
+        if (p.specular !== undefined) controls.setSpecular(p.specular);
+        if (p.depthBlur !== undefined && p.depthBlurThreshold !== undefined) controls.setDepthBlur(p.depthBlur, p.depthBlurThreshold);
+        if (p.thicknessBlur !== undefined) controls.setThicknessBlur(p.thicknessBlur);
+        if (p.half !== undefined) controls.setHalf(p.half);
+        if (p.surfaceFilter !== undefined) controls.setSurfaceFilter(p.surfaceFilter);
+        if (p.narrowDelta !== undefined && p.narrowMu !== undefined) controls.setNarrowRange(p.narrowDelta, p.narrowMu);
+        if (p.thicknessDownscale !== undefined) controls.setThicknessDownscale(p.thicknessDownscale);
+        refreshMaterialRow();
+        refreshPhysicsParamVisibility();
+    }
+    const exportBtn = document.createElement("button");
+    exportBtn.textContent = "Export";
+    exportBtn.style.cssText = IO_BTN_STYLE;
+    exportBtn.onclick = () => {
+        const data = exportJsonFromPairState("liquefactor", currentMethod, liqPairState());
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `liquefactor-${currentMethod}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    };
+    const importInput = document.createElement("input");
+    importInput.type = "file";
+    importInput.accept = "application/json,.json";
+    importInput.style.display = "none";
+    importInput.onchange = () => {
+        const file = importInput.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                applyImportedPreset(JSON.parse(String(reader.result)) as FluidExportJson);
+                status.textContent = `Imported ${file.name}`;
+            } catch (e) {
+                status.textContent = `Import failed: ${(e as Error).message}`;
+            }
+        };
+        reader.readAsText(file);
+        importInput.value = ""; // allow re-importing the same file
+    };
+    const importBtn = document.createElement("button");
+    importBtn.textContent = "Import";
+    importBtn.style.cssText = IO_BTN_STYLE;
+    importBtn.onclick = () => importInput.click();
+    const ioRow = document.createElement("div");
+    ioRow.style.cssText = "display:flex;gap:6px;margin-top:6px;";
+    ioRow.append(exportBtn, importBtn, importInput);
+
+    controls.demoSlot.append(title, subtitle, foeRow, labelledRow("Sampling mode", modeSelect), envRow, materialRow, radiusRow, fillRow, spacingRow, impulseRow, meshColorRow, restartBtn, ioRow, status, partCount);
     document.body.append(controls.root);
     if (controls.gpu) {
         // The demo's own panel is top-left, so pin the GPU pane top-right to avoid overlap.
@@ -1316,7 +2136,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // ── Programmatic hooks for headless QA ───────────────────────────────────
     (window as unknown as { __liquefactor?: unknown }).__liquefactor = {
-        getInstances: () => instances.map((i) => ({ key: i.key, phase: i.phase, count: i.count, sampling: i.sampling, tex: i.diffuseTexs.map((t) => [t.width, t.height]) })),
+        getInstances: () =>
+            instances.map((i) => {
+                const w = i.meshes[0]!.worldMatrix as unknown as ArrayLike<number>;
+                return { key: i.key, phase: i.phase, count: i.count, sampling: i.sampling, tex: i.diffuseTexs.map((t) => [t.width, t.height]), pos: [w[12]!, w[13]!, w[14]!] };
+            }),
         usesWorker: () => workerPool.length > 0,
         workerCount: () => workerPool.length,
         getTotalParticles: () => virtualSim.count,
@@ -1325,8 +2149,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return inst ? ([inst.root.position.x, inst.root.position.y, inst.root.position.z] as [number, number, number]) : null;
         },
         restart: () => restart(),
-        setImpulse: (v: number) => {
-            impulseIntensity = v;
+        camState: () => ({ px: cam.position.x, py: cam.position.y, pz: cam.position.z, tx: cam.target.x, ty: cam.target.y, tz: cam.target.z, yaw: camYaw, pitch: camPitch }),
+        dynBodies: () =>
+            dynDisplays.map((d) => ({
+                name: d.disp.name,
+                rest: d.rest,
+                pos: [d.disp.position.x, d.disp.position.y, d.disp.position.z] as [number, number, number],
+                rot: [d.disp.rotationQuaternion.x, d.disp.rotationQuaternion.y, d.disp.rotationQuaternion.z, d.disp.rotationQuaternion.w] as [number, number, number, number],
+                vel: physWorld ? (() => { const v = getPhysicsBodyLinearVelocity(physWorld, d.body); return [v.x, v.y, v.z] as [number, number, number]; })() : null,
+            })),
+        camTo: (px: number, py: number, pz: number, tx: number, ty: number, tz: number) => {
+            cam.position.set(px, py, pz);
+            const dx = tx - px;
+            const dy = ty - py;
+            const dz = tz - pz;
+            camYaw = Math.atan2(dx, dz);
+            camPitch = Math.atan2(dy, Math.hypot(dx, dz));
+        },
+        liquefyKey: (key: string): boolean => {
+            const inst = instances.find((i) => i.key === key);
+            if (!inst) return false;
+            const w = inst.meshes[0]!.worldMatrix as unknown as ArrayLike<number>;
+            liquefyGroup(inst, [w[12]!, w[13]!, w[14]!]);
+            return true;
+        },
+        grading: (): Record<string, unknown> => ({
+            exposure: scene.imageProcessing.exposure,
+            contrast: scene.imageProcessing.contrast,
+            toneMapping: scene.imageProcessing.toneMapping,
+            toneMappingEnabled: scene.imageProcessing.toneMappingEnabled,
+            ibl: (instances[0]?.materials[0] as unknown as { environmentIntensity?: number } | undefined)?.environmentIntensity,
+            hemi: hemiLight.intensity,
+            sun: sun.intensity,
+            env: currentEnvKey,
+        }),
+        setFillStrategy: (s: MeshFillStrategy) => {            fillStrategy = s;
+            fillSelect.value = s;
+        },
+        setFillSpacing: (v: number) => {
+            fillSpacing = v;
+            spacingInput.value = String(v);
+            showSpacing();
+        },
+        fillOf: (key: string): boolean | null => {
+            const inst = instances.find((i) => i.key === key);
+            return inst && inst.count > 0 ? inst.shell : null;
+        },
+        setImpulse: (v: number) => {            impulseIntensity = v;
             impulseInput.value = String(v);
             impulseVal.textContent = `${v.toFixed(2)}×`;
         },
@@ -1365,7 +2234,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }),
     };
 
-    // Click a foe to liquefy it from the hit point (left-drag still orbits via attachControl).
+    // Click a foe to liquefy it from the hit point. RIGHT-drag looks around, so LMB is free for
+    // shooting in both modes — the old Shift gate existed only because left-drag used to orbit.
+    //
+    // One shot = the picked node's primitives + every node its manifest behaviour links to
+    // (transitively), all sampled from the SAME hit point, so the two demos melt the same group. A
+    // node the manifest says nothing about simply melts its own primitives, as before. The FLUID is
+    // always the demo's current panel settings — this demo exists to audition them.
+    function liquefyGroup(inst: Instance, hit: readonly [number, number, number]): void {
+        const group: Instance[] = [];
+        const seen = new Set<Instance>();
+        const queue: Instance[] = [inst];
+        while (queue.length) {
+            const next = queue.shift()!;
+            if (seen.has(next)) continue;
+            seen.add(next);
+            group.push(next);
+            for (const s of groupOfInstance.get(next) ?? []) if (!seen.has(s)) queue.push(s);
+            for (const name of linkedMeshNames(behaviorOfInstance.get(next))) for (const o of instancesByNodeName.get(name) ?? []) if (!seen.has(o)) queue.push(o);
+        }
+        for (const m of group) if (m.phase === "solid" && !m.sampling) requestSample(m, hit);
+    }
+
     canvas.addEventListener("pointerdown", (ev) => {
         if (ev.button !== 0) return;
         const rect = canvas.getBoundingClientRect();
@@ -1374,7 +2264,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         void pickAsync(picker, px, py, { filter: (m) => instanceOf(m)?.phase === "solid" && !instanceOf(m)?.sampling }).then((info) => {
             if (!info.hit || !info.pickedPoint || !info.pickedMesh) return;
             const inst = instanceOf(info.pickedMesh);
-            if (inst && inst.phase === "solid" && !inst.sampling) requestSample(inst, info.pickedPoint);
+            if (!inst || inst.phase !== "solid" || inst.sampling) return;
+            liquefyGroup(inst, info.pickedPoint);
         });
     });
 
@@ -1383,6 +2274,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let fpsAccumMs = 0;
     let fpsFrames = 0;
     onBeforeRender(scene, (deltaMs: number) => {
+        updateCamera(deltaMs);
         // Open the whole-frame GPU-timing envelope BEFORE any pass is encoded this frame.
         if (profiler) {
             profiler.beginFrame();
@@ -1401,7 +2293,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (const inst of instances) {
             if (inst.wriggling) applyWriggle(inst); // pain shake — active from click through the dissolve
             if (inst.phase === "dissolving") {
-                inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + LIQUEFY_SPEED * growDt, inst.maxR);
+                inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + (FOE_SET === "ship" ? LIQUEFY_SPEED_SHIP : LIQUEFY_SPEED) * growDt, inst.maxR);
                 bumpUbo(inst);
                 if (inst.liquefyState.frontR >= inst.maxR) finishShot(inst);
             } else if (inst.phase === "fluid" || inst.phase === "fading") {
@@ -1479,7 +2371,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     await envReady;
     // Load all glTF foes BEFORE the scene build so they materialize reliably (a dynamic post-boot
     // add leaves the clip-plugin UBO uninitialised). The 39 MB haunted house dominates this wait.
-    await Promise.all(MODEL_FOES.map((cfg) => loadModelInstance(cfg)));
+    if (FOE_SET === "ship") {
+        await loadShipFoes();
+    } else {
+        await Promise.all(MODEL_FOES.map((cfg) => loadModelInstance(cfg)));
+    }
     await registerScene(scene);
     await startEngine(engine);
 

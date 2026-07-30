@@ -1,0 +1,2244 @@
+{
+  "generator": "SciFiShip layout tool",
+  "schema": 2,
+  "savedAt": "2026-07-29T22:16:48.059Z",
+  "units": "metres",
+  "up": "Y (glTF)",
+  "grid": {
+    "tile": 4
+  },
+  "kitDir": "D:\\alexis\\TombRaider\\Popov72\\Modular SciFi MegaKit\\glTF",
+  "chunks": [
+    {
+      "id": "CH00_Storage",
+      "node": "CHUNK_CH00_Storage",
+      "aabb": {
+        "min": [
+          -13.2534,
+          -0.0134,
+          -16
+        ],
+        "max": [
+          12,
+          5,
+          4.4267
+        ]
+      },
+      "instanceCount": 35,
+      "meshCount": 55
+    },
+    {
+      "id": "CH01_New",
+      "node": "CHUNK_CH01_New",
+      "aabb": {
+        "min": [
+          -4.0017,
+          -0.013,
+          -16.9923
+        ],
+        "max": [
+          16.0017,
+          5.0046,
+          4.774
+        ]
+      },
+      "instanceCount": 60,
+      "meshCount": 140
+    }
+  ],
+  "instances": [
+    {
+      "id": "P0007",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorR",
+      "position": [
+        4,
+        0.075,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        0.65,
+        0.85,
+        1
+      ],
+      "node": "storageDoorR"
+    },
+    {
+      "id": "P0009",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorL",
+      "position": [
+        4,
+        0.073,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        -0.65,
+        0.85,
+        1
+      ],
+      "node": "storageDoorL"
+    },
+    {
+      "id": "P0011",
+      "module": "Platforms/Door_Frame_Square",
+      "chunk": "CH00_Storage",
+      "name": "storageDoor_frame",
+      "position": [
+        13,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "storageDoor_frame"
+    },
+    {
+      "id": "P0014",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0014"
+    },
+    {
+      "id": "P0015",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0015"
+    },
+    {
+      "id": "P0040",
+      "module": "Walls/WallAstra_Straight_Broken",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -10
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0040"
+    },
+    {
+      "id": "P0041",
+      "module": "Walls/WallAstra_Straight_Window",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0041"
+    },
+    {
+      "id": "P0043",
+      "module": "Walls/WallAstra_Corner_Square_Outer",
+      "chunk": "CH01_New",
+      "position": [
+        -16,
+        0,
+        -12
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0043"
+    },
+    {
+      "id": "P0045",
+      "module": "Walls/WallAstra_Corner_Round_Inner",
+      "chunk": "CH01_New",
+      "position": [
+        -8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0045"
+    },
+    {
+      "id": "P0046",
+      "module": "Walls/WallAstra_Straight_Broken",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0046"
+    },
+    {
+      "id": "P0060",
+      "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
+      "chunk": "CH01_New",
+      "position": [
+        -8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0060"
+    },
+    {
+      "id": "P0061",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0061"
+    },
+    {
+      "id": "P0062",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -10
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0062"
+    },
+    {
+      "id": "P0064",
+      "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
+      "chunk": "CH01_New",
+      "position": [
+        -16,
+        0,
+        -12
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0064"
+    },
+    {
+      "id": "P0067",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -10
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0067"
+    },
+    {
+      "id": "P0068",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -14
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0068"
+    },
+    {
+      "id": "P0069",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0069"
+    },
+    {
+      "id": "P0070",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -14
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0070"
+    },
+    {
+      "id": "P0071",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -10
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0071"
+    },
+    {
+      "id": "P0072",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0072"
+    },
+    {
+      "id": "P0075",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        5,
+        -14
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0075"
+    },
+    {
+      "id": "P0076",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -14
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0076"
+    },
+    {
+      "id": "P0077",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        5,
+        -10
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0077"
+    },
+    {
+      "id": "P0079",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0079"
+    },
+    {
+      "id": "P0080",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0080"
+    },
+    {
+      "id": "P0081",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -10
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0081"
+    },
+    {
+      "id": "P0099",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        5,
+        -6
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0099"
+    },
+    {
+      "id": "P0101",
+      "module": "Props/Prop_Cable_3",
+      "chunk": "CH01_New",
+      "position": [
+        -11,
+        0,
+        -13
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0101"
+    },
+    {
+      "id": "P0104",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        -10.25
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0104"
+    },
+    {
+      "id": "P0105",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        -6.25
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0105"
+    },
+    {
+      "id": "P0108",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0108"
+    },
+    {
+      "id": "P0109",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -14
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0109"
+    },
+    {
+      "id": "P0110",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -10
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0110"
+    },
+    {
+      "id": "P0111",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -6
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0111"
+    },
+    {
+      "id": "P0112",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        -2.2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0112"
+    },
+    {
+      "id": "P0122",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        -14.2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0122"
+    },
+    {
+      "id": "P0123",
+      "module": "Platforms/Platform_Metal_Curve",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0123"
+    },
+    {
+      "id": "P0126",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        1.4
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0126"
+    },
+    {
+      "id": "P0129",
+      "module": "Walls/WallAstra_Corner_Square_Outer",
+      "chunk": "CH01_New",
+      "position": [
+        -4,
+        0,
+        -4
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0129"
+    },
+    {
+      "id": "P0130",
+      "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
+      "chunk": "CH01_New",
+      "position": [
+        -3.9,
+        0,
+        -4
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0130"
+    },
+    {
+      "id": "P0131",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -10.1,
+        5,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0131"
+    },
+    {
+      "id": "P0132",
+      "module": "Platforms/Platform_DarkPlates_Curves",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0132"
+    },
+    {
+      "id": "P0133",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0133"
+    },
+    {
+      "id": "P0134",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0134"
+    },
+    {
+      "id": "P0135",
+      "module": "Walls/WallAstra_Straight_Window",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0135"
+    },
+    {
+      "id": "P0136",
+      "module": "Walls/WallAstra_Straight_Divided",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0136"
+    },
+    {
+      "id": "P0137",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0137"
+    },
+    {
+      "id": "P0138",
+      "module": "Walls/WallAstra_Straight_Divided",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0138"
+    },
+    {
+      "id": "P0139",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0139"
+    },
+    {
+      "id": "P0140",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0140"
+    },
+    {
+      "id": "P0141",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0141"
+    },
+    {
+      "id": "P0142",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0142"
+    },
+    {
+      "id": "P0143",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0143"
+    },
+    {
+      "id": "P0144",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0144"
+    },
+    {
+      "id": "P0145",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -2
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0145"
+    },
+    {
+      "id": "P0146",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.01,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0146"
+    },
+    {
+      "id": "P0149",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        0.006,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0149"
+    },
+    {
+      "id": "P0150",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0150"
+    },
+    {
+      "id": "P0151",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0151"
+    },
+    {
+      "id": "P0152",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0152"
+    },
+    {
+      "id": "P0153",
+      "module": "Walls/BottomSimple_Corner_Square_Outer_1",
+      "chunk": "CH01_New",
+      "position": [
+        -4,
+        0.01,
+        -4
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0153"
+    },
+    {
+      "id": "P0155",
+      "module": "Walls/BottomSimple_Corner_Round_Inner",
+      "chunk": "CH01_New",
+      "position": [
+        -8,
+        0.01,
+        0
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0155"
+    },
+    {
+      "id": "P0156",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -6,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0156"
+    },
+    {
+      "id": "P0157",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -2,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0157"
+    },
+    {
+      "id": "P0158",
+      "module": "Walls/BottomSimple_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        2,
+        0.01,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0158"
+    },
+    {
+      "id": "P0161",
+      "module": "Walls/WallWideBand_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        0,
+        6
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0161"
+    },
+    {
+      "id": "P0162",
+      "module": "Walls/WallWideBand_Corner_Square_Outer",
+      "chunk": "CH00_Storage",
+      "position": [
+        8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0162"
+    },
+    {
+      "id": "P0163",
+      "module": "Walls/WallWideBand_Corner_Square_Outer",
+      "chunk": "CH00_Storage",
+      "position": [
+        8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0163"
+    },
+    {
+      "id": "P0164",
+      "module": "Walls/WallWideBand_Corner_Square_Outer",
+      "chunk": "CH00_Storage",
+      "position": [
+        8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0164"
+    },
+    {
+      "id": "P0168",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        0,
+        6
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0168"
+    },
+    {
+      "id": "P0169",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        0,
+        6
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0169"
+    },
+    {
+      "id": "P0170",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        14,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0170"
+    },
+    {
+      "id": "P0171",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        14,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0171"
+    },
+    {
+      "id": "P0172",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0172"
+    },
+    {
+      "id": "P0173",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0173"
+    },
+    {
+      "id": "P0174",
+      "module": "Walls/TopSimple_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        2,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0174"
+    },
+    {
+      "id": "P0177",
+      "module": "Props/Prop_ItemHolder",
+      "chunk": "CH00_Storage",
+      "name": "weaponHolder",
+      "position": [
+        6,
+        0,
+        -1
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "weaponHolder"
+    },
+    {
+      "id": "P0178",
+      "module": "Props/Prop_Pipe_Capped",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        4.75,
+        -3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0178"
+    },
+    {
+      "id": "P0179",
+      "module": "Props/Prop_Pipe_Capped",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        4.75,
+        -3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0179"
+    },
+    {
+      "id": "P0180",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -10,
+        0,
+        -14
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0180"
+    },
+    {
+      "id": "P0181",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -10,
+        0,
+        -10
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0181"
+    },
+    {
+      "id": "P0182",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0182"
+    },
+    {
+      "id": "P0183",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -10,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0183"
+    },
+    {
+      "id": "P0184",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -6,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0184"
+    },
+    {
+      "id": "P0185",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0185"
+    },
+    {
+      "id": "P0186",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0186"
+    },
+    {
+      "id": "P0187",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        -2.3,
+        0.006,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0187"
+    },
+    {
+      "id": "P0188",
+      "module": "Walls/BottomAccent_Straight",
+      "chunk": "CH00_Storage",
+      "position": [
+        1.7,
+        0.006,
+        2
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0188"
+    },
+    {
+      "id": "P0189",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0189"
+    },
+    {
+      "id": "P0191",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0191"
+    },
+    {
+      "id": "P0192",
+      "module": "Props/Prop_Crate4",
+      "chunk": "CH00_Storage",
+      "name": "crate4",
+      "position": [
+        11,
+        0.56,
+        3
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "crate4"
+    },
+    {
+      "id": "P0193",
+      "module": "Props/Prop_Crate2",
+      "chunk": "CH00_Storage",
+      "name": "crate2",
+      "position": [
+        9.5,
+        0.5,
+        3
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "crate2"
+    },
+    {
+      "id": "P0194",
+      "module": "Props/Prop_Crate4",
+      "chunk": "CH00_Storage",
+      "name": "crate4",
+      "position": [
+        11,
+        1.69,
+        3
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "crate4"
+    },
+    {
+      "id": "P0195",
+      "module": "Decals/Decal_Caution",
+      "chunk": "CH00_Storage",
+      "name": "storageDoor_caution",
+      "position": [
+        4,
+        2,
+        2
+      ],
+      "rotation": [
+        90,
+        -270,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "storageDoor_caution"
+    },
+    {
+      "id": "P0197",
+      "module": "Decals/Decal_0",
+      "chunk": "CH00_Storage",
+      "name": "player",
+      "position": [
+        6.5,
+        0.1,
+        2
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "player"
+    }
+  ],
+  "markers": [
+    {
+      "id": "Door_D00",
+      "type": "door",
+      "position": [
+        3.9492,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "width": 4.211441993713379,
+      "height": 4.0489020347595215,
+      "chunkA": "",
+      "chunkB": "",
+      "triggerRadius": 3.5,
+      "slideDistance": 1.51,
+      "leaves": [
+        "P0009",
+        "P0007"
+      ]
+    }
+  ],
+  "activeChunk": "CH00_Storage",
+  "fluidSim": [
+    "viscosity-inplace",
+    "liquid-slow.json"
+  ],
+  "behaviors": {
+    "dynamic": {
+      "dynamic": true
+    },
+    "any_liquefiable": {
+      "liquefiable": true
+    },
+    "door_liquefiable": {
+      "fluidSim": [
+        "viscosity-inplace"
+      ],
+      "liquefiable": true
+    },
+    "player_startpos": {},
+    "weapon_startpos": {}
+  },
+  "entities": {
+    "player": {
+      "behaviors": [
+        {
+          "name": "player_startpos",
+          "direction": [
+            1,
+            0,
+            0
+          ]
+        }
+      ]
+    },
+    "storageDoorL": {
+      "behaviors": [
+        {
+          "name": "door_liquefiable",
+          "linked": [
+            "storageDoorR",
+            "storageDoor_caution"
+          ]
+        }
+      ]
+    },
+    "storageDoorR": {
+      "behaviors": [
+        {
+          "name": "door_liquefiable",
+          "linked": [
+            "storageDoorL",
+            "storageDoor_caution"
+          ]
+        }
+      ]
+    }
+  },
+  "view": {
+    "position": [
+      11.514,
+      4.022,
+      0.858
+    ],
+    "rotation": [
+      0.468,
+      -1.604,
+      0
+    ],
+    "target": [
+      2.595,
+      -0.491,
+      0.561
+    ]
+  },
+  "environment": {
+    "strength": 1.7,
+    "toneMapping": "Khronos PBR Neutral",
+    "exposure": 0.55
+  },
+  "editorEnvironment": {
+    "strength": 1.7,
+    "exposure": 0.55
+  },
+  "portals": [
+    {
+      "id": "Portal_Door_D00",
+      "chunkA": "CH00_Storage",
+      "chunkB": "CH01_New",
+      "door": "Door_D00",
+      "centre": [
+        -3.9492,
+        2.0245,
+        2
+      ],
+      "normal": [
+        -1,
+        0,
+        0
+      ],
+      "corners": [
+        [
+          -3.9492,
+          0,
+          4.1057
+        ],
+        [
+          -3.9492,
+          0,
+          -0.1057
+        ],
+        [
+          -3.9492,
+          4.0489,
+          -0.1057
+        ],
+        [
+          -3.9492,
+          4.0489,
+          4.1057
+        ]
+      ]
+    }
+  ],
+  "doors": [
+    {
+      "id": "Door_D00",
+      "node": "Door_D00",
+      "chunkA": "CH00_Storage",
+      "chunkB": "CH01_New",
+      "position": [
+        -3.9492,
+        0,
+        2
+      ],
+      "width": 4.211441993713379,
+      "height": 4.0489020347595215,
+      "triggerRadius": 3.5,
+      "leaves": [
+        {
+          "node": "storageDoorL",
+          "openDistance": 1.51
+        },
+        {
+          "node": "storageDoorR",
+          "openDistance": 1.51
+        }
+      ]
+    }
+  ],
+  "adjacency": {
+    "CH00_Storage": [
+      {
+        "to": "CH01_New",
+        "portal": "Portal_Door_D00"
+      }
+    ],
+    "CH01_New": [
+      {
+        "to": "CH00_Storage",
+        "portal": "Portal_Door_D00"
+      }
+    ]
+  }
+}

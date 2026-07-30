@@ -19,7 +19,7 @@
  * Usage: npx tsx scripts/build-bundle-demos.ts
  */
 import { build, type Plugin } from "vite";
-import { resolve, dirname } from "path";
+import { resolve, dirname, basename } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { cpSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, statSync } from "fs";
@@ -50,6 +50,7 @@ const LITTLEST_TOKYO_SRC = resolve(labDir, "public/littlest-tokyo");
 const TETRIS_SRC = resolve(labDir, "public/tetris");
 const PLATFORMER_SRC = resolve(labDir, "public/platformer");
 const SANDBLOX_SRC = resolve(labDir, "public/sandblox");
+const WATERFALL_SRC = resolve(labDir, "public/waterfall");
 const DRACO_FILES = ["draco_decoder.js", "draco_decoder.wasm"];
 
 const _demoRequire = createRequire(import.meta.url);
@@ -191,12 +192,12 @@ function copyDemoIndexAssets(demos: DemoConfigEntry[]): void {
     }
 }
 
-function copyRequiredDir(source: string, target: string, label: string): void {
+function copyRequiredDir(source: string, target: string, label: string, include?: (file: string) => boolean): void {
     if (!existsSync(source)) {
         throw new Error(`Missing ${label} assets at ${source}`);
     }
     rmSync(target, { recursive: true, force: true });
-    cpSync(source, target, { recursive: true });
+    cpSync(source, target, { recursive: true, filter: include ? (src) => include(basename(src)) : undefined });
 }
 
 function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
@@ -239,6 +240,17 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
     if (demos.some((demo) => demo.slug === "sandblox")) {
         // Default world map JSON, fetched at runtime via demoAssetUrl.
         copyRequiredDir(SANDBLOX_SRC, resolve(demosDir, "sandblox"), "Sandblox");
+    }
+
+    if (demos.some((demo) => demo.slug === "fluid")) {
+        // Waterfall scene: the rock-formation glTF plus the height map baked from it
+        // (lab/public/waterfall/scripts/bake-rock-heightmap.ts), both fetched at runtime via demoAssetUrl.
+        // The `*-high.*` pair — the raw 72 MB photogrammetry scan and its own bake — is the
+        // SOURCE the shipped rock.glb is derived from (lab/public/waterfall/scripts/optimize-rock.ts),
+        // kept next to it for future re-exports but never served, so it is skipped here rather
+        // than copied into every demo build. `scripts/` is that tooling itself — build-time
+        // Node code that has no business being downloaded by a browser.
+        copyRequiredDir(WATERFALL_SRC, resolve(demosDir, "waterfall"), "Waterfall rock", (file) => file !== "scripts" && !file.includes("-high."));
     }
 
     if (demos.some((demo) => demo.slug === "bath-day")) {
