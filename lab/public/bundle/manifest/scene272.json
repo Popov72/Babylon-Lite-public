@@ -1,0 +1,10 @@
+{
+  "rawKB": 55.3,
+  "rawBytes": 56614,
+  "gzipKB": 21.6,
+  "ignoredRawKB": 0,
+  "runtimeChunks": [
+    "scene272-standard-renderable-CccAd_Fw.js",
+    "scene272.js"
+  ]
+}

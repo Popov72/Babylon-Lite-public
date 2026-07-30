@@ -1,9 +1,10 @@
 {
-  "rawKB": 40.4,
-  "gzipKB": 15.8,
+  "rawKB": 39.7,
+  "gzipKB": 15.7,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene161-shader-renderable-BuB91IGe.js",
+    "scene161-shader-renderable-LuoOwsjn.js",
     "scene161.js"
-  ]
+  ],
+  "rawBytes": 40679
 }

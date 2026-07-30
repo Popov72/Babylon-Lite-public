@@ -1,19 +1,20 @@
 {
-  "rawKB": 84.5,
-  "gzipKB": 35.1,
+  "rawKB": 84.7,
+  "gzipKB": 35.5,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene35-generate-mipmaps-0vLKe9rz.js",
-    "scene35-gltf-feature-gpu-instancing-DdNNdzxm.js",
-    "scene35-gltf-feature-registry-BqLTw74W.js",
-    "scene35-gltf-glb-parser-BJyme4Vk.js",
+    "scene35-generate-mipmaps-CWo6nUt6.js",
+    "scene35-gltf-feature-gpu-instancing-B7Lb4O04.js",
+    "scene35-gltf-feature-registry-Deg7ebgL.js",
+    "scene35-gltf-glb-parser-D_CuPqdp.js",
     "scene35-ibl-fragment-CeRrvT96.js",
-    "scene35-pbr-pipeline-B8Nt-9_M.js",
-    "scene35-pbr-renderable-DeQMmFbZ.js",
-    "scene35-rgbd-decode-BysONDsX.js",
+    "scene35-pbr-pipeline-B8xab3f9.js",
+    "scene35-pbr-renderable-BjtDkvCj.js",
+    "scene35-rgbd-decode-BRXFAjBk.js",
     "scene35-scene-uniforms-FTYH6Ct0.js",
     "scene35-thin-instance-fragment-CBn2miAC.js",
-    "scene35-thin-instance-gpu-n9Q4QDPC.js",
+    "scene35-thin-instance-gpu-DU7GMzAv.js",
     "scene35.js"
-  ]
+  ],
+  "rawBytes": 86752
 }

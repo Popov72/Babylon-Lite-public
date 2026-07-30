@@ -1,10 +1,11 @@
 {
-  "rawKB": 51.6,
-  "gzipKB": 20.3,
+  "rawKB": 51.9,
+  "gzipKB": 20.7,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene36-standard-renderable-CaAHZz_F.js",
+    "scene36-standard-renderable-D302P5gj.js",
     "scene36-std-emissive-fragment-DthzsVUc.js",
     "scene36.js"
-  ]
+  ],
+  "rawBytes": 53155
 }
