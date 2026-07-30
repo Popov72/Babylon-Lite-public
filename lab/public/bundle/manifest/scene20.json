@@ -1,6 +1,6 @@
 {
-  "rawKB": 78.4,
-  "gzipKB": 32.9,
+  "rawKB": 78.6,
+  "gzipKB": 33,
   "ignoredRawKB": 0,
   "runtimeChunks": [
     "scene20-background-dds-skybox-BIv-MiR7.js",

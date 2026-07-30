@@ -1,9 +1,9 @@
 {
-  "rawKB": 74.7,
-  "gzipKB": 30.1,
+  "rawKB": 75,
+  "gzipKB": 30.2,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene8-background-hdr-skybox-FeMZnJ2H.js",
+    "scene8-background-hdr-skybox-CW3CVQtF.js",
     "scene8-ibl-fragment-CeRrvT96.js",
     "scene8-pbr-renderable-DAGrUGjF.js",
     "scene8-scene-size-CBRA6KcU.js",

@@ -1,12 +1,13 @@
 {
-  "rawKB": 74,
-  "gzipKB": 30.3,
+  "rawKB": 74.5,
+  "gzipKB": 30.7,
   "ignoredRawKB": 0,
   "runtimeChunks": [
     "scene179-alpha-test-fragment-5wiD0rFT.js",
-    "scene179-generate-mipmaps-5DBI-Po-.js",
+    "scene179-generate-mipmaps-Dckj0KYX.js",
     "scene179-gltf-json-asset-DHBJMSDr.js",
-    "scene179-pbr-renderable-dLmUnRSQ.js",
+    "scene179-pbr-pipeline-B9vJ7zPM.js",
+    "scene179-pbr-renderable-CNvD50CO.js",
     "scene179.js"
   ]
 }

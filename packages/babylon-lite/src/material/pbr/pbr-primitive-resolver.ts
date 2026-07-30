@@ -22,47 +22,63 @@ const MSH_TOPOLOGY_SHIFT = 12;
 const MSH_INDEX_U32 = 1 << 15;
 
 // Encode the topology + negative-winding bits from the per-mesh flags set by the loader/feature.
-_installMeshFeatureExtra((mesh: Mesh): number => {
-    let f = 0;
-    if ((mesh as { _reverseWinding?: boolean })._reverseWinding) {
-        f |= MSH_REVERSE_WINDING;
-    }
-    const topo = (mesh as { _topology?: number })._topology;
-    if (topo) {
-        f |= topo << MSH_TOPOLOGY_SHIFT;
-        // Strips need the pipeline stripIndexFormat to match the index buffer; flag uint32 so the
-        // pipeline picks the right format. Lite always draws indexed.
-        if (topo >= 3 && mesh._gpu.indexFormat === "uint32") {
-            f |= MSH_INDEX_U32;
-        }
-    }
-    return f;
-});
+// Installed via an exported FUNCTION the glTF primitive feature calls, not by bare import: this
+// package is published with `sideEffects: false`, so a bundler is entitled to drop an import of a
+// module that exports nothing — which silently removed the resolver from every demo/scene bundle and
+// left `frontFace` at its "ccw" default. A mirrored mesh then evaluated `@builtin(front_facing)`
+// against the wrong winding, so the double-sided shader flipped the shading normal on the visible
+// outer surface and the mesh rendered black. Keeping the install behind a called export makes it
+// reachable through the module graph and immune to that.
+let _installed = false;
 
-_installPbrPrimitiveResolver((meshFeatures, hasDoubleSided): GPUPrimitiveState => {
-    // `reverseWinding` marks a mesh mirrored relative to Lite's world space: the loader sets it when
-    // the node's world-matrix determinant is positive. (Lite applies a RH→LH root flip with det < 0,
-    // so an un-mirrored glTF node lands at a negative world determinant and a mirrored one — e.g. KHR
-    // negative node scale — at a positive one.) A mirrored mesh has reversed triangle winding, so we
-    // flip the pipeline's `frontFace` (ccw→cw) rather than the cull face: WebGPU derives
-    // `@builtin(front_facing)` from `frontFace`, so this keeps the double-sided shader's front-facing
-    // normal flip correct (a cullMode flip would leave front_facing evaluated against the un-mirrored
-    // ccw winding, wrongly inverting the shading normal on the visible outer surface → black). BJS
-    // handles the same case by flipping sideOrientation (the GL front-face winding); it states the
-    // condition as a negative determinant because it measures the sign in its own opposite-handed space.
-    const reverseWinding = (meshFeatures & MSH_REVERSE_WINDING) !== 0;
-    // Non-triangle-list primitive topology. Points and lines have no faces to cull; for a strip the
-    // material's culling still applies.
-    const topoIdx = (meshFeatures >> MSH_TOPOLOGY_SHIFT) & 7;
-    const topology: GPUPrimitiveTopology =
-        topoIdx === 1 ? "point-list" : topoIdx === 2 ? "line-list" : topoIdx === 3 ? "line-strip" : topoIdx === 4 ? "triangle-strip" : "triangle-list";
-    const noCull = topoIdx >= 1 && topoIdx <= 3;
-    // Indexed strip draws need stripIndexFormat to match the index buffer.
-    const stripIndexFormat: GPUIndexFormat | undefined = topoIdx >= 3 ? (meshFeatures & MSH_INDEX_U32 ? "uint32" : "uint16") : undefined;
-    return {
-        topology,
-        ...(stripIndexFormat ? { stripIndexFormat } : undefined),
-        cullMode: noCull || hasDoubleSided ? "none" : "back",
-        frontFace: reverseWinding ? "cw" : "ccw",
-    };
-});
+/** Install the primitive-state resolver + mesh-feature encoder (idempotent). */
+export function _installPrimitiveState(): void {
+    if (_installed) {
+        return;
+    }
+    _installed = true;
+    _installMeshFeatureExtra((mesh: Mesh): number => {
+        let f = 0;
+        if ((mesh as { _reverseWinding?: boolean })._reverseWinding) {
+            f |= MSH_REVERSE_WINDING;
+        }
+        const topo = (mesh as { _topology?: number })._topology;
+        if (topo) {
+            f |= topo << MSH_TOPOLOGY_SHIFT;
+            // Strips need the pipeline stripIndexFormat to match the index buffer; flag uint32 so the
+            // pipeline picks the right format. Lite always draws indexed.
+            if (topo >= 3 && mesh._gpu.indexFormat === "uint32") {
+                f |= MSH_INDEX_U32;
+            }
+        }
+        return f;
+    });
+
+    _installPbrPrimitiveResolver((meshFeatures, hasDoubleSided): GPUPrimitiveState => {
+        // `reverseWinding` marks a mesh mirrored relative to Lite's world space: the loader sets it when
+        // the node's world-matrix determinant is positive. (Lite applies a RH→LH root flip with det < 0,
+        // so an un-mirrored glTF node lands at a negative world determinant and a mirrored one — e.g. KHR
+        // negative node scale — at a positive one.) A mirrored mesh has reversed triangle winding, so we
+        // flip the pipeline's `frontFace` (ccw→cw) rather than the cull face: WebGPU derives
+        // `@builtin(front_facing)` from `frontFace`, so this keeps the double-sided shader's front-facing
+        // normal flip correct (a cullMode flip would leave front_facing evaluated against the un-mirrored
+        // ccw winding, wrongly inverting the shading normal on the visible outer surface → black). BJS
+        // handles the same case by flipping sideOrientation (the GL front-face winding); it states the
+        // condition as a negative determinant because it measures the sign in its own opposite-handed space.
+        const reverseWinding = (meshFeatures & MSH_REVERSE_WINDING) !== 0;
+        // Non-triangle-list primitive topology. Points and lines have no faces to cull; for a strip the
+        // material's culling still applies.
+        const topoIdx = (meshFeatures >> MSH_TOPOLOGY_SHIFT) & 7;
+        const topology: GPUPrimitiveTopology =
+            topoIdx === 1 ? "point-list" : topoIdx === 2 ? "line-list" : topoIdx === 3 ? "line-strip" : topoIdx === 4 ? "triangle-strip" : "triangle-list";
+        const noCull = topoIdx >= 1 && topoIdx <= 3;
+        // Indexed strip draws need stripIndexFormat to match the index buffer.
+        const stripIndexFormat: GPUIndexFormat | undefined = topoIdx >= 3 ? (meshFeatures & MSH_INDEX_U32 ? "uint32" : "uint16") : undefined;
+        return {
+            topology,
+            ...(stripIndexFormat ? { stripIndexFormat } : undefined),
+            cullMode: noCull || hasDoubleSided ? "none" : "back",
+            frontFace: reverseWinding ? "cw" : "ccw",
+        };
+    });
+}
