@@ -1,0 +1,21 @@
+{
+  "_source": "Modular SciFi MegaKit / Engine Projects / Unity (URP) / Assets/ModularSci-FiMegaKit/Materials/*.mat",
+  "_note": "Quaternius' authoritative values. The runtime should use these; the editor viewport applies them too so light strips read correctly while laying out.",
+  "emissive": {
+    "M_Light":         { "color": [1.0, 1.0, 1.0],  "intensity": 20 },
+    "M_LightFade":     { "color": [0.55, 1.0, 0.0], "intensity": 10 },
+    "M_LightFade_Red": { "color": [1.0, 0.0, 0.09], "intensity": 10 },
+    "M_Decal_Screen":  { "color": [1.0, 0.0, 0.0],  "intensity": 5 }
+  },
+  "variants": {
+    "MI_Trim_02_Floor": { "base": "MI_Trim_02", "tint": [0.35, 0.41, 0.44], "metallic": 0.0, "roughness": 0.8 },
+    "MI_Trim_03_Dark":  { "base": "MI_Trim_03", "tint": [0.37, 0.37, 0.37] },
+    "MI_Trim_02_Rails": { "base": "MI_Trim_02", "tint": [1.0, 0.72, 0.0] }
+  },
+  "editorViewport": {
+    "_note": "Emissive intensities of 10-20 are correct for a baked-lighting runtime but blow out an unlit layout viewport, so they are damped here only.",
+    "emissiveScale": 0.08,
+    "exposure": 1.0,
+    "toneMapping": "KHR_PBR_NEUTRAL"
+  }
+}

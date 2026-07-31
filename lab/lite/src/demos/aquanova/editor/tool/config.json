@@ -1,0 +1,7 @@
+{
+  "kitDir": "../kit",
+  "exportDir": "../export",
+  "envDir": "../env",
+  "port": 5180,
+  "fluidSim": ["viscosity-inplace", "liquid-slow.json"]
+}

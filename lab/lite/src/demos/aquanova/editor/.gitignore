@@ -1,0 +1,30 @@
+# Generated and machine-local parts of the layout editor.
+#
+# Only what is rebuilt on demand, or is not ours to ship, is ignored. Anything
+# the editor needs as *input* is kept however large: the point of this folder is
+# that anyone can clone it and build a ship without hunting down assets.
+
+# Module thumbnails and turntable renders, rebuilt by the server on first
+# request, plus its own logs. ~51 MB.
+tool/cache/
+
+# Saved layouts are scratch copies; the ship the tool actually reloads is
+# export/ship_manifest.json.
+tool/layouts/
+
+# The exported ship: a 31 MB .glb rebuilt from the manifest by "Export glb",
+# and the timestamped manifest backups the server keeps on every save. The
+# live manifest itself is NOT ignored - it is the ship.
+export/*.glb
+export/ship_manifest.*-*.json
+
+# The HDRI is a placeholder with no recorded provenance, and is not the one this
+# ship will ship with - so it is not committed. The editor starts without it and
+# says so ("no HDRI, metals will look flat"); only reflections suffer, because
+# metals take nearly all their brightness from the IBL. Drop any .hdr in here
+# and point ENV_HDRI (tool/public/js/editor.js) at it.
+env/*.hdr
+
+# Deliberately NOT ignored, despite the size:
+#   kit/  35 MB of CC0 modules - see license.txt. Bundled so the editor runs
+#         anywhere without a separate download.

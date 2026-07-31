@@ -1,0 +1,341 @@
+:root {
+  --bg: #14171c;
+  --panel: #1b1f26;
+  --panel-2: #232833;
+  --line: #2f3643;
+  --text: #d7dce4;
+  --muted: #7f8894;
+  --accent: #ff8a3d;
+  --accent-dim: #7a4420;
+  --danger: #d9534f;
+  --ok: #4caf7d;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: 12px/1.45 "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+body { display: flex; flex-direction: column; }
+
+/*
+ * `hidden` must actually hide. The attribute only works through the UA rule
+ * `[hidden] { display: none }`, and *any* author `display` rule beats it -
+ * `.row { display: flex }` was enough to leave a hidden inspector row on screen
+ * with its previous element's values still in it.
+ */
+[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------- toolbar */
+
+#toolbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 10px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  flex: 0 0 auto; flex-wrap: wrap;
+}
+
+.brand {
+  font-weight: 700; letter-spacing: 0.14em; color: var(--accent);
+  font-size: 11px; padding-right: 4px;
+}
+
+.group { display: flex; align-items: center; gap: 5px; }
+.group.vertical { flex-direction: column; align-items: stretch; margin-top: 10px; }
+.group + .group { border-left: 1px solid var(--line); padding-left: 14px; }
+
+label { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+button {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 4px 9px; cursor: pointer; font: inherit;
+}
+button:hover { background: #2c3340; border-color: #3d4658; }
+button.active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+/* Toggle buttons keep their state in aria-pressed, so the styling and the
+   accessible state cannot drift apart. Deliberately louder than .active, which
+   only marks the armed brush. */
+button.toggle[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #16191f;
+  font-weight: 600; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+button.toggle[aria-pressed="true"]:hover { background: #ff9d5c; border-color: #ff9d5c; }
+button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+select, input[type="number"], input[type="search"] {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 3px 5px; font: inherit;
+}
+input[type="number"] { width: 100%; }
+input[type="range"] { width: 90px; }
+
+.readout { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- main */
+
+main { flex: 1 1 auto; display: flex; min-height: 0; }
+
+/* -------------------------------------------------------------- palette */
+
+#palette {
+  width: var(--palette-w, 260px); flex: 0 0 var(--palette-w, 260px);
+  background: var(--panel); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+}
+
+/* "Big icons": doubling the panel width doubles the tile size, since the grid
+   keeps the same column count. */
+body.big-palette { --palette-w: 520px; }
+
+.palette-head { padding: 8px; border-bottom: 1px solid var(--line); }
+#palette-search { width: 100%; margin-bottom: 6px; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 3px; }
+.tabs button { padding: 2px 7px; font-size: 11px; }
+
+#palette-list {
+  flex: 1 1 auto; overflow-y: auto; padding: 6px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+  /* implicit rows collapse to zero without this, hiding every thumbnail */
+  grid-auto-rows: max-content;
+  align-content: start;
+}
+
+.item {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+  cursor: pointer; overflow: hidden; text-align: center;
+}
+.item:hover { border-color: #4a5468; }
+.item.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.item .thumb {
+  width: 100%; aspect-ratio: 1; min-height: 72px; display: block;
+  background: #0f1216; object-fit: contain;
+}
+.item .cap {
+  display: block; font-size: 9px; line-height: 1.25; color: var(--muted);
+  padding: 3px 2px; word-break: break-word;
+}
+
+/* Rubber-band selection. A DOM overlay, not scene geometry: it has to be
+   exactly one pixel crisp and must never be pickable. */
+.marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(255, 138, 61, 0.12);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Turntable preview: sits exactly on top of the still thumbnail, so the module
+   appears to start spinning in place rather than the tile changing size. */
+.item { position: relative; }
+.item .turn {
+  position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 1;
+  background-repeat: no-repeat; background-color: #0f1216;
+  pointer-events: none;
+}
+.item.turn-wait .thumb { opacity: 0.55; transition: opacity 120ms; }
+body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
+.item.active .cap { color: var(--text); }
+
+.palette-foot {
+  padding: 6px 8px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------- viewport */
+
+#viewport { flex: 1 1 auto; position: relative; min-width: 0; }
+#render-canvas { width: 100%; height: 100%; display: block; outline: none; }
+
+#hint {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+  background: rgba(0,0,0,0.55); border: 1px solid var(--line);
+  padding: 4px 10px; border-radius: 3px; color: var(--muted);
+  pointer-events: none; font-size: 11px;
+}
+
+#hud {
+  position: absolute; left: 10px; top: 10px;
+  background: rgba(0,0,0,0.5); border: 1px solid var(--line);
+  border-radius: 3px; padding: 6px 9px; pointer-events: none;
+  font-size: 11px; line-height: 1.7; min-width: 168px;
+}
+#hud div { display: flex; gap: 10px; }
+#hud .k { color: var(--muted); flex: 0 0 62px; }
+#hud .v {
+  color: var(--accent); font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ inspector */
+
+#inspector {
+  width: 232px; flex: 0 0 232px;
+  background: var(--panel); border-left: 1px solid var(--line);
+  overflow-y: auto; padding: 8px 10px;
+}
+
+#inspector h2 {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 12px 0 6px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+#inspector h2:first-child { margin-top: 0; }
+#inspector h3 { font-size: 10px; color: var(--muted); margin: 9px 0 3px; font-weight: 600; }
+
+.row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.row label { flex: 0 0 52px; }
+.row select { flex: 1 1 auto; min-width: 0; }
+/* Without min-width:0 an input refuses to shrink below its intrinsic size and
+   spills out of the 232px inspector. */
+.row input[type="text"] { flex: 1 1 auto; min-width: 0; }
+/* A checkbox row wants its whole label clickable, not squeezed into 52px. */
+#behavior-fields .row label:has(input[type="checkbox"]) { flex: 1 1 auto; }
+#behavior-fields select[multiple] { height: auto; padding: 2px; }
+#bhv-count, #bhv-hint { margin: 2px 0 4px; line-height: 1.35; }
+.row .readout {
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+}
+/* Ids are read digit by digit and often copied out to grep the manifest, so
+   they get a fixed pitch and an explicit text cursor - a plain span in a panel
+   full of controls does not look selectable. */
+.row .readout.mono {
+  font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
+  user-select: all; cursor: text;
+}
+
+.vec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.vec.dims span {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+  padding: 3px 5px; text-align: center; color: var(--text);
+  font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis;
+}
+#dim-note { font-size: 9px; letter-spacing: 0; text-transform: none; }
+
+.muted { color: var(--muted); }
+
+#chunk-stats table { width: 100%; border-collapse: collapse; }
+#chunk-stats td { padding: 1px 0; }
+#chunk-stats td.n { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#chunk-stats tr.active td { color: var(--accent); }
+
+#validation .warn { color: var(--accent); }
+#validation .err { color: var(--danger); }
+#validation .ok { color: var(--ok); }
+#validation div { margin: 2px 0; }
+
+/* --------------------------------------------------------------- status */
+
+#status {
+  flex: 0 0 auto; display: flex; gap: 10px;
+  padding: 4px 10px; background: var(--panel);
+  border-top: 1px solid var(--line); color: var(--muted); font-size: 11px;
+}
+#status .right { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* ----------------------------------------------------------------- busy */
+/*
+ * A load rebuilds the scene one module at a time, so there is a long window in
+ * which the ship is half there. The overlay both says so and physically takes
+ * every pointer event, while the panels underneath go `inert` so nothing can be
+ * clicked or focused through it.
+ */
+
+#busy {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 16, 0.55);
+  cursor: progress;
+}
+#busy .card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 18px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  color: var(--text); font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+#busy .spinner {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: busy-spin 0.7s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #busy .spinner { animation: none; } }
+
+/* ------------------------------------------------- behaviour library */
+
+#bhv-modal {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 16, 0.6);
+}
+#bhv-modal .panel {
+  width: 620px; max-width: 92vw;
+  padding: 14px 16px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+}
+#bhv-modal h2 { margin: 0 0 4px; font-size: 13px; }
+#bhv-modal p { margin: 0 0 10px; }
+#bhv-modal .split { display: flex; gap: 12px; align-items: stretch; }
+#bhv-list { flex: 0 0 180px; }
+#bhv-modal .editor { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+#bhv-json {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px; padding: 6px;
+}
+#bhv-error { min-height: 14px; color: var(--danger); font-size: 11px; }
+
+/* the applied list in the inspector */
+#bhv-applied .item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 0; border-bottom: 1px solid var(--line);
+}
+#bhv-applied .item .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#bhv-applied .item button { flex: 0 0 auto; }
+#bhv-applied .linked { margin: 2px 0 6px; }
+#bhv-applied .linked select { width: 100%; }
+#bhv-applied .linked .lbl { color: var(--muted); font-size: 10px; }
+
+/*
+ * The step readouts that ride the axis gizmo: the move step at the origin, the
+ * turn angle in the curved arrow, the scale step on each cube. Centred on their
+ * point rather than offset from it, and never pickable: labels on the scene,
+ * not parts of it.
+ *
+ * Sized 1.5x the panel text. They are read at a glance, over a busy 3D scene
+ * and at whatever distance the camera happens to be, not scanned like a form.
+ */
+.axis-snap {
+  position: absolute; z-index: 5; pointer-events: none;
+  transform: translate(-50%, -50%);
+  padding: 2px 7px; border-radius: 3px;
+  background: rgba(10, 12, 16, 0.78); border: 1px solid var(--line);
+  color: var(--text); font: 600 15px/1.4 ui-monospace, monospace;
+  white-space: nowrap;
+}
+/* The turn angle sits inside the curved arrow and the scale step on the cube at
+   each tip. Both markers are smaller than the origin and already carry a shape,
+   so these chips stay a step tighter and quieter than the one at the origin. */
+.axis-snap.axis-rot,
+.axis-snap.axis-scale {
+  padding: 1px 5px;
+  font-size: 13.5px;
+  background: rgba(10, 12, 16, 0.85);
+}
+/* Nudged clear of the cube it belongs to: the cube sits on the very tip of the
+   arrow, so a centred chip would bury it. */
+.axis-snap.axis-scale { transform: translate(-50%, -140%); }
+#bhv-applied .vec { display: flex; gap: 4px; }
+#bhv-applied .vec input { flex: 1 1 0; min-width: 0; }
