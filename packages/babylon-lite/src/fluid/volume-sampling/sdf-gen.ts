@@ -7,10 +7,13 @@
 //
 //   1. Narrow band — for each triangle, visit the grid nodes inside its AABB (grown by `exactBand`
 //      cells) and record the EXACT point-to-triangle distance + the closest triangle index.
-//   2. Sign via ray crossing — for every grid COLUMN along +x, count how many triangles the column
-//      pierces before each node (SDFGen's robust `point_in_triangle_2d` + exact x-intercept). A node
-//      is INSIDE iff the running crossing count along its column is ODD. This is winding-independent
-//      and robust for reasonably closed meshes.
+//   2. Sign via ray crossing — for every grid COLUMN along +x, +y and +z, count how many triangles the
+//      column pierces before each node (SDFGen's robust `point_in_triangle_2d` + exact intercept). A
+//      node is INSIDE along an axis iff that column's running crossing count is ODD; the final sign is
+//      the MAJORITY of the three. SDFGen votes on +x alone, which is exact for a closed surface but
+//      lines out an entire ray of wrongly-signed nodes through any hole — and real level geometry has
+//      doorways, coincident faces and open ends. Three axes agree on a closed mesh, so nothing changes
+//      there, while a hole that breaks one direction is outvoted by the other two.
 //   3. Fast sweep — a handful of Gauss-Seidel passes propagate each node's closest-triangle guess to
 //      its 26-neighbourhood, filling exact distances OUTSIDE the narrow band (SDFGen's `sweep` /
 //      `check_neighbour`).
@@ -47,6 +50,39 @@ export interface MeshSdfOptions {
      * from the surface; the near-surface band is already exact regardless. Default 2 (SDFGen).
      */
     sweepPasses?: number;
+    /**
+     * How a node's INSIDE/OUTSIDE sign is decided. Distances are identical either way.
+     *
+     * `"parity"` (default) votes on the odd/even triangle-crossing count along the +x, +y and +z
+     * columns through the node. Exact for a closed surface and cheap, but every ray through a hole in
+     * the mesh flips the parity of the whole ray behind it, so an open model grows slabs of inverted
+     * sign that no amount of voting removes once two axes are wrong at once.
+     *
+     * `"flood"` ignores crossings and asks a topological question instead: can this node be reached
+     * from OUTSIDE the grid without passing through the surface band? Reachable ⇒ outside. It cannot
+     * invert an enclosed volume, but it needs the OUTER hull to be closed — one hole and "outside"
+     * floods the whole interior, which then reads as empty space.
+     *
+     * `"normal"` is fully local and needs no closure at all: a node takes the side of the plane of its
+     * nearest triangle. Correct wherever the nearest feature is a face interior, which is almost
+     * everywhere at cell resolution; it can flip within a cell or two of a sharp concave edge, and it
+     * requires consistent outward winding. This is the one to reach for on kit-bashed level geometry,
+     * where neither the shell nor the hull is closed.
+     */
+    signMode?: "parity" | "flood" | "normal";
+    /**
+     * Flip any component smaller than this many nodes that does not touch the grid boundary.
+     * Default 0 (off).
+     *
+     * Kit-bashed levels do not meet exactly: adjacent wall panels here are modelled 0.01–0.02 m apart,
+     * and a ray slipping through such a seam flips the parity behind it, leaving a one- or two-node
+     * island floating in open space. They are far too small to be real geometry at cell resolution, so
+     * removing them is safe — but only for a model whose material is one big connected region (a room
+     * shell, a hull). Do NOT use it on a bake of small separate props: each prop is its own small
+     * component and would be erased. Applies to islands of EITHER sign, since the caller may be reading
+     * this grid as a solid or (inverted) as a container.
+     */
+    despeckle?: number;
 }
 
 /** A dense signed-distance grid. `data[idx]` is negative inside the solid, positive outside. */
@@ -125,7 +161,17 @@ export function generateMeshSdf(positions: Float32Array, indices: Uint32Array | 
     const large2 = large * large;
     dist2.fill(large2);
     const closestTri = new Int32Array(nodeCount).fill(-1);
+    // Crossing counts for THREE ray directions. `crossings`[i,j,k] counts triangles pierced in the
+    // interval (i-1, i] along +x at column (j,k); `crossingsY` / `crossingsZ` are the same along +y and
+    // +z. SDFGen uses +x alone, which is correct only for a closed surface: one hole in the mesh flips
+    // the parity of every node on the rays that pass through it, so an open model grows whole LINES of
+    // wrongly-signed nodes. Real level geometry — kit-bashed rooms with doorways, coincident faces and
+    // open ends — is never that clean, so the sign is taken as the MAJORITY of the three axes instead. A
+    // hole big enough to break one direction rarely lines up with the other two, and for a genuinely
+    // closed mesh all three agree and the result is unchanged.
     const crossings = new Int32Array(nodeCount);
+    const crossingsY = new Int32Array(nodeCount);
+    const crossingsZ = new Int32Array(nodeCount);
 
     const triCount = (indices.length / 3) | 0;
     const bary = new Float64Array(3); // scratch for point_in_triangle_2d barycentric weights
@@ -233,6 +279,42 @@ export function generateMeshSdf(positions: Float32Array, indices: Uint32Array | 
                         crossings[ci] = crossings[ci]! + 1;
                     }
                     // Intercepts beyond +x of the grid are ignored (SDFGen behaviour).
+                }
+            }
+        }
+
+        // Stage 2b/2c: the same intersection count along +y and +z, for the majority-of-three sign.
+        // +y: project onto (x,z), column (i,k), nodes strided by ni.
+        const ci0 = clampInt(Math.ceil(min3(fip, fiq, fir)), 0, ni - 1);
+        const ci1 = clampInt(Math.floor(max3(fip, fiq, fir)), 0, ni - 1);
+        for (let k = ck0; k <= ck1; k++) {
+            for (let i = ci0; i <= ci1; i++) {
+                if (pointInTriangle2d(i, k, fip, fkp, fiq, fkq, fir, fkr, bary)) {
+                    const fj = bary[0]! * fjp + bary[1]! * fjq + bary[2]! * fjr;
+                    const jInterval = Math.ceil(fj);
+                    const colBase = i + ni * nj * k;
+                    if (jInterval < 0) {
+                        crossingsY[colBase] = crossingsY[colBase]! + 1;
+                    } else if (jInterval < nj) {
+                        const cIdx = colBase + ni * jInterval;
+                        crossingsY[cIdx] = crossingsY[cIdx]! + 1;
+                    }
+                }
+            }
+        }
+        // +z: project onto (x,y), column (i,j), nodes strided by ni*nj.
+        for (let j = cj0; j <= cj1; j++) {
+            for (let i = ci0; i <= ci1; i++) {
+                if (pointInTriangle2d(i, j, fip, fjp, fiq, fjq, fir, fjr, bary)) {
+                    const fk = bary[0]! * fkp + bary[1]! * fkq + bary[2]! * fkr;
+                    const kInterval = Math.ceil(fk);
+                    const colBase = i + ni * j;
+                    if (kInterval < 0) {
+                        crossingsZ[colBase] = crossingsZ[colBase]! + 1;
+                    } else if (kInterval < nk) {
+                        const cIdx = colBase + nij * kInterval;
+                        crossingsZ[cIdx] = crossingsZ[cIdx]! + 1;
+                    }
                 }
             }
         }
@@ -349,16 +431,209 @@ export function generateMeshSdf(positions: Float32Array, indices: Uint32Array | 
         sweep(-1, +1, +1);
     }
 
-    // ---- Final: sqrt + sign from the odd/even crossing parity along each +x column -------------
-    const data = new Float32Array(nodeCount);
+    // ---- Final: sqrt + sign from the MAJORITY of the three axes' crossing parities ---------------
+    // Each axis' parity is a running prefix sum along its own column, so all three are accumulated in
+    // one pass per axis before the vote.
+    const insideX = new Uint8Array(nodeCount);
+    const insideY = new Uint8Array(nodeCount);
+    const insideZ = new Uint8Array(nodeCount);
     for (let k = 0; k < nk; k++) {
         for (let j = 0; j < nj; j++) {
             let total = 0;
             let idx = ni * (j + nj * k);
             for (let i = 0; i < ni; i++, idx++) {
                 total += crossings[idx]!;
-                const d = Math.sqrt(dist2[idx]!);
-                data[idx] = (total & 1) === 1 ? -d : d; // odd parity ⇒ inside ⇒ negative
+                insideX[idx] = total & 1;
+            }
+        }
+    }
+    for (let k = 0; k < nk; k++) {
+        for (let i = 0; i < ni; i++) {
+            let total = 0;
+            let idx = i + nij * k;
+            for (let j = 0; j < nj; j++, idx += ni) {
+                total += crossingsY[idx]!;
+                insideY[idx] = total & 1;
+            }
+        }
+    }
+    for (let j = 0; j < nj; j++) {
+        for (let i = 0; i < ni; i++) {
+            let total = 0;
+            let idx = i + ni * j;
+            for (let k = 0; k < nk; k++, idx += nij) {
+                total += crossingsZ[idx]!;
+                insideZ[idx] = total & 1;
+            }
+        }
+    }
+    const data = new Float32Array(nodeCount);
+    if (opts.signMode === "normal") {
+        // Side of the nearest triangle's plane. `closestTri` is exact in the narrow band and carried
+        // outwards by the sweep, so every node has one.
+        for (let idx = 0; idx < nodeCount; idx++) {
+            const d = Math.sqrt(dist2[idx]!);
+            const t = closestTri[idx]!;
+            if (t < 0) {
+                data[idx] = d;
+                continue;
+            }
+            const b = 9 * t;
+            const ax = triVerts[b]!,
+                ay = triVerts[b + 1]!,
+                az = triVerts[b + 2]!;
+            const e1x = triVerts[b + 3]! - ax,
+                e1y = triVerts[b + 4]! - ay,
+                e1z = triVerts[b + 5]! - az;
+            const e2x = triVerts[b + 6]! - ax,
+                e2y = triVerts[b + 7]! - ay,
+                e2z = triVerts[b + 8]! - az;
+            const nx = e1y * e2z - e1z * e2y,
+                ny = e1z * e2x - e1x * e2z,
+                nz = e1x * e2y - e1y * e2x;
+            const i = idx % ni,
+                j = ((idx / ni) | 0) % nj,
+                k = (idx / nij) | 0;
+            const s = (i * cellSize + ox - ax) * nx + (j * cellSize + oy - ay) * ny + (k * cellSize + oz - az) * nz;
+            data[idx] = s < 0 ? -d : d;
+        }
+    } else if (opts.signMode === "flood") {
+        // Reachability from the grid boundary, blocked by the surface band. Two phases: flood the open
+        // space, then hand the band cells the label of whichever side reached them first.
+        const BAND = cellSize; // one cell — the exact narrow band is already at least this wide
+        const OUTSIDE = 1,
+            INSIDE = 2;
+        const label = new Uint8Array(nodeCount);
+        const queue = new Int32Array(nodeCount);
+        let head = 0,
+            tail = 0;
+        const open = (idx: number): boolean => dist2[idx]! > BAND * BAND;
+        const push = (idx: number, lab: number): void => {
+            if (label[idx]) {
+                return;
+            }
+            label[idx] = lab;
+            queue[tail++] = idx;
+        };
+        for (let k = 0; k < nk; k++) {
+            for (let j = 0; j < nj; j++) {
+                for (let i = 0; i < ni; i++) {
+                    if (i !== 0 && i !== ni - 1 && j !== 0 && j !== nj - 1 && k !== 0 && k !== nk - 1) {
+                        continue;
+                    }
+                    const idx = i + ni * (j + nj * k);
+                    if (open(idx)) {
+                        push(idx, OUTSIDE);
+                    }
+                }
+            }
+        }
+        // Phase 1: spread OUTSIDE through open space only.
+        const spread = (bandToo: boolean): void => {
+            while (head < tail) {
+                const idx = queue[head++]!;
+                const lab = label[idx]!;
+                const i = idx % ni,
+                    j = ((idx / ni) | 0) % nj,
+                    k = (idx / nij) | 0;
+                if (i > 0 && (bandToo || open(idx - 1))) {
+                    push(idx - 1, lab);
+                }
+                if (i < ni - 1 && (bandToo || open(idx + 1))) {
+                    push(idx + 1, lab);
+                }
+                if (j > 0 && (bandToo || open(idx - ni))) {
+                    push(idx - ni, lab);
+                }
+                if (j < nj - 1 && (bandToo || open(idx + ni))) {
+                    push(idx + ni, lab);
+                }
+                if (k > 0 && (bandToo || open(idx - nij))) {
+                    push(idx - nij, lab);
+                }
+                if (k < nk - 1 && (bandToo || open(idx + nij))) {
+                    push(idx + nij, lab);
+                }
+            }
+        };
+        spread(false);
+        // Phase 2: every open pocket the boundary could not reach is enclosed ⇒ INSIDE.
+        for (let idx = 0; idx < nodeCount; idx++) {
+            if (!label[idx] && open(idx)) {
+                push(idx, INSIDE);
+            }
+        }
+        spread(false);
+        // Phase 3: the band itself takes the nearest label.
+        head = 0;
+        tail = 0;
+        for (let idx = 0; idx < nodeCount; idx++) {
+            if (label[idx]) {
+                queue[tail++] = idx;
+            }
+        }
+        spread(true);
+        for (let idx = 0; idx < nodeCount; idx++) {
+            data[idx] = label[idx] === INSIDE ? -Math.sqrt(dist2[idx]!) : Math.sqrt(dist2[idx]!);
+        }
+    } else {
+        for (let idx = 0; idx < nodeCount; idx++) {
+            const d = Math.sqrt(dist2[idx]!);
+            data[idx] = insideX[idx]! + insideY[idx]! + insideZ[idx]! >= 2 ? -d : d; // majority inside ⇒ negative
+        }
+    }
+
+    // Despeckle: erase islands too small to be geometry (see MeshSdfOptions.despeckle).
+    const maxSpeck = opts.despeckle ?? 0;
+    if (maxSpeck > 0) {
+        const seen = new Uint8Array(nodeCount);
+        const stack = new Int32Array(nodeCount);
+        const comp = new Int32Array(maxSpeck + 1);
+        for (let start = 0; start < nodeCount; start++) {
+            if (seen[start]) {
+                continue;
+            }
+            // Sign-agnostic: a caller may be treating this grid as a solid OR (via an inversion) as a
+            // container, so the speck can be on either side. Both are flipped the same way.
+            const inside = data[start]! < 0;
+            let sp = 0;
+            let size = 0;
+            let touchesEdge = false;
+            stack[sp++] = start;
+            seen[start] = 1;
+            while (sp > 0) {
+                const idx = stack[--sp]!;
+                if (size < comp.length) {
+                    comp[size] = idx;
+                }
+                size++;
+                const i = idx % ni;
+                const j = ((idx / ni) | 0) % nj;
+                const k = (idx / nij) | 0;
+                if (i === 0 || j === 0 || k === 0 || i === ni - 1 || j === nj - 1 || k === nk - 1) {
+                    touchesEdge = true;
+                }
+                const nb = [
+                    i > 0 ? idx - 1 : -1,
+                    i < ni - 1 ? idx + 1 : -1,
+                    j > 0 ? idx - ni : -1,
+                    j < nj - 1 ? idx + ni : -1,
+                    k > 0 ? idx - nij : -1,
+                    k < nk - 1 ? idx + nij : -1,
+                ];
+                for (const t of nb) {
+                    // No early exit on a big component: leaving part of it unvisited would let the
+                    // remainder be re-walked later and mistaken for a speck of its own.
+                    if (t >= 0 && !seen[t] && data[t]! < 0 === inside) {
+                        seen[t] = 1;
+                        stack[sp++] = t;
+                    }
+                }
+            }
+            if (size <= maxSpeck && !touchesEdge) {
+                for (let c = 0; c < size; c++) {
+                    data[comp[c]!] = -data[comp[c]!]!;
+                }
             }
         }
     }

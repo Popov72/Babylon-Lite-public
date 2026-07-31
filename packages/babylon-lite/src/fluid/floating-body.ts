@@ -32,6 +32,19 @@ export interface FloatingBodyConfig {
     /** Baked SDF grid in the body's centred+scaled LOCAL frame (negative inside the solid). Bodies
      *  passing the SAME grid object share one uploaded slice. */
     grid: BodySdfGrid;
+    /**
+     * Flip the grid's sign, turning a SOLID into a CONTAINER.
+     *
+     * `generateMeshSdf` signs "inside the closed surface" negative, which is what the solver wants for
+     * a prop — its interior is solid. Bake a ROOM the same way, though, and the enclosed volume is the
+     * air the fluid is meant to occupy, so the field comes out inverted: the room interior reads
+     * negative ("penetrating a solid", pushed out) and the space beyond the walls and under the floor
+     * reads positive ("free"). Fluid in such a room is shoved through its own floor. Set this for a
+     * body baked from room shell geometry so the air reads positive and the walls/floor read negative.
+     *
+     * Defaults to false.
+     */
+    invertSdf?: boolean;
     /** Rigid mass (less than the water it displaces → floats). */
     mass: number;
     /** Diagonal moment of inertia (principal axes ≈ world axes for a plausible float). */
@@ -177,6 +190,8 @@ interface Body {
     /** Per-body SDF participation. False removes ONLY this body from the `bodiesSdf` union; its pose,
      *  display node and buoyancy measurement are untouched. */
     sdfActive: boolean;
+    /** Multiplier on the sampled distance: +1 for a solid, −1 for a container (see `invertSdf`). */
+    sdfSign: number;
 }
 
 const quatRotate = (q: readonly [number, number, number, number], v: readonly [number, number, number]): [number, number, number] => {
@@ -251,6 +266,7 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
             centre: cfg.centre ? [cfg.centre[0], cfg.centre[1], cfg.centre[2]] : [0, 0, 0],
             externalPose: cfg.externalPose ?? EXTERNAL_POSE,
             sdfActive: true,
+            sdfSign: cfg.invertSdf ? -1 : 1,
         };
         bodies.push(b);
         syncDisplay(b);
@@ -283,7 +299,7 @@ export function createFloatingBodySystem(device: GPUDevice, opts: FloatingBodySy
             sdfHeader[o + 16] = b.origin[0];
             sdfHeader[o + 17] = b.origin[1];
             sdfHeader[o + 18] = b.origin[2];
-            sdfHeader[o + 19] = 0;
+            sdfHeader[o + 19] = b.sdfSign;
             sdfHeader[o + 20] = b.dims[0];
             sdfHeader[o + 21] = b.dims[1];
             sdfHeader[o + 22] = b.dims[2];
@@ -632,7 +648,9 @@ fn bodiesSdf(pt: vec3<f32>, dt: f32) -> f32 {
         let gmax = origin + vec3<f32>(dims) / invCell;
         if (any(local < origin) || any(local > gmax)) { continue; }
         let bd = fbSampleG(u32(sceneSdfGrid[o + 15u]), local, origin, invCell, dims);
-        dmin = min(dmin, bd);
+        // Per-body sign: +1 for a solid, −1 for a container baked from room shell geometry (see
+        // FloatingBodyConfig.invertSdf) whose enclosed volume is the air the fluid occupies.
+        dmin = min(dmin, bd * sceneSdfGrid[o + 19u]);
     }
     return dmin;
 }`;
