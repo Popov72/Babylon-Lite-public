@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 2,
-  "savedAt": "2026-07-29T22:16:48.059Z",
+  "savedAt": "2026-07-31T17:02:46.624Z",
   "units": "metres",
   "up": "Y (glTF)",
   "grid": {
@@ -14,18 +14,18 @@
       "node": "CHUNK_CH00_Storage",
       "aabb": {
         "min": [
-          -13.2534,
+          -12.0075,
           -0.0134,
-          -16
+          -4.0075
         ],
         "max": [
-          12,
+          -3.7466,
           5,
           4.4267
         ]
       },
-      "instanceCount": 35,
-      "meshCount": 55
+      "instanceCount": 30,
+      "meshCount": 48
     },
     {
       "id": "CH01_New",
@@ -34,16 +34,16 @@
         "min": [
           -4.0017,
           -0.013,
-          -16.9923
+          -20.774
         ],
         "max": [
-          16.0017,
-          5.0046,
+          16.2534,
+          5.006,
           4.774
         ]
       },
-      "instanceCount": 60,
-      "meshCount": 140
+      "instanceCount": 78,
+      "meshCount": 170
     }
   ],
   "instances": [
@@ -97,7 +97,7 @@
       "chunk": "CH00_Storage",
       "name": "storageDoor_frame",
       "position": [
-        13,
+        4,
         0,
         2
       ],
@@ -476,7 +476,7 @@
       "chunk": "CH01_New",
       "position": [
         -10,
-        5,
+        4.98,
         -14
       ],
       "rotation": [
@@ -485,7 +485,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -518,7 +518,7 @@
       "chunk": "CH01_New",
       "position": [
         -10,
-        5,
+        4.98,
         -10
       ],
       "rotation": [
@@ -527,7 +527,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -602,7 +602,7 @@
       "chunk": "CH01_New",
       "position": [
         -10,
-        5,
+        4.98,
         -6
       ],
       "rotation": [
@@ -611,7 +611,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -874,7 +874,7 @@
       "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
       "chunk": "CH01_New",
       "position": [
-        -3.9,
+        -4,
         0,
         -4
       ],
@@ -895,8 +895,8 @@
       "module": "Platforms/Platform_DarkPlates",
       "chunk": "CH01_New",
       "position": [
-        -10.1,
-        5,
+        -10,
+        4.98,
         -2
       ],
       "rotation": [
@@ -905,7 +905,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -916,9 +916,9 @@
       "module": "Platforms/Platform_DarkPlates_Curves",
       "chunk": "CH01_New",
       "position": [
-        -10,
-        5,
-        2
+        -9.5,
+        4.98,
+        1.5
       ],
       "rotation": [
         0,
@@ -926,9 +926,9 @@
         0
       ],
       "scale": [
+        0.75,
         1,
-        1,
-        1
+        0.75
       ],
       "node": "P0132"
     },
@@ -938,7 +938,7 @@
       "chunk": "CH01_New",
       "position": [
         -6,
-        5,
+        4.98,
         2
       ],
       "rotation": [
@@ -947,7 +947,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -1148,7 +1148,7 @@
       "chunk": "CH01_New",
       "position": [
         -2,
-        5,
+        4.98,
         2
       ],
       "rotation": [
@@ -1157,7 +1157,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -1169,7 +1169,7 @@
       "chunk": "CH01_New",
       "position": [
         2,
-        5,
+        4.98,
         2
       ],
       "rotation": [
@@ -1178,7 +1178,7 @@
         0
       ],
       "scale": [
-        1,
+        0.5,
         1,
         1
       ],
@@ -1713,7 +1713,7 @@
     {
       "id": "P0180",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -10,
         0,
@@ -1734,7 +1734,7 @@
     {
       "id": "P0181",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -10,
         0,
@@ -1755,7 +1755,7 @@
     {
       "id": "P0182",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -10,
         0,
@@ -1776,7 +1776,7 @@
     {
       "id": "P0183",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -10,
         0,
@@ -1797,7 +1797,7 @@
     {
       "id": "P0184",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -6,
         0,
@@ -1818,7 +1818,7 @@
     {
       "id": "P0185",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -2,
         0,
@@ -1839,7 +1839,7 @@
     {
       "id": "P0186",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         2,
         0,
@@ -1860,7 +1860,7 @@
     {
       "id": "P0187",
       "module": "Walls/BottomAccent_Straight",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         -2.3,
         0.006,
@@ -1881,7 +1881,7 @@
     {
       "id": "P0188",
       "module": "Walls/BottomAccent_Straight",
-      "chunk": "CH00_Storage",
+      "chunk": "CH01_New",
       "position": [
         1.7,
         0.006,
@@ -2050,6 +2050,279 @@
         1
       ],
       "node": "player"
+    },
+    {
+      "id": "P0198",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        5,
+        -2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0198"
+    },
+    {
+      "id": "P0199",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0199"
+    },
+    {
+      "id": "P0200",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        5,
+        2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0200"
+    },
+    {
+      "id": "P0201",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        5,
+        -2
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0201"
+    },
+    {
+      "id": "P0203",
+      "module": "Walls/WallAstra_Corner_Round_Inner",
+      "chunk": "CH01_New",
+      "position": [
+        -12,
+        0,
+        -16
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0203"
+    },
+    {
+      "id": "P0204",
+      "module": "Walls/WallAstra_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -14,
+        0,
+        -18
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0204"
+    },
+    {
+      "id": "P0205",
+      "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
+      "chunk": "CH01_New",
+      "position": [
+        -12,
+        0,
+        -16
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0205"
+    },
+    {
+      "id": "P0206",
+      "module": "Walls/TopPadded_Incline_Straight",
+      "chunk": "CH01_New",
+      "position": [
+        -14,
+        0,
+        -18
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0206"
+    },
+    {
+      "id": "P0207",
+      "module": "Platforms/Platform_Metal2",
+      "chunk": "CH01_New",
+      "position": [
+        -14,
+        0,
+        -18
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0207"
+    },
+    {
+      "id": "P0208",
+      "module": "Platforms/Platform_Metal_Curve",
+      "chunk": "CH01_New",
+      "position": [
+        -10,
+        0.006,
+        -18
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0208"
+    },
+    {
+      "id": "P0209",
+      "module": "Platforms/Door_Frame_Square_Blocked",
+      "chunk": "CH01_New",
+      "position": [
+        -16,
+        0.006,
+        -18
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0209"
+    },
+    {
+      "id": "P0210",
+      "module": "Platforms/Platform_DarkPlates",
+      "chunk": "CH01_New",
+      "position": [
+        -14,
+        4.98,
+        -18
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        0.5,
+        1,
+        1
+      ],
+      "node": "P0210"
+    },
+    {
+      "id": "P0212",
+      "module": "Platforms/Platform_DarkPlates_Curves",
+      "chunk": "CH01_New",
+      "position": [
+        -10.5,
+        4.98,
+        -17.5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        1,
+        0.75
+      ],
+      "node": "P0212"
     }
   ],
   "markers": [
@@ -2057,7 +2330,7 @@
       "id": "Door_D00",
       "type": "door",
       "position": [
-        3.9492,
+        3.949,
         0,
         2
       ],
@@ -2065,6 +2338,11 @@
         0,
         90,
         0
+      ],
+      "scale": [
+        1.1,
+        1.1,
+        1.2
       ],
       "width": 4.211441993713379,
       "height": 4.0489020347595215,
@@ -2078,10 +2356,11 @@
       ]
     }
   ],
-  "activeChunk": "CH00_Storage",
+  "activeChunk": "CH01_New",
   "fluidSim": [
     "viscosity-inplace",
-    "liquid-slow.json"
+    "liquid-slow.json",
+    "liquid-crate.json"
   ],
   "behaviors": {
     "dynamic": {
@@ -2092,7 +2371,13 @@
     },
     "door_liquefiable": {
       "fluidSim": [
-        "viscosity-inplace"
+        "liquid-slow"
+      ],
+      "liquefiable": true
+    },
+    "crate_liquefiable": {
+      "fluidSim": [
+        "liquid-crate"
       ],
       "liquefiable": true
     },
@@ -2133,23 +2418,55 @@
           ]
         }
       ]
+    },
+    "weaponHolder": {
+      "behaviors": [
+        {
+          "name": "door_liquefiable"
+        }
+      ]
+    },
+    "storageDoor_caution": {
+      "behaviors": [
+        {
+          "name": "door_liquefiable",
+          "linked": [
+            "storageDoorL",
+            "storageDoorR"
+          ]
+        }
+      ]
+    },
+    "crate2": {
+      "behaviors": [
+        {
+          "name": "crate_liquefiable"
+        }
+      ]
+    },
+    "crate4": {
+      "behaviors": [
+        {
+          "name": "crate_liquefiable"
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      11.514,
-      4.022,
-      0.858
+      21.13,
+      9.426,
+      1.092
     ],
     "rotation": [
-      0.468,
-      -1.604,
+      0.307,
+      4.726,
       0
     ],
     "target": [
-      2.595,
-      -0.491,
-      0.561
+      11.599,
+      6.4,
+      1.226
     ]
   },
   "environment": {
@@ -2168,8 +2485,8 @@
       "chunkB": "CH01_New",
       "door": "Door_D00",
       "centre": [
-        -3.9492,
-        2.0245,
+        -3.949,
+        2.2269,
         2
       ],
       "normal": [
@@ -2179,24 +2496,24 @@
       ],
       "corners": [
         [
-          -3.9492,
+          -3.949,
           0,
-          4.1057
+          4.3163
         ],
         [
-          -3.9492,
+          -3.949,
           0,
-          -0.1057
+          -0.3163
         ],
         [
-          -3.9492,
-          4.0489,
-          -0.1057
+          -3.949,
+          4.4538,
+          -0.3163
         ],
         [
-          -3.9492,
-          4.0489,
-          4.1057
+          -3.949,
+          4.4538,
+          4.3163
         ]
       ]
     }
@@ -2208,12 +2525,12 @@
       "chunkA": "CH00_Storage",
       "chunkB": "CH01_New",
       "position": [
-        -3.9492,
+        -3.949,
         0,
         2
       ],
-      "width": 4.211441993713379,
-      "height": 4.0489020347595215,
+      "width": 4.6326,
+      "height": 4.4538,
       "triggerRadius": 3.5,
       "leaves": [
         {

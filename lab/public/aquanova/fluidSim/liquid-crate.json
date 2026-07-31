@@ -64,7 +64,7 @@
     "foamSize": 1
   },
   "impulse": {
-    "intensity": 1.1,
+    "intensity": 0,
     "direction": [
       0,
       0,
