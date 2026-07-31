@@ -246,12 +246,24 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
     if (demos.some((demo) => demo.slug === "fluid")) {
         // Waterfall scene: the rock-formation glTF plus the height map baked from it
         // (lab/public/waterfall/scripts/bake-rock-heightmap.ts), both fetched at runtime via demoAssetUrl.
-        // The `*-high.*` pair — the raw 72 MB photogrammetry scan and its own bake — is the
-        // SOURCE the shipped rock.glb is derived from (lab/public/waterfall/scripts/optimize-rock.ts),
-        // kept next to it for future re-exports but never served, so it is skipped here rather
+        // `rock-high.glb` / `rock-heightmap-high.bin` — the raw 72 MB photogrammetry scan and its own
+        // bake — are the SOURCE the shipped rock.glb is derived from (lab/public/waterfall/scripts/optimize-rock.ts),
+        // kept next to it for future re-exports but never served, so they are skipped here rather
         // than copied into every demo build. `scripts/` is that tooling itself — build-time
         // Node code that has no business being downloaded by a browser.
-        copyRequiredDir(WATERFALL_SRC, resolve(demosDir, "waterfall"), "Waterfall rock", (file) => file !== "scripts" && !file.includes("-high."));
+        //
+        // Two more intermediates are skipped for the same reason. `oasis.glb` is the un-tiled
+        // island the shipped `oasis-*.glb` tiers are derived from, and `oasis-heightmap.bin` was
+        // baked when the oasis was briefly the collision model — it is set dressing now, so
+        // nothing ever fetches it. Together they were 6.7 MB of dead weight per demo build.
+        //
+        // All three `oasis-<tier>.glb` ARE shipped: the scene's detail selector loads them lazily,
+        // and Draco keeps the set to 14.6 MB (the high tier alone is 108 MB uncompressed). Note
+        // that `oasis-high.glb` must NOT be caught by the rock's `-high.` source-file rule, hence
+        // the explicit keep below.
+        const WATERFALL_SKIP = new Set(["scripts", "oasis.glb", "oasis-heightmap.bin"]);
+        const isUnservedSource = (file: string): boolean => file.includes("-high.") && !file.startsWith("oasis-");
+        copyRequiredDir(WATERFALL_SRC, resolve(demosDir, "waterfall"), "Waterfall rock", (file) => !WATERFALL_SKIP.has(file) && !isUnservedSource(file));
     }
 
     if (demos.some((demo) => demo.slug === "racer")) {
@@ -304,6 +316,14 @@ function demoRequiresReady(slug: string): boolean {
     return slug === "racer";
 }
 
+/**
+ * Whether demo bundles keep their debug tooling. OFF unless asked for, so the default artefact is
+ * the one a visitor downloads. Enabled by `--debug` on the build command or `LAB_DEMO_DEBUG=1`.
+ */
+function demoDebugEnabled(): boolean {
+    return process.argv.includes("--debug") || process.env.LAB_DEMO_DEBUG === "1";
+}
+
 export async function buildDemo(slug: string): Promise<void> {
     const demoOutDir = resolve(demosDir, slug);
     rmSync(demoOutDir, { recursive: true, force: true });
@@ -318,6 +338,11 @@ export async function buildDemo(slug: string): Promise<void> {
         base: "./",
         publicDir: false,
         logLevel: "warn",
+        // Compile-time switch for a demo's debug tooling (overlays, QA hooks). OFF by default so a
+        // shipped demo carries none of it — the bundler folds `if (LAB_DEBUG)` to `false` and drops
+        // the `debug/` modules. Turn it on with `--debug` or LAB_DEMO_DEBUG=1 to ship a build you can
+        // actually inspect. The dev server injects nothing and defaults to ON (see debug-flag.ts).
+        define: { __LAB_DEBUG__: JSON.stringify(demoDebugEnabled()) },
         plugins: [wgslMinifyPlugin({ mangle: false }), terserPropertyManglePlugin(), minimalVitePreloadPlugin()],
         resolve: {
             // Demos resolve `babylon-lite` to the TS SOURCE (not `build/lib`) on purpose:
