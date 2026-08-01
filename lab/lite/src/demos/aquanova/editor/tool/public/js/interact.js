@@ -11,7 +11,7 @@ import {
   state, emit, on, pushUndo, placeAt, select, toggleSelect, entryOf,
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
-  elementsInRect, isBusy, ghostMaterialFor, hooks,
+  elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
 } from "./editor.js";
 
 const {
@@ -73,6 +73,19 @@ export function initInteract() {
   // Capture on the parent so this runs before Babylon's canvas handler; without
   // stopPropagation the camera would also zoom, and Ctrl+wheel is browser zoom.
   viewport.addEventListener("wheel", onWheel, { capture: true, passive: false });
+
+  // Middle button deletes what Del would delete. `preventDefault` on the
+  // *mousedown* is what suppresses Windows' autoscroll, which otherwise drops
+  // a scroll anchor on the page and swallows the following mouse moves.
+  viewport.addEventListener("mousedown", (e) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+  }, { capture: true });
+  viewport.addEventListener("auxclick", (e) => {
+    if (e.button !== 1 || isBusy()) return;
+    e.preventDefault();
+    emit("deletecurrent");
+  }, { capture: true });
 }
 
 // --------------------------------------------------------------- materials
@@ -106,9 +119,15 @@ function cloneParts(parts, root, prefix) {
   return out;
 }
 
-/** Local-space AABB centre of a prototype, cached on it. */
-function protoCentre(proto) {
-  if (proto._centre) return proto._centre;
+/**
+ * Local-space AABB of a prototype's parts, cached on it.
+ *
+ * Modules are not modelled around their origin - a 4 m wall sits 2 m to the
+ * side of it - so this is what lets the geometry sit under the pointer rather
+ * than the invisible origin.
+ */
+function protoBounds(proto) {
+  if (proto._bounds) return proto._bounds;
   let min = null, max = null;
   for (const part of proto.parts) {
     const bb = part.mesh.getBoundingInfo().boundingBox;
@@ -119,12 +138,93 @@ function protoCentre(proto) {
       max = max ? Vector3.Maximize(max, p) : p.clone();
     }
   }
-  proto._centre = min ? min.add(max).scale(0.5) : Vector3.Zero();
-  return proto._centre;
+  proto._bounds = { min: min || Vector3.Zero(), max: max || Vector3.Zero() };
+  return proto._bounds;
+}
+
+/** Local-space AABB centre of a prototype, cached on it. */
+function protoCentre(proto) {
+  const b = protoBounds(proto);
+  return b.min.add(b.max).scale(0.5);
+}
+
+/**
+ * Build the ghost from a list of items, each a module with its own offset,
+ * rotation and scale inside the group.
+ *
+ * One item is a palette placement; several are a grabbed selection or a
+ * multi-element duplicate. The group root carries the *shared* rotation and
+ * scale, so R and F turn the whole set about its own centre, exactly as they
+ * turn a single module about its origin.
+ */
+async function buildGhost(specs, opts = {}) {
+  const root = new TransformNode("GHOST", state.scene);
+  root.rotationQuaternion = Quaternion.Identity();
+
+  const items = [];
+  const meshes = [];
+  let min = null, max = null;
+  for (const spec of specs) {
+    const proto = await getProto(spec.module);
+    const node = new TransformNode(`GHOST_ITEM_${items.length}`, state.scene);
+    node.parent = root;
+    node.position.copyFrom(spec.offset || Vector3.Zero());
+    node.rotationQuaternion = spec.rotation
+      ? Quaternion.FromEulerAngles(
+        spec.rotation[0] * Math.PI / 180,
+        spec.rotation[1] * Math.PI / 180,
+        spec.rotation[2] * Math.PI / 180)
+      : Quaternion.Identity();
+    if (spec.scaling) node.scaling.set(...spec.scaling);
+    const parts = cloneParts(proto.parts, node, `GHOST_${items.length}_`);
+    meshes.push(...parts);
+    items.push({
+      module: spec.module, node, sourceId: spec.sourceId || null,
+      // Kept alongside the node so the drop can *compose* the world transform
+      // rather than decompose a matrix. A mirrored element has a negative
+      // determinant, which has no unique rotation/scale split - Babylon's
+      // decompose() legitimately moved a scale of [-1,1,1] onto Y with a
+      // compensating rotation, which looks identical and reads as a different
+      // ship in the manifest.
+      quat: node.rotationQuaternion.clone(),
+      scaling: node.scaling.asArray(),
+    });
+
+    // group AABB, in root-local space, so the body sits under the cursor
+    const b = protoBounds(proto);
+    const m = Matrix.Compose(node.scaling, node.rotationQuaternion, node.position);
+    for (const v of [b.min, b.max, new Vector3(b.min.x, b.min.y, b.max.z),
+      new Vector3(b.min.x, b.max.y, b.min.z), new Vector3(b.max.x, b.min.y, b.min.z),
+      new Vector3(b.max.x, b.max.y, b.min.z), new Vector3(b.max.x, b.min.y, b.max.z),
+      new Vector3(b.min.x, b.max.y, b.max.z)]) {
+      const p = Vector3.TransformCoordinates(v, m);
+      min = min ? Vector3.Minimize(min, p) : p.clone();
+      max = max ? Vector3.Maximize(max, p) : p.clone();
+    }
+  }
+
+  return {
+    // the module a single-item ghost holds, for the HUD and repeat placement
+    module: items.length === 1 ? items[0].module : null,
+    root, items, meshes,
+    centre: min ? min.add(max).scale(0.5) : Vector3.Zero(),
+    mode: opts.mode || "place",
+    quat: opts.rotation
+      ? Quaternion.FromEulerAngles(
+        opts.rotation[0] * Math.PI / 180,
+        opts.rotation[1] * Math.PI / 180,
+        opts.rotation[2] * Math.PI / 180)
+      : Quaternion.Identity(),
+    scaling: opts.scaling ? [...opts.scaling] : [1, 1, 1],
+  };
 }
 
 export function ghostActive() { return !!ghost; }
 export function ghostModule() { return ghost?.module || null; }
+/** How many elements the ghost is carrying - 1 for a palette placement. */
+export function ghostCount() { return ghost?.items.length || 0; }
+/** "place" a new module, "copy" a duplicate, or "move" a grabbed selection. */
+export function ghostMode() { return ghost?.mode || null; }
 // so editor.js can hang the axis gizmo on the ghost without importing this
 // module back and closing a cycle
 hooks.ghostNode = () => (ghost && !ghost.root.isDisposed() ? ghost.root : null);
@@ -141,29 +241,67 @@ export async function armGhost(moduleId, opts = {}) {
   cancelGhost();
   if (!moduleId) { emit("current"); return null; }
   const token = ++ghostToken;
-  const proto = await getProto(moduleId);
-  if (token !== ghostToken) return null;          // cancelled while loading
+  const built = await buildGhost([{ module: moduleId }], opts);
+  if (token !== ghostToken) { disposeGhost(built); return null; }  // cancelled while loading
 
-  const root = new TransformNode("GHOST", state.scene);
-  root.rotationQuaternion = Quaternion.Identity();
-  const meshes = cloneParts(proto.parts, root, "GHOST_");
-
-  ghost = {
-    module: moduleId, root, meshes,
-    centre: protoCentre(proto),
-    quat: opts.rotation
-      ? Quaternion.FromEulerAngles(
-        opts.rotation[0] * Math.PI / 180,
-        opts.rotation[1] * Math.PI / 180,
-        opts.rotation[2] * Math.PI / 180)
-      : Quaternion.Identity(),
-    scaling: opts.scaling ? [...opts.scaling] : [1, 1, 1],
-  };
+  ghost = built;
   applyGhostTransform();
   moveGhostToCursor();
   setCursorHidden(true);
   emit("current");
   return ghost;
+}
+
+/**
+ * Pick the selection up into the ghost, so it follows the cursor with no button
+ * held. `G`, the way Blender's grab works.
+ *
+ * The originals are hidden rather than moved: the ghost *is* the preview, and
+ * leaving solid copies behind would read as "these have been duplicated". `Esc`
+ * brings them back untouched, which is why they are hidden and not deleted.
+ *
+ * Markers are skipped - a door has no kit prototype to clone - and a selection
+ * of nothing but markers simply does not grab, leaving the drag to handle it.
+ */
+export async function grabSelection(opts = {}) {
+  const entries = state.selection.map(entryOf).filter((e) => e && e.module);
+  if (!entries.length) return null;
+  cancelGhost();
+  const token = ++ghostToken;
+
+  // The anchor is the element nearest the cursor, so the set keeps its shape
+  // around the piece you were pointing at rather than jumping by its centroid.
+  const anchorId = nearestToCursor(entries.map((e) => e.id)) || entries[0].id;
+  const anchor = entries.find((e) => e.id === anchorId) || entries[0];
+  const base = anchor.node.position.clone();
+
+  const specs = entries.map((e) => ({
+    module: e.module,
+    offset: e.node.position.subtract(base),
+    rotation: eulerOf(e.node),
+    scaling: e.node.scaling.asArray(),
+    sourceId: opts.copy ? null : e.id,
+  }));
+  const built = await buildGhost(specs, { mode: opts.copy ? "copy" : "move" });
+  if (token !== ghostToken) { disposeGhost(built); return null; }
+
+  ghost = built;
+  if (!opts.copy) for (const e of entries) e.node.setEnabled(false);
+  // The build plane follows, or a grab from an upper deck would drop back to
+  // the floor - the same reason Ctrl+D moves it.
+  if (Math.abs(base.y - state.gridY) > 1e-6) setGridElevation(base.y);
+  applyGhostTransform();
+  moveGhostToCursor();
+  setCursorHidden(true);
+  emit("current");
+  return ghost;
+}
+
+function disposeGhost(g) {
+  if (!g) return;
+  disposeClones(g.meshes);
+  for (const it of g.items) it.node.dispose();
+  g.root.dispose();
 }
 
 function applyGhostTransform() {
@@ -264,28 +402,84 @@ export function cancelGhost() {
   ghostToken++;
   setCursorHidden(false);
   if (!ghost) return;
-  disposeClones(ghost.meshes);
-  ghost.root.dispose();
+  // A cancelled grab must put back exactly what it picked up.
+  if (ghost.mode === "move") {
+    for (const it of ghost.items) {
+      const e = it.sourceId && entryOf(it.sourceId);
+      if (e) e.node.setEnabled(true);
+    }
+    applyVisibility();          // isolation and Shift+H get the last word
+  }
+  disposeGhost(ghost);
   ghost = null;
   emit("current");
 }
 
-/** Commit the ghost: create a placement where it stands. */
+/**
+ * Commit the ghost: create placements where it stands, or land the originals
+ * there if it was a grab.
+ */
 export async function dropGhost() {
   if (!ghost) return null;
   const g = ghost;
-  const position = g.root.position.clone();
   const quat = g.quat.clone();
+  const scaling = g.scaling.slice();
+
+  // Read every item's landing spot *before* touching anything, and compose the
+  // world transform rather than decomposing the matrix - see the note in
+  // buildGhost about mirrored elements.
+  const landed = g.items.map((it) => {
+    it.node.computeWorldMatrix(true);
+    const pos = it.node.getAbsolutePosition().clone();
+    // Babylon's a.multiply(b) applies b first, which is what parenting does:
+    // the item's own turn, then the group's.
+    const rot = g.quat.multiply(it.quat);
+    const scl = new Vector3(
+      g.scaling[0] * it.scaling[0],
+      g.scaling[1] * it.scaling[1],
+      g.scaling[2] * it.scaling[2]);
+    return { module: it.module, sourceId: it.sourceId, pos, rot, scl };
+  });
+
+  let made = null;
+  if (g.mode === "move") {
+    pushUndo();
+    for (const l of landed) {
+      const e = l.sourceId && entryOf(l.sourceId);
+      if (!e) continue;
+      e.node.position.copyFrom(l.pos);
+      e.node.rotationQuaternion = l.rot.clone();
+      e.node.scaling.copyFrom(l.scl);
+      e.node.setEnabled(true);
+      made = e;
+    }
+    applyVisibility();
+    cancelGhost();                       // nothing left to carry
+    emit("transform");
+    emit("placements");
+    return made;
+  }
 
   // The manifest stores Euler triples, so the orientation is decomposed only
   // here, once, at the boundary - never accumulated in that form.
-  const made = await placeAt(g.module, position, {
-    rotation: eulerOf(g.root), scale: g.scaling,
-  });
-  // keep the same module armed so a run of tiles is just repeated clicks
-  if (ghost) {
+  const ids = [];
+  for (const l of landed) {
+    const node = new TransformNode("TMP", state.scene);
+    node.rotationQuaternion = l.rot.clone();
+    const euler = eulerOf(node);
+    node.dispose();
+    const p = await placeAt(l.module, l.pos, {
+      rotation: euler, scale: l.scl.asArray(), silent: ids.length > 0,
+    });
+    if (p) { ids.push(p.id); made = p; }
+  }
+  if (ids.length > 1) select(ids);
+  // A duplicate is done once dropped; a palette module stays armed so a run of
+  // tiles is just repeated clicks.
+  if (g.mode === "copy") cancelGhost();
+  else if (ghost) {
     ghost.quat = quat;
-    ghost.scaling = g.scaling.slice();
+    ghost.scaling = scaling;
     applyGhostTransform();
   }
   emit("current");

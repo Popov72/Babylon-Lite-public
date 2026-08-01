@@ -8,7 +8,7 @@ import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
   ghostActive, ghostModule, hoveredId, cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
-  toggleDragAxis, setDragAxis, cancelMarquee,
+  toggleDragAxis, setDragAxis, cancelMarquee, grabSelection,
 } from "./interact.js";
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
@@ -20,7 +20,7 @@ import {
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
   setEntityExcludeSDF, dynamicNodeNamesInChunk,
-  isBusy, busyLabel, whileBusy,
+  isBusy, busyLabel, whileBusy, serialize,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
   noteKey, releaseAllKeys, setUnlit, setExposure, EXPOSURE_DEFAULT,
@@ -660,8 +660,32 @@ function setBigPalette(on) {
   state.engine?.resize();
 }
 
+/**
+ * One undo entry per slider *gesture*, not per pixel of travel.
+ *
+ * `input` fires continuously while a range is dragged, so a single sweep would
+ * otherwise bury the stack in near-identical snapshots. Armed on pointerdown
+ * and on the first keyboard nudge, spent on the first change - the same shape
+ * as the inspector fields, but with no focus event to hang it on, because a
+ * range keeps focus across separate drags.
+ */
+let lightPushed = false;
+function pushLightUndoOnce() {
+  if (lightPushed) return;
+  pushUndo();
+  lightPushed = true;
+}
+for (const id of ["env-intensity", "exposure"]) {
+  const el = $(id);
+  el.addEventListener("pointerdown", () => { lightPushed = false; });
+  el.addEventListener("keydown", () => { lightPushed = false; });
+  // A wheel over a focused range also moves it, and fires neither of the above.
+  el.addEventListener("wheel", () => { lightPushed = false; }, { passive: true });
+}
+
 $("env-intensity").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
+  pushLightUndoOnce();
   setEnvIntensity(v);
   $("env-intensity-val").textContent = v.toFixed(1);
   localStorage.setItem("envIntensity", String(v));
@@ -669,6 +693,7 @@ $("env-intensity").addEventListener("input", (e) => {
 
 $("exposure").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
+  pushLightUndoOnce();
   setExposure(v);
   showExposure(v);
   localStorage.setItem("exposure", String(v));
@@ -801,13 +826,55 @@ $("btn-select-rect").addEventListener("click", () => {
     : "drag moves elements again");
 });
 
-$("btn-save").addEventListener("click", doSave);$("btn-load").addEventListener("click", doLoad);
+/**
+ * Whether anything has changed since the last save or load.
+ *
+ * Compared against a snapshot rather than tracked with a flag, so undoing back
+ * to the saved state correctly counts as *clean* - a flag would keep claiming
+ * unsaved work that no longer exists.
+ *
+ * `hidden` is stripped: it never reaches the manifest, so it can never be
+ * saved, and leaving it in would make hiding one wall enough to prompt for the
+ * rest of the session.
+ */
+let savedState = null;
+
+function dirtyKey() {
+  const s = serialize();
+  delete s.hidden;
+  return JSON.stringify(s);
+}
+
+export function markSaved() { savedState = dirtyKey(); }
+function isDirty() { return savedState !== null && savedState !== dirtyKey(); }
+
+$("btn-save").addEventListener("click", doSave);
+$("btn-load").addEventListener("click", doLoad);
 $("btn-export").addEventListener("click", doExport);
+
+/**
+ * The same guard for closing or reloading the tab.
+ *
+ * The browser decides the wording - custom text has been ignored since 2016 -
+ * so this only chooses *whether* to ask. Chrome additionally requires the page
+ * to have been interacted with before it will show the prompt at all, which is
+ * the behaviour we want anyway: a tab you only ever looked at closes silently.
+ *
+ * `returnValue` as well as `preventDefault()`, because browsers disagree about
+ * which one arms it and setting both is the only combination that works
+ * everywhere.
+ */
+addEventListener("beforeunload", (e) => {
+  if (!isDirty()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
 
 async function doSave() {
   try {
     setStatus("saving…");
     const r = await saveLayout();
+    markSaved();
     setStatus(r.previous
       ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})`
       : `saved ${r.bytes} bytes → ${r.path}`);
@@ -815,9 +882,17 @@ async function doSave() {
 }
 
 async function doLoad() {
+  // A load throws away everything in the scene, and it is one button away from
+  // Save. Nothing else in the tool destroys unsaved work in a single click.
+  if (isDirty()
+    && !confirm("Load will discard your unsaved changes.\n\nLoad the saved ship anyway?")) {
+    setStatus("load cancelled — your changes are still here");
+    return;
+  }
   try {
     setStatus("loading…");
     const data = await loadLayout();
+    markSaved();
     setStatus(data
       ? `loaded ${data.instances.length} instances`
       : "nothing to load (no tool-written manifest yet)");
@@ -1000,6 +1075,9 @@ window.addEventListener("keydown", async (e) => {
       }
       break;
     }
+    // M picks the selection up onto the cursor (see grabCurrent). G was the
+    // Blender-idiomatic key for this, but it already toggles the grid here.
+    case "m": case "M": e.preventDefault(); grabCurrent(); break;
     case "Delete": case "Backspace": deleteCurrent(); break;
     case "Escape": cancelEverything(); break;
     case "g": case "G": {
@@ -1047,10 +1125,20 @@ function cancelEverything() {
 function duplicateCurrent() {
   if (ghostActive() || isDragging()) return;
   const cur = currentElement();
-  if (!cur || cur.ids.length !== 1) return duplicateSelected();
+  if (!cur) return;
 
-  const entry = entryOf(cur.ids[0]);
-  if (!entry?.module) return duplicateSelected();   // markers have no module
+  // Several selected: carry copies of the whole set. This used to fall back to
+  // duplicating in place, because a ghost could only hold one module.
+  const many = cur.ids.map(entryOf).filter((e) => e?.module);
+  if (many.length > 1) {
+    grabSelection({ copy: true }).then((g) => {
+      if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place`);
+    });
+    return;
+  }
+
+  const entry = many[0];
+  if (!entry) return duplicateSelected();          // markers have no module
 
   // The ghost sits on the build plane, so without this the copy of something on
   // an upper deck would appear back down at ground level. Moving the plane
@@ -1064,6 +1152,32 @@ function duplicateCurrent() {
     scaling: entry.node.scaling.asArray(),
   });
   setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place`);
+}
+
+/**
+ * Pick the selection up so it follows the cursor with no button held.
+ *
+ * The other half of the answer to "why are there two ways to move something".
+ * A drag is still a drag - press, move, release, and the elements stay solid
+ * the whole way. This is the hands-free version: the elements go translucent,
+ * the mouse is free, and a click lands them. Esc puts them back.
+ */
+function grabCurrent() {
+  if (ghostActive() || isDragging()) return;
+  const cur = currentElement();
+  const ids = (cur?.ids || []).map(entryOf).filter((e) => e?.module);
+  if (!ids.length) {
+    setStatus("nothing to pick up — select or point at an element first");
+    return;
+  }
+  if (!state.selection.length) select(cur.ids);
+  grabSelection().then((g) => {
+    if (g) {
+      setStatus(ids.length > 1
+        ? `carrying ${ids.length} elements — click to drop, Esc to put them back`
+        : `carrying ${ids[0].module} — click to drop, Esc to put it back`);
+    }
+  });
 }
 
 /**
@@ -1235,6 +1349,7 @@ function refreshBusy() {
 }
 on("pickmodule", (moduleId) => { setBrush(moduleId); setStatus(`armed ${moduleId}`); });
 on("status", (msg) => setStatus(msg));
+on("deletecurrent", () => deleteCurrent());
 on("focus", () => focusSelection());
 
 // The overlay is up in the markup already, so there is never a frame in which
@@ -1310,6 +1425,9 @@ async function bootstrap() {
   } else {
     setStatus(`ready — ${getCatalogue().byId.size} modules`);
   }
+  // Whatever we booted with - a restored ship or an empty grid - is the
+  // baseline "unsaved changes" is measured against.
+  markSaved();
   validate();
 }
 

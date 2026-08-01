@@ -331,7 +331,7 @@ selection before acting on a different element.
 |---|---|
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement. |
 | Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
-| Move | **drag** an element. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. `Esc` or right-click mid-drag puts everything back. |
+| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
 | Turn | **`R`** — about the element's own origin |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
@@ -355,11 +355,11 @@ selection before acting on a different element.
 | Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
 | Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
-| Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, every inspector field and every behaviour edit |
-| Edit | **`Ctrl+D` puts a copy of the current element on the cursor** as a ghost, keeping its rotation and mirroring · **`Del` deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
+| Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the Env and Exposure sliders, every inspector field and every behaviour edit |
+| Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
 | Grid | `G` · **Big icons** doubles the palette width and tile size (on by default) · **Unlit** shows raw albedo with no lighting · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
 | Palette | hover a tile to spin the module through a full 360° turn |
-| Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were |
+| Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab |
 
 **Every toolbar control names its shortcut in its tooltip**, or says outright
 that it has none. The keys are the whole point of the tool — the combos are a
@@ -457,8 +457,42 @@ looks. It also **raises the build plane to the source's own height**: the ghost
 rides that plane, so without it a copy of something on an upper deck would
 reappear down at ground level. Moving the plane rather than giving the ghost a
 private height keeps one source of truth, and the grid visibly follows so it is
-obvious what happened. A ghost can only hold one module, so a multi-selection
-still duplicates in place; there is nothing sensible to attach to the cursor.
+obvious what happened. **A multi-selection is carried too**: the ghost holds a
+list of items, each with its own offset, turn and mirroring, so `Ctrl+D` on
+twelve walls hands you twelve walls.
+
+### Carrying versus dragging
+
+There are two ways to move something, deliberately, and they differ in what
+your hand is doing:
+
+* **Drag** — press, move, release. The elements stay **solid** and follow
+  directly. The button is held throughout.
+* **Carry** (`M`) — the selection lifts onto the cursor as a **translucent**
+  ghost. No button held: move the mouse, turn with `R`, mirror with `F`, fly the
+  camera, then click to drop. `Esc` puts everything back where it was.
+
+Collapsing the two into one was tempting — the drag path duplicates rotation,
+scale, snapping and axis constraints that the ghost already has. What stopped it
+is the *release*: every 3D tool drops on mouse-up, and a press-drag-release that
+instead left a wall stuck to the cursor would fight a reflex nobody wants to
+retrain. So dragging keeps its contract, and carrying is the hands-free option
+next to it. The transparency is what tells them apart at a glance.
+
+While carried, the originals are **hidden rather than moved**: the ghost is the
+preview, and leaving solid copies behind would read as "these have been
+duplicated". Hidden, not deleted, so `Esc` can put them back untouched.
+
+**Markers are skipped** by a carry — a door has no kit prototype to clone from —
+so a selection of nothing but doors simply does not lift, and the drag handles
+it as before.
+
+> **The drop composes, it never decomposes.** Each item's landing transform is
+> built as *group rotation × item rotation* and a component-wise scale product,
+> not read back out of the world matrix. A mirrored element has a negative
+> determinant, and such a matrix has no unique rotation/scale split: measured,
+> `Matrix.decompose()` moved a `[-1,1,1]` scale onto **Y** with a compensating
+> turn. It looks identical on screen and is a different ship in the manifest.
 
 **The wheel belongs to the camera.** It dollies, full stop — that is what a
 wheel does in a 3D view, and every attempt to give it a second job fought that
@@ -847,6 +881,37 @@ which means free positioning while dragging.
 `pushUndo()` no-ops while it is set. Without that, a single stray `pushUndo()`
 anywhere in the restore path does two invisible kinds of damage: it **clears the
 redo stack**, and it pushes a *half-restored* snapshot onto the undo stack.
+
+**The lighting is on the stack; the camera is not.** Both were off it at first,
+on the same reasoning — "not an edit to the ship". Only half of that held up.
+`Env` and `Exposure` are *authored* values: the manifest carries them and the
+runtime reads them, so a lighting change you cannot take back is a real edit
+lost. Where the camera happens to be standing is genuinely not.
+
+Both light sets travel together, not just the one on screen. The **Runtime
+light** toggle only decides which pair the sliders edit, so restoring the
+visible pair alone would leave the hidden one behind, to surface later as a
+value nothing ever put back.
+
+**One entry per slider gesture.** A range fires `input` continuously while it is
+dragged, so one sweep of `Env` would otherwise bury the stack in near-identical
+snapshots. The push is armed on `pointerdown` (and on the first key or wheel)
+and spent on the first change — the same shape as the inspector fields, but
+without a focus event to hang it on, because a range keeps focus between drags.
+
+**Load asks before discarding unsaved work.** It throws away the whole scene and
+sits one button away from Save; nothing else in the tool destroys that much in a
+single click. **Closing or reloading the tab gets the same guard**, via
+`beforeunload` — the browser owns the wording there (custom text has been
+ignored since 2016), so all the tool chooses is *whether* to ask. Chrome also
+requires the page to have been interacted with first, which is the behaviour we
+want anyway: a tab you only looked at closes silently.
+
+"Unsaved" is decided by comparing against a snapshot taken at the last save,
+load or boot — not by a dirty *flag*, so undoing back to the saved state
+correctly counts as clean again. `hidden` is stripped from that comparison: it
+never reaches the manifest, so it can never be saved, and leaving it in would
+make hiding one wall enough to prompt for the rest of the session.
 
 That is not hypothetical — restoring a spawn marker did exactly this, because
 `deserializeMarkers()` passed `silent: true` for doors but `setSpawn()` had no

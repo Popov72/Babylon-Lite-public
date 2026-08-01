@@ -1953,8 +1953,10 @@ export function applyView(view) {
 /**
  * The lighting the ship is authored under, for the manifest.
  *
- * Like the camera, deliberately not part of serialize(): turning the exposure
- * down is not an edit to the ship and has no business on the undo stack.
+ * Unlike the camera, this **is** part of serialize() and so rides the undo
+ * stack: it is an authored value the manifest carries and the runtime reads, so
+ * getting it wrong is as much an edit to take back as moving a wall. The camera
+ * stays off the stack, because where you happen to be standing is not an edit.
  *
  * These are the **Runtime light** values - the pair tuned with the editor's own
  * lights switched off - because that is the picture the demos render. `strength`
@@ -2032,6 +2034,17 @@ export function serialize() {
   return {
     chunks: [...state.chunks],
     activeChunk: state.activeChunk,
+    // The Env/Exposure pairs and the tone mapping. On the stack because they
+    // are *authored* values that the manifest carries and the runtime reads -
+    // getting the lighting wrong is as much an edit to undo as moving a wall.
+    // Both pairs travel together: the Runtime-light toggle only decides which
+    // one the sliders edit, so restoring one and not the other would leave the
+    // hidden set behind.
+    lightSets: {
+      editor: { ...state.lightSets.editor },
+      runtime: { ...state.lightSets.runtime },
+    },
+    toneMapping: state.toneMapping,
     // Ship data, so it belongs on the undo stack with everything else - and it
     // survives the clearAll() that a restore begins with.
     behaviors: Object.fromEntries(
@@ -2080,6 +2093,22 @@ async function restoreFrom(data) {
   state.chunks = ids.length ? ids : ["CH00_Storage"];
   state.activeChunk = data.activeChunk && state.chunks.includes(data.activeChunk)
     ? data.activeChunk : state.chunks[0];
+  // Only from an undo snapshot: a *manifest* carries its lighting in the
+  // `environment` / `editorEnvironment` blocks, which loadLayout() applies
+  // through applyEnvironment() instead.
+  if (data.lightSets) {
+    for (const k of ["editor", "runtime"]) {
+      const set = data.lightSets[k];
+      if (!set) continue;
+      if (Number.isFinite(set.strength)) state.lightSets[k].strength = set.strength;
+      if (Number.isFinite(set.exposure)) state.lightSets[k].exposure = set.exposure;
+    }
+    if (data.toneMapping) setToneMapping(data.toneMapping);
+    const live = activeLightSet();
+    setEnvIntensity(live.strength);
+    setExposure(live.exposure);
+    emit("environment");            // the sliders and their readouts follow
+  }
   for (const inst of data.instances || []) {
     if (!getModule(inst.module)) {
       console.warn("skipping unknown module", inst.module);

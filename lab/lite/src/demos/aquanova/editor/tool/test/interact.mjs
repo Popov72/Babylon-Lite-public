@@ -1743,7 +1743,7 @@ const envRound = await page.evaluate(async () => {
     strength: ed.state.scene.environmentIntensity,
     exposure: ed.state.scene.imageProcessingConfiguration.exposure,
   };
-  const inUndoState = "environment" in JSON.parse(JSON.stringify(ed.serialize()));
+  const inUndoState = "lightSets" in JSON.parse(JSON.stringify(ed.serialize()));
   const ignoredOld = ed.applyEnvironment(undefined);
 
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
@@ -1775,10 +1775,179 @@ check("the sliders follow the loaded lighting",
     && envRound.sliders.exposureLabel === "0.82"
     && Math.abs(parseFloat(envRound.sliders.exposure) - 0.82) <= 0.05,
   JSON.stringify(envRound.sliders));
-check("the environment stays out of the undo snapshot",
-  envRound.inUndoState === false);
+check("the environment now rides the undo snapshot",
+  envRound.inUndoState === true);
 check("a manifest saved before this simply has no environment to apply",
   envRound.ignoredOld === false);
+
+// ---- 1d-vicies. the lighting is undoable, one entry per gesture -------------
+// It used to be deliberately off the stack ("not an edit to the ship"). It is
+// an authored value the manifest carries and the runtime reads, so getting it
+// wrong is as much an edit to take back as moving a wall.
+const lightUndo = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.setEnvIntensity(1.5); ed.setExposure(0.55);
+  document.getElementById("env-intensity").value = "1.5";
+  return { start: ed.state.envIntensity, depth: ed.historyDepth().undo };
+});
+// one gesture: press, then several input events as the thumb travels
+await page.evaluate(() => {
+  const el = document.getElementById("env-intensity");
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  for (const v of ["2.0", "2.5", "3.0"]) {
+    el.value = v;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+await page.waitForTimeout(250);
+const afterDrag = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { env: ed.state.envIntensity, depth: ed.historyDepth().undo };
+});
+check("dragging the Env slider costs exactly one undo entry",
+  Math.abs(afterDrag.env - 3.0) < 1e-6 && afterDrag.depth === lightUndo.depth + 1,
+  `${lightUndo.start} -> ${afterDrag.env}, stack ${lightUndo.depth} -> ${afterDrag.depth}`);
+
+await page.evaluate(async () => (await import("/js/editor.js")).undo());
+await page.waitForTimeout(250);
+const undone = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    env: ed.state.envIntensity,
+    scene: ed.state.scene.environmentIntensity,
+    slider: parseFloat(document.getElementById("env-intensity").value),
+    readout: document.getElementById("env-intensity-val").textContent,
+  };
+});
+check("undo puts the Env back, on the scene and on the slider",
+  Math.abs(undone.env - 1.5) < 1e-6 && Math.abs(undone.scene - 1.5) < 1e-6
+    && Math.abs(undone.slider - 1.5) < 1e-6 && undone.readout === "1.5",
+  JSON.stringify(undone));
+
+await page.evaluate(async () => (await import("/js/editor.js")).redo());
+await page.waitForTimeout(250);
+const redone = await page.evaluate(async () =>
+  (await import("/js/editor.js")).state.envIntensity);
+check("redo brings it back", Math.abs(redone - 3.0) < 1e-6, `${redone}`);
+
+// the *inactive* light set must travel too, or switching Runtime light after an
+// undo would surface a value that was never restored
+const bothSets = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.setRuntimeLighting(false);
+  ed.setEnvIntensity(1.2);
+  ed.pushUndo();
+  ed.setRuntimeLighting(true);
+  ed.setEnvIntensity(3.9);                 // edits the runtime set
+  ed.setRuntimeLighting(false);
+  const before = { ...ed.state.lightSets.runtime };
+  await ed.undo();
+  const after = { ...ed.state.lightSets.runtime };
+  ed.setRuntimeLighting(false);
+  ed.setEnvIntensity(1.5); ed.setExposure(0.55);
+  ed.clearAll(); ed.select([]);
+  return { before: before.strength, after: after.strength };
+});
+check("undo restores the light set the sliders are not editing",
+  Math.abs(bothSets.before - 3.9) < 1e-6 && Math.abs(bothSets.after - 1.5) < 1e-6,
+  `runtime strength ${bothSets.before} -> ${bothSets.after}`);
+
+// ---- 1d-unvicies. Load warns before discarding unsaved work -----------------
+// Load throws away the whole scene and sits one button from Save. Nothing else
+// in the tool destroys unsaved work in a single click.
+const guard = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  window.__confirms = [];
+  window.__realConfirm = window.confirm;
+  window.confirm = (msg) => { window.__confirms.push(msg); return window.__answer; };
+  return true;
+});
+
+// dirty: prompt, and answering no leaves the scene alone
+const dirty = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const V = BABYLON.Vector3;
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  window.__answer = false;
+  window.__confirms.length = 0;
+  return ed.state.placements.size;
+});
+await page.click("#btn-load");
+await page.waitForTimeout(700);
+const refused = await page.evaluate(async () => ({
+  prompts: window.__confirms.length,
+  msg: window.__confirms[0] || "",
+  placements: (await import("/js/editor.js")).state.placements.size,
+  status: document.getElementById("status-text").textContent,
+}));
+check("Load with unsaved changes asks first",
+  refused.prompts === 1 && /unsaved/i.test(refused.msg), `"${refused.msg}"`);
+check("answering no keeps the scene and says so",
+  refused.placements === dirty && /cancelled/i.test(refused.status),
+  `${refused.placements} placements, "${refused.status}"`);
+
+// saving clears the warning: the changes are no longer unsaved
+await page.evaluate(async () => {
+  const realFetch = window.fetch;
+  window.fetch = (url, opts) => (String(url).includes("/api/layout") && opts?.method === "POST"
+    ? Promise.resolve(new Response('{"ok":true,"bytes":10,"path":"x"}',
+      { status: 200, headers: { "Content-Type": "application/json" } }))
+    : realFetch(url, opts));
+  document.getElementById("btn-save").click();
+  await new Promise((r) => setTimeout(r, 500));
+  window.fetch = realFetch;
+  window.__confirms.length = 0;
+  window.__answer = true;               // let this one through
+});
+await page.click("#btn-load");
+await page.waitForTimeout(900);
+const savedThenLoad = await page.evaluate(() => window.__confirms.length);
+check("saving clears the unsaved-changes warning", savedThenLoad === 0,
+  `${savedThenLoad} prompts after a save`);
+
+// and a load re-baselines too, so loading twice in a row never asks
+await page.evaluate(() => { window.__confirms.length = 0; window.__answer = false; });
+await page.click("#btn-load");
+await page.waitForTimeout(900);
+const loadTwice = await page.evaluate(() => window.__confirms.length);
+check("a load re-baselines, so loading again does not ask", loadTwice === 0,
+  `${loadTwice} prompts on the second load`);
+
+// Closing or reloading the tab gets the same guard. The browser owns the
+// wording, so all we control is whether the event is cancelled.
+const unloadClean = await page.evaluate(() => {
+  const e = new Event("beforeunload", { cancelable: true });
+  dispatchEvent(e);
+  return e.defaultPrevented;
+});
+check("closing a saved ship does not warn", unloadClean === false);
+
+const unloadDirty = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const V = BABYLON.Vector3;
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  const e = new Event("beforeunload", { cancelable: true });
+  dispatchEvent(e);
+  return { prevented: e.defaultPrevented, returnValue: e.returnValue };
+});
+check("closing with unsaved changes warns",
+  // A synthetic Event cannot model BeforeUnloadEvent exactly: its `returnValue`
+  // is the legacy *boolean* alias for "not cancelled", so assigning "" reads
+  // back as false rather than "". Either way it is falsy, which is precisely
+  // what arms the browser's prompt - and `defaultPrevented` is the part that
+  // actually matters.
+  unloadDirty.prevented === true && !unloadDirty.returnValue,
+  JSON.stringify(unloadDirty));
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  window.confirm = window.__realConfirm;
+  ed.clearAll(); ed.select([]);
+});
 
 // ---- 1d-vicies. the runtime-light preview ---------------------------------
 // The editor's four analytic lights are an authoring aid the game does not
@@ -4044,6 +4213,146 @@ check("clicking places the duplicate with its transform intact",
     && dupPlaced.scale[0] === -1,
   `${dupPlaced.count} placements, rotY=${dupPlaced.rotY}, scale=[${dupPlaced.scale}]`);
 
+// ---- 1d-duovicies. the ghost carries a whole selection ---------------------
+// It used to hold exactly one module, which is why Ctrl+D on a multi-selection
+// duplicated in place and why moving anything needed a second mechanism.
+const carrySet = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const M = "Walls/ShortWall_Band2_Straight";
+  const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
+  const b = await ed.placeAt(M, new V(8, 0, 0), { rotation: [0, 90, 0], silent: true });
+  const c = await ed.placeAt(M, new V(0, 0, 8), { scale: [-1, 1, 1], silent: true });
+  ed.state.scene.pointerX = ed.state.engine.getRenderWidth() / 2;
+  ed.state.scene.pointerY = ed.state.engine.getRenderHeight() / 2;
+  ed.select([a.id, b.id, c.id]);
+  const g = await i.grabSelection();
+  return {
+    ids: [a.id, b.id, c.id],
+    carrying: i.ghostCount(), mode: i.ghostMode(),
+    // the originals go out of sight while the ghost stands in for them
+    originalsOn: [a, b, c].map((e) => e.node.isEnabled()),
+    // and the set keeps its shape: distinct offsets from the anchor
+    spread: g ? g.items.map((it) => it.node.position.asArray().map((v) => +v.toFixed(2)).join()) : [],
+  };
+});
+check("G picks the whole selection up", carrySet.carrying === 3 && carrySet.mode === "move",
+  `${carrySet.carrying} items, mode ${carrySet.mode}`);
+check("the originals step aside while it is carried",
+  carrySet.originalsOn.join() === "false,false,false", `${carrySet.originalsOn}`);
+check("the set keeps its shape on the cursor",
+  // one at the anchor, one 8 m along X, one 8 m along Z - lengths alone would
+  // not tell the last two apart
+  new Set(carrySet.spread).size === 3 && carrySet.spread.includes("0,0,0"),
+  `offsets [${carrySet.spread.join(" | ")}]`);
+
+// Esc puts them back exactly, having moved nothing
+const carryEsc = await page.evaluate(async (ids) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost();
+  const es = ids.map((id) => ed.state.placements.get(id));
+  return {
+    on: es.map((e) => e.node.isEnabled()),
+    at: es.map((e) => +e.node.position.x.toFixed(2)),
+    ghost: i.ghostActive(),
+  };
+}, carrySet.ids);
+check("Esc puts a carried selection back untouched",
+  carryEsc.on.join() === "true,true,true" && carryEsc.at.join() === "0,8,0"
+    && carryEsc.ghost === false,
+  `enabled ${carryEsc.on}, x ${carryEsc.at}`);
+
+// dropping moves the originals rather than duplicating them
+const carryDropped = await page.evaluate(async (ids) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  ed.select(ids);
+  await i.grabSelection();
+  // stand the ghost somewhere definite, then land it
+  const g = ed.state.scene.getTransformNodeByName("GHOST");
+  g.position.set(20, 0, 20);
+  await i.dropGhost();
+  const es = ids.map((id) => ed.state.placements.get(id));
+  return {
+    count: ed.state.placements.size,
+    on: es.map((e) => e.node.isEnabled()),
+    // relative shape preserved: b was 8 m along X from a, c 8 m along Z
+    dx: +(es[1].node.position.x - es[0].node.position.x).toFixed(2),
+    dz: +(es[2].node.position.z - es[0].node.position.z).toFixed(2),
+    rotB: +ed.eulerOf(es[1].node)[1].toFixed(1),
+    sclC: es[2].node.scaling.asArray(),
+    ghost: i.ghostActive(),
+  };
+}, carrySet.ids);
+check("dropping a carried selection moves it, and does not copy it",
+  carryDropped.count === 3 && carryDropped.on.join() === "true,true,true" && carryDropped.ghost === false,
+  `${carryDropped.count} placements, enabled ${carryDropped.on}`);
+check("the set lands with its shape, turns and mirroring intact",
+  carryDropped.dx === 8 && carryDropped.dz === 8 && Math.abs(carryDropped.rotB - 90) < 0.5
+    && carryDropped.sclC[0] === -1,
+  `dx=${carryDropped.dx}, dz=${carryDropped.dz}, rotB=${carryDropped.rotB}, scaleC=[${carryDropped.sclC}]`);
+
+// Ctrl+D on several: copies, originals untouched
+const dupMany = await page.evaluate(async (ids) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  ed.select(ids);
+  const g = await i.grabSelection({ copy: true });
+  const out = {
+    carrying: i.ghostCount(), mode: i.ghostMode(),
+    originalsOn: ids.map((id) => ed.state.placements.get(id).node.isEnabled()),
+  };
+  const root = ed.state.scene.getTransformNodeByName("GHOST");
+  root.position.set(40, 0, 40);
+  await i.dropGhost();
+  out.after = ed.state.placements.size;
+  out.selected = ed.state.selection.length;
+  ed.clearAll(); ed.select([]);
+  return out;
+}, carrySet.ids);
+check("Ctrl+D on a multi-selection carries copies, leaving the originals put",
+  dupMany.carrying === 3 && dupMany.mode === "copy"
+    && dupMany.originalsOn.join() === "true,true,true",
+  `${dupMany.carrying} items, mode ${dupMany.mode}, originals ${dupMany.originalsOn}`);
+check("dropping the copies adds them and selects them",
+  dupMany.after === 6 && dupMany.selected === 3,
+  `${dupMany.after} placements, ${dupMany.selected} selected`);
+
+// ---- 1d-tervicies. the middle button deletes -------------------------------
+const mmb = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const a = await ed.placeAt("Platforms/Platform_Simple", new V(0, 0, 0), { silent: true });
+  ed.state.camera.position = new V(0, 8, -0.2);
+  ed.state.camera.setTarget(new V(0, 0, 0));
+  ed.state.camera.cameraDirection.setAll(0);
+  return { id: a.id, before: ed.state.placements.size };
+});
+await page.waitForTimeout(600);
+const mmbAt = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const b = ed.screenBoundsOf(ed.state.placements.get([...ed.state.placements.keys()][0]).node);
+  const r = ed.state.engine.getRenderingCanvas().getBoundingClientRect();
+  return { x: r.x + (b.minX + b.maxX) / 2, y: r.y + (b.minY + b.maxY) / 2 };
+});
+await page.mouse.move(mmbAt.x, mmbAt.y, { steps: 4 });
+await page.waitForTimeout(250);
+await page.mouse.click(mmbAt.x, mmbAt.y, { button: "middle" });
+await page.waitForTimeout(500);
+const mmbAfter = await page.evaluate(async () =>
+  (await import("/js/editor.js")).state.placements.size);
+check("the middle button deletes what the cursor is over",
+  mmb.before === 1 && mmbAfter === 0, `${mmb.before} -> ${mmbAfter} placements`);
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.clearAll(); ed.select([]);
+});
+
 // The ghost rides the build plane, so duplicating something on an upper deck
 // has to bring the plane up with it or the copy reappears at ground level.
 const dupHigh = await page.evaluate(async () => {
@@ -4519,7 +4828,7 @@ check("selecting the hovered element drops the hover at once",
     && afterSelect.selection === 1,
   `hovered=${afterSelect.hovered}, current=${afterSelect.kind}`);
 
-// and it stays dropped when the pointer moves over it again
+// and it stays carryDropped when the pointer moves over it again
 await page.mouse.move(stillPt.x + 30, stillPt.y + 20, { steps: 3 });
 await page.mouse.move(stillPt.x, stillPt.y, { steps: 3 });
 await page.waitForTimeout(350);
