@@ -12,6 +12,11 @@ tool/cache/
 # export/ship_manifest.json.
 tool/layouts/
 
+# Each suite drops a screenshot at the end of its run, purely to be looked at.
+# Tracked once, they turned into binary churn in every diff: `npm test`
+# rewrites all three whether or not anything changed.
+tool/test/shot-*.png
+
 # The exported ship: a 31 MB .glb rebuilt from the manifest by "Export glb",
 # and the timestamped manifest backups the server keeps on every save. The
 # live manifest itself is NOT ignored - it is the ship.
