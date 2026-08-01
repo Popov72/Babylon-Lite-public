@@ -1,13 +1,13 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 2,
-  "savedAt": "2026-07-31T17:02:46.624Z",
+  "savedAt": "2026-07-31T23:36:44.528Z",
   "units": "metres",
   "up": "Y (glTF)",
   "grid": {
     "tile": 4
   },
-  "kitDir": "D:\\alexis\\TombRaider\\Popov72\\Modular SciFi MegaKit\\glTF",
+  "kitDir": "D:\\alexis\\TombRaider\\Popov72\\Babylon-Lite\\lab\\lite\\src\\demos\\aquanova\\editor\\kit",
   "chunks": [
     {
       "id": "CH00_Storage",
@@ -42,8 +42,8 @@
           4.774
         ]
       },
-      "instanceCount": 78,
-      "meshCount": 170
+      "instanceCount": 79,
+      "meshCount": 174
     }
   ],
   "instances": [
@@ -2323,6 +2323,28 @@
         0.75
       ],
       "node": "P0212"
+    },
+    {
+      "id": "P0213",
+      "module": "Props/Prop_Pod",
+      "chunk": "CH01_New",
+      "name": "capsule",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "capsule"
     }
   ],
   "markers": [
@@ -2448,25 +2470,35 @@
       "behaviors": [
         {
           "name": "crate_liquefiable"
+        },
+        {
+          "name": "dynamic"
+        }
+      ]
+    },
+    "capsule": {
+      "behaviors": [
+        {
+          "name": "door_liquefiable"
         }
       ]
     }
   },
   "view": {
     "position": [
-      21.13,
-      9.426,
-      1.092
+      9.802,
+      1.748,
+      -1.345
     ],
     "rotation": [
-      0.307,
-      4.726,
+      0.065,
+      -0.031,
       0
     ],
     "target": [
-      11.599,
-      6.4,
-      1.226
+      9.493,
+      1.098,
+      8.629
     ]
   },
   "environment": {
