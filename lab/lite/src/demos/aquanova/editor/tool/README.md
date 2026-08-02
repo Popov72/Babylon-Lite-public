@@ -322,10 +322,19 @@ Moving something already placed is a plain **drag**, which moves the real
 geometry rather than a ghost so that it works on a whole selection at once.
 
 The **current element** is whatever the ghost holds, or — when nothing is being
-placed — **whatever the cursor hovers**, and only then the selection. Hover
-outranks the selection deliberately: pointing at something is a more immediate
-statement of intent than a selection made earlier, and it saves clearing the
-selection before acting on a different element.
+placed — **the selection**. Hover used to outrank the selection, on the
+reasoning that pointing at something is a more immediate statement of intent.
+In practice it made every edit conditional on where the mouse happened to be
+resting: turn a wall, drift the cursor a pixel onto its neighbour, press `R`
+again, and the neighbour turns. You end up parking the pointer over empty space
+before touching the keyboard, which is no way to work. Selecting is one click,
+and it stays put.
+
+**`Del` is the exception**, and keeps its own hover rule: "get rid of that one"
+is a complete thought on its own, and needs no selection to survive afterwards.
+So is numpad `.`, which raises the build plane to the top of whatever you are
+pointing at — it reads an element rather than changing one, so it has none of
+the "the wrong thing moved" problem.
 
 | | |
 |---|---|
@@ -339,7 +348,7 @@ selection before acting on a different element.
 | Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
 | Turn as a group | **`Alt` + `R`** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
 | Resize | **`Shift` + wheel** — steps by the Scale snap on the current scale axis |
-| What gets edited | the ghost if one is being placed, otherwise **whatever is hovered**, otherwise the selection |
+| What gets edited | the ghost if one is being placed, otherwise **the selection**. `Del` is the exception and takes the hovered element first |
 | Rotation axis | `Shift+R` cycles Y → X → Z. Y first: it is the only one a modular kit usually needs. |
 | Scale axis | `Shift+F` cycles all → X → Y → Z |
 | Build plane | numpad `+` / `-` (or main-row `+` / `-`) by the Move step; numpad `.` jumps it to the top of the hovered element |
@@ -397,10 +406,12 @@ box, not the local one, so it changes as you rotate. That is the number you want
 when checking whether a piece still fits its 4 m tile. With several elements
 selected it reports the combined box.
 
-`Del` follows the same precedence as everything else: whatever the cursor is
-over first, then the selection. Deleting a hovered element leaves an unrelated
-selection intact — pointing at one thing is no reason to forget the others.
-Nothing mid-gesture is deletable — `Esc` is the way out of those.
+`Del` is the **only** edit that still takes the hovered element first, falling
+back to the selection when the cursor is over nothing. "Get rid of that one" is
+a complete thought on its own, and needs no selection to survive afterwards —
+which is exactly why deleting a hovered element leaves an unrelated selection
+intact: pointing at one thing is no reason to forget the others. Nothing
+mid-gesture is deletable — `Esc` is the way out of those.
 
 **`Shift+H` parks the selection out of sight**, so you can reach into a room
 without flying round the wall in front of it. It cycles **50% → hidden → 50%**:
@@ -560,7 +571,7 @@ it as before.
 **The wheel belongs to the camera.** It dollies, full stop — that is what a
 wheel does in a 3D view, and every attempt to give it a second job fought that
 expectation. It no longer rotates anything; `R` does, and it acts on the
-hovered element without needing a selection first. Two exceptions, both
+selection. Two exceptions, both
 deliberate: `Shift` + wheel resizes the current element, and **holding the right
 button turns the wheel into a fly-speed control** — the right button already
 means "I am driving the camera", so adjusting how fast reads naturally and
@@ -677,7 +688,7 @@ Two rows, and only two:
 | | |
 |---|---|
 | **Build plane** | the height new modules land on — `state.gridY` |
-| **Current** | what the next key will act on: the ghost `◆`, the hover `▸`, or the selection `■` |
+| **Current** | what the next key will act on: the ghost `◆`, or the selection `■` |
 
 Everything else it used to carry — rotation axis, scale axis, fly speed, drag
 axis, lighting mode — is already on screen in the **toolbar**, whose combos *are*

@@ -4357,14 +4357,16 @@ check("hover picks the element", hov.id === target.id,
 check("outline uses per-instance edges", hov.edged === hov.total && hov.edged > 0,
   `${hov.edged}/${hov.total} instances edged`);
 check("no HighlightLayer in the scene", hov.effectLayers === 0, `${hov.effectLayers} effect layer(s)`);
-// selection now outranks hover, so clear it to test the hover fallback
+// Hover no longer redirects an edit, so with nothing selected there is nothing
+// to act on - pointing at a wall must not make it the thing R turns.
 const hoverIsCurrent = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   ed.select([]);
-  return i.currentElement()?.kind;
+  return { kind: i.currentElement()?.kind ?? null, hovered: !!i.hoveredId() };
 });
-check("hovered element is 'current'", hoverIsCurrent === "hover", hoverIsCurrent || "none");
+check("a merely hovered element is not what an edit acts on",
+  hoverIsCurrent.hovered && hoverIsCurrent.kind === null, JSON.stringify(hoverIsCurrent));
 
 // ---- 7. the wheel leaves a merely-hovered element alone ---------------------
 const rotBefore = await page.evaluate(async () => {
@@ -4445,17 +4447,32 @@ const afterPlainRight = await page.evaluate(async () =>
 check("a plain right-click still cancels", afterPlainRight === 0,
   `${afterPlainRight} selected`);
 
-// R still turns whatever is under the cursor - no camera binding to collide with
+// R leaves a merely hovered element alone: edits go to the selection, so that
+// resting the pointer somewhere cannot decide what the next key turns.
 await page.evaluate(() => window.dispatchEvent(
   new KeyboardEvent("keydown", { key: "r", code: "KeyR", bubbles: true })));
 await page.waitForTimeout(200);
 const rotAfterHover = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return ed.eulerOf([...ed.state.placements.values()][0].node)[1];
+  const i = await import("/js/interact.js");
+  return { rot: ed.eulerOf([...ed.state.placements.values()][0].node)[1],
+    hovered: i.hoveredId(), selected: ed.state.selection.length };
 });
-check("R still rotates the hovered element",
-  Math.abs(Math.abs(rotAfterHover - rotBefore) - 90) < 0.01,
-  `${rotBefore.toFixed(1)} -> ${rotAfterHover.toFixed(1)}`);
+check("R does not turn a merely hovered element",
+  !!rotAfterHover.hovered && rotAfterHover.selected === 0
+    && Math.abs(rotAfterHover.rot - rotBefore) < 1e-6,
+  `hovering ${rotAfterHover.hovered}, held at ${rotBefore.toFixed(1)}`);
+// ...and turns it once it is actually selected
+const rotWhenSelected = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const e = [...ed.state.placements.values()][0];
+  ed.select([e.id]);
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", bubbles: true }));
+  return ed.eulerOf(e.node)[1];
+});
+check("but it does turn the selection",
+  Math.abs(Math.abs(rotWhenSelected - rotBefore) - 90) < 0.01,
+  `${rotBefore.toFixed(1)} -> ${rotWhenSelected.toFixed(1)}`);
 
 const outlineSynced = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -5037,12 +5054,12 @@ const precedence = await page.evaluate(async (ids) => {
     bMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.bId).node)[1] - bBefore) > 1e-6,
   };
 }, precedenceSetup);
-check("hovered takes precedence over selected",
-  precedence.hovered === precedenceSetup.bId && precedence.kind === "hover"
-    && precedence.bMoved && !precedence.aMoved,
+check("the selection is edited even with something else under the cursor",
+  precedence.hovered === precedenceSetup.bId && precedence.kind === "selection"
+    && precedence.aMoved && !precedence.bMoved,
   `current=${precedence.kind}, hovered moved=${precedence.bMoved}, selected moved=${precedence.aMoved}`);
 
-// pointer off everything -> the selection is the current element again
+// pointer off everything -> still the selection, unchanged
 await page.mouse.move(canvasBox.x + 12, canvasBox.y + 12, { steps: 4 });
 await page.waitForTimeout(350);
 const fallback = await page.evaluate(async (ids) => {
@@ -5054,7 +5071,7 @@ const fallback = await page.evaluate(async (ids) => {
   return { kind,
     aMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.aId).node)[1] - aBefore) > 1e-6 };
 }, precedenceSetup);
-check("with nothing hovered the selection is the current element",
+check("and with nothing hovered it is the selection just the same",
   fallback.kind === "selection" && fallback.aMoved,
   `current=${fallback.kind}, selected moved=${fallback.aMoved}`);
 
@@ -6947,8 +6964,8 @@ const hoveredUnselected = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { hovered: i.hoveredId(), kind: i.currentElement()?.kind };
 });
-check("an unselected element under the cursor is hovered",
-  hoveredUnselected.hovered === exclusive.id && hoveredUnselected.kind === "hover",
+check("an unselected element under the cursor is hovered, but not edited",
+  hoveredUnselected.hovered === exclusive.id && hoveredUnselected.kind === undefined,
   `hovered=${hoveredUnselected.hovered}, current=${hoveredUnselected.kind}`);
 
 const afterSelect = await page.evaluate(async (id) => {

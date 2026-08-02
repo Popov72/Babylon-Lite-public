@@ -1037,19 +1037,21 @@ function refreshHover() {
 }
 
 /**
- * What an edit acts on, in priority order: the ghost being placed, then
- * whatever the cursor is over, then the selection.
+ * What an edit acts on: the ghost being placed, otherwise the selection.
  *
- * Hover outranks the selection deliberately - pointing at something is a more
- * immediate statement of intent than a selection made earlier, and it saves
- * clearing the selection before acting on a different element.
+ * Hover used to outrank the selection, on the reasoning that pointing at
+ * something is a more immediate statement of intent. In practice it made every
+ * edit conditional on where the mouse happened to be resting - turn a wall,
+ * drift the cursor a pixel onto its neighbour, press `R` again and the
+ * neighbour turns. You end up parking the pointer over empty space before
+ * touching the keyboard, which is no way to work.
+ *
+ * `Del` is the one exception, and it keeps its own hover rule: "get rid of that
+ * one" is a complete thought on its own, and it needs no selection to survive
+ * afterwards.
  */
 export function currentElement() {
   if (ghost) return { kind: "ghost", ids: [], module: ghost.module || ghost.collider };
-  if (hoverId) {
-    const e = entryOf(hoverId);
-    if (e) return { kind: "hover", ids: [hoverId], module: e.name || e.module || e.type };
-  }
   if (state.selection.length) {
     const first = entryOf(state.selection[0]);
     return {
@@ -1063,10 +1065,8 @@ export function currentElement() {
   return null;
 }
 
-/** Placement entries a wheel edit should touch - hover first, as above. */
+/** Placement entries a wheel or key edit should touch: the selection. */
 function wheelTargets() {
-  const hovered = hoverId ? entryOf(hoverId) : null;
-  if (hovered) return [hovered];
   return state.selection.map(entryOf).filter(Boolean);
 }
 

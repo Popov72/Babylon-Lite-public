@@ -1172,7 +1172,7 @@ window.addEventListener("keydown", async (e) => {
       const r = flipCurrent();
       setStatus(r
         ? `mirrored ${r.count} object(s) on ${r.axis.toUpperCase()}`
-        : "nothing to mirror — select or hover an element first");
+        : "nothing to mirror — select an element first");
       break;
     }
     // R turns the current element, Shift+R picks the axis it turns about, and
@@ -1399,10 +1399,9 @@ function grabCurrent() {
   const ids = (cur?.ids || []).map(entryOf)
     .filter((e) => e?.module || e?.type === "collider");
   if (!ids.length) {
-    setStatus("nothing to pick up — select or point at an element first");
+    setStatus("nothing to pick up — select an element first");
     return;
   }
-  if (!state.selection.length) select(cur.ids);
   grabSelection().then((g) => {
     if (g) {
       setStatus(ids.length > 1
@@ -1434,9 +1433,13 @@ function deleteCurrent() {
 
 /** Put the build plane on top of whatever the cursor is over. */
 function elevationFromHover() {
-  const cur = currentElement();
-  if (!cur || cur.kind !== "hover") { setStatus("hover an element first"); return; }
-  const entry = entryOf(cur.ids[0]);
+  // Straight off the hover, not through currentElement(): edits follow the
+  // selection now, and this one is deliberately about what you are pointing at.
+  // It reads an element rather than changing one, so it has none of the "the
+  // wrong thing moved" problem that took hover off the editing keys.
+  const id = hoveredId();
+  if (!id) { setStatus("hover an element first"); return; }
+  const entry = entryOf(id);
   const b = entry && worldBounds(entry.node);
   if (!b) return;
   setGridElevation(b.max.y);
@@ -1466,7 +1469,7 @@ function refreshHud() {
 
   const cur = currentElement();
   $("hud-current").textContent = cur
-    ? `${cur.kind === "ghost" ? "◆" : cur.kind === "selection" ? "■" : "▸"} ${short(cur.module)}`
+    ? `${cur.kind === "ghost" ? "◆" : "■"} ${short(cur.module)}`
     : "—";
   $("hud-current").title = cur?.module || "";
 }
