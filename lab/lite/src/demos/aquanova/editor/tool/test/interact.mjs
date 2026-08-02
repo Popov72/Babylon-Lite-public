@@ -1077,6 +1077,68 @@ check("and takes only its own shapes off the area",
 check("staging the module again brings them back",
   persist.restored === 2, `${persist.restored} on the area`);
 
+// Moving or turning a stand-in is a *view* operation: the hull is authored in
+// the module's own frame, so the shapes come with it and the record does not
+// change. Left alone the element slid out from under its shapes, which then
+// belonged to nothing - and deleting it afterwards could not find them either.
+const follow = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  const frame = () => new Promise((r) =>
+    ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
+  const el = [...ed.state.placements.values()].find((p) => p.stage && p.module === prop);
+  const shapes = co.stageColliders().filter((c) => c.host === el.id);
+  await frame(); await frame();
+  const was = {
+    shape: shapes[0].node.position.asArray().map((v) => +v.toFixed(3)),
+    record: JSON.stringify(ed.state.moduleCollision.get(prop)),
+    hosted: shapes.length,
+  };
+
+  el.node.position.addInPlace(new V(5, 0, 3));
+  await frame(); await frame();
+  const moved = {
+    shape: shapes[0].node.position.asArray().map((v) => +v.toFixed(3)),
+    record: JSON.stringify(ed.state.moduleCollision.get(prop)),
+  };
+
+  el.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, Math.PI / 2, 0);
+  await frame(); await frame();
+  const turned = {
+    q: shapes[0].node.rotationQuaternion.asArray().map((v) => +v.toFixed(3)),
+    record: JSON.stringify(ed.state.moduleCollision.get(prop)),
+  };
+
+  ed.select([el.id]);
+  ed.removeSelected();
+  await frame();
+  const deleted = {
+    staged: [...ed.state.placements.values()].filter((p) => p.stage && p.module === prop).length,
+    left: co.stageColliders().filter((c) => c.host === el.id).length,
+    stored: (ed.state.moduleCollision.get(prop) || []).length,
+  };
+  // put the bench back as the blocks after this one expect to find it
+  const kit = await import("/js/kit.js");
+  await co.stageModule(prop, kit.instantiate, kit.moduleBounds);
+  await frame();
+  return { was, moved, turned, deleted };
+}, PROP_A);
+check("a shape knows which staged element it belongs to",
+  follow.was.hosted >= 1, `${follow.was.hosted} hosted`);
+check("moving a staged element carries its shapes with it",
+  follow.moved.shape[0] === +(follow.was.shape[0] + 5).toFixed(3)
+    && follow.moved.shape[2] === +(follow.was.shape[2] + 3).toFixed(3),
+  `${JSON.stringify(follow.was.shape)} -> ${JSON.stringify(follow.moved.shape)}`);
+check("turning it turns them too",
+  Math.abs(Math.abs(follow.turned.q[1]) - 0.707) < 0.01, `q=${JSON.stringify(follow.turned.q)}`);
+check("and neither changes the hull that was authored",
+  follow.moved.record === follow.was.record && follow.turned.record === follow.was.record,
+  "record held through a move and a turn");
+check("deleting a moved element still takes its shapes off the bench",
+  follow.deleted.staged === 0 && follow.deleted.left === 0 && follow.deleted.stored >= 1,
+  JSON.stringify(follow.deleted));
+
 // the whole point: none of this reaches the ship
 const stageLeak = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");

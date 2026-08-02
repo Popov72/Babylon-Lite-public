@@ -332,6 +332,10 @@ export function harvestStage() {
       const v = overlapVolume(cb, b.grown);
       if (v > bestVol) { bestVol = v; best = b; }
     }
+    // Remembered on the shape as well as counted: moving or turning a staged
+    // element has to carry its own shapes with it, and that has to know whose
+    // they are without re-deciding ownership half way through the move.
+    c.host = best ? best.entry.id : null;
     if (!best) { orphans++; continue; }
     claimed.get(best.entry.id).push({ collider: c, host: best.entry });
   }
@@ -510,12 +514,12 @@ export async function stageModule(moduleId, instantiate, boundsOf, at = null) {
       scale: [scl.x, scl.y, scl.z],
     });
   }
+  harvestStage();            // the new shapes need to know their host
   applyVisibility();
   emit("placements");
   emit("colliders");
   return { entry, added: true };
 }
-
 /**
  * Take a module off the stage, keeping what was fitted to it.
  *
@@ -545,6 +549,63 @@ export function unstageModule(entryOrId) {
 }
 
 /**
+ * Shapes follow the element they belong to.
+ *
+ * Moving or turning a stand-in on the bench is a *view* operation - the hull is
+ * authored in the module's own frame, so nothing about it should change. Left
+ * to itself the element slid out from under its shapes, which then belonged to
+ * nothing, or worse, to whichever neighbour they had drifted into.
+ *
+ * Done by watching the result rather than by hooking the causes. There are at
+ * least six ways an element's transform changes - a drag, an M carry, the
+ * inspector, an arrow-key nudge, R, F - and a watcher catches all of them,
+ * including any added later.
+ */
+let stageWatch = null;
+
+function watchStagedElements() {
+  unwatchStagedElements();
+  const seen = new Map();
+  stageWatch = state.scene.onBeforeRenderObservable.add(() => {
+    if (!state.collisionMode) return;
+    let moved = false;
+    for (const e of stagedElements()) {
+      e.node.computeWorldMatrix(true);
+      const now = e.node.getWorldMatrix();
+      const before = seen.get(e.id);
+      if (before && !before.equals(now)) {
+        const delta = before.clone().invert().multiply(now);
+        for (const c of stageColliders()) {
+          if (c.host !== e.id) continue;
+          c.node.computeWorldMatrix(true);
+          const world = c.node.getWorldMatrix().multiply(delta);
+          const p = new Vector3(), q = new Quaternion(), s = new Vector3();
+          world.decompose(s, q, p);
+          c.node.position.copyFrom(p);
+          c.node.rotationQuaternion = q;
+          c.node.scaling.copyFrom(s);
+          c.node.computeWorldMatrix(true);
+        }
+        moved = true;
+      }
+      seen.set(e.id, now.clone());
+    }
+    // Drop anything that has left the bench, so a re-staged module does not
+    // inherit a stale matrix and jump.
+    for (const id of [...seen.keys()]) {
+      if (!state.placements.get(id)?.stage) seen.delete(id);
+    }
+    if (moved) harvestStage();
+  });
+}
+
+function unwatchStagedElements() {
+  if (!stageWatch) return;
+  state.scene.onBeforeRenderObservable.remove(stageWatch);
+  stageWatch = null;
+}
+
+/**
  * Open the staging area, restoring whatever was on it when it was last closed.
  *
  * Coming back to a blank stage after stepping out to look at the ship was the
@@ -562,6 +623,8 @@ export async function enterCollisionMode(instantiate, boundsOf) {
     if (!s?.module) continue;
     await stageModule(s.module, instantiate, boundsOf, s.position);
   }
+  harvestStage();            // so every shape knows its host before anything moves
+  watchStagedElements();
   applyVisibility();
   emit("placements");
   emit("colliders");
@@ -571,6 +634,7 @@ export async function enterCollisionMode(instantiate, boundsOf) {
 /** Close it, keeping everything that was fitted and where it all stood. */
 export function exitCollisionMode() {
   if (!state.collisionMode) return false;
+  unwatchStagedElements();
   harvestStage();
   // Remember the bench before clearing it, so re-opening finds the same
   // modules in the same places.
@@ -648,10 +712,15 @@ hooks.reconcileCollider = reconcileCollider;
 // Used by the ghost, which has to draw a collision primitive without having a
 // kit prototype to clone, and to land one when the carry is dropped.
 hooks.buildColliderMesh = (kind, id) => buildMesh(kind, id, state.scene);
-hooks.addCollider = (kind, opts) =>
-  addCollider(kind, Vector3.FromArray(opts.position),
-    // a shape dropped while the staging area is open is a staged shape
+hooks.addCollider = (kind, opts) => {
+  // a shape dropped while the staging area is open is a staged shape
+  const c = addCollider(kind, Vector3.FromArray(opts.position),
     { ...opts, stage: opts.stage !== undefined ? opts.stage : state.collisionMode });
+  // and needs a host straight away, or the element it was dropped on would
+  // move out from under it the first time anything nudged that element
+  if (c?.stage) harvestStage();
+  return c;
+};
 // Removing a staged element must keep what was fitted to it, so the delete path
 // goes through unstageModule rather than disposing the placement outright.
 hooks.unstageModule = (id) => unstageModule(id);

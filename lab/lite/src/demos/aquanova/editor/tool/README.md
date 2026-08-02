@@ -1173,6 +1173,20 @@ stage after stepping out to look at the ship was the wrong default: this is a
 workbench, not a dialog. The roster rides in the collision file, so it survives
 a reload as well as a trip back to the ship.
 
+**Moving or turning a stand-in carries its shapes with it**, and changes nothing
+about the hull: the hull is authored in the module's own frame, so shifting the
+stand-in is a *view* operation. Left to itself the element slid out from under
+its shapes, which then belonged to nothing — or worse, to whichever neighbour
+they had drifted into — and deleting it afterwards could not find them either,
+so they were stranded on the bench.
+
+That is done by **watching the result, not by hooking the causes**. There are at
+least six ways an element's transform changes — a drag, an `M` carry, the
+inspector, an arrow-key nudge, `R`, `F` — and one watcher on the render loop
+catches all of them, including any added later. Each shape remembers which
+element claimed it, so a move knows whose shapes to carry without re-deciding
+ownership half way through.
+
 ### Collision travels in its own file
 
 Saving writes `ship_collision.json` beside `ship_manifest.json`, and loading
