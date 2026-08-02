@@ -144,6 +144,17 @@ body.big-palette { --palette-w: 520px; }
 body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 .item.active .cap { color: var(--text); }
 
+/* "This module already has collision." The same green the shapes are drawn in,
+   so it reads the same on the tile as it does in the viewport. Sits above the
+   turntable, which covers the whole thumbnail while it spins. */
+.item.has-collision::after {
+  content: ""; position: absolute; top: 4px; right: 4px; z-index: 2;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #26e659; border: 1px solid rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 5px rgba(38, 230, 89, 0.8);
+  pointer-events: none;
+}
+
 .palette-foot {
   padding: 6px 8px; border-top: 1px solid var(--line);
   font-size: 11px; color: var(--accent);

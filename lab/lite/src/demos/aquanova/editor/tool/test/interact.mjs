@@ -1380,6 +1380,50 @@ check("it is a preview, not data: never exported, and gone when the record is",
   inherited.stowaways === 0 && inherited.cleared === 0,
   `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`);
 
+// ---- 1d-quintricies. the palette says which modules are done --------------
+// Fitting a kit is a job you do a few modules at a time and come back to, and
+// there are 277 of them. Without a mark, the only way to tell which were done
+// was to stage each one and look.
+const marks = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const settle = () => new Promise((r) => setTimeout(r, 120));
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  await settle();
+  const target = [...kit.getCatalogue().byId.keys()].find((m) => m.startsWith("Props/"));
+  const tile = () => document.querySelector(`#palette-list .item[data-id="${target}"]`);
+  const lit = () => !!tile()?.classList.contains("has-collision");
+
+  const before = lit();
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  const { entry } = await co.stageModule(target, kit.instantiate, kit.moduleBounds);
+  ed.select([entry.id]);
+  await co.fitBoxToSelection(kit.moduleBounds);
+  await settle();
+  const after = lit();
+  const title = tile()?.title;
+
+  // and it goes out again when the shapes do
+  for (const c of co.stageColliders()) co.removeCollider(c.id, true);
+  co.harvestStage();
+  ed.emit("colliders");
+  await settle();
+  const cleared = lit();
+  co.exitCollisionMode();
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  await settle();
+  return { target, before, after, cleared, title, stillLit: lit() };
+});
+check("a module with collision is marked in the palette",
+  marks.before === false && marks.after === true,
+  `${marks.target}: ${marks.before} -> ${marks.after}`);
+check("and the tile says how many shapes it carries",
+  /1 collision shape\b/.test(marks.title || ""), marks.title);
+check("the mark goes out when the shapes do",
+  marks.cleared === false && marks.stillLit === false,
+  `after removing ${marks.cleared}, after clearing ${marks.stillLit}`);
+
 
 // ---- 1d-duotricies. the geometry / collision layer switch -----------------
 // It can only ever take things off screen, so chunk isolation and the Shift+H

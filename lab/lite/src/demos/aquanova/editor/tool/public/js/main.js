@@ -2,7 +2,7 @@
 
 import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
-import { initPalette, setBrush } from "./palette.js";
+import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import { saveLayout, loadLayout, loadCollision, exportGlb, resolveDoorChunks } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
@@ -1449,7 +1449,7 @@ on("pickmodule", (moduleId) => {
 on("stagemodule", (moduleId) => stageFromPalette(moduleId));
 on("status", (msg) => setStatus(msg));
 on("deletecurrent", () => deleteCurrent());
-on("colliders", () => { refreshStats(); validate(); });
+on("colliders", () => { refreshStats(); validate(); refreshCollisionMarks(); });
 
 // ------------------------------------------------------------- collision
 
@@ -1691,6 +1691,7 @@ async function bootstrap() {
   // Whatever we booted with - a restored ship or an empty grid - is the
   // baseline "unsaved changes" is measured against.
   markSaved();
+  refreshCollisionMarks();     // the palette is only built by now
   validate();
 }
 

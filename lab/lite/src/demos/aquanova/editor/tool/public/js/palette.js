@@ -67,7 +67,6 @@ function render() {
     const el = document.createElement("div");
     el.className = "item" + (state.brush === m.id ? " active" : "");
     el.dataset.id = m.id;
-    el.title = m.id;
 
     const img = document.createElement("img");
     img.className = "thumb";
@@ -80,6 +79,7 @@ function render() {
     cap.textContent = m.name;
 
     el.append(img, cap);
+    markCollision(el, m.id);
     el.addEventListener("click", () => {
       // On the collision staging area the palette *stages* modules: there is no
       // ship on screen to arm a brush against, and staging is what you came for.
@@ -94,6 +94,31 @@ function render() {
   listEl.appendChild(frag);
   document.getElementById("status-text").textContent =
     `${mods.length} modules shown of ${getCatalogue().byId.size}`;
+}
+
+/**
+ * Mark a tile whose module carries collision.
+ *
+ * The green dot is the same green the shapes are drawn in, so "this one is
+ * done" reads the same on the tile as it does in the viewport. Without it the
+ * only way to tell which of 277 modules had been fitted was to stage each one
+ * and look - and fitting a kit is precisely a job you do a few at a time and
+ * come back to.
+ */
+function markCollision(el, moduleId) {
+  const n = state.moduleCollision.get(moduleId)?.length || 0;
+  el.classList.toggle("has-collision", n > 0);
+  el.title = n
+    ? `${moduleId} — ${n} collision shape${n === 1 ? "" : "s"}`
+    : moduleId;
+}
+
+/** Re-mark every visible tile, without rebuilding the list. */
+export function refreshCollisionMarks() {
+  if (!listEl) return;
+  for (const el of listEl.children) {
+    if (el.dataset.id) markCollision(el, el.dataset.id);
+  }
 }
 
 export function setBrush(id, opts = {}) {

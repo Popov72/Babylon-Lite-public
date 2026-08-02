@@ -1210,7 +1210,14 @@ hiding and the layer switch like everything else. That runs on every collider
 added, so the rebuild is coalesced into one pass per burst — fitting a room of
 eighty boxes would otherwise rebuild the whole ship's preview eighty times.
 
-A module that carries its own collision is **skipped by the room fitter**: its
+**The palette says which modules are done.** A tile whose module carries
+collision gets a green dot — the same green the shapes are drawn in — and its
+tooltip says how many shapes. Fitting a kit is a job you do a few modules at a
+time and come back to, and there are 277 of them; without a mark the only way to
+tell which were done was to stage each one and look. The dot is live: it lights
+as soon as a shape is fitted and goes out when the last one is removed.
+
+**A module that carries its own collision is skipped by the room fitter**: its
 placements are already covered, so fitting a box as well would give them
 collision twice. The one thing module collision does not get is doorway
 subtraction — author it on props, not on the walls a door is cut through.
