@@ -1350,6 +1350,7 @@ existed returns that setting's default rather than `undefined`.
 | setting | default | what it does |
 | --- | --- | --- |
 | Collision shell | `0.008` m | the *minimum* thickness any collision box is given on any axis |
+| Auto-save every | `2` min | how often a recovery copy is written; `0` turns it off |
 
 The default matches what the kit's walls read as in the inspector. They in fact
 measure 0.0075 m; the field rounds. Because the shell is a minimum, leaving it
@@ -1727,6 +1728,30 @@ renames and creates directories. There is no bundler and no `node_modules` —
 `npm start` is literally `node server.mjs` — so there is no "clean the dist
 folder" step of the kind Vite or webpack would bring. Files in `export/` are
 removed only if you remove them.
+
+### Auto-save
+
+Every couple of minutes — the interval is in the **Settings** pane, and `0`
+turns it off — the editor writes `ship_autosave.json` beside the ship, but
+**only when something has changed** since the last save or auto-save.
+
+Three deliberate choices:
+
+* **It is not the manifest.** A background write must never overwrite the ship
+  you last chose to save. Recovery is a copy you reach for, not a thing that
+  happens to your work.
+* **It is not rotated.** The manifest keeps a timestamped copy of every
+  deliberate save, and doing the same here would bury `export/` under a file
+  every couple of minutes. One rolling recovery file is the point.
+* **It keeps its own baseline.** An auto-save does *not* clear "you have unsaved
+  work", because the manifest still does not have those changes. Sharing one
+  baseline would mean a background write quietly disarmed the guard that stops
+  you closing the tab on an hour of work — the exact opposite of what an
+  auto-save is for.
+
+To recover, copy `ship_autosave.json` over `ship_manifest.json` and reload. The
+file names itself `"generator": "SciFiShip layout tool (auto-save)"` and carries
+`"autoSaved": true`, so it is never mistaken for a deliberate save.
 
 ## Configuration
 

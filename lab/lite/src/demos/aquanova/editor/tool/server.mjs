@@ -38,6 +38,7 @@ const LAYOUT_DIR = path.join(HERE, "layouts");
 
 const MANIFEST = path.join(EXPORT_DIR, "ship_manifest.json");
 const COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
+const AUTOSAVE = path.join(EXPORT_DIR, "ship_autosave.json");
 const GLB = path.join(EXPORT_DIR, "ship.glb");
 
 const MIME = {
@@ -281,12 +282,34 @@ async function handle(req, res) {
     if (req.method === "POST") {
       const body = await readBody(req);
       await fsp.mkdir(path.dirname(COLLISION), { recursive: true });
-      const previous = await rotatePrevious(COLLISION);
+      // Not rotated, unlike the manifest. It is written on every save, so a
+      // timestamped copy each time buried the export folder - and it is not the
+      // only copy: every manifest carries the same hulls in `moduleShapes`, so
+      // one can be rebuilt from any saved ship.
       await fsp.writeFile(COLLISION, body);
-      return sendJson(res, 200, {
-        ok: true, path: COLLISION, bytes: body.length,
-        previous: previous ? path.basename(previous) : null,
-      });
+      return sendJson(res, 200, { ok: true, path: COLLISION, bytes: body.length });
+    }
+    return send(res, 405, "method not allowed");
+  }
+
+  if (p === "/api/autosave") {
+    // A rolling recovery file. Deliberately *not* rotated: the manifest keeps a
+    // timestamped copy of every deliberate save, and doing the same here would
+    // bury the export folder under a file every couple of minutes. It is also
+    // deliberately not the manifest, so a background write can never overwrite
+    // the ship you last chose to save.
+    if (req.method === "GET") {
+      try {
+        return send(res, 200, await fsp.readFile(AUTOSAVE), MIME[".json"]);
+      } catch {
+        return sendJson(res, 200, {});
+      }
+    }
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      await fsp.mkdir(path.dirname(AUTOSAVE), { recursive: true });
+      await fsp.writeFile(AUTOSAVE, body);
+      return sendJson(res, 200, { ok: true, path: AUTOSAVE, bytes: body.length });
     }
     return send(res, 405, "method not allowed");
   }

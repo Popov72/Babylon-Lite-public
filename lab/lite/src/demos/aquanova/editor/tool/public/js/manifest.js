@@ -406,6 +406,23 @@ export async function saveCollision() {
   return res.json();
 }
 
+/** Write a recovery copy, apart from the ship you last chose to save. */
+export async function saveAutosave() {
+  if (state.collisionMode) hooks.harvestStage?.();
+  const body = JSON.stringify({
+    ...buildManifest(),
+    generator: "SciFiShip layout tool (auto-save)",
+    autoSaved: true,
+  }, null, 2);
+  const res = await fetch("/api/autosave", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 /**
  * Read the per-module collision back from its own file.
  *

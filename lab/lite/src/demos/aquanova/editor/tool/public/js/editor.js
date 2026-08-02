@@ -57,6 +57,20 @@ export const CONFIG_DEFAULTS = {
   // collision - the kit's floors and ceilings are single planes. Matches the
   // 8 mm the kit's walls actually measure, so a room comes out uniform.
   shellThickness: 0.008,
+  // How often the editor writes a recovery copy, in minutes. 0 turns it off.
+  autoSaveMinutes: 2,
+};
+
+/**
+ * What each setting will accept.
+ *
+ * A thickness of zero is a shape with no shape; an auto-save interval of zero
+ * is a perfectly reasonable "don't". One rule for both would have to be wrong
+ * for one of them.
+ */
+const CONFIG_RANGE = {
+  shellThickness: { min: 1e-4, max: 10 },
+  autoSaveMinutes: { min: 0, max: 240 },
 };
 
 export const state = {
@@ -2009,7 +2023,8 @@ export function setVeilAlpha(a) {
 export function setConfig(key, value) {
   if (!(key in CONFIG_DEFAULTS)) return false;
   const v = Number(value);
-  if (!Number.isFinite(v) || v <= 0) return false;
+  const range = CONFIG_RANGE[key] || { min: 0, max: Infinity };
+  if (!Number.isFinite(v) || v < range.min || v > range.max) return false;
   if (Math.abs(state.config[key] - v) < 1e-9) return false;
   pushUndo();
   state.config = { ...state.config, [key]: v };

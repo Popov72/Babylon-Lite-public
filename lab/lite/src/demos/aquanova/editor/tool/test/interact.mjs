@@ -926,6 +926,72 @@ check("a setting round-trips through the layout",
   Math.abs(shell.roundTrip - 0.033) < 1e-9 && Math.abs(shell.legacy - 0.008) < 1e-9,
   `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},`
   + ` a layout without one ${shell.legacy}`);
+
+// ---- 1d-sesquitricies. auto-save ------------------------------------------
+// A recovery copy written *beside* the ship, never over it, and only when
+// something has actually changed. It keeps its own baseline: a background write
+// must not clear "you have unsaved work", because the ship you last chose to
+// save still does not have those changes.
+const auto = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const main = await import("/js/main.js");
+  const mf = await import("/js/manifest.js");
+  const V = BABYLON.Vector3;
+  const i = await import("/js/interact.js");
+  const co = await import("/js/colliders.js");
+  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+  ed.setConfig("autoSaveMinutes", 2);
+
+  const dirtyNow = () => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+
+  // The manifest is server state the whole run shares, so put back whatever is
+  // there rather than leaving this block's ship behind for the next one.
+  const manifestWas = await (await fetch("/api/layout")).json();
+  main.markSaved();
+  const quiet = await main.autoSaveNow();
+
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const afterChange = await main.autoSaveNow();
+  const file = await (await fetch("/api/autosave")).json();
+  const stillWarns = dirtyNow();
+  const again = await main.autoSaveNow();
+
+  // and the manifest never moved
+  const manifestNow = await (await fetch("/api/layout")).json();
+  const manifestTouched = JSON.stringify(manifestNow.instances || [])
+    !== JSON.stringify(manifestWas.instances || []);
+
+  ed.setConfig("autoSaveMinutes", 0);
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  const whenOff = await main.autoSaveNow();
+
+  const defaults = ed.CONFIG_DEFAULTS.autoSaveMinutes;
+  ed.setConfig("autoSaveMinutes", 2);
+  ed.clearAll(); ed.select([]);
+  return {
+    defaults, quiet, afterChange, again, whenOff, stillWarns, manifestTouched,
+    marked: !!file.autoSaved, instances: (file.instances || []).length,
+  };
+});
+check("auto-save defaults to two minutes", auto.defaults === 2, `${auto.defaults}`);
+check("a tick with nothing changed writes nothing",
+  auto.quiet.wrote === false && auto.quiet.armed === true, JSON.stringify(auto.quiet));
+check("a tick after a change writes, and marks the file as an auto-save",
+  auto.afterChange.wrote === true && auto.marked && auto.instances >= 1,
+  `${JSON.stringify(auto.afterChange)}, ${auto.instances} instances`);
+check("a second tick with nothing further changed writes nothing",
+  auto.again.wrote === false, JSON.stringify(auto.again));
+check("an auto-save never clears the unsaved-work warning",
+  auto.stillWarns === true, `${auto.stillWarns}`);
+check("and never writes over the ship you last saved",
+  auto.manifestTouched === false, `manifest changed: ${auto.manifestTouched}`);
+check("zero minutes turns it off, timer and tick alike",
+  auto.whenOff.armed === false && auto.whenOff.wrote === false,
+  JSON.stringify(auto.whenOff));
 // ---- 1d-undetricies. the collision staging area ---------------------------
 // A mode, not a property of the selection. It opens empty, you stage whatever
 // modules you want to fit shapes to, and which element a shape belongs to is

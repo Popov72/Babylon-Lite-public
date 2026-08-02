@@ -3,7 +3,9 @@
 import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
-import { saveLayout, loadLayout, loadCollision, exportGlb, resolveDoorChunks } from "./manifest.js";
+import {
+  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, resolveDoorChunks,
+} from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
   removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE,
@@ -914,8 +916,53 @@ function dirtyKey() {
   return JSON.stringify(s);
 }
 
-export function markSaved() { savedState = dirtyKey(); }
+export function markSaved() { savedState = dirtyKey(); autoState = savedState; }
 function isDirty() { return savedState !== null && savedState !== dirtyKey(); }
+
+// --------------------------------------------------------------- auto-save
+//
+// A recovery copy, written beside the ship rather than over it. It keeps its
+// *own* baseline: a background write must not clear "you have unsaved work",
+// because the ship you last chose to save still does not have those changes.
+// Using one baseline for both would mean an auto-save quietly disarmed the
+// guard that stops you closing the tab on an hour of work.
+
+let autoState = null;
+let autoTimer = null;
+let autoBusy = false;
+
+async function autoSaveTick() {
+  if (autoBusy || isBusy()) return;
+  if (!(Number(state.config.autoSaveMinutes) > 0)) return;   // off is off
+  const now = dirtyKey();
+  if (autoState !== null && now === autoState) return;   // nothing has changed
+  autoBusy = true;
+  try {
+    const r = await saveAutosave();
+    autoState = dirtyKey();
+    const at = new Date().toLocaleTimeString();
+    setStatus(`auto-saved ${r.bytes} bytes → ${r.path.split(/[\\/]/).pop()} at ${at}`);
+  } catch (e) {
+    setStatus(`auto-save failed: ${e.message}`);
+  } finally {
+    autoBusy = false;
+  }
+}
+
+/** Restart the timer from the current setting. 0 minutes turns it off. */
+function rearmAutoSave() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  const mins = Number(state.config.autoSaveMinutes) || 0;
+  if (mins > 0) autoTimer = setInterval(autoSaveTick, mins * 60 * 1000);
+}
+on("config", rearmAutoSave);
+
+/** For tests: run one tick now, and report whether it wrote anything. */
+export async function autoSaveNow() {
+  const before = autoState;
+  await autoSaveTick();
+  return { wrote: autoState !== before, armed: !!autoTimer };
+}
 
 $("btn-save").addEventListener("click", doSave);
 $("btn-load").addEventListener("click", doLoad);
@@ -1606,14 +1653,24 @@ on("focus", () => focusSelection());
 // on the undo stack and in the saved layout like any other edit.
 
 function refreshSettings() {
-  const el = $("cfg-shell");
-  if (document.activeElement !== el) el.value = state.config.shellThickness;
+  const shell = $("cfg-shell");
+  if (document.activeElement !== shell) shell.value = state.config.shellThickness;
+  const auto = $("cfg-autosave");
+  if (document.activeElement !== auto) auto.value = state.config.autoSaveMinutes;
 }
 
 $("cfg-shell").addEventListener("change", () => {
   if (setConfig("shellThickness", $("cfg-shell").value)) {
     setStatus(`collision shell ${state.config.shellThickness} m`
-      + " — regenerate a chunk to apply it");
+      + " — refit a module to apply it");
+  }
+  refreshSettings();
+});
+
+$("cfg-autosave").addEventListener("change", () => {
+  if (setConfig("autoSaveMinutes", $("cfg-autosave").value)) {
+    const m = state.config.autoSaveMinutes;
+    setStatus(m ? `auto-saving every ${m} min to ship_autosave.json` : "auto-save off");
   }
   refreshSettings();
 });
@@ -1638,6 +1695,7 @@ async function bootstrap() {
   setStatus("loading catalogue…");
   refreshSettings();
   refreshModuleBanner();
+  rearmAutoSave();
   setBigPalette(localStorage.getItem("bigPalette") !== "0");
   if (localStorage.getItem("unlit") === "1") {
     $("unlit").checked = true;
