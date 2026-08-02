@@ -1516,10 +1516,12 @@ async function openCollisionArea() {
   cancelGhost();
   setBrush(null);
   await whileBusy("opening the collision area…", async () => {
-    await enterCollisionMode(instantiate, moduleBounds);
+    const restored = await enterCollisionMode(instantiate, moduleBounds);
     setGridElevation(0);
+    // Only frame the bench when there is no viewpoint to come back to -
+    // otherwise the focus throws away the view the mode just restored.
     const back = [...state.placements.values()].filter((p) => p.stage);
-    if (back.length) focusNodes(back.map((p) => p.node));
+    if (back.length && !restored?.viewRestored) focusNodes(back.map((p) => p.node));
   });
   const n = [...state.placements.values()].filter((p) => p.stage).length;
   setStatus(n

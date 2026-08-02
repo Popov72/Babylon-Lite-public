@@ -6,7 +6,7 @@
 
 import {
   state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
-  loadModuleCollision, serializeModuleCollision, emit,
+  loadModuleCollision, serializeModuleCollision, emit, hooks,
   serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
   applyEnvironment, whileBusy, withVeilSuspended, isVeilClone,
 } from "./editor.js";
@@ -403,6 +403,8 @@ export async function saveCollision() {
     // What was on the collision staging area when it was last closed. Purely
     // an authoring convenience, and no part of the ship.
     stageLayout: state.stageLayout.map((s) => ({ module: s.module, position: [...s.position] })),
+    // and where you were standing on the bench, so a reload puts you back
+    stageView: hooks.stageViewpoint?.() || null,
   }, null, 2);
   const res = await fetch("/api/collision", {
     method: "POST",
@@ -427,6 +429,7 @@ export async function loadCollision() {
   const shapes = data?.moduleShapes || data?.moduleCollision;
   if (!shapes || !Object.keys(shapes).length) return null;
   loadModuleCollision(shapes, data.stageLayout);
+  hooks.setStageViewpoint?.(data.stageView);
   emit("colliders");
   return shapes;
 }

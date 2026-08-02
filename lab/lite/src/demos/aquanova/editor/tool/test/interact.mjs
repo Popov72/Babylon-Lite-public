@@ -1532,6 +1532,60 @@ check("it is a preview, not data: never exported, and gone when the record is",
   inherited.stowaways === 0 && inherited.cleared === 0,
   `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`);
 
+// And it keeps up with the ship. It is drawn from each placement's world
+// matrix and rebuilt only through applyVisibility(), which a move, a turn or a
+// delete never calls - so the hulls sat where the elements used to be, and
+// outlived the elements entirely.
+const previewFollows = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const V = BABYLON.Vector3;
+  const frame = () => new Promise((r) =>
+    ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
+  ed.clearAll(); ed.select([]);
+  ed.loadModuleCollision({ [prop]: [
+    { kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  ] }, []);
+  const el = await ed.placeAt(prop, new V(0, 0, 0), { silent: true });
+  ed.applyVisibility();
+  await frame(); await frame();
+
+  const shapes = () => ed.state.scene.transformNodes
+    .find((n) => n.name === "__COLLISION_PREVIEW")?.getChildMeshes() || [];
+  const nearest = () => {
+    let d = Infinity;
+    for (const m of shapes()) d = Math.min(d, V.Distance(m.getAbsolutePosition(), el.node.getAbsolutePosition()));
+    return +d.toFixed(2);
+  };
+  const before = { n: shapes().length, d: nearest() };
+
+  el.node.position.addInPlace(new V(30, 0, 20));
+  await frame(); await frame(); await frame();
+  const afterMove = nearest();
+
+  el.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, Math.PI / 2, 0);
+  await frame(); await frame(); await frame();
+  const afterTurn = nearest();
+
+  ed.select([el.id]);
+  ed.removeSelected();
+  await frame(); await frame(); await frame();
+  const afterDelete = shapes().length;
+
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  ed.applyVisibility();
+  await frame(); await frame();
+  return { before, afterMove, afterTurn, afterDelete };
+}, PROP_A);
+check("an inherited hull is drawn on its element",
+  previewFollows.before.n > 0 && previewFollows.before.d < 1.5,
+  `${previewFollows.before.n} meshes, ${previewFollows.before.d} m away`);
+check("moving a ship element carries its inherited hull",
+  previewFollows.afterMove < 1.5, `${previewFollows.afterMove} m away after a 36 m move`);
+check("turning it keeps the hull with it",
+  previewFollows.afterTurn < 1.5, `${previewFollows.afterTurn} m away after a 90 degree turn`);
+check("deleting it takes the hull with it",
+  previewFollows.afterDelete === 0, `${previewFollows.afterDelete} meshes left`);
+
 // ---- 1d-quintricies. the palette says which modules are done --------------
 // Fitting a kit is a job you do a few modules at a time and come back to, and
 // there are 277 of them. Without a mark, the only way to tell which were done

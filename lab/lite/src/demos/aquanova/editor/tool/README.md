@@ -1181,7 +1181,8 @@ a reload as well as a trip back to the ship.
 
 **Each side keeps its own viewpoint.** Coming back to the ship pointing at a
 barrel, or to the bench pointing across the ship, meant finding your bearings
-again on every switch.
+again on every switch. The bench's viewpoint rides in the collision
+file as well, so a reload puts you back where you were working.
 
 **Clicking a palette tile arms a ghost**, the same as placing anything else, so
 you choose where a stand-in goes. Clicking one already on the bench focuses it
@@ -1261,7 +1262,14 @@ accident — to change them you open the staging area, which is the one place
 they are editable.
 
 It is built at the end of `applyVisibility()`, so it follows chunk isolation,
-hiding and the layer switch like everything else. That runs on every collider
+hiding and the layer switch like everything else.
+
+**It keeps up with the ship, too.** It is drawn from each placement's world
+matrix, and `applyVisibility()` is not called by a move, a turn or a delete - so
+the hulls used to sit where the elements had been, and outlive the elements
+entirely. A watcher on the render loop notices those matrices changing, which
+catches every route including the ones that only report themselves at the end of
+a drag. Only placements whose module actually carries collision are looked at. That runs on every collider
 added, so the rebuild is coalesced into one pass per burst — fitting a room of
 eighty boxes would otherwise rebuild the whole ship's preview eighty times.
 

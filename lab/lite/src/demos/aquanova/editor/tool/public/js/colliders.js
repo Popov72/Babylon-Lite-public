@@ -458,9 +458,47 @@ function buildPreview() {
  * eighty boxes would otherwise rebuild the whole ship's preview eighty times.
  */
 export function refreshCollisionPreview() {
+  watchShipPlacements();
   if (previewPending) return;
   previewPending = true;
   Promise.resolve().then(() => { previewPending = false; buildPreview(); });
+}
+
+/**
+ * Keep the preview under the elements it belongs to.
+ *
+ * It is drawn from each placement's world matrix, and rebuilt only through
+ * applyVisibility() - which a move, a turn or a delete never calls. So the
+ * inherited hulls sat where the elements used to be, and outlived the elements
+ * entirely. Watching the matrices catches every way an element can move,
+ * including the ones that only emit "transform" at the end of a drag.
+ *
+ * Only placements whose module actually carries collision are looked at, so on
+ * a ship where nothing is authored yet this costs one map lookup per element.
+ */
+let shipWatch = null;
+const shipSeen = new Map();
+
+function watchShipPlacements() {
+  if (shipWatch || !state.scene) return;
+  shipWatch = state.scene.onBeforeRenderObservable.add(() => {
+    if (state.collisionMode || !state.moduleCollision.size) return;
+    if (state.showLayer === "geometry") return;
+    let changed = false;
+    const live = new Set();
+    for (const p of shipPlacements()) {
+      if (!state.moduleCollision.get(p.module)?.length) continue;
+      live.add(p.id);
+      p.node.computeWorldMatrix(true);
+      const now = p.node.getWorldMatrix();
+      const before = shipSeen.get(p.id);
+      if (!before || !before.equals(now)) { changed = true; shipSeen.set(p.id, now.clone()); }
+    }
+    for (const id of [...shipSeen.keys()]) {
+      if (!live.has(id)) { shipSeen.delete(id); changed = true; }
+    }
+    if (changed) refreshCollisionPreview();
+  });
 }
 
 /** How many inherited shapes are currently drawn, for tests. */
@@ -719,15 +757,23 @@ export async function enterCollisionMode(instantiate, boundsOf) {
   harvestStage();            // so every shape knows its host before anything moves
   watchStagedElements();
   resetStageHistory();       // the bench's history starts here, not in the ship's
+  const viewRestored = !!stageView;
   if (stageView) applyViewTo(stageView);
   applyVisibility();
   emit("placements");
   emit("colliders");
-  return true;
+  return { viewRestored };
 }
 
 let shipView = null;
 let stageView = null;
+
+/** The bench's own viewpoint, so it rides in the collision file. */
+export function stageViewpoint() { return stageView ? { ...stageView } : null; }
+export function setStageViewpoint(v) {
+  stageView = v && Array.isArray(v.position) && Array.isArray(v.target)
+    ? { position: [...v.position], target: [...v.target] } : null;
+}
 
 function viewOf() {
   const c = state.camera;
@@ -859,5 +905,7 @@ hooks.harvestStage = () => { if (state.collisionMode) harvestStage(); };
 hooks.refreshCollisionPreview = refreshCollisionPreview;
 // The staging area has a history of its own - see pushUndo in editor.js.
 hooks.attachModuleShapes = attachModuleShapes;
+hooks.stageViewpoint = stageViewpoint;
+hooks.setStageViewpoint = setStageViewpoint;
 hooks.serializeStage = serializeStage;
 hooks.restoreStage = (data) => restoreStage(data);
