@@ -181,12 +181,15 @@ async function buildGhost(specs, opts = {}) {
     // it. Everything downstream - offsets, group turns, the drop - is identical.
     let b;
     if (spec.collider) {
-      const shape = hooks.buildColliderMesh(spec.collider, `GHOST_${items.length}`);
-      if (!shape) continue;
-      shape.parent = node;
-      shape.isPickable = false;
-      shape.material = ghostMaterialFor(shape.material, "GHOST", GHOST_ALPHA);
-      meshes.push(shape);
+      const parts = hooks.buildColliderMesh(spec.collider, `GHOST_${items.length}`);
+      if (!parts?.length) continue;
+      for (const shape of parts) {
+        shape.parent = node;
+        shape.isPickable = false;
+        shape.material = ghostMaterialFor(shape.material, "GHOST", GHOST_ALPHA)
+          || shape.material;
+        meshes.push(shape);
+      }
       b = { min: new Vector3(-0.5, -0.5, -0.5), max: new Vector3(0.5, 0.5, 0.5) };
     } else {
       const proto = await getProto(spec.module);

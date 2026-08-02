@@ -824,8 +824,20 @@ hooks.deserializeColliders = deserializeColliders;
 hooks.removeCollider = (id) => removeCollider(id, true);
 hooks.reconcileCollider = reconcileCollider;
 // Used by the ghost, which has to draw a collision primitive without having a
-// kit prototype to clone, and to land one when the carry is dropped.
-hooks.buildColliderMesh = (kind, id) => buildMesh(kind, id, state.scene);
+// kit prototype to clone. The materials go on here, not at the call site:
+// ghostMaterialFor() clones whatever it is given and returns null for nothing,
+// so a bare mesh came out wearing the scene's default grey.
+hooks.buildColliderMesh = (kind, id) => {
+  const scene = state.scene;
+  const { colliderMat, colliderMatSel } = materials(scene);
+  const fill = buildMesh(kind, id, scene);
+  fill.material = colliderMat;
+  const wire = buildMesh(kind, `${id}_edge`, scene);
+  wire.material = colliderMatSel;
+  // The edges are what make a translucent green shape readable - the fill alone
+  // is a smudge, and it is the edges that say where it actually stops.
+  return [fill, wire];
+};
 hooks.addCollider = (kind, opts) => {
   // a shape dropped while the staging area is open is a staged shape
   const c = addCollider(kind, Vector3.FromArray(opts.position),

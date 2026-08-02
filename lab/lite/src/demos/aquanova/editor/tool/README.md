@@ -1188,11 +1188,17 @@ you choose where a stand-in goes. Clicking one already on the bench focuses it
 instead of adding a second — a second instance would give the association rule
 two equally good answers.
 
+`Ctrl+D` follows the same rule: it copies a **shape** — a hull is often several
+boxes — but is refused on a stand-in, and says so. The shape ghost is drawn in
+the collision green with its edges, like the shapes themselves; it came out in
+the scene's default grey until the ghost was given a material to clone, since
+`ghostMaterialFor()` returns nothing for nothing.
+
 **The bench has its own undo history.** Its contents are deliberately not in
-``serialize()`` - they must never reach the ship - so a *ship* snapshot restores
-as "no bench at all", which is precisely how ``Ctrl+Z`` used to wipe it. A
+`serialize()` - they must never reach the ship - so a *ship* snapshot restores
+as "no bench at all", which is precisely how `Ctrl+Z` used to wipe it. A
 separate stack also means undoing one box does not rebuild a hundred placements,
-and the ship''s own history is left untouched while you work.
+and the ship's own history is left untouched while you work.
 
 **Moving or turning a stand-in carries its shapes with it**, and changes nothing
 about the hull: the hull is authored in the module's own frame, so shifting the

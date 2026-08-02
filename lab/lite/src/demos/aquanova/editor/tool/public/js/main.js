@@ -1215,7 +1215,17 @@ function duplicateCurrent() {
 
   // Several selected: carry copies of the whole set. This used to fall back to
   // duplicating in place, because a ghost could only hold one module.
-  const many = cur.ids.map(entryOf).filter((e) => e?.module || e?.type === "collider");
+  const many = cur.ids.map(entryOf)
+    .filter((e) => e?.module || e?.type === "collider")
+    // A *module* can only be on the bench once - the association rule needs one
+    // answer to "which element is this shape on", and two instances give two.
+    // Shapes are a different matter: a hull is often several boxes.
+    .filter((e) => !(state.collisionMode && e.stage && e.type !== "collider"));
+  if (!many.length
+      && cur.ids.some((id) => { const e = entryOf(id); return e?.stage && e.type !== "collider"; })) {
+    setStatus("a module can only be on the bench once — copy its shapes instead");
+    return;
+  }
   if (many.length > 1) {
     grabSelection({ copy: true }).then((g) => {
       if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place`);

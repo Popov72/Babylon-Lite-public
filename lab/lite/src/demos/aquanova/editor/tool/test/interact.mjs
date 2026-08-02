@@ -1207,6 +1207,58 @@ check("and the ship keeps its own",
   JSON.stringify(views.backOnShip) === JSON.stringify(views.ship),
   `${JSON.stringify(views.ship)} -> ${JSON.stringify(views.backOnShip)}`);
 
+// Ctrl+D on the bench: a shape copies, a module stand-in does not.
+await page.mouse.move(collCanvas.x + 8, collCanvas.y + 8);   // selection, not hover
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  ed.select([co.stageColliders()[0].id]);
+});
+await page.keyboard.press("Control+d");
+await page.waitForTimeout(500);
+const dupShape = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const n = ed.hooks.ghostNode();
+  const ms = n ? n.getChildMeshes() : [];
+  return {
+    kind: i.ghostCollider(), meshes: ms.length,
+    // green, translucent, and edged - a bare mesh came out in the scene's
+    // default grey, because ghostMaterialFor() returns null for no material
+    green: ms.some((m) => (m.material?.emissiveColor?.g ?? 0) > 0.5
+      && (m.material?.emissiveColor?.r ?? 1) < 0.4),
+    clear: ms.every((m) => (m.material?.alpha ?? 1) < 1),
+    edged: ms.some((m) => !!m.material?.wireframe),
+  };
+});
+check("Ctrl+D on a shape arms a green, translucent, edged ghost",
+  dupShape.kind === "box" && dupShape.meshes === 2 && dupShape.green
+    && dupShape.clear && dupShape.edged, JSON.stringify(dupShape));
+await page.evaluate(async () => (await import("/js/interact.js")).cancelGhost());
+await page.waitForTimeout(200);
+
+const dupStaged = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const el = [...ed.state.placements.values()].find((p) => p.stage);
+  ed.select([el.id]);
+  return [...ed.state.placements.values()].filter((p) => p.stage).length;
+});
+await page.keyboard.press("Control+d");
+await page.waitForTimeout(500);
+const benchRefused = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  return {
+    ghost: i.ghostActive(), brush: ed.state.brush,
+    staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+    status: document.getElementById("status-text").textContent,
+  };
+});
+check("Ctrl+D on a staged module is refused, and says why",
+  !benchRefused.ghost && !benchRefused.brush && benchRefused.staged === dupStaged
+    && /only be on the bench once/.test(benchRefused.status),
+  JSON.stringify(benchRefused));
+
 // the whole point: none of this reaches the ship
 const stageLeak = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
