@@ -5638,6 +5638,72 @@ check("clicking places the duplicate with its transform intact",
     && dupPlaced.scale[0] === -1,
   `${dupPlaced.count} placements, rotY=${dupPlaced.rotY}, scale=[${dupPlaced.scale}]`);
 
+// ---- Ctrl+D always arms on the floor plane ----------------------------------
+// In Y mode the cursor drives the *build plane* rather than the ghost's own
+// height, and clears `baseY` to take it over - which is the very height the copy
+// was given so it would appear beside its source. The copy landed on the plane
+// instead: measured 9.5 m below, and from a camera at deck level that is off the
+// top of the screen. Ctrl+D sets the axis back rather than arming something you
+// cannot see, and says so, because a mode that changes itself quietly is worse
+// than one you change by hand.
+const dupAxis = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost();
+  const e = ed.state.placements.get(id);
+  e.node.position.set(4, 9.5, 6);
+  ed.select([id]);
+  ed.setGridElevation(0);                    // the plane, far below the source
+  i.setDragAxis("y");
+  const c = ed.state.camera;
+  c.cameraDirection.setAll(0); c.cameraRotation.set(0, 0);
+  c.position.set(4, 26, 6.001); c.rotation.set(Math.PI / 2, 0, 0);   // straight down
+  ed.state.scene.render();
+  return { was: ed.state.dragAxis, sourceY: e.node.position.y, gridY: ed.state.gridY };
+}, dupSetup.id);
+await page.waitForTimeout(400);
+const dupAxisCanvas = await page.evaluate(() =>
+  document.getElementById("render-canvas").getBoundingClientRect().toJSON());
+const dupAxisMid = {
+  x: Math.round(dupAxisCanvas.x + dupAxisCanvas.width / 2),
+  y: Math.round(dupAxisCanvas.y + dupAxisCanvas.height / 2),
+};
+await page.mouse.move(dupAxisMid.x, dupAxisMid.y, { steps: 3 });
+await page.waitForTimeout(250);
+await page.keyboard.press("Control+d");
+await page.waitForTimeout(800);
+await page.mouse.move(dupAxisMid.x + 3, dupAxisMid.y + 3);
+await page.waitForTimeout(300);
+const dupAxisGhost = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const n = ed.hooks.ghostNode?.();
+  return {
+    armed: !!n, y: n ? +n.position.y.toFixed(2) : null,
+    axis: ed.state.dragAxis, combo: document.getElementById("drag-axis").value,
+    gridY: +ed.state.gridY.toFixed(2),
+    status: (document.getElementById("status")?.textContent || "").trim(),
+  };
+});
+await page.keyboard.press("Escape");
+await page.waitForTimeout(300);
+check("Ctrl+D from Y mode puts the drag axis back on the floor",
+  dupAxis.was === "y" && dupAxisGhost.axis === "xz" && dupAxisGhost.combo === "xz",
+  `${dupAxis.was} -> ${dupAxisGhost.axis}, combo ${dupAxisGhost.combo}`);
+check("so the copy arms at its source's height, not down on the build plane",
+  dupAxisGhost.armed && Math.abs(dupAxisGhost.y - 9.5) < 0.01,
+  `ghost at ${dupAxisGhost.y} m, plane at ${dupAxisGhost.gridY} m`);
+check("and the status line says the axis moved",
+  /X\/Z/.test(dupAxisGhost.status.split("\n")[0]), dupAxisGhost.status.split("\n")[0].trim());
+
+await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.setDragAxis("xz");
+  ed.state.placements.get(id)?.node.position.set(0, 0, 0);
+  ed.select([]);
+}, dupSetup.id);
+
 // ---- 1d-duovicies. the ghost carries a whole selection ---------------------
 // It used to hold exactly one module, which is why Ctrl+D on a multi-selection
 // duplicated in place and why moving anything needed a second mechanism.

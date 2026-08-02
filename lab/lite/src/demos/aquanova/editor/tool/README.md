@@ -356,7 +356,7 @@ selection before acting on a different element.
 | Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
 | Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the Env and Exposure sliders, every inspector field and every behaviour edit |
-| Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
+| Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
 | Grid | `G` · **Big icons** doubles the palette width and tile size (on by default) · **Unlit** shows raw albedo with no lighting · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
 | Palette | hover a tile to spin the module through a full 360° turn |
 | Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab |
@@ -483,6 +483,16 @@ duplicate silently changed where *everything placed afterwards* would land.
 **A multi-selection is carried too**: the ghost holds a
 list of items, each with its own offset, turn and mirroring, so `Ctrl+D` on
 twelve walls hands you twelve walls.
+
+**It also sets the drag axis back to `X/Z` first**, and says so. In `Y` mode the
+cursor drives the *build plane* rather than the ghost's own height, and it clears
+`baseY` to take that over — which is the very height the copy was just given so
+it would appear beside its source. So the copy jumped to the plane instead:
+measured 9.5 m below its source, and from a camera down at deck level that is
+off the top of the screen. Nothing about "put a copy over there" wants the
+vertical axis, so the axis moves rather than the copy being armed somewhere you
+cannot see. The status line and the combo both report it, because a mode that
+changes itself quietly is worse than one you change by hand.
 
 ### Carrying versus dragging
 

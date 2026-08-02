@@ -1306,6 +1306,27 @@ function cancelEverything({ closeModes = true } = {}) {
 }
 
 /**
+ * Ctrl+D always arms its copy on the floor plane.
+ *
+ * In Y mode the cursor drives the *build plane* rather than the ghost's own
+ * height, and it clears `baseY` to take that over - which is exactly the height
+ * a copy was given so it would appear beside its source. So the copy jumped to
+ * wherever the plane happened to be, which from a camera down at deck level is
+ * off the top of the screen.
+ *
+ * Nothing about "put a copy over there" wants the vertical axis, so the axis is
+ * set rather than the copy being left unusable. Said out loud in the status
+ * line, and the combo follows: a mode that changes itself quietly is worse than
+ * one you have to change by hand.
+ */
+function floorAxisForCopy() {
+  if (state.dragAxis === "xz") return "";
+  setDragAxis("xz");
+  refreshDragAxis();
+  return " · drag axis set back to X/Z";
+}
+
+/**
  * Ctrl+D arms a ghost holding a copy of the current element, rather than
  * dropping one beside it: you almost always want the copy somewhere specific,
  * and an in-place duplicate then has to be dragged there anyway. The ghost
@@ -1334,14 +1355,16 @@ function duplicateCurrent() {
     return;
   }
   if (many.length > 1) {
+    const axisNote = floorAxisForCopy();
     grabSelection({ copy: true }).then((g) => {
-      if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place`);
+      if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place${axisNote}`);
     });
     return;
   }
 
   const entry = many[0];
   if (!entry) return duplicateSelected();          // markers have no module
+  const axisNote = floorAxisForCopy();
 
   // The ghost sits on the build plane, so without this the copy of something on
   // an upper deck would appear back down at ground level. Moving the plane
@@ -1357,7 +1380,7 @@ function duplicateCurrent() {
       baseY: y - half,
     });
     refreshColliderButtons();
-    setStatus(`copy of ${COLLIDER_LABEL[entry.kind]} on the cursor — click to place`);
+    setStatus(`copy of ${COLLIDER_LABEL[entry.kind]} on the cursor — click to place${axisNote}`);
     return;
   }
 
@@ -1369,7 +1392,7 @@ function duplicateCurrent() {
     // changed where *everything placed afterwards* would land.
     baseY: y,
   });
-  setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place`);
+  setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place${axisNote}`);
 }
 
 /**
