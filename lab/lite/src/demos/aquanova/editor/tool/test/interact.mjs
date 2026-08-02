@@ -1198,17 +1198,27 @@ const modeTools = await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   const el = [...ed.state.placements.values()].find((p) => p.stage);
   const shape = co.stageColliders()[0];
-  const axes = () => ed.state.scene.meshes.filter((m) => /AXIS/i.test(m.name) && m.isEnabled()).length;
-  ed.select([el.id]); ed.toggleAxes(); const onElement = axes(); ed.hideAxes();
-  ed.select([shape.id]); ed.toggleAxes(); const onShape = axes(); ed.hideAxes();
+  // Count the gizmo's own arms, and take showAxes at its word. Counting meshes
+  // whose name merely contains "axis" was too weak to notice that X did nothing
+  // at all on a collision shape - axesNode() looked in placements and markers
+  // and never in colliders.
+  const arms = () => ["x", "y", "z"]
+    .every((a) => ed.state.scene.transformNodes.some((n) => n.name === `AXES_${a}`));
+  ed.hideAxes();
+  const onElement = ed.showAxes(el.id) && arms();
+  ed.hideAxes();
+  const onShape = ed.showAxes(shape.id) && arms();
+  ed.hideAxes();
+  const viaToggle = !!ed.toggleAxes(shape.id) && arms();   // the path X takes
+  ed.hideAxes();
   ed.select([el.id]); ed.hideSelected("ghost"); const veiled = ed.veilCounts().ghost;
   ed.select([el.id]); ed.hideSelected("hidden"); const gone = !el.node.isEnabled();
   ed.unhideAll();
-  return { onElement, onShape, veiled, gone, back: el.node.isEnabled() };
+  return { onElement, onShape, viaToggle, veiled, gone, back: el.node.isEnabled() };
 });
 check("X draws axes on staged elements and on staged shapes",
-  modeTools.onElement > 0 && modeTools.onShape > 0,
-  `${modeTools.onElement} / ${modeTools.onShape}`);
+  modeTools.onElement && modeTools.onShape && modeTools.viaToggle,
+  `element=${modeTools.onElement} shape=${modeTools.onShape} toggle=${modeTools.viaToggle}`);
 check("H veils and hides staged elements, and gives them back",
   modeTools.veiled >= 1 && modeTools.gone && modeTools.back,
   `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`);

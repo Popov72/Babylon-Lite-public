@@ -701,7 +701,10 @@ export const GHOST_AXES = "__ghost__";
  */
 function axesNode(id) {
   if (id === GHOST_AXES) return hooks.ghostNode() || null;
-  const e = state.placements.get(id) || state.markers.get(id);
+  // entryOf covers placements, markers *and* collision shapes. Looking in two
+  // of the three by hand is what stopped X working on a collision shape - the
+  // same omission that once made them unpickable.
+  const e = entryOf(id);
   return e && !e.node.isDisposed() && e.node.isEnabled() ? e.node : null;
 }
 
@@ -710,7 +713,11 @@ function buildAxes(scene, length) {
   const arms = {};
   const mats = {};
   const marks = { rot: {}, scale: {} };
-  const r = Math.max(0.012, length * 0.02);
+  // Every thickness on the gizmo - shaft, arrowhead, the turn ring, the scale
+  // cube - is a multiple of this one radius, and every *length* is a multiple
+  // of `length`. So the whole thing is made slimmer or fatter here without
+  // touching how far the arms reach.
+  const r = Math.max(0.006, length * 0.01);
   // Geometry is authored along +Z once; each arm is simply turned to face its
   // own world axis, and never moves again - the axes are world-aligned.
   const facing = { x: [0, Math.PI / 2, 0], y: [-Math.PI / 2, 0, 0], z: [0, 0, 0] };
