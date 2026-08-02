@@ -867,10 +867,46 @@ export async function enterCollisionMode(instantiate, boundsOf) {
 let shipView = null;
 let stageView = null;
 
+/**
+ * Where you are standing on each side of the switch, whichever side is open.
+ *
+ * The live camera is *one* camera serving two rooms. Saving from the bench
+ * therefore wrote the bench's viewpoint into the ship's `view` and a stale one
+ * into `stageView`, so a save made without closing the bench moved the ship's
+ * saved viewpoint to wherever the bench happened to be - the same shape of bug
+ * in both directions at once.
+ *
+ * These say which of the two the live camera currently *is*, so both records
+ * come out right no matter where the save was made from. The other side's is
+ * stashed and cannot have moved: nothing can drive a camera that is not on
+ * screen.
+ */
+export function shipViewpoint() {
+  return state.collisionMode ? (shipView && { ...shipView }) : serializeView();
+}
+
 /** The bench's own viewpoint, so it rides in the collision file. */
-export function stageViewpoint() { return stageView ? { ...stageView } : null; }
+export function stageViewpoint() {
+  if (state.collisionMode) return serializeView();
+  return stageView ? { ...stageView } : null;
+}
 export function setStageViewpoint(v) {
   stageView = v && Array.isArray(v.position) && Array.isArray(v.rotation) ? { ...v } : null;
+}
+
+/**
+ * What is on the bench, read live while it is open.
+ *
+ * `state.stageLayout` is only written when the bench closes, so it has exactly
+ * the same problem as the viewpoints: a save made without closing wrote the
+ * roster from the *previous* session and quietly lost everything staged since.
+ */
+export function stageLayoutNow() {
+  if (!state.collisionMode) return state.stageLayout;
+  return stagedElements().map((e) => ({
+    module: e.module,
+    position: round(e.node.position.asArray()),
+  }));
 }
 
 /**
@@ -891,10 +927,7 @@ export function exitCollisionMode() {
   stageView = serializeView();
   // Remember the bench before clearing it, so re-opening finds the same
   // modules in the same places.
-  state.stageLayout = stagedElements().map((e) => ({
-    module: e.module,
-    position: round(e.node.position.asArray()),
-  }));
+  state.stageLayout = stageLayoutNow();
   for (const c of stageColliders()) removeCollider(c.id, true);
   for (const e of stagedElements()) removePlacement(e.id);
   state.collisionMode = false;
@@ -1002,5 +1035,7 @@ hooks.refreshCollisionPreview = refreshCollisionPreview;
 hooks.attachModuleShapes = attachModuleShapes;
 hooks.stageViewpoint = stageViewpoint;
 hooks.setStageViewpoint = setStageViewpoint;
+hooks.shipViewpoint = shipViewpoint;
+hooks.stageLayoutNow = stageLayoutNow;
 hooks.serializeStage = serializeStage;
 hooks.restoreStage = (data) => restoreStage(data);

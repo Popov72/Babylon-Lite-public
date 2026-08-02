@@ -144,7 +144,62 @@ if (rotationFailures.length) {
   errors.push("rotation: " + rotationFailures.join(" | "));
 }
 
+// ---- a save made from the bench belongs to both sides ----------------------
+// One camera serves two rooms. `view: serializeView()` read whichever room was
+// on screen, so saving without closing the collision bench wrote the *bench's*
+// viewpoint into the ship's `view` - and a stale one into `stageView`, and last
+// session's roster into `stageLayout`. Three records, one mistake: reading the
+// live thing when the live thing is the other side's.
+const benchSave = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const m = await import("/js/manifest.js");
+  const aim = (pos, rot) => {
+    const c = ed.state.camera;
+    c.cameraDirection.setAll(0); c.cameraRotation.set(0, 0);
+    c.position.set(...pos); c.rotation.set(...rot);
+  };
+  aim([61, 17, -43], [0.31, -1.07, 0]);
+  const ship = ed.serializeView();
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  aim([-9, 4, -12], [0.19, 0.88, 0]);
+  const bench = ed.serializeView();
+  const pick = [...(kit.getCatalogue()?.byId?.keys() || [])].find((id) =>
+    ![...ed.state.placements.values()].some((e) => e.stage && e.module === id));
+  if (pick) await co.stageModule(pick, kit.instantiate, kit.moduleBounds, [60, 0, 60]);
+  const manifest = m.buildManifest();
+  const roster = ed.hooks.stageLayoutNow().map((s) => s.module);
+  const stageView = ed.hooks.stageViewpoint();
+  co.exitCollisionMode();
+  return { ship, bench, staged: pick, roster, stageView, view: manifest.view };
+});
+const sameView = (a, b) => a && b
+  && JSON.stringify(a.position) === JSON.stringify(b.position)
+  && JSON.stringify(a.rotation) === JSON.stringify(b.rotation);
+console.log("bench save   :", JSON.stringify({
+  ship: benchSave.ship.position, wrote: benchSave.view?.position,
+  bench: benchSave.bench.position, stageView: benchSave.stageView?.position,
+}));
+const benchFailures = [];
+if (!sameView(benchSave.view, benchSave.ship)) {
+  benchFailures.push(`the ship's view came out as ${JSON.stringify(benchSave.view?.position)}`
+    + `, not ${JSON.stringify(benchSave.ship.position)}`);
+}
+if (!sameView(benchSave.stageView, benchSave.bench)) {
+  benchFailures.push(`the bench's view came out as ${JSON.stringify(benchSave.stageView?.position)}`
+    + `, not ${JSON.stringify(benchSave.bench.position)}`);
+}
+if (benchSave.staged && !benchSave.roster.includes(benchSave.staged)) {
+  benchFailures.push(`the roster is stale: ${benchSave.staged} was staged and is missing`);
+}
+if (benchFailures.length) {
+  console.log("BENCH SAVE BROKEN:", benchFailures.join(" | "));
+  errors.push("bench save: " + benchFailures.join(" | "));
+}
+
 console.log("\nerrors:", errors.length ? [...new Set(errors)].join("\n") : "(none)");
 await browser.close();
-// Losing the ability to recover work is worth failing the run over.
-if (rotationFailures.length) process.exit(1);
+// Losing the ability to recover work - or the viewpoint you saved from - is
+// worth failing the run over.
+if (rotationFailures.length || benchFailures.length) process.exit(1);

@@ -1295,6 +1295,29 @@ file as well, so a reload puts you back where you were working.
 > `{position, rotation}`; an older `{position, target}` entry is dropped on load
 > rather than misapplied.
 
+**A save made from the bench belongs to both sides.** There is one camera
+serving two rooms, and `view: serializeView()` read whichever room was on
+screen — so saving without closing the bench first wrote the *bench's*
+viewpoint into the ship's `view`, moving where the ship reopens to wherever the
+bench happened to be. Two records had the mirror-image fault at the same time:
+`stageView` and `stageLayout` are only written when the bench *closes*, so the
+same save wrote last session's bench viewpoint and last session's roster —
+quietly losing everything staged since.
+
+> Three records, one mistake: **reading the live thing when the live thing is
+> the other side's.** `shipViewpoint()`, `stageViewpoint()` and
+> `stageLayoutNow()` each ask which side the live camera and scene currently
+> *are*, and hand back the stash for the other. The stash cannot be stale:
+> nothing can drive a camera that is not on screen, or move a stand-in that is
+> not in the scene.
+>
+> `stageLayoutNow()` also feeds `serialize()`, which is what the dirty check
+> hashes — so reading `state.stageLayout` directly had left the check blind to
+> anything staged since the bench opened. The e2e suite now **fails the run** if
+> a save made from the bench misplaces either viewpoint or the roster, for the
+> same reason the backup-rotation guard does: this is the class of bug that
+> loses work silently.
+
 **Clicking a palette tile arms a ghost**, the same as placing anything else, so
 you choose where a stand-in goes. Clicking one already on the bench focuses it
 instead of adding a second — a second instance would give the association rule

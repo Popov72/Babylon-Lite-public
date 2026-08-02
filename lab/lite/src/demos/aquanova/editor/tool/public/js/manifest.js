@@ -355,8 +355,9 @@ export function buildManifest() {  const layout = serialize();
     fluidSim: [...state.fluidSim],
     behaviors: serializeBehaviors(),
     entities: serializeEntities(),
-    // where you were standing when you saved, so a reload puts you back
-    view: serializeView(),
+    // where you were standing when you saved, so a reload puts you back - the
+    // ship's own viewpoint, which is not the live camera while the bench is open
+    view: hooks.shipViewpoint?.() || serializeView(),
     // and what it was lit by, so a reload looks the same
     environment: serializeEnvironment(),
     // the editor's own Env/Exposure, which the demos must not read
@@ -402,9 +403,11 @@ export async function saveCollision() {
       + " Editor space: the manifest's own collision block is the mirrored,"
       + " runtime-facing copy.",
     moduleShapes: serializeModuleCollision(),
-    // What was on the collision staging area when it was last closed. Purely
-    // an authoring convenience, and no part of the ship.
-    stageLayout: state.stageLayout.map((s) => ({ module: s.module, position: [...s.position] })),
+    // What is on the collision staging area - read live if it is open, and from
+    // the last time it closed if it is not. Purely an authoring convenience,
+    // and no part of the ship.
+    stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout)
+      .map((s) => ({ module: s.module, position: [...s.position] })),
     // and where you were standing on the bench, so a reload puts you back
     stageView: hooks.stageViewpoint?.() || null,
   }, null, 2);

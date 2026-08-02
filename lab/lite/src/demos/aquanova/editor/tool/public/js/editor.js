@@ -2362,7 +2362,11 @@ export function serialize() {
     // reload quietly dropped every shape because the reader expected the other
     // form and filtered them all out.
     moduleShapes: serializeModuleCollision(),
-    stageLayout: state.stageLayout.map((s) => ({ module: s.module, position: [...s.position] })),
+    // Live while the bench is open: state.stageLayout is only written when it
+    // closes, so reading it directly made the dirty check blind to anything
+    // staged since - and a save from the bench wrote the previous roster.
+    stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout)
+      .map((s) => ({ module: s.module, position: [...s.position] })),
     config: { ...state.config },
   };
 }
