@@ -1897,10 +1897,17 @@ export function applyVisibility() {
     setVeil(e, veil === "ghost");
     for (const m of realMeshes(e.node)) m.isPickable = veil !== "ghost";
   }
-  // markers belong to no chunk, so isolation has nothing to say about them
+  // A door is not in a chunk, but it *joins* two - so isolation does have
+  // something to say about it: show it when the active chunk is one of its two
+  // sides. Sides left on "(auto)" are resolved the same way the manifest
+  // resolves them, by nearest chunk volume, so what you see under isolation is
+  // what will be written.
+  const sidesOf = doorSideResolver();
   for (const mk of state.markers.values()) {
     const veil = veilOf(mk.id);
-    mk.node.setEnabled(!staging && geometryOn && veil !== "hidden");
+    const joins = mk.type !== "door" || !state.isolate
+      || sidesOf(mk).includes(state.activeChunk);
+    mk.node.setEnabled(!staging && geometryOn && joins && veil !== "hidden");
     setVeil(mk, veil === "ghost");
     for (const m of realMeshes(mk.node)) m.isPickable = veil !== "ghost";
   }
@@ -1934,6 +1941,51 @@ export function setShowLayer(layer) {
   applyVisibility();
   emit("modes");
   return true;
+}
+
+/**
+ * The two chunks a door joins, for isolation.
+ *
+ * Returns a function rather than a value so the chunk volumes - which cost a
+ * world-bounds pass over every placement - are measured only if some door
+ * actually needs them, and then only once per call. A door with both sides set
+ * by hand needs nothing measured at all.
+ */
+function doorSideResolver() {
+  let boxes = null;
+  const volumes = () => {
+    if (boxes) return boxes;
+    boxes = [];
+    for (const id of state.chunks) {
+      let min = null, max = null;
+      for (const p of state.placements.values()) {
+        if (p.stage || p.chunk !== id) continue;
+        const b = worldBounds(p.node);
+        if (!b) continue;
+        min = min ? Vector3.Minimize(min, b.min) : b.min.clone();
+        max = max ? Vector3.Maximize(max, b.max) : b.max.clone();
+      }
+      if (min) boxes.push({ id, min, max });
+    }
+    return boxes;
+  };
+  const gap = (p, b) => {
+    const dx = Math.max(b.min.x - p.x, 0, p.x - b.max.x);
+    const dy = Math.max(b.min.y - p.y, 0, p.y - b.max.y);
+    const dz = Math.max(b.min.z - p.z, 0, p.z - b.max.z);
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  };
+  return (mk) => {
+    let a = mk.chunkA || "";
+    let b = mk.chunkB || "";
+    if (a && b) return [a, b];
+    const near = volumes()
+      .map((v) => ({ id: v.id, d: gap(mk.node.getAbsolutePosition(), v) }))
+      .sort((x, y) => x.d - y.d);
+    if (!a) a = near.find((n) => n.id !== b)?.id || "";
+    if (!b) b = near.find((n) => n.id !== a)?.id || "";
+    return [a, b];
+  };
 }
 
 /**

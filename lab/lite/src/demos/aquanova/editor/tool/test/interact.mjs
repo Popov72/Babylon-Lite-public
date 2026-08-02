@@ -7031,6 +7031,7 @@ check("a pressed Chunk button is visibly different",
   isoOn.pressed === "true" && Number(isoOn.bold) >= 600 && isoOn.bg !== "rgba(0, 0, 0, 0)",
   `aria-pressed=${isoOn.pressed}, weight=${isoOn.bold}, bg=${isoOn.bg}`);
 
+
 await page.selectOption("#chunk-select", "CH_ISO_B");
 await page.waitForTimeout(250);
 const followed = await page.evaluate(async () => {
@@ -7052,6 +7053,55 @@ const isoOff = await page.evaluate(async () => {
 check("pressing Chunk again brings every chunk back",
   isoOff.isolate === false && isoOff.pressed === "false" && isoOff.shown === isolate.total,
   `pressed=${isoOff.pressed}, ${isoOff.shown}/${isolate.total} shown`);
+
+// A door is not *in* a chunk, but it joins two, so isolation does have
+// something to say about it. Markers used to be exempt outright, which left a
+// door hanging in a room it has nothing to do with.
+const doorIso = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const W = "Walls/ShortWall_Band2_Straight";
+  ed.addChunk("CH_D_A"); ed.addChunk("CH_D_B"); ed.addChunk("CH_D_C");
+  ed.state.activeChunk = "CH_D_A";
+  await ed.placeAt(W, new V(0, 0, 0), { silent: true });
+  ed.state.activeChunk = "CH_D_B";
+  await ed.placeAt(W, new V(8, 0, 0), { silent: true });
+  ed.state.activeChunk = "CH_D_C";
+  await ed.placeAt(W, new V(60, 0, 60), { silent: true });
+
+  const named = mk.addDoor(new V(4, 0, 0), { chunkA: "CH_D_A", chunkB: "CH_D_B", silent: true });
+  const auto = mk.addDoor(new V(58, 0, 58), { silent: true });      // sides left on (auto)
+
+  const shownIn = (chunk) => {
+    ed.state.activeChunk = chunk;
+    ed.state.isolate = true;
+    ed.applyVisibility();
+    return [...ed.state.markers.values()].filter((m) => m.node.isEnabled()).map((m) => m.id);
+  };
+  const out = {
+    inA: shownIn("CH_D_A"), inB: shownIn("CH_D_B"), inC: shownIn("CH_D_C"),
+    named: named.id, auto: auto.id,
+  };
+  ed.state.isolate = false;
+  ed.applyVisibility();
+  out.off = [...ed.state.markers.values()].filter((m) => m.node.isEnabled()).map((m) => m.id);
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("an isolated chunk shows the doors that reach it",
+  doorIso.inA.includes(doorIso.named) && doorIso.inB.includes(doorIso.named),
+  `A ${JSON.stringify(doorIso.inA)}, B ${JSON.stringify(doorIso.inB)}`);
+check("and hides the ones that do not",
+  !doorIso.inC.includes(doorIso.named), `C ${JSON.stringify(doorIso.inC)}`);
+check("a door left on (auto) is placed by the same rule the manifest uses",
+  doorIso.inC.includes(doorIso.auto) && !doorIso.inA.includes(doorIso.auto),
+  `auto door in C=${doorIso.inC.includes(doorIso.auto)}, in A=${doorIso.inA.includes(doorIso.auto)}`);
+check("every door is back once isolation is off",
+  doorIso.off.includes(doorIso.named) && doorIso.off.includes(doorIso.auto),
+  JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 await page.fill("#palette-search", "");

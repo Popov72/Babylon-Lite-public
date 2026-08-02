@@ -1030,6 +1030,12 @@ Doors carry the portal:
 Portals and the adjacency graph are derived from doors, so there is nothing
 extra to keep in sync.
 
+**Isolation shows a door in both the rooms it joins.** A door is not *in* a
+chunk, so markers were exempt from isolation outright - which left a door
+hanging in the middle of a room it has nothing to do with. Sides left on
+`(auto)` are resolved by nearest chunk volume, the same rule the manifest uses,
+so what isolation shows you is what will be written.
+
 **`buildManifest()` forces world matrices first.** Babylon only refreshes them
 at render time, so an export fired straight after a scale — a wheel notch, an
 inspector keystroke — measured the ship as it was one frame ago. That was
