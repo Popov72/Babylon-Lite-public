@@ -1153,6 +1153,11 @@ The area is read back into the record on every change that matters — leaving i
 saving, or removing an element — so there is no separate commit step and nothing
 to forget.
 
+`Esc` closes the area once there is nothing in your hand. **The right button
+does not**: it cancels an armed shape exactly like `Esc`, but never closes the
+bench. RMB is also the camera button, and tearing down what you were working on
+is far too much to hang off a button you press to look around.
+
 **The bench keeps what you left on it.** Closing the area records which modules
 were on it and where, and re-opening puts them back. Coming back to a blank
 stage after stepping out to look at the ship was the wrong default: this is a

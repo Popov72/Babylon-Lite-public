@@ -1219,6 +1219,43 @@ const modeTools = await page.evaluate(async () => {
 check("X draws axes on staged elements and on staged shapes",
   modeTools.onElement && modeTools.onShape && modeTools.viaToggle,
   `element=${modeTools.onElement} shape=${modeTools.onShape} toggle=${modeTools.viaToggle}`);
+
+// The right button is also the camera button. It cancels what is in your hand,
+// like Escape, but must never close the bench you are working on.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.select([]);
+});
+await page.mouse.move(collMid.x, collMid.y);
+await page.mouse.down({ button: "right" });
+await page.mouse.up({ button: "right" });
+await page.waitForTimeout(400);
+const benchAfterRmb = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    mode: ed.state.collisionMode,
+    staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+  };
+});
+check("the right button does not close the collision area",
+  benchAfterRmb.mode === true && benchAfterRmb.staged === 2, JSON.stringify(benchAfterRmb));
+
+// but it still puts down an armed shape
+await page.click('#collider-buttons button[data-kind="sphere"]');
+await page.mouse.move(collMid.x, collMid.y);
+await page.waitForTimeout(300);
+const wasArmed = await page.evaluate(async () => (await import("/js/interact.js")).ghostActive());
+await page.mouse.down({ button: "right" });
+await page.mouse.up({ button: "right" });
+await page.waitForTimeout(400);
+const benchAfterCancel = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  return { ghost: i.ghostActive(), mode: ed.state.collisionMode };
+});
+check("the right button still puts down an armed shape",
+  wasArmed === true && benchAfterCancel.ghost === false && benchAfterCancel.mode === true,
+  `armed=${wasArmed}, ${JSON.stringify(benchAfterCancel)}`);
 check("H veils and hides staged elements, and gives them back",
   modeTools.veiled >= 1 && modeTools.gone && modeTools.back,
   `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`);

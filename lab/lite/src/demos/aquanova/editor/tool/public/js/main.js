@@ -1175,16 +1175,23 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) releaseAllKeys();
 });
 
-/** Right mouse button does the same as Escape. */
-on("escape", () => cancelEverything());
+/**
+ * Right mouse button does the same as Escape - except it never closes the
+ * collision area.
+ *
+ * RMB is also the camera button. Letting a stray right-click tear down the
+ * bench you were working on, when its only job here is to put down whatever is
+ * in your hand, is far too much to hang off a button you press to look around.
+ */
+on("escape", () => cancelEverything({ closeModes: false }));
 
-function cancelEverything() {
+function cancelEverything({ closeModes = true } = {}) {
   if (cancelMarquee()) return;     // an in-flight rectangle goes first
   if (cancelDrag()) return;        // then an in-flight drag
   if (ghostActive() || state.brush) { cancelGhost(); setBrush(null); clearMarkerBrush(); select([]); return; }
-  // Only once there is nothing in hand does Escape leave the module stage -
+  // Only once there is nothing in hand does Escape close the collision area -
   // otherwise cancelling an armed shape would throw you back to the ship.
-  if (state.collisionMode) { closeCollisionArea(); return; }
+  if (closeModes && state.collisionMode) { closeCollisionArea(); return; }
   cancelGhost();
   setBrush(null);
   clearMarkerBrush();
