@@ -7,7 +7,7 @@ import { saveLayout, loadLayout, loadCollision, exportGlb, resolveDoorChunks } f
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
   removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE,
-  reconcileCollider, colliderDims, generateForChunk,
+  reconcileCollider, colliderDims,
   enterCollisionMode, exitCollisionMode, fitBoxToSelection,
   stageModule, unstageModule, harvestStage, orphanCount,
 } from "./colliders.js";
@@ -1492,16 +1492,6 @@ function refreshColliderButtons() {
 }
 on("current", refreshColliderButtons);
 
-$("btn-collide-room").addEventListener("click", async () => {
-  const chunk = state.activeChunk;
-  await whileBusy(`fitting collision to ${chunk}…`, async () => {
-    const r = await generateForChunk(chunk, moduleBounds);
-    setStatus(`${chunk}: ${r.made} collision boxes`
-      + (r.cut ? `, ${r.cut} cut for doorways` : "")
-      + (r.inherited ? `, ${r.inherited} inherited from their module` : "")
-      + (r.skipped ? `, ${r.skipped} decal(s) skipped` : ""));
-  });
-});
 
 // ----------------------------------------------- the collision staging area
 //
@@ -1570,9 +1560,6 @@ function refreshModuleBanner() {
   }
   $("btn-edit-module").textContent = on ? "Back to the ship" : "Edit collision";
   $("btn-edit-module").classList.toggle("active", on);
-  // Fitting a room while its geometry is off stage would look like it did
-  // nothing, and the shapes it made would be invisible until you left.
-  $("btn-collide-room").disabled = on;
 }
 on("collisionMode", refreshModuleBanner);
 on("colliders", refreshModuleBanner);

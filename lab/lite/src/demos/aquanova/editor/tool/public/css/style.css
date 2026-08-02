@@ -365,6 +365,7 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #collision-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
 #collider-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
 #collider-buttons button { width: 100%; }
+#collision-pane > button { width: 100%; }
 
 #settings-pane {
   flex: 0 0 auto; padding: 8px 10px;

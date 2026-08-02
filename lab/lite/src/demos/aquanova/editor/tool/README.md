@@ -1089,32 +1089,33 @@ Only a lone primitive gets the lift. For a set, the offsets are measured from an
 anchor whose own half size is not the group's, and the two references would
 fight.
 
-### Fitting a room
+### What the primitives are for
 
-**Generate for active chunk** fits one box to every solid module in the chunk.
-It is fitted per *prototype* — the kit has 277 of them and a room has dozens of
-instances — and then instanced per placement, so corners and inclines come out
-right with no special handling. Boxes are marked `generated: true`, so pressing
-the button again replaces only its own output and leaves anything you placed or
-adjusted by hand alone.
+The four buttons in the Collision pane do two different jobs, depending on
+where you are.
 
-`Decals` are skipped: grilles, signage and painted panels lie flat on a surface
-that already has a collider, and a box round one would jut into the room by its
-whole thickness for nothing. Props are **not** skipped — the barriers and pods
-are things you walk into.
+**On the staging area** they are how you author a hull that is not a single
+box: a capsule for a barrel, a cylinder for a pipe, several boxes leaving a
+doorway open. **Fit a box** is only a starting point — it fits the module's
+bounding volume, which is exactly the shape authoring is meant to improve on.
+Whatever you drop is claimed by the staged element it sits on and becomes that
+module's collision.
 
-**An unsealed doorway is cut out of the walls it crosses.** The subtraction
-works in the door's own frame, where the opening is a rectangle on the plane
-`z = 0`, and splits a crossing box into the pieces around the hole — left,
-right, sill, lintel. It is only attempted when the box's axes line up with the
-door's; every rotation in the kit is a multiple of 90°, so that is the normal
-case, and a door at an odd angle leaves an honest solid wall to fix by hand
-rather than a cutout that is subtly in the wrong place. A **sealed** door is not
-in the list at all, so a window onto space stays solid.
+**On the ship** they create *room* colliders: world-space one-offs belonging to
+a chunk, for things with no module behind them — an invisible barrier, a
+blocker over a gap. They are written to `collision[chunk]` as authored.
+
+There used to be a third path: **Generate for active chunk**, which fitted a
+box to every solid module in a room, skipped decals, and cut unsealed doorways
+out of the walls they crossed. It is gone, along with the ~150 lines behind it.
+Every module's collision is now authored once and inherited by every placement,
+which is both better geometry and less of it — and a door frame's opening is
+simply left out when its hull is authored, rather than subtracted afterwards
+from a slab that should never have been solid. `sealed` keeps its runtime
+meaning on the door record.
 
 For a fluid or a player, **over-approximating is safe and gaps leak** —
-overlapping boxes are harmless, a hole is not — which is why the fit is an AABB
-per module rather than a snug hull.
+overlapping shapes are harmless, a hole is not. Err on the generous side.
 
 ### The collision staging area
 
@@ -1230,10 +1231,10 @@ time and come back to, and there are 277 of them; without a mark the only way to
 tell which were done was to stage each one and look. The dot is live: it lights
 as soon as a shape is fitted and goes out when the last one is removed.
 
-**A module that carries its own collision is skipped by the room fitter**: its
-placements are already covered, so fitting a box as well would give them
-collision twice. The one thing module collision does not get is doorway
-subtraction — author it on props, not on the walls a door is cut through.
+**A module that carries its own collision is covered everywhere, always.** The
+manifest instances its shapes onto every placement of it, so there is nothing
+per-room to keep in step and nothing to re-run after an edit: change the hull
+once and every room that uses that module changes with it.
 
 
 ### What the viewport shows

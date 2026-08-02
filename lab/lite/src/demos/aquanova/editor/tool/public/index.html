@@ -125,10 +125,10 @@
     <div id="collision-pane">
       <h3>Collision</h3>
       <p class="muted">Unit shapes — scale them to size. Green, never exported to
-        <code>ship.glb</code>: they are what the runtime hands to Havok.</p>
+        <code>ship.glb</code>: they are what the runtime hands to Havok. On the
+        staging area they build a module's hull; on the ship they are one-off
+        blockers belonging to a room.</p>
       <div id="collider-buttons"></div>
-      <button id="btn-collide-room"
-              title="Fit a box to every solid module in the active chunk, cutting the openings of unsealed doors out of the walls. Decals are skipped, and so is any module that carries its own collision — those are inherited by every placement instead. Regenerating replaces only what it generated before.">Generate for active chunk</button>
       <button id="btn-edit-module"
               title="Open the collision staging area: a separate space where you stage kit modules and fit collision shapes to them, once each, inherited by every placement of that module. No shortcut">Edit collision</button>
     </div>

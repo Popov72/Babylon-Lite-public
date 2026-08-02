@@ -155,9 +155,6 @@ export function addCollider(kind, position, opts = {}) {
     node: root,
     mesh,
     edges,
-    // set by generateForChunk, so regenerating replaces its own output and
-    // leaves anything you placed or adjusted by hand alone
-    generated: !!opts.generated,
   };
   root.metadata = { collider: data };
   state.colliders.set(id, data);
@@ -235,7 +232,6 @@ export function serializeColliders() {
     position: round(c.node.position.asArray()),
     rotation: round(eulerDeg(c.node)),
     scale: round(c.node.scaling.asArray()),
-    generated: !!c.generated,
   }));
 }
 
@@ -250,178 +246,6 @@ export function deserializeColliders(list) {
 }
 
 function round(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
-
-// ------------------------------------------------------- auto-generation
-
-/**
- * Categories that get no collider.
- *
- * Decals are stickers - grilles, signage, painted panels - lying flat on a
- * surface that already has one, so a box round them would jut into the room by
- * their whole thickness for nothing. Everything else is solid: props included,
- * since the barriers and pods are things you walk into.
- */
-const NO_COLLIDER = new Set(["Decals"]);
-
-function categoryOf(moduleId) {
-  return String(moduleId).split("/")[0];
-}
-
-/**
- * A world-space OBB hugging one placement, from its module's local bounds.
- *
- * Fitted per *module* rather than per room: the kit has 277 of them and a room
- * has dozens of instances, so the bounds are cached and the placement's own
- * transform does the rest - which is what reproduces corners and inclines
- * without any special handling.
- */
-function obbForPlacement(entry, bounds) {
-  const size = bounds.max.subtract(bounds.min);
-  const centre = bounds.min.add(bounds.max).scale(0.5);
-  const scale = entry.node.scaling;
-  const quat = entry.node.rotationQuaternion || Quaternion.Identity();
-  // the module-local centre, scaled and turned the way the placement is
-  const offset = Vector3.TransformCoordinates(
-    new Vector3(centre.x * scale.x, centre.y * scale.y, centre.z * scale.z),
-    Matrix.Compose(Vector3.One(), quat, Vector3.Zero()));
-  // The kit models its floors and ceilings as single planes with no depth at
-  // all, and its walls only 7.5 mm thick. Both are given at least the shell
-  // thickness, so a fitted room is nowhere thinner than you asked for.
-  return {
-    centre: entry.node.position.add(offset),
-    quat: quat.clone(),
-    half: new Vector3(
-      shellThick(size.x * scale.x) / 2,
-      shellThick(size.y * scale.y) / 2,
-      shellThick(size.z * scale.z) / 2),
-  };
-}
-
-/** True when `q` maps every axis onto an axis - a multiple of 90 degrees. */
-function isAxisAligned(m) {
-  for (let row = 0; row < 3; row++) {
-    for (let col = 0; col < 3; col++) {
-      const v = Math.abs(m.getRow(row).asArray()[col]);
-      if (v > 1e-3 && v < 1 - 1e-3) return false;
-    }
-  }
-  return true;
-}
-
-/**
- * Cut a doorway out of a box.
- *
- * Works in the door's own frame, where the opening is the rectangle
- * x in [-w/2, w/2], y in [0, h] on the plane z = 0. A wall crossing that plane
- * is split into the pieces around the hole - left, right, sill below, lintel
- * above - and anything not reaching the opening is returned untouched.
- *
- * Only attempted when the box's axes line up with the door's. Every rotation in
- * the kit is a multiple of 90 degrees so that is the normal case; a door at an
- * odd angle leaves an honest solid wall to fix by hand, rather than a cutout
- * that is subtly in the wrong place.
- */
-function subtractOpening(box, door) {
-  const dq = door.node.rotationQuaternion || Quaternion.Identity();
-  const toDoor = Matrix.Compose(Vector3.One(), dq, door.node.getAbsolutePosition()).invert();
-  const rel = Matrix.Compose(Vector3.One(), dq, Vector3.Zero()).invert()
-    .multiply(Matrix.Compose(Vector3.One(), box.quat, Vector3.Zero()));
-  if (!isAxisAligned(rel)) return null;
-
-  // the box, as an AABB in door space (exact, because the axes line up)
-  const c = Vector3.TransformCoordinates(box.centre, toDoor);
-  const h = new Vector3(
-    Math.abs(rel.getRow(0).x) * box.half.x + Math.abs(rel.getRow(1).x) * box.half.y
-      + Math.abs(rel.getRow(2).x) * box.half.z,
-    Math.abs(rel.getRow(0).y) * box.half.x + Math.abs(rel.getRow(1).y) * box.half.y
-      + Math.abs(rel.getRow(2).y) * box.half.z,
-    Math.abs(rel.getRow(0).z) * box.half.x + Math.abs(rel.getRow(1).z) * box.half.y
-      + Math.abs(rel.getRow(2).z) * box.half.z);
-
-  const w = (door.width * Math.abs(door.node.scaling.x)) / 2;
-  const top = door.height * Math.abs(door.node.scaling.y);
-  const lo = { x: c.x - h.x, y: c.y - h.y, z: c.z - h.z };
-  const hi = { x: c.x + h.x, y: c.y + h.y, z: c.z + h.z };
-
-  // Must straddle the door plane, or a wall on the far side of the room that
-  // happens to line up in X and Y would be cut for no reason.
-  if (hi.z < -1e-3 || lo.z > 1e-3) return null;
-  if (hi.x <= -w + 1e-4 || lo.x >= w - 1e-4) return null;   // clear of the hole
-  if (hi.y <= 1e-4 || lo.y >= top - 1e-4) return null;
-
-  const pieces = [];
-  const push = (x0, x1, y0, y1) => {
-    if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return;
-    pieces.push({
-      centre: Vector3.TransformCoordinates(
-        new Vector3((x0 + x1) / 2, (y0 + y1) / 2, c.z), toDoor.clone().invert()),
-      quat: dq.clone(),
-      half: new Vector3((x1 - x0) / 2, (y1 - y0) / 2, h.z),
-    });
-  };
-  const bandX0 = Math.max(lo.x, -w);
-  const bandX1 = Math.min(hi.x, w);
-  push(lo.x, Math.min(hi.x, -w), lo.y, hi.y);          // left of the opening
-  push(Math.max(lo.x, w), hi.x, lo.y, hi.y);           // right of it
-  push(bandX0, bandX1, lo.y, Math.min(hi.y, 0));       // sill below
-  push(bandX0, bandX1, Math.max(lo.y, top), hi.y);     // lintel above
-  return pieces;
-}
-
-/**
- * Fit collision boxes to every solid module in a chunk.
- *
- * Regenerating replaces only what was generated before: colliders you placed or
- * adjusted by hand carry `generated: false` and are left alone, so the button
- * is safe to press twice.
- */
-export async function generateForChunk(chunkId, boundsOf) {
-  pushUndo();
-  for (const c of [...state.colliders.values()]) {
-    if (c.chunk === chunkId && c.generated) removeCollider(c.id, true);
-  }
-
-  const doors = [...state.markers.values()]
-    .filter((m) => m.type === "door" && !m.sealed);
-
-  let made = 0, skipped = 0, cut = 0, inherited = 0; const cutModules = [];
-  for (const e of state.placements.values()) {
-    if (e.stage || e.chunk !== chunkId) continue;
-    if (NO_COLLIDER.has(categoryOf(e.module))) { skipped++; continue; }
-    // A module that carries its own collision is covered everywhere, always -
-    // the manifest instances those shapes onto every placement of it. Fitting a
-    // box here as well would give it collision twice, and editing the module
-    // would silently stop matching the room until you pressed the button again.
-    if (state.moduleCollision.get(e.module)?.length) { inherited++; continue; }
-    const bounds = await boundsOf(e.module);
-    if (!bounds) continue;
-
-    let boxes = [obbForPlacement(e, bounds)];
-    for (const d of doors) {
-      const next = [];
-      for (const b of boxes) {
-        const split = subtractOpening(b, d);
-        if (split) { next.push(...split); cut++; cutModules.push(e.module); } else next.push(b);
-      }
-      boxes = next;
-    }
-    for (const b of boxes) {
-      const node = new TransformNode("TMP_OBB", state.scene);
-      node.rotationQuaternion = b.quat;
-      const euler = eulerDeg(node);
-      node.dispose();
-      addCollider("box", b.centre, {
-        chunk: chunkId, stage: false, rotation: euler,
-        scale: [b.half.x * 2, b.half.y * 2, b.half.z * 2],
-        generated: true, silent: true,
-      });
-      made++;
-    }
-  }
-  applyVisibility();
-  emit("colliders");
-  return { made, skipped, cut, inherited, cutModules };
-}
 
 function eulerDeg(node) {
   const q = node.rotationQuaternion || Quaternion.FromEulerVector(node.rotation);

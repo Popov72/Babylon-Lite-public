@@ -669,72 +669,6 @@ check("a turned capsule or cylinder carries its axis as two points",
     && Math.abs(coll.mCyl.pointA[1]) < 1e-3,
   `A=${coll.mCyl.pointA} B=${coll.mCyl.pointB}`);
 
-// ---- 1d-quinvicies. fitting collision to a room ----------------------------
-const fitted = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const co = await import("/js/colliders.js");
-  const mk = await import("/js/markers.js");
-  const kit = await import("/js/kit.js");
-  const i = await import("/js/interact.js");
-  const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-
-  const W = "Walls/ShortWall_Band2_Straight";
-  const wall = await ed.placeAt(W, new V(0, 0, 0), { silent: true });
-  await ed.placeAt(W, new V(20, 0, 0), { silent: true });      // far from the door
-  const decal = await ed.placeAt("Decals/Decal_Arrows", new V(4, 0, 0), { silent: true })
-    .catch(() => null);
-  const chunk = ed.state.activeChunk;
-
-  // a door straddling the first wall
-  ed.select([wall.id]);
-  const door = mk.doorFromSelection();
-  ed.select([]);
-
-  const r = await co.generateForChunk(chunk, kit.moduleBounds);
-  const mine = () => [...ed.state.colliders.values()].filter((c) => c.chunk === chunk);
-  const cutOnce = r.cut;
-  const openBoxes = r.made;
-
-  // sealing the door stops the subtraction: the wall it covers comes back
-  door.sealed = true;
-  const sealedRun = await co.generateForChunk(chunk, kit.moduleBounds);
-  const sealedBoxes = sealedRun.made;
-  door.sealed = false;
-  await co.generateForChunk(chunk, kit.moduleBounds);
-
-  // regenerating replaces its own output, and spares anything hand-placed
-  const hand = co.addCollider("sphere", new V(0, 0, 0), { chunk, silent: true });
-  const again = await co.generateForChunk(chunk, kit.moduleBounds);
-  const out = {
-    openBoxes, sealedBoxes, cutOnce, cutWhenSealed: sealedRun.cut,
-    skippedDecals: r.skipped, hadDecal: !!decal,
-    allBoxes: mine().filter((c) => c.id !== hand.id).every((c) => c.kind === "box"),
-    stable: again.made === r.made,
-    handSurvived: !!ed.state.colliders.get(hand.id),
-  };
-  ed.clearAll(); ed.select([]);
-  return out;
-});
-check("solid modules get boxes, and only boxes",
-  fitted.openBoxes >= 1 && fitted.allBoxes, `${fitted.openBoxes} boxes`);
-check("a doorway spanning a whole wall removes it, and sealing brings it back",
-  // the door was built from the first wall, so its opening covers that module
-  // exactly - unsealed it leaves nothing behind, sealed it is solid again
-  fitted.sealedBoxes === fitted.openBoxes + 1,
-  `${fitted.openBoxes} open vs ${fitted.sealedBoxes} sealed`);
-check("an unsealed doorway is cut out of the walls, a sealed one is not",
-  fitted.cutOnce > 0 && fitted.cutWhenSealed === 0,
-  `${fitted.cutOnce} cut, ${fitted.cutWhenSealed} when sealed`);
-check("decals get no collider",
-  !fitted.hadDecal || fitted.skippedDecals > 0, `${fitted.skippedDecals} skipped`);
-check("regenerating replaces its own boxes and spares hand-placed ones",
-  fitted.stable && fitted.handSurvived,
-  `stable=${fitted.stable}, hand-placed survived=${fitted.handSurvived}`);
-check("the export leaves the editor's own names alone",
-  glbNames.sceneNames.every((n) => /^P\d+(#\d+)?$/.test(n)),
-  JSON.stringify(glbNames.sceneNames));
-
 // ---- 1d-sexvicies. a collider is placed and moved like anything else -------
 // The Collision pane arms the ghost the same way the palette does: nothing
 // exists until you click. And a collider is pickable - it used to be created
@@ -919,40 +853,42 @@ await page.evaluate(async () => {
 await page.waitForTimeout(200);
 
 // ---- 1d-duodetricies. the shell thickness a flat module is given -----------
-// The kit models floors and ceilings as single planes with no depth at all.
-// The degenerate axis used to fall through `Math.abs(v) || 1` and come out a
-// *metre* thick, which is how a two-plate room got slabs top and bottom.
+// The kit models floors and ceilings as single planes with no depth at all, and
+// its walls only 7.5 mm. Both used to come out wrong: a zero axis fell through
+// `Math.abs(v) || 1` and became a *metre*, and the shell only ever filled a
+// zero axis, so it did nothing at all to anything solid.
 const shell = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
   const i = await import("/js/interact.js");
-  const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const chunk = ed.state.activeChunk;
+  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+  ed.loadModuleCollision({}, []);
 
   const W = "Walls/ShortWall_Band2_Straight";
   const P = "Platforms/Platform_3Plates";
-  for (const rot of [0, 90, 180, -90]) {
-    await ed.placeAt(W, new V(0, 0, 0), { rotation: [0, rot, 0], silent: true });
-  }
-  await ed.placeAt(P, new V(0, 0, 0), { silent: true });
-  await ed.placeAt(P, new V(0, 2, 0), { silent: true });
-
   const flatBounds = await kit.moduleBounds(P);
-  const r = await co.generateForChunk(chunk, kit.moduleBounds);
-  const sizes = [...ed.state.colliders.values()]
-    .map((c) => c.node.scaling.asArray().map((v) => +v.toFixed(4)));
+  const wallBounds = await kit.moduleBounds(W);
 
-  ed.setConfig("shellThickness", 0.05);
-  await co.generateForChunk(chunk, kit.moduleBounds);
-  const thicker = [...ed.state.colliders.values()]
-    .map((c) => c.node.scaling.asArray().map((v) => +v.toFixed(4)))
-    .filter((s) => s[0] === 4 && s[2] === 4).map((s) => s[1]);
+  // Fit a box is the one fitter now, and it works on the staging area.
+  const fitAt = async (moduleId, thickness) => {
+    ed.setConfig("shellThickness", thickness);
+    const { entry } = await co.stageModule(moduleId, kit.instantiate, kit.moduleBounds);
+    ed.select([entry.id]);
+    const r = await co.fitBoxToSelection(kit.moduleBounds);
+    const size = r.collider.node.scaling.asArray().map((v) => +v.toFixed(4));
+    co.unstageModule(entry.id);
+    ed.state.moduleCollision.delete(moduleId);
+    return size;
+  };
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  const flatThin = await fitAt(P, 0.008);
+  const wallThin = await fitAt(W, 0.008);
+  const flatThick = await fitAt(P, 0.05);
+  co.exitCollisionMode();
 
-  // undo() restores asynchronously: without the await the next edit races it
-  await ed.undo();                                   // the regeneration
-  await ed.undo();                                   // the setting itself
+  await ed.undo();                     // undo() restores asynchronously
+  await ed.undo();
   const undone = ed.state.config.shellThickness;
 
   ed.setConfig("shellThickness", 0.033);
@@ -964,39 +900,32 @@ const shell = await page.evaluate(async () => {
   const legacy = ed.state.config.shellThickness;
 
   ed.setConfig("shellThickness", 0.008);
-  ed.clearAll(); ed.select([]);
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
   return {
-    made: r.made, sizes, thicker, undone, roundTrip, legacy,
+    flatThin, wallThin, flatThick, undone, roundTrip, legacy,
     flatDepth: +(flatBounds.max.y - flatBounds.min.y).toFixed(6),
+    wallDepth: +(wallBounds.max.x - wallBounds.min.x).toFixed(6),
     savedConfig: layout.config,
   };
 });
-const flatBoxes = shell.sizes.filter((s) => s[0] === 4 && s[2] === 4);
-const wallBoxes = shell.sizes.filter((s) => s[1] > 1);
 check("the kit really does model a floor as a bare plane",
   shell.flatDepth === 0, `local depth ${shell.flatDepth} m`);
 check("a flat module gets the shell thickness, not a metre",
-  shell.made === 6 && flatBoxes.length === 2
-    && flatBoxes.every((s) => Math.abs(s[1] - 0.008) < 1e-6),
-  `${shell.made} boxes, flat depths ${flatBoxes.map((s) => s[1]).join(", ")}`);
+  Math.abs(shell.flatThin[1] - 0.008) < 1e-6, `[${shell.flatThin}]`);
 check("the shell is a minimum, so a 7.5 mm wall is brought up to it",
-  // it used to fill a *zero* axis only, which made the setting look broken on
-  // anything with real depth - and left walls too thin to be safe at speed
-  wallBoxes.length === 4 && wallBoxes.every((s) => Math.abs(s[0] - 0.008) < 1e-6),
-  `wall depths ${wallBoxes.map((s) => s[0]).join(", ")}, from a real 0.0075 m`);
+  shell.wallDepth < 0.008 && Math.abs(shell.wallThin[0] - 0.008) < 1e-6,
+  `a real ${shell.wallDepth} m fitted as [${shell.wallThin}]`);
 check("but a module thicker than the shell keeps its own size",
-  wallBoxes.every((s) => Math.abs(s[2] - 4) < 1e-6 && Math.abs(s[1] - 1.9981) < 1e-3),
-  `wall spans ${wallBoxes.map((s) => `${s[1]}x${s[2]}`).join(", ")}`);
+  Math.abs(shell.wallThin[2] - 4) < 1e-3 && Math.abs(shell.wallThin[1] - 1.9981) < 1e-3,
+  `wall fitted [${shell.wallThin}]`);
 check("the setting drives the fit",
-  shell.thicker.length === 2 && shell.thicker.every((v) => Math.abs(v - 0.05) < 1e-6),
-  `at 0.05 m: [${shell.thicker.join(", ")}]`);
+  Math.abs(shell.flatThick[1] - 0.05) < 1e-6, `at 0.05 m: [${shell.flatThick}]`);
 check("changing a setting is undoable", Math.abs(shell.undone - 0.008) < 1e-9,
   `undo -> ${shell.undone}`);
 check("a setting round-trips through the layout",
   Math.abs(shell.roundTrip - 0.033) < 1e-9 && Math.abs(shell.legacy - 0.008) < 1e-9,
   `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},`
   + ` a layout without one ${shell.legacy}`);
-
 // ---- 1d-undetricies. the collision staging area ---------------------------
 // A mode, not a property of the selection. It opens empty, you stage whatever
 // modules you want to fit shapes to, and which element a shape belongs to is
@@ -1290,15 +1219,12 @@ const closed = await page.evaluate(async () => {
     body: JSON.stringify(original),
   });
 
-  const fit = await co.generateForChunk(ed.state.activeChunk,
-    (await import("/js/kit.js")).moduleBounds);
   ed.clearAll(); ed.select([]); ed.loadModuleCollision({});
   return {
     after, wiped, restored,
     onDisk: Object.keys(onDisk.moduleShapes || {}).length,
     schema: onDisk.schema,
     backKeys: back ? Object.keys(back).length : 0,
-    fit,
   };
 });
 check("leaving clears the area and puts the ship back",
@@ -1310,9 +1236,6 @@ check("collision is written to its own file, apart from the ship",
 check("and that file alone can restore it",
   closed.wiped === 0 && closed.restored === 2 && closed.backKeys === 2,
   `wiped to ${closed.wiped}, back to ${closed.restored}`);
-check("the room fitter leaves placements the record already covers",
-  closed.fit.inherited === 1 && closed.fit.made === 1,
-  `made ${closed.fit.made}, inherited ${closed.fit.inherited}`);
 
 // ---- 1d-trestricies. the bench keeps what you left on it ------------------
 // Coming back to a blank stage after stepping out to look at the ship was the
