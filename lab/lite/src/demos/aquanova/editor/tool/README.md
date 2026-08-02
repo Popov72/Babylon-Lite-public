@@ -286,13 +286,41 @@ So the split is by **who reads the field**:
 |---|---|
 | `chunks[].aabb` — min/max swap with the flip | `instances[]` |
 | `portals[].centre` / `normal` / `corners` | `markers[]` |
-| `doors[].position` | `view` |
-| `entities[].behaviors[].direction` | |
+| `doors[].position` / `direction` | `colliders[]` |
+| `collision[chunk]` | `moduleShapes[]` |
+| `moduleCollision[module]` — **local**, see below | `stageLayout[]`, `view` |
 
 The right-hand column is the tool's own reload data: it exists to rebuild the
 editor and never leaves it. The left-hand column is everything the game
 consumes; getting it wrong mirrors the ship against its own geometry, which is
 how a player start authored to face the door came out facing away from it.
+
+**The manifest says all of this itself**, under a `space` key naming every
+top-level field as `gltf`, `editor` or `none`, with the conversion rules beside
+it. A source comment is no use to a runtime, and this split has already caught
+one out: composing a glTF-space module hull onto an editor-space `instances[]`
+entry puts the collider on the **wrong side of the prop**, where it still looks
+entirely plausible. An e2e check fails the run if a top-level key is not
+declared, so a new block cannot ship without someone saying what space it is in.
+
+> Two traps worth naming, both silent:
+>
+> - **Take a placement's transform from the loaded glTF node, not from
+>   `instances[]`.** The node is in the same space as the collision blocks;
+>   `instances` is not. The node's `extras` carries `id`, `module` and `chunk`
+>   for exactly this.
+> - **`moduleCollision` is a *local* transform in glTF space.** Converting it
+>   back needs the **rotation as well as the centre** — `[-x,y,z]` for the
+>   point, `[-x,y,z,-w]` for the quaternion, because mirroring flips the
+>   handedness of the turn too. Centre-only conversion leaves a turned box
+>   mirrored, which looks correct on anything symmetrical.
+>
+> Mirroring `instances[]` as well would make the runtime-facing half uniform,
+> but it would not make the *file* uniform: `colliders`, `moduleShapes`,
+> `stageLayout` and `view` are authoring data and would still be editor space,
+> and `instances` is what the editor reloads from, so it would need un-mirroring
+> on load and a schema bump to keep old manifests readable. The line has to fall
+> somewhere; saying where is worth more than moving it.
 
 `direction` is flipped on the way in as well, so the inspector and the `X` axis
 gizmo always agree with each other. The flip is its own inverse and one helper

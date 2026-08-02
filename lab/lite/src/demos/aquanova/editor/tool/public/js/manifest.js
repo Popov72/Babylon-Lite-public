@@ -193,11 +193,27 @@ function collisionByChunk() {
 }
 
 /**
- * The shapes authored on each kit module, in the module's own local space.
+ * The shapes authored on each kit module, in the module's own local space,
+ * **mirrored to glTF space** like everything else the runtime reads.
  *
- * What the runtime instances: for each entry in `instances`, look its module up
- * here and compose with the placement's transform. One Havok shape per module,
- * reused across every body that needs it.
+ * What the runtime instances: for each placement, look its module up here and
+ * compose with the placement's transform. One Havok shape per module, reused
+ * across every body that needs it.
+ *
+ * Two things to get right, both silent when wrong:
+ *
+ * - Take the placement's transform from the **loaded glTF node**, not from
+ *   `instances`. `instances` is editor space - it is the tool's own reload
+ *   source - and composing a glTF-space hull onto it puts the collider on the
+ *   wrong side of the prop, where it still looks perfectly plausible. The glTF
+ *   node's `extras` carries `id`, `module` and `chunk` for exactly this.
+ * - Converting a *local* transform between the two spaces needs the **rotation
+ *   as well as the centre** - `[-x,y,z]` for the point and `[-x,y,z,-w]` for
+ *   the quaternion. Centre only leaves a turned box mirrored, which looks
+ *   right on anything symmetrical and wrong on everything else.
+ *
+ * The manifest's `space` block names every field's space, so this can be
+ * asserted rather than remembered.
  *
  * `moduleShapes` beside it is the same hulls in the editor's own coordinates -
  * the authoring source both this and the editor's reload come from. The two are
@@ -305,6 +321,38 @@ export function buildManifest() {  const layout = serialize();
     savedAt: new Date().toISOString(),
     units: "metres",
     up: "Y (glTF)",
+    // Which half of this file is in which space, said out loud and by name.
+    //
+    // The manifest has two halves. Runtime-facing fields are written in **glTF
+    // space**, matching ship.glb: an element at editor [7,3,5] is at [-7,3,5]
+    // in both. Tool-facing fields stay in **editor space**, because they exist
+    // to rebuild the editor and never leave it - `instances` is what the tool
+    // reloads the ship from.
+    //
+    // That split is deliberate but it was only ever written in a source
+    // comment, which is no use to a runtime: compose a glTF-space module hull
+    // onto an editor-space instance and the collider lands on the *wrong side*
+    // of the prop, still looking perfectly plausible. Naming the fields here
+    // lets a reader assert instead of remember.
+    space: {
+      gltf: ["chunks[].aabb", "collision", "moduleCollision", "portals", "doors"],
+      editor: ["instances", "markers", "colliders", "moduleShapes", "stageLayout", "view"],
+      none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kitDir",
+        "activeChunk", "fluidSim", "behaviors", "entities", "environment",
+        "editorEnvironment", "adjacency", "space"],
+      convert: {
+        note: "editor <-> glTF is its own inverse: negate X.",
+        point: "[-x, y, z]",
+        quaternion: "[-x, y, z, -w] — mirroring flips the handedness of the turn as well",
+        aabb: "min.x and max.x swap as well as negate",
+        // The one that bites. moduleCollision is a *local* transform written in
+        // glTF space, so converting it back needs the rotation as well as the
+        // centre - a centre-only conversion leaves a turned box mirrored, and
+        // looks right on anything symmetrical.
+        moduleCollision: "local to its module, in glTF space:"
+          + " convert centre AND rotation before composing onto a placement",
+      },
+    },
     grid: { tile: 4 },
     // Ship-wide authoring constants - see state.config. They have to travel
     // with the ship: refitting collision with a different shell thickness
@@ -336,10 +384,13 @@ export function buildManifest() {  const layout = serialize();
     // and the two endpoints Havok's constructor actually takes.
     //
     // A module's hull is NOT expanded into here. It is written once below and
-    // instanced by the runtime, which already knows every placement's module,
-    // chunk and transform from `instances`. Expanding it as well was pure
-    // duplication of the sort that grows: placements x shapes, against
-    // modules x shapes.
+    // instanced by the runtime, which already knows every placement's module
+    // and chunk - from the glTF node's own `extras`, or from `instances`.
+    // Expanding it as well was pure duplication of the sort that grows:
+    // placements x shapes, against modules x shapes.
+    //
+    // Take the *transform* from the loaded glTF node, not from `instances`:
+    // the node is in the same space as this block, and `instances` is not.
     collision: collisionByChunk(),
     // What each kit module carries, in its own local space, in Havok's terms -
     // one shape per module, for the runtime to instance and to share.

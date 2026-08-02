@@ -235,8 +235,48 @@ if (benchFailures.length) {
   errors.push("bench save: " + benchFailures.join(" | "));
 }
 
+// ---- the manifest says which space each of its halves is in -----------------
+// Runtime-facing fields are glTF space, matching ship.glb; tool-facing ones are
+// editor space, because they exist to rebuild the editor. Compose a glTF-space
+// module hull onto an editor-space instance and the collider lands on the wrong
+// side of the prop, still looking plausible - so the split is named in the file
+// rather than left in a source comment no runtime will ever read.
+//
+// This check is about *coverage*: a new top-level key cannot ship without
+// someone saying which space it is in.
+const spaceFailures = [];
+{
+  const man = JSON.parse(fs.readFileSync(path.join(EXPORT, "ship_manifest.json"), "utf8"));
+  const sp = man.space;
+  if (!sp) {
+    spaceFailures.push("the manifest does not say which space its fields are in");
+  } else {
+    const declared = new Set([...(sp.gltf || []), ...(sp.editor || []), ...(sp.none || [])]
+      .map((k) => k.split("[")[0]));
+    const undeclared = Object.keys(man).filter((k) => !declared.has(k));
+    const phantom = [...declared].filter((k) => !(k in man));
+    console.log(`manifest space: ${declared.size} field(s) declared,`
+      + ` ${undeclared.length} undeclared, ${phantom.length} phantom`);
+    if (undeclared.length) spaceFailures.push(`undeclared: ${undeclared.join(", ")}`);
+    if (phantom.length) spaceFailures.push(`declared but absent: ${phantom.join(", ")}`);
+    if (!sp.convert?.quaternion) spaceFailures.push("the conversion rule omits the quaternion");
+    // The two that actually caught someone out.
+    if (!(sp.editor || []).includes("instances")) {
+      spaceFailures.push("instances is not declared as editor space");
+    }
+    if (!(sp.gltf || []).includes("moduleCollision")) {
+      spaceFailures.push("moduleCollision is not declared as glTF space");
+    }
+  }
+  if (spaceFailures.length) {
+    console.log("MANIFEST SPACE BROKEN:", spaceFailures.join(" | "));
+    errors.push("manifest space: " + spaceFailures.join(" | "));
+  }
+}
+
 console.log("\nerrors:", errors.length ? [...new Set(errors)].join("\n") : "(none)");
 await browser.close();
 // Losing the ability to recover work - or the viewpoint you saved from - is
 // worth failing the run over.
-if (rotationFailures.length || benchFailures.length || glbFailures.length) process.exit(1);
+if (rotationFailures.length || benchFailures.length || glbFailures.length
+  || spaceFailures.length) process.exit(1);
