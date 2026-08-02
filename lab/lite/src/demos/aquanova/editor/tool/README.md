@@ -331,11 +331,11 @@ selection before acting on a different element.
 |---|---|
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement. |
 | Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
-| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. `Esc` or right-click mid-drag puts everything back. |
+| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
 | Turn | **`R`** — about the element's own origin |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
-| Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
+| Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis and **`Y`** the space it is measured in, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
 | Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
 | Turn as a group | **`Alt` + `R`** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
 | Resize | **`Shift` + wheel** — steps by the Scale snap on the current scale axis |
@@ -350,7 +350,7 @@ selection before acting on a different element.
 | Name | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id |
 | Behaviour | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body) |
 | Eyedropper | `Alt`-click a placed element to arm its module |
-| Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y |
+| Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen |
 | Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging); Rot and Scale are keyboard *step sizes*, so they have no "off" |
 | Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
 | Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
@@ -560,6 +560,46 @@ onto the horizontal**, so it always faces the camera — a fixed world plane wou
 go edge-on and stop responding the moment you orbited round. `V` is safe to
 press mid-drag: the drag re-anchors on the new axis so the element does not
 jump.
+
+### `Y` chooses whose axes those are
+
+`V` says *which* axis a move runs on; **`Y`, or the combo beside it, says whose**
+— the world's, or the element's own. A modular kit turns every second wall 90°,
+so "slide it along its length" is world Z on one and world X on the next; in
+local space it is `X only` on both.
+
+Both spaces run one expression. The travel is projected onto each live axis, the
+distance snapped, and the axis added back scaled by it — with the world's own
+axes, that is exactly the old "drop the other component", so world space is not
+a special case but the same code with an identity basis.
+
+> **The frame is the element's world matrix, taken once.** Its normalised rows,
+> not its rotation quaternion, so they are the axes `Shift+X` draws — mirroring
+> included. Taken once at the start of a gesture, so turning a piece mid-drag
+> cannot make its own axes run away from under the gesture. And `computeWorldMatrix(true)`,
+> not the cached one: a turn earlier in the same frame has not been through a
+> render yet, and reading the cache left every axis one turn behind. That was a
+> real bug, caught by a test that turned an element and nudged it in the same
+> breath.
+
+Whose element is always the one being *acted on*: the piece under the cursor for
+a drag, the anchor for an `M` carry, the first of the selection for an arrow
+nudge — which is the one `X` puts its gizmo on. With several selected they all
+move by the one delta measured in that element's frame, the way a set of objects
+moves in Blender.
+
+Two consequences worth knowing. **A constrained drag can legitimately do
+nothing**: drag across the screen with `X only` on a wall whose own X points into
+it, and there is no travel along that axis to speak of — the same as dragging
+across a `Z only` constraint in world space. And **local snapping is along the
+local axis**, so a piece lands on multiples of the step measured from where it
+started, not on the world grid. Both are what Blender does, and both are what
+"the axis belongs to the element" has to mean.
+
+**Placing from the palette is always world.** A module that has not been dropped
+has no place of its own for a local axis to be measured from, and the build
+plane it snaps to is a world plane. The same reason the vertical drag keeps
+driving the build plane rather than the element's own up.
 
 **Which axes are live is shown on the gizmo**, in colour rather than only in
 words: `X` red, `Y` green, `Z` blue — the standard convention — with the locked

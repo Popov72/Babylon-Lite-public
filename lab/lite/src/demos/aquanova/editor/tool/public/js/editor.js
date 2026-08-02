@@ -112,7 +112,8 @@ export const state = {
   walk: false,             // see setWalk
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
-  dragAxis: "xz",          // "xz" or "y" - which way a drag moves things (Q)
+  dragAxis: "xz",          // "xz" | "y" | "x" | "z" - which axis a move runs on (V)
+  moveSpace: "world",      // "world" | "local" - whose axis that is (Y)
   collisionMode: false,    // the collision staging area is open, see colliders.js
   // module id -> shapes authored on it, in the module's own local space. The
   // one authoritative record: what is on the staging area is a working copy.
@@ -692,6 +693,59 @@ export const AXIS_COLOR = {
 /** Which axes a drag currently moves along. */
 export function liveAxes(mode = state.dragAxis) {
   return mode === "y" ? ["y"] : mode === "x" ? ["x"] : mode === "z" ? ["z"] : ["x", "z"];
+}
+
+/**
+ * The frame a move runs in: the world's axes, or the given element's own.
+ *
+ * `moveSpace` says whose axes the *move axis* means. In world space "X only"
+ * slides along world X; in local space it slides along the element's own X, so
+ * a wall turned 90 degrees still slides along its length rather than across it.
+ * Null means the world, which every caller treats as "no basis at all".
+ *
+ * The axes come from the world matrix's normalised rows, not from the rotation
+ * quaternion, so they are the axes Shift+X actually draws - mirroring included.
+ * A mirrored element's basis is left-handed, which is fine here: each axis is
+ * used on its own.
+ *
+ * Whose element is always the caller's to decide, and it is always the one
+ * being *acted on*: the piece under the cursor for a drag, the anchor of a
+ * carry, the first of the selection for an arrow nudge - which is also the one
+ * `X` puts its gizmo on. With several selected they all move by one delta
+ * measured in that element's frame, the way a set of objects moves in Blender.
+ */
+export function moveBasis(node) {
+  if (state.moveSpace !== "local" || !node || node.isDisposed()) return null;
+  // Forced, not read from the cache: the frame is taken once at the start of a
+  // gesture, and a turn earlier in the same frame - R, the inspector, a load -
+  // has not been through a render yet, so the cached matrix still holds the
+  // rotation before it. That put the axes one turn behind.
+  const m = node.computeWorldMatrix(true);
+  const out = {};
+  for (const [a, row] of [["x", 0], ["y", 1], ["z", 2]]) {
+    const r = m.getRow(row);
+    const v = new Vector3(r.x, r.y, r.z);
+    if (v.lengthSquared() < 1e-12) return null;    // degenerate, fall back to world
+    out[a] = v.normalize();
+  }
+  return out;
+}
+
+/**
+ * Take a world-space movement and let through only what the current axis and
+ * the given frame allow, snapping along each axis that survives.
+ *
+ * World space is the same expression with the world's own axes, so both modes
+ * run one code path: project onto each live axis, snap that distance, and add
+ * the axis back scaled by it.
+ */
+export function constrainMove(delta, snap = (v) => v, basis = null) {
+  const out = Vector3.Zero();
+  for (const a of liveAxes()) {
+    if (basis) out.addInPlace(basis[a].scale(snap(Vector3.Dot(delta, basis[a]))));
+    else out[a] = snap(delta[a]);
+  }
+  return out;
 }
 
 /** Which axes a scale acts on - "all" means every one of them. */
@@ -1464,13 +1518,24 @@ export function toggleSelect(id) {
   emit("selection");
 }
 
-/** Shift every selected node by a world-space delta. */
+/**
+ * Shift every selected node by a delta.
+ *
+ * The delta arrives in the world's terms - one arrow key is one step along one
+ * axis - and is turned into the current move space here, so an arrow nudge and
+ * a mouse drag agree about which way "X" points. Unlike a drag it ignores the
+ * *axis* setting: the key already names the axis.
+ */
 export function nudgeSelection(delta) {
   if (!state.selection.length) return;
+  const basis = moveBasis(entryOf(state.selection[0])?.node);
+  const step = basis
+    ? basis.x.scale(delta.x).add(basis.y.scale(delta.y)).add(basis.z.scale(delta.z))
+    : delta;
   pushUndo();
   for (const id of state.selection) {
     const e = entryOf(id);
-    if (e) e.node.position.addInPlace(delta);
+    if (e) e.node.position.addInPlace(step);
   }
   emit("transform");
 }

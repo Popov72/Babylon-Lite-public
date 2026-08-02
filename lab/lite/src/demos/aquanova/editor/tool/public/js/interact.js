@@ -12,6 +12,7 @@ import {
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
+  constrainMove, moveBasis,
 } from "./editor.js";
 
 const {
@@ -352,6 +353,10 @@ export async function grabSelection(opts = {}) {
   // the starting state rather than a special case.
   ghost.root.position.copyFrom(base);
   ghost.anchor = { cursor: cursorOnPlane(state.gridY + centreOffset().y), base: base.clone() };
+  // Taken from the anchor element, and taken once: it is the piece you grabbed,
+  // and re-reading it would let a turn mid-carry swing the axes about.
+  ghost.anchorNode = anchor.node;
+  ghost.basis = moveBasis(anchor.node);
   applyGhostTransform();
   moveGhostToCursor();
   setCursorHidden(true);
@@ -498,16 +503,18 @@ function moveGhostToCursor() {
   // and simply sits on the cursor.
   if (ghost.anchor?.cursor) {
     const a = ghost.anchor;
-    const x = state.dragAxis === "z"
-      ? ghost.root.position.x : a.base.x + snap(p.x - a.cursor.x);
-    const z = state.dragAxis === "x"
-      ? ghost.root.position.z : a.base.z + snap(p.z - a.cursor.z);
-    ghost.root.position.set(x, planeY + lift.y, z);
+    const to = a.base.add(constrainMove(p.subtract(a.cursor), snap, ghost.basis));
+    // In local space the element's own axes may lean, so a move along one of
+    // them is allowed to change height. In world space they never do, and the
+    // build plane stays in charge of Y as it does everywhere else.
+    ghost.root.position.set(to.x, ghost.basis ? to.y : planeY + lift.y, to.z);
     return;
   }
 
   // A single-axis mode leaves the other coordinate wherever the ghost already
-  // is, so it slides along one line from where you put it.
+  // is, so it slides along one line from where you put it. Always the world's
+  // axes: a module still on the palette has no place of its own yet for a local
+  // one to be measured from.
   const x = state.dragAxis === "z" ? ghost.root.position.x : snap(p.x - off.x);
   const z = state.dragAxis === "x" ? ghost.root.position.z : snap(p.z - off.z);
   ghost.root.position.set(x + lift.x, planeY + lift.y, z + lift.z);
@@ -731,6 +738,12 @@ function beginDragCandidate(id, ev, pickedPoint) {
     startX: ev.clientX, startY: ev.clientY,
     entries,
     origins: entries.map((e) => e.node.position.clone()),
+    // The frame is taken once, from the element under the cursor rather than
+    // the first of the selection: it is the one you grabbed. Taking it once
+    // also means turning a piece mid-drag cannot make its own axes run away
+    // from underneath the gesture.
+    refNode: entryOf(id)?.node || null,
+    basis: moveBasis(entryOf(id)?.node),
   };
   anchorDrag(anchor);
   return true;
@@ -817,6 +830,43 @@ export function toggleDragAxis() {
   const i = DRAG_AXES.indexOf(state.dragAxis);
   return setDragAxis(DRAG_AXES[(i + 1) % DRAG_AXES.length]);
 }
+
+/**
+ * Whose axes the move axis means: the world's, or the element's own.
+ *
+ * Local is what a modular kit wants half the time - every second wall is turned
+ * 90 degrees, and "slide it along its length" is world Z on one and world X on
+ * the next. It is a *space*, not a fifth axis, which is why it is its own combo
+ * rather than four more entries in the axis one.
+ *
+ * Safe to change mid-gesture, like the axis: a drag re-anchors and re-takes its
+ * frame, so the element carries on from where it is instead of jumping.
+ */
+export const MOVE_SPACES = ["world", "local"];
+
+export function setMoveSpace(space) {
+  if (!MOVE_SPACES.includes(space)) return state.moveSpace;
+  state.moveSpace = space;
+  if (drag) { rebaseDrag(); drag.basis = moveBasis(drag.refNode); }
+  if (ghost) {
+    if (ghost.anchor) {
+      // Re-anchoring on the cursor's *current* position is what keeps the carry
+      // still: without it the travel so far would be re-measured in the new
+      // frame and the element would jump to wherever that lands.
+      ghost.anchor.base = ghost.root.position.clone();
+      ghost.anchor.cursor = cursorOnPlane(state.gridY + centreOffset().y);
+      ghost.basis = moveBasis(ghost.anchorNode);
+    }
+    rebaseGhostVertical();
+    moveGhostToCursor();
+  }
+  emit("modes");
+  return state.moveSpace;
+}
+
+export function toggleMoveSpace() {
+  return setMoveSpace(state.moveSpace === "local" ? "world" : "local");
+}
 /** Re-anchor a drag in progress, so switching axis does not jump the element. */
 export function rebaseDrag() {
   if (!drag) return;
@@ -847,12 +897,7 @@ function updateDrag(ev) {
     // beginDragCandidate); take it at the first frame it works instead of
     // refusing to move for the rest of the gesture.
     if (!drag.fromV) { drag.fromV = now; return; }
-    const dy = snap(now.y - drag.fromV.y);
-    for (let i = 0; i < drag.entries.length; i++) {
-      const o = drag.origins[i];
-      drag.entries[i].node.position.set(o.x, o.y + dy, o.z);
-    }
-    emit("transform");
+    applyDelta(now.subtract(drag.fromV), snap);
     return;
   }
 
@@ -860,7 +905,7 @@ function updateDrag(ev) {
   if (drag.mode === "plane") {
     if (!now) return;
     if (!drag.from) { drag.from = now; return; }
-    applyFlatDelta(now.x - drag.from.x, now.z - drag.from.z, snap);
+    applyDelta(now.subtract(drag.from), snap);
     return;
   }
 
@@ -870,17 +915,20 @@ function updateDrag(ev) {
   // the plane mapping inverts when the plane sits above the camera
   const move = drag.right.scale(dpx * drag.unitsPerPx)
     .add(drag.fwd.scale(-dpy * drag.unitsPerPx));
-  applyFlatDelta(move.x, move.z, snap);
+  applyDelta(move, snap);
 }
 
-function applyFlatDelta(rawX, rawZ, snap) {
-  // A single-axis mode simply drops the other component: the cursor still
-  // tracks on the floor plane, but only one coordinate is allowed through.
-  const dx = state.dragAxis === "z" ? 0 : snap(rawX);
-  const dz = state.dragAxis === "x" ? 0 : snap(rawZ);
+/**
+ * Move everything in the drag by however much of this world-space travel the
+ * axis and space settings let through.
+ *
+ * The whole gesture is re-derived from the origins each frame rather than
+ * accumulated, so a snapped drag never drifts and cancelling is exact.
+ */
+function applyDelta(raw, snap) {
+  const d = constrainMove(raw, snap, drag.basis);
   for (let i = 0; i < drag.entries.length; i++) {
-    const o = drag.origins[i];
-    drag.entries[i].node.position.set(o.x + dx, o.y, o.z + dz);
+    drag.entries[i].node.position.copyFrom(drag.origins[i].add(d));
   }
   emit("transform");
 }

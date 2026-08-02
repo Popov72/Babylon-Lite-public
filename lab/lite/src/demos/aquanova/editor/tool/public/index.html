@@ -28,11 +28,15 @@
       <option value="2">2</option>
       <option value="4">4</option>
     </select>
-    <select id="drag-axis" title="Which way dragging moves elements — V cycles through them">
+    <select id="drag-axis" title="Which axis dragging, carrying and the arrow keys move along — V cycles through them">
       <option value="xz">X/Z (floor)</option>
       <option value="y">Y (up/down)</option>
       <option value="x">X only</option>
       <option value="z">Z only</option>
+    </select>
+    <select id="move-space" title="Whose axis that is: the world's, or the element's own — Y switches. Local slides a turned wall along its own length. Placing from the palette is always world">
+      <option value="world" selected>World</option>
+      <option value="local">Local</option>
     </select>
     <label title="How far one press of R turns an element, in degrees — Ctrl+R cycles forwards, Ctrl+Shift+R back">Rot</label>
     <select id="snap-rot" title="How far one press of R turns an element, in degrees — Ctrl+R cycles forwards, Ctrl+Shift+R back">

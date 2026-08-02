@@ -17,7 +17,7 @@ import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
   ghostActive, ghostModule, ghostCollider, armColliderGhost, colliderHalf, hoveredId,
   cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
-  toggleDragAxis, setDragAxis, cancelMarquee, grabSelection,
+  toggleDragAxis, setDragAxis, toggleMoveSpace, setMoveSpace, cancelMarquee, grabSelection,
 } from "./interact.js";
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
@@ -891,6 +891,30 @@ $("drag-axis").addEventListener("change", (e) => {
   setStatus(`drag moves ${DRAG_AXIS_LABEL[state.dragAxis]}`);
 });
 
+/**
+ * Y switches between the world's axes and the element's own. The combo and the
+ * status line follow, for the same reason V's do: a mode you cannot see is one
+ * you will forget you are in, and this one silently changes where every drag,
+ * carry and arrow key goes.
+ */
+function setMoveSpaceFromKey() {
+  toggleMoveSpace();
+  refreshMoveSpace();
+  setStatus(state.moveSpace === "local"
+    ? "moving along the element's own axes — press Y for the world's"
+    : "moving along the world's axes — press Y for the element's own");
+}
+
+function refreshMoveSpace() {
+  $("move-space").value = state.moveSpace;
+}
+
+$("move-space").addEventListener("change", (e) => {
+  setMoveSpace(e.target.value);
+  refreshMoveSpace();
+  setStatus(`moving in ${state.moveSpace} space`);
+});
+
 $("btn-select-rect").addEventListener("click", () => {
   const on = setSelectMode(!state.selectMode);
   $("btn-select-rect").setAttribute("aria-pressed", on ? "true" : "false");
@@ -1147,6 +1171,14 @@ window.addEventListener("keydown", async (e) => {
       else setDragAxisFromKey();
       break;
     }
+    // Y says whose axes V's choice means: the world's, or the element's own.
+    // Next to V on both layouts, and the pair reads as "which axis, whose".
+    // Ctrl+Y is already redo and is claimed above, before this switch.
+    case "y": case "Y": {
+      e.preventDefault();
+      setMoveSpaceFromKey();
+      break;
+    }
     // X shows one element's axes in world space; Shift+X in its own local
     // space, which is the one that matters for scaling - scaling is local, so
     // on anything that has been turned a world gizmo cannot say which way X
@@ -1389,6 +1421,7 @@ function elevationFromHover() {
 function refreshHud() {
   $("hud-elev").textContent = `${state.gridY.toFixed(2)} m`;
   refreshDragAxis();
+  refreshMoveSpace();
   $("rot-axis").value = state.rotAxis;
   $("scale-axis").value = state.scaleAxis;
 

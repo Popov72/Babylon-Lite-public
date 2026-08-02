@@ -6096,6 +6096,167 @@ for (const axis of ["x", "z"]) {
 }
 await page.evaluate(async () => (await import("/js/interact.js")).setDragAxis("xz"));
 
+// ---- World / Local: whose axes the move axis means --------------------------
+// A modular kit turns every second wall 90 degrees, so "slide it along its
+// length" is world Z on one and world X on the next. Local space says the axis
+// belongs to the element, and the pair of combos reads as "which axis, whose".
+//
+// The wall is put back on world axes first: the checks below turn it, and every
+// later block expects it where it started.
+const spSetup = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const e = ed.state.placements.get(id);
+  e.node.position.set(0, 0, 0);
+  e.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, Math.PI / 2, 0);
+  ed.select([id]);
+  ed.state.snap.pos = 0;                       // measure the raw travel
+  i.setDragAxis("x");
+  ed.state.camera.cameraDirection.setAll(0);
+  ed.state.camera.cameraRotation.set(0, 0);
+  ed.state.camera.position = new V(0, 16, 0.001);
+  ed.state.camera.setTarget(V.Zero());          // straight down: screen +x is world +x
+  const bb = ed.worldBounds(e.node);
+  return { centre: bb.min.add(bb.max).scale(0.5).asArray(),
+    space: ed.state.moveSpace, combo: document.getElementById("move-space").value,
+    options: [...document.getElementById("move-space").options].map((o) => o.value) };
+}, qSetup.id);
+await page.waitForTimeout(500);
+
+check("the move space starts on the world's axes",
+  spSetup.space === "world" && spSetup.combo === "world"
+    && spSetup.options.join() === "world,local", JSON.stringify(spSetup));
+
+// One gesture, four combinations: across the screen is world X, up the screen
+// is world Z, and the wall's own X lies along world Z because it is turned.
+async function spDrag(space, dx, dy) {
+  const from = await page.evaluate(async ([id, s]) => {
+    const ed = await import("/js/editor.js");
+    const i = await import("/js/interact.js");
+    const e = ed.state.placements.get(id);
+    e.node.position.set(0, 0, 0);
+    i.setMoveSpace(s);
+    const bb = ed.worldBounds(e.node);
+    return { pos: e.node.position.asArray(), centre: bb.min.add(bb.max).scale(0.5).asArray() };
+  }, [qSetup.id, space]);
+  const at = await screenOf(from.centre);
+  await page.mouse.move(at.x, at.y, { steps: 4 });
+  await page.waitForTimeout(250);
+  await page.mouse.down();
+  await page.mouse.move(at.x + dx, at.y + dy, { steps: 10 });
+  await page.waitForTimeout(150);
+  await page.mouse.up();
+  await page.waitForTimeout(250);
+  const to = await page.evaluate(async (id) =>
+    (await import("/js/editor.js")).state.placements.get(id).node.position.asArray(), qSetup.id);
+  return to.map((v, k) => +(v - from.pos[k]).toFixed(3));
+}
+
+const spWorldAcross = await spDrag("world", 150, 0);
+const spWorldUp = await spDrag("world", 0, -150);
+const spLocalAcross = await spDrag("local", 150, 0);
+const spLocalUp = await spDrag("local", 0, -150);
+
+check("world + X only: dragging across the screen slides on world X",
+  Math.abs(spWorldAcross[0]) > 0.5 && Math.abs(spWorldAcross[2]) < 1e-6,
+  `[${spWorldAcross}]`);
+check("world + X only: dragging up the screen moves nothing at all",
+  Math.hypot(...spWorldUp) < 1e-6, `[${spWorldUp}]`);
+// The two are exact opposites, which is the whole claim: the axis really turned
+// with the element rather than the constraint simply being dropped.
+check("local + X only on a turned wall: up the screen slides it on world Z",
+  Math.abs(spLocalUp[0]) < 1e-6 && Math.abs(spLocalUp[2]) > 0.5, `[${spLocalUp}]`);
+check("local + X only on a turned wall: across the screen moves nothing",
+  Math.hypot(...spLocalAcross) < 1e-6, `[${spLocalAcross}]`);
+check("and the travel is the same length either way, only turned",
+  Math.abs(Math.hypot(...spWorldAcross) - Math.hypot(...spLocalUp)) < 1e-2,
+  `${Math.hypot(...spWorldAcross).toFixed(3)} vs ${Math.hypot(...spLocalUp).toFixed(3)}`);
+
+// An arrow nudge names its own axis, so it ignores the axis combo - but it must
+// still agree with a drag about which way that axis points.
+const spNudge = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const e = ed.state.placements.get(id);
+  const run = (space, yawDeg) => {
+    e.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, yawDeg * Math.PI / 180, 0);
+    e.node.position.set(0, 0, 0);
+    i.setMoveSpace(space);
+    ed.nudgeSelection(new V(1, 0, 0));
+    return e.node.position.asArray().map((v) => +v.toFixed(4));
+  };
+  const out = { worldTurned: run("world", 90), localFlat: run("local", 0),
+    localTurned: run("local", 90), localDiagonal: run("local", 45) };
+  i.setMoveSpace("world");
+  return out;
+}, qSetup.id);
+check("an arrow nudge in world space is world X however the wall is turned",
+  spNudge.worldTurned.join() === "1,0,0", `[${spNudge.worldTurned}]`);
+check("in local space on an unturned element it is the same thing",
+  spNudge.localFlat.join() === "1,0,0", `[${spNudge.localFlat}]`);
+check("but on a turned wall it runs along the wall instead",
+  Math.abs(spNudge.localTurned[0]) < 1e-3
+    && Math.abs(Math.abs(spNudge.localTurned[2]) - 1) < 1e-3, `[${spNudge.localTurned}]`);
+check("at 45 degrees it splits the step without changing its length",
+  Math.abs(Math.hypot(...spNudge.localDiagonal) - 1) < 1e-3
+    && Math.abs(spNudge.localDiagonal[0] - Math.abs(spNudge.localDiagonal[2])) < 1e-3,
+  `[${spNudge.localDiagonal}]`);
+
+// Y is the key, next to V, and the combo has to follow it - a mode you cannot
+// see is a mode you will forget you are in.
+await page.evaluate(() => document.getElementById("render-canvas").focus());
+await page.keyboard.press("y");
+await page.waitForTimeout(150);
+const spAfterY = await page.evaluate(async () => ({
+  state: (await import("/js/editor.js")).state.moveSpace,
+  combo: document.getElementById("move-space").value,
+  status: document.getElementById("status")?.textContent || "",
+}));
+await page.keyboard.press("y");
+await page.waitForTimeout(150);
+const spBackY = await page.evaluate(async () =>
+  (await import("/js/editor.js")).state.moveSpace);
+// Ctrl+Y is redo and is claimed before the switch: it must not toggle as well.
+await page.keyboard.press("Control+y");
+await page.waitForTimeout(150);
+const spCtrlY = await page.evaluate(async () =>
+  (await import("/js/editor.js")).state.moveSpace);
+
+check("Y switches to local space and the combo says so",
+  spAfterY.state === "local" && spAfterY.combo === "local", JSON.stringify(spAfterY));
+check("and it says which key goes back",
+  /\bY\b/.test(spAfterY.status) && /local|own/i.test(spAfterY.status), spAfterY.status);
+check("Y again returns to the world's axes", spBackY === "world", spBackY);
+check("Ctrl+Y is still redo and leaves the space alone", spCtrlY === "world", spCtrlY);
+
+// A combo change has to reach the state, not just the status line.
+const spCombo = await page.evaluate(async () => {
+  const el = document.getElementById("move-space");
+  el.value = "local";
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  const local = (await import("/js/editor.js")).state.moveSpace;
+  el.value = "world";
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return { local, world: (await import("/js/editor.js")).state.moveSpace };
+});
+check("the combo drives the mode as well as the key",
+  spCombo.local === "local" && spCombo.world === "world", JSON.stringify(spCombo));
+
+await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const e = ed.state.placements.get(id);
+  e.node.rotationQuaternion = BABYLON.Quaternion.Identity();
+  e.node.position.set(0, 0, 0);
+  i.setMoveSpace("world"); i.setDragAxis("xz");
+  ed.state.snap.pos = 1;
+  ed.state.camera.position = new BABYLON.Vector3(0, 6, -14);
+  ed.state.camera.setTarget(new BABYLON.Vector3(0, 1, 0));
+}, qSetup.id);
+await page.waitForTimeout(400);
+
 // ---- V also constrains the ghost -------------------------------------------
 // In Y mode the cursor drives the *build plane*, not the ghost's own height:
 // the grid, the ghost and numpad +/- all hang off that one value, so raising it
