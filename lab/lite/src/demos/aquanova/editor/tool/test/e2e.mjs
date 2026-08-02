@@ -112,6 +112,43 @@ console.log("blender glb preserved:",
 console.log("blender manifest preserved:",
   after["ship_manifest.blender.bak.json"] === before["ship_manifest.json"]);
 
+// ---- every exported node says which instance it is -------------------------
+// A name is not an identity: two placements may carry the same one, so a
+// runtime matching by name cannot tell which Havok body belongs to which mesh -
+// and taking a mesh out of the scene, which is what liquefying one does, would
+// be a guess as to which shape to drop with it. The placement id goes into the
+// glTF node's `extras`, which Babylon and Babylon-Lite both hand back at
+// `metadata.gltf.extras`.
+const glbFailures = [];
+{
+  const buf = fs.readFileSync(path.join(EXPORT, "ship.glb"));
+  const magic = buf.readUInt32LE(0) === 0x46546c67;
+  const json = magic
+    ? JSON.parse(buf.toString("utf8", 20, 20 + buf.readUInt32LE(12)))
+    : { nodes: [] };
+  const man = JSON.parse(fs.readFileSync(path.join(EXPORT, "ship_manifest.json"), "utf8"));
+  const byId = new Map((man.instances || []).map((i) => [i.id, i]));
+  const tagged = (json.nodes || []).filter((n) => n.extras?.id);
+  const ids = tagged.map((n) => n.extras.id);
+  const resolvable = tagged.filter((n) => {
+    const inst = byId.get(n.extras.id);
+    return inst && inst.module === n.extras.module && inst.chunk === n.extras.chunk;
+  });
+  console.log(`glb extras   : ${tagged.length} node(s) tagged,`
+    + ` ${new Set(ids).size} distinct id(s), ${resolvable.length} resolve to an instance`);
+  if (!magic) glbFailures.push("ship.glb is not a glb");
+  if (!tagged.length) glbFailures.push("no exported node carries an id in extras");
+  if (new Set(ids).size !== ids.length) glbFailures.push("two nodes share an id");
+  if (resolvable.length !== tagged.length) {
+    glbFailures.push(`${tagged.length - resolvable.length} node(s) name an instance`
+      + " the manifest does not have");
+  }
+  if (glbFailures.length) {
+    console.log("GLB EXTRAS BROKEN:", glbFailures.join(" | "));
+    errors.push("glb extras: " + glbFailures.join(" | "));
+  }
+}
+
 // ---- every write keeps what it replaced -----------------------------------
 // The manifest, the collision file and the auto-save all rotate a timestamped
 // copy. The collision file was briefly exempted on the reasoning that every
@@ -202,4 +239,4 @@ console.log("\nerrors:", errors.length ? [...new Set(errors)].join("\n") : "(non
 await browser.close();
 // Losing the ability to recover work - or the viewpoint you saved from - is
 // worth failing the run over.
-if (rotationFailures.length || benchFailures.length) process.exit(1);
+if (rotationFailures.length || benchFailures.length || glbFailures.length) process.exit(1);

@@ -74,6 +74,38 @@ one glTF mesh between every instance of a module, so a mesh entry belongs to the
 module, not to any one element. The **node** is the only per-element name slot,
 and it is the name Babylon gives the node when the .glb is loaded back.
 
+### Every exported node carries its identity
+
+Because the name is deliberately not unique, it cannot be an identity. Each
+placement's glTF node therefore also carries an `extras` block:
+
+```json
+{ "id": "P0192", "module": "Props/Prop_Crate4", "chunk": "CH00_Storage" }
+```
+
+Written by putting `metadata.gltf.extras` on the node for the duration of the
+export — Babylon's serializer reads exactly that address by default
+(`metadataSelector: (m) => m?.gltf?.extras`), and it is put back afterwards so
+the editor's own `metadata.placement` is untouched.
+
+**Both loaders hand it back at the same address**, `mesh.metadata.gltf.extras`:
+Babylon.js through its `ExtrasAsMetadata` loader extension, and **Babylon-Lite**
+through `gltf-feature-extras.ts`, whose detector explicitly includes
+`json.nodes.some(n => n.extras !== undefined)` — so node extras are enough to
+pull the feature module in, and it assigns to the node *and* the mesh.
+
+> **This is what makes a mesh removable.** Liquefying a prop takes its mesh out
+> of the scene, and its Havok body has to go with it — which needs the runtime
+> to know *which* body that is. Matching on the node name cannot do it: this
+> ship has two placements called `crate4` (`P0192` and `P0194`, stacked at 11,3),
+> so the .glb has two nodes with that name and a name lookup is a coin toss. The
+> id is the manifest's own key and unique by construction.
+>
+> `module` and `chunk` ride along so a mesh reaches its hull in
+> `moduleCollision[module]` in one hop, with no join back through `instances`.
+> The e2e suite **fails the run** if a tagged node's id is missing, duplicated,
+> or names an instance the manifest does not have.
+
 ### Behaviours
 
 Two halves, matching the manifest:

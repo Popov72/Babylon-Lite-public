@@ -505,6 +505,7 @@ async function exportGlbInner() {
   const holders = new Map();
   const restore = [];
   const renamed = [];
+  const tagged = [];
 
   for (const id of state.chunks) {
     const t = new TransformNode(`CHUNK_${id}`, state.scene);
@@ -521,6 +522,23 @@ async function exportGlbInner() {
       renamed.push([m, m.name]);
       m.name = `${name}_primitive${i}`;
     });
+
+    // Who this node is, written into the glTF node's `extras`.
+    //
+    // A name is not an identity: two placements may carry the same one - this
+    // ship has `crate4` twice - so a runtime that matched by name could not
+    // tell which body belongs to which mesh, and taking one mesh out of the
+    // scene would be a guess as to which Havok shape to drop with it.
+    //
+    // `id` is the manifest's own key and unique by construction; `module` and
+    // `chunk` ride along so a mesh resolves to its hull in `moduleCollision`
+    // without a lookup table. Babylon's exporter takes `metadata.gltf.extras`
+    // and both Babylon and Babylon-Lite hand it back at the same address.
+    tagged.push([p.node, p.node.metadata]);
+    p.node.metadata = {
+      ...(p.node.metadata || {}),
+      gltf: { extras: { id: p.id, module: p.module, chunk: p.chunk } },
+    };
   }
 
   const exportable = new Set();
@@ -547,6 +565,10 @@ async function exportGlbInner() {
   } finally {
     for (const [node, parent] of restore) node.parent = parent;
     for (const [node, name] of renamed) node.name = name;
+    // Put the metadata back exactly, undefined included: the editor's own
+    // picking reads this object, and a stray `gltf` key left on it would be a
+    // quiet lie about what the node is.
+    for (const [node, meta] of tagged) node.metadata = meta;
     for (const t of holders.values()) t.dispose();
   }
 }
