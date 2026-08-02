@@ -761,6 +761,12 @@ export function axesTarget() { return axes?.id || null; }
 /** Which space the axes are drawn in - "world" or "local". */
 export function axesSpace() { return axes?.space || null; }
 
+/** Whether the turn arrow is drawn reversed, i.e. the step is negative. */
+export function axesRotArrowFlipped() {
+  const ring = axes?.marks.rot[state.rotAxis];
+  return ring ? ring.scaling.x < 0 : null;
+}
+
 /** The id used for the armed ghost, which is not a placement and has no id. */
 export const GHOST_AXES = "__ghost__";
 
@@ -1039,6 +1045,10 @@ function placeAxisLabel() {
   const ring = axes.marks.rot[state.rotAxis];
   if (ring && axes.rotLabel) {
     if (!ring.isEnabled()) { axes.rotLabel.hidden = true; } else {
+      // The curved arrow has a head, so it states a *direction* - and a
+      // negative step turns the other way. Mirroring the arc reverses which
+      // way it circulates, so the picture cannot disagree with the key.
+      ring.scaling.x = state.snap.rot < 0 ? -1 : 1;
       ring.computeWorldMatrix(true);
       placeChip(axes.rotLabel, ring.getAbsolutePosition(),
         state.snap.rot ? `${state.snap.rot}°` : "free");

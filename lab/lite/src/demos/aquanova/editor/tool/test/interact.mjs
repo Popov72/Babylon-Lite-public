@@ -343,6 +343,47 @@ check("the inertia slider is gone and the camera is fixed at 0.75",
 check("Rot and Scale no longer offer a meaningless 'off'",
   !knobs.rotOptions.includes("0") && !knobs.scaleOptions.includes("0"),
   `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`);
+// R only ever turns one way, so turning back meant four presses of 90 or
+// switching the axis and thinking about signs. A negative step is the same
+// key going the other way. The list is a number line, so Ctrl+R sweeps it.
+check("the rotation step runs from -90 to 90",
+  knobs.rotOptions.join() === "-90,-45,-15,-5,5,15,45,90", `[${knobs.rotOptions}]`);
+
+const rotSign = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [3, 0.4, 0.8] });
+  ed.select([c.id]);
+  const wasStep = ed.state.snap.rot, wasAxis = ed.state.rotAxis;
+  ed.state.rotAxis = "y";
+  const run = (step) => {
+    c.node.rotationQuaternion = BABYLON.Quaternion.Identity();
+    ed.state.snap.rot = step;
+    i.rotateCurrent(1);
+    return +(c.node.rotationQuaternion.toEulerAngles().y * 180 / Math.PI).toFixed(2);
+  };
+  const out = { p90: run(90), m90: run(-90), p45: run(45), m45: run(-45), p5: run(5), m5: run(-5) };
+  // the curved arrow on the gizmo has a head, so it states a direction too
+  ed.showAxes(c.id);
+  ed.state.snap.rot = -90; window.__scene.render();
+  out.arrowBack = ed.axesRotArrowFlipped();
+  ed.state.snap.rot = 90; window.__scene.render();
+  out.arrowForward = ed.axesRotArrowFlipped();
+  ed.hideAxes();
+  ed.state.snap.rot = wasStep; ed.state.rotAxis = wasAxis;
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("a negative step turns the same key the other way",
+  rotSign.p90 === -rotSign.m90 && rotSign.p45 === -rotSign.m45 && rotSign.p5 === -rotSign.m5
+    && rotSign.p90 === 90,
+  `${rotSign.p90}/${rotSign.m90}, ${rotSign.p45}/${rotSign.m45}, ${rotSign.p5}/${rotSign.m5}`);
+check("and the gizmo's turn arrow points the way it will actually go",
+  rotSign.arrowBack === true && rotSign.arrowForward === false,
+  `at -90 flipped=${rotSign.arrowBack}, at 90 flipped=${rotSign.arrowForward}`);
 
 // ---- 1d-quater. undo / redo ------------------------------------------------
 const history = await page.evaluate(async () => {
@@ -2681,7 +2722,7 @@ const rotFollowed = await page.evaluate(async () => {
   };
 });
 check("the angle chip follows Ctrl+R, and moves to the arm Shift+R picks",
-  rotFollowed.text === "5°" && rotFollowed.axis === "x"
+  rotFollowed.text === "-90°" && rotFollowed.axis === "x"
     && rotFollowed.onAxisArm.join() === "true,false,false",
   `${rotFollowed.text} on ${rotFollowed.axis}, at ${rotFollowed.onAxisArm}`);
 // put the angle back for the tests below
@@ -2918,9 +2959,10 @@ for (let k = 0; k < 2; k++) {
 await page.keyboard.press("Control+Shift+r");
 await page.waitForTimeout(120);
 const rotStepBack = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.rot);
+// The list runs -90 to 90, so past 90 the cycle wraps round to the far end.
 check("Ctrl+R cycles the rotation angle, Ctrl+Shift+R goes back",
-  rotStep.map((r) => r.v).join() === "5,15" && rotStep.every((r) => r.combo === String(r.v))
-    && rotStepBack === 5,
+  rotStep.map((r) => r.v).join() === "-90,-45" && rotStep.every((r) => r.combo === String(r.v))
+    && rotStepBack === -90,
   `90 -> ${rotStep.map((r) => r.v).join(" -> ")} -> back ${rotStepBack}`);
 
 const sclStep = [];

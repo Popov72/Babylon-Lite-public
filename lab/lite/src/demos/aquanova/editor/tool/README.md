@@ -333,7 +333,7 @@ selection before acting on a different element.
 | Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
-| Turn | **`R`** — about the element's own origin |
+| Turn | **`R`** — about the element's own origin, by the `Rot` step. The step is **signed**: pick a negative angle to turn the other way |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
 | Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis and **`Y`** the space it is measured in, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
 | Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
@@ -351,7 +351,7 @@ selection before acting on a different element.
 | Behaviour | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body) |
 | Eyedropper | `Alt`-click a placed element to arm its module |
 | Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen |
-| Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging); Rot and Scale are keyboard *step sizes*, so they have no "off" |
+| Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging); Rot and Scale are keyboard *step sizes*, so they have no "off". Rot runs `-90°` to `90°`, the sign being which way `R` turns |
 | Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
 | Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
@@ -685,13 +685,22 @@ to this element" is one glance rather than three readouts:
 | curved arrow encircling it | the axis a turn goes about | `Shift+R` |
 | cube on the tip | the axis a scale acts on (all three for `all`) | `Shift+F` |
 | the chip at the origin | the move step, in metres, or `free` | `Shift+V` |
-| the chip inside the curved arrow | the turn angle, in degrees | `Ctrl+R` |
+| the chip inside the curved arrow | the turn angle, in degrees, signed | `Ctrl+R` |
 | a chip on each lit cube | the scale step | `Ctrl+F` |
 
 Each modal setting has exactly one marker, and each marker means exactly one
 thing — `V` never touches the ring, `Shift+R` never touches the brightness. The
 curved arrow sweeps three quarters of a turn rather than closing into a full
 ring, so it reads as a direction of travel and not as a collar.
+
+**The turn angle is signed**: `-90°`, `-45°`, `-15°`, `-5°` sit alongside the
+positives, so `R` turns the other way without four presses of 90 or switching
+the axis and reasoning about which sign that gives. `rotateCurrent` already
+multiplied the step by a direction, so a negative step needed no new code — but
+the *arrow* did, because it has a head and therefore states a direction. It is
+mirrored on its own X when the step is negative, which reverses which way the
+arc circulates: the picture cannot disagree with the key. The list runs `-90` to
+`90` in order, so `Ctrl+R` sweeps a number line rather than jumping about.
 
 The markers keep full brightness even on a dimmed arm: the rotation and scale
 axes are often not among the drag axes, and a dim marker would read as "off".
