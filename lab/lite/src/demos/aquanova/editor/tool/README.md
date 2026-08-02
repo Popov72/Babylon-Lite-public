@@ -334,7 +334,7 @@ selection before acting on a different element.
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
 | Turn | **`R`** — about the element's own origin, by the `Rot` step. The step is **signed**: pick a negative angle to turn the other way |
-| Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
+| Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
 | Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis and **`Y`** the space it is measured in, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
 | Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
 | Turn as a group | **`Alt` + `R`** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
@@ -668,11 +668,19 @@ three sources at once and has no control anywhere.
 `X` draws one element's **world** X/Y/Z arrows; **`Shift+X`** draws its **own**.
 
 Both are needed because the two things you do with an axis disagree about which
-space they live in. A **drag** moves along the world axes — `node.position` *is*
-world position, since placements have no parent in the editor — so a world gizmo
-is the honest answer for moving. **Scaling is local**, so on anything that has
-been turned (most of a ship built from a modular kit) a world gizmo cannot tell
-you which way `X` will grow.
+space they live in. A **drag** moves along the world axes by default — `node.position`
+*is* world position, since placements have no parent in the editor — so a world
+gizmo is the honest answer for moving, unless the `World`/`Local` combo says
+otherwise. **Scaling is always local**, so on anything that has been turned
+(most of a ship built from a modular kit) a world gizmo cannot tell you which
+way `X` will grow.
+
+**The flavour survives clicking another element.** The gizmo already followed a
+single pick — having asked to see it, you almost never want it left behind on
+the piece you have moved away from — but re-showing it took the *default*, so a
+local gizmo reverted to world on the next click and `Shift+X` had to be pressed
+again for every element. It now carries whichever flavour it was in; `X` and
+`Shift+X` still name one outright.
 
 The local arms are aimed **individually**, from the world matrix's basis rows,
 rather than by rotating the gizmo as a whole. A mirrored element — negative

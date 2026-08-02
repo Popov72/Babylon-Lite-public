@@ -1515,8 +1515,14 @@ export function select(ids) {
   // Axes already on screen follow the selection: having asked to see them, you
   // almost never want them left behind on the element you just moved away from.
   // Only for a single pick - a multi-selection has no one element to sit on.
+  //
+  // And they follow in the flavour they were already in. Re-showing them took
+  // the default, so a local gizmo - the one that matters, since scaling is
+  // local and a turned piece has its own idea of which way X grows - silently
+  // reverted to world on the next click, and `Shift+X` had to be pressed again
+  // for every element.
   if (axes && state.selection.length === 1 && state.selection[0] !== axes.id) {
-    showAxes(state.selection[0]);
+    showAxes(state.selection[0], axes.space);
   }
   emit("selection");
 }

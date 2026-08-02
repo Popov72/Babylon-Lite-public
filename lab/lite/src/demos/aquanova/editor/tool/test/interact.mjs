@@ -2896,11 +2896,33 @@ const follows = await page.evaluate(async () => {
   ed.select([]);
   const onNone = ed.axesTarget();
 
+  // ...and they follow in the flavour they were already in. Re-showing them
+  // took the default, so a local gizmo reverted to world on the next click and
+  // Shift+X had to be pressed again for every element - which is the one that
+  // matters, scaling being local and a turned piece having its own idea of
+  // which way X grows.
+  ed.showAxes(a.id, "local");
+  const localStart = ed.axesSpace();
+  ed.select([b.id]);
+  const localKept = { on: ed.axesTarget(), space: ed.axesSpace() };
+  ed.select([c.id]);
+  const localTwice = ed.axesSpace();
+  ed.showAxes(a.id, "world");
+  ed.select([b.id]);
+  const worldKept = ed.axesSpace();
+  // and X/Shift+X still say which flavour outright, whatever is on screen
+  ed.showAxes(a.id, "local");
+  ed.toggleAxes(a.id, "world");
+  const xForcesWorld = ed.axesSpace();
+  ed.toggleAxes(a.id, "local");
+  const shiftXForcesLocal = ed.axesSpace();
+
   ed.hideAxes();
   ed.select([a.id]);
   const whenHidden = ed.axesTarget();      // hidden stays hidden
   ed.clearAll(); ed.select([]);
-  return { started, followed, onMulti, onNone, whenHidden, a: a.id, b: b.id };
+  return { started, followed, onMulti, onNone, whenHidden, a: a.id, b: b.id,
+    localStart, localKept, localTwice, worldKept, xForcesWorld, shiftXForcesLocal };
 });
 check("visible axes follow a single click to the new element",
   follows.started === follows.a && follows.followed === follows.b,
@@ -2910,6 +2932,15 @@ check("a multi-selection or an empty one leaves them where they are",
   `multi=${follows.onMulti}, none=${follows.onNone}`);
 check("selecting does not conjure axes that were never shown",
   follows.whenHidden === null, `${follows.whenHidden}`);
+check("a local gizmo is still local on the element you click next",
+  follows.localStart === "local" && follows.localKept.on === follows.b
+    && follows.localKept.space === "local" && follows.localTwice === "local",
+  `${follows.localStart} -> ${follows.localKept.space} -> ${follows.localTwice}`);
+check("and a world one is still world",
+  follows.worldKept === "world", follows.worldKept);
+check("X and Shift+X still name the flavour outright",
+  follows.xForcesWorld === "world" && follows.shiftXForcesLocal === "local",
+  `X -> ${follows.xForcesWorld}, Shift+X -> ${follows.shiftXForcesLocal}`);
 
 // ---- 1d-octodecies. Shift/Ctrl on E, F and V drive the axis modes ----------
 // One letter per action, its settings behind the modifiers: Shift picks the
