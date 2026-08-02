@@ -328,7 +328,9 @@ const knobs = await page.evaluate(async () => {
            inertiaSlider: !!document.getElementById("inertia"),
            camInertia: ed.state.camera.inertia,
            rotOptions: [...document.getElementById("snap-rot").options].map((o) => o.value),
-           scaleOptions: [...document.getElementById("snap-scale").options].map((o) => o.value) };
+           rotLabels: [...document.getElementById("snap-rot").options].map((o) => o.text),
+           scaleOptions: [...document.getElementById("snap-scale").options].map((o) => o.value),
+           scaleLabels: [...document.getElementById("snap-scale").options].map((o) => o.text) };
 });
 check("the Env slider drives the scene's IBL strength",
   knobs.raised.state === 3.2 && knobs.raised.scene === 3.2,
@@ -338,16 +340,27 @@ check("Env intensity is clamped", knobs.high === 6 && knobs.low === 0,
 check("the inertia slider is gone and the camera is fixed at 0.75",
   !knobs.inertiaSlider && knobs.camInertia === 0.75,
   `slider=${knobs.inertiaSlider}, inertia=${knobs.camInertia}`);
-// "off" is a real option for Move (free positioning) but meaningless for a
-// keyboard step: it fell back to a hidden default instead of doing nothing.
+// "off" is a real option for Move (free positioning while dragging) but
+// meaningless for a keyboard step: a step of zero simply does nothing, and it
+// fell back to a hidden default instead. `free` is the useful reading of the
+// same idea - a step small enough to dial in any value with the keys you
+// already use, rather than no step at all.
 check("Rot and Scale no longer offer a meaningless 'off'",
   !knobs.rotOptions.includes("0") && !knobs.scaleOptions.includes("0"),
   `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`);
-// R only ever turns one way, so turning back meant four presses of 90 or
+// R only ever turned one way, so turning back meant four presses of 90 or
 // switching the axis and thinking about signs. A negative step is the same
-// key going the other way. The list is a number line, so Ctrl+R sweeps it.
-check("the rotation step runs from -90 to 90",
-  knobs.rotOptions.join() === "-90,-45,-15,-5,5,15,45,90", `[${knobs.rotOptions}]`);
+// key going the other way. The list is a number line, so Ctrl+R sweeps it -
+// and `free` sits in the middle of it, being the smallest step there is.
+check("the rotation step runs from -90 to 90, through a fine step either way",
+  knobs.rotOptions.join() === "-90,-45,-15,-5,-0.5,0.5,5,15,45,90",
+  `[${knobs.rotOptions}]`);
+check("and the scale step starts at a fine one",
+  knobs.scaleOptions.join() === "0.01,0.05,0.1,0.25", `[${knobs.scaleOptions}]`);
+check("both are labelled 'free', the way the Move step's 'off' is",
+  knobs.rotLabels.filter((t) => /free/.test(t)).length === 2
+    && knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1,
+  `rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`);
 
 const rotSign = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -365,7 +378,8 @@ const rotSign = await page.evaluate(async () => {
     i.rotateCurrent(1);
     return +(c.node.rotationQuaternion.toEulerAngles().y * 180 / Math.PI).toFixed(2);
   };
-  const out = { p90: run(90), m90: run(-90), p45: run(45), m45: run(-45), p5: run(5), m5: run(-5) };
+  const out = { p90: run(90), m90: run(-90), p45: run(45), m45: run(-45), p5: run(5), m5: run(-5),
+    free: run(0.5), freeBack: run(-0.5) };
   // the curved arrow on the gizmo has a head, so it states a direction too
   ed.showAxes(c.id);
   ed.state.snap.rot = -90; window.__scene.render();
@@ -381,9 +395,53 @@ check("a negative step turns the same key the other way",
   rotSign.p90 === -rotSign.m90 && rotSign.p45 === -rotSign.m45 && rotSign.p5 === -rotSign.m5
     && rotSign.p90 === 90,
   `${rotSign.p90}/${rotSign.m90}, ${rotSign.p45}/${rotSign.m45}, ${rotSign.p5}/${rotSign.m5}`);
+// `free` is a fine step, not no step - a keyboard step of zero would simply do
+// nothing, which is why "off" was taken off these two lists in the first place.
+check("'free' turns by half a degree, either way",
+  Math.abs(rotSign.free - 0.5) < 1e-6 && Math.abs(rotSign.freeBack + 0.5) < 1e-6,
+  `${rotSign.free} / ${rotSign.freeBack}`);
 check("and the gizmo's turn arrow points the way it will actually go",
   rotSign.arrowBack === true && rotSign.arrowForward === false,
   `at -90 flipped=${rotSign.arrowBack}, at 90 flipped=${rotSign.arrowForward}`);
+
+// The wheel already goes both ways, so the scale step needs no sign - but its
+// floor did need lifting. A fixed 5 cm floor sat at exactly five times a 0.01
+// step, so `free` could not reach the sizes it exists for.
+const scaleFree = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [1, 1, 1] });
+  ed.select([c.id]);
+  const wasStep = ed.state.snap.scale, wasAxis = ed.state.scaleAxis;
+  ed.state.scaleAxis = "y";
+  const run = (step, dir, from) => {
+    c.node.scaling.set(1, from, 1);
+    ed.state.snap.scale = step;
+    i.scaleCurrent(dir);
+    return +c.node.scaling.y.toFixed(4);
+  };
+  const out = {
+    up: run(0.01, 1, 1), down: run(0.01, -1, 1),
+    coarse: run(0.1, 1, 1),
+    // and it can go below the old fixed floor, one fine step at a time
+    thin: run(0.01, -1, 0.04),
+    // while a coarse step keeps the floor it always had
+    coarseFloor: run(0.1, -1, 0.06),
+  };
+  ed.state.snap.scale = wasStep; ed.state.scaleAxis = wasAxis;
+  co.removeCollider(c.id, true); ed.clearAll(); ed.select([]);
+  return out;
+});
+check("'free' resizes by 0.01 a notch, up and down",
+  Math.abs(scaleFree.up - 1.01) < 1e-4 && Math.abs(scaleFree.down - 0.99) < 1e-4
+    && Math.abs(scaleFree.coarse - 1.1) < 1e-4,
+  `up ${scaleFree.up}, down ${scaleFree.down}, coarse ${scaleFree.coarse}`);
+check("and it can go under the old fixed 5 cm floor, which sat at five of its steps",
+  Math.abs(scaleFree.thin - 0.03) < 1e-4 && Math.abs(scaleFree.coarseFloor - 0.05) < 1e-4,
+  `fine 0.04 -> ${scaleFree.thin}, coarse 0.06 -> ${scaleFree.coarseFloor}`);
 
 // ---- 1d-quater. undo / redo ------------------------------------------------
 const history = await page.evaluate(async () => {
@@ -3006,7 +3064,7 @@ for (let k = 0; k < 2; k++) {
   })));
 }
 check("Ctrl+F cycles the scale step",
-  sclStep.map((r) => r.v).join() === "0.25,0.05"
+  sclStep.map((r) => r.v).join() === "0.25,0.01"
     && sclStep.every((r) => r.combo === String(r.v)),
   `0.1 -> ${sclStep.map((r) => r.v).join(" -> ")}`);
 

@@ -1234,9 +1234,15 @@ export function scaleCurrent(dir) {
   // Work on the magnitude and keep the sign, so a mirrored (negative) element
   // can still be resized instead of being snapped back to +0.05 on the first
   // notch.
+  //
+  // The floor is the smaller of 5 cm and one step, so the wheel can never take
+  // something down to nothing but the `free` step can still reach the sizes it
+  // exists for: a fixed 5 cm floor sat at exactly five times a 0.01 step, and a
+  // collision shell fitted to the kit's 7.5 mm walls could not be nudged at all.
+  const floor = Math.min(0.05, Math.abs(step));
   const bump = (v) => {
     const sign = v < 0 ? -1 : 1;
-    return sign * Math.max(0.05, Math.abs(v) + step);
+    return sign * Math.max(floor, Math.abs(v) + step);
   };
   const apply = (arr) => {
     if (state.scaleAxis === "all") {

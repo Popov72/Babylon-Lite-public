@@ -351,7 +351,7 @@ selection before acting on a different element.
 | Behaviour | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body) |
 | Eyedropper | `Alt`-click a placed element to arm its module |
 | Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen |
-| Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging); Rot and Scale are keyboard *step sizes*, so they have no "off". Rot runs `-90°` to `90°`, the sign being which way `R` turns |
+| Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard *step sizes*, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns |
 | Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
 | Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
@@ -740,6 +740,23 @@ the *arrow* did, because it has a head and therefore states a direction. It is
 mirrored on its own X when the step is negative, which reverses which way the
 arc circulates: the picture cannot disagree with the key. The list runs `-90` to
 `90` in order, so `Ctrl+R` sweeps a number line rather than jumping about.
+
+**`free` is a fine step, not no step.** Both lists carry one — `±0.5°` on `Rot`,
+`0.01` on `Scale` — for dialling in a value with the keys you already use. It is
+deliberately *not* zero: `Move` can be switched off because a drag is a
+continuous gesture that then goes unsnapped, but `R` and `Shift+wheel` are
+discrete, so a step of zero would simply do nothing. That is exactly why a
+literal "off" was taken off these two lists earlier, and a test still fails if
+`0` reappears in either. `Rot` gets `free` in both directions, since its sign
+lives in the step; `Scale` needs only one, the wheel already going both ways.
+
+> The scale floor moved with it. `scaleCurrent` clamped the magnitude at 5 cm so
+> the wheel could never take something down to nothing — harmless when the
+> smallest step was 0.05, but at exactly five times a `free` step it became a
+> wall, and a collision shell fitted to the kit's 7.5 mm walls could not be
+> nudged at all. The floor is now the smaller of 5 cm and one step, so coarse
+> steps keep the guard they always had and `free` can reach the sizes it exists
+> for.
 
 The markers keep full brightness even on a dimmed arm: the rotation and scale
 axes are often not among the drag axes, and a dim marker would read as "off".
