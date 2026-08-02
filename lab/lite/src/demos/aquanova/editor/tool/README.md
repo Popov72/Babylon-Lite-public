@@ -999,6 +999,11 @@ Doors carry the portal:
   placements registered as the animated leaves.
 * Chunk A/B default to `(auto)`, which resolves to the two nearest chunk
   volumes at save time. Set them explicitly when that guess is wrong.
+* **Sealed** marks a portal you can see through but not walk through — a window
+  onto space rather than a doorway. The renderer still draws the far chunk;
+  collision generation keeps the opening solid. It is written on the door
+  record only (`doors[].sealed`), not on the portal, and defaults to `false` so
+  every manifest written before it reads back as an ordinary doorway.
 * **Doors resize two ways.** The inspector's `W`/`H` fields set the authored
   opening; `Shift+wheel` and the inspector's `Scale` fields scale the node like
   any other element. Both were once blocked for markers — `scaleCurrent()`
@@ -1028,6 +1033,181 @@ so** in the status bar rather than keeping it and quietly re-saving it.
 
 Markers are editor-only: they are written to the manifest but excluded from the
 exported .glb.
+
+## Collision
+
+Collision geometry is authored beside the ship, not derived from it at runtime.
+It is stored in `state.colliders`, drawn in green, kept out of `ship.glb`, and
+written to the manifest grouped by chunk in **Havok's own parameters** — so the
+runtime hands each record straight to a shape constructor with no
+interpretation.
+
+| shape | what the manifest carries | why |
+| --- | --- | --- |
+| box | `centre`, `rotation` (quaternion), `halfExtents` | `PhysicsShapeBox` takes an explicit turn |
+| sphere | `centre`, `radius` | no orientation exists |
+| capsule | `pointA`, `pointB`, `radius` | `PhysicsShapeCapsule`'s turn is implicit in the segment |
+| cylinder | `pointA`, `pointB`, `radius` | likewise |
+
+**The scale is constrained per kind, on every write path.** Havok's sphere is a
+single radius and its capsule a radius plus two endpoints, so an ellipsoid has
+no representation at all: the runtime would have to silently resize it, and the
+ship you built would not be the ship you play. `constrainScale()` therefore runs
+on the inspector, the wheel, a carried duplicate and a loaded manifest alike —
+a sphere is forced round, a capsule and cylinder locked to one radius in X/Z,
+and only the box takes an arbitrary scale.
+
+### Primitives land corner first
+
+A kit module is modelled *from* its origin: a wall's geometry starts at the
+origin and runs 4 m to the side, so dropping it with the origin on the build
+plane leaves it resting on the floor and filling whole grid cells. A collision
+primitive is a **unit shape centred on its origin**, because Havok wants a
+centre and not a corner — so the identical drop buried half of it under the
+plane and put its faces through the middle of a cell.
+
+The ghost therefore shifts a lone primitive by its own half size, putting the
+*corner* where the origin was snapped to. The lift is derived from the live
+transforms rather than a constant, so it survives the wheel scaling the ghost
+and `R` turning it, and it uses the world-axis extents (`|m₀|+|m₄|+|m₈|` and so
+on) so a turned box reports the box that actually contains it.
+
+The build plane consequently means a primitive's **base**, not its origin. That
+is not cosmetic: referencing the centre made every `M` grab set the plane to the
+centre and then drop the shape half a height higher, so a box climbed off the
+floor a little more each time it was moved.
+
+Only a lone primitive gets the lift. For a set, the offsets are measured from an
+anchor whose own half size is not the group's, and the two references would
+fight.
+
+### Fitting a room
+
+**Generate for active chunk** fits one box to every solid module in the chunk.
+It is fitted per *prototype* — the kit has 277 of them and a room has dozens of
+instances — and then instanced per placement, so corners and inclines come out
+right with no special handling. Boxes are marked `generated: true`, so pressing
+the button again replaces only its own output and leaves anything you placed or
+adjusted by hand alone.
+
+`Decals` are skipped: grilles, signage and painted panels lie flat on a surface
+that already has a collider, and a box round one would jut into the room by its
+whole thickness for nothing. Props are **not** skipped — the barriers and pods
+are things you walk into.
+
+**An unsealed doorway is cut out of the walls it crosses.** The subtraction
+works in the door's own frame, where the opening is a rectangle on the plane
+`z = 0`, and splits a crossing box into the pieces around the hole — left,
+right, sill, lintel. It is only attempted when the box's axes line up with the
+door's; every rotation in the kit is a multiple of 90°, so that is the normal
+case, and a door at an odd angle leaves an honest solid wall to fix by hand
+rather than a cutout that is subtly in the wrong place. A **sealed** door is not
+in the list at all, so a window onto space stays solid.
+
+For a fluid or a player, **over-approximating is safe and gaps leak** —
+overlapping boxes are harmless, a hole is not — which is why the fit is an AABB
+per module rather than a snug hull.
+
+### Collision authored on a kit module
+
+A room's primitives are world space and belong to that room. A **module's** are
+authored once, in the module's own local space, and every placement of it
+inherits them. That is the only sane answer for props: a barrier's AABB is a
+poor fit, and it may be placed twenty times.
+
+Select an element (or point at one) and press **Edit module collision**. The
+ship goes off stage, a **stand-in** of that module appears at the origin with an
+identity transform, and its shapes come on. Because the stand-in sits at the
+origin unturned, the module's local space and the world agree — which is what
+lets *every* existing tool work here unchanged: the ghost, dragging, scaling,
+the axis gizmo, the inspector, undo. **Fit a box** seeds one box from the
+module's bounding volume as a starting point. `Esc` or **Back to the ship**
+leaves.
+
+**The stand-in is deliberately not a placement.** It is never in
+`state.placements`, so it cannot reach the layout, the manifest or the exported
+`.glb`, and its meshes are not pickable — the shapes are what you are there to
+click. The ship is only *hidden* while you work, never touched, so leaving puts
+it back exactly as it was.
+
+On the module stage the palette becomes a module **chooser**: clicking a tile
+opens that module rather than arming a brush, because arming one would drop real
+kit geometry into a ship you cannot see. Fitting a room is disabled there for the
+same reason.
+
+**A module that carries its own collision is skipped by the room fitter.** Its
+placements are already covered — the manifest instances the shapes onto every
+one of them — so fitting a box as well would give it collision twice, and
+editing the module would silently stop matching the room until you pressed the
+button again. The status line reports how many placements were inherited rather
+than fitted.
+
+The one thing module collision does *not* get is doorway subtraction: an
+unsealed doorway is cut out of fitted boxes only. Author module collision on
+props, not on the walls a door is cut through.
+
+In the manifest:
+
+* `collision[chunk]` — what the runtime reads. Room shapes as authored, plus
+  every module shape instanced onto every placement of its module, each
+  carrying `module` so a runtime that wants to build one Havok shape and reuse
+  it across bodies can group by that id.
+* `moduleCollision[moduleId]` — the same shapes in module-local space, which is
+  what makes that sharing possible.
+* `colliders` — the editor's own record, kind plus a plain transform. **This is
+  the source the tool reloads from**, and `collision` is derived from it. A
+  saved ship used to come back with no collision at all, because
+  `buildManifest()` assembles its own object and never wrote this key while
+  `restoreFrom()` read it.
+
+### What the viewport shows
+
+The **Ship + collision / Ship only / Collision only** switch in the toolbar
+composes with everything else rather than fighting it: it can only ever take
+things *off* screen, so chunk isolation and the `Shift+H` veil keep the last
+word. It runs through `applyVisibility()`, the one place that decides what is
+enabled, for exactly that reason. Hiding a layer drops any selection it hides,
+so the gizmo and the inspector never act on something nobody can see.
+
+### The shell thickness
+
+The kit models its floors and ceilings as **single planes with no depth at
+all**: `Platforms/Platform_3Plates` measures `[4, 0, 4]`. A zero extent has no
+shape, and the guard against it used to read `Math.abs(v) || 1` — and `0 || 1`
+is **one metre**. A two-plate room therefore came out with metre-thick slabs top
+and bottom while its walls were 7.5 mm.
+
+A module with no depth on some axis is now given the **collision shell
+thickness** instead, centred on the plane, so a fitted room is the same
+thickness all the way round. The guard clamps to a hair rather than a metre,
+which is a floor on nonsense, not a source of it.
+
+### What the inspector measures
+
+For a primitive the `Size` row shows **Havok's own parameters**, not a bounding
+box: a box gives its three sides, a sphere one radius, a capsule or cylinder a
+radius and a height. A world AABB would show a sphere as three identical sides
+and a *turned* capsule as something with no relation to the radius it is
+actually built from — and the whole point of constraining the scale is that
+those numbers are the truth.
+
+## Settings
+
+Ship-wide constants live in `state.config`, are edited in the **Settings** pane,
+and go in the layout. They are authoring decisions, not preferences: a ship
+fitted with an 8 mm shell and reloaded on another machine has to come back with
+the same shell, or its collision silently changes. So they are **saved with the
+layout**, go through the **undo stack** like any other edit, and are read back
+through `{ ...CONFIG_DEFAULTS, ...saved }` so a layout written before a setting
+existed returns that setting's default rather than `undefined`.
+
+| setting | default | what it does |
+| --- | --- | --- |
+| Collision shell | `0.008` m | thickness given to a module with no depth of its own when fitting collision |
+
+The default matches what the kit's walls read as in the inspector. They in fact
+measure 0.0075 m; the field rounds. Set it to 0.0075 if you want a fitted room
+to be exactly uniform.
 
 ## Live checks
 

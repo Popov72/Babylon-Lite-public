@@ -165,7 +165,6 @@ async function buildGhost(specs, opts = {}) {
   const meshes = [];
   let min = null, max = null;
   for (const spec of specs) {
-    const proto = await getProto(spec.module);
     const node = new TransformNode(`GHOST_ITEM_${items.length}`, state.scene);
     node.parent = root;
     node.position.copyFrom(spec.offset || Vector3.Zero());
@@ -176,10 +175,28 @@ async function buildGhost(specs, opts = {}) {
         spec.rotation[2] * Math.PI / 180)
       : Quaternion.Identity();
     if (spec.scaling) node.scaling.set(...spec.scaling);
-    const parts = cloneParts(proto.parts, node, `GHOST_${items.length}_`);
-    meshes.push(...parts);
+
+    // A collision primitive has no kit prototype: it is generated geometry, so
+    // the ghost builds the same unit shape and wears the ghost material over
+    // it. Everything downstream - offsets, group turns, the drop - is identical.
+    let b;
+    if (spec.collider) {
+      const shape = hooks.buildColliderMesh(spec.collider, `GHOST_${items.length}`);
+      if (!shape) continue;
+      shape.parent = node;
+      shape.isPickable = false;
+      shape.material = ghostMaterialFor(shape.material, "GHOST", GHOST_ALPHA);
+      meshes.push(shape);
+      b = { min: new Vector3(-0.5, -0.5, -0.5), max: new Vector3(0.5, 0.5, 0.5) };
+    } else {
+      const proto = await getProto(spec.module);
+      const parts = cloneParts(proto.parts, node, `GHOST_${items.length}_`);
+      meshes.push(...parts);
+      b = protoBounds(proto);
+    }
     items.push({
-      module: spec.module, node, sourceId: spec.sourceId || null,
+      module: spec.module || null, collider: spec.collider || null,
+      node, sourceId: spec.sourceId || null,
       // Kept alongside the node so the drop can *compose* the world transform
       // rather than decompose a matrix. A mirrored element has a negative
       // determinant, which has no unique rotation/scale split - Babylon's
@@ -191,7 +208,6 @@ async function buildGhost(specs, opts = {}) {
     });
 
     // group AABB, in root-local space, so the body sits under the cursor
-    const b = protoBounds(proto);
     const m = Matrix.Compose(node.scaling, node.rotationQuaternion, node.position);
     for (const v of [b.min, b.max, new Vector3(b.min.x, b.min.y, b.max.z),
       new Vector3(b.min.x, b.max.y, b.min.z), new Vector3(b.max.x, b.min.y, b.min.z),
@@ -206,6 +222,8 @@ async function buildGhost(specs, opts = {}) {
   return {
     // the module a single-item ghost holds, for the HUD and repeat placement
     module: items.length === 1 ? items[0].module : null,
+    // likewise for a collision primitive, which has a kind instead of a module
+    collider: items.length === 1 ? items[0].collider : null,
     root, items, meshes,
     centre: min ? min.add(max).scale(0.5) : Vector3.Zero(),
     mode: opts.mode || "place",
@@ -221,6 +239,8 @@ async function buildGhost(specs, opts = {}) {
 
 export function ghostActive() { return !!ghost; }
 export function ghostModule() { return ghost?.module || null; }
+/** The collision primitive a single-item ghost holds, if it is one. */
+export function ghostCollider() { return ghost?.collider || null; }
 /** How many elements the ghost is carrying - 1 for a palette placement. */
 export function ghostCount() { return ghost?.items.length || 0; }
 /** "place" a new module, "copy" a duplicate, or "move" a grabbed selection. */
@@ -253,6 +273,26 @@ export async function armGhost(moduleId, opts = {}) {
 }
 
 /**
+ * Arm the ghost with a collision primitive. Same contract as armGhost: nothing
+ * exists until you click, and the ghost stays armed afterwards so a run of
+ * boxes along a wall is just repeated clicks.
+ */
+export async function armColliderGhost(kind, opts = {}) {
+  cancelGhost();
+  if (!kind) { emit("current"); return null; }
+  const token = ++ghostToken;
+  const built = await buildGhost([{ collider: kind }], opts);
+  if (token !== ghostToken) { disposeGhost(built); return null; }
+
+  ghost = built;
+  applyGhostTransform();
+  moveGhostToCursor();
+  setCursorHidden(true);
+  emit("current");
+  return ghost;
+}
+
+/**
  * Pick the selection up into the ghost, so it follows the cursor with no button
  * held. `G`, the way Blender's grab works.
  *
@@ -264,7 +304,8 @@ export async function armGhost(moduleId, opts = {}) {
  * of nothing but markers simply does not grab, leaving the drag to handle it.
  */
 export async function grabSelection(opts = {}) {
-  const entries = state.selection.map(entryOf).filter((e) => e && e.module);
+  const entries = state.selection.map(entryOf)
+    .filter((e) => e && (e.module || e.type === "collider"));
   if (!entries.length) return null;
   cancelGhost();
   const token = ++ghostToken;
@@ -276,7 +317,8 @@ export async function grabSelection(opts = {}) {
   const base = anchor.node.position.clone();
 
   const specs = entries.map((e) => ({
-    module: e.module,
+    module: e.module || null,
+    collider: e.type === "collider" ? e.kind : null,
     offset: e.node.position.subtract(base),
     rotation: eulerOf(e.node),
     scaling: e.node.scaling.asArray(),
@@ -288,8 +330,13 @@ export async function grabSelection(opts = {}) {
   ghost = built;
   if (!opts.copy) for (const e of entries) e.node.setEnabled(false);
   // The build plane follows, or a grab from an upper deck would drop back to
-  // the floor - the same reason Ctrl+D moves it.
-  if (Math.abs(base.y - state.gridY) > 1e-6) setGridElevation(base.y);
+  // the floor - the same reason Ctrl+D moves it. For a lone primitive the
+  // plane means its *base*, matching the corner-first drop: referencing the
+  // centre instead would raise it by half its height on every grab.
+  const ref = base.y - (entries.length === 1 && entries[0].type === "collider"
+    ? colliderHalf(entries[0].node.scaling.asArray(), entries[0].node.rotationQuaternion).y
+    : 0);
+  if (Math.abs(ref - state.gridY) > 1e-6) setGridElevation(ref);
   applyGhostTransform();
   moveGhostToCursor();
   setCursorHidden(true);
@@ -355,6 +402,46 @@ function centreOffset() {
   return Vector3.TransformCoordinates(ghost.centre, m);
 }
 
+/**
+ * World half-extents of a unit shape carrying this scale and turn - the sum of
+ * the absolute basis components, so a turned box reports the box that actually
+ * contains it.
+ */
+function unitHalf(m) {
+  return new Vector3(
+    (Math.abs(m.m[0]) + Math.abs(m.m[4]) + Math.abs(m.m[8])) / 2,
+    (Math.abs(m.m[1]) + Math.abs(m.m[5]) + Math.abs(m.m[9])) / 2,
+    (Math.abs(m.m[2]) + Math.abs(m.m[6]) + Math.abs(m.m[10])) / 2);
+}
+
+/** Half the world size of a lone collision primitive on the ghost, else zero. */
+export function colliderHalf(scaling, quat) {
+  return unitHalf(Matrix.Compose(
+    Vector3.FromArray(scaling), quat || Quaternion.Identity(), Vector3.Zero()));
+}
+
+/**
+ * How far to shift the ghost so a collision primitive lands *corner* first.
+ *
+ * A kit module is modelled from its origin, so dropping it with the origin on
+ * the build plane leaves it resting on the floor and filling whole grid cells.
+ * A collision primitive is a unit shape centred on its origin, because Havok
+ * wants a centre and not a corner - so the same drop buries half of it under
+ * the plane and puts its faces through the middle of a cell. Shifting by the
+ * half size puts the corner where the origin was snapped to.
+ *
+ * Derived from the live transforms, so it stays right after the wheel has
+ * scaled the ghost or `R` has turned it. Only a lone primitive gets this: for
+ * a set, the offsets are measured from an anchor whose own half size is not
+ * the group's, and the two references would fight and drift.
+ */
+function colliderLift() {
+  if (ghost?.items.length !== 1 || !ghost.items[0].collider) return Vector3.Zero();
+  const it = ghost.items[0];
+  return unitHalf(Matrix.Compose(Vector3.FromArray(it.scaling), it.quat, Vector3.Zero())
+    .multiply(Matrix.Compose(Vector3.FromArray(ghost.scaling), ghost.quat, Vector3.Zero())));
+}
+
 function moveGhostToCursor() {
   if (!ghost) return;
   const off = centreOffset();
@@ -390,7 +477,8 @@ function moveGhostToCursor() {
   // is, so it slides along one line from where you put it.
   const x = state.dragAxis === "z" ? ghost.root.position.x : snap(p.x - off.x);
   const z = state.dragAxis === "x" ? ghost.root.position.z : snap(p.z - off.z);
-  ghost.root.position.set(x, state.gridY, z);
+  const lift = colliderLift();
+  ghost.root.position.set(x + lift.x, state.gridY + lift.y, z + lift.z);
 }
 
 function setCursorHidden(hidden) {
@@ -438,7 +526,7 @@ export async function dropGhost() {
       g.scaling[0] * it.scaling[0],
       g.scaling[1] * it.scaling[1],
       g.scaling[2] * it.scaling[2]);
-    return { module: it.module, sourceId: it.sourceId, pos, rot, scl };
+    return { module: it.module, collider: it.collider, sourceId: it.sourceId, pos, rot, scl };
   });
 
   let made = null;
@@ -450,6 +538,9 @@ export async function dropGhost() {
       e.node.position.copyFrom(l.pos);
       e.node.rotationQuaternion = l.rot.clone();
       e.node.scaling.copyFrom(l.scl);
+      // a sphere has one radius and a capsule one, so an ellipsoid arriving
+      // from a free-scaled ghost is snapped back to something Havok can hold
+      if (e.type === "collider") hooks.reconcileCollider(e);
       e.node.setEnabled(true);
       made = e;
     }
@@ -468,9 +559,14 @@ export async function dropGhost() {
     node.rotationQuaternion = l.rot.clone();
     const euler = eulerOf(node);
     node.dispose();
-    const p = await placeAt(l.module, l.pos, {
-      rotation: euler, scale: l.scl.asArray(), silent: ids.length > 0,
-    });
+    const p = l.collider
+      ? hooks.addCollider(l.collider, {
+        position: l.pos.asArray(), rotation: euler, scale: l.scl.asArray(),
+        silent: ids.length > 0,
+      })
+      : await placeAt(l.module, l.pos, {
+        rotation: euler, scale: l.scl.asArray(), silent: ids.length > 0,
+      });
     if (p) { ids.push(p.id); made = p; }
   }
   if (ids.length > 1) select(ids);
@@ -837,7 +933,7 @@ function refreshHover() {
  * clearing the selection before acting on a different element.
  */
 export function currentElement() {
-  if (ghost) return { kind: "ghost", ids: [], module: ghost.module };
+  if (ghost) return { kind: "ghost", ids: [], module: ghost.module || ghost.collider };
   if (hoverId) {
     const e = entryOf(hoverId);
     if (e) return { kind: "hover", ids: [hoverId], module: e.name || e.module || e.type };
@@ -1079,7 +1175,12 @@ export function scaleCurrent(dir) {
   const targets = wheelTargets();
   if (!targets.length) return;
   if (beginWheelEdit()) pushUndo();
-  for (const e of targets) e.node.scaling.set(...apply(e.node.scaling.asArray()));
+  for (const e of targets) {
+    e.node.scaling.set(...apply(e.node.scaling.asArray()));
+    // A sphere has one radius and a capsule one too: pull any shape Havok
+    // cannot build back onto something it can, as it is being made.
+    if (e.type === "collider") hooks.reconcileCollider(e);
+  }
   emit("transform");
   emit("current");
 }

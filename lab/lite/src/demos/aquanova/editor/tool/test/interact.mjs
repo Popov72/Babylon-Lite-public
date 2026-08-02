@@ -560,9 +560,736 @@ check("the manifest names each element as the .glb does",
   JSON.stringify(glbNames.instanceNodes));
 check("a door leaf points at the leaf's node name",
   glbNames.leaf?.node === "weapon locker", JSON.stringify(glbNames.leaf));
+
+// A window onto space: the portal still renders, but the far side cannot be
+// walked to. Written on the door for the collision work to read later.
+const sealedDoor = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const mf = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const d = mk.addDoor(new V(4, 0, 0), { silent: true });
+  const fresh = mf.buildManifest().doors[0];
+
+  ed.select([d.id]);
+  document.getElementById("door-sealed").checked = true;
+  document.getElementById("door-sealed").dispatchEvent(new Event("change", { bubbles: true }));
+  const built = mf.buildManifest();
+
+  // it must survive a save/load round trip, and undo
+  const layout = ed.serialize();
+  await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+  const reloaded = [...ed.state.markers.values()][0]?.sealed;
+  ed.select([d.id]);
+  await ed.undo();
+  const afterUndo = [...ed.state.markers.values()][0]?.sealed;
+
+  const out = {
+    byDefault: fresh.sealed,
+    onDoor: built.doors[0].sealed,
+    // not on the portal: only the door carries it for now
+    onPortal: "sealed" in built.portals[0],
+    reloaded, afterUndo,
+    checkbox: document.getElementById("door-sealed").checked,
+  };
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("a door is an ordinary doorway unless sealed",
+  sealedDoor.byDefault === false, `${sealedDoor.byDefault}`);
+check("the Sealed box reaches the manifest's door record",
+  sealedDoor.onDoor === true && sealedDoor.onPortal === false,
+  `door=${sealedDoor.onDoor}, on the portal too=${sealedDoor.onPortal}`);
+check("sealed survives a reload, and undo takes it back",
+  sealedDoor.reloaded === true && sealedDoor.afterUndo === false,
+  `reloaded=${sealedDoor.reloaded}, after undo=${sealedDoor.afterUndo}`);
+
+// ---- 1d-quatervicies. collision primitives ---------------------------------
+// Unit shapes sized by scaling - but only the box takes an arbitrary scale.
+// Havok's sphere is one radius and its capsule a radius plus two endpoints, so
+// an ellipsoid has no representation and the runtime would have to silently
+// resize it. The editor pulls the scale back onto something buildable instead.
+const coll = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const mf = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  const made = {};
+  for (const k of co.COLLIDER_KINDS) made[k] = co.addCollider(k, new V(0, 0, 0), { silent: true });
+
+  made.sphere.node.scaling.set(2, 1, 1);  co.reconcileCollider(made.sphere);
+  made.capsule.node.scaling.set(3, 5, 1); co.reconcileCollider(made.capsule);
+  made.box.node.scaling.set(4, 2, 0.2);   co.reconcileCollider(made.box);
+  made.cylinder.node.scaling.set(2, 6, 2);
+  made.cylinder.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(Math.PI / 2, 0, 0);
+
+  const shapes = mf.buildManifest().collision[ed.state.activeChunk] || [];
+  const by = Object.fromEntries(shapes.map((s) => [s.kind, s]));
+
+  // a collider is an element like any other: entryOf finds it, so selection,
+  // dragging, hiding and the gizmo all work without knowing about it
+  const viaEntryOf = !!ed.entryOf(made.box.id);
+  const layout = ed.serialize();
+  await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+  const out = {
+    kinds: [...ed.state.colliders.values()].map((c) => c.kind).sort().join(),
+    viaEntryOf,
+    sphere: made.sphere.node.scaling.asArray(),
+    capsule: made.capsule.node.scaling.asArray(),
+    box: made.box.node.scaling.asArray(),
+    mBox: by.box, mSphere: by.sphere, mCyl: by.cylinder,
+    inGlb: null,
+  };
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("all four primitives exist and survive a reload",
+  coll.kinds === "box,capsule,cylinder,sphere" && coll.viaEntryOf, coll.kinds);
+check("a sphere is forced round, and a capsule to one radius",
+  coll.sphere[0] === coll.sphere[1] && coll.sphere[1] === coll.sphere[2]
+    && coll.capsule[0] === coll.capsule[2] && coll.capsule[1] === 5,
+  `sphere [${coll.sphere}], capsule [${coll.capsule}]`);
+check("a box keeps whatever scale it is given",
+  coll.box.join() === "4,2,0.2", `[${coll.box}]`);
+check("the manifest speaks Havok's own parameters",
+  coll.mBox.halfExtents.join() === "2,1,0.1" && coll.mBox.rotation.length === 4
+    && Math.abs(coll.mSphere.radius - 0.6667) < 1e-3
+    && !("rotation" in coll.mSphere),
+  `box ${JSON.stringify(coll.mBox.halfExtents)}, sphere r=${coll.mSphere.radius}`);
+check("a turned capsule or cylinder carries its axis as two points",
+  // rotated 90 degrees about X, so the segment runs along Z, not Y - which is
+  // how Havok expresses an arbitrarily oriented capsule
+  Math.abs(coll.mCyl.pointA[2] + 3) < 1e-3 && Math.abs(coll.mCyl.pointB[2] - 3) < 1e-3
+    && Math.abs(coll.mCyl.pointA[1]) < 1e-3,
+  `A=${coll.mCyl.pointA} B=${coll.mCyl.pointB}`);
+
+// ---- 1d-quinvicies. fitting collision to a room ----------------------------
+const fitted = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const mk = await import("/js/markers.js");
+  const kit = await import("/js/kit.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  const W = "Walls/ShortWall_Band2_Straight";
+  const wall = await ed.placeAt(W, new V(0, 0, 0), { silent: true });
+  await ed.placeAt(W, new V(20, 0, 0), { silent: true });      // far from the door
+  const decal = await ed.placeAt("Decals/Decal_Arrows", new V(4, 0, 0), { silent: true })
+    .catch(() => null);
+  const chunk = ed.state.activeChunk;
+
+  // a door straddling the first wall
+  ed.select([wall.id]);
+  const door = mk.doorFromSelection();
+  ed.select([]);
+
+  const r = await co.generateForChunk(chunk, kit.moduleBounds);
+  const mine = () => [...ed.state.colliders.values()].filter((c) => c.chunk === chunk);
+  const cutOnce = r.cut;
+  const openBoxes = r.made;
+
+  // sealing the door stops the subtraction: the wall it covers comes back
+  door.sealed = true;
+  const sealedRun = await co.generateForChunk(chunk, kit.moduleBounds);
+  const sealedBoxes = sealedRun.made;
+  door.sealed = false;
+  await co.generateForChunk(chunk, kit.moduleBounds);
+
+  // regenerating replaces its own output, and spares anything hand-placed
+  const hand = co.addCollider("sphere", new V(0, 0, 0), { chunk, silent: true });
+  const again = await co.generateForChunk(chunk, kit.moduleBounds);
+  const out = {
+    openBoxes, sealedBoxes, cutOnce, cutWhenSealed: sealedRun.cut,
+    skippedDecals: r.skipped, hadDecal: !!decal,
+    allBoxes: mine().filter((c) => c.id !== hand.id).every((c) => c.kind === "box"),
+    stable: again.made === r.made,
+    handSurvived: !!ed.state.colliders.get(hand.id),
+  };
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("solid modules get boxes, and only boxes",
+  fitted.openBoxes >= 1 && fitted.allBoxes, `${fitted.openBoxes} boxes`);
+check("a doorway spanning a whole wall removes it, and sealing brings it back",
+  // the door was built from the first wall, so its opening covers that module
+  // exactly - unsealed it leaves nothing behind, sealed it is solid again
+  fitted.sealedBoxes === fitted.openBoxes + 1,
+  `${fitted.openBoxes} open vs ${fitted.sealedBoxes} sealed`);
+check("an unsealed doorway is cut out of the walls, a sealed one is not",
+  fitted.cutOnce > 0 && fitted.cutWhenSealed === 0,
+  `${fitted.cutOnce} cut, ${fitted.cutWhenSealed} when sealed`);
+check("decals get no collider",
+  !fitted.hadDecal || fitted.skippedDecals > 0, `${fitted.skippedDecals} skipped`);
+check("regenerating replaces its own boxes and spares hand-placed ones",
+  fitted.stable && fitted.handSurvived,
+  `stable=${fitted.stable}, hand-placed survived=${fitted.handSurvived}`);
 check("the export leaves the editor's own names alone",
   glbNames.sceneNames.every((n) => /^P\d+(#\d+)?$/.test(n)),
   JSON.stringify(glbNames.sceneNames));
+
+// ---- 1d-sexvicies. a collider is placed and moved like anything else -------
+// The Collision pane arms the ghost the same way the palette does: nothing
+// exists until you click. And a collider is pickable - it used to be created
+// and then be unselectable for good, because the pick resolved a mesh through
+// `placementRoot`/`markerRoot` only and never looked at `colliderRoot`.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+});
+await page.waitForTimeout(200);
+
+const collCanvas = await page.evaluate(() =>
+  window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+const collMid = {
+  x: Math.round(collCanvas.x + collCanvas.width / 2),
+  y: Math.round(collCanvas.y + collCanvas.height / 2),
+};
+
+await page.click('#collider-buttons button[data-kind="box"]');
+await page.mouse.move(collMid.x, collMid.y);
+await page.waitForTimeout(300);
+const armedColl = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  return {
+    ghost: i.ghostActive(), kind: i.ghostCollider(), made: ed.state.colliders.size,
+    lit: document.querySelector('#collider-buttons button[data-kind="box"]')
+      .classList.contains("active"),
+  };
+});
+check("the Collision pane arms a ghost, it does not drop a shape",
+  armedColl.ghost && armedColl.kind === "box" && armedColl.made === 0 && armedColl.lit,
+  `ghost=${armedColl.ghost} kind=${armedColl.kind} made=${armedColl.made}`);
+
+await page.mouse.click(collMid.x, collMid.y);
+await page.waitForTimeout(300);
+const droppedColl = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const c = [...ed.state.colliders.values()][0];
+  return {
+    n: ed.state.colliders.size, id: c?.id, kind: c?.kind,
+    pos: c ? c.node.position.asArray().map((v) => +v.toFixed(2)) : null,
+    armed: i.ghostActive(),
+  };
+});
+check("clicking lands one collider and stays armed for the next",
+  droppedColl.n === 1 && droppedColl.kind === "box" && droppedColl.armed,
+  `${droppedColl.n} placed, still armed=${droppedColl.armed}`);
+
+await page.keyboard.press("Escape");
+await page.evaluate(async () => (await import("/js/editor.js")).select([]));
+await page.waitForTimeout(200);
+
+const collAt = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const c = ed.state.colliders.get(id);
+  ed.state.scene.render();
+  const e = ed.state.engine;
+  const p = BABYLON.Vector3.Project(c.node.getAbsolutePosition(),
+    BABYLON.Matrix.Identity(), ed.state.scene.getTransformMatrix(),
+    ed.state.camera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight()));
+  const r = e.getRenderingCanvas().getBoundingClientRect();
+  return { x: Math.round(r.x + p.x), y: Math.round(r.y + p.y) };
+}, droppedColl.id);
+
+await page.mouse.move(collAt.x, collAt.y);
+await page.waitForTimeout(250);
+await page.mouse.click(collAt.x, collAt.y);
+await page.waitForTimeout(300);
+const pickedColl = await page.evaluate(async () =>
+  [...(await import("/js/editor.js")).state.selection]);
+check("a collider can still be picked after it is deselected",
+  pickedColl.length === 1 && pickedColl[0] === droppedColl.id,
+  `selection=${JSON.stringify(pickedColl)}`);
+
+await page.mouse.move(collMid.x + 150, collMid.y - 60);
+await page.waitForTimeout(150);
+await page.keyboard.press("m");
+await page.waitForTimeout(400);
+const carriedColl = await page.evaluate(async () => {
+  const i = await import("/js/interact.js");
+  return { ghost: i.ghostActive(), mode: i.ghostMode() };
+});
+await page.mouse.move(collMid.x + 200, collMid.y - 30);
+await page.waitForTimeout(150);
+await page.mouse.click(collMid.x + 200, collMid.y - 30);
+await page.waitForTimeout(350);
+const landedColl = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const c = ed.state.colliders.get(id);
+  return {
+    n: ed.state.colliders.size, enabled: !!c?.node.isEnabled(),
+    pos: c ? c.node.position.asArray().map((v) => +v.toFixed(2)) : null,
+  };
+}, droppedColl.id);
+check("M carries a collider and drops the same one somewhere else",
+  carriedColl.mode === "move" && landedColl.n === 1 && landedColl.enabled
+    && landedColl.pos.join() !== droppedColl.pos.join(),
+  `mode=${carriedColl.mode}, ${droppedColl.pos} -> ${landedColl.pos}`);
+
+// Ctrl+D on a collider arms a copy of the same primitive rather than falling
+// back to duplicateSelected(), which is the marker path.
+await page.mouse.move(collCanvas.x + 40, collCanvas.y + 40);  // hover beats selection
+await page.waitForTimeout(200);
+await page.evaluate(async (id) => (await import("/js/editor.js")).select([id]),
+  droppedColl.id);
+await page.keyboard.press("Control+d");
+await page.waitForTimeout(400);
+const dupColl = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  return { kind: i.ghostCollider(), n: ed.state.colliders.size };
+});
+check("Ctrl+D on a collider arms a copy of the same primitive",
+  dupColl.kind === "box" && dupColl.n === 1, `kind=${dupColl.kind}, ${dupColl.n} existing`);
+
+await page.keyboard.press("Escape");
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+});
+await page.waitForTimeout(200);
+
+// ---- 1d-septvicies. a fresh primitive lands corner first -------------------
+// A kit module is modelled from its origin, so it rests on the build plane and
+// fills whole cells. A primitive is centred on its origin, because Havok wants
+// a centre - so without a shift it lands half buried with its faces through the
+// middle of a cell.
+await page.evaluate(async () => (await import("/js/editor.js")).setGridElevation(0));
+const cornerLands = [];
+for (const [dx, dy] of [[0, 0], [37, -23], [-91, 61]]) {
+  await page.click('#collider-buttons button[data-kind="box"]');
+  await page.mouse.move(collMid.x + dx, collMid.y + dy);
+  await page.waitForTimeout(250);
+  await page.mouse.click(collMid.x + dx, collMid.y + dy);
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(120);
+  cornerLands.push(await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const list = [...ed.state.colliders.values()];
+    const c = list[list.length - 1];
+    const p = c.node.position, s = c.node.scaling;
+    return { id: c.id, min: [p.x - s.x / 2, p.y - s.y / 2, p.z - s.z / 2].map((v) => +v.toFixed(4)) };
+  }));
+}
+check("a fresh primitive rests on the build plane",
+  cornerLands.every((l) => Math.abs(l.min[1]) < 1e-6),
+  `base heights ${cornerLands.map((l) => l.min[1]).join(", ")}`);
+check("its corner lands on a grid intersection",
+  cornerLands.every((l) => Math.abs(l.min[0] - Math.round(l.min[0])) < 1e-6
+    && Math.abs(l.min[2] - Math.round(l.min[2])) < 1e-6),
+  cornerLands.map((l) => `[${l.min}]`).join(" "));
+
+// The build plane means a primitive's *base*, not its origin, or referencing
+// the centre would raise it by half its height on every single grab.
+const driftId = cornerLands[0].id;
+for (let round = 0; round < 3; round++) {
+  await page.evaluate(async (id) => (await import("/js/editor.js")).select([id]), driftId);
+  await page.mouse.move(collMid.x + 60, collMid.y + 20);
+  await page.waitForTimeout(150);
+  await page.keyboard.press("m");
+  await page.waitForTimeout(350);
+  await page.mouse.click(collMid.x + 60, collMid.y + 20);
+  await page.waitForTimeout(300);
+}
+const drifted = await page.evaluate(async (id) => {
+  const c = (await import("/js/editor.js")).state.colliders.get(id);
+  return +(c.node.position.y - c.node.scaling.y / 2).toFixed(4);
+}, driftId);
+check("carrying one does not raise it off the plane", Math.abs(drifted) < 1e-6,
+  `base ${drifted} m after three grab/drop rounds`);
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+});
+await page.waitForTimeout(200);
+
+// ---- 1d-duodetricies. the shell thickness a flat module is given -----------
+// The kit models floors and ceilings as single planes with no depth at all.
+// The degenerate axis used to fall through `Math.abs(v) || 1` and come out a
+// *metre* thick, which is how a two-plate room got slabs top and bottom.
+const shell = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const chunk = ed.state.activeChunk;
+
+  const W = "Walls/ShortWall_Band2_Straight";
+  const P = "Platforms/Platform_3Plates";
+  for (const rot of [0, 90, 180, -90]) {
+    await ed.placeAt(W, new V(0, 0, 0), { rotation: [0, rot, 0], silent: true });
+  }
+  await ed.placeAt(P, new V(0, 0, 0), { silent: true });
+  await ed.placeAt(P, new V(0, 2, 0), { silent: true });
+
+  const flatBounds = await kit.moduleBounds(P);
+  const r = await co.generateForChunk(chunk, kit.moduleBounds);
+  const sizes = [...ed.state.colliders.values()]
+    .map((c) => c.node.scaling.asArray().map((v) => +v.toFixed(4)));
+
+  ed.setConfig("shellThickness", 0.05);
+  await co.generateForChunk(chunk, kit.moduleBounds);
+  const thicker = [...ed.state.colliders.values()]
+    .map((c) => c.node.scaling.asArray().map((v) => +v.toFixed(4)))
+    .filter((s) => s[0] === 4 && s[2] === 4).map((s) => s[1]);
+
+  // undo() restores asynchronously: without the await the next edit races it
+  await ed.undo();                                   // the regeneration
+  await ed.undo();                                   // the setting itself
+  const undone = ed.state.config.shellThickness;
+
+  ed.setConfig("shellThickness", 0.033);
+  const layout = ed.serialize();
+  await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+  const roundTrip = ed.state.config.shellThickness;
+  const older = JSON.parse(JSON.stringify(layout)); delete older.config;
+  await ed.deserialize(older);
+  const legacy = ed.state.config.shellThickness;
+
+  ed.setConfig("shellThickness", 0.008);
+  ed.clearAll(); ed.select([]);
+  return {
+    made: r.made, sizes, thicker, undone, roundTrip, legacy,
+    flatDepth: +(flatBounds.max.y - flatBounds.min.y).toFixed(6),
+    savedConfig: layout.config,
+  };
+});
+const flatBoxes = shell.sizes.filter((s) => s[0] === 4 && s[2] === 4);
+const wallBoxes = shell.sizes.filter((s) => s[1] > 1);
+check("the kit really does model a floor as a bare plane",
+  shell.flatDepth === 0, `local depth ${shell.flatDepth} m`);
+check("a flat module gets the shell thickness, not a metre",
+  shell.made === 6 && flatBoxes.length === 2
+    && flatBoxes.every((s) => Math.abs(s[1] - 0.008) < 1e-6),
+  `${shell.made} boxes, flat depths ${flatBoxes.map((s) => s[1]).join(", ")}`);
+check("a module with real depth keeps its own",
+  wallBoxes.length === 4 && wallBoxes.every((s) => Math.abs(s[0] - 0.0075) < 1e-6),
+  `wall depths ${wallBoxes.map((s) => s[0]).join(", ")}`);
+check("the setting drives the fit",
+  shell.thicker.length === 2 && shell.thicker.every((v) => Math.abs(v - 0.05) < 1e-6),
+  `at 0.05 m: [${shell.thicker.join(", ")}]`);
+check("changing a setting is undoable", Math.abs(shell.undone - 0.008) < 1e-9,
+  `undo -> ${shell.undone}`);
+check("a setting round-trips through the layout",
+  Math.abs(shell.roundTrip - 0.033) < 1e-9 && Math.abs(shell.legacy - 0.008) < 1e-9,
+  `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},`
+  + ` a layout without one ${shell.legacy}`);
+
+// ---- 1d-undetricies. collision authored on a kit module -------------------
+// Authored once, in the module's own space, and inherited by every placement.
+// The stand-in you fit it against is deliberately not a placement, so it cannot
+// reach the layout, the manifest or the .glb.
+const PROP = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  return [...kit.getCatalogue().byId.keys()].find((id) => id.startsWith("Props/"));
+});
+
+const modSetup = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); co.exitModuleCollision(); ed.clearAll(); ed.select([]);
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt(prop, new V(8, 0, 0), { silent: true });
+  await ed.placeAt(prop, new V(12, 0, 4), { rotation: [0, 90, 0], silent: true });
+  co.addCollider("box", new V(-4, 0.5, 0), { silent: true });     // a room shape
+  ed.select([a.id]);
+  return { placements: ed.state.placements.size };
+}, PROP);
+
+await page.click("#btn-edit-module");
+await page.waitForFunction(() => !document.getElementById("module-banner").hidden,
+  null, { timeout: 20000 });
+const onStage = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const ref = co.moduleRefNode();
+  return {
+    editing: ed.state.editModule,
+    banner: document.getElementById("module-banner-text").textContent,
+    refMeshes: ref ? ref.getChildMeshes().length : 0,
+    refPickable: ref ? ref.getChildMeshes().some((m) => m.isPickable) : null,
+    refIsPlacement: [...ed.state.placements.values()].some((p) => p.node === ref),
+    shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
+    roomShapesShown: [...ed.state.colliders.values()]
+      .filter((c) => !c.module && c.node.isEnabled()).length,
+    fitRoomDisabled: document.getElementById("btn-collide-room").disabled,
+  };
+});
+check("the button opens the module of the selected element",
+  onStage.editing === PROP && onStage.banner.includes(PROP), onStage.banner);
+check("the ship goes off stage and the stand-in comes on",
+  onStage.shipShown === 0 && onStage.roomShapesShown === 0 && onStage.refMeshes > 0,
+  `${onStage.shipShown} placements shown, stand-in has ${onStage.refMeshes} meshes`);
+check("the stand-in is neither a placement nor pickable",
+  onStage.refIsPlacement === false && onStage.refPickable === false);
+check("fitting a room is refused while its geometry is hidden",
+  onStage.fitRoomDisabled === true);
+
+// a shape dropped here joins the module rather than the active chunk
+await page.click('#collider-buttons button[data-kind="box"]');
+await page.mouse.move(collMid.x, collMid.y);
+await page.waitForTimeout(250);
+await page.mouse.click(collMid.x, collMid.y);
+await page.waitForTimeout(300);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+const modDropped = await page.evaluate(async (prop) => {
+  const co = await import("/js/colliders.js");
+  const ed = await import("/js/editor.js");
+  const mine = co.moduleColliders(prop);
+  return {
+    n: mine.length,
+    chunks: mine.map((c) => c.chunk),
+    stillEditing: ed.state.editModule,
+  };
+}, PROP);
+check("a shape dropped on the stage joins the module, not the room",
+  modDropped.n === 1 && modDropped.chunks.every((c) => c === null) && modDropped.stillEditing === PROP,
+  `${modDropped.n} shape(s), chunks ${JSON.stringify(modDropped.chunks)}`);
+
+await page.click("#btn-module-fit");
+await page.waitForTimeout(600);
+const fitted2 = await page.evaluate(async (prop) => {
+  const co = await import("/js/colliders.js");
+  const mine = co.moduleColliders(prop);
+  return { n: mine.length, kind: mine[0]?.kind, size: mine[0]?.node.scaling.asArray() };
+}, PROP);
+check("Fit a box replaces the module's shapes with one fitted box",
+  fitted2.n === 1 && fitted2.kind === "box" && fitted2.size.every((v) => v > 0),
+  `${fitted2.n} shape(s), ${JSON.stringify(fitted2.size)}`);
+
+// Escape leaves the stage once nothing is in hand, and the ship comes back
+await page.keyboard.press("Escape");
+await page.waitForTimeout(400);
+const backOnShip = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  return {
+    editing: ed.state.editModule,
+    refGone: !co.moduleRefNode(),
+    banner: document.getElementById("module-banner").hidden,
+    shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
+    moduleShapesShown: co.moduleColliders(prop).filter((c) => c.node.isEnabled()).length,
+    roomShapesShown: [...ed.state.colliders.values()]
+      .filter((c) => !c.module && c.node.isEnabled()).length,
+  };
+}, PROP);
+check("Escape leaves the stage and puts the ship back untouched",
+  backOnShip.editing === null && backOnShip.refGone && backOnShip.banner
+    && backOnShip.shipShown === modSetup.placements && backOnShip.roomShapesShown === 1,
+  `${backOnShip.shipShown} of ${modSetup.placements} placements back,`
+  + ` ${backOnShip.roomShapesShown} room shape(s)`);
+check("a module's shapes are not left lying in the world",
+  backOnShip.moduleShapesShown === 0, `${backOnShip.moduleShapesShown} still on screen`);
+
+const modOut = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const mf = await import("/js/manifest.js");
+
+  const fit = await co.generateForChunk(ed.state.activeChunk, kit.moduleBounds);
+  const man = mf.buildManifest();
+  const list = man.collision[ed.state.activeChunk] || [];
+  const expanded = list.filter((s) => s.module === prop);
+
+  // and the stand-in never reaches the .glb
+  await co.enterModuleCollision(prop, kit.instantiate);
+  const realFetch = window.fetch;
+  let body = null;
+  window.fetch = (url, opts) => {
+    if (String(url).includes("/api/export")) {
+      body = opts.body;
+      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
+        { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return realFetch(url, opts);
+  };
+  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+  co.exitModuleCollision();
+  const buf = await body.arrayBuffer();
+  const dv = new DataView(buf);
+  const json = JSON.parse(new TextDecoder()
+    .decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+  const names = (json.nodes || []).map((n) => String(n.name));
+
+  ed.clearAll(); ed.select([]);
+  return {
+    fit,
+    authored: (man.moduleCollision[prop] || []).length,
+    expanded: expanded.length,
+    named: expanded.every((s) => s.module === prop),
+    savedRecords: (man.colliders || []).length,
+    stowaways: names.filter((n) => n.includes("MODULE_REF")),
+    glbNodes: names.length,
+  };
+}, PROP);
+check("the fitter leaves placements their module already covers",
+  modOut.fit.inherited === 2 && modOut.fit.made === 1,
+  `made ${modOut.fit.made}, inherited ${modOut.fit.inherited}`);
+check("the manifest carries the module's own shapes, once",
+  modOut.authored === 1, `${modOut.authored}`);
+check("and instances them onto every placement of it",
+  modOut.expanded === 2 && modOut.named, `${modOut.expanded} expanded records`);
+check("the manifest carries the editor's own collider records",
+  modOut.savedRecords === 3, `${modOut.savedRecords}`);
+check("the stand-in never reaches the exported .glb",
+  modOut.stowaways.length === 0 && modOut.glbNodes > 0,
+  `${modOut.glbNodes} nodes, stowaways ${JSON.stringify(modOut.stowaways)}`);
+
+// A saved ship used to come back with no collision at all: buildManifest()
+// assembles its own object and never wrote the `colliders` key restoreFrom
+// reads. Both kinds have to survive the round trip through the server.
+const collTrip = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const mf = await import("/js/manifest.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  await ed.placeAt(prop, new V(4, 0, 0), { silent: true });
+  co.addCollider("sphere", new V(1, 1, 1), { silent: true });                 // a room shape
+  co.addCollider("capsule", new V(0, 0.5, 0), { module: prop, silent: true }); // a module shape
+
+  await mf.saveLayout("collround");
+  ed.clearAll();
+  await mf.loadLayout("collround");
+  const all = [...ed.state.colliders.values()];
+  return {
+    total: all.length,
+    room: all.filter((c) => !c.module).map((c) => c.kind),
+    module: all.filter((c) => c.module === prop).map((c) => c.kind),
+    chunkNulled: all.filter((c) => c.module).every((c) => c.chunk === null),
+  };
+}, PROP);
+check("both kinds of collider survive a save and load",
+  collTrip.total === 2 && collTrip.room.join() === "sphere"
+    && collTrip.module.join() === "capsule" && collTrip.chunkNulled,
+  `room ${JSON.stringify(collTrip.room)}, module ${JSON.stringify(collTrip.module)}`);
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); co.exitModuleCollision(); ed.clearAll(); ed.select([]);
+});
+await page.waitForTimeout(200);
+
+// ---- 1d-duotricies. the geometry / collision layer switch -----------------
+// It can only ever take things off screen, so chunk isolation and the Shift+H
+// veil keep the last word - which is why it goes through applyVisibility()
+// rather than reaching for setEnabled itself.
+const layers = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  co.addCollider("box", new V(2, 0.5, 0), { silent: true });
+  co.addCollider("sphere", new V(4, 0.5, 0), { silent: true, scale: [2, 2, 2] });
+  const shown = () => ({
+    geo: [...ed.state.placements.values()].filter((e) => e.node.isEnabled()).length,
+    col: [...ed.state.colliders.values()].filter((c) => c.node.isEnabled()).length,
+  });
+  const both = shown();
+  ed.setShowLayer("geometry"); const geoOnly = shown();
+  ed.setShowLayer("collision"); const colOnly = shown();
+
+  // selecting something and then hiding its layer must drop it, or the gizmo
+  // and the inspector act on an element nobody can see
+  ed.setShowLayer("both");
+  ed.select([[...ed.state.placements.keys()][0]]);
+  ed.setShowLayer("collision");
+  const afterHidingGeometry = [...ed.state.selection];
+  ed.select([[...ed.state.colliders.keys()][0]]);
+  ed.setShowLayer("geometry");
+  const afterHidingCollision = [...ed.state.selection];
+
+  // and it composes with isolation rather than overriding it
+  ed.setShowLayer("both");
+  ed.state.isolate = true;
+  ed.state.activeChunk = "CH_Elsewhere";
+  ed.state.chunks = [...new Set([...ed.state.chunks, "CH_Elsewhere"])];
+  ed.applyVisibility();
+  const isolatedElsewhere = shown();
+  ed.state.isolate = false;
+  ed.state.activeChunk = ed.state.chunks[0];
+  ed.setShowLayer("both");
+  ed.applyVisibility();
+  ed.clearAll(); ed.select([]);
+  return { both, geoOnly, colOnly, afterHidingGeometry, afterHidingCollision, isolatedElsewhere };
+});
+check("both layers show by default",
+  layers.both.geo === 1 && layers.both.col === 2, JSON.stringify(layers.both));
+check("ship only takes the collision off screen",
+  layers.geoOnly.geo === 1 && layers.geoOnly.col === 0, JSON.stringify(layers.geoOnly));
+check("collision only takes the ship off screen",
+  layers.colOnly.geo === 0 && layers.colOnly.col === 2, JSON.stringify(layers.colOnly));
+check("hiding a layer drops any selection it hides",
+  layers.afterHidingGeometry.length === 0 && layers.afterHidingCollision.length === 0,
+  `${JSON.stringify(layers.afterHidingGeometry)} / ${JSON.stringify(layers.afterHidingCollision)}`);
+check("isolation still gets the last word over the switch",
+  layers.isolatedElsewhere.geo === 0 && layers.isolatedElsewhere.col === 0,
+  JSON.stringify(layers.isolatedElsewhere));
+
+// ---- 1d-tertricies. what the inspector measures for a primitive -----------
+// Havok's own parameters, not a bounding box: a world AABB would show a sphere
+// as three identical sides, and a turned capsule as something with no relation
+// to the radius it is actually built from.
+const primDims = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  const read = () => [
+    document.getElementById("dim-x").textContent,
+    document.getElementById("dim-y").textContent,
+    document.getElementById("dim-z").textContent,
+    document.getElementById("dim-note").textContent,
+  ];
+  const out = {};
+  const box = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [4, 2, 0.2] });
+  ed.select([box.id]); out.box = read();
+  const sph = co.addCollider("sphere", new V(6, 0, 0), { silent: true, scale: [3, 3, 3] });
+  ed.select([sph.id]); out.sphere = read();
+  const cap = co.addCollider("capsule", new V(12, 0, 0), { silent: true, scale: [2, 5, 2] });
+  cap.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(Math.PI / 2, 0, 0);
+  ed.select([cap.id]); out.capsule = read();
+  const wall = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 20), { silent: true });
+  ed.select([wall.id]); out.wall = read();
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("a box reports its three sides",
+  primDims.box[0] === "4.00" && primDims.box[1] === "2.00" && primDims.box[2] === "0.20"
+    && primDims.box[3].includes("X/Y/Z"), JSON.stringify(primDims.box));
+check("a sphere reports one radius and says so",
+  primDims.sphere[0] === "1.50" && primDims.sphere[1] === "—" && primDims.sphere[3].includes("radius"),
+  JSON.stringify(primDims.sphere));
+check("a turned capsule still reports radius and height",
+  primDims.capsule[0] === "1.00" && primDims.capsule[1] === "5.00" && primDims.capsule[2] === "—",
+  JSON.stringify(primDims.capsule));
+check("a kit module still reports its bounding box",
+  primDims.wall[3].includes("X/Y/Z") && primDims.wall[1] === "2.00", JSON.stringify(primDims.wall));
 
 // ---- 1d-terdecies. the behaviour library and the entities that use it ------
 // `behaviors` is a library of named definitions; `entities` says which node

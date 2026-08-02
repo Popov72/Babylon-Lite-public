@@ -11,7 +11,7 @@ import {
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
-const { TransformNode, Vector3 } = BABYLON;
+const { TransformNode, Vector3, Quaternion, Matrix } = BABYLON;
 
 export const SCHEMA = 2;
 
@@ -105,8 +105,128 @@ function serializeEntities() {
   return out;
 }
 
-export function buildManifest() {
-  const layout = serialize();
+/**
+ * One Havok record from a world matrix.
+ *
+ * Everything is read off the matrix's own basis rows rather than decomposed.
+ * `Matrix.decompose()` is ambiguous the moment a transform is mirrored - a
+ * negative determinant has no unique rotation/scale split - and a placement
+ * scaled [-1,1,1] is completely ordinary in this kit. Reading the rows is
+ * exact: their lengths are the extents and their directions are the axes.
+ *
+ * A box is symmetric under an axis flip, so when the composed basis comes out
+ * left-handed one axis is negated to describe the identical box with a rotation
+ * that actually exists. A capsule or cylinder needs no such care: its two
+ * endpoints carry its axis, which is the Havok signature.
+ */
+function shapeRecord(id, kind, world, moduleId) {
+  const centre = new Vector3(world.m[12], world.m[13], world.m[14]);
+  const ax = new Vector3(world.m[0], world.m[1], world.m[2]);
+  const ay = new Vector3(world.m[4], world.m[5], world.m[6]);
+  const az = new Vector3(world.m[8], world.m[9], world.m[10]);
+  const shape = {
+    id, kind,
+    ...(moduleId ? { module: moduleId } : {}),
+    centre: toGltf(r(centre.asArray())),
+  };
+
+  if (kind === "box") {
+    shape.halfExtents = r([ax.length() / 2, ay.length() / 2, az.length() / 2]);
+    const bx = ax.clone().normalize();
+    const by = ay.clone().normalize();
+    const bz = az.clone().normalize();
+    if (Vector3.Dot(Vector3.Cross(bx, by), bz) < 0) bx.scaleInPlace(-1);
+    const m = new Matrix();
+    Matrix.FromXYZAxesToRef(bx, by, bz, m);
+    const q = Quaternion.FromRotationMatrix(m);
+    // mirroring X flips the handedness of the turn as well as the position
+    shape.rotation = r([-q.x, q.y, q.z, -q.w]);
+  } else if (kind === "sphere") {
+    shape.radius = r([ax.length() / 2])[0];
+  } else {
+    shape.radius = r([ax.length() / 2])[0];
+    shape.height = r([ay.length()])[0];
+    // The segment endpoints, so the runtime needs no quaternion at all: the
+    // local Y axis turned into world space, half a height either way.
+    const half = ay.clone().scale(0.5);
+    shape.pointA = toGltf(r(centre.subtract(half).asArray()));
+    shape.pointB = toGltf(r(centre.add(half).asArray()));
+  }
+  return shape;
+}
+
+/**
+ * The collision shapes, per chunk, in the form Havok's constructors take.
+ *
+ * A box gets a centre, a quaternion and half-extents. A sphere gets a centre
+ * and a radius. A capsule or cylinder gets the two endpoints of its segment,
+ * because that is literally the Havok signature - and it is how an arbitrarily
+ * oriented capsule is expressed, since those shapes take no quaternion.
+ *
+ * Two sources feed it. A room's own primitives are already world space. A
+ * module's are authored once in the module's local space and **instanced here
+ * onto every placement of it**, carrying `module` so a runtime that wants to
+ * build one Havok shape and reuse it across bodies can group by that id.
+ *
+ * All of it is mirrored on X, like every other runtime-facing field.
+ */
+function collisionByChunk() {
+  const out = {};
+  const byModule = new Map();
+  for (const c of state.colliders.values()) {
+    c.node.computeWorldMatrix(true);
+    if (c.module) {
+      if (!byModule.has(c.module)) byModule.set(c.module, []);
+      byModule.get(c.module).push(c);
+      continue;
+    }
+    (out[c.chunk] ||= []).push(shapeRecord(c.id, c.kind, c.node.getWorldMatrix()));
+  }
+
+  if (byModule.size) {
+    for (const p of state.placements.values()) {
+      const list = byModule.get(p.module);
+      if (!list) continue;
+      p.node.computeWorldMatrix(true);
+      const placement = p.node.getWorldMatrix();
+      for (const c of list) {
+        // the primitive's own local transform, then the placement's - which is
+        // exactly what parenting it to the placement would have produced
+        const world = Matrix.Compose(
+          c.node.scaling,
+          c.node.rotationQuaternion || Quaternion.Identity(),
+          c.node.position).multiply(placement);
+        (out[p.chunk] ||= []).push(
+          shapeRecord(`${p.id}:${c.id}`, c.kind, world, c.module));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The shapes authored on each kit module, in the module's own local space.
+ *
+ * Derived data: `collision` above already instances these onto every placement,
+ * which is what the runtime reads. This block is what makes shape *sharing*
+ * possible - one Havok shape per module, reused by every body - and what the
+ * editor shows you when you open a module to fit it.
+ */
+function moduleCollision() {
+  const out = {};
+  for (const c of state.colliders.values()) {
+    if (!c.module) continue;
+    c.node.computeWorldMatrix(true);
+    const local = Matrix.Compose(
+      c.node.scaling,
+      c.node.rotationQuaternion || Quaternion.Identity(),
+      c.node.position);
+    (out[c.module] ||= []).push(shapeRecord(c.id, c.kind, local));
+  }
+  return out;
+}
+
+export function buildManifest() {  const layout = serialize();
 
   // Every derived figure below - chunk bounds, portal corners - is read off a
   // world matrix, and Babylon only refreshes those at render time. An export
@@ -164,6 +284,11 @@ export function buildManifest() {
       width: r([m.width * Math.abs(m.node.scaling.x)])[0],
       height: r([m.height * Math.abs(m.node.scaling.y)])[0],
       triggerRadius: m.triggerRadius,
+      // The far side can be seen but not reached - a window onto space rather
+      // than a doorway. Written on the door only for now; collision generation
+      // will read it when that work happens. Default false, so every manifest
+      // written before this reads back as an ordinary doorway.
+      sealed: !!m.sealed,
       leaves: m.leaves
         .filter((id) => state.placements.has(id))
         .map((id) => ({
@@ -186,6 +311,12 @@ export function buildManifest() {
     units: "metres",
     up: "Y (glTF)",
     grid: { tile: 4 },
+    // Ship-wide authoring constants - see state.config. They have to travel
+    // with the ship: refitting collision with a different shell thickness
+    // produces different geometry, so a manifest that dropped them would come
+    // back looking identical and then fit differently the next time you
+    // pressed Generate.
+    config: layout.config,
     kitDir: state.kitDir || null,
     chunks,
     // "node" is what the element is called in ship.glb - its own name, or its
@@ -195,6 +326,22 @@ export function buildManifest() {
       ...i, node: nodeNameOf(state.placements.get(i.id)) || i.id,
     })),
     markers: layout.markers,
+    // The editor's own record of every collision primitive: kind plus a plain
+    // transform, which is what it reloads from. `collision` below is the same
+    // information turned into what Havok's constructors take, and is derived -
+    // this is the source. Without it a saved ship came back with no collision
+    // at all, because restoreFrom() reads this key and nothing wrote it.
+    colliders: layout.colliders,
+    // The shapes the runtime hands to Havok, in glTF space like everything else
+    // it reads. Grouped by chunk because collision is streamed per room, and a
+    // flat list would make every room filter the whole ship.
+    //
+    // Sizes are the *effective* ones, not the editor's raw scale: a unit box
+    // scaled 4x2x0.2 is written as half-extents, and a capsule as the radius
+    // and the two endpoints Havok's constructor actually takes.
+    collision: collisionByChunk(),
+    // what each kit module carries, in its own local space - see moduleCollision
+    moduleCollision: moduleCollision(),
     activeChunk: layout.activeChunk,
     // The sims a liquefied element may use. Seeded from the tool's config.json,
     // but a loaded ship's own list wins - see restoreFrom - so the two cannot

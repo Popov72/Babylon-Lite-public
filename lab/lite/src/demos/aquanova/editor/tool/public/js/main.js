@@ -1,18 +1,25 @@
 // Wiring: toolbar, inspector, keyboard, autoload.
 
-import { loadCatalogue, getCatalogue } from "./kit.js";
+import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush } from "./palette.js";
 import { saveLayout, loadLayout, exportGlb, resolveDoorChunks } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
+  removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE,
+  reconcileCollider, colliderDims, generateForChunk,
+  enterModuleCollision, exitModuleCollision, fitModuleCollision,
+  moduleColliders, moduleRefNode,
+} from "./colliders.js";
+import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
-  ghostActive, ghostModule, hoveredId, cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
+  ghostActive, ghostModule, ghostCollider, armColliderGhost, colliderHalf, hoveredId,
+  cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
   toggleDragAxis, setDragAxis, cancelMarquee, grabSelection,
 } from "./interact.js";
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
-  nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection,
+  nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
   renameChunk, renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
   setVeilAlpha,
@@ -20,12 +27,13 @@ import {
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
   setEntityExcludeSDF, dynamicNodeNamesInChunk,
-  isBusy, busyLabel, whileBusy, serialize,
+  isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
   noteKey, releaseAllKeys, setUnlit, setExposure, EXPOSURE_DEFAULT,
+  setConfig, resetConfig, CONFIG_DEFAULTS,
   setWalk, EYE_HEIGHT, setEnvIntensity, ENV_INTENSITY_DEFAULT, setSelectMode,
-  setRuntimeLighting, activeLightSet,
+  setRuntimeLighting, activeLightSet, setShowLayer, SHOW_LAYERS,
 } from "./editor.js";
 
 const $ = (id) => document.getElementById(id);
@@ -85,8 +93,12 @@ function refreshInspector() {
   // CSS rule away from being on screen against the wrong element, and it is
   // what the behaviour panel would key off if it ever read the field.
   setField($("insp-name"), n === 1 && !isMarker ? (e.name || "") : "");
-  $("insp-chunk").parentElement.hidden = isMarker;
-  if (!isMarker) $("insp-chunk").value = e.chunk;
+  // A module's primitive belongs to a kit prototype, not a room, so the chunk
+  // row is meaningless for it - and letting it be set would silently re-home
+  // the shape into a room where its local-space transform means nothing.
+  const isModuleCollider = e.type === "collider" && !!e.module;
+  $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider;
+  if (!isMarker && !isModuleCollider) $("insp-chunk").value = e.chunk;
   const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
   posIn.forEach((el, i) => setField(el, round(p.asArray()[i])));
   rotIn.forEach((el, i) => setField(el, round(r[i])));
@@ -100,6 +112,7 @@ function refreshInspector() {
     fillChunkSelect($("door-b"), e.chunkB);
     setField($("door-trig"), e.triggerRadius);
     setField($("door-slide"), e.slideDistance);
+    $("door-sealed").checked = !!e.sealed;
     $("door-leaves").textContent = e.leaves.length ? e.leaves.join(", ") : "none";
   }
   refreshDimensions();
@@ -347,6 +360,35 @@ function setField(el, v) {
  * checking whether a piece still fits its tile.
  */
 function refreshDimensions() {
+  // A collision primitive reports what Havok is actually given, not a bounding
+  // box: a sphere is one radius and a capsule a radius plus a height, and the
+  // whole point of constraining the scale is that those numbers are the truth.
+  // A world AABB would show a sphere as three identical sides and a *turned*
+  // capsule as something with no relation to its radius at all.
+  const only = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
+  if (only?.type === "collider") {
+    const d = colliderDims(only);
+    const f = (v) => (v < 0.1 ? v.toFixed(3) : v.toFixed(2));
+    if (d.kind === "box") {
+      $("dim-x").textContent = f(d.size[0]);
+      $("dim-y").textContent = f(d.size[1]);
+      $("dim-z").textContent = f(d.size[2]);
+      $("dim-note").textContent = "— metres, X/Y/Z";
+    } else if (d.kind === "sphere") {
+      $("dim-x").textContent = f(d.radius);
+      $("dim-y").textContent = "—";
+      $("dim-z").textContent = "—";
+      $("dim-note").textContent = "— radius, in metres";
+    } else {
+      $("dim-x").textContent = f(d.radius);
+      $("dim-y").textContent = f(d.height);
+      $("dim-z").textContent = "—";
+      $("dim-note").textContent = "— radius / height, in metres";
+    }
+    for (const id of ["dim-x", "dim-y", "dim-z"]) $(id).title = "";
+    return;
+  }
+
   let min = null, max = null;
   let counted = 0;
   for (const id of state.selection) {
@@ -417,6 +459,8 @@ function applyInspector(source) {
   // portalOf() already reads the world matrix, so the portal follows.
   e.node.scaling.set(
     num(sclIn[0], s.x), num(sclIn[1], s.y), num(sclIn[2], s.z));
+  // A collider's kind decides what scales are representable at all.
+  if (e.type === "collider" && reconcileCollider(e)) syncScaleFields(e);
   select([e.id]);                       // keeps the outline in step
   emit("transform");
 }
@@ -426,6 +470,19 @@ function applyInspector(source) {
  * A bare "-" parses as NaN, and coercing that to a default is what used to make
  * negative (mirrored) scales impossible to type.
  */
+/**
+ * Write a constrained scale back into the fields the user is not typing in.
+ *
+ * Rewriting the focused one would fight the caret, exactly as the uniform-scale
+ * mirroring does - so a sphere typed into X shows the same number appear in Y
+ * and Z, but only once the caret leaves.
+ */
+function syncScaleFields(e) {
+  const s = e.node.scaling.asArray();
+  sclIn.forEach((el, i) => { if (el !== document.activeElement) el.value = round(s[i]); });
+  refreshDimensions();
+}
+
 function num(el, fallback) {
   const v = parseFloat(el.value);
   return Number.isFinite(v) ? v : fallback;
@@ -516,6 +573,17 @@ for (const [id, key] of [["door-a", "chunkA"], ["door-b", "chunkB"]]) {
     validate();
   });
 }
+$("door-sealed").addEventListener("change", () => {
+  const e = entryOf(state.selection[0]);
+  if (!e || e.type !== "door" || syncing) return;
+  pushUndo();
+  e.sealed = $("door-sealed").checked;
+  setStatus(e.sealed
+    ? `${e.id} sealed — visible through, not walkable`
+    : `${e.id} is a doorway again`);
+  validate();
+});
+
 $("btn-door-leaves").addEventListener("click", () => {
   const door = entryOf(state.selection[0]);
   if (!door || door.type !== "door") return;
@@ -1106,6 +1174,10 @@ on("escape", () => cancelEverything());
 function cancelEverything() {
   if (cancelMarquee()) return;     // an in-flight rectangle goes first
   if (cancelDrag()) return;        // then an in-flight drag
+  if (ghostActive() || state.brush) { cancelGhost(); setBrush(null); clearMarkerBrush(); select([]); return; }
+  // Only once there is nothing in hand does Escape leave the module stage -
+  // otherwise cancelling an armed shape would throw you back to the ship.
+  if (state.editModule) { leaveModuleCollision(); return; }
   cancelGhost();
   setBrush(null);
   clearMarkerBrush();
@@ -1129,7 +1201,7 @@ function duplicateCurrent() {
 
   // Several selected: carry copies of the whole set. This used to fall back to
   // duplicating in place, because a ghost could only hold one module.
-  const many = cur.ids.map(entryOf).filter((e) => e?.module);
+  const many = cur.ids.map(entryOf).filter((e) => e?.module || e?.type === "collider");
   if (many.length > 1) {
     grabSelection({ copy: true }).then((g) => {
       if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place`);
@@ -1145,6 +1217,18 @@ function duplicateCurrent() {
   // rather than giving the ghost its own height keeps one source of truth, and
   // the grid visibly follows so it is obvious what happened.
   const y = entry.node.position.y;
+  if (entry.type === "collider") {
+    // the plane is the primitive's base, to match the corner-first drop
+    const half = colliderHalf(entry.node.scaling.asArray(), entry.node.rotationQuaternion).y;
+    if (Math.abs(y - half - state.gridY) > 1e-6) setGridElevation(y - half);
+    armColliderGhost(entry.kind, {
+      rotation: eulerOf(entry.node),
+      scaling: entry.node.scaling.asArray(),
+    });
+    refreshColliderButtons();
+    setStatus(`copy of ${COLLIDER_LABEL[entry.kind]} on the cursor — click to place`);
+    return;
+  }
   if (Math.abs(y - state.gridY) > 1e-6) setGridElevation(y);
 
   setBrush(entry.module, {
@@ -1165,7 +1249,8 @@ function duplicateCurrent() {
 function grabCurrent() {
   if (ghostActive() || isDragging()) return;
   const cur = currentElement();
-  const ids = (cur?.ids || []).map(entryOf).filter((e) => e?.module);
+  const ids = (cur?.ids || []).map(entryOf)
+    .filter((e) => e?.module || e?.type === "collider");
   if (!ids.length) {
     setStatus("nothing to pick up — select or point at an element first");
     return;
@@ -1175,7 +1260,8 @@ function grabCurrent() {
     if (g) {
       setStatus(ids.length > 1
         ? `carrying ${ids.length} elements — click to drop, Esc to put them back`
-        : `carrying ${ids[0].module} — click to drop, Esc to put it back`);
+        : `carrying ${ids[0].module || COLLIDER_LABEL[ids[0].kind]}`
+          + " — click to drop, Esc to put it back");
     }
   });
 }
@@ -1347,10 +1433,167 @@ function refreshBusy() {
   }
   if (busy) document.activeElement?.blur();
 }
-on("pickmodule", (moduleId) => { setBrush(moduleId); setStatus(`armed ${moduleId}`); });
+on("pickmodule", (moduleId) => {
+  // On the module stage the palette is a module *chooser*: arming a brush there
+  // would drop real kit geometry into the ship you cannot see.
+  if (state.editModule) { editModuleCollision(moduleId); return; }
+  setBrush(moduleId); setStatus(`armed ${moduleId}`);
+});
 on("status", (msg) => setStatus(msg));
 on("deletecurrent", () => deleteCurrent());
+on("colliders", () => { refreshStats(); validate(); });
+
+// ------------------------------------------------------------- collision
+
+/**
+ * The Collision pane: one button per primitive. A button *arms* the ghost the
+ * same way a palette module does - nothing exists until you click in the view,
+ * and the ghost stays armed so a run of boxes along a wall is repeated clicks.
+ */
+for (const kind of COLLIDER_KINDS) {
+  const b = document.createElement("button");
+  b.textContent = COLLIDER_LABEL[kind];
+  b.dataset.kind = kind;
+  b.title = SCALE_RULE[kind] === "free"
+    ? "Any scale — Havok takes a box with a quaternion"
+    : SCALE_RULE[kind] === "uniform"
+      ? "Scales uniformly: Havok's sphere is a single radius"
+      : "X and Z scale together as the radius; Y is the height";
+  b.addEventListener("click", async () => {
+    setBrush(null);                       // the two ghosts are the same slot
+    await armColliderGhost(kind);
+    refreshColliderButtons();
+    setStatus(`${COLLIDER_LABEL[kind]} — click to place, Esc to cancel`);
+  });
+  $("collider-buttons").appendChild(b);
+}
+
+/** Light the button whose primitive the ghost is holding. */
+function refreshColliderButtons() {
+  const armed = ghostCollider();
+  for (const b of $("collider-buttons").children) {
+    b.classList.toggle("active", b.dataset.kind === armed);
+  }
+}
+on("current", refreshColliderButtons);
+
+$("btn-collide-room").addEventListener("click", async () => {
+  const chunk = state.activeChunk;
+  await whileBusy(`fitting collision to ${chunk}…`, async () => {
+    const r = await generateForChunk(chunk, moduleBounds);
+    setStatus(`${chunk}: ${r.made} collision boxes`
+      + (r.cut ? `, ${r.cut} cut for doorways` : "")
+      + (r.inherited ? `, ${r.inherited} inherited from their module` : "")
+      + (r.skipped ? `, ${r.skipped} decal(s) skipped` : ""));
+  });
+});
+
+// ------------------------------------------------- module collision editing
+//
+// The module of whatever you are pointing at or have selected, so the button
+// works straight off the ship - which is where you notice a prop needs a better
+// hull in the first place.
+
+function moduleToEdit() {
+  const cur = currentElement();
+  if (cur?.kind === "ghost" && ghostModule()) return ghostModule();
+  for (const id of cur?.ids || []) {
+    const e = entryOf(id);
+    if (e?.module) return e.module;
+  }
+  return state.brush || null;
+}
+
+async function editModuleCollision(moduleId) {
+  await whileBusy(`opening ${moduleId}…`, async () => {
+    cancelGhost();
+    await enterModuleCollision(moduleId, instantiate);
+    const ref = moduleRefNode();
+    if (ref) focusNodes([ref]);
+    setGridElevation(0);
+  });
+  const n = moduleColliders(moduleId).length;
+  setStatus(n
+    ? `${moduleId}: ${n} shape(s) — every placement inherits them`
+    : `${moduleId} has no collision yet — drop shapes, or press Fit a box`);
+}
+
+$("btn-edit-module").addEventListener("click", async () => {
+  if (state.editModule) return leaveModuleCollision();
+  const moduleId = moduleToEdit();
+  if (!moduleId) {
+    setStatus("select an element, or pick a module, to edit its collision");
+    return;
+  }
+  await editModuleCollision(moduleId);
+});
+
+function leaveModuleCollision() {
+  const was = state.editModule;
+  cancelGhost();
+  exitModuleCollision();
+  setStatus(was ? `back to the ship — ${was} keeps its shapes` : "");
+}
+
+$("btn-module-done").addEventListener("click", leaveModuleCollision);
+
+$("btn-module-fit").addEventListener("click", async () => {
+  const moduleId = state.editModule;
+  if (!moduleId) return;
+  await whileBusy("fitting…", async () => { await fitModuleCollision(moduleId, moduleBounds); });
+  setStatus(`${moduleId}: fitted one box — scale and split it as you like`);
+});
+
+function refreshModuleBanner() {
+  const editing = state.editModule;
+  $("module-banner").hidden = !editing;
+  if (editing) {
+    $("module-banner-text").textContent = `Editing collision — ${editing}`;
+  }
+  $("btn-edit-module").textContent = editing ? "Back to the ship" : "Edit module collision";
+  $("btn-edit-module").classList.toggle("active", !!editing);
+  // Fitting a room while its geometry is off stage would look like it did
+  // nothing, and the shapes it made would be invisible until you left.
+  $("btn-collide-room").disabled = !!editing;
+}
+on("editModule", refreshModuleBanner);
+$("show-layer").addEventListener("change", (ev) => {
+  setShowLayer(ev.target.value);
+  setStatus(ev.target.value === "both" ? "showing the ship and its collision"
+    : ev.target.value === "geometry" ? "showing the ship only"
+      : "showing collision only");
+});
+on("modes", () => { $("show-layer").value = state.showLayer; });
+
 on("focus", () => focusSelection());
+
+// -------------------------------------------------------------- settings
+//
+// One row per ship-wide constant. Writes go through setConfig(), so they land
+// on the undo stack and in the saved layout like any other edit.
+
+function refreshSettings() {
+  const el = $("cfg-shell");
+  if (document.activeElement !== el) el.value = state.config.shellThickness;
+}
+
+$("cfg-shell").addEventListener("change", () => {
+  if (setConfig("shellThickness", $("cfg-shell").value)) {
+    setStatus(`collision shell ${state.config.shellThickness} m`
+      + " — regenerate a chunk to apply it");
+  }
+  refreshSettings();
+});
+
+$("btn-cfg-reset").addEventListener("click", () => {
+  let changed = false;
+  for (const key of Object.keys(CONFIG_DEFAULTS)) changed = resetConfig(key) || changed;
+  refreshSettings();
+  setStatus(changed ? "settings back to defaults" : "settings were already default");
+});
+
+on("config", refreshSettings);
+on("placements", refreshSettings);      // a load or an undo can change them
 
 // The overlay is up in the markup already, so there is never a frame in which
 // a half-built editor looks ready to use. whileBusy() takes it from here.
@@ -1360,6 +1603,8 @@ on("focus", () => focusSelection());
 
 async function bootstrap() {
   setStatus("loading catalogue…");
+  refreshSettings();
+  refreshModuleBanner();
   setBigPalette(localStorage.getItem("bigPalette") !== "0");
   if (localStorage.getItem("unlit") === "1") {
     $("unlit").checked = true;

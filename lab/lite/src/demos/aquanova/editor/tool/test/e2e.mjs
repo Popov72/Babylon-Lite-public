@@ -64,6 +64,12 @@ const built = await page.evaluate(async () => {
 
   ed.select([]);
 
+  // A non-default ship-wide constant, so the round-trip check below has teeth:
+  // buildManifest() assembles its own object rather than writing serialize()'s,
+  // so anything it forgets to copy is lost on save and silently comes back on
+  // its default. Leaving this at 0.008 would not have caught that.
+  ed.setConfig("shellThickness", 0.0075);
+
   return { placements: ed.state.placements.size, markers: ed.state.markers.size, door: door?.id };
 });
 console.log("built        :", JSON.stringify(built));
@@ -88,6 +94,7 @@ const reload = await page.evaluate(async () => {
     portals: d.portals.map((p) => `${p.chunkA}->${p.chunkB}`),
     fluidSim: d.fluidSim,
     environment: d.environment,
+    config: d.config,
     checks: document.getElementById("validation").textContent.trim(),
   };
 });

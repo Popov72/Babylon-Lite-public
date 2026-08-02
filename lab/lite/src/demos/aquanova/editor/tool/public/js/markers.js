@@ -52,6 +52,11 @@ export function addDoor(position, opts = {}) {
     chunkB: opts.chunkB ?? "",
     triggerRadius: opts.triggerRadius ?? DEFAULT_DOOR.triggerRadius,
     slideDistance: opts.slideDistance ?? DEFAULT_DOOR.slideDistance,
+    // A portal you can see through but not walk through - a window onto space.
+    // The renderer still draws the far chunk; collision generation keeps the
+    // opening solid. Default false, so every manifest written before this reads
+    // back as an ordinary doorway.
+    sealed: !!opts.sealed,
     leaves: opts.leaves ? [...opts.leaves] : [],
   };
 
@@ -152,6 +157,7 @@ export function serializeMarkers() {
     width: m.width, height: m.height,
     chunkA: m.chunkA, chunkB: m.chunkB,
     triggerRadius: m.triggerRadius, slideDistance: m.slideDistance,
+    sealed: !!m.sealed,
     leaves: [...m.leaves],
   }));
 }

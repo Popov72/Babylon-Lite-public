@@ -339,3 +339,49 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 .axis-snap.axis-scale { transform: translate(-50%, -140%); }
 #bhv-applied .vec { display: flex; gap: 4px; }
 #bhv-applied .vec input { flex: 1 1 0; min-width: 0; }
+
+/* ------------------------------------------------------- collision pane */
+/*
+ * Sits under the module list rather than behind a tab: collision shapes are
+ * placed *while* looking at the room they wrap, so hiding them behind a tab
+ * switch would mean losing the palette every time one is dropped.
+ */
+#collision-pane {
+  flex: 0 0 auto; padding: 8px 10px;
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+#collision-pane h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+#collision-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
+#collider-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
+#collider-buttons button { width: 100%; }
+
+#settings-pane {
+  flex: 0 0 auto; padding: 8px 10px;
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+#settings-pane h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+#settings-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
+#settings-pane .cfg-row {
+  display: grid; grid-template-columns: 1fr 72px 16px; gap: 4px;
+  align-items: center; margin-bottom: 6px; font-size: 11px;
+}
+#settings-pane .cfg-row input { width: 100%; }
+#settings-pane .cfg-row .unit { color: var(--muted); font-size: 10px; }
+#settings-pane button { width: 100%; }
+
+/* The stage is not the ship: say so loudly, in the middle of the view, or a
+   mode that hides an entire ship reads as an editor that has lost it. */
+#module-banner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 6; display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 4px;
+  background: rgba(190, 110, 20, 0.92); color: #fff;
+  font-size: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+#module-banner[hidden] { display: none; }
+#module-banner button {
+  background: rgba(0, 0, 0, 0.28); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+#module-banner button:hover { background: rgba(0, 0, 0, 0.45); }
+#module-banner-text { font-weight: 600; }

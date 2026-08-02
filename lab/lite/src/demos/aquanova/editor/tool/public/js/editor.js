@@ -27,12 +27,29 @@ const CAMERA_INERTIA = 0.75;
 // used to swing the view without picking things up on release.
 export const CLICK_MS = 300;
 
+/**
+ * Ship-wide constants the layout carries with it.
+ *
+ * These are authoring decisions, not preferences: a ship fitted with a 8 mm
+ * collision shell and reloaded on another machine has to come back with the
+ * same shell, or its collision would silently change. So they live in the
+ * layout, go through the undo stack, and are editable in the Settings pane
+ * rather than being buried as literals in the code.
+ */
+export const CONFIG_DEFAULTS = {
+  // Thickness given to a module with no depth of its own when fitting
+  // collision - the kit's floors and ceilings are single planes. Matches the
+  // 8 mm the kit's walls actually measure, so a room comes out uniform.
+  shellThickness: 0.008,
+};
+
 export const state = {
   scene: null,
   engine: null,
   camera: null,
   placements: new Map(),   // id -> { id, module, chunk, node }
   markers: new Map(),      // id -> door / spawn marker (see markers.js)
+  colliders: new Map(),    // id -> collision primitive (see colliders.js)
   chunks: ["CH00_Storage"],
   activeChunk: "CH00_Storage",
   selection: [],
@@ -66,12 +83,16 @@ export const state = {
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
   dragAxis: "xz",          // "xz" or "y" - which way a drag moves things (Q)
+  editModule: null,        // module whose collision is being edited, see colliders.js
+  showLayer: "both",       // "both" | "geometry" | "collision", see setShowLayer
+  config: { ...CONFIG_DEFAULTS },
   nextId: 1,
 };
 
-/** Selection holds ids from either store; resolve without caring which. */
+/** Selection holds ids from any store; resolve without caring which. */
 export function entryOf(id) {
-  return state.placements.get(id) || state.markers.get(id) || null;
+  return state.placements.get(id) || state.markers.get(id)
+    || state.colliders.get(id) || null;
 }
 
 const listeners = new Map();
@@ -540,6 +561,7 @@ export function elementsInRect(rect) {
   };
   for (const e of state.placements.values()) if (overlaps(e.node)) out.push(e.id);
   for (const m of state.markers.values()) if (overlaps(m.node)) out.push(m.id);
+  for (const c of state.colliders.values()) if (overlaps(c.node)) out.push(c.id);
   return out;
 }
 
@@ -1250,7 +1272,8 @@ export function pickUnderCursor() {
     (m) => m.isPickable && m.isEnabled());
   const id = pick?.hit
     ? (pick.pickedMesh?.metadata?.placementRoot?.name
-      || pick.pickedMesh?.metadata?.markerRoot?.name)
+      || pick.pickedMesh?.metadata?.markerRoot?.name
+      || pick.pickedMesh?.metadata?.colliderRoot?.name)
     : null;
   if (id && entryOf(id)) return { kind: "entry", id, entry: entryOf(id), pick };
 
@@ -1303,11 +1326,13 @@ export function removeSelected() {
   pushUndo();
   for (const id of state.selection) {
     if (state.placements.has(id)) removePlacement(id);
+    else if (state.colliders.has(id)) hooks.removeCollider(id);
     else removeMarkerNode(id);
   }
   select([]);
   emit("placements");
   emit("markers");
+  emit("colliders");
 }
 
 function removeMarkerNode(id) {
@@ -1347,6 +1372,7 @@ export function clearAll() {
   hideAxes();
   for (const id of [...state.placements.keys()]) removePlacement(id);
   for (const id of [...state.markers.keys()]) removeMarkerNode(id);
+  for (const id of [...state.colliders.keys()]) hooks.removeCollider(id);
   state.selection = [];
   state.nextId = 1;
   // ids restart at P0001, so a leftover entry would hide a brand new element
@@ -1394,6 +1420,12 @@ export function nudgeSelection(delta) {
 export function focusSelection() {
   const nodes = state.selection.map((id) => entryOf(id)?.node).filter(Boolean);
   if (!nodes.length) return;
+  focusNodes(nodes);
+}
+
+/** Frame these nodes, keeping the camera's current orientation. */
+export function focusNodes(nodes) {
+  if (!nodes?.length) return;
   let min = null, max = null;
   for (const n of nodes) {
     const b = worldBounds(n);
@@ -1803,10 +1835,19 @@ function setVeil(entry, on) {
 
 export function applyVisibility() {
   const veilOf = (id) => (veilSuspended ? undefined : state.hidden.get(id));
+  // Editing a module's collision puts a single stand-in on an empty stage. The
+  // ship is only hidden, never touched, so leaving the mode puts it all back.
+  const editing = state.editModule;
+  // The layer switch composes with everything else rather than fighting it: it
+  // can only ever take things *off* screen, so chunk isolation and the Shift+H
+  // veil keep the last word on what is left.
+  const geometryOn = state.showLayer !== "collision";
+  const collisionOn = state.showLayer !== "geometry";
 
   for (const e of state.placements.values()) {
     const veil = veilOf(e.id);
-    const on = (!state.isolate || e.chunk === state.activeChunk) && veil !== "hidden";
+    const on = !editing && geometryOn
+      && (!state.isolate || e.chunk === state.activeChunk) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
     for (const m of realMeshes(e.node)) m.isPickable = veil !== "ghost";
@@ -1814,10 +1855,40 @@ export function applyVisibility() {
   // markers belong to no chunk, so isolation has nothing to say about them
   for (const mk of state.markers.values()) {
     const veil = veilOf(mk.id);
-    mk.node.setEnabled(veil !== "hidden");
+    mk.node.setEnabled(!editing && geometryOn && veil !== "hidden");
     setVeil(mk, veil === "ghost");
     for (const m of realMeshes(mk.node)) m.isPickable = veil !== "ghost";
   }
+  // A room's primitives belong to a chunk and follow isolation like placements.
+  // A module's belong to a kit prototype and are only on stage while that
+  // module is the one being edited - they are in its local space, so anywhere
+  // else they would be a pile of shapes sitting at the world origin.
+  for (const c of state.colliders.values()) {
+    const veil = veilOf(c.id);
+    const on = c.module
+      ? c.module === editing
+      : collisionOn && !editing
+        && (!state.isolate || c.chunk === state.activeChunk) && veil !== "hidden";
+    c.node.setEnabled(on);
+    if (c.mesh) c.mesh.isPickable = veil !== "ghost";
+  }
+}
+
+/** What the viewport shows: the ship, its collision, or both. */
+export const SHOW_LAYERS = ["both", "geometry", "collision"];
+
+export function setShowLayer(layer) {
+  if (!SHOW_LAYERS.includes(layer) || layer === state.showLayer) return false;
+  state.showLayer = layer;
+  // Selecting something and then hiding its layer would leave the gizmo and the
+  // inspector acting on an element nobody can see.
+  if (state.selection.some((id) => {
+    const e = entryOf(id);
+    return e && (e.type === "collider" ? layer === "geometry" : layer === "collision");
+  })) select([]);
+  applyVisibility();
+  emit("modes");
+  return true;
 }
 
 /**
@@ -1829,6 +1900,29 @@ export function setVeilAlpha(a) {
   state.veilAlpha = v;
   for (const [key, mat] of ghostMats) if (key.endsWith(":VEIL")) mat.alpha = v;
   emit("modes");
+}
+
+/**
+ * Change a ship-wide constant.
+ *
+ * Undoable, because it changes what the ship *is*: fitting collision with a
+ * different shell thickness produces different geometry, and a slip of the
+ * keyboard has to be as recoverable as any other edit.
+ */
+export function setConfig(key, value) {
+  if (!(key in CONFIG_DEFAULTS)) return false;
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return false;
+  if (Math.abs(state.config[key] - v) < 1e-9) return false;
+  pushUndo();
+  state.config = { ...state.config, [key]: v };
+  emit("config");
+  return true;
+}
+
+/** Restore a ship-wide constant to the value the editor ships with. */
+export function resetConfig(key) {
+  return setConfig(key, CONFIG_DEFAULTS[key]);
 }
 
 /**
@@ -1914,6 +2008,10 @@ export function veilCounts() {
 export const hooks = {
   serializeMarkers: () => [],
   deserializeMarkers: () => {},
+  serializeColliders: () => [],
+  deserializeColliders: () => {},
+  removeCollider: () => {},
+  reconcileCollider: () => false,
   // interact.js owns the placement ghost; the axes need its node, and importing
   // interact.js back would close a cycle
   ghostNode: () => null,
@@ -2068,7 +2166,9 @@ export function serialize() {
       rotation: round3(eulerOf(e.node)),
       scale: round3(e.node.scaling.asArray()),
     })),
+    colliders: hooks.serializeColliders(),
     markers: hooks.serializeMarkers(),
+    config: { ...state.config },
   };
 }
 
@@ -2087,6 +2187,9 @@ export async function deserialize(data) {
 
 async function restoreFrom(data) {
   clearAll();
+  // Defaults first, so a layout saved before a setting existed comes back with
+  // that setting's default rather than undefined.
+  state.config = { ...CONFIG_DEFAULTS, ...(data.config || {}) };
   // buildManifest() writes chunks as rich objects; serialize() writes plain
   // ids. Accept either so a saved manifest reloads cleanly.
   const ids = (data.chunks || []).map((c) => (typeof c === "string" ? c : c.id)).filter(Boolean);
@@ -2121,6 +2224,7 @@ async function restoreFrom(data) {
   }
   applyVisibility();
   hooks.deserializeMarkers(data.markers || []);
+  hooks.deserializeColliders(data.colliders || []);
   // Restored before the final applyVisibility(), so an undo puts back exactly
   // what was on screen. Absent in a manifest, which never carries it.
   for (const item of data.hidden || []) {

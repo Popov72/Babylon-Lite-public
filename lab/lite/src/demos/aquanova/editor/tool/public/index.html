@@ -103,6 +103,11 @@
 
   <div class="group">
     <label title="Show the build-plane grid — G"><input type="checkbox" id="show-grid" checked> Grid</label>
+    <select id="show-layer" title="What the viewport shows: the ship, the collision shapes, or both. It only ever hides — chunk isolation and Shift+H still apply on top. No shortcut">
+      <option value="both">Ship + collision</option>
+      <option value="geometry">Ship only</option>
+      <option value="collision">Collision only</option>
+    </select>
     <label title="Show raw albedo with no lighting. No shortcut"><input type="checkbox" id="unlit"> Unlit</label>
     <label title="Drop the editor's own lights and show only the HDRI, which is all the game has. The only honest preview of the Env and Exposure sliders. No shortcut"><input type="checkbox" id="runtime-light"> Runtime&nbsp;light</label>
     <label title="Walk at the player's eye height (1.8 m), following whatever floor is underfoot, instead of flying. No shortcut"><input type="checkbox" id="walk"> Walk</label>
@@ -117,6 +122,27 @@
       <div id="palette-tabs" class="tabs"></div>
     </div>
     <div id="palette-list"></div>
+    <div id="collision-pane">
+      <h3>Collision</h3>
+      <p class="muted">Unit shapes — scale them to size. Green, never exported to
+        <code>ship.glb</code>: they are what the runtime hands to Havok.</p>
+      <div id="collider-buttons"></div>
+      <button id="btn-collide-room"
+              title="Fit a box to every solid module in the active chunk, cutting the openings of unsealed doors out of the walls. Decals are skipped, and so is any module that carries its own collision — those are inherited by every placement instead. Regenerating replaces only what it generated before.">Generate for active chunk</button>
+      <button id="btn-edit-module"
+              title="Fit collision to the selected element's kit module, once, in the module's own space — every placement of that module inherits it. The right answer for props, whose bounding box is a poor fit. No shortcut">Edit module collision</button>
+    </div>
+    <div id="settings-pane">
+      <h3>Settings</h3>
+      <p class="muted">Ship-wide constants. Saved with the layout and undoable,
+        because changing one changes what the ship is.</p>
+      <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
+        <span>Collision shell</span>
+        <input type="number" id="cfg-shell" min="0.001" max="1" step="0.001">
+        <span class="unit">m</span>
+      </label>
+      <button id="btn-cfg-reset" title="Put every setting on this pane back to the value the editor ships with. Undoable">Reset to defaults</button>
+    </div>
     <div class="palette-foot">
       <span id="brush-label">No module selected</span>
     </div>
@@ -124,6 +150,11 @@
 
   <div id="viewport">
     <canvas id="render-canvas" touch-action="none"></canvas>
+    <div id="module-banner" hidden>
+      <span id="module-banner-text"></span>
+      <button id="btn-module-fit" title="Replace this module's shapes with one box fitted to its bounding volume, as a starting point to adjust. Undoable">Fit a box</button>
+      <button id="btn-module-done" title="Go back to the ship. Nothing is committed or discarded here — the shapes are saved with the layout like everything else. Esc also leaves">Back to the ship</button>
+    </div>
     <div id="hud">
       <div><span class="k" title="Height of the build plane new modules land on — not a property of any element. Numpad + / - raises and lowers it; numpad . jumps it to the top of whatever the cursor is over, for stacking">Build plane</span><span id="hud-elev" class="v">0.00 m</span></div>
       <div><span class="k">Current</span><span id="hud-current" class="v">—</span></div>
@@ -184,6 +215,11 @@
         <div class="row"><label>Trigger</label><input type="number" id="door-trig" step="0.5"></div>
         <div class="row"><label>Slide</label><input type="number" id="door-slide" step="0.05"></div>
         <div class="row"><label>Leaves</label><span id="door-leaves" class="readout"></span></div>
+        <div class="row">
+          <label title="The far side can be seen but not reached — a window onto space rather than a doorway. The portal still renders through it; collision keeps the opening solid.">
+            <input type="checkbox" id="door-sealed"> Sealed (see through, cannot pass)
+          </label>
+        </div>
         <button id="btn-door-leaves">Use selection as leaves</button>
       </div>
 
