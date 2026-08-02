@@ -67,6 +67,32 @@ button.toggle[aria-pressed="true"] {
 button.toggle[aria-pressed="true"]:hover { background: #ff9d5c; border-color: #ff9d5c; }
 button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 
+/*
+ * "Yes, that press landed."
+ *
+ * Save, Load and Export glb all do their work somewhere else - a file on disk,
+ * a status line at the bottom - so the button itself gave no sign it had been
+ * hit, and a press that missed looked exactly like one that worked.
+ *
+ * `:active` alone is not enough: it lasts only while the button is held, so a
+ * quick click barely registers and a keyboard activation never shows at all.
+ * The class is added on click and taken off on a timer.
+ *
+ * No transition on it, deliberately. A fade *in* is exactly wrong for a flash:
+ * with one, the colour was still climbing out of the idle grey when the timer
+ * took the class off again, and the button never went orange at all. It reads
+ * as a press, so it has to be instant.
+ *
+ * Toggle buttons are left out: they already go solid orange and stay there,
+ * which says the same thing for longer.
+ */
+button:active:not(.toggle),
+button.tapped,
+button.tapped:hover {
+  background: var(--accent); border-color: var(--accent); color: #16191f;
+  transition: none;
+}
+
 select, input[type="number"], input[type="search"] {
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 3px;

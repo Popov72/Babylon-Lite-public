@@ -734,6 +734,32 @@ function setBigPalette(on) {
 }
 
 /**
+ * Flash a button orange when it is pressed.
+ *
+ * Save, Load and Export glb all do their work somewhere else - a file on disk,
+ * a line in the status bar - so the button gave no sign it had been hit, and a
+ * press that missed looked exactly like one that worked.
+ *
+ * One delegated listener rather than a line in every handler: a button added
+ * later is covered without anyone remembering to, and no handler can forget.
+ * It runs on the capture phase so a handler that stops propagation - or throws
+ * - still gets its flash.
+ *
+ * Toggle buttons are skipped: they go solid orange and *stay* there, which says
+ * the same thing for longer, and flashing a slightly different orange first
+ * only muddies it.
+ */
+const TAP_MS = 260;
+const tapTimers = new WeakMap();
+document.addEventListener("click", (e) => {
+  const b = e.target?.closest?.("button");
+  if (!b || b.disabled || b.classList.contains("toggle")) return;
+  clearTimeout(tapTimers.get(b));      // a second press restarts the flash
+  b.classList.add("tapped");
+  tapTimers.set(b, setTimeout(() => b.classList.remove("tapped"), TAP_MS));
+}, true);
+
+/**
  * One undo entry per slider *gesture*, not per pixel of travel.
  *
  * `input` fires continuously while a range is dragged, so a single sweep would

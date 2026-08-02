@@ -371,6 +371,27 @@ every button, select, slider and checkbox in the toolbar and fails if any lacks
 a tooltip, or if a tooltip mentions neither a key nor "no shortcut" — so a new
 control cannot ship undocumented.
 
+**A button flashes orange when you press it.** `Save`, `Load` and `Export glb`
+all do their work somewhere else — a file on disk, a line in the status bar — so
+the button itself gave no sign it had been hit, and a press that missed looked
+exactly like one that worked. One delegated listener on the document adds a
+class for 260 ms, so a button added later is covered without anyone remembering
+to, and no handler can forget. It runs on the **capture** phase, so a handler
+that stops propagation, or throws, still gets its flash.
+
+> **No transition on it**, and that is not an oversight. A fade *in* is exactly
+> wrong for a flash: with one, the colour was still climbing out of the idle
+> grey when the timer took the class off again, and the button never actually
+> went orange — measured at 50 ms into a 180 ms fade, sitting at `rgb(98,68,54)`.
+> A press reads as instant, so it has to be instant.
+>
+> Toggle buttons opt out. They already latch solid orange and *stay* there,
+> which says the same thing for longer; flashing a slightly different orange
+> first only muddies it. The test measures the colour in the same task as the
+> click — a transition cannot hide behind that — and it does so on a **clone**
+> of each button, swapped in for the duration, so checking that `Save` lights up
+> does not save over the test server's ship.
+
 The inspector shows the selection's **world** bounding box in metres — the world
 box, not the local one, so it changes as you rotate. That is the number you want
 when checking whether a piece still fits its 4 m tile. With several elements

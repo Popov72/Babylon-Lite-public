@@ -6047,6 +6047,62 @@ check("the axis combos name their cycling keys",
   `rot "${tips.rotAxis}" · scale "${tips.scaleAxis}"`);
 check("Save still names Ctrl+S", /Ctrl\+S/.test(tips.save), `"${tips.save}"`);
 
+// ---- a press has to look like a press ---------------------------------------
+// Save, Load and Export glb all do their work somewhere else - a file on disk,
+// a line in the status bar - so a press that missed looked exactly like one
+// that worked. The measurement is taken in the *same task* as the click, so a
+// transition cannot hide behind it: a fade-in is what broke the first attempt,
+// the colour still climbing out of grey when the timer took the class off.
+//
+// Each button is swapped for a clone of itself for the duration. The clone
+// carries the same id, classes and styling but none of the listeners, so the
+// flash is measured on the real thing without Save actually saving over the
+// test server's ship or Drop-to-plane actually moving the selection.
+const ACCENT = "rgb(255, 138, 61)";
+const tapped = await page.evaluate((accent) => {
+  const flash = (id) => {
+    const real = document.getElementById(id);
+    if (!real) return { id, missing: true };
+    const stunt = real.cloneNode(true);
+    real.replaceWith(stunt);
+    const idle = getComputedStyle(stunt).backgroundColor;
+    stunt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    const during = getComputedStyle(stunt).backgroundColor;
+    const marked = stunt.classList.contains("tapped");
+    stunt.replaceWith(real);
+    return { id, idle, during, marked, lit: during === accent };
+  };
+  return {
+    actions: ["btn-save", "btn-load", "btn-export", "btn-focus", "btn-ground"].map(flash),
+    toggle: flash("btn-isolate"),
+  };
+}, ACCENT);
+check("Save, Load, Export and the rest go orange the instant they are pressed",
+  tapped.actions.every((r) => r.lit && r.marked),
+  tapped.actions.map((r) => `${r.id} ${r.idle}->${r.during}`).join(", "));
+// A toggle latches solid orange and stays there, which says the same thing for
+// longer - flashing a slightly different orange first only muddies it.
+check("a toggle button is left to its own latched state",
+  tapped.toggle.marked === false, `class marked=${tapped.toggle.marked}`);
+
+const tapClears = await page.evaluate(() => {
+  const real = document.getElementById("btn-focus");
+  const stunt = real.cloneNode(true);
+  stunt.id = "tap-probe";
+  real.after(stunt);
+  stunt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  return stunt.classList.contains("tapped");
+});
+await page.waitForTimeout(500);
+const tapGone = await page.evaluate(() => {
+  const stunt = document.getElementById("tap-probe");
+  const still = stunt.classList.contains("tapped");
+  stunt.remove();
+  return still;
+});
+check("and the flash takes itself off again",
+  tapClears && !tapGone, `on at click=${tapClears}, still on later=${tapGone}`);
+
 await page.mouse.down();
 await page.mouse.move(qPt.x + 10, qPt.y - 150, { steps: 10 });
 await page.waitForTimeout(200);
