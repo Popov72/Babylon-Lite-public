@@ -18,15 +18,18 @@ tool/layouts/
 tool/test/shot-*.png
 
 # The exported ship: a 31 MB .glb rebuilt from the manifest by "Export glb",
-# and the timestamped backups the server keeps on every save. The live manifest
-# itself is NOT ignored - it is the ship - and neither is ship_collision.json,
-# which is the kit's hulls and the whole point is that it travels.
+# and the timestamped backups the server keeps on every write. Those backups
+# are ignored here but are NOT expendable on disk - they are the recovery path,
+# and they have already been the only thing that got work back. The live
+# manifest itself is NOT ignored (it is the ship), and neither is
+# ship_collision.json, which is the kit's hulls and is meant to travel.
 export/*.glb
 export/ship_manifest.*-*.json
 export/ship_collision.*-*.json
+export/ship_autosave.*-*.json
 
-# The recovery copy, rewritten every couple of minutes while you work. Never a
-# deliberate save, so never part of the history.
+# The current recovery copy, rewritten every couple of minutes while you work.
+# Never a deliberate save, so never part of the history.
 export/ship_autosave.json
 
 # The HDRI is a placeholder with no recorded provenance, and is not the one this

@@ -1740,18 +1740,35 @@ Three deliberate choices:
 * **It is not the manifest.** A background write must never overwrite the ship
   you last chose to save. Recovery is a copy you reach for, not a thing that
   happens to your work.
-* **It is not rotated.** The manifest keeps a timestamped copy of every
-  deliberate save, and doing the same here would bury `export/` under a file
-  every couple of minutes. One rolling recovery file is the point.
+* **Every one is kept.** Each write rotates the previous copy to a timestamped
+  name, so a long session leaves hundreds of small files. That is the point: the
+  value of an auto-save is having the state from *before* whatever went wrong,
+  and you cannot know in advance which one that is. They are a few kilobytes
+  each, and deleting them is one command.
 * **It keeps its own baseline.** An auto-save does *not* clear "you have unsaved
   work", because the manifest still does not have those changes. Sharing one
   baseline would mean a background write quietly disarmed the guard that stops
   you closing the tab on an hour of work — the exact opposite of what an
   auto-save is for.
 
-To recover, copy `ship_autosave.json` over `ship_manifest.json` and reload. The
-file names itself `"generator": "SciFiShip layout tool (auto-save)"` and carries
-`"autoSaved": true`, so it is never mistaken for a deliberate save.
+To recover, copy `ship_autosave.json` (or any of its timestamped predecessors)
+over `ship_manifest.json` and reload. The file names itself
+`"generator": "SciFiShip layout tool (auto-save)"` and carries `"autoSaved":
+true`, so it is never mistaken for a deliberate save.
+
+### Why every write is rotated
+
+`ship_manifest.json`, `ship_collision.json` and `ship_autosave.json` all keep a
+timestamped copy of what they replaced.
+
+The collision file was briefly exempted, on the reasoning that every manifest
+carries the same hulls in `moduleShapes`, so a lost copy could always be
+rebuilt. **That reasoning is only as good as its source.** It was overwritten
+with an empty file once, and the manifest had been emptied in the same breath —
+so the derived-from argument was worth nothing, and the timestamped copies were
+the only thing that got the work back.
+
+Storage is cheap and these files are kilobytes. Recovering an afternoon is not.
 
 ## Configuration
 

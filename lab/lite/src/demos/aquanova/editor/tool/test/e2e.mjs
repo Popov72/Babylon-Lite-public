@@ -112,5 +112,39 @@ console.log("blender glb preserved:",
 console.log("blender manifest preserved:",
   after["ship_manifest.blender.bak.json"] === before["ship_manifest.json"]);
 
+// ---- every write keeps what it replaced -----------------------------------
+// The manifest, the collision file and the auto-save all rotate a timestamped
+// copy. The collision file was briefly exempted on the reasoning that every
+// manifest carries the same hulls in `moduleShapes` - but that argument is only
+// as good as its source, and when the file was overwritten with nothing the
+// manifest had been emptied in the same breath. The timestamped copies were the
+// only thing that got the work back. This is here so nobody removes them again.
+const rotationFailures = [];
+for (const [route, stem] of [["collision", "ship_collision"], ["autosave", "ship_autosave"]]) {
+  const body = (n) => JSON.stringify({ probe: stem, n });
+  const post = async (n) => page.evaluate(async ([r, b]) =>
+    (await fetch(`/api/${r}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: b,
+    })).json(), [route, body(n)]);
+  const first = await post(1);
+  await new Promise((r) => setTimeout(r, 1100));   // the stamp is per second
+  const second = await post(2);
+  const backups = fs.readdirSync(EXPORT)
+    .filter((f) => f.startsWith(`${stem}.`) && f !== `${stem}.json`);
+  const kept = backups.some((f) =>
+    JSON.parse(fs.readFileSync(path.join(EXPORT, f), "utf8")).n === 1);
+  console.log(`rotation ${stem}: ${backups.length} backup(s), first write kept: ${kept}`);
+  if (!second.previous || !kept) {
+    rotationFailures.push(`${stem}: previous=${second.previous}, first write kept=${kept}`);
+  }
+  void first;
+}
+if (rotationFailures.length) {
+  console.log("ROTATION BROKEN:", rotationFailures.join(" | "));
+  errors.push("rotation: " + rotationFailures.join(" | "));
+}
+
 console.log("\nerrors:", errors.length ? [...new Set(errors)].join("\n") : "(none)");
 await browser.close();
+// Losing the ability to recover work is worth failing the run over.
+if (rotationFailures.length) process.exit(1);

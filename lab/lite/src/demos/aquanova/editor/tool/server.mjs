@@ -282,21 +282,33 @@ async function handle(req, res) {
     if (req.method === "POST") {
       const body = await readBody(req);
       await fsp.mkdir(path.dirname(COLLISION), { recursive: true });
-      // Not rotated, unlike the manifest. It is written on every save, so a
-      // timestamped copy each time buried the export folder - and it is not the
-      // only copy: every manifest carries the same hulls in `moduleShapes`, so
-      // one can be rebuilt from any saved ship.
+      // Rotated, like the manifest. This was briefly not rotated, on the
+      // reasoning that every manifest carries the same hulls in `moduleShapes`
+      // so a copy could always be rebuilt. That reasoning is only as good as
+      // the source: when this file was once overwritten with nothing, the
+      // manifest had been emptied in the same breath, and the timestamped
+      // copies were the only thing that got the work back. Cheap files beat
+      // clever arguments.
+      const previous = await rotatePrevious(COLLISION);
       await fsp.writeFile(COLLISION, body);
-      return sendJson(res, 200, { ok: true, path: COLLISION, bytes: body.length });
+      return sendJson(res, 200, {
+        ok: true, path: COLLISION, bytes: body.length,
+        previous: previous ? path.basename(previous) : null,
+      });
     }
     return send(res, 405, "method not allowed");
   }
 
   if (p === "/api/autosave") {
-    // A rolling recovery file. Deliberately *not* rotated: the manifest keeps a
-    // timestamped copy of every deliberate save, and doing the same here would
-    // bury the export folder under a file every couple of minutes. It is also
-    // deliberately not the manifest, so a background write can never overwrite
+    // A recovery file, written every couple of minutes while you work.
+    //
+    // Rotated, so every one of those couple-of-minute states is kept. That is
+    // hundreds of small files over a long session, and that is the point: the
+    // whole value of an auto-save is having the state from *before* whatever
+    // went wrong, and you cannot know in advance which one that is. They are a
+    // few kilobytes each and deleting them is one command.
+    //
+    // Deliberately not the manifest, so a background write can never overwrite
     // the ship you last chose to save.
     if (req.method === "GET") {
       try {
@@ -308,8 +320,12 @@ async function handle(req, res) {
     if (req.method === "POST") {
       const body = await readBody(req);
       await fsp.mkdir(path.dirname(AUTOSAVE), { recursive: true });
+      const previous = await rotatePrevious(AUTOSAVE);
       await fsp.writeFile(AUTOSAVE, body);
-      return sendJson(res, 200, { ok: true, path: AUTOSAVE, bytes: body.length });
+      return sendJson(res, 200, {
+        ok: true, path: AUTOSAVE, bytes: body.length,
+        previous: previous ? path.basename(previous) : null,
+      });
     }
     return send(res, 405, "method not allowed");
   }
