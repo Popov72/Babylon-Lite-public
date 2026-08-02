@@ -1393,6 +1393,23 @@ bounding volume, which is exactly the shape authoring is meant to improve on.
 Whatever you drop is claimed by the staged element it sits on and becomes that
 module's collision.
 
+> **The authored convention is a face, not a box round the mesh.** A hull's
+> *surface* is put flush with the visible surface the player meets, and the body
+> extends **away** from the play space. Floors show it most plainly: every
+> `Platforms/*` hull is `position.y = -0.25`, `scale.y = 0.5` — a half-metre
+> slab hanging entirely *below* the walking surface, so you stand exactly on the
+> plate. Walls do the same horizontally: `WallWideBand_Straight` has a 108 mm
+> panel and a **1 m** hull whose inner face is on the grid line and whose body
+> runs outward into the wall's thickness.
+>
+> So a hull that sits ~0.45 m off its mesh centre, or juts 0.9 m past its mesh
+> AABB, is not stale — it is that convention, and 30 of the 49 authored modules
+> show it. Measured on the storage room, whose four `WallWideBand_*` walls give
+> an interior of X 4→12, Z −4→4 — 8 × 8 m, exactly as built: **all seven hulls
+> lie entirely outside that interior**, so the player is stopped flush with the
+> visible wall and the overhang is in the void behind it. A thick backstop is
+> also what stops a fast body tunnelling through a 7.5 mm panel.
+
 **On the ship** they create *room* colliders: world-space one-offs belonging to
 a chunk, for things with no module behind them — an invisible barrier, a
 blocker over a gap. They are written to `collision[chunk]` as authored.
