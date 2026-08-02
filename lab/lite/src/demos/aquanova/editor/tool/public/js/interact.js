@@ -267,6 +267,7 @@ hooks.ghostNode = () => (ghost && !ghost.root.isDisposed() ? ghost.root : null);
 export async function armGhost(moduleId, opts = {}) {
   cancelGhost();
   if (!moduleId) { emit("current"); return null; }
+  floorDragAxisForGhost();
   const token = ++ghostToken;
   const built = await buildGhost([{ module: moduleId }], opts);
   if (token !== ghostToken) { disposeGhost(built); return null; }  // cancelled while loading
@@ -280,6 +281,29 @@ export async function armGhost(moduleId, opts = {}) {
 }
 
 /**
+ * Arming a ghost puts the drag axis back on the floor plane.
+ *
+ * In Y mode the cursor drives the *build plane* rather than the ghost's own
+ * height: the plane follows however far the cursor has travelled vertically,
+ * and the ghost goes with it. That is the point of the mode when you are moving
+ * something that already exists, and useless when you are arming something new
+ * - the ghost leaves the top or bottom of the screen before you have chosen
+ * where to put it. `Ctrl+D` has it worse still: a copy is given its source's
+ * height so it appears beside it, and Y mode clears exactly that.
+ *
+ * It lives here rather than in the click handlers because there are four ways
+ * to arm one - a palette tile, the eyedropper, a collision shape button, a
+ * duplicate - and one of them was missed the first time. `setDragAxis` emits
+ * `modes`, so the combo follows on its own.
+ *
+ * Deliberately *not* applied to an `M` carry: raising something is a perfectly
+ * good reason to be in Y mode, and that gesture moves what already exists.
+ */
+function floorDragAxisForGhost() {
+  if (state.dragAxis !== "xz") setDragAxis("xz");
+}
+
+/**
  * Arm the ghost with a collision primitive. Same contract as armGhost: nothing
  * exists until you click, and the ghost stays armed afterwards so a run of
  * boxes along a wall is just repeated clicks.
@@ -287,6 +311,7 @@ export async function armGhost(moduleId, opts = {}) {
 export async function armColliderGhost(kind, opts = {}) {
   cancelGhost();
   if (!kind) { emit("current"); return null; }
+  floorDragAxisForGhost();
   const token = ++ghostToken;
   const built = await buildGhost([{ collider: kind }], opts);
   if (token !== ghostToken) { disposeGhost(built); return null; }
@@ -314,6 +339,9 @@ export async function grabSelection(opts = {}) {
   const entries = state.selection.map(entryOf)
     .filter((e) => e && (e.module || e.type === "collider"));
   if (!entries.length) return null;
+  // A copy is a new thing being placed, so it wants the floor plane; a carry is
+  // moving what is already there, and raising it is a fair reason to be in Y.
+  if (opts.copy) floorDragAxisForGhost();
   cancelGhost();
   const token = ++ghostToken;
 

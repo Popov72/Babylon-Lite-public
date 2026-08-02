@@ -5931,6 +5931,49 @@ check("so the copy arms at its source's height, not down on the build plane",
 check("and the status line says the axis moved",
   /X\/Z/.test(dupAxisGhost.status.split("\n")[0]), dupAxisGhost.status.split("\n")[0].trim());
 
+// Every way of arming a ghost does it, not only Ctrl+D. The reset lives in
+// interact.js beside the three functions that assign the ghost, because there
+// are four routes in - a palette tile, the eyedropper, a shape button, a
+// duplicate - and putting it in the click handlers missed the palette, which is
+// the one the bug was reported against.
+const armAxis = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const pal = await import("/js/palette.js");
+  const module = ed.state.placements.get(id).module;
+  const arm = async (how) => {
+    i.cancelGhost();
+    i.setDragAxis("y");
+    ed.select([id]);
+    await how();
+    // setBrush fires armGhost without awaiting it, and armGhost loads the
+    // module's prototype - so the ghost turns up a few frames later even though
+    // the axis is set at once.
+    for (let k = 0; k < 60 && !ed.hooks.ghostNode?.(); k++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const out = { axis: ed.state.dragAxis, combo: document.getElementById("drag-axis").value,
+      ghost: !!ed.hooks.ghostNode?.() };
+    i.cancelGhost();
+    return out;
+  };
+  return {
+    palette: await arm(() => pal.setBrush(module)),
+    shape: await arm(() => i.armColliderGhost("box", { scaling: [1, 1, 1] })),
+    copy: await arm(() => i.grabSelection({ copy: true })),
+    // ...but a carry is moving what is already there, and raising it is a
+    // perfectly good reason to be in Y mode
+    carry: await arm(() => i.grabSelection()),
+  };
+}, dupSetup.id);
+for (const [how, r] of [["a palette tile", armAxis.palette], ["a collision shape button", armAxis.shape],
+  ["a Ctrl+D copy of a selection", armAxis.copy]]) {
+  check(`arming from ${how} puts the axis back on the floor`,
+    r.ghost && r.axis === "xz" && r.combo === "xz", JSON.stringify(r));
+}
+check("but an M carry is left in Y mode, raising being the whole point of it",
+  armAxis.carry.ghost && armAxis.carry.axis === "y", JSON.stringify(armAxis.carry));
+
 await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");

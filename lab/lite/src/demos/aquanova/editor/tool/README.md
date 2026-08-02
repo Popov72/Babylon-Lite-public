@@ -494,6 +494,24 @@ vertical axis, so the axis moves rather than the copy being armed somewhere you
 cannot see. The status line and the combo both report it, because a mode that
 changes itself quietly is worse than one you change by hand.
 
+> **Every way of arming a ghost does this**, not only `Ctrl+D` — a palette tile,
+> the eyedropper, a collision shape button. Even without a `baseY` to lose, `Y`
+> mode makes the build plane follow however far the cursor has travelled
+> vertically, and the ghost with it, so a freshly armed module leaves the screen
+> before you have chosen where to put it.
+>
+> It lives in `interact.js`, next to the three functions that assign the ghost,
+> rather than in the click handlers. The first attempt put it in the handlers
+> and missed the palette — which is the route the bug was reported against,
+> because a tile calls `setBrush` → `armGhost` directly rather than going
+> through the `pickmodule` event. `setDragAxis` emits `modes`, so the combo
+> follows on its own.
+>
+> An `M` carry is deliberately exempt: it moves what is already there, and
+> raising something is a perfectly good reason to be in `Y` mode. `Ctrl+D` on a
+> multi-selection goes through the *same* function, so it is told apart by
+> `opts.copy` rather than by which key was pressed.
+
 ### Carrying versus dragging
 
 There are two ways to move something, deliberately, and they differ in what

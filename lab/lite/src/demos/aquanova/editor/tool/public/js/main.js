@@ -1306,24 +1306,14 @@ function cancelEverything({ closeModes = true } = {}) {
 }
 
 /**
- * Ctrl+D always arms its copy on the floor plane.
- *
- * In Y mode the cursor drives the *build plane* rather than the ghost's own
- * height, and it clears `baseY` to take that over - which is exactly the height
- * a copy was given so it would appear beside its source. So the copy jumped to
- * wherever the plane happened to be, which from a camera down at deck level is
- * off the top of the screen.
- *
- * Nothing about "put a copy over there" wants the vertical axis, so the axis is
- * set rather than the copy being left unusable. Said out loud in the status
- * line, and the combo follows: a mode that changes itself quietly is worse than
- * one you have to change by hand.
+ * Whether arming a ghost is about to move the drag axis, so the status line can
+ * say so. The move itself happens in interact.js, where every arming path goes
+ * through one of three functions and none can be forgotten - this only reports
+ * it, because a mode that changes itself quietly is worse than one you change
+ * by hand.
  */
-function floorAxisForCopy() {
-  if (state.dragAxis === "xz") return "";
-  setDragAxis("xz");
-  refreshDragAxis();
-  return " · drag axis set back to X/Z";
+function axisNoteForGhost() {
+  return state.dragAxis === "xz" ? "" : " · drag axis set back to X/Z";
 }
 
 /**
@@ -1355,7 +1345,7 @@ function duplicateCurrent() {
     return;
   }
   if (many.length > 1) {
-    const axisNote = floorAxisForCopy();
+    const axisNote = axisNoteForGhost();
     grabSelection({ copy: true }).then((g) => {
       if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place${axisNote}`);
     });
@@ -1364,7 +1354,7 @@ function duplicateCurrent() {
 
   const entry = many[0];
   if (!entry) return duplicateSelected();          // markers have no module
-  const axisNote = floorAxisForCopy();
+  const axisNote = axisNoteForGhost();
 
   // The ghost sits on the build plane, so without this the copy of something on
   // an upper deck would appear back down at ground level. Moving the plane
@@ -1592,12 +1582,15 @@ function refreshBusy() {
   if (busy) document.activeElement?.blur();
 }
 on("pickmodule", (moduleId) => {
+  // Arming anything puts the drag axis back on the floor, or the ghost drives
+  // the build plane away from wherever you are looking.
+  const axisNote = axisNoteForGhost();
   // On the collision area the palette *stages* modules: arming a brush there
   // would drop real kit geometry into the ship you cannot see.
-  if (state.collisionMode) { stageFromPalette(moduleId); return; }
-  setBrush(moduleId); setStatus(`armed ${moduleId}`);
+  if (state.collisionMode) { stageFromPalette(moduleId, axisNote); return; }
+  setBrush(moduleId); setStatus(`armed ${moduleId}${axisNote}`);
 });
-on("stagemodule", (moduleId) => stageFromPalette(moduleId));
+on("stagemodule", (moduleId) => stageFromPalette(moduleId, axisNoteForGhost()));
 on("status", (msg) => setStatus(msg));
 on("deletecurrent", () => deleteCurrent());
 on("colliders", () => { refreshStats(); validate(); refreshCollisionMarks(); });
@@ -1622,9 +1615,10 @@ for (const kind of COLLIDER_KINDS) {
         : "X and Z scale together as the radius; Y is the height";
   b.addEventListener("click", async () => {
     setBrush(null);                       // the two ghosts are the same slot
+    const axisNote = axisNoteForGhost();
     await armColliderGhost(kind, { scaling: COLLIDER_DEFAULT_SCALE[kind] });
     refreshColliderButtons();
-    setStatus(`${COLLIDER_LABEL[kind]} — click to place, Esc to cancel`);
+    setStatus(`${COLLIDER_LABEL[kind]} — click to place, Esc to cancel${axisNote}`);
   });
   $("collider-buttons").appendChild(b);
 }
@@ -1684,7 +1678,7 @@ $("btn-module-done").addEventListener("click", closeCollisionArea);
  * cursor as a ghost, the same as placing anything else, so you choose where it
  * goes instead of being handed a spot.
  */
-async function stageFromPalette(moduleId) {
+async function stageFromPalette(moduleId, axisNote = "") {
   const already = [...state.placements.values()]
     .find((p) => p.stage && p.module === moduleId);
   if (already) {
@@ -1695,7 +1689,7 @@ async function stageFromPalette(moduleId) {
     return;
   }
   setBrush(moduleId);
-  setStatus(`${moduleId} — click to put it on the bench`);
+  setStatus(`${moduleId} — click to put it on the bench${axisNote}`);
 }
 
 $("btn-module-fit").addEventListener("click", async () => {
