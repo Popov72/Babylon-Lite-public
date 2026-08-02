@@ -1190,6 +1190,19 @@ barrel, or to the bench pointing across the ship, meant finding your bearings
 again on every switch. The bench's viewpoint rides in the collision
 file as well, so a reload puts you back where you were working.
 
+> Both sides store the camera as the camera itself holds it — **position and
+> rotation**, through the same `serializeView` / `applyView` used by the layout
+> — not a position and a target. `getTarget()` on a `FreeCamera` reports the
+> last point something *explicitly* aimed it at, and free look never updates
+> that. The first version captured that stale target and then aimed at it, so
+> the camera returned to the right place looking the wrong way, which reads as
+> "the view was not restored" — because it wasn't. The test missed it for the
+> same reason: it drove the camera with `setTarget`, the one gesture that keeps
+> the target honest. It now aims by rotation, the way a user does, and checks
+> the rotation comes back too. `stageView` in the collision file therefore holds
+> `{position, rotation}`; an older `{position, target}` entry is dropped on load
+> rather than misapplied.
+
 **Clicking a palette tile arms a ghost**, the same as placing anything else, so
 you choose where a stand-in goes. Clicking one already on the bench focuses it
 instead of adding a second — a second instance would give the association rule

@@ -18,6 +18,7 @@
 import {
   state, emit, pushUndo, hooks, applyVisibility, select,
   placeAt, removePlacement, worldBounds, shipPlacements, resetStageHistory,
+  serializeView, applyView,
 } from "./editor.js";
 
 const { MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode, Matrix } = BABYLON;
@@ -743,7 +744,7 @@ export async function enterCollisionMode(instantiate, boundsOf) {
   // Each side keeps its own viewpoint. Coming back to the ship from the bench
   // pointing at a barrel, or to the bench pointing across the ship, means
   // finding your bearings again on every switch.
-  shipView = viewOf();
+  shipView = serializeView();
   stageInstantiate = instantiate;
   state.collisionMode = true;
   select([]);
@@ -758,7 +759,7 @@ export async function enterCollisionMode(instantiate, boundsOf) {
   watchStagedElements();
   resetStageHistory();       // the bench's history starts here, not in the ship's
   const viewRestored = !!stageView;
-  if (stageView) applyViewTo(stageView);
+  if (stageView) applyView(stageView);
   applyVisibility();
   emit("placements");
   emit("colliders");
@@ -771,29 +772,25 @@ let stageView = null;
 /** The bench's own viewpoint, so it rides in the collision file. */
 export function stageViewpoint() { return stageView ? { ...stageView } : null; }
 export function setStageViewpoint(v) {
-  stageView = v && Array.isArray(v.position) && Array.isArray(v.target)
-    ? { position: [...v.position], target: [...v.target] } : null;
+  stageView = v && Array.isArray(v.position) && Array.isArray(v.rotation) ? { ...v } : null;
 }
 
-function viewOf() {
-  const c = state.camera;
-  return { position: c.position.asArray(), target: c.getTarget().asArray() };
-}
-
-function applyViewTo(v) {
-  const c = state.camera;
-  c.cameraDirection.setAll(0);
-  c.cameraRotation.setAll(0);
-  c.position.set(...v.position);
-  c.setTarget(Vector3.FromArray(v.target));
-}
+/**
+ * Both sides store the camera as the *camera* holds it - position and rotation,
+ * via serializeView/applyView - rather than a position and a target.
+ *
+ * `getTarget()` on a FreeCamera reports the last point something explicitly
+ * aimed it at, and free look never updates that. Capturing a stale target and
+ * then aiming at it put the camera back in the right place looking the wrong
+ * way, which reads as "the view was not restored" - because it wasn't.
+ */
 
 /** Close it, keeping everything that was fitted and where it all stood. */
 export function exitCollisionMode() {
   if (!state.collisionMode) return false;
   unwatchStagedElements();
   harvestStage();
-  stageView = viewOf();
+  stageView = serializeView();
   // Remember the bench before clearing it, so re-opening finds the same
   // modules in the same places.
   state.stageLayout = stagedElements().map((e) => ({
@@ -805,7 +802,7 @@ export function exitCollisionMode() {
   state.collisionMode = false;
   select([]);
   resetStageHistory();       // the bench's history does not outlive the bench
-  if (shipView) applyViewTo(shipView);
+  if (shipView) applyView(shipView);
   applyVisibility();
   emit("collisionMode");
   emit("placements");

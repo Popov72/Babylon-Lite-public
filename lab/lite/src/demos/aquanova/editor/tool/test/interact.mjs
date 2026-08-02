@@ -1246,18 +1246,28 @@ const views = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
-  const V = BABYLON.Vector3;
-  const put = (p, t) => {
-    ed.state.camera.cameraDirection.setAll(0);
-    ed.state.camera.cameraRotation.setAll(0);
-    ed.state.camera.position.set(...p);
-    ed.state.camera.setTarget(V.FromArray(t));
+  // Aim by rotation, the way free look does. Position and a *target* was the
+  // earlier shape of this, and getTarget() on a FreeCamera only reports the
+  // last point something explicitly aimed it at - so the camera came back in
+  // the right place looking the wrong way.
+  const put = (p, r) => {
+    const c = ed.state.camera;
+    c.cameraDirection.setAll(0);
+    c.cameraRotation.set(0, 0);
+    c.position.set(...p);
+    c.rotation.set(...r);
   };
-  const at = () => ed.state.camera.position.asArray().map((v) => +v.toFixed(1));
-  put([-7, 6, -9], [0, 0, 0]);
+  const at = () => {
+    const c = ed.state.camera;
+    return {
+      pos: c.position.asArray().map((v) => +v.toFixed(2)),
+      rot: [c.rotation.x, c.rotation.y, c.rotation.z].map((v) => +v.toFixed(3)),
+    };
+  };
+  put([-7, 6, -9], [0.31, 0.82, 0]);
   const bench = at();
   co.exitCollisionMode();
-  put([100, 40, -100], [0, 0, 0]);
+  put([100, 40, -100], [0.44, -1.2, 0]);
   const ship = at();
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   const backOnBench = at();
@@ -1266,7 +1276,7 @@ const views = await page.evaluate(async () => {
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   return { bench, ship, backOnBench, backOnShip };
 });
-check("the bench keeps its own viewpoint across a switch",
+check("the bench keeps its own viewpoint across a switch, aim and all",
   JSON.stringify(views.backOnBench) === JSON.stringify(views.bench),
   `${JSON.stringify(views.bench)} -> ${JSON.stringify(views.backOnBench)}`);
 check("and the ship keeps its own",
