@@ -337,6 +337,15 @@ export async function grabSelection(opts = {}) {
     ? colliderHalf(entries[0].node.scaling.asArray(), entries[0].node.rotationQuaternion).y
     : 0);
   if (Math.abs(ref - state.gridY) > 1e-6) setGridElevation(ref);
+
+  // A grab is *relative*: the elements stay exactly where they are and then
+  // follow how far the mouse moves, the way Blender's G works. Teleporting them
+  // onto the cursor instead threw an element halfway across the room the moment
+  // you pressed the key - and re-snapped anything deliberately placed off the
+  // grid. Anchoring here, before the first move, is what makes "stay in place"
+  // the starting state rather than a special case.
+  ghost.root.position.copyFrom(base);
+  ghost.anchor = { cursor: cursorOnPlane(state.gridY + centreOffset().y), base: base.clone() };
   applyGhostTransform();
   moveGhostToCursor();
   setCursorHidden(true);
@@ -473,11 +482,26 @@ function moveGhostToCursor() {
   if (!p) return;
   const s = state.snap.pos || 0;
   const snap = (v) => (s ? Math.round(v / s) * s : v);
+  const lift = colliderLift();
+
+  // A grab moves things by how far the cursor has travelled since you pressed
+  // the key, so they start where they already were and keep whatever sub-grid
+  // offset they were placed with. A palette ghost has no "where it already was"
+  // and simply sits on the cursor.
+  if (ghost.anchor?.cursor) {
+    const a = ghost.anchor;
+    const x = state.dragAxis === "z"
+      ? ghost.root.position.x : a.base.x + snap(p.x - a.cursor.x);
+    const z = state.dragAxis === "x"
+      ? ghost.root.position.z : a.base.z + snap(p.z - a.cursor.z);
+    ghost.root.position.set(x, state.gridY + lift.y, z);
+    return;
+  }
+
   // A single-axis mode leaves the other coordinate wherever the ghost already
   // is, so it slides along one line from where you put it.
   const x = state.dragAxis === "z" ? ghost.root.position.x : snap(p.x - off.x);
   const z = state.dragAxis === "x" ? ghost.root.position.z : snap(p.z - off.z);
-  const lift = colliderLift();
   ghost.root.position.set(x + lift.x, state.gridY + lift.y, z + lift.z);
 }
 

@@ -472,6 +472,14 @@ your hand is doing:
   ghost. No button held: move the mouse, turn with `R`, mirror with `F`, fly the
   camera, then click to drop. `Esc` puts everything back where it was.
 
+**A carry is relative.** The elements stay exactly where they are when you press
+`M`, and then move by however far the cursor travels, snapped to the move step —
+the way Blender's `G` works. It used to teleport them onto the cursor the moment
+the key went down, which threw a piece halfway across the room and re-snapped
+anything deliberately placed off the grid. Relative motion also means an element
+keeps whatever sub-grid offset it was placed with. A palette ghost has no "where
+it already was" and simply sits on the cursor, as before.
+
 Collapsing the two into one was tempting — the drag path duplicates rotation,
 scale, snapping and axis constraints that the ghost already has. What stopped it
 is the *release*: every 3D tool drops on mouse-up, and a press-drag-release that

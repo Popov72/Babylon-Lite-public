@@ -5300,6 +5300,84 @@ check("the set lands with its shape, turns and mirroring intact",
     && carryDropped.sclC[0] === -1,
   `dx=${carryDropped.dx}, dz=${carryDropped.dz}, rotB=${carryDropped.rotB}, scaleC=[${carryDropped.sclC}]`);
 
+// ---- a grab is relative: it starts in place and follows how far you move ---
+// It used to teleport the elements onto the cursor the moment the key went
+// down, which threw a piece halfway across the room and re-snapped anything
+// deliberately placed off the grid.
+const relGrab = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  // Deliberately does not clear the scene: the blocks around this one share
+  // their placements, and wiping them here left the next test reaching into
+  // elements that no longer existed.
+  i.cancelGhost(); ed.select([]);
+  // The move step is a global other blocks cycle, and a grab snaps its *delta*
+  // to it - at 4 m a 3 m drag would land 4 m away and this would read as a bug
+  // in the grab rather than in the test.
+  const step = ed.state.snap.pos;
+  ed.state.snap.pos = 1;
+  const camWas = {
+    pos: ed.state.camera.position.asArray(),
+    target: ed.state.camera.getTarget().asArray(),
+  };
+  // off the 1 m grid on purpose, so a re-snap would show
+  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(10.27, 0, 3.4),
+    { silent: true });
+  // Look almost straight down, so the plane the ghost tracks (one through the
+  // module's body, a metre up on a wall) and the y = 0 plane this test projects
+  // onto agree to within millimetres instead of a metre of parallax. Inertia
+  // is cleared too, or the camera drifts between the two measurements and the
+  // delta comes out a grid step long.
+  ed.state.camera.cameraDirection.setAll(0);
+  ed.state.camera.cameraRotation.setAll(0);
+  ed.state.camera.position.set(10.27, 30, 3.5);
+  ed.state.camera.setTarget(new V(10.27, 0, 3.4));
+  ed.state.scene.render();
+  return { id: e.id, at: e.node.position.asArray().map((v) => +v.toFixed(3)), step, camWas };
+});
+
+const grabFrom = await screenOf([10.27, 0, 3.4]);
+await page.mouse.move(grabFrom.x, grabFrom.y);
+await page.waitForTimeout(200);
+await page.evaluate(async (id) => (await import("/js/editor.js")).select([id]), relGrab.id);
+await page.keyboard.press("m");
+await page.waitForTimeout(400);
+const grabbedAt = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const n = ed.hooks.ghostNode();
+  return n ? n.position.asArray().map((v) => +v.toFixed(3)) : null;
+});
+check("a grab starts exactly where the element already was",
+  JSON.stringify(grabbedAt) === JSON.stringify(relGrab.at),
+  `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(grabbedAt)}`);
+
+// drive the cursor to a point exactly 3 m along X and Z from where it started
+const grabTo = await screenOf([13.27, 0, 6.4]);
+await page.mouse.move(grabTo.x, grabTo.y, { steps: 6 });
+await page.waitForTimeout(300);
+const movedTo = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const n = ed.hooks.ghostNode();
+  return n ? n.position.asArray().map((v) => +v.toFixed(3)) : null;
+});
+check("and then follows the cursor by exactly that far, offset and all",
+  movedTo && Math.abs(movedTo[0] - 13.27) < 0.01 && Math.abs(movedTo[2] - 6.4) < 0.01,
+  `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(movedTo)} (wanted 13.27, 6.4)`);
+await page.evaluate(async (was) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost();
+  ed.removePlacement(was.id);              // only the one this block made
+  ed.select([]);
+  ed.state.snap.pos = was.step;            // and put the globals back
+  ed.state.camera.cameraDirection.setAll(0);
+  ed.state.camera.cameraRotation.setAll(0);
+  ed.state.camera.position.set(...was.camWas.pos);
+  ed.state.camera.setTarget(BABYLON.Vector3.FromArray(was.camWas.target));
+}, relGrab);
+
+
 // Ctrl+D on several: copies, originals untouched
 const dupMany = await page.evaluate(async (ids) => {
   const ed = await import("/js/editor.js");
