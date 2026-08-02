@@ -2910,6 +2910,74 @@ check("it sits on the ring, not on top of the move step chip",
   rotLabel.apart > 40 && rotLabel.ringOffOrigin > 0.5,
   `${rotLabel.apart.toFixed(0)} px apart, ring ${rotLabel.ringOffOrigin.toFixed(2)} m from the origin`);
 
+// ---- the gizmo is never culled, and knows where it is -----------------------
+// It does not move by being re-parented: its root is re-positioned every frame
+// onto whatever element it belongs to. `doNotSyncBoundingInfo` was set on every
+// part as a micro-optimisation, and that is precisely the flag that stops a
+// bounding box following the world matrix - so the boxes stayed where the gizmo
+// was *built*. On an element 50 m out the boxes trailed 50 m behind, and the
+// frustum test culled arms, heads and turn arcs on their old position. That is
+// what "the arrows get clipped, and going forward clips the lines too" was, and
+// why clicking away and back cured it: re-showing rebuilds the meshes.
+const gizmoCull = await page.evaluate(async (moduleId) => {
+  const ed = await import("/js/editor.js");
+  const V = BABYLON.Vector3;
+  const scene = ed.state.scene;
+  const cam = ed.state.camera;
+  // Blocks share the scene, and the chip checks below expect the gizmo this
+  // one found. So: borrow it, and put everything back.
+  const had = { target: ed.axesTarget(), space: ed.axesSpace(),
+    selection: [...ed.state.selection],
+    pos: cam.position.clone(), rot: cam.rotation.clone() };
+  const e = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
+  ed.select([e.id]);
+  ed.showAxes(e.id, "world");
+  const look = (at, back) => {
+    cam.cameraDirection.setAll(0);
+    cam.cameraRotation.set(0, 0);
+    cam.position.set(at[0], at[1] + 1.5, at[2] - back);
+    cam.rotation.set(0.08, 0, 0);
+  };
+  const survey = () => {
+    scene.render();
+    const parts = scene.meshes.filter((m) => m.name.startsWith("AXES_") && m.isEnabled());
+    const active = new Set(scene.getActiveMeshes().data.filter(Boolean).map((m) => m.uniqueId));
+    const drift = parts.map((m) => +m.getBoundingInfo().boundingBox.centerWorld
+      .subtract(m.getAbsolutePosition()).length().toFixed(2));
+    return { enabled: parts.length, drawn: parts.filter((m) => active.has(m.uniqueId)).length,
+      drift: Math.max(...drift) };
+  };
+  look([0, 0, 0], 8);
+  const atOrigin = survey();
+  // out where a real ship is, with the camera following it
+  e.node.position.set(40, 0, -30);
+  look([40, 0, -30], 8);
+  const away = survey();
+  look([40, 0, -30], 2.2);        // "go forward"
+  const near = survey();
+  look([40, 0, -30], 0.8);
+  const closer = survey();
+
+  ed.hideAxes();
+  ed.removePlacement(e.id);
+  ed.select(had.selection);
+  if (had.target) ed.showAxes(had.target, had.space);
+  cam.cameraDirection.setAll(0);
+  cam.cameraRotation.set(0, 0);
+  cam.position.copyFrom(had.pos);
+  cam.rotation.copyFrom(had.rot);
+  scene.render();
+  return { atOrigin, away, near, closer, restored: ed.axesTarget() === had.target };
+}, PROP_A);
+check("a gizmo on an element far from the origin keeps its bounding boxes with it",
+  gizmoCull.away.drift < 0.01, `${gizmoCull.away.drift} m behind the arrows`);
+for (const where of ["atOrigin", "away", "near", "closer"]) {
+  const r = gizmoCull[where];
+  check(`every part of the gizmo is drawn (${where})`,
+    r.enabled > 0 && r.drawn === r.enabled, `${r.drawn} of ${r.enabled}`);
+}
+check("and the block put back the gizmo it borrowed", gizmoCull.restored);
+
 // and it follows both the angle and the axis
 await page.keyboard.press("Control+r");
 await page.waitForTimeout(250);

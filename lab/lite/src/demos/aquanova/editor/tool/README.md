@@ -824,6 +824,17 @@ Three implementation notes worth keeping:
   must not get 3× arrows — while re-deriving it each frame also covers drags,
   undo, the ghost following the cursor, and deletion with no event plumbing: if
   the element goes, the gizmo goes.
+* Every part is marked **`alwaysSelectAsActiveMesh`**, and — the point —
+  **nothing sets `doNotSyncBoundingInfo`**. That flag was on every part as a
+  micro-optimisation, and it is exactly the one that stops a bounding box
+  following its mesh's world matrix. Since the gizmo moves by being
+  *re-positioned* rather than re-parented, the boxes stayed wherever it was
+  built: select an element 50 m out and the boxes trail 50 m behind the arrows
+  (measured — the drift was exactly 50), and the frustum test then culls arms,
+  arrowheads and turn arcs on their old position. It reads as the arrows being
+  **clipped**, worse the closer you fly, and clicking away and back cures it
+  because re-showing rebuilds the meshes. Fifteen tiny meshes are not worth
+  culling at all, so they are never culled and their bounds are left honest.
 * Its materials are `StandardMaterial`, not PBR, precisely because
   `applyViewportMode()` only touches materials that have an `unlit` property.
   A gizmo built from these can never pick up the editor's unlit mode or its

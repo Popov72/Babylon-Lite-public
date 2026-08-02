@@ -790,6 +790,31 @@ function axesNode(id) {
   return e && !e.node.isDisposed() && e.node.isEnabled() ? e.node : null;
 }
 
+/**
+ * A gizmo part is never culled, and always knows where it is.
+ *
+ * The gizmo does not move by being re-parented: its root is *re-positioned
+ * every frame* onto whatever element it belongs to. `doNotSyncBoundingInfo`
+ * was set on every part as a micro-optimisation, and that is exactly the flag
+ * that stops Babylon updating a mesh's bounding box when its world matrix
+ * changes - so the boxes stayed wherever the gizmo was built. Select an element
+ * 50 m away and the boxes are 50 m behind the arrows (measured: a drift of
+ * exactly 50), which leaves the frustum test culling arms, arrowheads and turn
+ * arcs on their old position rather than their real one.
+ *
+ * That is what "the arrows get clipped, and if I go forward the lines get
+ * clipped too" was - not depth, not the near plane - and why clicking away and
+ * back fixed it: re-showing rebuilds the meshes, so their boxes start correct
+ * again and drift away from there.
+ *
+ * Fifteen tiny meshes are not worth culling at all, so they are marked as
+ * always active. Bounding info is left to sync normally, because a stale box is
+ * a trap for anything else that ever asks one of these where it is.
+ */
+function keepAlwaysDrawn(mesh) {
+  mesh.alwaysSelectAsActiveMesh = true;
+}
+
 function buildAxes(scene, length) {
   const root = new BABYLON.TransformNode("AXES", scene);
   const arms = {};
@@ -844,16 +869,16 @@ function buildAxes(scene, length) {
       m.material = m === scaleMark ? mats[`${a}_mark`] : mats[a];
       m.parent = arm;
       m.isPickable = false;
-      m.doNotSyncBoundingInfo = true;
       // draw over the ship: an arrow buried inside the element it belongs to
       // would be exactly as useful as no arrow
       m.renderingGroupId = 1;
+      keepAlwaysDrawn(m);
     }
     for (const m of rotMark.getChildMeshes()) {
       m.material = mats[`${a}_mark`];
       m.isPickable = false;
-      m.doNotSyncBoundingInfo = true;
       m.renderingGroupId = 1;
+      keepAlwaysDrawn(m);
     }
     rotMark.parent = arm;
     marks.rot[a] = rotMark;
