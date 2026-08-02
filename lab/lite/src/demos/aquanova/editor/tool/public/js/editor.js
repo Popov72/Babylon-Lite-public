@@ -113,7 +113,7 @@ export const state = {
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
   dragAxis: "xz",          // "xz" | "y" | "x" | "z" - which axis a move runs on (V)
-  moveSpace: "world",      // "world" | "local" - whose axis that is (Y)
+  axisSpace: "world",      // "world" | "local" - whose axes a move or turn uses (Y)
   collisionMode: false,    // the collision staging area is open, see colliders.js
   // module id -> shapes authored on it, in the module's own local space. The
   // one authoritative record: what is on the staging area is a working copy.
@@ -696,12 +696,14 @@ export function liveAxes(mode = state.dragAxis) {
 }
 
 /**
- * The frame a move runs in: the world's axes, or the given element's own.
+ * The frame a move or a turn runs in: the world's axes, or the given element's
+ * own.
  *
- * `moveSpace` says whose axes the *move axis* means. In world space "X only"
- * slides along world X; in local space it slides along the element's own X, so
- * a wall turned 90 degrees still slides along its length rather than across it.
- * Null means the world, which every caller treats as "no basis at all".
+ * `axisSpace` says whose axes the *move axis* and the *rotation axis* mean. In
+ * world space "X only" slides along world X and `R` turns about world Y; in
+ * local space they use the element's own, so a wall turned 90 degrees slides
+ * along its length rather than across it, and a tilted panel turns about its
+ * own edge. Null means the world, which every caller treats as "no basis".
  *
  * The axes come from the world matrix's normalised rows, not from the rotation
  * quaternion, so they are the axes Shift+X actually draws - mirroring included.
@@ -713,9 +715,11 @@ export function liveAxes(mode = state.dragAxis) {
  * carry, the first of the selection for an arrow nudge - which is also the one
  * `X` puts its gizmo on. With several selected they all move by one delta
  * measured in that element's frame, the way a set of objects moves in Blender.
+ * A turn is the exception, and takes each element's own axis, because it
+ * already turns each about its own origin.
  */
-export function moveBasis(node) {
-  if (state.moveSpace !== "local" || !node || node.isDisposed()) return null;
+export function axisBasis(node) {
+  if (state.axisSpace !== "local" || !node || node.isDisposed()) return null;
   // Forced, not read from the cache: the frame is taken once at the start of a
   // gesture, and a turn earlier in the same frame - R, the inspector, a load -
   // has not been through a render yet, so the cached matrix still holds the
@@ -1544,7 +1548,7 @@ export function toggleSelect(id) {
  */
 export function nudgeSelection(delta) {
   if (!state.selection.length) return;
-  const basis = moveBasis(entryOf(state.selection[0])?.node);
+  const basis = axisBasis(entryOf(state.selection[0])?.node);
   const step = basis
     ? basis.x.scale(delta.x).add(basis.y.scale(delta.y)).add(basis.z.scale(delta.z))
     : delta;

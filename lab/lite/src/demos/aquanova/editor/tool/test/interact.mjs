@@ -443,6 +443,72 @@ check("and it can go under the old fixed 5 cm floor, which sat at five of its st
   Math.abs(scaleFree.thin - 0.03) < 1e-4 && Math.abs(scaleFree.coarseFloor - 0.05) < 1e-4,
   `fine 0.04 -> ${scaleFree.thin}, coarse 0.06 -> ${scaleFree.coarseFloor}`);
 
+// ---- World/Local governs turning too ----------------------------------------
+// `R` turned about a world axis whatever the element was doing, so on a wall
+// already yawed 90 degrees "turn about X" tumbled it about the room rather than
+// about its own length. Whose axis it is now comes from the same combo as
+// moving, and the axis is taken per element, matching the origin: each turns
+// about its own origin, so each turns about its own axis.
+const rotSpace = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3, Q = BABYLON.Quaternion;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [3, 0.4, 1] });
+  ed.select([c.id]);
+  const wasStep = ed.state.snap.rot, wasAxis = ed.state.rotAxis;
+  ed.state.snap.rot = 90;
+  const rows = () => {
+    c.node.computeWorldMatrix(true);
+    const m = c.node.getWorldMatrix();
+    const row = (k) => {
+      const q = m.getRow(k);
+      return new V(q.x, q.y, q.z).normalize().asArray().map((v) => +v.toFixed(3));
+    };
+    return { x: row(0), y: row(1), z: row(2) };
+  };
+  const run = (space, yawDeg, rotAxis) => {
+    c.node.rotationQuaternion = Q.FromEulerAngles(0, yawDeg * Math.PI / 180, 0);
+    c.node.computeWorldMatrix(true);
+    i.setAxisSpace(space);
+    ed.state.rotAxis = rotAxis;
+    i.rotateCurrent(1);
+    return rows();
+  };
+  const out = {
+    // wheelTargets prefers whatever is under the cursor, so a stray hover would
+    // turn a different element and quietly make all of this vacuous
+    hovered: i.hoveredId?.() ?? null,
+    yawedWorld: run("world", 90, "x"),
+    yawedLocal: run("local", 90, "x"),
+    flatWorld: run("world", 0, "x"),
+    flatLocal: run("local", 0, "x"),
+    aboutYWorld: run("world", 90, "y"),
+    aboutYLocal: run("local", 90, "y"),
+  };
+  i.setAxisSpace("world");
+  ed.state.snap.rot = wasStep; ed.state.rotAxis = wasAxis;
+  co.removeCollider(c.id, true); ed.clearAll(); ed.select([]);
+  return out;
+});
+const rotSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+check("nothing was hovered, so the checks below turned the element they meant to",
+  rotSpace.hovered === null, `${rotSpace.hovered}`);
+check("on an unturned element the two spaces agree exactly",
+  rotSame(rotSpace.flatWorld, rotSpace.flatLocal), JSON.stringify(rotSpace.flatWorld));
+check("but on a yawed wall, turning about X differs between them",
+  !rotSame(rotSpace.yawedWorld, rotSpace.yawedLocal),
+  `world ${JSON.stringify(rotSpace.yawedWorld.x)}, local ${JSON.stringify(rotSpace.yawedLocal.x)}`);
+// The definitive one: a turn leaves its own axis alone, so in local space the
+// element's own x row has to come out unchanged - it *is* the axis.
+check("a local X turn leaves the element's own X where it was, being the axis",
+  rotSame(rotSpace.yawedLocal.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedLocal.x));
+check("while a world X turn does not",
+  !rotSame(rotSpace.yawedWorld.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedWorld.x));
+check("about Y they agree on a yawed wall, its own Y being the world's",
+  rotSame(rotSpace.aboutYWorld, rotSpace.aboutYLocal), JSON.stringify(rotSpace.aboutYLocal));
+
 // ---- 1d-quater. undo / redo ------------------------------------------------
 const history = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -6372,8 +6438,8 @@ const spSetup = await page.evaluate(async (id) => {
   ed.state.camera.setTarget(V.Zero());          // straight down: screen +x is world +x
   const bb = ed.worldBounds(e.node);
   return { centre: bb.min.add(bb.max).scale(0.5).asArray(),
-    space: ed.state.moveSpace, combo: document.getElementById("move-space").value,
-    options: [...document.getElementById("move-space").options].map((o) => o.value) };
+    space: ed.state.axisSpace, combo: document.getElementById("axis-space").value,
+    options: [...document.getElementById("axis-space").options].map((o) => o.value) };
 }, qSetup.id);
 await page.waitForTimeout(500);
 
@@ -6389,7 +6455,7 @@ async function spDrag(space, dx, dy) {
     const i = await import("/js/interact.js");
     const e = ed.state.placements.get(id);
     e.node.position.set(0, 0, 0);
-    i.setMoveSpace(s);
+    i.setAxisSpace(s);
     const bb = ed.worldBounds(e.node);
     return { pos: e.node.position.asArray(), centre: bb.min.add(bb.max).scale(0.5).asArray() };
   }, [qSetup.id, space]);
@@ -6436,13 +6502,13 @@ const spNudge = await page.evaluate(async (id) => {
   const run = (space, yawDeg) => {
     e.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, yawDeg * Math.PI / 180, 0);
     e.node.position.set(0, 0, 0);
-    i.setMoveSpace(space);
+    i.setAxisSpace(space);
     ed.nudgeSelection(new V(1, 0, 0));
     return e.node.position.asArray().map((v) => +v.toFixed(4));
   };
   const out = { worldTurned: run("world", 90), localFlat: run("local", 0),
     localTurned: run("local", 90), localDiagonal: run("local", 45) };
-  i.setMoveSpace("world");
+  i.setAxisSpace("world");
   return out;
 }, qSetup.id);
 check("an arrow nudge in world space is world X however the wall is turned",
@@ -6463,19 +6529,19 @@ await page.evaluate(() => document.getElementById("render-canvas").focus());
 await page.keyboard.press("y");
 await page.waitForTimeout(150);
 const spAfterY = await page.evaluate(async () => ({
-  state: (await import("/js/editor.js")).state.moveSpace,
-  combo: document.getElementById("move-space").value,
+  state: (await import("/js/editor.js")).state.axisSpace,
+  combo: document.getElementById("axis-space").value,
   status: document.getElementById("status")?.textContent || "",
 }));
 await page.keyboard.press("y");
 await page.waitForTimeout(150);
 const spBackY = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.moveSpace);
+  (await import("/js/editor.js")).state.axisSpace);
 // Ctrl+Y is redo and is claimed before the switch: it must not toggle as well.
 await page.keyboard.press("Control+y");
 await page.waitForTimeout(150);
 const spCtrlY = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.moveSpace);
+  (await import("/js/editor.js")).state.axisSpace);
 
 check("Y switches to local space and the combo says so",
   spAfterY.state === "local" && spAfterY.combo === "local", JSON.stringify(spAfterY));
@@ -6486,13 +6552,13 @@ check("Ctrl+Y is still redo and leaves the space alone", spCtrlY === "world", sp
 
 // A combo change has to reach the state, not just the status line.
 const spCombo = await page.evaluate(async () => {
-  const el = document.getElementById("move-space");
+  const el = document.getElementById("axis-space");
   el.value = "local";
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  const local = (await import("/js/editor.js")).state.moveSpace;
+  const local = (await import("/js/editor.js")).state.axisSpace;
   el.value = "world";
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  return { local, world: (await import("/js/editor.js")).state.moveSpace };
+  return { local, world: (await import("/js/editor.js")).state.axisSpace };
 });
 check("the combo drives the mode as well as the key",
   spCombo.local === "local" && spCombo.world === "world", JSON.stringify(spCombo));
@@ -6503,7 +6569,7 @@ await page.evaluate(async (id) => {
   const e = ed.state.placements.get(id);
   e.node.rotationQuaternion = BABYLON.Quaternion.Identity();
   e.node.position.set(0, 0, 0);
-  i.setMoveSpace("world"); i.setDragAxis("xz");
+  i.setAxisSpace("world"); i.setDragAxis("xz");
   ed.state.snap.pos = 1;
   ed.state.camera.position = new BABYLON.Vector3(0, 6, -14);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 1, 0));

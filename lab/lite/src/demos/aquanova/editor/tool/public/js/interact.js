@@ -12,7 +12,7 @@ import {
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
-  constrainMove, moveBasis,
+  constrainMove, axisBasis,
 } from "./editor.js";
 
 const {
@@ -356,7 +356,7 @@ export async function grabSelection(opts = {}) {
   // Taken from the anchor element, and taken once: it is the piece you grabbed,
   // and re-reading it would let a turn mid-carry swing the axes about.
   ghost.anchorNode = anchor.node;
-  ghost.basis = moveBasis(anchor.node);
+  ghost.basis = axisBasis(anchor.node);
   applyGhostTransform();
   moveGhostToCursor();
   setCursorHidden(true);
@@ -743,7 +743,7 @@ function beginDragCandidate(id, ev, pickedPoint) {
     // also means turning a piece mid-drag cannot make its own axes run away
     // from underneath the gesture.
     refNode: entryOf(id)?.node || null,
-    basis: moveBasis(entryOf(id)?.node),
+    basis: axisBasis(entryOf(id)?.node),
   };
   anchorDrag(anchor);
   return true;
@@ -832,7 +832,7 @@ export function toggleDragAxis() {
 }
 
 /**
- * Whose axes the move axis means: the world's, or the element's own.
+ * Whose axes the move and rotation axes mean: the world's, or the element's own.
  *
  * Local is what a modular kit wants half the time - every second wall is turned
  * 90 degrees, and "slide it along its length" is world Z on one and world X on
@@ -842,12 +842,12 @@ export function toggleDragAxis() {
  * Safe to change mid-gesture, like the axis: a drag re-anchors and re-takes its
  * frame, so the element carries on from where it is instead of jumping.
  */
-export const MOVE_SPACES = ["world", "local"];
+export const AXIS_SPACES = ["world", "local"];
 
-export function setMoveSpace(space) {
-  if (!MOVE_SPACES.includes(space)) return state.moveSpace;
-  state.moveSpace = space;
-  if (drag) { rebaseDrag(); drag.basis = moveBasis(drag.refNode); }
+export function setAxisSpace(space) {
+  if (!AXIS_SPACES.includes(space)) return state.axisSpace;
+  state.axisSpace = space;
+  if (drag) { rebaseDrag(); drag.basis = axisBasis(drag.refNode); }
   if (ghost) {
     if (ghost.anchor) {
       // Re-anchoring on the cursor's *current* position is what keeps the carry
@@ -855,17 +855,17 @@ export function setMoveSpace(space) {
       // frame and the element would jump to wherever that lands.
       ghost.anchor.base = ghost.root.position.clone();
       ghost.anchor.cursor = cursorOnPlane(state.gridY + centreOffset().y);
-      ghost.basis = moveBasis(ghost.anchorNode);
+      ghost.basis = axisBasis(ghost.anchorNode);
     }
     rebaseGhostVertical();
     moveGhostToCursor();
   }
   emit("modes");
-  return state.moveSpace;
+  return state.axisSpace;
 }
 
-export function toggleMoveSpace() {
-  return setMoveSpace(state.moveSpace === "local" ? "world" : "local");
+export function toggleAxisSpace() {
+  return setAxisSpace(state.axisSpace === "local" ? "world" : "local");
 }
 /** Re-anchor a drag in progress, so switching axis does not jump the element. */
 export function rebaseDrag() {
@@ -1190,6 +1190,20 @@ function beginWheelEdit() {
   return fresh;
 }
 
+/**
+ * Turn the current element(s) by one step about the chosen axis.
+ *
+ * Whose axis that is comes from the same World/Local setting as moving: in
+ * world space `R` turns about the world's Y, in local space about the
+ * element's own - which on anything already turned is a different axis, and
+ * the one you mean when you say "tilt this panel back a bit".
+ *
+ * The axis is taken per element, matching the origin: each turns about its own
+ * origin, so each turns about its own axis too, and a row of props tilts the
+ * same way relative to each piece rather than fanning out. A pivot turn is the
+ * exception - one axis has to serve the whole group, so it comes from the
+ * element the gesture is aimed at.
+ */
 export function rotateCurrent(dir, aboutPivot = false) {
   const step = (state.snap.rot || 90) * dir;
   // the axis name is a cycle label, not a component index - map it or "y"
@@ -1197,9 +1211,13 @@ export function rotateCurrent(dir, aboutPivot = false) {
   const axis = "xyz".indexOf(state.rotAxis);
   if (axis < 0) return;
   const rad = step * Math.PI / 180;
-  const unit = AXIS_UNITS[axis];
+  const worldUnit = AXIS_UNITS[axis];
+  const unitFor = (node) => axisBasis(node)?.[state.rotAxis] || worldUnit;
 
   if (ghost) {
+    // The ghost root already wears the turn and the mirroring, so its own axes
+    // are read from it the same way an element's are.
+    const unit = axisBasis(ghost.root)?.[state.rotAxis] || worldUnit;
     ghost.quat = Quaternion.RotationAxis(unit, rad).multiply(ghost.quat);
     applyGhostTransform();
     moveGhostToCursor();          // keep the body centred as the offset rotates
@@ -1213,6 +1231,7 @@ export function rotateCurrent(dir, aboutPivot = false) {
 
   if (aboutPivot) {
     const pivot = sharedPivot(targets);
+    const unit = unitFor(targets[0].node);
     const q = Quaternion.RotationAxis(unit, rad);
     const m = Matrix.Identity();
     q.toRotationMatrix(m);
@@ -1223,7 +1242,7 @@ export function rotateCurrent(dir, aboutPivot = false) {
     }
   } else {
     // each element turns about its own origin, which is what a row of props wants
-    for (const e of targets) spinNode(e.node, unit, rad);
+    for (const e of targets) spinNode(e.node, unitFor(e.node), rad);
   }
   emit("transform");
   emit("current");

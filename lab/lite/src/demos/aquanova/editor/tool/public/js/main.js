@@ -17,7 +17,7 @@ import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
   ghostActive, ghostModule, ghostCollider, armColliderGhost, colliderHalf, hoveredId,
   cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
-  toggleDragAxis, setDragAxis, toggleMoveSpace, setMoveSpace, cancelMarquee, grabSelection,
+  toggleDragAxis, setDragAxis, toggleAxisSpace, setAxisSpace, cancelMarquee, grabSelection,
 } from "./interact.js";
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
@@ -921,24 +921,24 @@ $("drag-axis").addEventListener("change", (e) => {
  * Y switches between the world's axes and the element's own. The combo and the
  * status line follow, for the same reason V's do: a mode you cannot see is one
  * you will forget you are in, and this one silently changes where every drag,
- * carry and arrow key goes.
+ * carry, arrow key and turn goes.
  */
-function setMoveSpaceFromKey() {
-  toggleMoveSpace();
-  refreshMoveSpace();
-  setStatus(state.moveSpace === "local"
-    ? "moving along the element's own axes — press Y for the world's"
-    : "moving along the world's axes — press Y for the element's own");
+function setAxisSpaceFromKey() {
+  toggleAxisSpace();
+  refreshAxisSpace();
+  setStatus(state.axisSpace === "local"
+    ? "moving and turning about the element's own axes — press Y for the world's"
+    : "moving and turning about the world's axes — press Y for the element's own");
 }
 
-function refreshMoveSpace() {
-  $("move-space").value = state.moveSpace;
+function refreshAxisSpace() {
+  $("axis-space").value = state.axisSpace;
 }
 
-$("move-space").addEventListener("change", (e) => {
-  setMoveSpace(e.target.value);
-  refreshMoveSpace();
-  setStatus(`moving in ${state.moveSpace} space`);
+$("axis-space").addEventListener("change", (e) => {
+  setAxisSpace(e.target.value);
+  refreshAxisSpace();
+  setStatus(`moving and turning in ${state.axisSpace} space`);
 });
 
 $("btn-select-rect").addEventListener("click", () => {
@@ -1202,7 +1202,7 @@ window.addEventListener("keydown", async (e) => {
     // Ctrl+Y is already redo and is claimed above, before this switch.
     case "y": case "Y": {
       e.preventDefault();
-      setMoveSpaceFromKey();
+      setAxisSpaceFromKey();
       break;
     }
     // X shows one element's axes in world space; Shift+X in its own local
@@ -1470,7 +1470,7 @@ function elevationFromHover() {
 function refreshHud() {
   $("hud-elev").textContent = `${state.gridY.toFixed(2)} m`;
   refreshDragAxis();
-  refreshMoveSpace();
+  refreshAxisSpace();
   $("rot-axis").value = state.rotAxis;
   $("scale-axis").value = state.scaleAxis;
 

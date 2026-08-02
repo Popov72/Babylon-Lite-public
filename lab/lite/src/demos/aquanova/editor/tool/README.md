@@ -331,9 +331,9 @@ selection before acting on a different element.
 |---|---|
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement. |
 | Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
-| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length). `Esc` or right-click mid-drag puts everything back. |
+| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
-| Turn | **`R`** — about the element's own origin, by the `Rot` step. The step is **signed**: pick a negative angle to turn the other way |
+| Turn | **`R`** — about the element's own origin, by the `Rot` step. The step is **signed**: pick a negative angle to turn the other way. The `World`/`Local` combo picks whose axis it turns about, the same as it does for moving |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
 | Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis and **`Y`** the space it is measured in, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
 | Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
@@ -599,10 +599,25 @@ jump.
 so "slide it along its length" is world Z on one and world X on the next; in
 local space it is `X only` on both.
 
-Both spaces run one expression. The travel is projected onto each live axis, the
-distance snapped, and the axis added back scaled by it — with the world's own
-axes, that is exactly the old "drop the other component", so world space is not
-a special case but the same code with an identity basis.
+**It governs turning as well.** `R` used to turn about a world axis whatever the
+element was doing, so on a wall already yawed 90° "turn about X" tumbled it
+about the *room* rather than about its own length. In local space it turns about
+the element's own axis — which is the one you mean when you say "tilt this panel
+back a bit". The state is called `axisSpace`, not `moveSpace`, for exactly this
+reason: a name that covered only half of what it governs is the kind that goes
+wrong later.
+
+> The rotation axis is taken **per element**, matching the origin. Each element
+> already turns about its own origin — "which is what a row of props wants" —
+> so each turns about its own axis too, and a row of identically-placed props
+> tilts together instead of fanning out. `Alt+R` is the exception: one axis has
+> to serve a group swinging about a shared pivot, so it comes from the element
+> the gesture is aimed at, the same rule the drag uses.
+
+Both spaces run one expression for moving. The travel is projected onto each
+live axis, the distance snapped, and the axis added back scaled by it — with the
+world's own axes, that is exactly the old "drop the other component", so world
+space is not a special case but the same code with an identity basis.
 
 > **The frame is the element's world matrix, taken once.** Its normalised rows,
 > not its rotation quaternion, so they are the axes `Shift+X` draws — mirroring
