@@ -175,7 +175,10 @@ function capsuleRatio(mesh) {
   const p = mesh.parent;
   if (!p) return 1;
   const w = p.computeWorldMatrix(true).m;
-  const d = Math.hypot(w[0], w[1], w[2]);
+  // The mean of X and Z, not X alone: a capsule has one radius, and an owner
+  // that is wider one way than the other has no capsule to speak of. Averaging
+  // is what constrainScale does with the same problem.
+  const d = (Math.hypot(w[0], w[1], w[2]) + Math.hypot(w[8], w[9], w[10])) / 2;
   const h = Math.hypot(w[4], w[5], w[6]);
   return d > 1e-9 ? Math.max(h / d, 1) : 1;
 }
@@ -498,6 +501,7 @@ let previewPending = false;
 function disposePreview() {
   if (!previewRoot) return;
   for (const m of previewRoot.getChildMeshes()) m.dispose();
+  for (const t of previewRoot.getChildTransformNodes()) t.dispose();
   previewRoot.dispose();
   previewRoot = null;
 }
@@ -536,14 +540,28 @@ function buildPreview() {
         Vector3.FromArray(s.position)).multiply(placement);
       const pos = new Vector3(), rot = new Quaternion(), scl = new Vector3();
       world.decompose(scl, rot, pos);
+      // Through the same rule the authoring path uses. A placement may be
+      // scaled unevenly - this ship has doors at [0.65, 0.85, 1] - and a
+      // capsule or sphere composed with that is an ellipsoid, which Havok has
+      // no shape for. Drawing the ellipsoid would promise something the runtime
+      // cannot deliver, so the preview shows the shape Havok actually gets.
+      const size = constrainScale(s.kind, [scl.x, scl.y, scl.z]);
       for (const [material, name] of [[mat, "fill"], [wire, "edge"]]) {
+        // The size goes on a holder and the shape hangs off it, exactly as a
+        // real collider is built. Putting it on the mesh looked equivalent and
+        // was not: a capsule counter-scales its own Y so its caps stay round,
+        // and writing over that left the preview drawing spheres - the ship
+        // disagreeing with the bench about the same hull.
+        const holder = new TransformNode(`PREVIEW_${n}_${name}`, scene);
+        holder.parent = previewRoot;
+        holder.position.copyFrom(pos);
+        holder.rotationQuaternion = rot.clone();
+        holder.scaling.set(...size);
         const mesh = buildMesh(s.kind, `PREVIEW_${n}_${name}`, scene);
-        mesh.parent = previewRoot;
-        mesh.position.copyFrom(pos);
-        mesh.rotationQuaternion = rot.clone();
-        mesh.scaling.copyFrom(scl);
+        mesh.parent = holder;
         mesh.material = material;
         mesh.isPickable = false;
+        if (s.kind === "capsule") shapeCapsule(mesh, capsuleRatio(mesh));
       }
       n++;
     }

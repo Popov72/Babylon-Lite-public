@@ -1916,6 +1916,86 @@ check("it is a preview, not data: never exported, and gone when the record is",
   inherited.stowaways === 0 && inherited.cleared === 0,
   `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`);
 
+// ---- and a capsule hull is drawn as a capsule out on the ship ---------------
+// A capsule is the one kind whose geometry depends on its proportions, so it
+// counter-scales its own Y to keep its caps round. The preview wrote the size
+// straight onto the *mesh*, which looked equivalent to what a real collider
+// does and was not: it flattened that counter-scale, and every inherited
+// capsule came out a sphere. The size goes on a holder now, as it does
+// everywhere else.
+const previewCapsule = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  const settle = () => new Promise((r) => setTimeout(r, 80));
+  ed.clearAll(); ed.select([]);
+  const measure = async (placementScale) => {
+    ed.clearAll(); ed.select([]);
+    ed.loadModuleCollision({ [prop]: [
+      { kind: "capsule", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 3, 1] },
+    ] }, []);
+    await ed.placeAt(prop, new V(0, 0, 0), { scale: placementScale, silent: true });
+    ed.setShowLayer("both");
+    ed.applyVisibility();
+    await settle();
+    ed.state.scene.render();
+    await settle();
+    ed.state.scene.render();
+    // buildMesh suffixes the shape's name; the holder takes the plain one
+    const mesh = ed.state.scene.meshes.find((m) => m.name.startsWith("PREVIEW_0_fill"));
+    if (!mesh) return { missing: true };
+    mesh.computeWorldMatrix(true);
+    const raw = mesh.getVerticesData("position");
+    const wm = mesh.getWorldMatrix();
+    const c = wm.getRow(3);
+    const origin = new V(c.x, c.y, c.z);
+    const pts = [];
+    for (let i = 0; i < raw.length; i += 3) {
+      pts.push(V.TransformCoordinates(new V(raw[i], raw[i + 1], raw[i + 2]), wm).subtract(origin));
+    }
+    const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y), zs = pts.map((q) => q.z);
+    const width = Math.max(...xs) - Math.min(...xs);
+    const depth = Math.max(...zs) - Math.min(...zs);
+    const height = Math.max(...ys) - Math.min(...ys);
+    const rad = width / 2, half = Math.max(height / 2 - rad, 0);
+    let worst = 0;
+    for (const q of pts) {
+      const y = Math.max(-half, Math.min(half, q.y));
+      worst = Math.max(worst, Math.abs(Math.hypot(q.x, q.y - y, q.z) - rad));
+    }
+    const wsm = wm.m;
+    return {
+      size: [width, height, depth].map((v) => +v.toFixed(3)),
+      offSurface: +worst.toFixed(4),
+      worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]),
+        Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(3)),
+      holder: mesh.parent?.getClassName?.() ?? null,
+    };
+  };
+  const plain = await measure([1, 1, 1]);
+  // A placement may be scaled unevenly - this ship has doors at [0.65,0.85,1] -
+  // and a capsule composed with that is an ellipsoid, which Havok has no shape
+  // for. The preview shows what Havok gets, not a promise it cannot keep.
+  const squashed = await measure([0.5, 1, 1]);
+  ed.clearAll(); ed.select([]);
+  ed.loadModuleCollision({}, []);
+  return { plain, squashed };
+}, PROP_A);
+check("an inherited capsule is drawn 1 wide and 3 tall, as its hull says",
+  !previewCapsule.plain.missing
+    && previewCapsule.plain.size.join() === "1,3,1", JSON.stringify(previewCapsule.plain.size));
+check("every vertex of it lies on a true capsule, not a stretched sphere",
+  previewCapsule.plain.offSurface < 3e-3, `worst ${previewCapsule.plain.offSurface} m`);
+check("the size rides a holder, so the mesh keeps the counter-scale that rounds its caps",
+  previewCapsule.plain.holder === "TransformNode"
+    && new Set(previewCapsule.plain.worldScale).size === 1,
+  `${previewCapsule.plain.holder}, world scale ${JSON.stringify(previewCapsule.plain.worldScale)}`);
+check("and on an unevenly scaled placement it is still a capsule, radius averaged",
+  previewCapsule.squashed.offSurface < 3e-3
+    && previewCapsule.squashed.size[0] === previewCapsule.squashed.size[2]
+    && Math.abs(previewCapsule.squashed.size[0] - 0.75) < 1e-3,
+  `${JSON.stringify(previewCapsule.squashed.size)}, worst ${previewCapsule.squashed.offSurface}`);
+
 // And it keeps up with the ship. It is drawn from each placement's world
 // matrix and rebuilt only through applyVisibility(), which a move, a turn or a
 // delete never calls - so the hulls sat where the elements used to be, and

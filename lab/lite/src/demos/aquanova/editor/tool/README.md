@@ -1228,6 +1228,23 @@ change rather than every time the shape is resized.
 > rather than on the shape's own parent, which is why the ratio is read off the
 > parent's **world matrix** and not its local scaling.
 
+**The size always goes on a holder, never on the shape mesh.** That is what
+makes the counter-scale possible, and the ship's inherited-hull preview was the
+one place that did not do it: it wrote the composed transform straight onto the
+mesh, which looked equivalent to what a real collider does and flattened the
+counter-scale, so every capsule out on the ship was drawn as a **sphere** while
+the same hull on the bench was a proper pill. The preview builds a
+`TransformNode` per shape now, exactly as `addCollider` does.
+
+> The preview also runs its composed scale through `constrainScale`. A placement
+> may be scaled unevenly — this ship has doors at `[0.65, 0.85, 1]` — and a
+> capsule or a sphere composed with that is an ellipsoid, which Havok has no
+> shape for at all. Drawing the ellipsoid would promise something the runtime
+> cannot deliver, so the preview shows the shape Havok actually gets: one
+> radius, averaged from X and Z, the same rule the authoring path applies.
+> `capsuleRatio` averages the two the same way, so nothing downstream can be
+> handed a width that depends on which way you look at it.
+
 **A capsule's height is the whole pill, caps included** — the same reading as a
 box's side or a sphere's diameter, and what the editor draws and the inspector
 says. Havok's capsule is a segment *grown by the radius in every direction*, so
