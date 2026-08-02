@@ -120,14 +120,13 @@ function serializeEntities() {
  * that actually exists. A capsule or cylinder needs no such care: its two
  * endpoints carry its axis, which is the Havok signature.
  */
-function shapeRecord(id, kind, world, moduleId) {
+function shapeRecord(id, kind, world) {
   const centre = new Vector3(world.m[12], world.m[13], world.m[14]);
   const ax = new Vector3(world.m[0], world.m[1], world.m[2]);
   const ay = new Vector3(world.m[4], world.m[5], world.m[6]);
   const az = new Vector3(world.m[8], world.m[9], world.m[10]);
   const shape = {
     id, kind,
-    ...(moduleId ? { module: moduleId } : {}),
     centre: toGltf(r(centre.asArray())),
   };
 
@@ -164,10 +163,11 @@ function shapeRecord(id, kind, world, moduleId) {
  * because that is literally the Havok signature - and it is how an arbitrarily
  * oriented capsule is expressed, since those shapes take no quaternion.
  *
- * Two sources feed it. A room's own primitives are already world space. A
- * module's are authored once in the module's local space and **instanced here
- * onto every placement of it**, carrying `module` so a runtime that wants to
- * build one Havok shape and reuse it across bodies can group by that id.
+ * **Room shapes only.** A module's hull is written once in `moduleCollision`
+ * and instanced by the runtime, which already has every placement's module,
+ * chunk and transform in `instances`. Writing it out per placement as well was
+ * pure duplication, and the kind that grows: placements x shapes rather than
+ * modules x shapes.
  *
  * All of it is mirrored on X, like every other runtime-facing field.
  */
@@ -178,38 +178,21 @@ function collisionByChunk() {
     c.node.computeWorldMatrix(true);
     (out[c.chunk] ||= []).push(shapeRecord(c.id, c.kind, c.node.getWorldMatrix()));
   }
-
-  if (state.moduleCollision.size) {
-    for (const p of shipPlacements()) {
-      const shapes = state.moduleCollision.get(p.module);
-      if (!shapes?.length) continue;
-      p.node.computeWorldMatrix(true);
-      const placement = p.node.getWorldMatrix();
-      shapes.forEach((s, i) => {
-        // the shape's own local transform, then the placement's - which is
-        // exactly what parenting it to the placement would have produced
-        const world = Matrix.Compose(
-          Vector3.FromArray(s.scale),
-          Quaternion.FromEulerAngles(
-            s.rotation[0] * Math.PI / 180,
-            s.rotation[1] * Math.PI / 180,
-            s.rotation[2] * Math.PI / 180),
-          Vector3.FromArray(s.position)).multiply(placement);
-        (out[p.chunk] ||= []).push(
-          shapeRecord(`${p.id}:${i}`, s.kind, world, p.module));
-      });
-    }
-  }
   return out;
 }
 
 /**
  * The shapes authored on each kit module, in the module's own local space.
  *
- * Derived data: `collision` above already instances these onto every placement,
- * which is what the runtime reads. This block is what makes shape *sharing*
- * possible - one Havok shape per module, reused by every body - and it is also
- * written to its own file, so it can be shipped and reused by another ship.
+ * What the runtime instances: for each entry in `instances`, look its module up
+ * here and compose with the placement's transform. One Havok shape per module,
+ * reused across every body that needs it.
+ *
+ * `moduleShapes` beside it is the same hulls in the editor's own coordinates -
+ * the authoring source both this and the editor's reload come from. The two are
+ * one transform apart, which is why they are two keys and not one: they were
+ * one key once, and a reload silently threw every shape away because the reader
+ * expected the other form.
  */
 function moduleCollision() {
   const out = {};
@@ -333,17 +316,25 @@ export function buildManifest() {  const layout = serialize();
     // this is the source. Without it a saved ship came back with no collision
     // at all, because restoreFrom() reads this key and nothing wrote it.
     colliders: layout.colliders,
-    // The shapes the runtime hands to Havok, in glTF space like everything else
-    // it reads. Grouped by chunk because collision is streamed per room, and a
-    // flat list would make every room filter the whole ship.
+    // A room's own one-off shapes, in glTF space, in the form Havok's
+    // constructors take. Grouped by chunk because collision is streamed per
+    // room, and a flat list would make every room filter the whole ship.
     //
     // Sizes are the *effective* ones, not the editor's raw scale: a unit box
     // scaled 4x2x0.2 is written as half-extents, and a capsule as the radius
     // and the two endpoints Havok's constructor actually takes.
+    //
+    // A module's hull is NOT expanded into here. It is written once below and
+    // instanced by the runtime, which already knows every placement's module,
+    // chunk and transform from `instances`. Expanding it as well was pure
+    // duplication of the sort that grows: placements x shapes, against
+    // modules x shapes.
     collision: collisionByChunk(),
-    // What each kit module carries, in its own local space, in Havok's terms.
-    // Derived: `moduleShapes` below is the authoring source it comes from.
+    // What each kit module carries, in its own local space, in Havok's terms -
+    // one shape per module, for the runtime to instance and to share.
     moduleCollision: moduleCollision(),
+    // The same hulls in the editor's own coordinates. The authoring source both
+    // of the above and the editor's own reload come from.
     moduleShapes: layout.moduleShapes,
     stageLayout: layout.stageLayout,
     activeChunk: layout.activeChunk,

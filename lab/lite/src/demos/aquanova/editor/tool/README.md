@@ -1235,19 +1235,28 @@ is exactly what happened against a server too old to know the route: every save
 appeared to fail, and every reload warned about losing changes that were in fact
 safely written. The status line names the problem instead.
 
-The manifest still carries the same data, for the runtime and for reloading:
+The manifest carries three collision blocks, and they are **not** three copies
+of the same thing:
 
-* `collision[chunk]` — what the runtime reads. Room shapes as authored, plus
-  every module shape instanced onto every placement of its module, each
-  carrying `module` so a runtime that wants to build one Havok shape and reuse
-  it across bodies can group by that id.
-* `moduleCollision[moduleId]` — the same shapes in module-local space, in
-  Havok's terms, which is what makes that sharing possible.
-* `moduleShapes[moduleId]` — the **authoring** form: editor coordinates,
-  position/rotation/scale. This is the source the tool reloads from, and the
-  two blocks above are derived from it, exactly the way `colliders` relates to
-  `collision`.
+* `collision[chunk]` — a room's **own** one-off shapes, world space, in Havok's
+  parameters. Grouped by chunk because collision is streamed per room.
+* `moduleCollision[moduleId]` — what a kit module carries, in the module's own
+  local space, in Havok's parameters. **Written once per module**, for the
+  runtime to instance onto every placement of it and to share one Havok shape
+  between them.
+* `moduleShapes[moduleId]` — the same hulls in the **authoring** form: editor
+  coordinates, position/rotation/scale. The source the tool reloads from, and
+  what `moduleCollision` is derived from — exactly the way `colliders` relates
+  to `collision`.
 * `colliders` — the editor's record of the *room's* shapes.
+
+**A module's hull is deliberately not expanded per placement.** It used to be,
+and that block was both the largest of the three and the only one that grew with
+the ship: placements × shapes, against modules × shapes. The runtime does not
+need it — `instances` already gives every placement's module, chunk and
+transform, which is everything required to place the hull. On a 114-instance
+ship dropping the expansion took the manifest from 87 KB to 69 KB, and the gap
+widens with every room.
 
 `moduleCollision` and `moduleShapes` were once the same key, and a reload
 silently produced empty shape lists: the reader expects editor coordinates and

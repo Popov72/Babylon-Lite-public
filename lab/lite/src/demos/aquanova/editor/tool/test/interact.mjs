@@ -1300,6 +1300,7 @@ check("staged shapes are not serialized as the ship's own",
   stageLeak.roomColliders === 1, `${stageLeak.roomColliders}`);
 check("the per-module record is what the manifest carries",
   stageLeak.modules === 2, `${stageLeak.modules} modules`);
+
 check("and the object count still counts the ship, not the area",
   /^2 objects/.test(stageLeak.objectCount), stageLeak.objectCount.split("·")[0].trim());
 
@@ -1418,6 +1419,50 @@ check("collision is written to its own file, apart from the ship",
 check("and that file alone can restore it",
   closed.wiped === 0 && closed.restored === 2 && closed.backKeys === 2,
   `wiped to ${closed.wiped}, back to ${closed.restored}`);
+
+// The manifest must carry a module's hull once, not once per placement: the
+// runtime instances it from `instances`, which already has every placement's
+// module, chunk and transform. Expanding it here as well grew as
+// placements x shapes rather than modules x shapes.
+const noDupes = await page.evaluate(async ([a]) => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  co.exitCollisionMode();
+  ed.clearAll(); ed.select([]);
+  ed.loadModuleCollision({ [a]: [
+    { kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+  ] }, []);
+  // six placements of the module, and one room shape that has no module at all
+  for (let i = 0; i < 6; i++) await ed.placeAt(a, new V(i * 6, 0, 0), { silent: true });
+  co.addCollider("sphere", new V(-8, 1, 0), { silent: true });
+
+  const man = mf.buildManifest();
+  const flat = Object.values(man.collision || {}).flat();
+  const out = {
+    placements: man.instances.filter((x) => x.module === a).length,
+    inCollision: flat.length,
+    kinds: flat.map((s) => s.kind),
+    inModuleCollision: (man.moduleCollision[a] || []).length,
+    inModuleShapes: (man.moduleShapes[a] || []).length,
+    // everything the runtime needs to place the hull itself
+    instanceHasAll: man.instances.every((x) =>
+      x.module && x.chunk && x.position && x.rotation && x.scale),
+  };
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  return out;
+}, [PROP_A]);
+check("a module's hull is written once, not once per placement",
+  noDupes.placements === 6 && noDupes.inModuleCollision === 1,
+  `${noDupes.placements} placements, ${noDupes.inModuleCollision} record in moduleCollision`);
+check("and collision[chunk] carries only the room's own shapes",
+  noDupes.inCollision === 1 && noDupes.kinds.join() === "sphere",
+  `${noDupes.inCollision} record(s): ${JSON.stringify(noDupes.kinds)}`);
+check("the authoring form is there too, once per module",
+  noDupes.inModuleShapes === 1, `${noDupes.inModuleShapes}`);
+check("and every instance carries what it takes to place the hull",
+  noDupes.instanceHasAll === true);
 
 // ---- 1d-trestricies. the bench keeps what you left on it ------------------
 // Coming back to a blank stage after stepping out to look at the ship was the
