@@ -17,7 +17,7 @@
 
 import {
   state, emit, pushUndo, hooks, applyVisibility, select,
-  placeAt, removePlacement, worldBounds,
+  placeAt, removePlacement, worldBounds, shipPlacements,
 } from "./editor.js";
 
 const { MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode, Matrix } = BABYLON;
@@ -552,20 +552,107 @@ export function orphanCount() {
   return n;
 }
 
+// ------------------------------------------- inherited collision, on the ship
+//
+// A module's shapes are stored once and instanced onto every placement of it at
+// export time, which means the ship carried collision you could not see: the
+// only place it was ever drawn was the staging area. "Collision only" on a ship
+// whose collision is all inherited showed an empty room, which reads exactly
+// like a broken switch.
+//
+// So it is drawn here too - as a preview, not as data. These meshes are not in
+// state.colliders, are not pickable and are rebuilt from the record, so there
+// is nothing to keep in sync and nothing to accidentally edit: to change them
+// you open the staging area, which is the one place they are editable.
+
+let previewRoot = null;
+let previewPending = false;
+
+function disposePreview() {
+  if (!previewRoot) return;
+  for (const m of previewRoot.getChildMeshes()) m.dispose();
+  previewRoot.dispose();
+  previewRoot = null;
+}
+
+/** Whether a placement is on screen for reasons other than the layer switch. */
+function visibleIgnoringLayer(p) {
+  if (p.stage) return false;
+  if (state.hidden.get(p.id) === "hidden") return false;
+  return !state.isolate || p.chunk === state.activeChunk;
+}
+
+function buildPreview() {
+  disposePreview();
+  if (state.collisionMode) return;              // the bench draws its own
+  if (state.showLayer === "geometry") return;   // collision is off screen
+  if (!state.moduleCollision.size) return;
+
+  const scene = state.scene;
+  if (!scene) return;
+  const { colliderMat: mat, colliderMatSel: wire } = materials(scene);
+  previewRoot = new TransformNode("__COLLISION_PREVIEW", scene);
+
+  let n = 0;
+  for (const p of shipPlacements()) {
+    const shapes = state.moduleCollision.get(p.module);
+    if (!shapes?.length || !visibleIgnoringLayer(p)) continue;
+    p.node.computeWorldMatrix(true);
+    const placement = p.node.getWorldMatrix();
+    for (const s of shapes) {
+      const world = Matrix.Compose(
+        Vector3.FromArray(s.scale),
+        Quaternion.FromEulerAngles(
+          s.rotation[0] * Math.PI / 180,
+          s.rotation[1] * Math.PI / 180,
+          s.rotation[2] * Math.PI / 180),
+        Vector3.FromArray(s.position)).multiply(placement);
+      const pos = new Vector3(), rot = new Quaternion(), scl = new Vector3();
+      world.decompose(scl, rot, pos);
+      for (const [material, name] of [[mat, "fill"], [wire, "edge"]]) {
+        const mesh = buildMesh(s.kind, `PREVIEW_${n}_${name}`, scene);
+        mesh.parent = previewRoot;
+        mesh.position.copyFrom(pos);
+        mesh.rotationQuaternion = rot.clone();
+        mesh.scaling.copyFrom(scl);
+        mesh.material = material;
+        mesh.isPickable = false;
+      }
+      n++;
+    }
+  }
+}
+
+/**
+ * Rebuild the preview once, after the current burst of changes.
+ *
+ * applyVisibility() runs on every single collider added, so fitting a room of
+ * eighty boxes would otherwise rebuild the whole ship's preview eighty times.
+ */
+export function refreshCollisionPreview() {
+  if (previewPending) return;
+  previewPending = true;
+  Promise.resolve().then(() => { previewPending = false; buildPreview(); });
+}
+
+/** How many inherited shapes are currently drawn, for tests. */
+export function previewCount() {
+  return previewRoot ? previewRoot.getChildMeshes().length / 2 : 0;
+}
+
 /** Where to park the next staged element, clear of everything already there. */
 async function nextStageSpot(moduleId, boundsOf) {
   const bounds = await boundsOf(moduleId);
   const half = bounds ? Math.max(
     Math.abs(bounds.max.x - bounds.min.x),
     Math.abs(bounds.max.z - bounds.min.z)) / 2 : 2;
-  let x = 0;
+  let x = null;
   for (const e of stagedElements()) {
     const b = worldBounds(e.node);
-    if (b) x = Math.max(x, b.max.x);
+    if (b) x = x === null ? b.max.x : Math.max(x, b.max.x);
   }
   // A gap wider than twice the association margin, so no two grown boxes touch
-  const centre = stagedElements().length ? x + STAGE_GAP + half : 0;
-  return new Vector3(centre, 0, 0);
+  return new Vector3(x === null ? 0 : x + STAGE_GAP + half, 0, 0);
 }
 
 /**
@@ -575,12 +662,12 @@ async function nextStageSpot(moduleId, boundsOf) {
  * good answers. Staging one that is already there focuses it instead, which is
  * what you actually wanted when you clicked it.
  */
-export async function stageModule(moduleId, instantiate, boundsOf) {
+export async function stageModule(moduleId, instantiate, boundsOf, at = null) {
   const existing = stagedElements().find((e) => e.module === moduleId);
   if (existing) return { entry: existing, added: false };
 
-  const at = await nextStageSpot(moduleId, boundsOf);
-  const entry = await placeAt(moduleId, at, { stage: true, silent: true });
+  const spot = at ? Vector3.FromArray(at) : await nextStageSpot(moduleId, boundsOf);
+  const entry = await placeAt(moduleId, spot, { stage: true, silent: true });
 
   for (const s of state.moduleCollision.get(moduleId) || []) {
     const world = Matrix.Compose(
@@ -633,20 +720,40 @@ export function unstageModule(entryOrId) {
   return true;
 }
 
-/** Open the staging area. It starts empty; stage what you want to work on. */
-export function enterCollisionMode() {
+/**
+ * Open the staging area, restoring whatever was on it when it was last closed.
+ *
+ * Coming back to a blank stage after stepping out to look at the ship was the
+ * wrong default: the area is a workbench, and a workbench keeps what you left
+ * on it. The roster travels in the collision file, so it survives a reload too.
+ */
+export async function enterCollisionMode(instantiate, boundsOf) {
   if (state.collisionMode) return false;
   state.collisionMode = true;
   select([]);
   applyVisibility();
   emit("collisionMode");
+
+  for (const s of state.stageLayout) {
+    if (!s?.module) continue;
+    await stageModule(s.module, instantiate, boundsOf, s.position);
+  }
+  applyVisibility();
+  emit("placements");
+  emit("colliders");
   return true;
 }
 
-/** Close it, keeping everything that was fitted. */
+/** Close it, keeping everything that was fitted and where it all stood. */
 export function exitCollisionMode() {
   if (!state.collisionMode) return false;
   harvestStage();
+  // Remember the bench before clearing it, so re-opening finds the same
+  // modules in the same places.
+  state.stageLayout = stagedElements().map((e) => ({
+    module: e.module,
+    position: round(e.node.position.asArray()),
+  }));
   for (const c of stageColliders()) removeCollider(c.id, true);
   for (const e of stagedElements()) removePlacement(e.id);
   state.collisionMode = false;
@@ -727,3 +834,7 @@ hooks.unstageModule = (id) => unstageModule(id);
 // Any change to a staged shape re-reads the area into the per-module record,
 // so leaving, saving or removing an element need no special handling.
 hooks.harvestStage = () => { if (state.collisionMode) harvestStage(); };
+// Inherited collision is drawn from the record rather than stored as elements,
+// so applyVisibility - the one place that decides what is on screen - asks for
+// it to be rebuilt whenever anything it depends on has moved.
+hooks.refreshCollisionPreview = refreshCollisionPreview;

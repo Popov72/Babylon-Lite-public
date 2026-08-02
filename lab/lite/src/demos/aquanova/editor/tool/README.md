@@ -1153,6 +1153,12 @@ The area is read back into the record on every change that matters — leaving i
 saving, or removing an element — so there is no separate commit step and nothing
 to forget.
 
+**The bench keeps what you left on it.** Closing the area records which modules
+were on it and where, and re-opening puts them back. Coming back to a blank
+stage after stepping out to look at the ship was the wrong default: this is a
+workbench, not a dialog. The roster rides in the collision file, so it survives
+a reload as well as a trip back to the ship.
+
 ### Collision travels in its own file
 
 Saving writes `ship_collision.json` beside `ship_manifest.json`, and loading
@@ -1161,19 +1167,48 @@ point of it living apart: the collision is a property of the *kit*, not of any
 one ship, so once these hulls are fitted the file can be shipped and the next
 ship built from the same kit starts fully fitted.
 
-The manifest still carries the same data, twice over, for the runtime:
+**A failure writing it does not fail the save.** The ship is already on disk by
+then, and throwing would leave the editor believing it had unsaved work — which
+is exactly what happened against a server too old to know the route: every save
+appeared to fail, and every reload warned about losing changes that were in fact
+safely written. The status line names the problem instead.
+
+The manifest still carries the same data, for the runtime and for reloading:
 
 * `collision[chunk]` — what the runtime reads. Room shapes as authored, plus
   every module shape instanced onto every placement of its module, each
   carrying `module` so a runtime that wants to build one Havok shape and reuse
   it across bodies can group by that id.
-* `moduleCollision[moduleId]` — the same shapes in module-local space, which is
-  what makes that sharing possible.
-* `colliders` — the editor's own record of the *room's* shapes, kind plus a
-  plain transform. **This is what the tool reloads from**, and `collision` is
-  derived from it. A saved ship used to come back with no collision at all,
-  because `buildManifest()` assembles its own object and never wrote this key
-  while `restoreFrom()` read it.
+* `moduleCollision[moduleId]` — the same shapes in module-local space, in
+  Havok's terms, which is what makes that sharing possible.
+* `moduleShapes[moduleId]` — the **authoring** form: editor coordinates,
+  position/rotation/scale. This is the source the tool reloads from, and the
+  two blocks above are derived from it, exactly the way `colliders` relates to
+  `collision`.
+* `colliders` — the editor's record of the *room's* shapes.
+
+`moduleCollision` and `moduleShapes` were once the same key, and a reload
+silently produced empty shape lists: the reader expects editor coordinates and
+filtered out every runtime-shaped record. One name, one meaning. A manifest
+written before the split is converted on load rather than lost.
+
+### Seeing collision the ship inherits
+
+A module's shapes are stored once and instanced onto every placement at export
+time, so the ship carried collision that was drawn nowhere but the staging area.
+On a ship whose collision is all inherited, **Collision only** showed an empty
+room — which reads exactly like a broken switch.
+
+They are now drawn in place as well, from the record, as a **preview**: not in
+`state.colliders`, not pickable, not exported, and rebuilt whenever anything it
+depends on moves. There is nothing to keep in sync and nothing to edit by
+accident — to change them you open the staging area, which is the one place
+they are editable.
+
+It is built at the end of `applyVisibility()`, so it follows chunk isolation,
+hiding and the layer switch like everything else. That runs on every collider
+added, so the rebuild is coalesced into one pass per burst — fitting a room of
+eighty boxes would otherwise rebuild the whole ship's preview eighty times.
 
 A module that carries its own collision is **skipped by the room fitter**: its
 placements are already covered, so fitting a box as well would give them

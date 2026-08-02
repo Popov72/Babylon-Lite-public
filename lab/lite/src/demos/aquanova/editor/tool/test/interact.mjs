@@ -1010,14 +1010,15 @@ const [PROP_A, PROP_B] = PROP;
 const areaOpen = await page.evaluate(async (a) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
-  ed.loadModuleCollision({});
+  ed.loadModuleCollision({}, []);
   await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   await ed.placeAt(a, new V(8, 0, 0), { silent: true });
   co.addCollider("box", new V(-6, 0.5, 0), { silent: true });
-  co.enterCollisionMode();
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   return {
     mode: ed.state.collisionMode,
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
@@ -1247,7 +1248,7 @@ const closed = await page.evaluate(async () => {
   ed.clearAll(); ed.select([]); ed.loadModuleCollision({});
   return {
     after, wiped, restored,
-    onDisk: Object.keys(onDisk.moduleCollision || {}).length,
+    onDisk: Object.keys(onDisk.moduleShapes || {}).length,
     schema: onDisk.schema,
     backKeys: back ? Object.keys(back).length : 0,
     fit,
@@ -1265,6 +1266,119 @@ check("and that file alone can restore it",
 check("the room fitter leaves placements the record already covers",
   closed.fit.inherited === 1 && closed.fit.made === 1,
   `made ${closed.fit.made}, inherited ${closed.fit.inherited}`);
+
+// ---- 1d-trestricies. the bench keeps what you left on it ------------------
+// Coming back to a blank stage after stepping out to look at the ship was the
+// wrong default: the area is a workbench. The roster rides in the collision
+// file, so it survives a reload as well as a trip back to the ship.
+const bench = await page.evaluate(async ([a, b]) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  await ed.placeAt(a, new V(0, 0, 0), { silent: true });
+  await ed.placeAt(a, new V(8, 0, 0), { silent: true });
+
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  await co.stageModule(a, kit.instantiate, kit.moduleBounds);
+  await co.stageModule(b, kit.instantiate, kit.moduleBounds);
+  const first = [...ed.state.placements.values()].filter((p) => p.stage);
+  ed.select([first[0].id]);
+  await co.fitBoxToSelection(kit.moduleBounds);
+  const placed = first.map((p) => p.node.position.asArray().map((v) => +v.toFixed(3)));
+
+  co.exitCollisionMode();
+  const roster = ed.state.stageLayout.map((s) => s.module);
+  const rosterAt = ed.state.stageLayout.map((s) => s.position);
+
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  const back = [...ed.state.placements.values()].filter((p) => p.stage);
+  const out = {
+    roster, rosterAt, placed,
+    backModules: back.map((p) => p.module),
+    backAt: back.map((p) => p.node.position.asArray().map((v) => +v.toFixed(3))),
+    shapes: co.stageColliders().length,
+  };
+  co.exitCollisionMode();
+  return out;
+}, [PROP_A, PROP_B]);
+const sameSpots = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length
+  && a.every((v, i) => (Array.isArray(v)
+    ? sameSpots(v, b[i]) : Math.abs(v - b[i]) < 1e-2));
+check("closing the area records what was on it",
+  bench.roster.length === 2 && sameSpots(bench.rosterAt, bench.placed),
+  `${JSON.stringify(bench.roster)} at ${JSON.stringify(bench.rosterAt)}`);
+check("re-opening puts the same modules back in the same places",
+  JSON.stringify(bench.backModules) === JSON.stringify(bench.roster)
+    && sameSpots(bench.backAt, bench.placed),
+  `${JSON.stringify(bench.backAt)} vs ${JSON.stringify(bench.placed)}`);
+check("and their shapes come back with them", bench.shapes === 1, `${bench.shapes}`);
+
+// ---- 1d-quattuortricies. inherited collision is visible on the ship -------
+// A module's shapes are instanced onto every placement at export time, so the
+// ship carried collision that was drawn nowhere but the staging area. On a ship
+// whose collision is all inherited, "Collision only" showed an empty room -
+// which reads exactly like a broken switch.
+const inherited = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+  ed.setShowLayer("both"); ed.applyVisibility(); await settle();
+  const both = co.previewCount();
+  ed.setShowLayer("collision"); ed.applyVisibility(); await settle();
+  const collisionOnly = {
+    preview: co.previewCount(),
+    geo: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
+  };
+  ed.setShowLayer("geometry"); ed.applyVisibility(); await settle();
+  const geometryOnly = co.previewCount();
+
+  // it follows isolation like everything else, being built through applyVisibility
+  ed.setShowLayer("both");
+  ed.state.isolate = true;
+  ed.state.chunks = [...new Set([...ed.state.chunks, "CH_Nowhere"])];
+  ed.state.activeChunk = "CH_Nowhere";
+  ed.applyVisibility(); await settle();
+  const isolatedAway = co.previewCount();
+  ed.state.isolate = false;
+  ed.state.activeChunk = ed.state.chunks[0];
+  ed.applyVisibility(); await settle();
+
+  // and never reaches the .glb
+  const mf = await import("/js/manifest.js");
+  const realFetch = window.fetch;
+  let body = null;
+  window.fetch = (url, opts) => {
+    if (String(url).includes("/api/export")) {
+      body = opts.body;
+      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
+        { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return realFetch(url, opts);
+  };
+  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+  const buf = await body.arrayBuffer();
+  const dv = new DataView(buf);
+  const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+  const stowaways = (json.nodes || []).map((n) => String(n.name))
+    .filter((n) => /PREVIEW/i.test(n)).length;
+
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+  ed.applyVisibility(); await settle();
+  return { both, collisionOnly, geometryOnly, isolatedAway, stowaways, cleared: co.previewCount() };
+});
+check("inherited collision is drawn on every placement of its module",
+  inherited.both === 2, `${inherited.both} shapes for 2 placements`);
+check("Collision only shows it with the ship off screen",
+  inherited.collisionOnly.preview === 2 && inherited.collisionOnly.geo === 0,
+  JSON.stringify(inherited.collisionOnly));
+check("Ship only takes it off screen too", inherited.geometryOnly === 0);
+check("it follows chunk isolation, being built through applyVisibility",
+  inherited.isolatedAway === 0, `${inherited.isolatedAway} still drawn`);
+check("it is a preview, not data: never exported, and gone when the record is",
+  inherited.stowaways === 0 && inherited.cleared === 0,
+  `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`);
 
 
 // ---- 1d-duotricies. the geometry / collision layer switch -----------------

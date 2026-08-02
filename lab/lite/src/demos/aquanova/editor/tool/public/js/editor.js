@@ -103,6 +103,9 @@ export const state = {
   // module id -> shapes authored on it, in the module's own local space. The
   // one authoritative record: what is on the staging area is a working copy.
   moduleCollision: new Map(),
+  // What was on the staging area when it was last closed, so re-opening it
+  // finds the same modules in the same places rather than a blank stage.
+  stageLayout: [],
   showLayer: "both",       // "both" | "geometry" | "collision", see setShowLayer
   config: { ...CONFIG_DEFAULTS },
   nextId: 1,
@@ -1900,6 +1903,9 @@ export function applyVisibility() {
     c.node.setEnabled(on);
     if (c.mesh) c.mesh.isPickable = veil !== "ghost";
   }
+  // Collision a placement inherits from its module is drawn from the record,
+  // not stored as elements - see refreshCollisionPreview.
+  hooks.refreshCollisionPreview?.();
 }
 
 /** What the viewport shows: the ship, its collision, or both. */
@@ -2196,10 +2202,14 @@ export function serialize() {
     })),
     colliders: hooks.serializeColliders(),
     markers: hooks.serializeMarkers(),
-    // Authored per kit module, in the module's own local space, and inherited
-    // by every placement of it. Also written to its own file - see
-    // saveCollision - so it can be shipped and reused by another ship.
-    moduleCollision: serializeModuleCollision(),
+    // Authored per kit module, in the module's own local space and the editor's
+    // own coordinates. This is the *source*; the manifest's `moduleCollision`
+    // is the mirrored, Havok-shaped copy derived from it - exactly the way
+    // `colliders` relates to `collision`. They were once the same key, and a
+    // reload quietly dropped every shape because the reader expected the other
+    // form and filtered them all out.
+    moduleShapes: serializeModuleCollision(),
+    stageLayout: state.stageLayout.map((s) => ({ module: s.module, position: [...s.position] })),
     config: { ...state.config },
   };
 }
@@ -2220,7 +2230,7 @@ export function serializeModuleCollision() {
 }
 
 /** Replace the per-module shapes wholesale. */
-export function loadModuleCollision(data) {
+export function loadModuleCollision(data, stageLayout) {
   state.moduleCollision = new Map();
   for (const [moduleId, shapes] of Object.entries(data || {})) {
     if (!Array.isArray(shapes) || !shapes.length) continue;
@@ -2233,7 +2243,72 @@ export function loadModuleCollision(data) {
         scale: [...(s.scale || [1, 1, 1])],
       })));
   }
+  if (Array.isArray(stageLayout)) {
+    state.stageLayout = stageLayout
+      .filter((s) => s && typeof s.module === "string" && Array.isArray(s.position))
+      .map((s) => ({ module: s.module, position: [...s.position] }));
+  }
+  applyVisibility();      // the inherited-collision preview is built from this
   emit("colliders");
+}
+
+/**
+ * Read module shapes back out of the manifest's runtime block.
+ *
+ * Only for a manifest written before the authoring form had a key of its own.
+ * The runtime block is mirrored on X and speaks Havok's parameters, so it is
+ * undone here rather than fed to the reader that expects editor coordinates -
+ * which is what silently emptied it before.
+ */
+export function moduleShapesFromRuntime(block) {
+  const out = {};
+  for (const [moduleId, shapes] of Object.entries(block || {})) {
+    if (!Array.isArray(shapes)) continue;
+    const made = [];
+    for (const s of shapes) {
+      if (!s?.kind || !Array.isArray(s.centre)) continue;
+      const position = [-s.centre[0], s.centre[1], s.centre[2]];
+      if (s.kind === "box") {
+        const q = Array.isArray(s.rotation)
+          ? new Quaternion(-s.rotation[0], s.rotation[1], s.rotation[2], -s.rotation[3])
+          : Quaternion.Identity();
+        const e = q.toEulerAngles();
+        made.push({
+          kind: "box",
+          position,
+          rotation: [e.x, e.y, e.z].map((r) => r * 180 / Math.PI),
+          scale: (s.halfExtents || [0.5, 0.5, 0.5]).map((v) => v * 2),
+        });
+      } else if (s.kind === "sphere") {
+        const d = (s.radius ?? 0.5) * 2;
+        made.push({ kind: "sphere", position, rotation: [0, 0, 0], scale: [d, d, d] });
+      } else {
+        // the segment carries the axis, so the turn is whatever takes +Y to it
+        const d = (s.radius ?? 0.5) * 2;
+        const h = s.height ?? 1;
+        let rotation = [0, 0, 0];
+        if (Array.isArray(s.pointA) && Array.isArray(s.pointB)) {
+          const a = new Vector3(-s.pointA[0], s.pointA[1], s.pointA[2]);
+          const b = new Vector3(-s.pointB[0], s.pointB[1], s.pointB[2]);
+          const axis = b.subtract(a);
+          if (axis.length() > 1e-6) {
+            axis.normalize();
+            const up = Vector3.Up();
+            const dot = Vector3.Dot(up, axis);
+            let q;
+            if (dot > 1 - 1e-6) q = Quaternion.Identity();
+            else if (dot < -1 + 1e-6) q = Quaternion.RotationAxis(Vector3.Right(), Math.PI);
+            else q = Quaternion.RotationAxis(Vector3.Cross(up, axis).normalize(), Math.acos(dot));
+            const e = q.toEulerAngles();
+            rotation = [e.x, e.y, e.z].map((r) => r * 180 / Math.PI);
+          }
+        }
+        made.push({ kind: s.kind, position, rotation, scale: [d, h, d] });
+      }
+    }
+    if (made.length) out[moduleId] = made;
+  }
+  return out;
 }
 
 export async function deserialize(data) {
@@ -2254,7 +2329,11 @@ async function restoreFrom(data) {
   // Defaults first, so a layout saved before a setting existed comes back with
   // that setting's default rather than undefined.
   state.config = { ...CONFIG_DEFAULTS, ...(data.config || {}) };
-  loadModuleCollision(data.moduleCollision);
+  // `moduleShapes` is the authoring form. A manifest written before it had a
+  // key of its own carries only the runtime one, so convert rather than lose it.
+  loadModuleCollision(
+    data.moduleShapes || moduleShapesFromRuntime(data.moduleCollision),
+    data.stageLayout);
   // buildManifest() writes chunks as rich objects; serialize() writes plain
   // ids. Accept either so a saved manifest reloads cleanly.
   const ids = (data.chunks || []).map((c) => (typeof c === "string" ? c : c.id)).filter(Boolean);

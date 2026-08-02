@@ -947,8 +947,9 @@ async function doSave() {
     if (state.collisionMode) harvestStage();
     const r = await saveLayout();
     markSaved();
-    const coll = r.collision
-      ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "";
+    const coll = r.collisionError
+      ? ` — collision file NOT written: ${r.collisionError}`
+      : (r.collision ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "");
     setStatus(r.previous
       ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}`
       : `saved ${r.bytes} bytes → ${r.path}${coll}`);
@@ -1504,9 +1505,16 @@ $("btn-collide-room").addEventListener("click", async () => {
 async function openCollisionArea() {
   cancelGhost();
   setBrush(null);
-  enterCollisionMode();
-  setGridElevation(0);
-  setStatus("collision area — pick modules from the left to stage them");
+  await whileBusy("opening the collision area…", async () => {
+    await enterCollisionMode(instantiate, moduleBounds);
+    setGridElevation(0);
+    const back = [...state.placements.values()].filter((p) => p.stage);
+    if (back.length) focusNodes(back.map((p) => p.node));
+  });
+  const n = [...state.placements.values()].filter((p) => p.stage).length;
+  setStatus(n
+    ? `collision area — ${n} module(s) back on the bench`
+    : "collision area — pick modules from the left to stage them");
 }
 
 function closeCollisionArea() {
@@ -1518,8 +1526,8 @@ function closeCollisionArea() {
     + (r.orphans ? `, ${r.orphans} shape(s) belonged to nothing and were dropped` : ""));
 }
 
-$("btn-edit-module").addEventListener("click", () => {
-  if (state.collisionMode) closeCollisionArea(); else openCollisionArea();
+$("btn-edit-module").addEventListener("click", async () => {
+  if (state.collisionMode) closeCollisionArea(); else await openCollisionArea();
 });
 $("btn-module-done").addEventListener("click", closeCollisionArea);
 

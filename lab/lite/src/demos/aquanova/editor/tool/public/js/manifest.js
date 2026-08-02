@@ -341,8 +341,11 @@ export function buildManifest() {  const layout = serialize();
     // scaled 4x2x0.2 is written as half-extents, and a capsule as the radius
     // and the two endpoints Havok's constructor actually takes.
     collision: collisionByChunk(),
-    // what each kit module carries, in its own local space - see moduleCollision
+    // What each kit module carries, in its own local space, in Havok's terms.
+    // Derived: `moduleShapes` below is the authoring source it comes from.
     moduleCollision: moduleCollision(),
+    moduleShapes: layout.moduleShapes,
+    stageLayout: layout.stageLayout,
     activeChunk: layout.activeChunk,
     // The sims a liquefied element may use. Seeded from the tool's config.json,
     // but a loaded ship's own list wins - see restoreFrom - so the two cannot
@@ -373,8 +376,17 @@ export async function saveLayout(name) {
   if (!res.ok) throw new Error(await res.text());
   // Collision goes to its own file as well as into the manifest. The manifest
   // is this ship; the file is the kit's, and is what you carry to the next one.
-  const coll = await saveCollision();
-  return { ...(await res.json()), collision: coll };
+  //
+  // A failure here must not fail the save: the ship is already written, and
+  // throwing would leave the editor believing it had unsaved work - which is
+  // exactly what happened against a server too old to know this route.
+  let collision = null, collisionError = null;
+  try {
+    collision = await saveCollision();
+  } catch (e) {
+    collisionError = e.message || String(e);
+  }
+  return { ...(await res.json()), collision, collisionError };
 }
 
 /** Write the per-module collision to its own file. */
@@ -387,14 +399,17 @@ export async function saveCollision() {
     note: "Collision authored per kit module, in each module's local space."
       + " Editor space: the manifest's own collision block is the mirrored,"
       + " runtime-facing copy.",
-    moduleCollision: serializeModuleCollision(),
+    moduleShapes: serializeModuleCollision(),
+    // What was on the collision staging area when it was last closed. Purely
+    // an authoring convenience, and no part of the ship.
+    stageLayout: state.stageLayout.map((s) => ({ module: s.module, position: [...s.position] })),
   }, null, 2);
   const res = await fetch("/api/collision", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
 
@@ -409,10 +424,11 @@ export async function loadCollision() {
   const res = await fetch("/api/collision");
   if (!res.ok) return null;
   const data = await res.json();
-  if (!data?.moduleCollision || !Object.keys(data.moduleCollision).length) return null;
-  loadModuleCollision(data.moduleCollision);
+  const shapes = data?.moduleShapes || data?.moduleCollision;
+  if (!shapes || !Object.keys(shapes).length) return null;
+  loadModuleCollision(shapes, data.stageLayout);
   emit("colliders");
-  return data.moduleCollision;
+  return shapes;
 }
 
 export async function loadLayout(name) {
