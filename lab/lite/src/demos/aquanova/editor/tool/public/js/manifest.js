@@ -144,11 +144,20 @@ function shapeRecord(id, kind, world) {
   } else if (kind === "sphere") {
     shape.radius = r([ax.length() / 2])[0];
   } else {
-    shape.radius = r([ax.length() / 2])[0];
+    const radius = ax.length() / 2;
+    shape.radius = r([radius])[0];
     shape.height = r([ay.length()])[0];
     // The segment endpoints, so the runtime needs no quaternion at all: the
-    // local Y axis turned into world space, half a height either way.
-    const half = ay.clone().scale(0.5);
+    // local Y axis turned into world space, half a *segment* either way.
+    //
+    // A capsule's height is the whole pill, caps included - the same reading as
+    // a box's side or a sphere's diameter, and what the editor draws. Havok's
+    // capsule is that segment grown by the radius in every direction, so the
+    // segment is one diameter shorter than the height. A cylinder has flat
+    // ends: its segment is its full height. Getting this wrong makes every
+    // capsule a diameter taller in play than it looks in the editor.
+    const span = kind === "capsule" ? Math.max(ay.length() - radius * 2, 0) : ay.length();
+    const half = ay.length() > 1e-9 ? ay.scale(0.5 * span / ay.length()) : Vector3.Zero();
     shape.pointA = toGltf(r(centre.subtract(half).asArray()));
     shape.pointB = toGltf(r(centre.add(half).asArray()));
   }
@@ -161,7 +170,9 @@ function shapeRecord(id, kind, world) {
  * A box gets a centre, a quaternion and half-extents. A sphere gets a centre
  * and a radius. A capsule or cylinder gets the two endpoints of its segment,
  * because that is literally the Havok signature - and it is how an arbitrarily
- * oriented capsule is expressed, since those shapes take no quaternion.
+ * oriented capsule is expressed, since those shapes take no quaternion. Note
+ * that a capsule's `height` is the whole pill and its segment is a diameter
+ * shorter, while a cylinder's segment *is* its height.
  *
  * **Room shapes only.** A module's hull is written once in `moduleCollision`
  * and instanced by the runtime, which already has every placement's module,

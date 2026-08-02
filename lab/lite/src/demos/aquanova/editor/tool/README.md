@@ -1066,8 +1066,8 @@ interpretation.
 | --- | --- | --- |
 | box | `centre`, `rotation` (quaternion), `halfExtents` | `PhysicsShapeBox` takes an explicit turn |
 | sphere | `centre`, `radius` | no orientation exists |
-| capsule | `pointA`, `pointB`, `radius` | `PhysicsShapeCapsule`'s turn is implicit in the segment |
-| cylinder | `pointA`, `pointB`, `radius` | likewise |
+| capsule | `pointA`, `pointB`, `radius` | `PhysicsShapeCapsule`'s turn is implicit in the segment; the segment is a diameter shorter than the height |
+| cylinder | `pointA`, `pointB`, `radius` | likewise, but the segment *is* the height |
 
 **The scale is constrained per kind, on every write path.** Havok's sphere is a
 single radius and its capsule a radius plus two endpoints, so an ellipsoid has
@@ -1075,7 +1075,50 @@ no representation at all: the runtime would have to silently resize it, and the
 ship you built would not be the ship you play. `constrainScale()` therefore runs
 on the inspector, the wheel, a carried duplicate and a loaded manifest alike —
 a sphere is forced round, a capsule and cylinder locked to one radius in X/Z,
-and only the box takes an arbitrary scale.
+and only the box takes an arbitrary scale. A capsule additionally cannot be
+shorter than it is wide: at `h == d` its two caps meet and it *is* a sphere, and
+Havok agrees — its capsule is a segment plus a radius, and there is no segment
+of negative length.
+
+### A capsule is drawn as a capsule
+
+A box, a sphere and a cylinder are each a single unit mesh under a scale. A
+capsule is not, and this is the one place the "unit shape sized by scaling" rule
+does not hold: a capsule's caps are hemispheres of the *tube's* radius, so
+stretching one unit mesh in Y stretches the caps with it into an ellipsoid.
+
+It was worse than that. The unit mesh was `CreateCapsule({height: 1, radius:
+0.5})`, and Babylon's capsule `height` **includes** the caps —
+`heightMinusCaps = height − radiusTop − radiusBottom` — so at radius 0.5 there
+was no tube left at all. Every capsule in the editor was a sphere pulled into a
+lozenge, 141 mm off a true capsule's surface at 1 × 3 m, while Havok collided
+with a proper pill.
+
+The trick that keeps it to a single mesh: build the geometry at the right
+**ratio** — radius 0.5, total height `h/d` — and counter-scale the mesh's own Y
+by `d/h`. The two cancel, so the mesh ends up wearing a *uniform* world scale of
+`d`: the caps come out as true hemispheres, the normals stay correct without an
+inverse-transpose, and the geometry only has to be rebuilt when the proportions
+change rather than every time the shape is resized.
+
+> **Watching the result again.** A collider's scale changes from the gizmo, the
+> inspector, the wheel, a carried duplicate, a fit, an undo and a load. One
+> `onBeforeRenderObservable` comparing `h/d` against what each capsule was last
+> built at catches all seven — and the ghost, whose size lives on the ghost root
+> rather than on the shape's own parent, which is why the ratio is read off the
+> parent's **world matrix** and not its local scaling.
+
+**A capsule's height is the whole pill, caps included** — the same reading as a
+box's side or a sphere's diameter, and what the editor draws and the inspector
+says. Havok's capsule is a segment *grown by the radius in every direction*, so
+`shapeRecord()` writes a segment one diameter shorter than the height. A
+cylinder has flat ends and keeps its full height. Getting that wrong makes every
+capsule a diameter taller in play than it looks in the editor — invisible in the
+tool and baffling in the game.
+
+Because a capsule at scale 1 is one metre wide and one metre tall — which is a
+sphere — the Collision pane arms it at 1 × 2 m, so the brush looks like the
+thing it places.
 
 ### Primitives land corner first
 

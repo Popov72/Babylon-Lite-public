@@ -8,7 +8,7 @@ import {
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
-  removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE,
+  removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE, COLLIDER_DEFAULT_SCALE,
   reconcileCollider, colliderDims,
   enterCollisionMode, exitCollisionMode, fitBoxToSelection,
   stageModule, unstageModule, harvestStage, orphanCount,
@@ -386,7 +386,9 @@ function refreshDimensions() {
       $("dim-x").textContent = f(d.radius);
       $("dim-y").textContent = f(d.height);
       $("dim-z").textContent = "—";
-      $("dim-note").textContent = "— radius / height, in metres";
+      $("dim-note").textContent = d.kind === "capsule"
+        ? "— radius / height, caps included"
+        : "— radius / height, in metres";
     }
     for (const id of ["dim-x", "dim-y", "dim-z"]) $(id).title = "";
     return;
@@ -1533,10 +1535,12 @@ for (const kind of COLLIDER_KINDS) {
     ? "Any scale — Havok takes a box with a quaternion"
     : SCALE_RULE[kind] === "uniform"
       ? "Scales uniformly: Havok's sphere is a single radius"
-      : "X and Z scale together as the radius; Y is the height";
+      : kind === "capsule"
+        ? "X and Z scale together as the radius; Y is the height, caps included"
+        : "X and Z scale together as the radius; Y is the height";
   b.addEventListener("click", async () => {
     setBrush(null);                       // the two ghosts are the same slot
-    await armColliderGhost(kind);
+    await armColliderGhost(kind, { scaling: COLLIDER_DEFAULT_SCALE[kind] });
     refreshColliderButtons();
     setStatus(`${COLLIDER_LABEL[kind]} — click to place, Esc to cancel`);
   });

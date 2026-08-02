@@ -669,6 +669,104 @@ check("a turned capsule or cylinder carries its axis as two points",
     && Math.abs(coll.mCyl.pointA[1]) < 1e-3,
   `A=${coll.mCyl.pointA} B=${coll.mCyl.pointB}`);
 
+// ---- 1d-quinvicies. a capsule is drawn as a capsule ------------------------
+// A tube closed by two hemispheres, not a stretched sphere. Every other kind is
+// one unit mesh under a scale; a capsule is not, because its caps are
+// hemispheres of the tube's radius and a non-uniform scale turns them into an
+// ellipsoid. The old unit mesh was `height: 1, radius: 0.5`, and Babylon's
+// capsule height *includes* the caps - so `height - 2 x radius` left no tube at
+// all and every capsule in the editor was a lozenge.
+const capsProbe = await page.evaluate(async (sizes) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const mf = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  const out = { cases: [], armed: co.COLLIDER_DEFAULT_SCALE.capsule };
+  for (const [d, h] of sizes) {
+    const c = co.addCollider("capsule", new V(0, 0, 0), { silent: true, scale: [d, h, d] });
+    ed.state.scene.render();                       // let the watcher settle the shape
+    c.mesh.computeWorldMatrix(true);
+    const raw = c.mesh.getVerticesData("position");
+    const wm = c.mesh.getWorldMatrix();
+    const pts = [];
+    for (let k = 0; k < raw.length; k += 3)
+      pts.push(V.TransformCoordinates(new V(raw[k], raw[k + 1], raw[k + 2]), wm));
+
+    const s = c.node.scaling, rad = s.x / 2, half = Math.max(s.y / 2 - rad, 0);
+    // distance from every vertex to the capsule's own segment, less the radius:
+    // zero everywhere is the definition of the surface
+    let worst = 0;
+    for (const q of pts) {
+      const y = Math.max(-half, Math.min(half, q.y));
+      worst = Math.max(worst, Math.abs(Math.hypot(q.x, q.y - y, q.z) - rad));
+    }
+    const ys = pts.map((q) => q.y), xs = pts.map((q) => q.x), zs = pts.map((q) => q.z);
+    const ring = (sign) => pts.filter((q) => Math.abs(q.y - sign * half) < 1e-4)
+      .map((q) => Math.hypot(q.x, q.z));
+    const rings = [...ring(1), ...ring(-1)];
+    const wsm = wm.m;
+    out.cases.push({
+      asked: [d, h],
+      scale: s.asArray().map((v) => +v.toFixed(4)),
+      size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys),
+        Math.max(...zs) - Math.min(...zs)].map((v) => +v.toFixed(4)),
+      offSurface: +worst.toFixed(5),
+      tube: rings.length ? [Math.min(...rings), Math.max(...rings)].map((v) => +v.toFixed(5)) : null,
+      // the mesh counter-scales its parent's Y, so what it ends up wearing is a
+      // uniform scale - which is exactly why the caps stay round
+      worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]),
+        Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(4)),
+    });
+    co.removeCollider(c.id, true);
+  }
+
+  // and what Havok is told has to describe the same pill
+  const cCap = co.addCollider("capsule", new V(0, 0, 0), { silent: true, scale: [1, 3, 1] });
+  const cCyl = co.addCollider("cylinder", new V(6, 0, 0), { silent: true, scale: [1, 3, 1] });
+  const capShapes = mf.buildManifest().collision[ed.state.activeChunk] || [];
+  out.rec = Object.fromEntries(capShapes.map((s) => [s.kind, s]));
+  ed.clearAll(); ed.select([]);
+  return out;
+}, [[1, 3], [1.6, 2.2], [1, 0.2]]);
+
+for (const c of capsProbe.cases) {
+  const [d, h] = c.asked;
+  const wantH = Math.max(h, d);
+  check(`a ${d} x ${h} capsule is ${d} wide and ${wantH} tall, caps included`,
+    Math.abs(c.size[0] - d) < 1e-3 && Math.abs(c.size[2] - d) < 1e-3
+      && Math.abs(c.size[1] - wantH) < 1e-3, `[${c.size}] from scale [${c.scale}]`);
+  check(`every vertex of the ${d} x ${h} capsule lies on a true capsule`,
+    c.offSurface < 3e-3, `worst off-surface = ${c.offSurface} m`);
+  check(`the ${d} x ${h} capsule's mesh ends up uniformly scaled, so its caps are round`,
+    new Set(c.worldScale).size === 1, `[${c.worldScale}]`);
+  if (h > d) {
+    check(`the ${d} x ${h} capsule has a straight tube of exactly its radius`,
+      c.tube && Math.abs(c.tube[0] - d / 2) < 1e-3 && Math.abs(c.tube[1] - d / 2) < 1e-3,
+      `tube radius ${c.tube} vs ${d / 2}`);
+  }
+}
+// A capsule shorter than it is wide has no tube left, so it *is* a sphere -
+// which is also the only thing Havok can make of it, its capsule being a
+// segment plus a radius.
+check("a capsule cannot be squashed below a sphere",
+  capsProbe.cases[2].scale.join() === "1,1,1", `[${capsProbe.cases[2].scale}]`);
+check("and it arms as a pill rather than as a sphere",
+  capsProbe.armed[1] > capsProbe.armed[0], `[${capsProbe.armed}]`);
+
+const capSeg = (s) => Math.hypot(s.pointB[0] - s.pointA[0], s.pointB[1] - s.pointA[1],
+  s.pointB[2] - s.pointA[2]);
+check("Havok's capsule segment is a diameter shorter than the drawn height",
+  Math.abs(capSeg(capsProbe.rec.capsule) + 2 * capsProbe.rec.capsule.radius
+    - capsProbe.rec.capsule.height) < 1e-6,
+  `segment ${capSeg(capsProbe.rec.capsule).toFixed(3)} + 2r ${2 * capsProbe.rec.capsule.radius}`
+  + ` vs height ${capsProbe.rec.capsule.height}`);
+check("but a cylinder's segment is still its whole height",
+  Math.abs(capSeg(capsProbe.rec.cylinder) - capsProbe.rec.cylinder.height) < 1e-6,
+  `segment ${capSeg(capsProbe.rec.cylinder).toFixed(3)} vs height ${capsProbe.rec.cylinder.height}`);
+
 // ---- 1d-sexvicies. a collider is placed and moved like anything else -------
 // The Collision pane arms the ghost the same way the palette does: nothing
 // exists until you click. And a collider is pickable - it used to be created

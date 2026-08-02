@@ -21,7 +21,10 @@ import {
   serializeView, applyView,
 } from "./editor.js";
 
-const { MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode, Matrix } = BABYLON;
+const {
+  MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode, Matrix,
+  Mesh, CreateCapsuleVertexData,
+} = BABYLON;
 
 /** Smallest extent a collider may have: enough to exist, small enough to hide. */
 const MIN_EXTENT = 1e-4;
@@ -60,6 +63,18 @@ export const SCALE_RULE = {
   box: "free", sphere: "uniform", capsule: "radial", cylinder: "radial",
 };
 
+/**
+ * What a primitive is when you first arm it.
+ *
+ * A capsule is the only one that needs saying: at a scale of 1 it is one metre
+ * wide and one metre tall, which is a capsule whose caps meet in the middle -
+ * a sphere. Arming it as a 1 x 2 m pill makes the brush look like the thing it
+ * places.
+ */
+export const COLLIDER_DEFAULT_SCALE = {
+  box: [1, 1, 1], sphere: [1, 1, 1], capsule: [1, 2, 1], cylinder: [1, 1, 1],
+};
+
 let colliderMat = null;
 let colliderMatSel = null;
 
@@ -95,16 +110,19 @@ function nextColliderId() {
  * Unit geometry, one metre across, so a scale of 1 is a 1 m shape and the
  * numbers in the inspector read as metres.
  *
- * The capsule is built at height 1 *including* its caps, so scaling Y by 3
- * gives a 3 m capsule rather than 3 m plus two hemispheres.
+ * The capsule is the exception and gets built by shapeCapsule() below: it is
+ * the one kind whose *proportions* change its geometry rather than just its
+ * size.
  */
 function buildMesh(kind, id, scene) {
   switch (kind) {
     case "sphere":
       return MeshBuilder.CreateSphere(`${id}_shape`, { diameter: 1, segments: 12 }, scene);
-    case "capsule":
-      return MeshBuilder.CreateCapsule(`${id}_shape`,
-        { height: 1, radius: 0.5, tessellation: 12, subdivisions: 1 }, scene);
+    case "capsule": {
+      const m = new Mesh(`${id}_shape`, scene);
+      shapeCapsule(m, 2);              // a pill until its owner's scale says otherwise
+      return m;
+    }
     case "cylinder":
       return MeshBuilder.CreateCylinder(`${id}_shape`,
         { height: 1, diameter: 1, tessellation: 16 }, scene);
@@ -112,6 +130,75 @@ function buildMesh(kind, id, scene) {
       return MeshBuilder.CreateBox(`${id}_shape`, { size: 1 }, scene);
   }
 }
+
+// Every capsule currently drawn, and the proportion each was last built at.
+const capsules = new Map();
+let capsuleWatcher = null;
+
+/**
+ * Draw a capsule as a capsule: a tube closed by two hemispheres.
+ *
+ * A box, a sphere and a cylinder are each one unit mesh under a scale. A
+ * capsule is not, because its caps are hemispheres of the *tube's* radius:
+ * stretch the mesh in Y and they stretch with it into an ellipsoid. The old
+ * unit mesh was worse still - `height: 1, radius: 0.5`, and Babylon's capsule
+ * height includes the caps, so `height - 2 x radius` left no tube at all. Every
+ * capsule in the editor was a sphere pulled into a lozenge, while Havok
+ * collided with a proper pill.
+ *
+ * What keeps it to a single mesh: build the geometry at the right *ratio* -
+ * radius 0.5, total height h/d - and counter-scale Y by d/h. The mesh's own
+ * world scale then comes out uniform (d in every axis), so the caps are true
+ * hemispheres and the normals stay correct, and the geometry only has to be
+ * rebuilt when the proportions change, not when the shape is merely resized.
+ */
+function shapeCapsule(mesh, ratio) {
+  CreateCapsuleVertexData({
+    height: ratio, radius: 0.5, tessellation: 12, subdivisions: 1, capSubdivisions: 6,
+  }).applyToMesh(mesh);
+  mesh.scaling.set(1, 1 / ratio, 1);
+  capsules.set(mesh, ratio);
+  watchCapsules(mesh.getScene());
+}
+
+/**
+ * How long the capsule is in units of its own width, read off what its owner
+ * actually resolves to rather than its local scale - so a shape under a ghost,
+ * which carries its size on the ghost's root, comes out the same as one under a
+ * collider root.
+ *
+ * Floored at 1: at h == d the caps meet and the capsule *is* a sphere. Shorter
+ * than that is not a capsule, and Havok agrees - its capsule is a segment plus
+ * a radius, and there is no segment of negative length.
+ */
+function capsuleRatio(mesh) {
+  const p = mesh.parent;
+  if (!p) return 1;
+  const w = p.computeWorldMatrix(true).m;
+  const d = Math.hypot(w[0], w[1], w[2]);
+  const h = Math.hypot(w[4], w[5], w[6]);
+  return d > 1e-9 ? Math.max(h / d, 1) : 1;
+}
+
+/**
+ * One observer keeps every capsule in shape.
+ *
+ * A collider's scale changes from the gizmo, the inspector, the wheel, a
+ * carried duplicate, a fit, an undo and a load, and a capsule has to be
+ * redrawn after any of them. Watching the result catches all seven, and
+ * whatever is added next, for the cost of comparing a number a frame.
+ */
+function watchCapsules(scene) {
+  if (capsuleWatcher || !scene) return;
+  capsuleWatcher = scene.onBeforeRenderObservable.add(() => {
+    for (const [mesh, ratio] of capsules) {
+      if (mesh.isDisposed()) { capsules.delete(mesh); continue; }
+      const want = capsuleRatio(mesh);
+      if (Math.abs(want - ratio) > 1e-4) shapeCapsule(mesh, want);
+    }
+  });
+}
+
 
 export function addCollider(kind, position, opts = {}) {
   if (!COLLIDER_KINDS.includes(kind)) return null;
@@ -139,6 +226,10 @@ export function addCollider(kind, position, opts = {}) {
   edges.parent = root;
   edges.material = wire;
   edges.isPickable = false;
+
+  // A capsule's geometry depends on how tall it is against how wide, so it can
+  // only be drawn once it knows its owner - one frame late would show a sphere.
+  if (kind === "capsule") for (const m of [mesh, edges]) shapeCapsule(m, capsuleRatio(m));
 
   const data = {
     id,
@@ -194,7 +285,12 @@ export function constrainScale(kind, scale) {
     }
     case "radial": {
       const r = (s[0] + s[2]) / 2;
-      return [r, s[1], r];
+      // A capsule's height counts its caps, the same way a box's side counts
+      // the whole box - so it cannot be shorter than it is wide. At h == d the
+      // hemispheres meet and it is exactly a sphere; below that there is no
+      // shape left, and Havok says the same, its capsule being a segment plus
+      // a radius. A cylinder has flat ends and no such floor.
+      return [r, kind === "capsule" ? Math.max(s[1], r) : s[1], r];
     }
     default:
       return s;
@@ -215,7 +311,9 @@ export function reconcileCollider(c) {
  * What the shape measures, in metres, for the inspector.
  *
  * A box reports its three sides; everything else reports the radius and height
- * Havok is actually given - which is the point of constraining the scale.
+ * Havok is actually given - which is the point of constraining the scale. A
+ * capsule's height is the whole pill, caps included, so it reads like a box's
+ * side rather than like Havok's inner segment.
  */
 export function colliderDims(c) {
   const s = c.node.scaling;
