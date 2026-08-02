@@ -37,6 +37,7 @@ const TURN_DIR = path.join(HERE, "cache", "turntable");
 const LAYOUT_DIR = path.join(HERE, "layouts");
 
 const MANIFEST = path.join(EXPORT_DIR, "ship_manifest.json");
+const COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
 const GLB = path.join(EXPORT_DIR, "ship.glb");
 
 const MIME = {
@@ -259,6 +260,31 @@ async function handle(req, res) {
       await fsp.writeFile(file, body);
       return sendJson(res, 200, {
         ok: true, path: file, bytes: body.length,
+        previous: previous ? path.basename(previous) : null,
+      });
+    }
+    return send(res, 405, "method not allowed");
+  }
+
+  if (p === "/api/collision") {
+    // Collision authored per kit module, kept in its own file so it can be
+    // shipped and reused: a new ship built from the same kit gets every hull
+    // back without authoring any of it again. The manifest carries the same
+    // data for the runtime, but this is the copy meant to travel.
+    if (req.method === "GET") {
+      try {
+        return send(res, 200, await fsp.readFile(COLLISION), MIME[".json"]);
+      } catch {
+        return sendJson(res, 200, {});
+      }
+    }
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      await fsp.mkdir(path.dirname(COLLISION), { recursive: true });
+      const previous = await rotatePrevious(COLLISION);
+      await fsp.writeFile(COLLISION, body);
+      return sendJson(res, 200, {
+        ok: true, path: COLLISION, bytes: body.length,
         previous: previous ? path.basename(previous) : null,
       });
     }

@@ -80,7 +80,12 @@ function render() {
     cap.textContent = m.name;
 
     el.append(img, cap);
-    el.addEventListener("click", () => setBrush(state.brush === m.id ? null : m.id));
+    el.addEventListener("click", () => {
+      // On the collision staging area the palette *stages* modules: there is no
+      // ship on screen to arm a brush against, and staging is what you came for.
+      if (state.collisionMode) { emit("stagemodule", m.id); return; }
+      setBrush(state.brush === m.id ? null : m.id);
+    });
     el.addEventListener("pointerenter", () => startTurntable(el, m));
     el.addEventListener("pointerleave", () => stopTurntable(el));
     frag.appendChild(el);

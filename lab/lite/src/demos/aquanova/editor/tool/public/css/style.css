@@ -385,3 +385,4 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 }
 #module-banner button:hover { background: rgba(0, 0, 0, 0.45); }
 #module-banner-text { font-weight: 600; }
+#module-banner-text.warn::after { content: ' \2014 they will be lost'; font-weight: 400; opacity: 0.85; }

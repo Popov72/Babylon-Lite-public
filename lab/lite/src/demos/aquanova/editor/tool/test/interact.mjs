@@ -979,9 +979,14 @@ check("a flat module gets the shell thickness, not a metre",
   shell.made === 6 && flatBoxes.length === 2
     && flatBoxes.every((s) => Math.abs(s[1] - 0.008) < 1e-6),
   `${shell.made} boxes, flat depths ${flatBoxes.map((s) => s[1]).join(", ")}`);
-check("a module with real depth keeps its own",
-  wallBoxes.length === 4 && wallBoxes.every((s) => Math.abs(s[0] - 0.0075) < 1e-6),
-  `wall depths ${wallBoxes.map((s) => s[0]).join(", ")}`);
+check("the shell is a minimum, so a 7.5 mm wall is brought up to it",
+  // it used to fill a *zero* axis only, which made the setting look broken on
+  // anything with real depth - and left walls too thin to be safe at speed
+  wallBoxes.length === 4 && wallBoxes.every((s) => Math.abs(s[0] - 0.008) < 1e-6),
+  `wall depths ${wallBoxes.map((s) => s[0]).join(", ")}, from a real 0.0075 m`);
+check("but a module thicker than the shell keeps its own size",
+  wallBoxes.every((s) => Math.abs(s[2] - 4) < 1e-6 && Math.abs(s[1] - 1.9981) < 1e-3),
+  `wall spans ${wallBoxes.map((s) => `${s[1]}x${s[2]}`).join(", ")}`);
 check("the setting drives the fit",
   shell.thicker.length === 2 && shell.thicker.every((v) => Math.abs(v - 0.05) < 1e-6),
   `at 0.05 m: [${shell.thicker.join(", ")}]`);
@@ -992,128 +997,162 @@ check("a setting round-trips through the layout",
   `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},`
   + ` a layout without one ${shell.legacy}`);
 
-// ---- 1d-undetricies. collision authored on a kit module -------------------
-// Authored once, in the module's own space, and inherited by every placement.
-// The stand-in you fit it against is deliberately not a placement, so it cannot
-// reach the layout, the manifest or the .glb.
+// ---- 1d-undetricies. the collision staging area ---------------------------
+// A mode, not a property of the selection. It opens empty, you stage whatever
+// modules you want to fit shapes to, and which element a shape belongs to is
+// decided by where it sits - which is what makes copying a similar hull work.
 const PROP = await page.evaluate(async () => {
   const kit = await import("/js/kit.js");
-  return [...kit.getCatalogue().byId.keys()].find((id) => id.startsWith("Props/"));
+  return [...kit.getCatalogue().byId.keys()].filter((id) => id.startsWith("Props/"));
 });
+const [PROP_A, PROP_B] = PROP;
 
-const modSetup = await page.evaluate(async (prop) => {
+const areaOpen = await page.evaluate(async (a) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); co.exitModuleCollision(); ed.clearAll(); ed.select([]);
+  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+  ed.loadModuleCollision({});
   await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
-  const a = await ed.placeAt(prop, new V(8, 0, 0), { silent: true });
-  await ed.placeAt(prop, new V(12, 0, 4), { rotation: [0, 90, 0], silent: true });
-  co.addCollider("box", new V(-4, 0.5, 0), { silent: true });     // a room shape
-  ed.select([a.id]);
-  return { placements: ed.state.placements.size };
-}, PROP);
-
-await page.click("#btn-edit-module");
-await page.waitForFunction(() => !document.getElementById("module-banner").hidden,
-  null, { timeout: 20000 });
-const onStage = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const co = await import("/js/colliders.js");
-  const ref = co.moduleRefNode();
+  await ed.placeAt(a, new V(8, 0, 0), { silent: true });
+  co.addCollider("box", new V(-6, 0.5, 0), { silent: true });
+  co.enterCollisionMode();
   return {
-    editing: ed.state.editModule,
-    banner: document.getElementById("module-banner-text").textContent,
-    refMeshes: ref ? ref.getChildMeshes().length : 0,
-    refPickable: ref ? ref.getChildMeshes().some((m) => m.isPickable) : null,
-    refIsPlacement: [...ed.state.placements.values()].some((p) => p.node === ref),
-    shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
-    roomShapesShown: [...ed.state.colliders.values()]
-      .filter((c) => !c.module && c.node.isEnabled()).length,
-    fitRoomDisabled: document.getElementById("btn-collide-room").disabled,
+    mode: ed.state.collisionMode,
+    staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+    shipShown: [...ed.state.placements.values()].filter((p) => !p.stage && p.node.isEnabled()).length,
+    roomShapesShown: [...ed.state.colliders.values()].filter((c) => !c.stage && c.node.isEnabled()).length,
   };
-});
-check("the button opens the module of the selected element",
-  onStage.editing === PROP && onStage.banner.includes(PROP), onStage.banner);
-check("the ship goes off stage and the stand-in comes on",
-  onStage.shipShown === 0 && onStage.roomShapesShown === 0 && onStage.refMeshes > 0,
-  `${onStage.shipShown} placements shown, stand-in has ${onStage.refMeshes} meshes`);
-check("the stand-in is neither a placement nor pickable",
-  onStage.refIsPlacement === false && onStage.refPickable === false);
-check("fitting a room is refused while its geometry is hidden",
-  onStage.fitRoomDisabled === true);
+}, PROP_A);
+check("the collision area opens empty, with the ship off screen",
+  areaOpen.mode && areaOpen.staged === 0 && areaOpen.shipShown === 0
+    && areaOpen.roomShapesShown === 0, JSON.stringify(areaOpen));
 
-// a shape dropped here joins the module rather than the active chunk
-await page.click('#collider-buttons button[data-kind="box"]');
-await page.mouse.move(collMid.x, collMid.y);
-await page.waitForTimeout(250);
-await page.mouse.click(collMid.x, collMid.y);
-await page.waitForTimeout(300);
-await page.keyboard.press("Escape");
-await page.waitForTimeout(200);
-const modDropped = await page.evaluate(async (prop) => {
-  const co = await import("/js/colliders.js");
-  const ed = await import("/js/editor.js");
-  const mine = co.moduleColliders(prop);
-  return {
-    n: mine.length,
-    chunks: mine.map((c) => c.chunk),
-    stillEditing: ed.state.editModule,
-  };
-}, PROP);
-check("a shape dropped on the stage joins the module, not the room",
-  modDropped.n === 1 && modDropped.chunks.every((c) => c === null) && modDropped.stillEditing === PROP,
-  `${modDropped.n} shape(s), chunks ${JSON.stringify(modDropped.chunks)}`);
-
-await page.click("#btn-module-fit");
-await page.waitForTimeout(600);
-const fitted2 = await page.evaluate(async (prop) => {
-  const co = await import("/js/colliders.js");
-  const mine = co.moduleColliders(prop);
-  return { n: mine.length, kind: mine[0]?.kind, size: mine[0]?.node.scaling.asArray() };
-}, PROP);
-check("Fit a box replaces the module's shapes with one fitted box",
-  fitted2.n === 1 && fitted2.kind === "box" && fitted2.size.every((v) => v > 0),
-  `${fitted2.n} shape(s), ${JSON.stringify(fitted2.size)}`);
-
-// Escape leaves the stage once nothing is in hand, and the ship comes back
-await page.keyboard.press("Escape");
-await page.waitForTimeout(400);
-const backOnShip = await page.evaluate(async (prop) => {
-  const ed = await import("/js/editor.js");
-  const co = await import("/js/colliders.js");
-  return {
-    editing: ed.state.editModule,
-    refGone: !co.moduleRefNode(),
-    banner: document.getElementById("module-banner").hidden,
-    shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
-    moduleShapesShown: co.moduleColliders(prop).filter((c) => c.node.isEnabled()).length,
-    roomShapesShown: [...ed.state.colliders.values()]
-      .filter((c) => !c.module && c.node.isEnabled()).length,
-  };
-}, PROP);
-check("Escape leaves the stage and puts the ship back untouched",
-  backOnShip.editing === null && backOnShip.refGone && backOnShip.banner
-    && backOnShip.shipShown === modSetup.placements && backOnShip.roomShapesShown === 1,
-  `${backOnShip.shipShown} of ${modSetup.placements} placements back,`
-  + ` ${backOnShip.roomShapesShown} room shape(s)`);
-check("a module's shapes are not left lying in the world",
-  backOnShip.moduleShapesShown === 0, `${backOnShip.moduleShapesShown} still on screen`);
-
-const modOut = await page.evaluate(async (prop) => {
+const stagedTwo = await page.evaluate(async ([a, b]) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
+  const first = await co.stageModule(a, kit.instantiate, kit.moduleBounds);
+  await co.stageModule(b, kit.instantiate, kit.moduleBounds);
+  const again = await co.stageModule(a, kit.instantiate, kit.moduleBounds);
+  const list = [...ed.state.placements.values()].filter((p) => p.stage);
+  const boxes = list.map((p) => ed.worldBounds(p.node));
+  let gap = Infinity;
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      gap = Math.min(gap, Math.max(boxes[i].min.x, boxes[j].min.x)
+        - Math.min(boxes[i].max.x, boxes[j].max.x));
+    }
+  }
+  return {
+    n: list.length, addedAgain: again.added, same: again.entry.id === first.entry.id,
+    gap: Math.round(gap * 100) / 100,
+    chunkHidden: !ed.state.chunks.includes(ed.STAGE_CHUNK),
+  };
+}, [PROP_A, PROP_B]);
+check("one instance per module, and re-staging returns the one already there",
+  stagedTwo.n === 2 && stagedTwo.addedAgain === false && stagedTwo.same,
+  `${stagedTwo.n} staged`);
+check("staged elements are spaced beyond twice the association margin",
+  stagedTwo.gap > 2 * 0.5, `${stagedTwo.gap} m clear, margin is 0.5 m`);
+check("the stage chunk never joins the ship's chunk list", stagedTwo.chunkHidden);
+
+// Fit a box acts on the selection and says plainly when it cannot
+const fitRules = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const out = {};
+  ed.select([]);
+  out.none = (await co.fitBoxToSelection(kit.moduleBounds)).error;
+  const list = [...ed.state.placements.values()].filter((p) => p.stage);
+  ed.select(list.map((p) => p.id));
+  out.many = (await co.fitBoxToSelection(kit.moduleBounds)).error;
+  const shape = co.addCollider("sphere", new BABYLON.Vector3(300, 0, 0), { stage: true, silent: true });
+  ed.select([shape.id]);
+  out.onShape = (await co.fitBoxToSelection(kit.moduleBounds)).error;
+  co.removeCollider(shape.id, true);
+
+  // the shell is a MINIMUM thickness, so it applies to every axis - it used to
+  // fill a zero-depth axis only, which made it look broken on anything solid
+  ed.setConfig("shellThickness", 0.5);
+  ed.select([list[0].id]);
+  const r = await co.fitBoxToSelection(kit.moduleBounds);
+  const bounds = await kit.moduleBounds(list[0].module);
+  out.ok = r.ok;
+  out.fitted = r.collider.node.scaling.asArray().map((v) => +v.toFixed(3));
+  out.raw = bounds.max.subtract(bounds.min).asArray().map((v) => +v.toFixed(3));
+  ed.setConfig("shellThickness", 0.008);
+  return out;
+});
+check("fitting with nothing, or several, selected explains itself",
+  /select the element/.test(fitRules.none) && /single element/.test(fitRules.many),
+  `${fitRules.none} / ${fitRules.many}`);
+check("fitting onto a shape rather than an element explains itself",
+  /collision shape/.test(fitRules.onShape), fitRules.onShape);
+check("the collision shell is a minimum thickness on every axis",
+  fitRules.ok && fitRules.fitted.every((v) => v >= 0.5 - 1e-6)
+    && fitRules.fitted.some((v, i) => Math.abs(v - fitRules.raw[i]) > 1e-6),
+  `raw ${JSON.stringify(fitRules.raw)} -> ${JSON.stringify(fitRules.fitted)} at shell 0.5`);
+
+// association is by position, which is what makes copying a hull work
+const assoc = await page.evaluate(async ([a, b]) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const list = [...ed.state.placements.values()].filter((p) => p.stage);
+  const ea = list.find((p) => p.module === a), eb = list.find((p) => p.module === b);
+  const src = co.stageColliders()[0];
+  const delta = eb.node.position.subtract(ea.node.position);
+  co.addCollider(src.kind, src.node.position.add(delta),
+    { stage: true, silent: true, scale: src.node.scaling.asArray() });
+  const h = co.harvestStage();
+  const stray = co.addCollider("box", new BABYLON.Vector3(0, 0, 400), { stage: true, silent: true });
+  const orphans = co.orphanCount();
+  co.removeCollider(stray.id, true);
+  return {
+    h, orphans,
+    aLocal: (ed.state.moduleCollision.get(a) || [])[0]?.position,
+    bLocal: (ed.state.moduleCollision.get(b) || [])[0]?.position,
+    counts: [(ed.state.moduleCollision.get(a) || []).length,
+      (ed.state.moduleCollision.get(b) || []).length],
+  };
+}, [PROP_A, PROP_B]);
+check("a shape is claimed by the element it sits on",
+  assoc.counts.join() === "1,1" && assoc.h.orphans === 0, JSON.stringify(assoc.counts));
+check("stored relative to it, so a copy dropped on another element matches",
+  JSON.stringify(assoc.aLocal) === JSON.stringify(assoc.bLocal),
+  `${JSON.stringify(assoc.aLocal)} vs ${JSON.stringify(assoc.bLocal)}`);
+check("a shape belonging to nothing is counted rather than hidden",
+  assoc.orphans === 1, `${assoc.orphans}`);
+
+// taking an element off the area must not lose what was fitted to it
+const persist = await page.evaluate(async (a) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const el = [...ed.state.placements.values()].find((p) => p.stage && p.module === a);
+  const before = (ed.state.moduleCollision.get(a) || []).length;
+  ed.select([el.id]);
+  ed.removeSelected();                       // the Del path, not the API
+  const kept = (ed.state.moduleCollision.get(a) || []).length;
+  const leftOnArea = co.stageColliders().length;
+  await co.stageModule(a, kit.instantiate, kit.moduleBounds);
+  return { before, kept, leftOnArea, restored: co.stageColliders().length };
+}, PROP_A);
+check("deleting a staged element keeps its shapes on record",
+  persist.before === 1 && persist.kept === 1, `${persist.before} -> ${persist.kept}`);
+check("and takes only its own shapes off the area",
+  persist.leftOnArea === 1, `${persist.leftOnArea} left`);
+check("staging the module again brings them back",
+  persist.restored === 2, `${persist.restored} on the area`);
+
+// the whole point: none of this reaches the ship
+const stageLeak = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-
-  const fit = await co.generateForChunk(ed.state.activeChunk, kit.moduleBounds);
   const man = mf.buildManifest();
-  const list = man.collision[ed.state.activeChunk] || [];
-  const expanded = list.filter((s) => s.module === prop);
-
-  // and the stand-in never reaches the .glb
-  await co.enterModuleCollision(prop, kit.instantiate);
+  const layout = ed.serialize();
   const realFetch = window.fetch;
   let body = null;
   window.fetch = (url, opts) => {
@@ -1125,74 +1164,108 @@ const modOut = await page.evaluate(async (prop) => {
     return realFetch(url, opts);
   };
   try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
-  co.exitModuleCollision();
   const buf = await body.arrayBuffer();
   const dv = new DataView(buf);
-  const json = JSON.parse(new TextDecoder()
-    .decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+  const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+  const ids = [...ed.state.placements.values()].filter((p) => p.stage).map((p) => p.id);
   const names = (json.nodes || []).map((n) => String(n.name));
-
-  ed.clearAll(); ed.select([]);
   return {
-    fit,
-    authored: (man.moduleCollision[prop] || []).length,
-    expanded: expanded.length,
-    named: expanded.every((s) => s.module === prop),
-    savedRecords: (man.colliders || []).length,
-    stowaways: names.filter((n) => n.includes("MODULE_REF")),
-    glbNodes: names.length,
+    staged: ids.length,
+    inInstances: man.instances.filter((i) => ids.includes(i.id)).length,
+    inLayout: layout.instances.filter((i) => ids.includes(i.id)).length,
+    inChunks: man.chunks.filter((c) => String(c.id).includes("stage")).length,
+    inGlb: names.filter((n) => ids.some((id) => n.startsWith(id))).length,
+    roomColliders: (layout.colliders || []).length,
+    modules: Object.keys(man.moduleCollision || {}).length,
+    objectCount: document.getElementById("status-counts").textContent,
   };
-}, PROP);
-check("the fitter leaves placements their module already covers",
-  modOut.fit.inherited === 2 && modOut.fit.made === 1,
-  `made ${modOut.fit.made}, inherited ${modOut.fit.inherited}`);
-check("the manifest carries the module's own shapes, once",
-  modOut.authored === 1, `${modOut.authored}`);
-check("and instances them onto every placement of it",
-  modOut.expanded === 2 && modOut.named, `${modOut.expanded} expanded records`);
-check("the manifest carries the editor's own collider records",
-  modOut.savedRecords === 3, `${modOut.savedRecords}`);
-check("the stand-in never reaches the exported .glb",
-  modOut.stowaways.length === 0 && modOut.glbNodes > 0,
-  `${modOut.glbNodes} nodes, stowaways ${JSON.stringify(modOut.stowaways)}`);
-
-// A saved ship used to come back with no collision at all: buildManifest()
-// assembles its own object and never wrote the `colliders` key restoreFrom
-// reads. Both kinds have to survive the round trip through the server.
-const collTrip = await page.evaluate(async (prop) => {
-  const ed = await import("/js/editor.js");
-  const co = await import("/js/colliders.js");
-  const kit = await import("/js/kit.js");
-  const mf = await import("/js/manifest.js");
-  const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
-  await ed.placeAt(prop, new V(4, 0, 0), { silent: true });
-  co.addCollider("sphere", new V(1, 1, 1), { silent: true });                 // a room shape
-  co.addCollider("capsule", new V(0, 0.5, 0), { module: prop, silent: true }); // a module shape
-
-  await mf.saveLayout("collround");
-  ed.clearAll();
-  await mf.loadLayout("collround");
-  const all = [...ed.state.colliders.values()];
-  return {
-    total: all.length,
-    room: all.filter((c) => !c.module).map((c) => c.kind),
-    module: all.filter((c) => c.module === prop).map((c) => c.kind),
-    chunkNulled: all.filter((c) => c.module).every((c) => c.chunk === null),
-  };
-}, PROP);
-check("both kinds of collider survive a save and load",
-  collTrip.total === 2 && collTrip.room.join() === "sphere"
-    && collTrip.module.join() === "capsule" && collTrip.chunkNulled,
-  `room ${JSON.stringify(collTrip.room)}, module ${JSON.stringify(collTrip.module)}`);
-
-await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const co = await import("/js/colliders.js");
-  const i = await import("/js/interact.js");
-  i.cancelGhost(); co.exitModuleCollision(); ed.clearAll(); ed.select([]);
 });
-await page.waitForTimeout(200);
+check("the staging area reaches neither the manifest, the layout nor the .glb",
+  stageLeak.staged === 2 && stageLeak.inInstances === 0 && stageLeak.inLayout === 0
+    && stageLeak.inChunks === 0 && stageLeak.inGlb === 0,
+  `${stageLeak.staged} staged, ${stageLeak.inInstances}/${stageLeak.inLayout}/${stageLeak.inGlb} leaked`);
+check("staged shapes are not serialized as the ship's own",
+  stageLeak.roomColliders === 1, `${stageLeak.roomColliders}`);
+check("the per-module record is what the manifest carries",
+  stageLeak.modules === 2, `${stageLeak.modules} modules`);
+check("and the object count still counts the ship, not the area",
+  /^2 objects/.test(stageLeak.objectCount), stageLeak.objectCount.split("·")[0].trim());
+
+// X and H work here like anywhere else
+const modeTools = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const el = [...ed.state.placements.values()].find((p) => p.stage);
+  const shape = co.stageColliders()[0];
+  const axes = () => ed.state.scene.meshes.filter((m) => /AXIS/i.test(m.name) && m.isEnabled()).length;
+  ed.select([el.id]); ed.toggleAxes(); const onElement = axes(); ed.hideAxes();
+  ed.select([shape.id]); ed.toggleAxes(); const onShape = axes(); ed.hideAxes();
+  ed.select([el.id]); ed.hideSelected("ghost"); const veiled = ed.veilCounts().ghost;
+  ed.select([el.id]); ed.hideSelected("hidden"); const gone = !el.node.isEnabled();
+  ed.unhideAll();
+  return { onElement, onShape, veiled, gone, back: el.node.isEnabled() };
+});
+check("X draws axes on staged elements and on staged shapes",
+  modeTools.onElement > 0 && modeTools.onShape > 0,
+  `${modeTools.onElement} / ${modeTools.onShape}`);
+check("H veils and hides staged elements, and gives them back",
+  modeTools.veiled >= 1 && modeTools.gone && modeTools.back,
+  `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`);
+
+// leaving keeps everything, and collision travels in its own file
+const closed = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const mf = await import("/js/manifest.js");
+  co.exitCollisionMode();
+  const after = {
+    mode: ed.state.collisionMode,
+    staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+    stageShapes: co.stageColliders().length,
+    shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
+    stored: ed.state.moduleCollision.size,
+  };
+
+  // The collision file is server state shared by the whole run, so put back
+  // exactly what was there. Saving the *ship* here would be worse still: it
+  // would become what every later boot restores, and the suite would stop
+  // being repeatable - which is precisely how it first went wrong.
+  const original = await (await fetch("/api/collision")).json();
+  await mf.saveCollision();
+  const onDisk = await (await fetch("/api/collision")).json();
+  ed.loadModuleCollision({});
+  const wiped = ed.state.moduleCollision.size;
+  const back = await mf.loadCollision();
+  const restored = ed.state.moduleCollision.size;
+  await fetch("/api/collision", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(original),
+  });
+
+  const fit = await co.generateForChunk(ed.state.activeChunk,
+    (await import("/js/kit.js")).moduleBounds);
+  ed.clearAll(); ed.select([]); ed.loadModuleCollision({});
+  return {
+    after, wiped, restored,
+    onDisk: Object.keys(onDisk.moduleCollision || {}).length,
+    schema: onDisk.schema,
+    backKeys: back ? Object.keys(back).length : 0,
+    fit,
+  };
+});
+check("leaving clears the area and puts the ship back",
+  !closed.after.mode && closed.after.staged === 0 && closed.after.stageShapes === 0
+    && closed.after.shipShown === 2, JSON.stringify(closed.after));
+check("everything fitted survives the way out", closed.after.stored === 2);
+check("collision is written to its own file, apart from the ship",
+  closed.onDisk === 2 && closed.schema === 1, `${closed.onDisk} modules, schema ${closed.schema}`);
+check("and that file alone can restore it",
+  closed.wiped === 0 && closed.restored === 2 && closed.backKeys === 2,
+  `wiped to ${closed.wiped}, back to ${closed.restored}`);
+check("the room fitter leaves placements the record already covers",
+  closed.fit.inherited === 1 && closed.fit.made === 1,
+  `made ${closed.fit.made}, inherited ${closed.fit.inherited}`);
+
 
 // ---- 1d-duotricies. the geometry / collision layer switch -----------------
 // It can only ever take things off screen, so chunk isolation and the Shift+H

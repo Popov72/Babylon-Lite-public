@@ -5,7 +5,8 @@
 // is a derived runtime artefact and is never read back.
 
 import {
-  state, serialize, deserialize, worldBounds, withAuthoredMaterials,
+  state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
+  loadModuleCollision, serializeModuleCollision, emit,
   serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
   applyEnvironment, whileBusy, withVeilSuspended, isVeilClone,
 } from "./editor.js";
@@ -172,33 +173,31 @@ function shapeRecord(id, kind, world, moduleId) {
  */
 function collisionByChunk() {
   const out = {};
-  const byModule = new Map();
   for (const c of state.colliders.values()) {
+    if (c.stage) continue;             // a working copy, not part of the ship
     c.node.computeWorldMatrix(true);
-    if (c.module) {
-      if (!byModule.has(c.module)) byModule.set(c.module, []);
-      byModule.get(c.module).push(c);
-      continue;
-    }
     (out[c.chunk] ||= []).push(shapeRecord(c.id, c.kind, c.node.getWorldMatrix()));
   }
 
-  if (byModule.size) {
-    for (const p of state.placements.values()) {
-      const list = byModule.get(p.module);
-      if (!list) continue;
+  if (state.moduleCollision.size) {
+    for (const p of shipPlacements()) {
+      const shapes = state.moduleCollision.get(p.module);
+      if (!shapes?.length) continue;
       p.node.computeWorldMatrix(true);
       const placement = p.node.getWorldMatrix();
-      for (const c of list) {
-        // the primitive's own local transform, then the placement's - which is
+      shapes.forEach((s, i) => {
+        // the shape's own local transform, then the placement's - which is
         // exactly what parenting it to the placement would have produced
         const world = Matrix.Compose(
-          c.node.scaling,
-          c.node.rotationQuaternion || Quaternion.Identity(),
-          c.node.position).multiply(placement);
+          Vector3.FromArray(s.scale),
+          Quaternion.FromEulerAngles(
+            s.rotation[0] * Math.PI / 180,
+            s.rotation[1] * Math.PI / 180,
+            s.rotation[2] * Math.PI / 180),
+          Vector3.FromArray(s.position)).multiply(placement);
         (out[p.chunk] ||= []).push(
-          shapeRecord(`${p.id}:${c.id}`, c.kind, world, c.module));
-      }
+          shapeRecord(`${p.id}:${i}`, s.kind, world, p.module));
+      });
     }
   }
   return out;
@@ -209,19 +208,21 @@ function collisionByChunk() {
  *
  * Derived data: `collision` above already instances these onto every placement,
  * which is what the runtime reads. This block is what makes shape *sharing*
- * possible - one Havok shape per module, reused by every body - and what the
- * editor shows you when you open a module to fit it.
+ * possible - one Havok shape per module, reused by every body - and it is also
+ * written to its own file, so it can be shipped and reused by another ship.
  */
 function moduleCollision() {
   const out = {};
-  for (const c of state.colliders.values()) {
-    if (!c.module) continue;
-    c.node.computeWorldMatrix(true);
-    const local = Matrix.Compose(
-      c.node.scaling,
-      c.node.rotationQuaternion || Quaternion.Identity(),
-      c.node.position);
-    (out[c.module] ||= []).push(shapeRecord(c.id, c.kind, local));
+  for (const [moduleId, shapes] of state.moduleCollision) {
+    if (!shapes?.length) continue;
+    out[moduleId] = shapes.map((s, i) => shapeRecord(`${moduleId}:${i}`, s.kind,
+      Matrix.Compose(
+        Vector3.FromArray(s.scale),
+        Quaternion.FromEulerAngles(
+          s.rotation[0] * Math.PI / 180,
+          s.rotation[1] * Math.PI / 180,
+          s.rotation[2] * Math.PI / 180),
+        Vector3.FromArray(s.position))));
   }
   return out;
 }
@@ -233,12 +234,12 @@ export function buildManifest() {  const layout = serialize();
   // fired straight after a scale (a wheel notch, an inspector keystroke) would
   // otherwise measure the ship as it was one frame ago, and the door's own
   // width, taken from `scaling` directly, would disagree with its portal.
-  for (const p of state.placements.values()) p.node.computeWorldMatrix(true);
+  for (const p of shipPlacements()) p.node.computeWorldMatrix(true);
   for (const m of state.markers.values()) m.node.computeWorldMatrix(true);
 
   const boxes = [];
   const chunks = state.chunks.map((id) => {
-    const members = [...state.placements.values()].filter((p) => p.chunk === id);
+    const members = shipPlacements().filter((p) => p.chunk === id);
     let min = null, max = null;
     let meshCount = 0;
     for (const m of members) {
@@ -370,7 +371,48 @@ export async function saveLayout(name) {
     body,
   });
   if (!res.ok) throw new Error(await res.text());
+  // Collision goes to its own file as well as into the manifest. The manifest
+  // is this ship; the file is the kit's, and is what you carry to the next one.
+  const coll = await saveCollision();
+  return { ...(await res.json()), collision: coll };
+}
+
+/** Write the per-module collision to its own file. */
+export async function saveCollision() {
+  const body = JSON.stringify({
+    generator: "SciFiShip layout tool",
+    schema: 1,
+    savedAt: new Date().toISOString(),
+    units: "metres",
+    note: "Collision authored per kit module, in each module's local space."
+      + " Editor space: the manifest's own collision block is the mirrored,"
+      + " runtime-facing copy.",
+    moduleCollision: serializeModuleCollision(),
+  }, null, 2);
+  const res = await fetch("/api/collision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+/**
+ * Read the per-module collision back from its own file.
+ *
+ * The file wins over whatever the ship manifest carries: it is the one you
+ * shipped with the kit, and the point of having it is that a new ship starts
+ * with every hull already fitted.
+ */
+export async function loadCollision() {
+  const res = await fetch("/api/collision");
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data?.moduleCollision || !Object.keys(data.moduleCollision).length) return null;
+  loadModuleCollision(data.moduleCollision);
+  emit("colliders");
+  return data.moduleCollision;
 }
 
 export async function loadLayout(name) {
@@ -381,6 +423,9 @@ export async function loadLayout(name) {
     const data = await res.json();
     if (!data.instances) return null;    // a Blender-era manifest, not reloadable
     await deserialize(data);
+    // The shipped collision file wins over whatever this ship's manifest
+    // carries, so a new ship built from the same kit starts fully fitted.
+    await loadCollision();
     applyView(data.view);                // older manifests simply have none
     applyEnvironment(data.environment, data.editorEnvironment);
     // Start positions moved to behaviours, so an old block is dropped rather
@@ -424,7 +469,7 @@ async function exportGlbInner() {
     const t = new TransformNode(`CHUNK_${id}`, state.scene);
     holders.set(id, t);
   }
-  for (const p of state.placements.values()) {
+  for (const p of shipPlacements()) {
     restore.push([p.node, p.node.parent]);
     p.node.parent = holders.get(p.chunk) || null;
 
@@ -439,7 +484,7 @@ async function exportGlbInner() {
 
   const exportable = new Set();
   for (const t of holders.values()) exportable.add(t);
-  for (const p of state.placements.values()) {
+  for (const p of shipPlacements()) {
     exportable.add(p.node);
     for (const m of p.node.getChildMeshes()) exportable.add(m);
   }

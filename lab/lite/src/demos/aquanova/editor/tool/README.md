@@ -1108,45 +1108,60 @@ For a fluid or a player, **over-approximating is safe and gaps leak** —
 overlapping boxes are harmless, a hole is not — which is why the fit is an AABB
 per module rather than a snug hull.
 
-### Collision authored on a kit module
+### The collision staging area
 
-A room's primitives are world space and belong to that room. A **module's** are
-authored once, in the module's own local space, and every placement of it
-inherits them. That is the only sane answer for props: a barrier's AABB is a
-poor fit, and it may be placed twenty times.
+A room's primitives are world space and belong to that room. Collision on a
+**kit module** is authored once, in the module's own local space, and every
+placement of it inherits it — the only sane answer for props, whose bounding box
+is a poor fit and which are placed many times over.
 
-Select an element (or point at one) and press **Edit module collision**. The
-ship goes off stage, a **stand-in** of that module appears at the origin with an
-identity transform, and its shapes come on. Because the stand-in sits at the
-origin unturned, the module's local space and the world agree — which is what
-lets *every* existing tool work here unchanged: the ghost, dragging, scaling,
-the axis gizmo, the inspector, undo. **Fit a box** seeds one box from the
-module's bounding volume as a starting point. `Esc` or **Back to the ship**
-leaves.
+**Edit collision** opens a staging area. It is a *mode*, not a property of the
+selection: it starts empty, and you stage whatever modules you want to work on.
+Clicking a palette tile stages that module; clicking one already there focuses
+it rather than adding a second, because a second instance would give the
+association rule below two equally good answers.
 
-**The stand-in is deliberately not a placement.** It is never in
-`state.placements`, so it cannot reach the layout, the manifest or the exported
-`.glb`, and its meshes are not pickable — the shapes are what you are there to
-click. The ship is only *hidden* while you work, never touched, so leaving puts
-it back exactly as it was.
+Staged elements are real placements carrying `stage: true`. That is what makes
+every existing tool work on them unchanged — selection, `X`, `H`, `Del`,
+`Ctrl+D`, dragging, the marquee, the inspector, undo. They are filtered out at
+the two places that walk *every* placement (the manifest's instance list and the
+.glb exporter, both via `shipPlacements()`), and their chunk id is never in
+`state.chunks`, so nothing else can reach them either.
 
-On the module stage the palette becomes a module **chooser**: clicking a tile
-opens that module rather than arming a brush, because arming one would drop real
-kit geometry into a ship you cannot see. Fitting a room is disabled there for the
-same reason.
+**Which element a shape belongs to is decided by where it sits**, not by a tag:
+a shape is owned by the staged element whose bounding box, grown by
+`ASSOCIATION_MARGIN` (0.5 m), it overlaps most. That is what makes copying work
+— `Ctrl+D` a hull off one barrel, drag it onto a similar one, and it simply
+becomes that one's. It is only unambiguous because the stage lays elements out
+with **more than twice that margin** between them, so no two grown boxes can
+ever meet; the largest-overlap rule is the belt to that braces.
 
-**A module that carries its own collision is skipped by the room fitter.** Its
-placements are already covered — the manifest instances the shapes onto every
-one of them — so fitting a box as well would give it collision twice, and
-editing the module would silently stop matching the room until you pressed the
-button again. The status line reports how many placements were inherited rather
-than fitted.
+A shape that overlaps nothing belongs to nothing. Rather than being dropped
+quietly it is **counted in the banner**, which says how many will be lost.
 
-The one thing module collision does *not* get is doorway subtraction: an
-unsealed doorway is cut out of fitted boxes only. Author module collision on
-props, not on the walls a door is cut through.
+**Removing a staged element keeps what was fitted to it.** `Del` goes through
+`unstageModule()`, which reads the area back into the per-module record first —
+so staging that module again brings its shapes straight back. Shapes are stored
+*relative to the element*, so it does not matter where on the area it lands next
+time.
 
-In the manifest:
+**Fit a box** acts on the selection: exactly one element, and not a collision
+shape. Anything else says so plainly rather than guessing — "fit the current
+module" stopped meaning anything the moment the area could hold more than one.
+
+The area is read back into the record on every change that matters — leaving it,
+saving, or removing an element — so there is no separate commit step and nothing
+to forget.
+
+### Collision travels in its own file
+
+Saving writes `ship_collision.json` beside `ship_manifest.json`, and loading
+reads it back **in preference to whatever the ship carries**. That is the whole
+point of it living apart: the collision is a property of the *kit*, not of any
+one ship, so once these hulls are fitted the file can be shipped and the next
+ship built from the same kit starts fully fitted.
+
+The manifest still carries the same data, twice over, for the runtime:
 
 * `collision[chunk]` — what the runtime reads. Room shapes as authored, plus
   every module shape instanced onto every placement of its module, each
@@ -1154,11 +1169,17 @@ In the manifest:
   it across bodies can group by that id.
 * `moduleCollision[moduleId]` — the same shapes in module-local space, which is
   what makes that sharing possible.
-* `colliders` — the editor's own record, kind plus a plain transform. **This is
-  the source the tool reloads from**, and `collision` is derived from it. A
-  saved ship used to come back with no collision at all, because
-  `buildManifest()` assembles its own object and never wrote this key while
-  `restoreFrom()` read it.
+* `colliders` — the editor's own record of the *room's* shapes, kind plus a
+  plain transform. **This is what the tool reloads from**, and `collision` is
+  derived from it. A saved ship used to come back with no collision at all,
+  because `buildManifest()` assembles its own object and never wrote this key
+  while `restoreFrom()` read it.
+
+A module that carries its own collision is **skipped by the room fitter**: its
+placements are already covered, so fitting a box as well would give them
+collision twice. The one thing module collision does not get is doorway
+subtraction — author it on props, not on the walls a door is cut through.
+
 
 ### What the viewport shows
 
@@ -1177,10 +1198,15 @@ shape, and the guard against it used to read `Math.abs(v) || 1` — and `0 || 1`
 is **one metre**. A two-plate room therefore came out with metre-thick slabs top
 and bottom while its walls were 7.5 mm.
 
-A module with no depth on some axis is now given the **collision shell
-thickness** instead, centred on the plane, so a fitted room is the same
-thickness all the way round. The guard clamps to a hair rather than a metre,
-which is a floor on nonsense, not a source of it.
+A module with no depth on some axis is now given at least the **collision shell
+thickness**, and so is one that is merely *thinner* than it. The shell is a
+**minimum**, not a filler for zero-depth axes: it began as the latter, which
+made it look broken — a barrel has real depth on all three axes, so nothing you
+typed ever changed anything. A minimum is both what the name implies and what is
+actually useful, since the kit's walls measure 7.5 mm and a collider that thin is
+something a fast body tunnels straight through. The guard against a zero extent
+clamps to a hair rather than a metre, which is a floor on nonsense, not a source
+of it.
 
 ### What the inspector measures
 
@@ -1203,11 +1229,13 @@ existed returns that setting's default rather than `undefined`.
 
 | setting | default | what it does |
 | --- | --- | --- |
-| Collision shell | `0.008` m | thickness given to a module with no depth of its own when fitting collision |
+| Collision shell | `0.008` m | the *minimum* thickness any collision box is given on any axis |
 
 The default matches what the kit's walls read as in the inspector. They in fact
-measure 0.0075 m; the field rounds. Set it to 0.0075 if you want a fitted room
-to be exactly uniform.
+measure 0.0075 m; the field rounds. Because the shell is a minimum, leaving it
+at the default brings those walls up to 8 mm rather than leaving them at 7.5 —
+set it to 0.0075 if you want them exactly as modelled, or higher (0.03 is a
+reasonable choice) if you would rather nothing thin enough to tunnel through.
 
 ## Live checks
 

@@ -130,7 +130,7 @@
       <button id="btn-collide-room"
               title="Fit a box to every solid module in the active chunk, cutting the openings of unsealed doors out of the walls. Decals are skipped, and so is any module that carries its own collision — those are inherited by every placement instead. Regenerating replaces only what it generated before.">Generate for active chunk</button>
       <button id="btn-edit-module"
-              title="Fit collision to the selected element's kit module, once, in the module's own space — every placement of that module inherits it. The right answer for props, whose bounding box is a poor fit. No shortcut">Edit module collision</button>
+              title="Open the collision staging area: a separate space where you stage kit modules and fit collision shapes to them, once each, inherited by every placement of that module. No shortcut">Edit collision</button>
     </div>
     <div id="settings-pane">
       <h3>Settings</h3>
@@ -152,8 +152,8 @@
     <canvas id="render-canvas" touch-action="none"></canvas>
     <div id="module-banner" hidden>
       <span id="module-banner-text"></span>
-      <button id="btn-module-fit" title="Replace this module's shapes with one box fitted to its bounding volume, as a starting point to adjust. Undoable">Fit a box</button>
-      <button id="btn-module-done" title="Go back to the ship. Nothing is committed or discarded here — the shapes are saved with the layout like everything else. Esc also leaves">Back to the ship</button>
+      <button id="btn-module-fit" title="Replace the selected staged element's shapes with one box fitted to its bounding volume, no thinner than the collision shell. Select exactly one element, not a shape. Undoable">Fit a box</button>
+      <button id="btn-module-done" title="Close the staging area. Everything fitted is kept — it is read back into the per-module record on the way out. Esc also leaves">Back to the ship</button>
     </div>
     <div id="hud">
       <div><span class="k" title="Height of the build plane new modules land on — not a property of any element. Numpad + / - raises and lowers it; numpad . jumps it to the top of whatever the cursor is over, for stacking">Build plane</span><span id="hud-elev" class="v">0.00 m</span></div>

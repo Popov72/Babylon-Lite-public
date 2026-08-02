@@ -3,13 +3,13 @@
 import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush } from "./palette.js";
-import { saveLayout, loadLayout, exportGlb, resolveDoorChunks } from "./manifest.js";
+import { saveLayout, loadLayout, loadCollision, exportGlb, resolveDoorChunks } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
   removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE,
   reconcileCollider, colliderDims, generateForChunk,
-  enterModuleCollision, exitModuleCollision, fitModuleCollision,
-  moduleColliders, moduleRefNode,
+  enterCollisionMode, exitCollisionMode, fitBoxToSelection,
+  stageModule, unstageModule, harvestStage, orphanCount,
 } from "./colliders.js";
 import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
@@ -20,6 +20,7 @@ import {
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
   nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
+  shipPlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
   renameChunk, renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
   setVeilAlpha,
@@ -96,7 +97,7 @@ function refreshInspector() {
   // A module's primitive belongs to a kit prototype, not a room, so the chunk
   // row is meaningless for it - and letting it be set would silently re-home
   // the shape into a room where its local-space transform means nothing.
-  const isModuleCollider = e.type === "collider" && !!e.module;
+  const isModuleCollider = e.type === "collider" && !!e.stage;
   $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider;
   if (!isMarker && !isModuleCollider) $("insp-chunk").value = e.chunk;
   const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
@@ -614,7 +615,7 @@ function refreshChunks() {
 
 function refreshStats() {
   const counts = new Map(state.chunks.map((c) => [c, 0]));
-  for (const p of state.placements.values()) {
+  for (const p of shipPlacements()) {
     counts.set(p.chunk, (counts.get(p.chunk) || 0) + 1);
   }
   const rows = [...counts.entries()].map(([c, n]) =>
@@ -624,7 +625,7 @@ function refreshStats() {
   const veiled = veilCounts();
   const pct = Math.round(state.veilAlpha * 100);
   statusCounts.textContent =
-    `${state.placements.size} objects · ${state.chunks.length} chunks · ${doors} doors · ${state.selection.length} selected`
+    `${shipPlacements().length} objects · ${state.chunks.length} chunks · ${doors} doors · ${state.selection.length} selected`
     + (veiled.ghost ? ` · ${veiled.ghost} at ${pct}%` : "")
     + (veiled.hidden ? ` · ${veiled.hidden} hidden` : "");
 }
@@ -941,11 +942,16 @@ addEventListener("beforeunload", (e) => {
 async function doSave() {
   try {
     setStatus("saving…");
+    // The staging area is a working copy: read it back before writing, or
+    // whatever is on it right now would not be in the file.
+    if (state.collisionMode) harvestStage();
     const r = await saveLayout();
     markSaved();
+    const coll = r.collision
+      ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "";
     setStatus(r.previous
-      ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})`
-      : `saved ${r.bytes} bytes → ${r.path}`);
+      ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}`
+      : `saved ${r.bytes} bytes → ${r.path}${coll}`);
   } catch (e) { setStatus("save failed: " + e.message); }
 }
 
@@ -1177,7 +1183,7 @@ function cancelEverything() {
   if (ghostActive() || state.brush) { cancelGhost(); setBrush(null); clearMarkerBrush(); select([]); return; }
   // Only once there is nothing in hand does Escape leave the module stage -
   // otherwise cancelling an armed shape would throw you back to the ship.
-  if (state.editModule) { leaveModuleCollision(); return; }
+  if (state.collisionMode) { closeCollisionArea(); return; }
   cancelGhost();
   setBrush(null);
   clearMarkerBrush();
@@ -1335,7 +1341,7 @@ function validate() {
   const out = [];
   const boxes = [];
   for (const c of state.chunks) {
-    const members = [...state.placements.values()].filter((p) => p.chunk === c);
+    const members = shipPlacements().filter((p) => p.chunk === c);
     if (!members.length) continue;
     let min = null, max = null;
     for (const m of members) {
@@ -1358,13 +1364,13 @@ function validate() {
     }
   }
 
-  const sunk = [...state.placements.values()].filter((p) => {
+  const sunk = shipPlacements().filter((p) => {
     const b = worldBounds(p.node);
     return b && b.min.y < -0.05;
   });
   if (sunk.length) out.push(["warn", `${sunk.length} object(s) below y = 0`]);
 
-  const offGrid = [...state.placements.values()].filter((p) => {
+  const offGrid = shipPlacements().filter((p) => {
     const s = state.snap.pos || 0;
     if (!s) return false;
     return ["x", "z"].some((k) => Math.abs(p.node.position[k] / s - Math.round(p.node.position[k] / s)) > 1e-3);
@@ -1384,7 +1390,7 @@ function validate() {
     if (!d.leaves.length) out.push(["warn", `${d.id}: no leaves assigned`]);
   }
   const orphans = state.chunks.filter((c) =>
-    !linked.has(c) && [...state.placements.values()].some((p) => p.chunk === c));
+    !linked.has(c) && shipPlacements().some((p) => p.chunk === c));
   if (orphans.length && state.chunks.length > 1) {
     out.push(["warn", `unreachable: ${orphans.join(", ")}`]);
   }
@@ -1434,11 +1440,12 @@ function refreshBusy() {
   if (busy) document.activeElement?.blur();
 }
 on("pickmodule", (moduleId) => {
-  // On the module stage the palette is a module *chooser*: arming a brush there
+  // On the collision area the palette *stages* modules: arming a brush there
   // would drop real kit geometry into the ship you cannot see.
-  if (state.editModule) { editModuleCollision(moduleId); return; }
+  if (state.collisionMode) { stageFromPalette(moduleId); return; }
   setBrush(moduleId); setStatus(`armed ${moduleId}`);
 });
+on("stagemodule", (moduleId) => stageFromPalette(moduleId));
 on("status", (msg) => setStatus(msg));
 on("deletecurrent", () => deleteCurrent());
 on("colliders", () => { refreshStats(); validate(); });
@@ -1488,75 +1495,74 @@ $("btn-collide-room").addEventListener("click", async () => {
   });
 });
 
-// ------------------------------------------------- module collision editing
+// ----------------------------------------------- the collision staging area
 //
-// The module of whatever you are pointing at or have selected, so the button
-// works straight off the ship - which is where you notice a prop needs a better
-// hull in the first place.
+// A mode, not a property of the selection: open it, stage whatever modules you
+// want to fit shapes to, and close it again. The ship is hidden while it is
+// open and put back untouched afterwards.
 
-function moduleToEdit() {
-  const cur = currentElement();
-  if (cur?.kind === "ghost" && ghostModule()) return ghostModule();
-  for (const id of cur?.ids || []) {
-    const e = entryOf(id);
-    if (e?.module) return e.module;
-  }
-  return state.brush || null;
-}
-
-async function editModuleCollision(moduleId) {
-  await whileBusy(`opening ${moduleId}…`, async () => {
-    cancelGhost();
-    await enterModuleCollision(moduleId, instantiate);
-    const ref = moduleRefNode();
-    if (ref) focusNodes([ref]);
-    setGridElevation(0);
-  });
-  const n = moduleColliders(moduleId).length;
-  setStatus(n
-    ? `${moduleId}: ${n} shape(s) — every placement inherits them`
-    : `${moduleId} has no collision yet — drop shapes, or press Fit a box`);
-}
-
-$("btn-edit-module").addEventListener("click", async () => {
-  if (state.editModule) return leaveModuleCollision();
-  const moduleId = moduleToEdit();
-  if (!moduleId) {
-    setStatus("select an element, or pick a module, to edit its collision");
-    return;
-  }
-  await editModuleCollision(moduleId);
-});
-
-function leaveModuleCollision() {
-  const was = state.editModule;
+async function openCollisionArea() {
   cancelGhost();
-  exitModuleCollision();
-  setStatus(was ? `back to the ship — ${was} keeps its shapes` : "");
+  setBrush(null);
+  enterCollisionMode();
+  setGridElevation(0);
+  setStatus("collision area — pick modules from the left to stage them");
 }
 
-$("btn-module-done").addEventListener("click", leaveModuleCollision);
+function closeCollisionArea() {
+  cancelGhost();
+  setBrush(null);
+  const r = harvestStage();
+  exitCollisionMode();
+  setStatus(`back to the ship — ${state.moduleCollision.size} module(s) carry collision`
+    + (r.orphans ? `, ${r.orphans} shape(s) belonged to nothing and were dropped` : ""));
+}
+
+$("btn-edit-module").addEventListener("click", () => {
+  if (state.collisionMode) closeCollisionArea(); else openCollisionArea();
+});
+$("btn-module-done").addEventListener("click", closeCollisionArea);
+
+/** Put a module on the stage, or focus it if it is already there. */
+async function stageFromPalette(moduleId) {
+  await whileBusy(`staging ${moduleId}…`, async () => {
+    const { entry, added } = await stageModule(moduleId, instantiate, moduleBounds);
+    select([entry.id]);
+    focusNodes([entry.node]);
+    setStatus(added
+      ? `${moduleId} staged — select it and press Fit a box, or drop shapes on it`
+      : `${moduleId} is already staged`);
+  });
+}
 
 $("btn-module-fit").addEventListener("click", async () => {
-  const moduleId = state.editModule;
-  if (!moduleId) return;
-  await whileBusy("fitting…", async () => { await fitModuleCollision(moduleId, moduleBounds); });
-  setStatus(`${moduleId}: fitted one box — scale and split it as you like`);
+  const r = await fitBoxToSelection(moduleBounds);
+  if (!r.ok) { setStatus(r.error); return; }
+  refreshModuleBanner();
+  setStatus(`${r.module}: fitted one box at the collision shell`
+    + ` (${state.config.shellThickness} m minimum) — scale and split it as you like`);
 });
 
 function refreshModuleBanner() {
-  const editing = state.editModule;
-  $("module-banner").hidden = !editing;
-  if (editing) {
-    $("module-banner-text").textContent = `Editing collision — ${editing}`;
+  const on = state.collisionMode;
+  $("module-banner").hidden = !on;
+  if (on) {
+    const staged = [...state.placements.values()].filter((p) => p.stage).length;
+    const orphans = orphanCount();
+    $("module-banner-text").textContent = `Collision area — ${staged} staged`
+      + (orphans ? `, ${orphans} shape(s) belong to nothing` : "");
+    $("module-banner-text").classList.toggle("warn", orphans > 0);
   }
-  $("btn-edit-module").textContent = editing ? "Back to the ship" : "Edit module collision";
-  $("btn-edit-module").classList.toggle("active", !!editing);
+  $("btn-edit-module").textContent = on ? "Back to the ship" : "Edit collision";
+  $("btn-edit-module").classList.toggle("active", on);
   // Fitting a room while its geometry is off stage would look like it did
   // nothing, and the shapes it made would be invisible until you left.
-  $("btn-collide-room").disabled = !!editing;
+  $("btn-collide-room").disabled = on;
 }
-on("editModule", refreshModuleBanner);
+on("collisionMode", refreshModuleBanner);
+on("colliders", refreshModuleBanner);
+on("placements", refreshModuleBanner);
+
 $("show-layer").addEventListener("change", (ev) => {
   setShowLayer(ev.target.value);
   setStatus(ev.target.value === "both" ? "showing the ship and its collision"
@@ -1668,7 +1674,11 @@ async function bootstrap() {
         + "dropped: give a dummy element a start-position behaviour instead"
       : `restored ${data.instances.length} instances from ship_manifest.json`);
   } else {
-    setStatus(`ready — ${getCatalogue().byId.size} modules`);
+    // No ship yet, but the kit's collision file may still be there - that is
+    // the whole point of it living apart from any one ship.
+    const coll = await loadCollision().catch(() => null);
+    setStatus(`ready — ${getCatalogue().byId.size} modules`
+      + (coll ? `, collision for ${Object.keys(coll).length} of them` : ""));
   }
   // Whatever we booted with - a restored ship or an empty grid - is the
   // baseline "unsaved changes" is measured against.

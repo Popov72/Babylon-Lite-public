@@ -28,6 +28,22 @@ const CAMERA_INERTIA = 0.75;
 export const CLICK_MS = 300;
 
 /**
+ * The chunk staged elements are parked in.
+ *
+ * Never in `state.chunks`, so it cannot be picked, isolated or assigned to, and
+ * every `p.chunk === id` loop skips it for free. `shipPlacements()` is the
+ * belt to that braces: the handful of loops that walk *every* placement - the
+ * manifest's instance list and the .glb exporter - must use it, or the staging
+ * area would end up in the ship.
+ */
+export const STAGE_CHUNK = "__collision_stage";
+
+/** Every placement that is part of the ship, excluding the staging area. */
+export function shipPlacements() {
+  return [...state.placements.values()].filter((p) => !p.stage);
+}
+
+/**
  * Ship-wide constants the layout carries with it.
  *
  * These are authoring decisions, not preferences: a ship fitted with a 8 mm
@@ -83,7 +99,10 @@ export const state = {
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
   dragAxis: "xz",          // "xz" or "y" - which way a drag moves things (Q)
-  editModule: null,        // module whose collision is being edited, see colliders.js
+  collisionMode: false,    // the collision staging area is open, see colliders.js
+  // module id -> shapes authored on it, in the module's own local space. The
+  // one authoritative record: what is on the staging area is a working copy.
+  moduleCollision: new Map(),
   showLayer: "both",       // "both" | "geometry" | "collision", see setShowLayer
   config: { ...CONFIG_DEFAULTS },
   nextId: 1,
@@ -1309,13 +1328,18 @@ export async function placeAt(moduleId, position, opts = {}) {
   const entry = {
     id,
     module: moduleId,
-    chunk: opts.chunk || state.activeChunk,
+    chunk: opts.stage ? STAGE_CHUNK : (opts.chunk || state.activeChunk),
     name: opts.name || "",        // optional label, see renamePlacement
+    // A stand-in on the collision staging area rather than part of the ship.
+    // It is a real placement so that selection, the gizmo, hiding, dragging and
+    // Ctrl+D all work on it unchanged - and filtered out at the two boundaries
+    // that walk every placement, so it can never reach the ship.
+    stage: !!opts.stage,
     node,
   };
   node.metadata = { placement: entry };
   state.placements.set(id, entry);
-  if (!state.chunks.includes(entry.chunk)) state.chunks.push(entry.chunk);
+  if (!entry.stage && !state.chunks.includes(entry.chunk)) state.chunks.push(entry.chunk);
   applyVisibility();
   if (!opts.silent) { emit("placements"); select([id]); }
   return entry;
@@ -1325,11 +1349,17 @@ export function removeSelected() {
   if (!state.selection.length) return;
   pushUndo();
   for (const id of state.selection) {
-    if (state.placements.has(id)) removePlacement(id);
+    const p = state.placements.get(id);
+    // Taking a staged element off the area must not lose what was fitted to
+    // it: unstageModule reads its shapes into the per-module record first, so
+    // staging the module again brings them straight back.
+    if (p?.stage) hooks.unstageModule(id);
+    else if (p) removePlacement(id);
     else if (state.colliders.has(id)) hooks.removeCollider(id);
     else removeMarkerNode(id);
   }
   select([]);
+  hooks.harvestStage();
   emit("placements");
   emit("markers");
   emit("colliders");
@@ -1343,7 +1373,7 @@ function removeMarkerNode(id) {
   state.markers.delete(id);
 }
 
-function removePlacement(id) {
+export function removePlacement(id) {
   const entry = state.placements.get(id);
   if (!entry) return;
   entry.node.getChildMeshes().forEach((m) => m.dispose());
@@ -1835,9 +1865,10 @@ function setVeil(entry, on) {
 
 export function applyVisibility() {
   const veilOf = (id) => (veilSuspended ? undefined : state.hidden.get(id));
-  // Editing a module's collision puts a single stand-in on an empty stage. The
-  // ship is only hidden, never touched, so leaving the mode puts it all back.
-  const editing = state.editModule;
+  // The staging area is a separate world: while it is open the ship is hidden,
+  // never touched, so closing it puts everything back. Hiding and the veil work
+  // on both, which is what makes H behave the same in either place.
+  const staging = state.collisionMode;
   // The layer switch composes with everything else rather than fighting it: it
   // can only ever take things *off* screen, so chunk isolation and the Shift+H
   // veil keep the last word on what is left.
@@ -1846,8 +1877,8 @@ export function applyVisibility() {
 
   for (const e of state.placements.values()) {
     const veil = veilOf(e.id);
-    const on = !editing && geometryOn
-      && (!state.isolate || e.chunk === state.activeChunk) && veil !== "hidden";
+    const on = (e.stage ? staging : !staging && geometryOn
+      && (!state.isolate || e.chunk === state.activeChunk)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
     for (const m of realMeshes(e.node)) m.isPickable = veil !== "ghost";
@@ -1855,20 +1886,17 @@ export function applyVisibility() {
   // markers belong to no chunk, so isolation has nothing to say about them
   for (const mk of state.markers.values()) {
     const veil = veilOf(mk.id);
-    mk.node.setEnabled(!editing && geometryOn && veil !== "hidden");
+    mk.node.setEnabled(!staging && geometryOn && veil !== "hidden");
     setVeil(mk, veil === "ghost");
     for (const m of realMeshes(mk.node)) m.isPickable = veil !== "ghost";
   }
   // A room's primitives belong to a chunk and follow isolation like placements.
-  // A module's belong to a kit prototype and are only on stage while that
-  // module is the one being edited - they are in its local space, so anywhere
-  // else they would be a pile of shapes sitting at the world origin.
+  // The staging area's are a working copy of what each module carries, and only
+  // exist while it is open.
   for (const c of state.colliders.values()) {
     const veil = veilOf(c.id);
-    const on = c.module
-      ? c.module === editing
-      : collisionOn && !editing
-        && (!state.isolate || c.chunk === state.activeChunk) && veil !== "hidden";
+    const on = (c.stage ? staging : collisionOn && !staging
+      && (!state.isolate || c.chunk === state.activeChunk)) && veil !== "hidden";
     c.node.setEnabled(on);
     if (c.mesh) c.mesh.isPickable = veil !== "ghost";
   }
@@ -2157,7 +2185,7 @@ export function serialize() {
         // glTF space, matching the manifest - readBehaviorExtras() flips it back
         ...(b.direction ? { direction: flipX(b.direction) } : {}),
       }))])),
-    instances: [...state.placements.values()].map((e) => ({
+    instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
       chunk: e.chunk,
@@ -2168,8 +2196,44 @@ export function serialize() {
     })),
     colliders: hooks.serializeColliders(),
     markers: hooks.serializeMarkers(),
+    // Authored per kit module, in the module's own local space, and inherited
+    // by every placement of it. Also written to its own file - see
+    // saveCollision - so it can be shipped and reused by another ship.
+    moduleCollision: serializeModuleCollision(),
     config: { ...state.config },
   };
+}
+
+/** The per-module shapes, as plain data. */
+export function serializeModuleCollision() {
+  const out = {};
+  for (const [moduleId, shapes] of state.moduleCollision) {
+    if (!shapes?.length) continue;
+    out[moduleId] = shapes.map((s) => ({
+      kind: s.kind,
+      position: [...s.position],
+      rotation: [...s.rotation],
+      scale: [...s.scale],
+    }));
+  }
+  return out;
+}
+
+/** Replace the per-module shapes wholesale. */
+export function loadModuleCollision(data) {
+  state.moduleCollision = new Map();
+  for (const [moduleId, shapes] of Object.entries(data || {})) {
+    if (!Array.isArray(shapes) || !shapes.length) continue;
+    state.moduleCollision.set(moduleId, shapes
+      .filter((s) => s && s.kind && Array.isArray(s.position))
+      .map((s) => ({
+        kind: s.kind,
+        position: [...s.position],
+        rotation: [...(s.rotation || [0, 0, 0])],
+        scale: [...(s.scale || [1, 1, 1])],
+      })));
+  }
+  emit("colliders");
 }
 
 export async function deserialize(data) {
@@ -2190,6 +2254,7 @@ async function restoreFrom(data) {
   // Defaults first, so a layout saved before a setting existed comes back with
   // that setting's default rather than undefined.
   state.config = { ...CONFIG_DEFAULTS, ...(data.config || {}) };
+  loadModuleCollision(data.moduleCollision);
   // buildManifest() writes chunks as rich objects; serialize() writes plain
   // ids. Accept either so a saved manifest reloads cleanly.
   const ids = (data.chunks || []).map((c) => (typeof c === "string" ? c : c.id)).filter(Boolean);

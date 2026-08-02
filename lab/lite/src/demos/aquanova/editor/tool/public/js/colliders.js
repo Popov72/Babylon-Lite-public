@@ -15,12 +15,28 @@
 // or cylinder gets its axis from its two endpoints - which the runtime derives
 // from this transform, so any orientation works for all four.
 
-import { state, emit, pushUndo, hooks, applyVisibility, select } from "./editor.js";
+import {
+  state, emit, pushUndo, hooks, applyVisibility, select,
+  placeAt, removePlacement, worldBounds,
+} from "./editor.js";
 
 const { MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode, Matrix } = BABYLON;
 
 /** Smallest extent a collider may have: enough to exist, small enough to hide. */
 const MIN_EXTENT = 1e-4;
+
+/**
+ * An extent, never thinner than the configured collision shell.
+ *
+ * The shell is a *minimum*, not a filler for zero-depth axes. It started as the
+ * latter, which made it look broken: a barrel has real depth on all three axes,
+ * so nothing you typed ever changed anything. A minimum is both what the name
+ * implies and what is actually useful - the kit's walls measure 7.5 mm, and a
+ * collider that thin is something a fast-moving body tunnels straight through.
+ */
+function shellThick(v) {
+  return Math.max(Math.abs(v) || 0, state.config.shellThickness);
+}
 
 /** The kinds Havok can take directly, in the order the palette lists them. */
 export const COLLIDER_KINDS = ["box", "sphere", "capsule", "cylinder"];
@@ -102,7 +118,6 @@ export function addCollider(kind, position, opts = {}) {
   const scene = state.scene;
   const { colliderMat: mat, colliderMatSel: wire } = materials(scene);
   const id = opts.id || nextColliderId();
-  const mod = opts.module !== undefined ? (opts.module || null) : (state.editModule || null);
   const root = new TransformNode(id, scene);
   root.position.copyFrom(position);
   root.rotationQuaternion = opts.rotation
@@ -128,19 +143,15 @@ export function addCollider(kind, position, opts = {}) {
     id,
     type: "collider",          // entryOf() and the inspector branch on this
     kind,
-    // A primitive belongs to a room *or* to a kit module, never both.
+    // A primitive belongs to a room, or to the collision staging area.
     //
-    // A module's primitives are authored once, in the module's own local space,
-    // and every placement of it inherits them - which is the only sane way to
-    // give a barrier or a pod a decent hull, since its AABB is a poor fit and
-    // it may be placed twenty times. A room's primitives are world space and
-    // belong to that room alone.
-    //
-    // Undefined means "whatever the editor is doing", so dropping a shape while
-    // editing a module joins that module. A restore passes it explicitly, so a
-    // saved layout can never be re-homed by the mode that happens to be open.
-    module: mod,
-    chunk: mod ? null : (opts.chunk || state.activeChunk),
+    // A staged one is a *working copy* of what some module carries: which
+    // module is decided by where it sits (see harvestStage), not by a tag, so
+    // that dragging a copy of one hull onto a similar element simply makes it
+    // that element's. It is never serialized into the layout - the per-module
+    // record is what persists.
+    stage: !!opts.stage,
+    chunk: opts.stage ? null : (opts.chunk || state.activeChunk),
     node: root,
     mesh,
     edges,
@@ -216,10 +227,11 @@ export function colliderDims(c) {
 }
 
 export function serializeColliders() {
-  return [...state.colliders.values()].map((c) => ({
+  // The staging area is a working copy; the per-module record is what persists.
+  return [...state.colliders.values()].filter((c) => !c.stage).map((c) => ({
     id: c.id,
     kind: c.kind,
-    ...(c.module ? { module: c.module } : { chunk: c.chunk }),
+    chunk: c.chunk,
     position: round(c.node.position.asArray()),
     rotation: round(eulerDeg(c.node)),
     scale: round(c.node.scaling.asArray()),
@@ -227,24 +239,12 @@ export function serializeColliders() {
   }));
 }
 
-/** Every primitive authored on `moduleId`, in the module's own local space. */
-export function moduleColliders(moduleId) {
-  return [...state.colliders.values()].filter((c) => c.module === moduleId);
-}
-
-/** Module ids that carry authored collision, so the fitter can skip them. */
-export function modulesWithCollision() {
-  const out = new Set();
-  for (const c of state.colliders.values()) if (c.module) out.add(c.module);
-  return out;
-}
-
 export function deserializeColliders(list) {
   for (const id of [...state.colliders.keys()]) removeCollider(id, true);
   for (const c of list || []) {
     if (!COLLIDER_KINDS.includes(c.kind)) continue;
     addCollider(c.kind, Vector3.FromArray(c.position),
-      { ...c, module: c.module || null, silent: true });
+      { ...c, stage: false, silent: true });
   }
   emit("colliders");
 }
@@ -275,7 +275,7 @@ function categoryOf(moduleId) {
  * transform does the rest - which is what reproduces corners and inclines
  * without any special handling.
  */
-function obbForPlacement(entry, bounds, shell) {
+function obbForPlacement(entry, bounds) {
   const size = bounds.max.subtract(bounds.min);
   const centre = bounds.min.add(bounds.max).scale(0.5);
   const scale = entry.node.scaling;
@@ -285,17 +285,15 @@ function obbForPlacement(entry, bounds, shell) {
     new Vector3(centre.x * scale.x, centre.y * scale.y, centre.z * scale.z),
     Matrix.Compose(Vector3.One(), quat, Vector3.Zero()));
   // The kit models its floors and ceilings as single planes with no depth at
-  // all, so their AABB is degenerate on one axis. Give it the shell thickness
-  // instead, centred on the plane, and a room comes out the same thickness all
-  // the way round rather than with metre thick slabs top and bottom.
-  const thick = (v) => (Math.abs(v) < 1e-6 ? shell : Math.abs(v));
+  // all, and its walls only 7.5 mm thick. Both are given at least the shell
+  // thickness, so a fitted room is nowhere thinner than you asked for.
   return {
     centre: entry.node.position.add(offset),
     quat: quat.clone(),
     half: new Vector3(
-      thick(size.x * scale.x) / 2,
-      thick(size.y * scale.y) / 2,
-      thick(size.z * scale.z) / 2),
+      shellThick(size.x * scale.x) / 2,
+      shellThick(size.y * scale.y) / 2,
+      shellThick(size.z * scale.z) / 2),
   };
 }
 
@@ -387,20 +385,18 @@ export async function generateForChunk(chunkId, boundsOf) {
     .filter((m) => m.type === "door" && !m.sealed);
 
   let made = 0, skipped = 0, cut = 0, inherited = 0; const cutModules = [];
-  const shell = state.config.shellThickness;
-  const authored = modulesWithCollision();
   for (const e of state.placements.values()) {
-    if (e.chunk !== chunkId) continue;
+    if (e.stage || e.chunk !== chunkId) continue;
     if (NO_COLLIDER.has(categoryOf(e.module))) { skipped++; continue; }
     // A module that carries its own collision is covered everywhere, always -
     // the manifest instances those shapes onto every placement of it. Fitting a
     // box here as well would give it collision twice, and editing the module
     // would silently stop matching the room until you pressed the button again.
-    if (authored.has(e.module)) { inherited++; continue; }
+    if (state.moduleCollision.get(e.module)?.length) { inherited++; continue; }
     const bounds = await boundsOf(e.module);
     if (!bounds) continue;
 
-    let boxes = [obbForPlacement(e, bounds, shell)];
+    let boxes = [obbForPlacement(e, bounds)];
     for (const d of doors) {
       const next = [];
       for (const b of boxes) {
@@ -415,7 +411,7 @@ export async function generateForChunk(chunkId, boundsOf) {
       const euler = eulerDeg(node);
       node.dispose();
       addCollider("box", b.centre, {
-        chunk: chunkId, module: null, rotation: euler,
+        chunk: chunkId, stage: false, rotation: euler,
         scale: [b.half.x * 2, b.half.y * 2, b.half.z * 2],
         generated: true, silent: true,
       });
@@ -433,97 +429,285 @@ function eulerDeg(node) {
   return [e.x, e.y, e.z].map((r) => Math.round((r * 180 / Math.PI) * 1e4) / 1e4);
 }
 
-// ------------------------------------------------- editing a module's shapes
+// --------------------------------------------- the collision staging area
+//
+// A mode, not a property of the selection. It opens empty; you stage whatever
+// modules you want to work on, one instance of each, and fit shapes to them.
+//
+// Staged elements are real placements carrying `stage: true`, which is what
+// makes every existing tool work on them unchanged - selection, the axis
+// gizmo, hiding, dragging, Ctrl+D, the marquee, the inspector. They are
+// filtered out of the manifest and the .glb, the only two places that walk
+// every placement, so they can never reach the ship.
+//
+// Which element a shape belongs to is decided by *where it is*, not by a tag:
+// a shape is owned by the staged element whose bounding box, grown by
+// ASSOCIATION_MARGIN, it overlaps most. That is what makes copying work - drag
+// a duplicate of one barrel's hull onto another and it simply becomes that
+// one's. It is only safe because the stage lays elements out with more than
+// twice that margin between them, so no two grown boxes can ever touch.
+
+/** How far outside an element's own bounds a shape still counts as its own. */
+export const ASSOCIATION_MARGIN = 0.5;
+
+/** Clear ground between staged elements, so their grown boxes cannot meet. */
+const STAGE_GAP = ASSOCIATION_MARGIN * 2 + 1;
+
+function stagedElements() {
+  return [...state.placements.values()].filter((p) => p.stage);
+}
+
+export function stageColliders() {
+  return [...state.colliders.values()].filter((c) => c.stage);
+}
+
+/** The world AABB of a node, grown by the association margin. */
+function grownBounds(node) {
+  const b = worldBounds(node);
+  if (!b) return null;
+  const m = new Vector3(ASSOCIATION_MARGIN, ASSOCIATION_MARGIN, ASSOCIATION_MARGIN);
+  return { min: b.min.subtract(m), max: b.max.add(m) };
+}
+
+function overlapVolume(a, b) {
+  const dx = Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x);
+  const dy = Math.min(a.max.y, b.max.y) - Math.max(a.min.y, b.min.y);
+  const dz = Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z);
+  if (dx <= 0 || dy <= 0 || dz <= 0) return 0;
+  return dx * dy * dz;
+}
 
 /**
- * A stand-in of the module being edited, so you can see what you are fitting.
+ * Read the staging area back into the per-module record.
  *
- * Deliberately *not* a placement: it is never in state.placements, so it cannot
- * reach the layout, the manifest or the .glb, and it cannot be selected, moved
- * or deleted by accident. It sits at the origin with an identity transform,
- * which is what makes the module's local space and the world agree while you
- * are editing - so every existing tool (the ghost, dragging, scaling, the axis
- * gizmo, the inspector) works on module primitives with no changes at all.
+ * Only modules currently staged are rewritten. Anything else keeps what it had
+ * - staging one barrel must not wipe the collision of every other module.
+ *
+ * Run after every change rather than only on the way out, so the record is
+ * always current and leaving, saving or removing an element need no special
+ * handling. A shape that belongs to nothing is left where it is and counted, so
+ * it can be reported rather than silently dropped.
  */
-let moduleRef = null;
+export function harvestStage() {
+  const elements = stagedElements();
+  if (!elements.length) return { assigned: 0, orphans: stageColliders().length };
 
-async function showModuleRef(moduleId, instantiate) {
-  hideModuleRef();
-  const root = await instantiate(moduleId, "__MODULE_REF");
-  root.position.set(0, 0, 0);
-  root.rotationQuaternion = Quaternion.Identity();
-  root.scaling.set(1, 1, 1);
-  for (const m of root.getChildMeshes()) {
-    m.isPickable = false;         // the shapes are what you are here to click
-    m.metadata = null;            // and it must never resolve as a placement
+  const boxes = elements.map((e) => {
+    e.node.computeWorldMatrix(true);
+    return { entry: e, grown: grownBounds(e.node) };
+  }).filter((x) => x.grown);
+
+  const claimed = new Map(boxes.map((b) => [b.entry.id, []]));
+  let orphans = 0;
+  for (const c of stageColliders()) {
+    c.node.computeWorldMatrix(true);
+    const cb = worldBounds(c.node);
+    if (!cb) continue;
+    let best = null, bestVol = 0;
+    for (const b of boxes) {
+      const v = overlapVolume(cb, b.grown);
+      if (v > bestVol) { bestVol = v; best = b; }
+    }
+    if (!best) { orphans++; continue; }
+    claimed.get(best.entry.id).push({ collider: c, host: best.entry });
   }
-  moduleRef = root;
-  return root;
+
+  let assigned = 0;
+  for (const b of boxes) {
+    const mine = claimed.get(b.entry.id);
+    // The shapes are stored relative to the element, so a module staged at a
+    // different spot next time gets them back in the right place.
+    const toLocal = b.entry.node.getWorldMatrix().clone().invert();
+    const shapes = mine.map(({ collider }) => {
+      const local = Matrix.Compose(
+        collider.node.scaling,
+        collider.node.rotationQuaternion || Quaternion.Identity(),
+        collider.node.position).multiply(toLocal);
+      const pos = new Vector3(), rot = new Quaternion(), scl = new Vector3();
+      local.decompose(scl, rot, pos);
+      const e = rot.toEulerAngles();
+      return {
+        kind: collider.kind,
+        position: round([pos.x, pos.y, pos.z]),
+        rotation: round([e.x, e.y, e.z].map((r) => r * 180 / Math.PI)),
+        scale: round([scl.x, scl.y, scl.z]),
+      };
+    });
+    assigned += shapes.length;
+    if (shapes.length) state.moduleCollision.set(b.entry.module, shapes);
+    else state.moduleCollision.delete(b.entry.module);
+  }
+  return { assigned, orphans };
 }
 
-function hideModuleRef() {
-  if (!moduleRef) return;
-  for (const m of moduleRef.getChildMeshes()) m.dispose();
-  moduleRef.dispose();
-  moduleRef = null;
+/** How many staged shapes belong to nothing, for the banner to report. */
+export function orphanCount() {
+  const boxes = stagedElements().map((e) => grownBounds(e.node)).filter(Boolean);
+  let n = 0;
+  for (const c of stageColliders()) {
+    const cb = worldBounds(c.node);
+    if (!cb) continue;
+    if (!boxes.some((b) => overlapVolume(cb, b) > 0)) n++;
+  }
+  return n;
 }
 
-/** The stand-in's node, so the camera can frame it. */
-export function moduleRefNode() { return moduleRef; }
-
-/**
- * Edit the collision of one kit module.
- *
- * The ship is not touched: it is hidden, and put back untouched on the way out.
- * Nothing here is undoable in itself - entering and leaving a mode is not an
- * edit - but everything you do *inside* it is, because module primitives are
- * ordinary colliders that happen to carry a module instead of a chunk.
- */
-export async function enterModuleCollision(moduleId, instantiate) {
-  if (!moduleId) return false;
-  state.editModule = moduleId;
-  // through select(), not by clearing the array, or the inspector keeps showing
-  // an element that is no longer on screen and no longer acted on
-  select([]);
-  await showModuleRef(moduleId, instantiate);
-  applyVisibility();
-  emit("editModule");
-  emit("colliders");
-  return true;
-}
-
-export function exitModuleCollision() {
-  if (!state.editModule) return false;
-  state.editModule = null;
-  select([]);
-  hideModuleRef();
-  applyVisibility();
-  emit("editModule");
-  emit("colliders");
-  return true;
-}
-
-/**
- * Fit a starting box to the module being edited, so there is something to
- * adjust rather than a blank stage. Uses the same AABB the room fitter would,
- * which is exactly the shape authoring a module is meant to improve on.
- */
-export async function fitModuleCollision(moduleId, boundsOf) {
+/** Where to park the next staged element, clear of everything already there. */
+async function nextStageSpot(moduleId, boundsOf) {
   const bounds = await boundsOf(moduleId);
-  if (!bounds) return null;
+  const half = bounds ? Math.max(
+    Math.abs(bounds.max.x - bounds.min.x),
+    Math.abs(bounds.max.z - bounds.min.z)) / 2 : 2;
+  let x = 0;
+  for (const e of stagedElements()) {
+    const b = worldBounds(e.node);
+    if (b) x = Math.max(x, b.max.x);
+  }
+  // A gap wider than twice the association margin, so no two grown boxes touch
+  const centre = stagedElements().length ? x + STAGE_GAP + half : 0;
+  return new Vector3(centre, 0, 0);
+}
+
+/**
+ * Put a module on the stage, with whatever shapes it already carries.
+ *
+ * One instance of each: a second would give the association rule two equally
+ * good answers. Staging one that is already there focuses it instead, which is
+ * what you actually wanted when you clicked it.
+ */
+export async function stageModule(moduleId, instantiate, boundsOf) {
+  const existing = stagedElements().find((e) => e.module === moduleId);
+  if (existing) return { entry: existing, added: false };
+
+  const at = await nextStageSpot(moduleId, boundsOf);
+  const entry = await placeAt(moduleId, at, { stage: true, silent: true });
+
+  for (const s of state.moduleCollision.get(moduleId) || []) {
+    const world = Matrix.Compose(
+      Vector3.FromArray(s.scale),
+      Quaternion.FromEulerAngles(
+        s.rotation[0] * Math.PI / 180,
+        s.rotation[1] * Math.PI / 180,
+        s.rotation[2] * Math.PI / 180),
+      Vector3.FromArray(s.position)).multiply(entry.node.getWorldMatrix());
+    const pos = new Vector3(), rot = new Quaternion(), scl = new Vector3();
+    world.decompose(scl, rot, pos);
+    const e = rot.toEulerAngles();
+    addCollider(s.kind, pos, {
+      stage: true, silent: true,
+      rotation: [e.x, e.y, e.z].map((r) => r * 180 / Math.PI),
+      scale: [scl.x, scl.y, scl.z],
+    });
+  }
+  applyVisibility();
+  emit("placements");
+  emit("colliders");
+  return { entry, added: true };
+}
+
+/**
+ * Take a module off the stage, keeping what was fitted to it.
+ *
+ * The record is read back first, so removing an element is not a way to lose
+ * its collision - staging it again brings the shapes straight back.
+ */
+export function unstageModule(entryOrId) {
+  const entry = typeof entryOrId === "string"
+    ? state.placements.get(entryOrId) : entryOrId;
+  if (!entry?.stage) return false;
+
+  harvestStage();
+  const grown = grownBounds(entry.node);
+  if (grown) {
+    for (const c of stageColliders()) {
+      const cb = worldBounds(c.node);
+      if (cb && overlapVolume(cb, grown) > 0) removeCollider(c.id, true);
+    }
+  }
+  removePlacement(entry.id);
+  state.selection = state.selection.filter((id) => id !== entry.id);
+  applyVisibility();
+  emit("placements");
+  emit("colliders");
+  emit("selection");
+  return true;
+}
+
+/** Open the staging area. It starts empty; stage what you want to work on. */
+export function enterCollisionMode() {
+  if (state.collisionMode) return false;
+  state.collisionMode = true;
+  select([]);
+  applyVisibility();
+  emit("collisionMode");
+  return true;
+}
+
+/** Close it, keeping everything that was fitted. */
+export function exitCollisionMode() {
+  if (!state.collisionMode) return false;
+  harvestStage();
+  for (const c of stageColliders()) removeCollider(c.id, true);
+  for (const e of stagedElements()) removePlacement(e.id);
+  state.collisionMode = false;
+  select([]);
+  applyVisibility();
+  emit("collisionMode");
+  emit("placements");
+  emit("colliders");
+  return true;
+}
+
+/**
+ * Fit a box to one staged element.
+ *
+ * Acts on the selection, and says so plainly when the selection is not one
+ * element: fitting "the current module" was ambiguous the moment the stage
+ * could hold more than one.
+ */
+export async function fitBoxToSelection(boundsOf) {
+  if (!state.collisionMode) return { ok: false, error: "open the collision area first" };
+  if (state.selection.length !== 1) {
+    return { ok: false,
+      error: state.selection.length
+        ? `select a single element — ${state.selection.length} are selected`
+        : "select the element to fit a box to" };
+  }
+  const entry = state.placements.get(state.selection[0]);
+  if (!entry) {
+    return { ok: false, error: "that is a collision shape — select the element itself" };
+  }
+  if (!entry.stage) return { ok: false, error: "that element is not on the staging area" };
+
+  const bounds = await boundsOf(entry.module);
+  if (!bounds) return { ok: false, error: `no bounds for ${entry.module}` };
+
   pushUndo();
-  for (const c of moduleColliders(moduleId)) removeCollider(c.id, true);
+  const grown = grownBounds(entry.node);
+  if (grown) {
+    for (const c of stageColliders()) {
+      const cb = worldBounds(c.node);
+      if (cb && overlapVolume(cb, grown) > 0) removeCollider(c.id, true);
+    }
+  }
+  entry.node.computeWorldMatrix(true);
   const size = bounds.max.subtract(bounds.min);
   const centre = bounds.min.add(bounds.max).scale(0.5);
-  const shell = state.config.shellThickness;
-  const thick = (v) => (Math.abs(v) < 1e-6 ? shell : Math.abs(v));
-  const made = addCollider("box", centre, {
-    module: moduleId, silent: true,
-    scale: [thick(size.x), thick(size.y), thick(size.z)],
-  });
+  const world = Matrix.Compose(Vector3.One(), Quaternion.Identity(), centre)
+    .multiply(entry.node.getWorldMatrix());
+  const made = addCollider("box",
+    new Vector3(world.m[12], world.m[13], world.m[14]), {
+      stage: true, silent: true,
+      rotation: eulerDeg(entry.node),
+      scale: [
+        shellThick(size.x * entry.node.scaling.x),
+        shellThick(size.y * entry.node.scaling.y),
+        shellThick(size.z * entry.node.scaling.z)],
+    });
+  harvestStage();
   applyVisibility();
   emit("colliders");
-  return made;
+  return { ok: true, collider: made, module: entry.module };
 }
 
 hooks.serializeColliders = serializeColliders;
@@ -534,4 +718,12 @@ hooks.reconcileCollider = reconcileCollider;
 // kit prototype to clone, and to land one when the carry is dropped.
 hooks.buildColliderMesh = (kind, id) => buildMesh(kind, id, state.scene);
 hooks.addCollider = (kind, opts) =>
-  addCollider(kind, Vector3.FromArray(opts.position), opts);
+  addCollider(kind, Vector3.FromArray(opts.position),
+    // a shape dropped while the staging area is open is a staged shape
+    { ...opts, stage: opts.stage !== undefined ? opts.stage : state.collisionMode });
+// Removing a staged element must keep what was fitted to it, so the delete path
+// goes through unstageModule rather than disposing the placement outright.
+hooks.unstageModule = (id) => unstageModule(id);
+// Any change to a staged shape re-reads the area into the per-module record,
+// so leaving, saving or removing an element need no special handling.
+hooks.harvestStage = () => { if (state.collisionMode) harvestStage(); };
