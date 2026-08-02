@@ -1139,6 +1139,74 @@ check("deleting a moved element still takes its shapes off the bench",
   follow.deleted.staged === 0 && follow.deleted.left === 0 && follow.deleted.stored >= 1,
   JSON.stringify(follow.deleted));
 
+// The bench has its own undo history. Its contents are deliberately not in
+// serialize(), so a *ship* snapshot restores as "no bench at all" - which is
+// exactly how Ctrl+Z used to wipe it.
+const benchUndo = await page.evaluate(async (prop) => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const el = [...ed.state.placements.values()].find((p) => p.stage && p.module === prop);
+  const shipBefore = ed.state.placements.size;
+  const shapesBefore = co.stageColliders().length;
+  ed.select([el.id]);
+  await co.fitBoxToSelection(kit.moduleBounds);
+  const fitted = co.stageColliders().length;
+
+  await ed.undo();
+  const afterUndo = {
+    staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+    shapes: co.stageColliders().length,
+    ship: ed.state.placements.size,
+    mode: ed.state.collisionMode,
+  };
+  await ed.redo();
+  return { shipBefore, shapesBefore, fitted, afterUndo,
+    afterRedo: co.stageColliders().length };
+}, PROP_A);
+check("Ctrl+Z on the bench undoes the edit and leaves the bench standing",
+  benchUndo.afterUndo.mode && benchUndo.afterUndo.staged === 2
+    && benchUndo.afterUndo.shapes === benchUndo.shapesBefore,
+  JSON.stringify(benchUndo.afterUndo));
+check("and never touches the ship",
+  benchUndo.afterUndo.ship === benchUndo.shipBefore,
+  `${benchUndo.shipBefore} -> ${benchUndo.afterUndo.ship}`);
+check("redo puts the bench edit back",
+  benchUndo.afterRedo === benchUndo.fitted,
+  `${benchUndo.afterRedo} of ${benchUndo.fitted}`);
+
+// Each side of the switch keeps its own viewpoint.
+const views = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const kit = await import("/js/kit.js");
+  const V = BABYLON.Vector3;
+  const put = (p, t) => {
+    ed.state.camera.cameraDirection.setAll(0);
+    ed.state.camera.cameraRotation.setAll(0);
+    ed.state.camera.position.set(...p);
+    ed.state.camera.setTarget(V.FromArray(t));
+  };
+  const at = () => ed.state.camera.position.asArray().map((v) => +v.toFixed(1));
+  put([-7, 6, -9], [0, 0, 0]);
+  const bench = at();
+  co.exitCollisionMode();
+  put([100, 40, -100], [0, 0, 0]);
+  const ship = at();
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  const backOnBench = at();
+  co.exitCollisionMode();
+  const backOnShip = at();
+  await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+  return { bench, ship, backOnBench, backOnShip };
+});
+check("the bench keeps its own viewpoint across a switch",
+  JSON.stringify(views.backOnBench) === JSON.stringify(views.bench),
+  `${JSON.stringify(views.bench)} -> ${JSON.stringify(views.backOnBench)}`);
+check("and the ship keeps its own",
+  JSON.stringify(views.backOnShip) === JSON.stringify(views.ship),
+  `${JSON.stringify(views.ship)} -> ${JSON.stringify(views.backOnShip)}`);
+
 // the whole point: none of this reaches the ship
 const stageLeak = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -5445,10 +5513,13 @@ const highGhost = await page.evaluate(async () => {
   return { gridY: ed.state.gridY, ghostY: n ? n.position.y : null,
            hud: document.getElementById("hud-elev").textContent };
 });
-check("duplicating raises the build plane to the source's level",
-  Math.abs(highGhost.gridY - dupHigh.sourceY) < 1e-6
+check("duplicating keeps the source's height without moving the build plane",
+  // Moving the plane was the old behaviour, and it meant Ctrl+D silently
+  // changed where *everything placed afterwards* would land.
+  Math.abs(highGhost.gridY - dupHigh.gridBefore) < 1e-6
     && Math.abs(highGhost.ghostY - dupHigh.sourceY) < 1e-6,
-  `plane ${dupHigh.gridBefore} -> ${highGhost.gridY} m, ghost at ${highGhost.ghostY} m`);
+  `plane held at ${highGhost.gridY} m, ghost at ${highGhost.ghostY} m`
+  + ` from a source at ${dupHigh.sourceY} m`);
 
 await page.mouse.down(); await page.mouse.up();
 await page.waitForTimeout(800);

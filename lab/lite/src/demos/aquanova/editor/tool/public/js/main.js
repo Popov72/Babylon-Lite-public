@@ -1234,20 +1234,23 @@ function duplicateCurrent() {
   if (entry.type === "collider") {
     // the plane is the primitive's base, to match the corner-first drop
     const half = colliderHalf(entry.node.scaling.asArray(), entry.node.rotationQuaternion).y;
-    if (Math.abs(y - half - state.gridY) > 1e-6) setGridElevation(y - half);
     armColliderGhost(entry.kind, {
       rotation: eulerOf(entry.node),
       scaling: entry.node.scaling.asArray(),
+      baseY: y - half,
     });
     refreshColliderButtons();
     setStatus(`copy of ${COLLIDER_LABEL[entry.kind]} on the cursor — click to place`);
     return;
   }
-  if (Math.abs(y - state.gridY) > 1e-6) setGridElevation(y);
 
   setBrush(entry.module, {
     rotation: eulerOf(entry.node),
     scaling: entry.node.scaling.asArray(),
+    // The copy keeps the source's height without dragging the build plane up
+    // to it. Moving the plane was the old way, and it meant Ctrl+D silently
+    // changed where *everything placed afterwards* would land.
+    baseY: y,
   });
   setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place`);
 }
@@ -1528,16 +1531,26 @@ $("btn-edit-module").addEventListener("click", async () => {
 });
 $("btn-module-done").addEventListener("click", closeCollisionArea);
 
-/** Put a module on the stage, or focus it if it is already there. */
+/**
+ * Put a module on the bench.
+ *
+ * One already there is focused rather than duplicated - a second instance would
+ * give the association rule two equally good answers. A new one comes up on the
+ * cursor as a ghost, the same as placing anything else, so you choose where it
+ * goes instead of being handed a spot.
+ */
 async function stageFromPalette(moduleId) {
-  await whileBusy(`staging ${moduleId}…`, async () => {
-    const { entry, added } = await stageModule(moduleId, instantiate, moduleBounds);
-    select([entry.id]);
-    focusNodes([entry.node]);
-    setStatus(added
-      ? `${moduleId} staged — select it and press Fit a box, or drop shapes on it`
-      : `${moduleId} is already staged`);
-  });
+  const already = [...state.placements.values()]
+    .find((p) => p.stage && p.module === moduleId);
+  if (already) {
+    cancelGhost();
+    select([already.id]);
+    focusNodes([already.node]);
+    setStatus(`${moduleId} is already staged`);
+    return;
+  }
+  setBrush(moduleId);
+  setStatus(`${moduleId} — click to put it on the bench`);
 }
 
 $("btn-module-fit").addEventListener("click", async () => {

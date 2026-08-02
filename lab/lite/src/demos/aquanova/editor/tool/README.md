@@ -453,11 +453,13 @@ duplicate that lands next to its source has to be dragged where you actually
 wanted it anyway. It arms a ghost exactly as clicking a palette tile does —
 brush and all, so the copy stays armed for repeat placement — seeded with the
 source's rotation and scale, so a turned or **mirrored** piece copies as it
-looks. It also **raises the build plane to the source's own height**: the ghost
-rides that plane, so without it a copy of something on an upper deck would
-reappear down at ground level. Moving the plane rather than giving the ghost a
-private height keeps one source of truth, and the grid visibly follows so it is
-obvious what happened. **A multi-selection is carried too**: the ghost holds a
+looks. It **keeps the source's own height without moving the build plane**: the
+ghost carries a private height for exactly this, so a copy of something on an
+upper deck reappears up there rather than down at ground level, and the plane
+you were building on is left where you put it. Moving the plane was the earlier
+answer — one source of truth, visibly followed by the grid — but it meant a
+duplicate silently changed where *everything placed afterwards* would land.
+**A multi-selection is carried too**: the ghost holds a
 list of items, each with its own offset, turn and mirroring, so `Ctrl+D` on
 twelve walls hands you twelve walls.
 
@@ -468,6 +470,10 @@ your hand is doing:
 
 * **Drag** — press, move, release. The elements stay **solid** and follow
   directly. The button is held throughout.
+* **Ctrl+D** — a copy of the current element comes up on the cursor. It keeps
+  the source's height **without moving the build plane**: moving the plane was
+  the old behaviour, and it meant a duplicate silently changed where everything
+  placed afterwards would land.
 * **Carry** (`M`) — the selection lifts onto the cursor as a **translucent**
   ghost. No button held: move the mouse, turn with `R`, mirror with `F`, fly the
   camera, then click to drop. `Esc` puts everything back where it was.
@@ -1126,9 +1132,9 @@ is a poor fit and which are placed many times over.
 
 **Edit collision** opens a staging area. It is a *mode*, not a property of the
 selection: it starts empty, and you stage whatever modules you want to work on.
-Clicking a palette tile stages that module; clicking one already there focuses
-it rather than adding a second, because a second instance would give the
-association rule below two equally good answers.
+Clicking a palette tile arms a ghost you place yourself; clicking one already
+there focuses it rather than adding a second, because a second instance would
+give the association rule below two equally good answers.
 
 Staged elements are real placements carrying `stage: true`. That is what makes
 every existing tool work on them unchanged — selection, `X`, `H`, `Del`,
@@ -1172,6 +1178,21 @@ were on it and where, and re-opening puts them back. Coming back to a blank
 stage after stepping out to look at the ship was the wrong default: this is a
 workbench, not a dialog. The roster rides in the collision file, so it survives
 a reload as well as a trip back to the ship.
+
+**Each side keeps its own viewpoint.** Coming back to the ship pointing at a
+barrel, or to the bench pointing across the ship, meant finding your bearings
+again on every switch.
+
+**Clicking a palette tile arms a ghost**, the same as placing anything else, so
+you choose where a stand-in goes. Clicking one already on the bench focuses it
+instead of adding a second — a second instance would give the association rule
+two equally good answers.
+
+**The bench has its own undo history.** Its contents are deliberately not in
+``serialize()`` - they must never reach the ship - so a *ship* snapshot restores
+as "no bench at all", which is precisely how ``Ctrl+Z`` used to wipe it. A
+separate stack also means undoing one box does not rebuild a hundred placements,
+and the ship''s own history is left untouched while you work.
 
 **Moving or turning a stand-in carries its shapes with it**, and changes nothing
 about the hull: the hull is authored in the module's own frame, so shifting the

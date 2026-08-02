@@ -129,6 +129,10 @@ export function emit(evt, payload) {
 let gridNode = null;
 let undoStack = [];
 let redoStack = [];
+// The staging area's own history, so undoing a box there does not restore a
+// ship snapshot that knows nothing about the bench - see pushUndo.
+let stageUndo = [];
+let stageRedo = [];
 
 // ------------------------------------------------------------------ setup
 
@@ -2542,6 +2546,17 @@ export function historyLimits() {
 
 export function pushUndo() {
   if (restoring) return;
+  // The staging area keeps its own history. Its contents are deliberately not
+  // in serialize() - they must never reach the ship - so a ship snapshot taken
+  // there restores as "no bench at all", which is precisely how Ctrl+Z used to
+  // wipe it. A separate stack also means a bench edit does not rebuild 116
+  // placements to undo one box.
+  if (state.collisionMode) {
+    stageUndo.push(JSON.stringify(hooks.serializeStage()));
+    trimHistory(stageUndo);
+    stageRedo.length = 0;
+    return;
+  }
   undoStack.push(JSON.stringify(serialize()));
   trimHistory(undoStack);
   redoStack.length = 0;
@@ -2549,10 +2564,19 @@ export function pushUndo() {
 
 /** Depth of each history stack - for tests and diagnostics. */
 export function historyDepth() {
-  return { undo: undoStack.length, redo: redoStack.length };
+  return state.collisionMode
+    ? { undo: stageUndo.length, redo: stageRedo.length }
+    : { undo: undoStack.length, redo: redoStack.length };
 }
 
 export async function undo() {
+  if (state.collisionMode) {
+    if (!stageUndo.length) return;
+    stageRedo.push(JSON.stringify(hooks.serializeStage()));
+    trimHistory(stageRedo);
+    await hooks.restoreStage(JSON.parse(stageUndo.pop()));
+    return;
+  }
   if (!undoStack.length) return;
   redoStack.push(JSON.stringify(serialize()));
   trimHistory(redoStack);
@@ -2560,10 +2584,23 @@ export async function undo() {
 }
 
 export async function redo() {
+  if (state.collisionMode) {
+    if (!stageRedo.length) return;
+    stageUndo.push(JSON.stringify(hooks.serializeStage()));
+    trimHistory(stageUndo);
+    await hooks.restoreStage(JSON.parse(stageRedo.pop()));
+    return;
+  }
   if (!redoStack.length) return;
   undoStack.push(JSON.stringify(serialize()));
   trimHistory(undoStack);
   await deserialize(JSON.parse(redoStack.pop()));
+}
+
+/** Start the staging area's history clean, so it cannot reach past itself. */
+export function resetStageHistory() {
+  stageUndo.length = 0;
+  stageRedo.length = 0;
 }
 
 // ---------------------------------------------------------------- helpers

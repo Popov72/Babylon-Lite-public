@@ -227,6 +227,9 @@ async function buildGhost(specs, opts = {}) {
     root, items, meshes,
     centre: min ? min.add(max).scale(0.5) : Vector3.Zero(),
     mode: opts.mode || "place",
+    // A copy keeps its source's height without the build plane being dragged
+    // up to it - which used to change where everything placed afterwards went.
+    baseY: Number.isFinite(opts.baseY) ? opts.baseY : null,
     quat: opts.rotation
       ? Quaternion.FromEulerAngles(
         opts.rotation[0] * Math.PI / 180,
@@ -461,6 +464,7 @@ function moveGhostToCursor() {
   // keeps all of that in step, and switching back to X/Z simply resumes at the
   // new height instead of snapping the ghost back down.
   if (state.dragAxis === "y") {
+    ghost.baseY = null;              // V takes over the height from here
     if (!ghost.vFrom) rebaseGhostVertical();
     const anchor = ghost.root.position.add(off);
     const now = cursorOnVerticalPlane(anchor);
@@ -478,7 +482,8 @@ function moveGhostToCursor() {
   // ceiling module sits metres above its origin, and following the build plane
   // would leave it floating far up-screen from the pointer - far enough that
   // you cannot reach the bottom of the viewport before running out of window.
-  const p = cursorOnPlane(state.gridY + off.y);
+  const planeY = Number.isFinite(ghost.baseY) ? ghost.baseY : state.gridY;
+  const p = cursorOnPlane(planeY + off.y);
   if (!p) return;
   const s = state.snap.pos || 0;
   const snap = (v) => (s ? Math.round(v / s) * s : v);
@@ -494,7 +499,7 @@ function moveGhostToCursor() {
       ? ghost.root.position.x : a.base.x + snap(p.x - a.cursor.x);
     const z = state.dragAxis === "x"
       ? ghost.root.position.z : a.base.z + snap(p.z - a.cursor.z);
-    ghost.root.position.set(x, state.gridY + lift.y, z);
+    ghost.root.position.set(x, planeY + lift.y, z);
     return;
   }
 
@@ -502,7 +507,7 @@ function moveGhostToCursor() {
   // is, so it slides along one line from where you put it.
   const x = state.dragAxis === "z" ? ghost.root.position.x : snap(p.x - off.x);
   const z = state.dragAxis === "x" ? ghost.root.position.z : snap(p.z - off.z);
-  ghost.root.position.set(x + lift.x, state.gridY + lift.y, z + lift.z);
+  ghost.root.position.set(x + lift.x, planeY + lift.y, z + lift.z);
 }
 
 function setCursorHidden(hidden) {
@@ -590,7 +595,11 @@ export async function dropGhost() {
       })
       : await placeAt(l.module, l.pos, {
         rotation: euler, scale: l.scl.asArray(), silent: ids.length > 0,
+        // On the collision bench a dropped module is a stand-in, not ship
+        // geometry - and it arrives carrying whatever hull it already has.
+        stage: state.collisionMode,
       });
+    if (p && state.collisionMode && !l.collider) hooks.attachModuleShapes(p);
     if (p) { ids.push(p.id); made = p; }
   }
   if (ids.length > 1) select(ids);
