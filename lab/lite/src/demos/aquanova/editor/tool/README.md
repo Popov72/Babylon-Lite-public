@@ -1984,16 +1984,17 @@ and glTF has no way to say "alpha driven by noise", so the export wrote it
 the emissive values the export flattened; it now carries alpha the same way:
 
 ```json
-"transparency": { "M_Glass": { "alpha": 0.28, "roughness": 0.5 } }
+"transparency": {
+  "M_Glass": { "alpha": 0.28, "tint": [0.470588, 0.776471, 0.596078], "roughness": 0.5 }
+}
 ```
 
-`0.28` is the middle of that `0.05…0.5` range held still. `tint` and
-`roughness` are optional — the kit's own colour is `0.471, 0.776, 0.596` if you
-want the green as well as the transparency. It is applied to the ship and the
-palette alike, and it **is exported**: the glb comes out `alphaMode: "BLEND"`
-with a base-colour alpha of 0.28, so the runtime gets glass too. Like the
-emissive values, it is authored state, not a viewport aid — unlike
-`backFaceCulling`, which is put back the way the kit had it on the way out.
+`0.28` is the middle of that `0.05…0.5` range held still, and the tint is their
+colour exactly. It is applied to the ship and the palette alike, and it **is
+exported**: the glb comes out `alphaMode: "BLEND"` with a base-colour alpha of
+0.28, so the runtime gets glass too. Like the emissive values, it is authored
+state, not a viewport aid — unlike `backFaceCulling`, which is put back the way
+the kit had it on the way out.
 
 > Applied **before** the dedupe key is taken, deliberately. Once the override
 > has settled what `M_Glass` is, the kit's two spellings of it are the same

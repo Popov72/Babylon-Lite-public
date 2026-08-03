@@ -81,7 +81,7 @@ export async function initThumbs() {
  * the whole point of the fix that added this was a tile disagreeing with the
  * ship, which is exactly the sort of thing you would then still be staring at.
  */
-const THUMB_VERSION = 3;
+const THUMB_VERSION = 4;
 
 const keyOf = (id) => `v${THUMB_VERSION}_${id.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
 

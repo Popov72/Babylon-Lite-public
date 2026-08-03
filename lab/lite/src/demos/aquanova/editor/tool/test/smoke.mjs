@@ -82,21 +82,25 @@ const glass = await page.evaluate(async () => {
       const src = m.sourceMesh || m;
       if (src.material?.name === "M_Glass") {
         seen[tag] = { alpha: +src.material.alpha.toFixed(3),
-          mode: src.material.transparencyMode, uid: src.material.uniqueId };
+          mode: src.material.transparencyMode, uid: src.material.uniqueId,
+          albedo: src.material.albedoColor?.asArray().map((v) => +v.toFixed(3)) };
       }
     }
   }
   const names = new Map();
   for (const [, m] of kit.materialRegistry) names.set(m.name, (names.get(m.name) || 0) + 1);
-  const want = kit.getKitMaterials()?.transparency?.M_Glass?.alpha;
+  const want = kit.getKitMaterials()?.transparency?.M_Glass;
   return { seen, want, materials: kit.materialRegistry.size, names: names.size,
     glassCopies: names.get("M_Glass") || 0 };
 });
 console.log("glass       :", JSON.stringify(glass));
 const both = glass.seen.blend && glass.seen.opaque;
+const tinted = both && glass.want.tint
+  && glass.seen.blend.albedo.every((v, i) => Math.abs(v - glass.want.tint[i]) < 0.002);
 const glassBad = !both
-  || glass.seen.blend.alpha !== glass.want || glass.seen.opaque.alpha !== glass.want
-  || glass.seen.blend.mode !== 2
+  || glass.seen.blend.alpha !== glass.want.alpha
+  || glass.seen.opaque.alpha !== glass.want.alpha
+  || glass.seen.blend.mode !== 2 || !tinted
   // the override settles the difference, so the two spellings share one copy
   || glass.seen.blend.uid !== glass.seen.opaque.uid || glass.glassCopies !== 1;
 // and the sharing still has to be doing its job
