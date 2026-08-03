@@ -791,7 +791,7 @@ export function setGridVisible(v) { gridNode.setEnabled(v); }
 //
 //   bright arrow    the axes a drag moves along     (V)
 //   curved arrow    the axis a turn goes about      (Shift+R)
-//   cube on the tip the axis a scale acts on        (Shift+F)
+//   cube on the tip the axis a scale acts on        (F)
 //
 // and two DOM chips carry the *values*: the move step at the origin, the turn
 // angle inside the curved arrow.
@@ -812,7 +812,7 @@ export function liveAxes(mode = state.dragAxis) {
  * own.
  *
  * `axisSpace` says whose axes the *move axis* and the *rotation axis* mean. In
- * world space "X only" slides along world X and `R` turns about world Y; in
+ * world space "X only" slides along world X and a turn goes about world Y; in
  * local space they use the element's own, so a wall turned 90 degrees slides
  * along its length rather than across it, and a tilted panel turns about its
  * own edge. Null means the world, which every caller treats as "no basis".
@@ -876,12 +876,6 @@ export function axesTarget() { return axes?.id || null; }
 
 /** Which space the axes are drawn in - "world" or "local". */
 export function axesSpace() { return axes?.space || null; }
-
-/** Whether the turn arrow is drawn reversed, i.e. the step is negative. */
-export function axesRotArrowFlipped() {
-  const ring = axes?.marks.rot[state.rotAxis];
-  return ring ? ring.scaling.x < 0 : null;
-}
 
 /** The id used for the armed ghost, which is not a placement and has no id. */
 export const GHOST_AXES = "__ghost__";
@@ -1186,11 +1180,10 @@ function placeAxisLabel() {
   const ring = axes.marks.rot[state.rotAxis];
   if (ring && axes.rotLabel) {
     if (!ring.isEnabled()) { axes.rotLabel.hidden = true; } else {
-      // The curved arrow has a head, so it states a *direction* - and a
-      // negative step turns the other way. Mirroring the arc reverses which
-      // way it circulates, so the picture cannot disagree with the key.
-      ring.scaling.x = state.snap.rot < 0 ? -1 : 1;
-      ring.computeWorldMatrix(true);
+      // The curved arrow used to be mirrored for a negative step, back when a
+      // step carried its own direction. The wheel carries it now - one way
+      // turns, the other way turns back - so the step is a magnitude again and
+      // the arrow has nothing to disagree with.
       placeChip(axes.rotLabel, ring.getAbsolutePosition(),
         state.snap.rot ? `${state.snap.rot}°` : "free");
     }
@@ -2932,3 +2925,4 @@ export function worldBounds(node) {
   }
   return min ? { min, max } : null;
 }
+

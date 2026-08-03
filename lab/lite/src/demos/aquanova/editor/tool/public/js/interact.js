@@ -4,7 +4,7 @@
 // of a module - follows the cursor snapped to the build plane; clicking drops
 // it. A placed element is moved by dragging it directly. Whatever the ghost
 // holds, or whatever the cursor hovers, or failing both the selection, is the
-// *current element*: Q/E turn it, F flips it, Shift + wheel resizes it.
+// *current element*: Shift+wheel turns it, Ctrl+wheel resizes it, Alt+F flips it.
 
 import { getProto } from "./kit.js";
 import {
@@ -1255,8 +1255,23 @@ function onWheel(ev) {
     return;
   }
 
+  // Shift turns, Ctrl resizes. The two edits a wheel can do, on the two
+  // modifiers, so the bare wheel is always the camera - and the letter keys are
+  // left free to carry the *settings* those edits use. Alt adds the pivot
+  // variant of a turn: the whole selection about one point rather than each
+  // element about its own.
+  //
+  // preventDefault above is what makes Ctrl+wheel usable at all: it is the
+  // browser's zoom, and the listener is registered non-passive on the viewport
+  // in capture, before Babylon's own handler sees it.
   const editable = !!ghost || wheelTargets().length > 0;
-  if (ev.shiftKey && !ev.ctrlKey && !ev.metaKey && editable) {
+  const shift = ev.shiftKey && !ev.ctrlKey && !ev.metaKey;
+  const ctrl = (ev.ctrlKey || ev.metaKey) && !ev.shiftKey;
+  if (editable && shift) {
+    rotateCurrent(dir, ev.altKey);
+    return;
+  }
+  if (editable && ctrl) {
     scaleCurrent(dir);
     return;
   }
@@ -1275,7 +1290,7 @@ function beginWheelEdit() {
  * Turn the current element(s) by one step about the chosen axis.
  *
  * Whose axis that is comes from the same World/Local setting as moving: in
- * world space `R` turns about the world's Y, in local space about the
+ * world space a turn goes about the world's Y, in local space about the
  * element's own - which on anything already turned is a different axis, and
  * the one you mean when you say "tilt this panel back a bit".
  *
@@ -1422,3 +1437,4 @@ export function cycleScaleAxis(dir = 1) {
   state.scaleAxis = SCALE_AXES[(i + dir + SCALE_AXES.length) % SCALE_AXES.length];
   emit("modes");
 }
+

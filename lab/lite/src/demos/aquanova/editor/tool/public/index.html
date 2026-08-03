@@ -38,32 +38,27 @@
       <option value="world" selected>World</option>
       <option value="local">Local</option>
     </select>
-    <label title="How far one press of R turns an element, in degrees — negative turns the other way, and free is a fine 0.5° step · Ctrl+R cycles forwards, Ctrl+Shift+R back">Rot</label>
-    <select id="snap-rot" title="How far one press of R turns an element, in degrees — negative turns the other way, and free is a fine 0.5° step · Ctrl+R cycles forwards, Ctrl+Shift+R back">
-      <option value="-90">-90&deg;</option>
-      <option value="-45">-45&deg;</option>
-      <option value="-15">-15&deg;</option>
-      <option value="-5">-5&deg;</option>
-      <option value="-0.5">-free</option>
+    <label title="How far one notch of Shift+wheel turns an element, in degrees — free is a fine 0.5° step · Shift+R cycles forwards, Ctrl+R back">Rot</label>
+    <select id="snap-rot" title="How far one notch of Shift+wheel turns an element, in degrees — free is a fine 0.5° step · Shift+R cycles forwards, Ctrl+R back">
       <option value="0.5">free</option>
       <option value="5">5&deg;</option>
       <option value="15">15&deg;</option>
       <option value="45">45&deg;</option>
       <option value="90" selected>90&deg;</option>
     </select>
-    <select id="rot-axis" title="Rotation axis — R turns about it, Alt+R swings the whole selection about a shared pivot · Shift+R cycles">
+    <select id="rot-axis" title="Rotation axis — Shift+wheel turns about it, Alt+Shift+wheel swings the whole selection about a shared pivot · R cycles">
       <option value="y" selected>Y</option>
       <option value="x">X</option>
       <option value="z">Z</option>
     </select>
-    <label title="How much one Shift+wheel notch resizes an element — free is a fine 0.01 step · Ctrl+F cycles forwards, Ctrl+Shift+F back">Scale</label>
-    <select id="snap-scale" title="How much one Shift+wheel notch resizes an element — free is a fine 0.01 step · Ctrl+F cycles forwards, Ctrl+Shift+F back">
+    <label title="How much one Ctrl+wheel notch resizes an element — free is a fine 0.01 step · Shift+F cycles forwards, Ctrl+F back">Scale</label>
+    <select id="snap-scale" title="How much one Ctrl+wheel notch resizes an element — free is a fine 0.01 step · Shift+F cycles forwards, Ctrl+F back">
       <option value="0.01">free</option>
       <option value="0.05">0.05</option>
       <option value="0.1" selected>0.1</option>
       <option value="0.25">0.25</option>
     </select>
-    <select id="scale-axis" title="Scale axis — Shift+wheel resizes on it and F mirrors on it · Shift+F cycles">
+    <select id="scale-axis" title="Scale axis — Ctrl+wheel resizes on it and Alt+F mirrors on it · F cycles">
       <option value="all" selected>all</option>
       <option value="x">X</option>
       <option value="y">Y</option>

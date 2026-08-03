@@ -349,17 +349,16 @@ check("the inertia slider is gone and the camera is fixed at 0.75",
 check("Rot and Scale no longer offer a meaningless 'off'",
   !knobs.rotOptions.includes("0") && !knobs.scaleOptions.includes("0"),
   `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`);
-// R only ever turned one way, so turning back meant four presses of 90 or
-// switching the axis and thinking about signs. A negative step is the same
-// key going the other way. The list is a number line, so Ctrl+R sweeps it -
-// and `free` sits in the middle of it, being the smallest step there is.
-check("the rotation step runs from -90 to 90, through a fine step either way",
-  knobs.rotOptions.join() === "-90,-45,-15,-5,-0.5,0.5,5,15,45,90",
+// The step used to carry a sign, back when a key turned and only ever one way.
+// The wheel turns both ways, so the sign went with it: the list is magnitudes
+// again, running from a fine step up to a quarter turn.
+check("the rotation step runs from a fine step up to a quarter turn",
+  knobs.rotOptions.join() === "0.5,5,15,45,90",
   `[${knobs.rotOptions}]`);
 check("and the scale step starts at a fine one",
   knobs.scaleOptions.join() === "0.01,0.05,0.1,0.25", `[${knobs.scaleOptions}]`);
 check("both are labelled 'free', the way the Move step's 'off' is",
-  knobs.rotLabels.filter((t) => /free/.test(t)).length === 2
+  knobs.rotLabels.filter((t) => /free/.test(t)).length === 1
     && knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1,
   `rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`);
 
@@ -373,37 +372,27 @@ const rotSign = await page.evaluate(async () => {
   ed.select([c.id]);
   const wasStep = ed.state.snap.rot, wasAxis = ed.state.rotAxis;
   ed.state.rotAxis = "y";
-  const run = (step) => {
+  const run = (step, dir) => {
     c.node.rotationQuaternion = BABYLON.Quaternion.Identity();
     ed.state.snap.rot = step;
-    i.rotateCurrent(1);
+    i.rotateCurrent(dir);
     return +(c.node.rotationQuaternion.toEulerAngles().y * 180 / Math.PI).toFixed(2);
   };
-  const out = { p90: run(90), m90: run(-90), p45: run(45), m45: run(-45), p5: run(5), m5: run(-5),
-    free: run(0.5), freeBack: run(-0.5) };
-  // the curved arrow on the gizmo has a head, so it states a direction too
-  ed.showAxes(c.id);
-  ed.state.snap.rot = -90; window.__scene.render();
-  out.arrowBack = ed.axesRotArrowFlipped();
-  ed.state.snap.rot = 90; window.__scene.render();
-  out.arrowForward = ed.axesRotArrowFlipped();
-  ed.hideAxes();
+  const out = { p90: run(90, 1), m90: run(90, -1), p45: run(45, 1), m45: run(45, -1),
+    p5: run(5, 1), m5: run(5, -1), free: run(0.5, 1), freeBack: run(0.5, -1) };
   ed.state.snap.rot = wasStep; ed.state.rotAxis = wasAxis;
   ed.clearAll(); ed.select([]);
   return out;
 });
-check("a negative step turns the same key the other way",
+check("the direction comes from the wheel, not the step",
   rotSign.p90 === -rotSign.m90 && rotSign.p45 === -rotSign.m45 && rotSign.p5 === -rotSign.m5
     && rotSign.p90 === 90,
   `${rotSign.p90}/${rotSign.m90}, ${rotSign.p45}/${rotSign.m45}, ${rotSign.p5}/${rotSign.m5}`);
-// `free` is a fine step, not no step - a keyboard step of zero would simply do
-// nothing, which is why "off" was taken off these two lists in the first place.
+// `free` is a fine step, not no step - a step of zero would simply do nothing,
+// which is why "off" was taken off these two lists in the first place.
 check("'free' turns by half a degree, either way",
   Math.abs(rotSign.free - 0.5) < 1e-6 && Math.abs(rotSign.freeBack + 0.5) < 1e-6,
   `${rotSign.free} / ${rotSign.freeBack}`);
-check("and the gizmo's turn arrow points the way it will actually go",
-  rotSign.arrowBack === true && rotSign.arrowForward === false,
-  `at -90 flipped=${rotSign.arrowBack}, at 90 flipped=${rotSign.arrowForward}`);
 
 // The wheel already goes both ways, so the scale step needs no sign - but its
 // floor did need lifting. A fixed 5 cm floor sat at exactly five times a 0.01
@@ -3164,9 +3153,9 @@ for (const where of ["atOrigin", "away", "near", "closer"]) {
 check("and the block put back the gizmo it borrowed", gizmoCull.restored);
 
 // and it follows both the angle and the axis
-await page.keyboard.press("Control+r");
+await page.keyboard.press("Shift+r");
 await page.waitForTimeout(250);
-await page.keyboard.press("Shift+R");
+await page.keyboard.press("r");
 await page.waitForTimeout(400);
 const rotFollowed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -3178,8 +3167,8 @@ const rotFollowed = await page.evaluate(async () => {
     onAxisArm: ring ? ring.getAbsolutePosition().asArray().map((v) => Math.abs(v) > 0.5) : null,
   };
 });
-check("the angle chip follows Ctrl+R, and moves to the arm Shift+R picks",
-  rotFollowed.text === "-90°" && rotFollowed.axis === "x"
+check("the angle chip follows Shift+R, and moves to the arm R picks",
+  rotFollowed.text === "0.5°" && rotFollowed.axis === "x"
     && rotFollowed.onAxisArm.join() === "true,false,false",
   `${rotFollowed.text} on ${rotFollowed.axis}, at ${rotFollowed.onAxisArm}`);
 // put the angle back for the tests below
@@ -3216,9 +3205,9 @@ check("every lit scale cube carries the scale step",
   sclShown.total === 3 && sclShown.shown === 3 && sclShown.texts.join() === "0.1",
   JSON.stringify(sclShown));
 
-await page.keyboard.press("Shift+F");          // all -> x
+await page.keyboard.press("f");                // all -> x
 await page.waitForTimeout(400);
-await page.keyboard.press("Control+f");        // 0.1 -> 0.25
+await page.keyboard.press("Shift+f");          // 0.1 -> 0.25
 await page.waitForTimeout(400);
 const sclOne = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -3227,7 +3216,7 @@ const sclOne = await page.evaluate(async () => {
   return { axis: ed.state.scaleAxis, step: ed.state.snap.scale,
            shown: lit.length, text: lit[0]?.textContent };
 });
-check("one axis lights one chip, and Ctrl+F changes what it says",
+check("one axis lights one chip, and Shift+F changes what it says",
   sclOne.axis === "x" && sclOne.shown === 1 && sclOne.text === "0.25",
   JSON.stringify(sclOne));
 
@@ -3420,52 +3409,68 @@ await page.evaluate(async () => {
 });
 const rotCycle = [];
 for (let k = 0; k < 3; k++) {
-  await page.keyboard.press("Shift+R");
+  await page.keyboard.press("r");
   await page.waitForTimeout(120);
   rotCycle.push(await page.evaluate(async () => (await import("/js/editor.js")).state.rotAxis));
 }
 const sclCycle = [];
 for (let k = 0; k < 4; k++) {
-  await page.keyboard.press("Shift+F");
+  await page.keyboard.press("f");
   await page.waitForTimeout(120);
   sclCycle.push(await page.evaluate(async () => (await import("/js/editor.js")).state.scaleAxis));
 }
-check("Shift+R cycles the rotation axis",
+check("R cycles the rotation axis",
   rotCycle.join() === "x,z,y", rotCycle.join(" -> "));
-check("Shift+F cycles the scale axis",
+check("F cycles the scale axis",
   sclCycle.join() === "x,y,z,all", sclCycle.join(" -> "));
 
 const rotStep = [];
 for (let k = 0; k < 2; k++) {
-  await page.keyboard.press("Control+r");
+  await page.keyboard.press("Shift+r");
   await page.waitForTimeout(120);
   rotStep.push(await page.evaluate(async () => ({
     v: (await import("/js/editor.js")).state.snap.rot,
     combo: document.getElementById("snap-rot").value,
   })));
 }
-await page.keyboard.press("Control+Shift+r");
+await page.keyboard.press("Control+r");
 await page.waitForTimeout(120);
 const rotStepBack = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.rot);
-// The list runs -90 to 90, so past 90 the cycle wraps round to the far end.
-check("Ctrl+R cycles the rotation angle, Ctrl+Shift+R goes back",
-  rotStep.map((r) => r.v).join() === "-90,-45" && rotStep.every((r) => r.combo === String(r.v))
-    && rotStepBack === -90,
+// The list runs 0.5 to 90, so past 90 the cycle wraps round to the far end.
+check("Shift+R cycles the rotation angle, Ctrl+R goes back",
+  rotStep.map((r) => r.v).join() === "0.5,5" && rotStep.every((r) => r.combo === String(r.v))
+    && rotStepBack === 0.5,
   `90 -> ${rotStep.map((r) => r.v).join(" -> ")} -> back ${rotStepBack}`);
 
 const sclStep = [];
 for (let k = 0; k < 2; k++) {
-  await page.keyboard.press("Control+f");
+  await page.keyboard.press("Shift+f");
   await page.waitForTimeout(120);
   sclStep.push(await page.evaluate(async () => ({
     v: (await import("/js/editor.js")).state.snap.scale,
     combo: document.getElementById("snap-scale").value,
   })));
 }
-check("Ctrl+F cycles the scale step",
+await page.keyboard.press("Control+f");
+await page.waitForTimeout(120);
+const sclStepBack = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.scale);
+check("Shift+F cycles the scale step, Ctrl+F goes back",
   sclStep.map((r) => r.v).join() === "0.25,0.01"
-    && sclStep.every((r) => r.combo === String(r.v)),
-  `0.1 -> ${sclStep.map((r) => r.v).join(" -> ")}`);
+    && sclStep.every((r) => r.combo === String(r.v)) && sclStepBack === 0.25,
+  `0.1 -> ${sclStep.map((r) => r.v).join(" -> ")} -> back ${sclStepBack}`);
+
+// Put the four settings back where the rest of the run expects them. Leaving a
+// half-degree step behind is invisible here and turns every later rotation
+// check into a no-op that still reads as a pass on the wrong grounds.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.state.snap.rot = 90; ed.state.rotAxis = "y";
+  ed.state.snap.scale = 0.1; ed.state.scaleAxis = "all";
+  document.getElementById("snap-rot").value = "90";
+  document.getElementById("snap-scale").value = "0.1";
+  document.getElementById("rot-axis").value = "y";
+  document.getElementById("scale-axis").value = "all";
+});
 
 // Ctrl+V and Ctrl+R are the ones that most need claiming - unclaimed it pastes - so press
 // it here, where the listener can actually see it. It walks the move step, so
@@ -4312,53 +4317,69 @@ check("ghost stays rendered through a full turn",
   spin.every((f) => f.visible && f.inActive === f.total),
   spin.map((f) => `${f.deg}:${f.inActive}/${f.total}`).join(" "));
 
-// ---- 2. E turns, Shift+wheel scales, wheel zooms ---------------------------
-// The wheel no longer rotates: it collided with zoom, which is what a wheel is
-// for in a 3D view. Rotation lives on Q/E.
+// ---- 2. Shift+wheel turns, Ctrl+wheel resizes, the bare wheel zooms --------
+// The bare wheel is always the camera, which is what a wheel is for in a 3D
+// view. The two edits it can do sit on the two modifiers.
 await page.mouse.wheel(0, -120);
 await page.waitForTimeout(150);
 let rot = await page.evaluate(() =>
   window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
-check("the wheel does not rotate the ghost", Math.abs(rot) < 0.01, `${rot.toFixed(2)}°`);
+check("the bare wheel does not rotate the ghost", Math.abs(rot) < 0.01, `${rot.toFixed(2)}°`);
 
-await page.keyboard.press("r");
+await page.keyboard.down("Shift");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Shift");
 await page.waitForTimeout(200);
 rot = await page.evaluate(() =>
   window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
-check("E turns the ghost 90°", Math.abs(Math.abs(rot) - 90) < 0.01, `${rot.toFixed(2)}°`);
+check("Shift+wheel turns the ghost 90°", Math.abs(Math.abs(rot) - 90) < 0.01, `${rot.toFixed(2)}°`);
 
+// and the other way, which is what retired the negative steps
+await page.keyboard.down("Shift");
+await page.mouse.wheel(0, 120);
+await page.keyboard.up("Shift");
+await page.waitForTimeout(200);
+const rotBack = await page.evaluate(() =>
+  window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
+check("and back the other way, which is why a step needs no sign",
+  Math.abs(rotBack) < 0.01, `${rot.toFixed(2)}° -> ${rotBack.toFixed(2)}°`);
+
+// leave it turned, which is what the placement checks below read
 await page.keyboard.down("Shift");
 await page.mouse.wheel(0, -120);
 await page.keyboard.up("Shift");
+await page.waitForTimeout(200);
+
+await page.keyboard.down("Control");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Control");
 await page.waitForTimeout(150);
 let scl = await page.evaluate(() =>
   window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
-check("Shift+wheel scales ghost +0.1", scl.every((v) => Math.abs(v - 1.1) < 1e-6), JSON.stringify(scl));
+check("Ctrl+wheel scales ghost +0.1", scl.every((v) => Math.abs(v - 1.1) < 1e-6), JSON.stringify(scl));
 
-// Shift+wheel is an edit, so it must not also dolly
+// an edit, so it must not also dolly
 const camHeld = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
-await page.keyboard.down("Shift");
+await page.keyboard.down("Control");
 await page.mouse.wheel(0, -120);
-await page.keyboard.up("Shift");
+await page.keyboard.up("Control");
 await page.waitForTimeout(400);
 const camStill = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
-check("Shift+wheel resizes without moving the camera",
+check("Ctrl+wheel resizes without moving the camera",
   JSON.stringify(camHeld) === JSON.stringify(camStill),
   `${camHeld.map((v) => v.toFixed(1))} -> ${camStill.map((v) => v.toFixed(1))}`);
-await page.keyboard.down("Shift");
+await page.keyboard.down("Control");
 await page.mouse.wheel(0, 120);            // undo the extra scale
-await page.keyboard.up("Shift");
+await page.keyboard.up("Control");
 await page.waitForTimeout(150);
 
-// Ctrl+wheel dollies the camera
+// the bare wheel dollies the camera
 const posBefore = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
-await page.keyboard.down("Control");
 await page.mouse.wheel(0, -240);
-await page.keyboard.up("Control");
 await page.waitForTimeout(600);
 const posAfter = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
 const moved = Math.hypot(posAfter[0] - posBefore[0], posAfter[1] - posBefore[1], posAfter[2] - posBefore[2]);
-check("Ctrl+wheel dollies the camera", moved > 0.5, `moved ${moved.toFixed(2)} m`);
+check("the bare wheel dollies the camera", moved > 0.5, `moved ${moved.toFixed(2)} m`);
 
 // ---- 2b. the dolly step never shrinks with distance ------------------------
 const zoom = await page.evaluate(async () => {
@@ -4456,20 +4477,20 @@ await page.evaluate(async () => {
   const s = (await import("/js/editor.js")).state;
   s.rotAxis = "y"; s.scaleAxis = "all";
 });
-await page.keyboard.press("Shift+R");
+await page.keyboard.press("r");
 await page.waitForTimeout(120);
 let axes = await page.evaluate(async () => {
   const s = (await import("/js/editor.js")).state;
   return { rot: s.rotAxis, scl: s.scaleAxis };
 });
-check("Shift+R cycles rotation axis", axes.rot === "x", `y -> ${axes.rot}`);
-await page.keyboard.press("Shift+F");
+check("R cycles rotation axis", axes.rot === "x", `y -> ${axes.rot}`);
+await page.keyboard.press("f");
 await page.waitForTimeout(120);
 axes = await page.evaluate(async () => {
   const s = (await import("/js/editor.js")).state;
   return { rot: s.rotAxis, scl: s.scaleAxis };
 });
-check("Shift+F cycles scale axis", axes.scl === "x", `all -> ${axes.scl}`);
+check("F cycles scale axis", axes.scl === "x", `all -> ${axes.scl}`);
 
 // a toolbar control that keeps focus used to swallow every shortcut
 const focusTrap = await page.evaluate(async () => {
@@ -4632,10 +4653,10 @@ const afterPlainRight = await page.evaluate(async () =>
 check("a plain right-click still cancels", afterPlainRight === 0,
   `${afterPlainRight} selected`);
 
-// R leaves a merely hovered element alone: edits go to the selection, so that
-// resting the pointer somewhere cannot decide what the next key turns.
-await page.evaluate(() => window.dispatchEvent(
-  new KeyboardEvent("keydown", { key: "r", code: "KeyR", bubbles: true })));
+// A turn leaves a merely hovered element alone: edits go to the selection, so
+// that resting the pointer somewhere cannot decide what the next one turns.
+await page.evaluate(async () =>
+  (await import("/js/interact.js")).rotateCurrent(1));
 await page.waitForTimeout(200);
 const rotAfterHover = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -4643,16 +4664,17 @@ const rotAfterHover = await page.evaluate(async () => {
   return { rot: ed.eulerOf([...ed.state.placements.values()][0].node)[1],
     hovered: i.hoveredId(), selected: ed.state.selection.length };
 });
-check("R does not turn a merely hovered element",
+check("a turn does not reach a merely hovered element",
   !!rotAfterHover.hovered && rotAfterHover.selected === 0
     && Math.abs(rotAfterHover.rot - rotBefore) < 1e-6,
   `hovering ${rotAfterHover.hovered}, held at ${rotBefore.toFixed(1)}`);
 // ...and turns it once it is actually selected
 const rotWhenSelected = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
   const e = [...ed.state.placements.values()][0];
   ed.select([e.id]);
-  window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", bubbles: true }));
+  i.rotateCurrent(1);
   return ed.eulerOf(e.node)[1];
 });
 check("but it does turn the selection",
@@ -5194,7 +5216,7 @@ const multi = await page.evaluate(async (moduleId) => {
 }, MODULE);
 check("selection is the current element", multi.kind === "selection" && multi.ids === 2,
   `${multi.kind}, "${multi.label}"`);
-check("E turns every selected element",
+check("a turn goes to every selected element",
   Math.abs(multi.after[0] - multi.before[0]) > 89 &&
   Math.abs(multi.after[1] - multi.before[1]) > 89 &&
   Math.abs(multi.after[2] - multi.before[2]) < 1e-6,
@@ -5594,8 +5616,8 @@ await page.evaluate(async () => {
 });
 
 // ---- 18d. F flips on the current scale axis --------------------------------
-const press = (key, code) => page.evaluate(([k, c]) => window.dispatchEvent(
-  new KeyboardEvent("keydown", { key: k, code: c, bubbles: true })), [key, code]);
+const press = (key, code, opts = {}) => page.evaluate(([k, c, o]) => window.dispatchEvent(
+  new KeyboardEvent("keydown", { key: k, code: c, bubbles: true, ...o })), [key, code, opts]);
 
 const flip = await page.evaluate(async (moduleId) => {
   const ed = await import("/js/editor.js");
@@ -5630,13 +5652,13 @@ const flip = await page.evaluate(async (moduleId) => {
   ed.state.scaleAxis = "all";
   return { oneX, oneZ, allResult, allScale, multi, both };
 }, MODULE);
-check("F flips on the chosen axis",
+check("a mirror flips on the chosen axis",
   flip.oneX[0] === -1 && flip.oneX[2] === 1 && flip.oneZ[0] === -1 && flip.oneZ[2] === -1,
   `x-flip ${JSON.stringify(flip.oneX)}, then z-flip ${JSON.stringify(flip.oneZ)}`);
 check("scale axis 'all' flips X, not all three",
   flip.allResult.axis === "x" && JSON.stringify(flip.allScale) === JSON.stringify([-1, 1, 1]),
   `axis=${flip.allResult.axis}, scale ${JSON.stringify(flip.allScale)}`);
-check("F flips the whole selection",
+check("a mirror flips the whole selection",
   flip.multi.count === 2 && flip.both.every((v) => v === -1),
   `${flip.multi.count} objects, scale.y ${JSON.stringify(flip.both)}`);
 
@@ -5659,7 +5681,7 @@ await page.mouse.move(dFrom.x, dFrom.y, { steps: 4 });
 await page.waitForTimeout(200);
 await page.mouse.down();
 await page.mouse.move(dTo.x, dTo.y, { steps: 8 });
-await press("f", "KeyF");
+await press("f", "KeyF", { altKey: true });
 await page.waitForTimeout(150);
 const midFlip = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -5668,18 +5690,18 @@ const midFlip = await page.evaluate(async () => {
 });
 await page.mouse.up();
 await page.waitForTimeout(200);
-check("F flips the element being dragged",
+check("Alt+F flips the element being dragged",
   midFlip.dragging && midFlip.scale[0] === -1,
   `dragging=${midFlip.dragging}, scale ${JSON.stringify(midFlip.scale)}`);
 
 // and the ghost, before it is even placed
 await page.evaluate((m) => import("/js/palette.js").then((p) => p.setBrush(m)), MODULE);
 await page.waitForTimeout(1000);
-await press("f", "KeyF");
+await press("f", "KeyF", { altKey: true });
 await page.waitForTimeout(150);
 const ghostFlip = await page.evaluate(() =>
   window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
-check("F flips the ghost before placing", ghostFlip[0] === -1,
+check("Alt+F flips the ghost before placing", ghostFlip[0] === -1,
   `ghost scale ${JSON.stringify(ghostFlip)}`);
 await page.evaluate(() => import("/js/palette.js").then((p) => p.setBrush(null)));
 
@@ -6655,9 +6677,9 @@ check("the Move step tooltip names its keys, which were undiscoverable",
   /Shift\+V/.test(tips.move) && /Ctrl\+V/.test(tips.move) && /Shift\+V/.test(tips.moveLabel),
   `"${tips.move}"`);
 check("the axis combos name their cycling keys",
-  /Shift\+R/.test(tips.rotAxis) && /\bR\b/.test(tips.rotAxis)
-    && /Shift\+F/.test(tips.scaleAxis) && /\bF\b/.test(tips.scaleAxis)
-    && /\bV\b/.test(tips.dragAxis),
+  /Shift\+wheel/.test(tips.rotAxis) && /\bR\b/.test(tips.rotAxis)
+    && /Ctrl\+wheel/.test(tips.scaleAxis) && /Alt\+F/.test(tips.scaleAxis)
+    && /\bF\b/.test(tips.scaleAxis) && /\bV\b/.test(tips.dragAxis),
   `rot "${tips.rotAxis}" · scale "${tips.scaleAxis}"`);
 check("Save still names Ctrl+S", /Ctrl\+S/.test(tips.save), `"${tips.save}"`);
 

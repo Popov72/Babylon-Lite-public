@@ -125,12 +125,12 @@ export function setBrush(id, opts = {}) {
   state.brush = id;
   brushEl.textContent = id ? `Placing: ${id}` : "No module selected";
   [...listEl.children].forEach((el) => el.classList.toggle("active", el.dataset.id === id));
-  // Transient guidance only, and no idle text: the wheel no longer turns
-  // anything, which is exactly how the old string went stale.
+  // Transient guidance only, and no idle text: the old string named keys that
+  // have since moved, which is exactly how it went stale.
   document.getElementById("hint").textContent = id
     ? (state.collisionMode
-      ? "Click to put it on the bench · E turns · Shift+wheel scales · Esc to stop"
-      : "Click to place · E turns · Shift+wheel scales · Esc or right-click to stop")
+      ? "Click to put it on the bench · Shift+wheel turns · Ctrl+wheel scales · Esc to stop"
+      : "Click to place · Shift+wheel turns · Ctrl+wheel scales · Esc or right-click to stop")
     : "";
   if (id) armGhost(id, opts); else cancelGhost();
   emit("brush");
@@ -202,3 +202,4 @@ function stopTurntable(el) {
 export function turntableState() {
   return { tile: turnTile?.dataset.id || null, running: !!turnTimer, frames: TURN_FRAMES };
 }
+

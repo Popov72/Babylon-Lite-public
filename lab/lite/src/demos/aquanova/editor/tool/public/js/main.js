@@ -1127,10 +1127,11 @@ window.addEventListener("keydown", async (e) => {
   if (mod && e.key.toLowerCase() === "d") { e.preventDefault(); return duplicateCurrent(); }
   if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
   if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); return redo(); }
-  // Ctrl + the key that uses a setting cycles that setting's *value*; Shift +
-  // the same key cycles its *axis*. R turns, F mirrors, V drags, and each keeps
-  // its own settings behind it - so everything about rotation is on R, and
-  // everything about translation on V.
+  // The bare letter picks the *axis*, Shift walks that setting's value and Ctrl
+  // walks it back. V for translation, R for rotation, F for scale - one letter
+  // each, the same three modifiers on every one. The edits themselves live on
+  // the wheel (Shift turns, Ctrl resizes) and on Alt+F for a mirror.
+  //
   // preventDefault is not optional on these: Ctrl+F is the browser's find bar,
   // Ctrl+R reloads the page, and Ctrl+V pastes. All three *can* be claimed -
   // Ctrl+R confirmed by hand, which is the only way to check: Playwright
@@ -1138,11 +1139,11 @@ window.addEventListener("keydown", async (e) => {
   // claimed to a test.
   if (mod && e.key.toLowerCase() === "r") {
     e.preventDefault();
-    return cycleRotSnap(e.shiftKey ? -1 : 1);
+    return cycleRotSnap(-1);
   }
   if (mod && e.key.toLowerCase() === "f") {
     e.preventDefault();
-    return cycleScaleSnap(e.shiftKey ? -1 : 1);
+    return cycleScaleSnap(-1);
   }
   // Ctrl+V walks the move step back, the direction Shift+V does not go.
   // Ctrl+T would have been the tidier pair with V's neighbour T, but it is a
@@ -1176,27 +1177,30 @@ window.addEventListener("keydown", async (e) => {
     case "ArrowDown": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, 0, -step));
     case "PageUp": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, step, 0));
     case "PageDown": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, -step, 0));
-    // F mirrors; Shift+F picks the axis it mirrors on (and that Shift+wheel
-    // resizes on). The action and its two settings share one letter.
+    // F is the scale axis, Shift+F walks the scale step and Ctrl+F walks it
+    // back - the same shape V has for translation and R for rotation. Mirroring
+    // is the odd one out with no setting of its own, so it takes Alt+F.
     case "f": case "F": {
       e.preventDefault();
-      if (e.shiftKey) {
+      if (e.altKey) {
+        const r = flipCurrent();
+        setStatus(r
+          ? `mirrored ${r.count} object(s) on ${r.axis.toUpperCase()}`
+          : "nothing to mirror — select an element first");
+      } else if (e.shiftKey) {
+        cycleScaleSnap(1);
+      } else {
         cycleRotOrScaleAxis("scale");
-        break;
       }
-      const r = flipCurrent();
-      setStatus(r
-        ? `mirrored ${r.count} object(s) on ${r.axis.toUpperCase()}`
-        : "nothing to mirror — select an element first");
       break;
     }
-    // R turns the current element, Shift+R picks the axis it turns about, and
-    // Alt+R swings the whole selection about a shared pivot. Everything about
-    // rotation is on one key, the way everything about translation is on V.
+    // R is the rotation axis, Shift+R walks the angle and Ctrl+R walks it back.
+    // The turn itself is Shift+wheel, and Alt+Shift+wheel swings the whole
+    // selection about a shared pivot.
     case "r": case "R":
       e.preventDefault();
-      if (e.shiftKey) cycleRotOrScaleAxis("rot");
-      else rotateCurrent(1, e.altKey);
+      if (e.shiftKey) cycleRotSnap(1);
+      else cycleRotOrScaleAxis("rot");
       break;
     // V is the drag axis; Shift+V walks the move step, Ctrl+V walks it back.
     //

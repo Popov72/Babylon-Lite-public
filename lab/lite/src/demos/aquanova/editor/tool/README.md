@@ -396,21 +396,36 @@ So is numpad `.`, which raises the build plane to the top of whatever you are
 pointing at — it reads an element rather than changing one, so it has none of
 the "the wrong thing moved" problem.
 
+**Every transform reads the same way.** The bare letter picks the *axis*, `Shift`
+walks that setting's *value* and `Ctrl` walks it back; the *edit* is a gesture,
+not a letter.
+
+| | axis | value | value back | the edit itself |
+| --- | --- | --- | --- | --- |
+| move | `V` (and `Y` for the space) | `Shift+V` | `Ctrl+V` | drag, `M`, arrow keys |
+| turn | `R` | `Shift+R` | `Ctrl+R` | `Shift`+wheel (`Alt` too: about a shared pivot) |
+| scale | `F` | `Shift+F` | `Ctrl+F` | `Ctrl`+wheel |
+| mirror | *uses the scale axis* | — | — | `Alt+F` |
+
+It was not always so: the letters used to carry the actions (`R` turned, `F`
+mirrored) with the settings behind the modifiers, which left `V` reading one way
+and `R` and `F` another for no reason anyone could give. Moving the two edits
+onto the wheel — where the third already was — freed all three letters to mean
+the same thing.
+
 | | |
 |---|---|
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot. |
-| Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
-| Turn | **`R`** — about the element's own origin, by the `Rot` step. The step is **signed**: pick a negative angle to turn the other way. The `World`/`Local` combo picks whose axis it turns about, the same as it does for moving |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
-| Axis modes | one letter per action, its settings behind the modifiers. **`V`** cycles the drag axis and **`Y`** the space it is measured in, **`Shift+V`** the move step (**`Ctrl+V`** back) · **`Shift+R`** the rotation axis, **`Ctrl+R`** the rotation angle · **`Shift+F`** the scale axis, **`Ctrl+F`** the scale step. `Ctrl+Shift` reverses the two step cycles. All three `Ctrl` pairs are claimed from the browser — reload, the find bar and paste |
-| Mirror | **`F`** — mirrors on the current Scale axis (`all` is treated as X) |
-| Turn as a group | **`Alt` + `R`** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
-| Resize | **`Shift` + wheel** — steps by the Scale snap on the current scale axis |
+| Axis modes | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste |
+| Mirror | **`Alt` + `F`** — mirrors on the current Scale axis (`all` is treated as X) |
+| Turn as a group | **`Alt` + `Shift` + wheel** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
+| Resize | **`Ctrl` + wheel** — steps by the Scale snap on the current scale axis |
 | What gets edited | the ghost if one is being placed, otherwise **the selection**. `Del` is the exception and takes the hovered element first |
-| Rotation axis | `Shift+R` cycles Y → X → Z. Y first: it is the only one a modular kit usually needs. |
-| Scale axis | `Shift+F` cycles all → X → Y → Z |
+| Rotation axis | `R` cycles Y → X → Z. Y first: it is the only one a modular kit usually needs. |
+| Scale axis | `F` cycles all → X → Y → Z |
 | Build plane | numpad `+` / `-` (or main-row `+` / `-`) by the Move step; numpad `.` jumps it to the top of the hovered element |
 | Select | **quick** left-click · `Ctrl`- or `Shift`-click adds to the selection · click empty space clears it · **drag from empty space to rubber-band**, or press **Rect select** to start the rectangle on top of a module. `Ctrl` or `Shift` while banding adds. To reach something behind a door portal, `Shift+H` the door — a ghosted element is click-through |
 | Chunks | the **Chunk** button toggles isolation — pressed (orange), every chunk but the one in the dropdown is hidden · `+` adds a chunk · **Rename** renames the active one everywhere it is used · `Assign` moves the selection into the active one |
@@ -628,11 +643,12 @@ it as before.
 > `Matrix.decompose()` moved a `[-1,1,1]` scale onto **Y** with a compensating
 > turn. It looks identical on screen and is a different ship in the manifest.
 
-**The wheel belongs to the camera.** It dollies, full stop — that is what a
-wheel does in a 3D view, and every attempt to give it a second job fought that
-expectation. It no longer rotates anything; `R` does, and it acts on the
-selection. Two exceptions, both
-deliberate: `Shift` + wheel resizes the current element, and **holding the right
+**The bare wheel belongs to the camera.** It dollies, full stop — that is what a
+wheel does in a 3D view, and every attempt to give it a *third* job fought that
+expectation. The two edits it does carry sit on its modifiers: `Shift` + wheel
+turns the current element and `Ctrl` + wheel resizes it. That is what freed the
+letters to carry those actions' *settings* instead, so `R` and `F` read the same
+way `V` always has. And **holding the right
 button turns the wheel into a fly-speed control** — the right button already
 means "I am driving the camera", so adjusting how fast reads naturally and
 cannot collide with editing. Steps are multiplicative, so the control feels the
@@ -699,7 +715,7 @@ wrong later.
 > The rotation axis is taken **per element**, matching the origin. Each element
 > already turns about its own origin — "which is what a row of props wants" —
 > so each turns about its own axis too, and a row of identically-placed props
-> tilts together instead of fanning out. `Alt+R` is the exception: one axis has
+> tilts together instead of fanning out. `Alt+Shift+wheel` is the exception: one axis has
 > to serve a group swinging about a shared pivot, so it comes from the element
 > the gesture is aimed at, the same rule the drag uses.
 
@@ -826,7 +842,7 @@ to this element" is one glance rather than three readouts:
 |---|---|---|
 | bright arrow, dim = locked | the axes a drag moves along | `V` |
 | curved arrow encircling it | the axis a turn goes about | `Shift+R` |
-| cube on the tip | the axis a scale acts on (all three for `all`) | `Shift+F` |
+| cube on the tip | the axis a scale acts on (all three for `all`) | `F` |
 | the chip at the origin | the move step, in metres, or `free` | `Shift+V` |
 | the chip inside the curved arrow | the turn angle, in degrees, signed | `Ctrl+R` |
 | a chip on each lit cube | the scale step | `Ctrl+F` |
@@ -836,23 +852,19 @@ thing — `V` never touches the ring, `Shift+R` never touches the brightness. Th
 curved arrow sweeps three quarters of a turn rather than closing into a full
 ring, so it reads as a direction of travel and not as a collar.
 
-**The turn angle is signed**: `-90°`, `-45°`, `-15°`, `-5°` sit alongside the
-positives, so `R` turns the other way without four presses of 90 or switching
-the axis and reasoning about which sign that gives. `rotateCurrent` already
-multiplied the step by a direction, so a negative step needed no new code — but
-the *arrow* did, because it has a head and therefore states a direction. It is
-mirrored on its own X when the step is negative, which reverses which way the
-arc circulates: the picture cannot disagree with the key. The list runs `-90` to
-`90` in order, so `Ctrl+R` sweeps a number line rather than jumping about.
+**The turn angle is a magnitude.** It was briefly *signed* — `-90°` through
+`-5°` sat alongside the positives — because a key only ever turned one way, so
+turning back meant four presses of 90 or switching the axis and reasoning about
+which sign that gave. The wheel carries the direction now: one way turns, the
+other turns back. So the sign went back out of the list, and the arrow the gizmo
+draws lost the mirroring it had grown to keep up with it.
 
-**`free` is a fine step, not no step.** Both lists carry one — `±0.5°` on `Rot`,
-`0.01` on `Scale` — for dialling in a value with the keys you already use. It is
-deliberately *not* zero: `Move` can be switched off because a drag is a
-continuous gesture that then goes unsnapped, but `R` and `Shift+wheel` are
-discrete, so a step of zero would simply do nothing. That is exactly why a
-literal "off" was taken off these two lists earlier, and a test still fails if
-`0` reappears in either. `Rot` gets `free` in both directions, since its sign
-lives in the step; `Scale` needs only one, the wheel already going both ways.
+**`free` is a fine step, not no step.** Both lists carry one — `0.5°` on `Rot`,
+`0.01` on `Scale` — for dialling in a value with the wheel. It is deliberately
+*not* zero: `Move` can be switched off because a drag is a continuous gesture
+that then goes unsnapped, but a wheel notch is discrete, so a step of zero would
+simply do nothing. That is exactly why a literal "off" was taken off these two
+lists earlier, and a test still fails if `0` reappears in either.
 
 > The scale floor moved with it. `scaleCurrent` clamped the magnitude at 5 cm so
 > the wheel could never take something down to nothing — harmless when the
@@ -1256,7 +1268,7 @@ Doors carry the portal:
   record only (`doors[].sealed`), not on the portal, and defaults to `false` so
   every manifest written before it reads back as an ordinary doorway.
 * **Doors resize two ways.** The inspector's `W`/`H` fields set the authored
-  opening; `Shift+wheel` and the inspector's `Scale` fields scale the node like
+  opening; `Ctrl+wheel` and the inspector's `Scale` fields scale the node like
   any other element. Both were once blocked for markers — `scaleCurrent()`
   filtered them out and `applyInspector()` guarded the write — which just made
   doors feel broken. The exported `width`/`height` fold the node scale in
