@@ -2261,6 +2261,9 @@ export const hooks = {
   // interact.js owns the placement ghost; the axes need its node, and importing
   // interact.js back would close a cycle
   ghostNode: () => null,
+  // palette.js owns the brush, and imports interact.js - so putting the tile
+  // back down after a one-shot drop has to come back through here
+  clearBrush: () => {},
 };
 
 /**

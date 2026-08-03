@@ -642,9 +642,16 @@ export async function dropGhost() {
   }
   if (ids.length > 1) select(ids);
   // A duplicate is done once dropped; a palette module stays armed so a run of
-  // tiles is just repeated clicks.
-  if (g.mode === "copy") cancelGhost();
-  else if (ghost) {
+  // tiles is just repeated clicks. Not on the collision bench: a module goes
+  // there once, to have a hull fitted to it, and staging the same one twice is
+  // refused anyway - so staying armed only ever produced a second stand-in
+  // nobody asked for. Collision primitives still repeat, because a hull really
+  // is a run of boxes.
+  const oneShot = state.collisionMode && landed.some((l) => !l.collider);
+  if (g.mode === "copy" || oneShot) {
+    cancelGhost();
+    if (oneShot) hooks.clearBrush();
+  } else if (ghost) {
     ghost.quat = quat;
     ghost.scaling = scaling;
     applyGhostTransform();

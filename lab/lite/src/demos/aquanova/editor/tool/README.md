@@ -398,7 +398,7 @@ the "the wrong thing moved" problem.
 
 | | |
 |---|---|
-| Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement. |
+| Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot. |
 | Select | **click** an element · `Ctrl`- or `Shift`-click to add or remove · click empty space to clear |
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
@@ -1463,6 +1463,17 @@ quietly it is **counted in the banner**, which says how many will be lost.
 so staging that module again brings its shapes straight back. Shapes are stored
 *relative to the element*, so it does not matter where on the area it lands next
 time.
+
+**A module dropped on the bench is a one-shot.** On the ship a palette tile
+stays armed, so a row of panels is just repeated clicks. Here it is the
+opposite: a module comes to the bench once, to have a hull fitted to it, and
+staging the same one twice is refused anyway — so staying armed only ever left
+a second stand-in on the cursor to be dismissed. The tile goes out and the hint
+clears with it, which is the visible difference between the two modes.
+
+> **Collision primitives still repeat.** A hull genuinely is a run of boxes
+> along a wall, so the box, sphere, capsule and cylinder ghosts stay armed. The
+> rule is about *modules*, not about the bench.
 
 **Fit a box** acts on the selection: exactly one element, and not a collision
 shape. Anything else says so plainly rather than guessing — "fit the current

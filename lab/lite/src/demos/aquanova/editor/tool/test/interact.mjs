@@ -8195,6 +8195,86 @@ check("every door is back once isolation is off",
   JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
+// ---- 1y. a module dropped on the collision bench is a one-shot -------------
+//
+// On the ship a palette tile stays armed, so a row of panels is just repeated
+// clicks. The bench is the opposite: a module goes there once, to have a hull
+// fitted to it, and staging the same one twice is refused anyway - so staying
+// armed only ever left a second stand-in on the cursor to be dismissed.
+const benchShot = await (async () => {
+  await page.evaluate(async () => {
+    const co = await import("/js/colliders.js");
+    const kit = await import("/js/kit.js");
+    if (!co.isCollisionMode?.() && !(await import("/js/editor.js")).state.collisionMode) {
+      await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
+    }
+  });
+  await page.waitForTimeout(700);
+
+  const read = () => page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const it = await import("/js/interact.js");
+    return { brush: ed.state.brush, armed: it.ghostActive(),
+      staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
+      colliders: ed.state.colliders.size,
+      hint: document.getElementById("hint").textContent,
+      lit: !!document.querySelector("#palette-list .item.active") };
+  });
+  const clickAt = async (dx, dy) => {
+    const b = await page.locator("#viewport").boundingBox();
+    await page.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2 + dy);
+    await page.waitForTimeout(200);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForTimeout(800);
+  };
+
+  await page.evaluate(async (id) => (await import("/js/palette.js")).setBrush(id), PROP_A);
+  await page.waitForFunction(async () => (await import("/js/interact.js")).ghostActive(),
+    null, { timeout: 20000 });
+  await page.waitForTimeout(250);
+  const armed = await read();
+  await clickAt(0, 0);
+  const one = await read();
+  await clickAt(180, 0);
+  const two = await read();
+
+  // a collision primitive is a different matter: a hull really is a run of boxes
+  await page.evaluate(async () => (await import("/js/interact.js")).armColliderGhost("box"));
+  await page.waitForTimeout(400);
+  const cBefore = await read();
+  await clickAt(-220, 70);
+  await clickAt(-280, 70);
+  const cAfter = await read();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  return { armed, one, two, cBefore, cAfter };
+})();
+check("the hint says a bench click puts the module on the bench",
+  /bench/.test(benchShot.armed.hint), JSON.stringify(benchShot.armed.hint));
+check("one click on the bench stages one module and puts the ghost down",
+  benchShot.one.staged === benchShot.armed.staged + 1
+    && !benchShot.one.armed && benchShot.one.brush === null,
+  `staged ${benchShot.armed.staged} -> ${benchShot.one.staged},`
+  + ` armed ${benchShot.one.armed}, brush ${JSON.stringify(benchShot.one.brush)}`);
+check("the tile goes out and the hint is cleared with it",
+  !benchShot.one.lit && benchShot.one.hint === "",
+  `lit ${benchShot.one.lit}, hint ${JSON.stringify(benchShot.one.hint)}`);
+check("so a second click stages nothing",
+  benchShot.two.staged === benchShot.one.staged,
+  `${benchShot.one.staged} -> ${benchShot.two.staged}`);
+check("a collision primitive still stays armed for a run of boxes",
+  benchShot.cAfter.colliders === benchShot.cBefore.colliders + 2,
+  `${benchShot.cBefore.colliders} -> ${benchShot.cAfter.colliders}`);
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  if (ed.state.collisionMode) co.exitCollisionMode();
+  ed.clearAll();
+});
+await page.waitForTimeout(500);
+
 // ---- 1z. the palette panes fold, and the brush label survives a short window
 //
 // The two panes are sized to their content, and once they were taller than the

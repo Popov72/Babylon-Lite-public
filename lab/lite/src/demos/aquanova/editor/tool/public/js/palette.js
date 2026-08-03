@@ -2,7 +2,7 @@
 
 import { getCatalogue } from "./kit.js";
 import { request as requestThumb, requestTurntable, TURN_FRAMES } from "./thumbs.js";
-import { state, emit } from "./editor.js";
+import { state, emit, hooks } from "./editor.js";
 import { armGhost, cancelGhost } from "./interact.js";
 
 const listEl = document.getElementById("palette-list");
@@ -128,11 +128,15 @@ export function setBrush(id, opts = {}) {
   // Transient guidance only, and no idle text: the wheel no longer turns
   // anything, which is exactly how the old string went stale.
   document.getElementById("hint").textContent = id
-    ? "Click to place · E turns · Shift+wheel scales · Esc or right-click to stop"
+    ? (state.collisionMode
+      ? "Click to put it on the bench · E turns · Shift+wheel scales · Esc to stop"
+      : "Click to place · E turns · Shift+wheel scales · Esc or right-click to stop")
     : "";
   if (id) armGhost(id, opts); else cancelGhost();
   emit("brush");
 }
+
+hooks.clearBrush = () => setBrush(null);
 
 export function refreshPalette() { render(); }
 
