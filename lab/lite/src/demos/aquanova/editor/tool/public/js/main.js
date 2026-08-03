@@ -734,6 +734,21 @@ function setBigPalette(on) {
 }
 
 /**
+ * Remember which palette panes are folded.
+ *
+ * localStorage rather than the manifest, like the exposure and the big-palette
+ * switch: whether *you* keep Settings rolled up says nothing about the ship,
+ * and putting it in the layout would make folding a pane count as unsaved work.
+ */
+for (const pane of document.querySelectorAll("#palette-panes details")) {
+  const key = `pane.${pane.id}`;
+  if (localStorage.getItem(key) === "0") pane.open = false;
+  pane.addEventListener("toggle", () => {
+    localStorage.setItem(key, pane.open ? "1" : "0");
+  });
+}
+
+/**
  * Flash a button orange when it is pressed.
  *
  * Save, Load and Export glb all do their work somewhere else - a file on disk,

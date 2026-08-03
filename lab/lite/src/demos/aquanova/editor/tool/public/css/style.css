@@ -126,11 +126,36 @@ body.big-palette { --palette-w: 520px; }
 .tabs button { padding: 2px 7px; font-size: 11px; }
 
 #palette-list {
-  flex: 1 1 auto; overflow-y: auto; padding: 6px;
+  /*
+   * Grows into spare room, and is the first thing to give it up: shrink 100
+   * against the panes' 1, so the panes keep their natural height until the
+   * list is down to its floor. Plain `flex: 1 1 auto` shares the shrinking in
+   * proportion to content, and with 277 tiles of content the list is so much
+   * the bigger that the panes still lost a third of themselves.
+   */
+  flex: 1 100 auto; overflow-y: auto; padding: 6px;
+  /* a floor, so the palette never becomes a strip of padding */
+  min-height: 90px;
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
   /* implicit rows collapse to zero without this, hiding every thumbnail */
   grid-auto-rows: max-content;
   align-content: start;
+}
+
+/*
+ * The folding panes, as one shrinkable block.
+ *
+ * They used to sit directly in the palette at their natural height, which is
+ * fine until the two of them are taller than the space left: being unable to
+ * shrink, they pushed the foot straight out of the bottom of the palette and
+ * under the status bar, where the module you had picked up was invisible.
+ * Below about 615 px of window there was no brush label at all.
+ *
+ * The cap keeps them from taking the palette over on a short window; past it
+ * they scroll, and the list and the brush label both keep their place.
+ */
+#palette-panes {
+  flex: 0 1 auto; min-height: 0; max-height: 60%; overflow-y: auto;
 }
 
 .item {
@@ -387,7 +412,6 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   flex: 0 0 auto; padding: 8px 10px;
   border-top: 1px solid var(--line); background: var(--panel);
 }
-#collision-pane h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 #collision-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
 #collider-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
 #collider-buttons button { width: 100%; }
@@ -397,8 +421,32 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   flex: 0 0 auto; padding: 8px 10px;
   border-top: 1px solid var(--line); background: var(--panel);
 }
-#settings-pane h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 #settings-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
+
+/*
+ * Folding headers.
+ *
+ * A `details` rather than a hand-rolled toggle: the open state is then a real
+ * attribute the browser keeps for us, keyboard and screen readers get it free,
+ * and printing or Ctrl+F still reaches a folded pane's contents.
+ */
+#palette-panes summary {
+  margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.04em; font-weight: 600; cursor: pointer;
+  list-style: none; display: flex; align-items: center; gap: 6px;
+  user-select: none;
+}
+#palette-panes summary::-webkit-details-marker { display: none; }
+#palette-panes summary::before {
+  content: "▶"; font-size: 8px; color: var(--muted);
+  width: 9px; text-align: center; flex: 0 0 auto;
+  transition: transform 0.12s ease;
+}
+#palette-panes details[open] > summary::before { transform: rotate(90deg); }
+#palette-panes summary:hover { color: var(--accent); }
+#palette-panes summary:hover::before { color: var(--accent); }
+/* folded, the header is the whole pane - it should not still reserve a gap */
+#palette-panes details:not([open]) > summary { margin-bottom: 0; }
 #settings-pane .cfg-row {
   display: grid; grid-template-columns: 1fr 72px 16px; gap: 4px;
   align-items: center; margin-bottom: 6px; font-size: 11px;

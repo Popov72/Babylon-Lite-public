@@ -1824,12 +1824,43 @@ existed returns that setting's default rather than `undefined`.
 | --- | --- | --- |
 | Collision shell | `0.008` m | the *minimum* thickness any collision box is given on any axis |
 | Auto-save every | `2` min | how often a recovery copy is written; `0` turns it off |
+| Hull tolerance | `0.1` m | how far a fitted hull may stray from the art — the fidelity dial for **Fit a hull** |
+| Hull thickness | `0.35` m | the depth a fitted hull gets along its thinnest axis |
+| Hull offset | `centered` | which side of the art that depth goes: `centered`, `negative`, `positive` |
+
+`CONFIG_RANGE` checks a numeric setting against `min`/`max` and a worded one
+against its `choices`. Hull offset is the only worded one so far, which is why
+`setConfig` grew a second branch rather than coercing everything through
+`Number()` — `Number("centered")` is `NaN`, and the whole row would have been
+silently unsettable.
 
 The default matches what the kit's walls read as in the inspector. They in fact
 measure 0.0075 m; the field rounds. Because the shell is a minimum, leaving it
 at the default brings those walls up to 8 mm rather than leaving them at 7.5 —
 set it to 0.0075 if you want them exactly as modelled, or higher (0.03 is a
 reasonable choice) if you would rather nothing thin enough to tunnel through.
+
+### Folding the panes
+
+**Collision** and **Settings** are `<details>`, so their headers fold them. A
+`<details>` rather than a hand-rolled toggle: the open state is then a real
+attribute the browser keeps, keyboard and screen readers get it for free, and
+Ctrl+F still reaches a folded pane's contents. Which panes you keep rolled up
+is in `localStorage`, not the layout — whether *you* fold Settings says nothing
+about the ship, and putting it in the layout would make folding a pane count as
+unsaved work.
+
+> **The brush label used to fall off the bottom.** Both panes are sized to their
+> content and could not shrink, so once they were taller than the room left in
+> the palette they pushed the label — the only thing that tells you which module
+> you are holding — out of the palette and under the status bar. Below about
+> 615 px of window height there was no label at all.
+>
+> They are now one block that shrinks and scrolls, capped at 60% of the palette,
+> and the module list yields first: `flex-shrink: 100` against the block's `1`.
+> Sharing the shrinking evenly is no good, because it goes in proportion to
+> content and with 277 tiles the list is so much the bigger that the panes still
+> lost a third of themselves while the list kept hundreds of spare pixels.
 
 ## Live checks
 

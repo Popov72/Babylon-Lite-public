@@ -133,8 +133,9 @@
       <div id="palette-tabs" class="tabs"></div>
     </div>
     <div id="palette-list"></div>
-    <div id="collision-pane">
-      <h3>Collision</h3>
+    <div id="palette-panes">
+    <details id="collision-pane" open>
+      <summary>Collision</summary>
       <p class="muted">Unit shapes — scale them to size. Green, never exported to
         <code>ship.glb</code>: they are what the runtime hands to Havok. On the
         staging area they build a module's hull; on the ship they are one-off
@@ -142,9 +143,9 @@
       <div id="collider-buttons"></div>
       <button id="btn-edit-module"
               title="Open the collision staging area: a separate space where you stage kit modules and fit collision shapes to them, once each, inherited by every placement of that module. No shortcut">Edit collision</button>
-    </div>
-    <div id="settings-pane">
-      <h3>Settings</h3>
+    </details>
+    <details id="settings-pane" open>
+      <summary>Settings</summary>
       <p class="muted">Ship-wide constants. Saved with the layout and undoable,
         because changing one changes what the ship is.</p>
       <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
@@ -176,6 +177,7 @@
         </select>
       </label>
       <button id="btn-cfg-reset" title="Put every setting on this pane back to the value the editor ships with. Undoable">Reset to defaults</button>
+    </details>
     </div>
     <div class="palette-foot">
       <span id="brush-label">No module selected</span>

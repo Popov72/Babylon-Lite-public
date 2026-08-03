@@ -8195,6 +8195,82 @@ check("every door is back once isolation is off",
   JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
+// ---- 1z. the palette panes fold, and the brush label survives a short window
+//
+// The two panes are sized to their content, and once they were taller than the
+// room left they pushed the brush label out of the bottom of the palette and
+// under the status bar - so on anything below about 615 px there was no sign
+// of what you were holding. Measured at the end of the run: it resizes the
+// window, and puts it back before the screenshot.
+const paneFold = await page.evaluate(() => {
+  const box = (sel) => {
+    const b = document.querySelector(sel).getBoundingClientRect();
+    return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) };
+  };
+  const label = document.getElementById("brush-label");
+  const lb = label.getBoundingClientRect();
+  const hit = document.elementFromPoint(lb.left + 4, lb.top + lb.height / 2);
+  return { palette: box("#palette"), foot: box(".palette-foot"), status: box("#status"),
+    list: box("#palette-list"),
+    open: [...document.querySelectorAll("#palette-panes details")].map((d) => d.open),
+    onTop: hit === label || !!hit?.contains(label) };
+});
+check("both palette panes start open, with the brush label under them",
+  paneFold.open.length === 2 && paneFold.open.every(Boolean)
+    && paneFold.foot.bottom <= paneFold.palette.bottom + 1 && paneFold.onTop,
+  `${JSON.stringify(paneFold.open)}, foot ends ${paneFold.foot.bottom},`
+  + ` palette ends ${paneFold.palette.bottom}, painted on top ${paneFold.onTop}`);
+
+await page.click("#settings-pane > summary");
+await page.waitForTimeout(250);
+const paneShut = await page.evaluate(() => ({
+  settings: Math.round(document.querySelector("#settings-pane").getBoundingClientRect().height),
+  list: Math.round(document.querySelector("#palette-list").getBoundingClientRect().height),
+  shown: document.getElementById("cfg-hull-tol").checkVisibility(),
+  stored: localStorage.getItem("pane.settings-pane"),
+}));
+check("folding a pane leaves its header and hands the room back to the list",
+  paneShut.settings < 45 && paneShut.list > paneFold.list.h && paneShut.shown === false,
+  `settings ${paneShut.settings} px, list ${paneFold.list.h} -> ${paneShut.list},`
+  + ` controls shown ${paneShut.shown}`);
+check("and the fold is remembered outside the ship, in localStorage",
+  paneShut.stored === "0", `pane.settings-pane = ${paneShut.stored}`);
+
+await page.setViewportSize({ width: 1700, height: 560 });
+await page.waitForTimeout(400);
+const paneTight = await page.evaluate(() => {
+  const box = (sel) => {
+    const b = document.querySelector(sel).getBoundingClientRect();
+    return { top: Math.round(b.top), bottom: Math.round(b.bottom), h: Math.round(b.height) };
+  };
+  const label = document.getElementById("brush-label");
+  const lb = label.getBoundingClientRect();
+  const hit = document.elementFromPoint(lb.left + 4, lb.top + lb.height / 2);
+  return { palette: box("#palette"), foot: box(".palette-foot"), status: box("#status"),
+    list: box("#palette-list"), panes: box("#palette-panes"),
+    onTop: hit === label || !!hit?.contains(label) };
+});
+await page.setViewportSize({ width: 1700, height: 950 });
+await page.waitForTimeout(400);
+check("on a short window the brush label keeps its place and the panes scroll",
+  paneTight.foot.bottom <= paneTight.palette.bottom + 1
+    && paneTight.foot.bottom <= paneTight.status.top + 1
+    && paneTight.onTop && paneTight.list.h >= 90,
+  `foot ${paneTight.foot.top}-${paneTight.foot.bottom},`
+  + ` palette ends ${paneTight.palette.bottom}, status starts ${paneTight.status.top},`
+  + ` list ${paneTight.list.h} px, panes ${paneTight.panes.h} px`);
+
+await page.click("#settings-pane > summary");
+await page.waitForTimeout(250);
+const paneBack = await page.evaluate(() => ({
+  open: document.querySelector("#settings-pane").open,
+  shown: document.getElementById("cfg-hull-tol").checkVisibility(),
+  h: Math.round(document.querySelector("#viewport").getBoundingClientRect().height),
+}));
+check("unfolding brings the controls back, and the window is as it was",
+  paneBack.open && paneBack.shown && paneBack.h > 700,
+  `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`);
+
 await page.fill("#palette-search", "");
 await page.waitForTimeout(400);
 
