@@ -2960,6 +2960,53 @@ check("the same space toggles off, the other space re-aims",
   localGizmo.off === null && localGizmo.swapped !== null && localGizmo.stillOn !== null,
   `off=${localGizmo.off}, swapped=${localGizmo.swapped}`);
 
+// Showing the axes says which space you are thinking in, so moving and turning
+// follow it. You press Shift+X to see which way the element's own X grows
+// *because* you are about to work along it. Hiding says nothing, and Y still
+// overrides afterwards.
+const axesSetSpace = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  ed.select([a.id]);
+  ed.state.camera.position = new V(4, 6, -7);
+  ed.state.camera.setTarget(new V(0, 0.5, 0));
+  i.setAxisSpace("world");
+  const key = (shift) => window.dispatchEvent(new KeyboardEvent("keydown",
+    { key: shift ? "X" : "x", code: "KeyX", shiftKey: shift, bubbles: true }));
+  const now = () => ({ space: ed.state.axisSpace, combo: document.getElementById("axis-space").value,
+    drawn: ed.axesSpace(), shown: ed.axesTarget() });
+
+  const start = now();
+  key(true);  const toLocal = now();          // Shift+X -> local axes, local space
+  key(false); const toWorld = now();          // X re-aims -> world, world space
+  key(false); const hidden = now();           // same key again hides
+  i.setAxisSpace("local");
+  key(false); const afterHiddenThenShow = now();
+  // and hiding must not touch it
+  i.setAxisSpace("local");
+  const beforeHide = ed.state.axisSpace;
+  key(false); const afterHide = now();
+  ed.hideAxes(); ed.clearAll(); ed.select([]);
+  i.setAxisSpace("world");
+  return { start, toLocal, toWorld, hidden, afterHiddenThenShow, beforeHide, afterHide };
+});
+check("Shift+X shows local axes and puts moving and turning in local space",
+  axesSetSpace.start.space === "world" && axesSetSpace.toLocal.drawn === "local"
+    && axesSetSpace.toLocal.space === "local" && axesSetSpace.toLocal.combo === "local",
+  `${axesSetSpace.start.space} -> ${axesSetSpace.toLocal.space},`
+  + ` gizmo ${axesSetSpace.toLocal.drawn}`);
+check("and X re-aims them to world and takes the space with it",
+  axesSetSpace.toWorld.drawn === "world" && axesSetSpace.toWorld.space === "world"
+    && axesSetSpace.toWorld.combo === "world",
+  `${axesSetSpace.toLocal.space} -> ${axesSetSpace.toWorld.space}`);
+check("hiding them says nothing about which space you want",
+  axesSetSpace.afterHide.shown === null
+    && axesSetSpace.afterHide.space === axesSetSpace.beforeHide,
+  `${axesSetSpace.beforeHide} -> ${axesSetSpace.afterHide.space}`);
+
 // ---- 1d-octodecies. no target hides, and the ghost counts as a target -------
 const axesNoTarget = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");

@@ -418,7 +418,7 @@ the same thing.
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot. |
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
-| Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them, the other key re-aims them, and pressing either with nothing selected or hovered hides them |
+| Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. Showing them **also puts moving and turning in that space**, since asking to see an axis is nearly always asking to work along it; `Y` overrides afterwards. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them (without touching the space), the other key re-aims them, and pressing either with nothing selected or hovered hides them |
 | Axis modes | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste |
 | Mirror | **`Alt` + `F`** — mirrors on the current Scale axis (`all` is treated as X) |
 | Turn as a group | **`Alt` + `Shift` + wheel** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
@@ -827,6 +827,17 @@ you almost never want them left behind on the piece you moved away from.
 **Nothing selected or hovered hides them.** Leaving the last element's gizmo up
 would leave it hanging off something you are no longer working on, with no key
 that clears it.
+
+**Showing them sets the space you work in.** `X` switches `World`/`Local` to
+`World` and `Shift+X` to `Local`, because asking to see an axis is nearly always
+asking to work along it — you press `Shift+X` to find which way the element's own
+X grows *because* the next thing you do is slide it that way. `Y` still overrides
+it afterwards, so the coupling costs a keypress in the rare case and saves one in
+the common case.
+
+> Only on the way *up*. Hiding a gizmo says nothing about which space you want,
+> and a toggle that quietly changed the drag axis on the way out would be a
+> genuinely surprising way to lose a placement.
 
 **The armed ghost counts as an element.** You set a module's rotation and
 mirroring *before* dropping it, which is exactly when the axes are worth seeing

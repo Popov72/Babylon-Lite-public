@@ -1248,11 +1248,21 @@ window.addEventListener("keydown", async (e) => {
         break;
       }
       const shown = toggleAxes(target, space);
+      // Showing the axes says which space you are thinking in, so the move and
+      // turn axes follow. It is what you meant 99 times in 100 - you press
+      // Shift+X to see which way the element's own X grows *because* you are
+      // about to work along it - and Y still overrides it either way.
+      // Only on the way up: hiding a gizmo says nothing about intent.
+      if (shown && state.axisSpace !== space) {
+        setAxisSpace(space);
+        refreshAxisSpace();
+      }
       const label = target === GHOST_AXES
         ? (ghostModule() || "ghost")
         : (entryOf(target)?.name || entryOf(target)?.module || target);
       setStatus(shown
-        ? `${space} axes on ${label} — ${space === "local" ? "Shift+X" : "X"} hides them`
+        ? `${space} axes on ${label} — moving and turning in ${space} space too,`
+          + ` Y switches · ${space === "local" ? "Shift+X" : "X"} hides them`
         : "axes hidden");
       break;
     }
