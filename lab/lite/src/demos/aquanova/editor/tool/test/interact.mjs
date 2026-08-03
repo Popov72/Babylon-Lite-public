@@ -395,8 +395,9 @@ check("'free' turns by half a degree, either way",
   `${rotSign.free} / ${rotSign.freeBack}`);
 
 // The wheel already goes both ways, so the scale step needs no sign - but its
-// floor did need lifting. A fixed 5 cm floor sat at exactly five times a 0.01
-// step, so `free` could not reach the sizes it exists for.
+// floor did need lowering. It sat at 5 cm, which is thicker than most of what
+// the kit is made of: a collision shell fitted to its 7.5 mm walls could not be
+// nudged at all, and a decal sits well under it.
 const scaleFree = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
@@ -429,8 +430,8 @@ check("'free' resizes by 0.01 a notch, up and down",
   Math.abs(scaleFree.up - 1.01) < 1e-4 && Math.abs(scaleFree.down - 0.99) < 1e-4
     && Math.abs(scaleFree.coarse - 1.1) < 1e-4,
   `up ${scaleFree.up}, down ${scaleFree.down}, coarse ${scaleFree.coarse}`);
-check("and it can go under the old fixed 5 cm floor, which sat at five of its steps",
-  Math.abs(scaleFree.thin - 0.03) < 1e-4 && Math.abs(scaleFree.coarseFloor - 0.05) < 1e-4,
+check("and the floor is 1 cm, whatever step you got there with",
+  Math.abs(scaleFree.thin - 0.03) < 1e-4 && Math.abs(scaleFree.coarseFloor - 0.01) < 1e-4,
   `fine 0.04 -> ${scaleFree.thin}, coarse 0.06 -> ${scaleFree.coarseFloor}`);
 
 // ---- World/Local governs turning too ----------------------------------------

@@ -877,13 +877,14 @@ that then goes unsnapped, but a wheel notch is discrete, so a step of zero would
 simply do nothing. That is exactly why a literal "off" was taken off these two
 lists earlier, and a test still fails if `0` reappears in either.
 
-> The scale floor moved with it. `scaleCurrent` clamped the magnitude at 5 cm so
-> the wheel could never take something down to nothing — harmless when the
-> smallest step was 0.05, but at exactly five times a `free` step it became a
-> wall, and a collision shell fitted to the kit's 7.5 mm walls could not be
-> nudged at all. The floor is now the smaller of 5 cm and one step, so coarse
-> steps keep the guard they always had and `free` can reach the sizes it exists
-> for.
+> The scale floor came down with it. `scaleCurrent` clamped the magnitude at
+> 5 cm so the wheel could never take something down to nothing — harmless when
+> the smallest step was 0.05, and a wall the moment `free` arrived at exactly a
+> fifth of it. 5 cm is also thicker than a good deal of what the kit is made of:
+> a collision shell fitted to its 7.5 mm walls could not be nudged at all, and a
+> decal sits well under it. The floor is **1 cm** now, or one step if that is
+> somehow finer. It exists only to stop a notch reaching zero; anything above
+> that is the tool second-guessing you.
 
 The markers keep full brightness even on a dimmed arm: the rotation and scale
 axes are often not among the drag axes, and a dim marker would read as "off".
