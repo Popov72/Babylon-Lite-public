@@ -8,8 +8,8 @@
     "M_Decal_Screen":  { "color": [1.0, 0.0, 0.0],  "intensity": 5 }
   },
   "transparency": {
-    "_note": "The .gltf export flattened these to OPAQUE - Quaternius' own shaders make them see-through, and the glTF has no way to say 'alpha driven by scrolling noise'. Godot's M_Glass_Base.tres reads ALPHA = mix(0.05, 0.5, perlin) over a pale green, roughness 0.5; 0.28 is the middle of that range held still, and the tint is their colour exactly.",
-    "M_Glass": { "alpha": 0.28, "tint": [0.470588, 0.776471, 0.596078], "roughness": 0.5 }
+    "_note": "The .gltf export flattened these to OPAQUE - Quaternius' own shaders make them see-through, and the glTF has no way to say 'alpha driven by scrolling noise'. The kit's own pale green read too faint at the top of a lit room, so these are the values judged in the Sandbox against the real ship: a deep green (0, 109, 11), half alpha, and an ior of 1 to take the sheen off the pane.",
+    "M_Glass": { "alpha": 0.5, "tint": [0.0, 0.427451, 0.043137], "roughness": 0.5, "ior": 1 }
   },
   "variants": {
     "MI_Trim_02_Floor": { "base": "MI_Trim_02", "tint": [0.35, 0.41, 0.44], "metallic": 0.0, "roughness": 0.8 },

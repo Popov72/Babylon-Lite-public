@@ -83,6 +83,7 @@ const glass = await page.evaluate(async () => {
       if (src.material?.name === "M_Glass") {
         seen[tag] = { alpha: +src.material.alpha.toFixed(3),
           mode: src.material.transparencyMode, uid: src.material.uniqueId,
+          ior: src.material.indexOfRefraction,
           albedo: src.material.albedoColor?.asArray().map((v) => +v.toFixed(3)) };
       }
     }
@@ -101,6 +102,8 @@ const glassBad = !both
   || glass.seen.blend.alpha !== glass.want.alpha
   || glass.seen.opaque.alpha !== glass.want.alpha
   || glass.seen.blend.mode !== 2 || !tinted
+  // an ior of 1 is what takes the white sheen off the pane
+  || (glass.want.ior !== undefined && glass.seen.blend.ior !== glass.want.ior)
   // the override settles the difference, so the two spellings share one copy
   || glass.seen.blend.uid !== glass.seen.opaque.uid || glass.glassCopies !== 1;
 // and the sharing still has to be doing its job

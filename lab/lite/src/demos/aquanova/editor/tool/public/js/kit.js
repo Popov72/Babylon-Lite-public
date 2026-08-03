@@ -80,6 +80,11 @@ export function applyKitTransparency(mat) {
   }
   if (t.tint && "albedoColor" in mat) mat.albedoColor = new Color3(...t.tint);
   if (typeof t.roughness === "number" && "roughness" in mat) mat.roughness = t.roughness;
+  // An index of refraction of 1 is glass that does not catch the light: the
+  // dielectric F0 is ((n-1)/(n+1))^2, so n = 1 makes it zero and the pane loses
+  // its white sheen, leaving the tint to be read on its own. Guarded because
+  // only a PBR material has the property at all.
+  if (typeof t.ior === "number" && "indexOfRefraction" in mat) mat.indexOfRefraction = t.ior;
 }
 
 /**

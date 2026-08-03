@@ -1985,16 +1985,27 @@ the emissive values the export flattened; it now carries alpha the same way:
 
 ```json
 "transparency": {
-  "M_Glass": { "alpha": 0.28, "tint": [0.470588, 0.776471, 0.596078], "roughness": 0.5 }
+  "M_Glass": { "alpha": 0.5, "tint": [0.0, 0.427451, 0.043137], "roughness": 0.5, "ior": 1 }
 }
 ```
 
-`0.28` is the middle of that `0.05…0.5` range held still, and the tint is their
-colour exactly. It is applied to the ship and the palette alike, and it **is
-exported**: the glb comes out `alphaMode: "BLEND"` with a base-colour alpha of
-0.28, so the runtime gets glass too. Like the emissive values, it is authored
-state, not a viewport aid — unlike `backFaceCulling`, which is put back the way
-the kit had it on the way out.
+The kit's own pale green `(120, 198, 152)` at the middle of that alpha range is
+technically faithful and reads as almost nothing: at 28% opacity the pane is
+three-quarters whatever is behind it, and the tint led red by ten values out of
+255. These are the values judged in the Sandbox against the real ship instead —
+a deep green `(0, 109, 11)` at half alpha, which is a window you can see is
+glass.
+
+`ior` is why it reads as a tint rather than a shine. A dielectric's reflectance
+is `((n−1)/(n+1))²`, so an index of refraction of 1 makes it zero: the pane
+stops catching a white highlight and the colour is left to be read on its own.
+
+All of it is applied to the ship and the palette alike, and all of it **is
+exported**: the glb comes out `alphaMode: "BLEND"` with the tint and alpha in
+`baseColorFactor` and the index of refraction in `KHR_materials_ior`, so the
+runtime gets the same glass. Like the emissive values, it is authored state, not
+a viewport aid — unlike `backFaceCulling`, which is put back the way the kit had
+it on the way out.
 
 > Applied **before** the dedupe key is taken, deliberately. Once the override
 > has settled what `M_Glass` is, the kit's two spellings of it are the same
