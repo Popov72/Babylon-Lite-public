@@ -4,7 +4,7 @@
 // produced when its tile scrolls into view, and the result is pushed to the
 // server's disk cache so later sessions load it straight from /api/thumb.
 
-import { materialKey } from "./kit.js";
+import { materialKey, applyKitTransparency } from "./kit.js";
 
 const {
   Engine, Scene, ArcRotateCamera, HemisphericLight, DirectionalLight,
@@ -81,7 +81,7 @@ export async function initThumbs() {
  * the whole point of the fix that added this was a tile disagreeing with the
  * ship, which is exactly the sort of thing you would then still be staring at.
  */
-const THUMB_VERSION = 2;
+const THUMB_VERSION = 3;
 
 const keyOf = (id) => `v${THUMB_VERSION}_${id.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
 
@@ -125,6 +125,7 @@ function shareMaterials(meshes) {
   for (const mesh of meshes) {
     const mat = mesh.material;
     if (!mat) continue;
+    applyKitTransparency(mat);          // the same authored values the ship gets
     const key = materialKey(mat);
     const shared = thumbMaterials.get(key);
     if (shared && shared !== mat) {

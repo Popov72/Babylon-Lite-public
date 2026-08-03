@@ -1974,7 +1974,31 @@ modules costs 8 materials and 9 textures.
 >
 > Transparency is the only thing those pairs differ in and the one thing that
 > cannot be shared, so it goes in the key. It costs two extra materials across
-> the whole catalogue.
+> the whole catalogue — one, now that glass has an authored answer.
+
+**`kit_materials.json` carries the transparency the .gltf lost.** Quaternius'
+own shaders make the glass see-through — Godot's `M_Glass_Base.tres` is
+`blend_mix` with `ALPHA = mix(0.05, 0.5, perlin)` scrolling over a pale green —
+and glTF has no way to say "alpha driven by noise", so the export wrote it
+`OPAQUE` and every window in the kit came out solid. The file already carried
+the emissive values the export flattened; it now carries alpha the same way:
+
+```json
+"transparency": { "M_Glass": { "alpha": 0.28, "roughness": 0.5 } }
+```
+
+`0.28` is the middle of that `0.05…0.5` range held still. `tint` and
+`roughness` are optional — the kit's own colour is `0.471, 0.776, 0.596` if you
+want the green as well as the transparency. It is applied to the ship and the
+palette alike, and it **is exported**: the glb comes out `alphaMode: "BLEND"`
+with a base-colour alpha of 0.28, so the runtime gets glass too. Like the
+emissive values, it is authored state, not a viewport aid — unlike
+`backFaceCulling`, which is put back the way the kit had it on the way out.
+
+> Applied **before** the dedupe key is taken, deliberately. Once the override
+> has settled what `M_Glass` is, the kit's two spellings of it are the same
+> material again and share one copy, instead of being kept apart over a
+> difference that no longer exists.
 
 **A cached thumbnail is versioned.** The stills and turntables live on the
 server's disk and outlive any reload, so a change to how a thumbnail is

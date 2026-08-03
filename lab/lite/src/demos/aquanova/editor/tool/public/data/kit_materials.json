@@ -7,6 +7,10 @@
     "M_LightFade_Red": { "color": [1.0, 0.0, 0.09], "intensity": 10 },
     "M_Decal_Screen":  { "color": [1.0, 0.0, 0.0],  "intensity": 5 }
   },
+  "transparency": {
+    "_note": "The .gltf export flattened these to OPAQUE - Quaternius' own shaders make them see-through, and the glTF has no way to say 'alpha driven by scrolling noise'. Godot's M_Glass_Base.tres reads ALPHA = mix(0.05, 0.5, perlin) over a pale green, roughness 0.5; 0.28 is the middle of that range held still. `tint` and `roughness` are optional and unset by default, so the panes keep the grey the glTF gives them - fill them in for the kit's own green.",
+    "M_Glass": { "alpha": 0.28, "roughness": 0.5 }
+  },
   "variants": {
     "MI_Trim_02_Floor": { "base": "MI_Trim_02", "tint": [0.35, 0.41, 0.44], "metallic": 0.0, "roughness": 0.8 },
     "MI_Trim_03_Dark":  { "base": "MI_Trim_03", "tint": [0.37, 0.37, 0.37] },

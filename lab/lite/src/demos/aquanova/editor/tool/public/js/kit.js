@@ -7,7 +7,7 @@
 // registry below keeps the first material seen under a given name and throws
 // the duplicates away, textures included.
 
-const { SceneLoader, TransformNode, Vector3, Quaternion, Matrix, Color3 } = BABYLON;
+const { SceneLoader, TransformNode, Vector3, Quaternion, Matrix, Color3, Material } = BABYLON;
 
 import { noteAuthoredEmissive, applyViewportMode } from "./editor.js";
 
@@ -57,6 +57,32 @@ function applyKitValues(mat) {
 }
 
 /**
+ * Put back the transparency the .gltf export flattened away.
+ *
+ * Quaternius' own shaders make some of these materials see-through - the
+ * Godot glass is `blend_mix` with `ALPHA = mix(0.05, 0.5, perlin)` - but glTF
+ * has no way to say "alpha driven by scrolling noise", so the export wrote
+ * them as OPAQUE and the panes came out solid. `kit_materials.json` carries
+ * the authored value the same way it already carries emissive.
+ *
+ * Applied *before* the dedupe key is taken, deliberately: the kit authors
+ * `M_Glass` as BLEND in two files and OPAQUE in twelve, and once the override
+ * has settled the question both are the same material again and share one
+ * copy, rather than being kept apart over a difference that no longer exists.
+ */
+export function applyKitTransparency(mat) {
+  const t = kitMaterials?.transparency?.[mat.name];
+  if (!t) return;
+  if (typeof t.alpha === "number") {
+    mat.alpha = t.alpha;
+    mat.transparencyMode = t.alpha < 1
+      ? Material.MATERIAL_ALPHABLEND : Material.MATERIAL_OPAQUE;
+  }
+  if (t.tint && "albedoColor" in mat) mat.albedoColor = new Color3(...t.tint);
+  if (typeof t.roughness === "number" && "roughness" in mat) mat.roughness = t.roughness;
+}
+
+/**
  * What makes two materials the same material.
  *
  * Not the name on its own. The kit names materials identically across modules
@@ -82,6 +108,7 @@ function dedupeMaterials(meshes) {
   for (const mesh of meshes) {
     const mat = mesh.material;
     if (!mat) continue;
+    applyKitTransparency(mat);
     const key = materialKey(mat);
     const shared = materialRegistry.get(key);
     if (shared && shared !== mat) {

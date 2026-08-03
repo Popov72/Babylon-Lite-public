@@ -58,12 +58,18 @@ const dedupe = await page.evaluate(async () => {
 });
 console.log("dedupe      :", JSON.stringify(dedupe));
 
-// Materials are shared by name *and* transparency. The kit names them
-// identically across modules and authors some of them two ways - M_Glass is
-// BLEND with an alpha of 0 in two files and OPAQUE in twelve - so a name-only
-// cache let whichever module loaded first decide how glass looked everywhere,
-// and the palette's own cache, filled in a different order, could disagree
-// with the ship about the very same module.
+// Materials are shared by name *and* transparency, and kit_materials.json can
+// override that transparency. Two things to hold:
+//
+//  - M_Decal_White is MASK in thirty-one files and OPAQUE in twenty-six, with
+//    no override, so it must stay two materials. Keyed by name alone whichever
+//    module loaded first decided it for everything, and the palette's own
+//    cache - filled in a different order - could disagree with the ship about
+//    the very same module.
+//  - M_Glass is BLEND in two and OPAQUE in twelve, but the kit's own shaders
+//    make it see-through and the .gltf export flattened that, so the override
+//    settles it. Once it has, both spellings are the same material again and
+//    collapse back to one copy.
 const glass = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const kit = await import("/js/kit.js");
@@ -75,25 +81,30 @@ const glass = await page.evaluate(async () => {
     for (const m of e.node.getChildMeshes()) {
       const src = m.sourceMesh || m;
       if (src.material?.name === "M_Glass") {
-        seen[tag] = { alpha: src.material.alpha, uid: src.material.uniqueId };
+        seen[tag] = { alpha: +src.material.alpha.toFixed(3),
+          mode: src.material.transparencyMode, uid: src.material.uniqueId };
       }
     }
   }
   const names = new Map();
   for (const [, m] of kit.materialRegistry) names.set(m.name, (names.get(m.name) || 0) + 1);
-  return { seen, materials: kit.materialRegistry.size, names: names.size,
-    glassVariants: names.get("M_Glass") || 0 };
+  const want = kit.getKitMaterials()?.transparency?.M_Glass?.alpha;
+  return { seen, want, materials: kit.materialRegistry.size, names: names.size,
+    glassCopies: names.get("M_Glass") || 0 };
 });
 console.log("glass       :", JSON.stringify(glass));
-const glassBad = !glass.seen.blend || !glass.seen.opaque
-  || glass.seen.blend.alpha !== 0 || glass.seen.opaque.alpha !== 1
-  || glass.seen.blend.uid === glass.seen.opaque.uid;
+const both = glass.seen.blend && glass.seen.opaque;
+const glassBad = !both
+  || glass.seen.blend.alpha !== glass.want || glass.seen.opaque.alpha !== glass.want
+  || glass.seen.blend.mode !== 2
+  // the override settles the difference, so the two spellings share one copy
+  || glass.seen.blend.uid !== glass.seen.opaque.uid || glass.glassCopies !== 1;
 // and the sharing still has to be doing its job
 const sharingBad = glass.materials > glass.names * 2;
 if (glassBad || sharingBad) {
   await browser.close();
   throw new Error(glassBad
-    ? `each module must keep the glass its own glTF authored: ${JSON.stringify(glass.seen)}`
+    ? `glass must take the authored alpha and share one copy: ${JSON.stringify(glass)}`
     : `materials stopped being shared: ${glass.materials} over ${glass.names} names`);
 }
 
