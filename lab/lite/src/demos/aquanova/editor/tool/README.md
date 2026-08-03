@@ -1467,6 +1467,9 @@ time.
 **Fit a box** acts on the selection: exactly one element, and not a collision
 shape. Anything else says so plainly rather than guessing — "fit the current
 module" stopped meaning anything the moment the area could hold more than one.
+The **Hull offset** setting below applies to it too: the collision shell can
+leave its box a good deal thicker than the art, and the offset decides which
+side of the art that extra thickness goes.
 
 **Fit a hull** is the same rules with a better answer: it reads the element's
 own triangles instead of its bounding box, and lays out as many boxes as the
@@ -1484,34 +1487,112 @@ Coverage alone is a bad judge: one enormous box covers every vertex and fills
 the room the player is meant to walk in. Letting the score choose means no
 single heuristic has to be right about which kind of module it is looking at.
 
+Three settings on the Settings pane govern it.
+
+**Hull tolerance** is how far the hull may stray from the art before that
+counts as wrong, in metres, and it is deliberately the *only* dial for how
+finely a shape is approximated. It is the resolution the hull is judged at, so
+tightening it fails the coarse candidates and a finer one has to take over — a
+rounded platform is worth one box at 25 cm and eight at 4 cm, while a crate
+stays a single box whatever you set. Fine values cost noticeably more time
+(tens of milliseconds at 25 cm, a second or so at 2.5 cm on a big module).
+
+A separate "how many boxes" setting would have to be kept in step with it, and
+the two would disagree. The choice is made in two questions, in order: is the
+hull good enough — does it contain the art, and is it within the tolerance of
+it nearly everywhere — and of the ones that are, which is the smallest? That
+ordering is what stops a tighter tolerance ever handing back a *bulkier* hull
+than the setting before it.
+
+> **Volume is the honest measure of a collision hull.** Every cubic metre of
+> it that is not art is somewhere the player cannot stand. Ranking on how
+> snugly a hull fits its art instead looks reasonable and is not: it happily
+> picks twenty overlapping boxes over three good ones.
+
+**Hull thickness** is the depth a hull is given along its thinnest axis. The
+kit's walls are millimetres thick and its floors are single planes with no
+depth at all; a collider that thin is something a fast-moving body goes
+straight through. It is a *minimum* — a crate is already thicker and is left
+alone.
+
+**Hull offset** decides which side of the art that depth goes.
+
+| | what it does |
+| --- | --- |
+| `centered` | splits the depth either side of the art |
+| `negative` | tucks the hull behind the visible surface — the convention this ship uses |
+| `positive` | stands it in front |
+
+The axis is oriented to the surface normal, so it points out of the solid and
+the two names mean the same thing on every module rather than depending on how
+the box happened to be fitted. Either way **the art stays inside its hull**:
+the face is placed a millimetre clear of the visible surface, and clamped so
+that when the hull is no thicker than the art — where there is no slack to
+give — that millimetre is not taken out of the other side.
+
+> **The offset names where a face goes; it does not nudge the box.** A slab is
+> fitted lying against its own surface already, so pushing it "by the padding"
+> pushes it a second time and the art comes out of the back. Naming the face is
+> the same answer whatever the box started as, and asking twice changes nothing.
+
 The `slabs` pass is the one that reads the kit's own convention: triangle
 normals point *out* of the solid, so laying a slab on a patch and extending it
 backwards puts the body away from the play space for free — without needing to
 know which side the room is on. Its depth is **capped**; using the patch's own
 extent instead let a curved patch, whose points wrap right round an arc, grow a
 slab that swallowed everything the arc enclosed (`WallAstra_Corner_Round_Outer`
-came out at 87 m³ against a hand-drawn 12).
+came out at 87 m³ against a hand-drawn 12). Its bin angle is *derived from the
+tolerance* rather than fixed: leaving it constant was what stopped a tighter
+tolerance from ever improving a rounded corner, because the slab pass kept
+winning with the same coarse three.
 
-> **It declines rather than guess.** A hull that covers ≥ 97%, sits ≥ 80% on
-> surface and needed ≤ 4 boxes is reported plainly; anything else is fitted but
-> flagged *"worth checking by eye"*. In practice that is the curved corners,
-> which are genuinely better drawn by hand. Saying so is more use than a hull
-> that looks plausible and leaks.
+The `split` pass cuts **axis-aligned** and offers *every depth* as a candidate.
+Both of those are deliberate. Turning each piece to face its own surface makes
+a single piece smaller but makes neighbours overlap, and a decomposition whose
+parts overlap gets bulkier the more finely it is cut — the opposite of what the
+tolerance is for. And stopping on a threshold meant the threshold was sometimes
+met one cut too early; handing the whole ladder to the score instead lets it
+pick, which it can do safely because axis-aligned parts nest inside their
+parent.
+
+> **Solidity judges the shape, volume judges the price.** Solidity is measured
+> *before* the thickness is added. Measuring after it has a thin floor plate,
+> padded to a walkable depth, fail its own test — most of that hull is
+> deliberately not near the art — and the fitter chops the plate up trying to
+> fix it.
+
+> **A hollow shell is solid inside.** Whether a sample is in the art is decided
+> by ray parity, not by proximity to a triangle: a crate is a hollow mesh, so
+> every point in the middle of it is far from any surface, and judging on
+> proximity alone marks a hull that fills the crate as mostly empty air. The
+> crossings along each ray are *paired*, and an odd one left over is dropped —
+> the kit is full of open shapes, and plain parity would mark everything beyond
+> a single-plane floor as solid.
+
+> **It declines rather than guess.** A hull that covers ≥ 95%, sits ≥ 85% on
+> surface at the tolerance and needed ≤ 4 boxes is reported plainly; anything
+> else is fitted but flagged *"worth checking by eye"*. In practice that is the
+> curved corners, which are genuinely better drawn by hand. Saying so is more
+> use than a hull that looks plausible and leaks.
 
 Measured against the 53 hand-authored hulls (`fit-boxes.mjs`, geometry dumped by
-`fit-dump.mjs`) it covers more in less volume for the same number of boxes:
+`fit-dump.mjs`, sweep by `fit-sweep.mjs`) at the default 10 cm tolerance and
+35 cm thickness:
 
 | | coverage | boxes | volume | on surface |
 | --- | --- | --- | --- | --- |
-| fitted | **99.7%** | 2.4 | **5.3 m³** | **87.4%** |
-| hand-authored | 88.4% | 1.7 | 7.4 m³ | 73.0% |
+| fitted | **99.7%** | 3.8 | 7.5 m³ | **89.8%** |
+| hand-authored | 76.8% | 1.5 | 6.4 m³ | 68.3% |
 
-It matches or beats the authored hull on 52 of 53, and is confident about 37 of
-them — those at 100% coverage and 92.8% solidity. Running it also turned up two
-real faults in the ship: `P0209` is a `Door_Frame_Square_Blocked` with **no hull
-at all** (the player walks through a blocked door), and the `Platform_Round1` /
-`Platform_Round2` hulls cover only **6.7% / 9.1%** — a square box on a round
-plate.
+It matches or beats the authored hull on 60 of 61 placed modules, and is
+confident about 44 of them — those at 100% coverage and 97% solidity. Loosening
+the tolerance to 15 cm trades fidelity for tidiness (3.2 boxes, 6.8 m³, 49
+confident); tightening to 6 cm does the reverse (4.5 boxes, 39 confident).
+
+Running it also turned up two real faults in the ship: `P0209` is a
+`Door_Frame_Square_Blocked` with **no hull at all** (the player walks through a
+blocked door), and the `Platform_Round1` / `Platform_Round2` hulls cover only
+**6.7% / 9.1%** — a square box on a round plate.
 
 > **Rotations cross the boundary as basis vectors, not Euler angles.** The
 > fitter is plain geometry with no Babylon in it, and converting by hand into

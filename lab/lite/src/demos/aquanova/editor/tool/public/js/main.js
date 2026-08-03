@@ -1710,6 +1710,7 @@ $("btn-module-fit-hull").addEventListener("click", async () => {
   refreshModuleBanner();
   const how = { box: "one box", slabs: "a slab per face", split: "a split" }[r.how] || r.how;
   setStatus(`${r.module}: ${r.colliders.length} box(es) by ${how}`
+    + ` at ${state.config.hullTolerance} m tolerance`
     + ` — covers ${(100 * r.coverage).toFixed(0)}%, ${(100 * r.solid).toFixed(0)}% of it on surface`
     + (r.confident ? "" : " — worth checking by eye, this is a shape better drawn by hand"));
 });
@@ -1751,7 +1752,40 @@ function refreshSettings() {
   if (document.activeElement !== shell) shell.value = state.config.shellThickness;
   const auto = $("cfg-autosave");
   if (document.activeElement !== auto) auto.value = state.config.autoSaveMinutes;
+  const tol = $("cfg-hull-tol");
+  if (document.activeElement !== tol) tol.value = state.config.hullTolerance;
+  const thick = $("cfg-hull-thick");
+  if (document.activeElement !== thick) thick.value = state.config.hullThickness;
+  $("cfg-hull-offset").value = state.config.hullOffset;
 }
+
+$("cfg-hull-tol").addEventListener("change", () => {
+  if (setConfig("hullTolerance", $("cfg-hull-tol").value)) {
+    setStatus(`hull tolerance ${state.config.hullTolerance} m`
+      + " — refit a module to apply it");
+  }
+  refreshSettings();
+});
+
+$("cfg-hull-thick").addEventListener("change", () => {
+  if (setConfig("hullThickness", $("cfg-hull-thick").value)) {
+    setStatus(`hull thickness ${state.config.hullThickness} m`
+      + " — refit a module to apply it");
+  }
+  refreshSettings();
+});
+
+$("cfg-hull-offset").addEventListener("change", () => {
+  if (setConfig("hullOffset", $("cfg-hull-offset").value)) {
+    const o = state.config.hullOffset;
+    setStatus(`hull offset ${o}`
+      + (o === "centered" ? " — thickness split either side of the art"
+        : o === "negative" ? " — hull tucked behind the art, clear of the play space"
+          : " — hull stood in front of the art")
+      + " — refit a module to apply it");
+  }
+  refreshSettings();
+});
 
 $("cfg-shell").addEventListener("change", () => {
   if (setConfig("shellThickness", $("cfg-shell").value)) {

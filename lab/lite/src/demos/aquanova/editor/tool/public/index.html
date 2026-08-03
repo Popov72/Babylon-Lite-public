@@ -157,6 +157,24 @@
         <input type="number" id="cfg-autosave" min="0" max="240" step="1">
         <span class="unit">min</span>
       </label>
+      <label class="cfg-row" title="How far a fitted hull may stray from the art before that counts as wrong. This is the single dial for how finely Fit a hull approximates a shape: a rounded prop worth one box at 20 cm is worth several at 3 cm, while a flat one stays a single box whatever you set. Fine values take noticeably longer to fit.">
+        <span>Hull tolerance</span>
+        <input type="number" id="cfg-hull-tol" min="0.01" max="1" step="0.01">
+        <span class="unit">m</span>
+      </label>
+      <label class="cfg-row" title="The depth a fitted hull is given along its thinnest axis. The kit's walls are millimetres thick, and a collider that thin is something a fast-moving body goes straight through.">
+        <span>Hull thickness</span>
+        <input type="number" id="cfg-hull-thick" min="0.01" max="5" step="0.01">
+        <span class="unit">m</span>
+      </label>
+      <label class="cfg-row" title="Where that thickness goes relative to the art. Centered splits it either side. Negative tucks the hull behind the visible surface, which is the convention this ship uses — you stand exactly where the art says you do. Positive stands it in front. Either way the art stays inside its hull.">
+        <span>Hull offset</span>
+        <select id="cfg-hull-offset">
+          <option value="centered">centered</option>
+          <option value="negative">negative</option>
+          <option value="positive">positive</option>
+        </select>
+      </label>
       <button id="btn-cfg-reset" title="Put every setting on this pane back to the value the editor ships with. Undoable">Reset to defaults</button>
     </div>
     <div class="palette-foot">

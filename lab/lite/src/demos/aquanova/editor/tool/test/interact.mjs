@@ -1444,6 +1444,101 @@ check("undoing a fitted hull puts the old one back",
   hullFit.afterUndo === hullFit.before, `${hullFit.recorded} -> ${hullFit.afterUndo},`
   + ` wanted ${hullFit.before}`);
 
+// The two hull settings. The tolerance is the single dial for how finely a
+// shape is approximated; the offset decides which side of the art the
+// thickness goes. Both are measured through the saved records, composed onto
+// the element, because that is what the runtime will do with them.
+const hullDials = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  const target = [...ed.state.placements.values()].find((p) => p.stage);
+  ed.select([target.id]);
+
+  /** Refit at these settings and measure the hull, along its own thin axis. */
+  const at = async (cfg) => {
+    for (const [k, v] of Object.entries(cfg)) ed.setConfig(k, v);
+    const r = await co.fitHullToSelection();
+    const shapes = ed.state.moduleCollision.get(target.module) || [];
+    let vol = 0, escape = -Infinity, shift = [0, 0, 0], slack = [0, 0, 0];
+    const pts = [];
+    for (const m of target.node.getChildMeshes()) {
+      const pos = m.getVerticesData && m.getVerticesData("position");
+      if (!pos) continue;
+      m.computeWorldMatrix(true);
+      const w = m.getWorldMatrix().multiply(target.node.getWorldMatrix().clone().invert());
+      for (let i = 0; i < pos.length; i += 3) {
+        pts.push(V.TransformCoordinates(new V(pos[i], pos[i + 1], pos[i + 2]), w));
+      }
+    }
+    for (const s of shapes) {
+      vol += Math.abs(s.scale[0] * s.scale[1] * s.scale[2]);
+      if (shapes.length !== 1) continue;
+      const m = new BABYLON.Matrix();
+      BABYLON.Matrix.FromQuaternionToRef(BABYLON.Quaternion.FromEulerAngles(
+        ...s.rotation.map((d) => (d * Math.PI) / 180)), m);
+      const ax = [0, 1, 2].map((k) => [m.m[k * 4], m.m[k * 4 + 1], m.m[k * 4 + 2]]);
+      const half = [0, 1, 2].map((k) => Math.abs(s.scale[k]) / 2);
+      // in the hull's own frame: where the art sits, and whether it fits
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (const p of pts) {
+        for (let k = 0; k < 3; k++) {
+          const d = (p.x - s.position[0]) * ax[k][0] + (p.y - s.position[1]) * ax[k][1]
+            + (p.z - s.position[2]) * ax[k][2];
+          if (d < lo[k]) lo[k] = d;
+          if (d > hi[k]) hi[k] = d;
+          escape = Math.max(escape, Math.abs(d) - half[k]);
+        }
+      }
+      // the hull's centre is the origin of that frame, so the art's centre is
+      // exactly how far the hull was pushed off the art
+      shift = [0, 1, 2].map((k) => +(-(lo[k] + hi[k]) / 2).toFixed(4));
+      slack = [0, 1, 2].map((k) => +(2 * half[k] - (hi[k] - lo[k])).toFixed(3));
+    }
+    return { n: shapes.length, ok: r.ok, vol: +vol.toFixed(3),
+      escape: +escape.toFixed(4), shift, slack };
+  };
+
+  const out = { module: target.module };
+  out.coarse = await at({ hullTolerance: 0.3, hullThickness: 0.35, hullOffset: "centered" });
+  out.fine = await at({ hullTolerance: 0.03 });
+  // a thickness well past the art's own, so there is padding for the offset to
+  // put somewhere - on a prop already thicker than the setting there is no
+  // slack, and all three offsets are correctly the same hull
+  out.mid = await at({ hullTolerance: 0.2, hullThickness: 1, hullOffset: "centered" });
+  out.neg = await at({ hullOffset: "negative" });
+  out.pos = await at({ hullOffset: "positive" });
+  out.again = await at({ hullOffset: "negative" });
+  out.rejected = ed.setConfig("hullOffset", "sideways");
+  for (const k of ["hullTolerance", "hullThickness", "hullOffset"]) ed.resetConfig(k);
+  return out;
+});
+check("a tighter hull tolerance buys a closer approximation",
+  hullDials.fine.n > hullDials.coarse.n || hullDials.fine.vol < hullDials.coarse.vol,
+  `${hullDials.module}: ${hullDials.coarse.n} box/${hullDials.coarse.vol} m3`
+  + ` -> ${hullDials.fine.n} box/${hullDials.fine.vol} m3`);
+const far = (v) => Math.max(...v.map(Math.abs));
+check("centered leaves the hull sitting on the middle of the art",
+  hullDials.mid.n !== 1 || far(hullDials.mid.shift) < 0.005,
+  `shift ${JSON.stringify(hullDials.mid.shift)}, slack ${JSON.stringify(hullDials.mid.slack)}`);
+check("an offset moves the hull off the art, by the slack it has to give",
+  hullDials.neg.n !== 1
+    || Math.abs(far(hullDials.neg.shift) - far(hullDials.neg.slack) / 2) < 0.01,
+  `shift ${JSON.stringify(hullDials.neg.shift)}, slack ${JSON.stringify(hullDials.neg.slack)}`);
+check("and the other offset is its mirror image",
+  hullDials.neg.n !== 1 || [0, 1, 2].every((k) =>
+    Math.abs(hullDials.pos.shift[k] + hullDials.neg.shift[k]) < 0.005),
+  `${JSON.stringify(hullDials.pos.shift)} vs ${JSON.stringify(hullDials.neg.shift)}`);
+check("an offset hull still contains its art",
+  hullDials.neg.escape <= 1e-3 && hullDials.pos.escape <= 1e-3
+    && hullDials.mid.escape <= 1e-3,
+  `escape ${hullDials.mid.escape} / ${hullDials.neg.escape} / ${hullDials.pos.escape}`);
+check("asking for the same offset twice does not move it twice",
+  far(hullDials.again.shift.map((v, k) => v - hullDials.neg.shift[k])) < 0.005,
+  `${JSON.stringify(hullDials.neg.shift)} then ${JSON.stringify(hullDials.again.shift)}`);
+check("a setting that is a word rejects a word that is not on the list",
+  hullDials.rejected === false, `setConfig returned ${hullDials.rejected}`);
+
 // association is by position, which is what makes copying a hull work
 const assoc = await page.evaluate(async ([a, b]) => {
   const ed = await import("/js/editor.js");

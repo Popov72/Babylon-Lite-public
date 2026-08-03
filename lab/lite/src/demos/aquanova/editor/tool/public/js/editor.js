@@ -59,6 +59,18 @@ export const CONFIG_DEFAULTS = {
   shellThickness: 0.008,
   // How often the editor writes a recovery copy, in minutes. 0 turns it off.
   autoSaveMinutes: 2,
+  // How far a fitted hull may stray from the art before that counts as wrong,
+  // in metres. The single dial for how finely Fit a hull approximates a shape:
+  // a rounded prop worth one box at 20 cm is worth several at 3 cm.
+  hullTolerance: 0.1,
+  // The depth a fitted hull is given along its thinnest axis. The kit's walls
+  // are millimetres thick and a hull that thin is something a fast-moving body
+  // goes straight through.
+  hullThickness: 0.35,
+  // Where that depth goes relative to the art: "centered" splits it either
+  // side, "negative" tucks it behind the visible surface (the convention this
+  // ship uses), "positive" stands it in front.
+  hullOffset: "centered",
 };
 
 /**
@@ -66,11 +78,15 @@ export const CONFIG_DEFAULTS = {
  *
  * A thickness of zero is a shape with no shape; an auto-save interval of zero
  * is a perfectly reasonable "don't". One rule for both would have to be wrong
- * for one of them.
+ * for one of them. A setting with `choices` is a word rather than a number,
+ * and is checked against the list instead of a range.
  */
 const CONFIG_RANGE = {
   shellThickness: { min: 1e-4, max: 10 },
   autoSaveMinutes: { min: 0, max: 240 },
+  hullTolerance: { min: 0.01, max: 1 },
+  hullThickness: { min: 0.01, max: 5 },
+  hullOffset: { choices: ["centered", "negative", "positive"] },
 };
 
 export const state = {
@@ -2132,8 +2148,16 @@ export function setVeilAlpha(a) {
  */
 export function setConfig(key, value) {
   if (!(key in CONFIG_DEFAULTS)) return false;
-  const v = Number(value);
   const range = CONFIG_RANGE[key] || { min: 0, max: Infinity };
+  if (range.choices) {
+    const v = String(value);
+    if (!range.choices.includes(v) || state.config[key] === v) return false;
+    pushUndo();
+    state.config = { ...state.config, [key]: v };
+    emit("config");
+    return true;
+  }
+  const v = Number(value);
   if (!Number.isFinite(v) || v < range.min || v > range.max) return false;
   if (Math.abs(state.config[key] - v) < 1e-9) return false;
   pushUndo();

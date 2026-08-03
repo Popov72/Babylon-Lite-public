@@ -994,16 +994,30 @@ export async function fitBoxToSelection(boundsOf) {
   entry.node.computeWorldMatrix(true);
   const size = bounds.max.subtract(bounds.min);
   const centre = bounds.min.add(bounds.max).scale(0.5);
-  const world = Matrix.Compose(Vector3.One(), Quaternion.Identity(), centre)
-    .multiply(entry.node.getWorldMatrix());
+  const scale = [
+    shellThick(size.x * entry.node.scaling.x),
+    shellThick(size.y * entry.node.scaling.y),
+    shellThick(size.z * entry.node.scaling.z)];
+
+  // the shell can leave the box a good deal thicker than the art; the offset
+  // setting decides which side of the art that extra thickness goes
+  let local = centre.asArray();
+  if (state.config.hullOffset !== "centered") {
+    const { placeBox } = await import("./hullfit.js");
+    const s = entry.node.scaling;
+    const half = [scale[0] / (2 * (s.x || 1)), scale[1] / (2 * (s.y || 1)),
+      scale[2] / (2 * (s.z || 1))];
+    const put = placeBox({ centre: local, half, basis: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+      localTriangles(entry.node), 0, state.config.hullOffset);
+    local = put.centre;
+  }
+  const world = Matrix.Compose(Vector3.One(), Quaternion.Identity(),
+    new Vector3(local[0], local[1], local[2])).multiply(entry.node.getWorldMatrix());
   const made = addCollider("box",
     new Vector3(world.m[12], world.m[13], world.m[14]), {
       stage: true, silent: true,
       rotation: eulerDeg(entry.node),
-      scale: [
-        shellThick(size.x * entry.node.scaling.x),
-        shellThick(size.y * entry.node.scaling.y),
-        shellThick(size.z * entry.node.scaling.z)],
+      scale,
     });
   harvestStage();
   applyVisibility();
@@ -1037,7 +1051,11 @@ export async function fitHullToSelection() {
   if (!tris.length) return { ok: false, error: `no geometry to read on ${entry.module}` };
 
   const { fit } = await import("./hullfit.js");
-  const result = fit(tris);
+  const result = fit(tris, {
+    tolerance: state.config.hullTolerance,
+    thickness: state.config.hullThickness,
+    offset: state.config.hullOffset,
+  });
   if (!result.boxes.length) return { ok: false, error: `could not fit ${entry.module}` };
 
   pushUndo();
