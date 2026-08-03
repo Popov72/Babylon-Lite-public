@@ -979,13 +979,30 @@ mean, since the left button no longer moves the camera. Starting *on a module*
 is the ambiguous case, and that is all the **Rect select** toggle is for:
 with it on, a drag bands instead of picking the module up.
 
-Hit-testing projects **all eight corners** of each element's world box and takes
-the screen-space extent. Two corners would badly under-report a rotated piece —
-the projection of a world AABB is not the AABB of the projection. Anything whose
-screen box overlaps the rectangle is selected, occluded or not, because "what is
-inside this rectangle" is a screen question, not a visibility one. Corners
-behind the camera are dropped: they project to a mirrored point that would
-otherwise stretch the box across the whole viewport.
+Hit-testing projects the corners of each element's **oriented** box — each mesh's
+own box, transformed — and takes the convex hull of those points. Anything whose
+**outline** meets the rectangle is selected, occluded or not, because "what is
+inside this rectangle" is a screen question, not a visibility one. Corners behind
+the camera are dropped: they project to a mirrored point that would otherwise
+stretch the hull across the whole viewport.
+
+> **Neither approximation could stay.** It used to take the screen-space
+> *extent* of the corners — an axis-aligned rectangle — and test that. For a
+> slab lying diagonally across the view that rectangle covers the viewport
+> corner to corner and is nearly all empty air, so a small band dropped in a gap
+> selected everything around it: one drawn in clear air beside a corner hull
+> picked up all of its boxes.
+>
+> And the corners came from the **world AABB**, so a collision box turned to
+> follow a curve reported the upright box containing it. `vectorsWorld` is the
+> box's own eight corners, which for a box collider is the shape exactly.
+> Together they took the tested area down to **34% of what it was** on a turned
+> hull, and a band drawn in clear air now catches nothing.
+>
+> Overlap, not containment: a band that merely clips something still takes it.
+> On a bench full of hulls that do overlap on screen it means a tight band round
+> one box may still catch its neighbours — but a band is a coarse tool, and
+> having to *enclose* a long wall to catch it is the worse trade.
 
 **Markers band like anything else.** The player spawn and the doors are elements
 you select, drag and delete exactly like a wall, so a rectangle drawn round one

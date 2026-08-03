@@ -601,7 +601,105 @@ export function screenBoundsOf(node) {
 }
 
 /**
- * Every element whose screen box overlaps the given canvas-space rect.
+ * The element's outline on screen, as a convex polygon.
+ *
+ * The corners of each of its meshes' *oriented* boxes, projected and hulled.
+ * Two approximations are dropped here, and both matter:
+ *
+ * `screenBoundsOf` squares the result off into an axis-aligned rectangle,
+ * which for anything seen at an angle is enormously bigger than the thing
+ * itself - a slab lying diagonally across the view has a screen box covering
+ * the viewport corner to corner, nearly all of it empty air. That is fine for
+ * finding a point to aim at, and useless for asking what a rectangle caught.
+ *
+ * And `worldBounds` is *axis-aligned in world space*, so a collision box that
+ * has been turned to follow a curve reports the upright box that contains it.
+ * `vectorsWorld` is the box's own eight corners, which for a box collider is
+ * the shape exactly.
+ */
+export function screenHullOf(node) {
+  const scene = state.scene;
+  if (!scene || !state.camera) return null;
+  const engine = scene.getEngine();
+  const vp = state.camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+  const view = scene.getTransformMatrix();
+  const pts = [];
+  for (const m of node.getChildMeshes()) {
+    m.computeWorldMatrix(true);
+    for (const c of m.getBoundingInfo().boundingBox.vectorsWorld) {
+      const p = Vector3.Project(c, Matrix.Identity(), view, vp);
+      // behind the camera projects to a mirrored point that would wreck the hull
+      if (p.z < 0 || p.z > 1) continue;
+      pts.push([p.x, p.y]);
+    }
+  }
+  if (pts.length < 3) return pts.length ? pts : null;
+
+  // monotone chain; a handful of points, so the sort costs nothing worth saving
+  pts.sort((u, v) => (u[0] - v[0]) || (u[1] - v[1]));
+  const cross = (o, a, c) =>
+    (a[0] - o[0]) * (c[1] - o[1]) - (a[1] - o[1]) * (c[0] - o[0]);
+  const half = (src) => {
+    const h = [];
+    for (const p of src) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    h.pop();
+    return h;
+  };
+  const hull = [...half(pts), ...half([...pts].reverse())];
+  return hull.length >= 3 ? hull : pts;
+}
+
+/** Does a convex polygon meet an axis-aligned rect? Separating axis, both ways. */
+function hullMeetsRect(hull, rect) {
+  if (!hull || !hull.length) return false;
+  if (hull.length < 3) {
+    return hull.some(([x, y]) =>
+      x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1);
+  }
+  // the rect's own two axes
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of hull) {
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (maxX < rect.x0 || minX > rect.x1 || maxY < rect.y0 || minY > rect.y1) return false;
+
+  // and one per hull edge
+  const corners = [[rect.x0, rect.y0], [rect.x1, rect.y0],
+    [rect.x1, rect.y1], [rect.x0, rect.y1]];
+  for (let i = 0; i < hull.length; i++) {
+    const a = hull[i], b = hull[(i + 1) % hull.length];
+    const ax = -(b[1] - a[1]), ay = b[0] - a[0];
+    let hLo = Infinity, hHi = -Infinity, rLo = Infinity, rHi = -Infinity;
+    for (const [x, y] of hull) {
+      const d = x * ax + y * ay;
+      if (d < hLo) hLo = d;
+      if (d > hHi) hHi = d;
+    }
+    for (const [x, y] of corners) {
+      const d = x * ax + y * ay;
+      if (d < rLo) rLo = d;
+      if (d > rHi) rHi = d;
+    }
+    if (hHi < rLo || rHi < hLo) return false;
+  }
+  return true;
+}
+
+
+/**
+ * Every element the given canvas-space rect actually touches.
+ *
+ * Against the element's *outline*, not the rectangle its outline sits in. A
+ * screen-space box round a slab lying diagonally across the view is mostly
+ * empty space, and testing that meant a small rectangle dropped in a gap
+ * selected everything around it — one drawn in clear air next to a corner hull
+ * picked up all three of its boxes.
  *
  * Markers count: the doors are elements you select, drag and delete like any
  * other, so a rectangle that goes round one has to catch it. Anything currently
@@ -612,9 +710,7 @@ export function elementsInRect(rect) {
   const out = [];
   const overlaps = (node) => {
     if (!node.isEnabled()) return false;
-    const b = screenBoundsOf(node);
-    if (!b) return false;
-    return !(b.maxX < rect.x0 || b.minX > rect.x1 || b.maxY < rect.y0 || b.minY > rect.y1);
+    return hullMeetsRect(screenHullOf(node), rect);
   };
   for (const e of state.placements.values()) if (overlaps(e.node)) out.push(e.id);
   for (const m of state.markers.values()) if (overlaps(m.node)) out.push(m.id);

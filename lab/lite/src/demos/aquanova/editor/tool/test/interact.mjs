@@ -8013,6 +8013,95 @@ check("a rectangle catches doors like anything else",
   `[${band.all}]`);
 check("elementsInRect no longer takes an options argument", band.arity === 1,
   `arity=${band.arity}`);
+
+// A rectangle is tested against each element's *outline*, not the rectangle
+// its outline sits in. A screen box round a slab lying diagonally across the
+// view is mostly empty air, so a small rectangle dropped in a gap used to
+// select everything around it - one drawn in clear air beside a corner hull
+// picked up all of its boxes.
+const marquee = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  await new Promise((r) => setTimeout(r, 300));
+
+  // three long boxes, turned, laid out like the boxes of a corner hull: this
+  // is the shape the old test was worst on, because a turned slab's screen box
+  // is mostly empty air
+  const made = [
+    co.addCollider("box", new V(0, 1, 0),
+      { rotation: [0, 35, 0], scale: [4, 2, 0.4], silent: true }),
+    co.addCollider("box", new V(2.6, 1, 1.8),
+      { rotation: [0, -55, 0], scale: [4, 2, 0.4], silent: true }),
+    co.addCollider("box", new V(-2.2, 1, 2.2),
+      { rotation: [0, 20, 0], scale: [3, 2, 0.4], silent: true }),
+  ];
+  ed.state.camera.position = new V(5, 6, -7);
+  ed.state.camera.setTarget(new V(0, 1, 0.7));
+  ed.state.scene.render();
+  await new Promise((r) => setTimeout(r, 300));
+
+  const total = ed.state.colliders.size;
+
+  // a patch of canvas with nothing drawn on it
+  const eng = ed.state.engine;
+  ed.state.scene.render();
+  const w = eng.getRenderWidth(), h = eng.getRenderHeight();
+  const buf = await eng.readPixels(0, 0, w, h);
+  const green = (x, yTop) => {
+    const i = (((h - 1 - yTop) * w) + x) * 4;
+    return buf[i + 1] > 70 && buf[i + 1] > buf[i] + 25;
+  };
+  let clear = null;
+  for (let y = 40; y < h - 140 && !clear; y += 20) {
+    for (let x = 40; x < w - 140 && !clear; x += 20) {
+      let ok = true;
+      for (let dy = 0; dy < 90 && ok; dy += 10) {
+        for (let dx = 0; dx < 90 && ok; dx += 10) if (green(x + dx, y + dy)) ok = false;
+      }
+      if (ok) clear = { x, y };
+    }
+  }
+
+  // and how much tighter the outline is than the box it replaces
+  const areaOf = (poly) => {
+    let a = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length];
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return Math.abs(a) / 2;
+  };
+  let hullArea = 0, boxArea = 0;
+  for (const s of made) {
+    const hull = ed.screenHullOf(s.node), b = ed.screenBoundsOf(s.node);
+    if (!hull || !b || hull.length < 3) continue;
+    hullArea += areaOf(hull);
+    boxArea += (b.maxX - b.minX) * (b.maxY - b.minY);
+  }
+
+  const out = { total, clear,
+    inAir: clear ? ed.elementsInRect(
+      { x0: clear.x, y0: clear.y, x1: clear.x + 80, y1: clear.y + 70 }).length : null,
+    everything: ed.elementsInRect({ x0: -1e5, y0: -1e5, x1: 1e5, y1: 1e5 }).length,
+    tightness: boxArea ? +(hullArea / boxArea).toFixed(3) : null };
+  for (const s of made) co.removeCollider(s.id, true);
+  return out;
+});
+check("a rectangle drawn in clear air selects nothing",
+  marquee.inAir === 0,
+  `caught ${marquee.inAir} of ${marquee.total}, rect at ${JSON.stringify(marquee.clear)}`);
+check("a rectangle over everything still catches everything",
+  marquee.everything === marquee.total,
+  `caught ${marquee.everything} of ${marquee.total}`);
+check("the outline is far tighter than the screen box it replaces",
+  marquee.tightness !== null && marquee.tightness < 0.75,
+  `${(100 * marquee.tightness).toFixed(0)}% of the old area`);
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.clearAll(); ed.select([]);
+});
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   ed.clearAll(); ed.select([]);
