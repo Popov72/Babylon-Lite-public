@@ -33,7 +33,7 @@ import {
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
-  noteKey, releaseAllKeys, setUnlit, setExposure, EXPOSURE_DEFAULT,
+  noteKey, releaseAllKeys, setUnlit, setTaa, setExposure, EXPOSURE_DEFAULT,
   setConfig, resetConfig, CONFIG_DEFAULTS,
   setWalk, EYE_HEIGHT, setEnvIntensity, ENV_INTENSITY_DEFAULT, setSelectMode,
   setRuntimeLighting, activeLightSet, setShowLayer, SHOW_LAYERS,
@@ -883,6 +883,20 @@ $("unlit").addEventListener("change", (e) => {
   setStatus(e.target.checked
     ? "unlit — raw albedo, no lighting"
     : "lit — hemi + key/fill + IBL");
+});
+
+$("taa").addEventListener("change", (e) => {
+  const wanted = e.target.checked;
+  const on = setTaa(wanted);
+  // The pipeline is missing from older Babylon builds; do not leave a ticked
+  // box doing nothing.
+  e.target.checked = on;
+  localStorage.setItem("taa", on ? "1" : "0");
+  setStatus(on
+    ? "TAA on — stock pipeline, accumulating whenever the camera is still"
+    : wanted
+      ? "this Babylon has no TAARenderingPipeline"
+      : "TAA off — back to the canvas' own anti-aliasing");
 });
 
 $("runtime-light").addEventListener("change", (e) => {
@@ -1857,6 +1871,9 @@ async function bootstrap() {
   if (localStorage.getItem("unlit") === "1") {
     $("unlit").checked = true;
   }
+  if (localStorage.getItem("taa") === "1") {
+    $("taa").checked = true;
+  }
   if (localStorage.getItem("runtimeLight") === "1") {
     $("runtime-light").checked = true;
     state.runtimeLight = true;    // read by initScene when it builds the rig
@@ -1903,6 +1920,8 @@ async function bootstrap() {
   });
   initInteract();
   if ($("unlit").checked) setUnlit(true);
+  // After initScene, which is what makes the camera the pipeline attaches to.
+  if ($("taa").checked) $("taa").checked = setTaa(true);
   await initThumbs();
   initPalette();
   refreshChunks();

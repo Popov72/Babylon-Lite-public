@@ -441,7 +441,7 @@ the same thing.
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
 | Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the Env and Exposure sliders, every inspector field and every behaviour edit |
 | Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
-| Grid | `G` · **Big icons** doubles the palette width and tile size (on by default) · **Unlit** shows raw albedo with no lighting · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
+| Grid | `G` · **Big icons** doubles the palette width and tile size (on by default) · **Unlit** shows raw albedo with no lighting · **TAA** runs Babylon's stock temporal anti-aliasing over the viewport · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
 | Palette | hover a tile to spin the module through a full 360° turn |
 | Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab |
 
@@ -1861,6 +1861,34 @@ things *off* screen, so chunk isolation and the `Shift+H` veil keep the last
 word. It runs through `applyVisibility()`, the one place that decides what is
 enabled, for exactly that reason. Hiding a layer drops any selection it hides,
 so the gizmo and the inspector never act on something nobody can see.
+
+### TAA
+
+The **TAA** checkbox runs Babylon's stock `TAARenderingPipeline` over the
+viewport. It exists to be compared against Babylon-Lite's own TAA, so it is
+deliberately *untouched* — stock pipeline, stock settings — because the point is
+that whatever the two engines do differently is the only difference on screen.
+The live pipeline is returned by `taaPipeline()` for anyone who wants to match a
+particular configuration by hand.
+
+It is **built and thrown away on each toggle** rather than left attached and
+switched off. An attached pipeline renders the scene into a texture whether or
+not it is enabled, and that alone changes the picture: the canvas MSAA the
+engine was created with only applies while the scene draws straight to the back
+buffer. Off has to give back the exact frame you had before it went on, or the
+comparison the feature exists for is not a comparison — and that is what the
+test asserts, byte for byte.
+
+> Which also means **turning TAA on turns canvas MSAA off**, since the scene is
+> no longer drawing to the back buffer. That is the honest comparison — one
+> anti-aliasing technique against the other, not one on top of the other — and
+> it is the same trade Babylon-Lite makes. `msaaSamples` on the pipeline puts
+> MSAA back if you want both.
+
+`disableOnCameraMove` is left at its default, so the accumulation resets while
+you fly and settles once you stop, which is when you are looking at it. The
+setting is remembered in `localStorage` and is **editor-only**: like `Unlit` and
+the `Ghost` slider it never reaches the manifest or the `.glb`.
 
 ### The shell thickness
 

@@ -8618,6 +8618,63 @@ check("unfolding brings the controls back, and the window is as it was",
   paneBack.open && paneBack.shown && paneBack.h > 700,
   `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`);
 
+// ---- 2a. TAA over the viewport ---------------------------------------------
+//
+// Babylon's stock TAA pipeline, here so it can be compared against
+// Babylon-Lite's own. It is built and thrown away on each toggle rather than
+// left attached and switched off, and that is what this checks: an attached
+// pipeline draws the scene into a texture whether or not it is enabled, and
+// that alone changes the picture, because the canvas MSAA the engine was made
+// with applies only while the scene draws straight to the back buffer. Off has
+// to give back the exact frame you had before it went on, or the comparison
+// the feature exists for is not a comparison.
+//
+// At the end of the run because clicking a toolbar control moves the real
+// mouse onto the toolbar, and the wheel blocks scroll wherever the pointer was
+// left. Nothing else here is disturbed: no camera move, no selection change.
+const taaShot = () => page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const eng = ed.state.engine;
+  ed.state.scene.render();
+  const buf = await eng.readPixels(0, 0, eng.getRenderWidth(), eng.getRenderHeight());
+  let sum = 0;
+  for (let i = 0; i < buf.length; i += 4) sum = (sum + buf[i] * (i + 1)) % 4294967296;
+  const cam = ed.state.camera;
+  return {
+    sum,
+    on: ed.state.taa,
+    pipe: !!ed.taaPipeline(),
+    passes: (cam._postProcesses || []).filter(Boolean).length,
+  };
+});
+
+const taaOff1 = await taaShot();
+await page.click("#taa");
+await page.evaluate(() => document.getElementById("taa").blur());
+await page.waitForTimeout(600);
+const taaOn = await taaShot();
+await page.click("#taa");
+await page.evaluate(() => document.getElementById("taa").blur());
+await page.waitForTimeout(400);
+const taaOff2 = await taaShot();
+const taaStore = await page.evaluate(() => localStorage.getItem("taa"));
+
+check("TAA is off until asked for, with nothing on the camera",
+  !taaOff1.on && !taaOff1.pipe && taaOff1.passes === 0,
+  `pipeline ${taaOff1.pipe}, ${taaOff1.passes} pass(es)`);
+check("the checkbox builds the pipeline and it reaches the camera",
+  taaOn.on && taaOn.pipe && taaOn.passes > 0,
+  `pipeline ${taaOn.pipe}, ${taaOn.passes} pass(es)`);
+check("and it changes what is drawn",
+  taaOn.sum !== taaOff1.sum, `frame ${taaOff1.sum} -> ${taaOn.sum}`);
+check("turning it off takes the pipeline back off the camera",
+  !taaOff2.on && !taaOff2.pipe && taaOff2.passes === 0,
+  `pipeline ${taaOff2.pipe}, ${taaOff2.passes} pass(es)`);
+check("and gives back the exact frame that was there before it",
+  taaOff2.sum === taaOff1.sum, `${taaOff1.sum} -> ${taaOff2.sum}`);
+check("the TAA choice is remembered outside the ship, in localStorage",
+  taaStore === "0", `taa = ${taaStore}`);
+
 await page.fill("#palette-search", "");
 await page.waitForTimeout(400);
 

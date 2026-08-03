@@ -9,6 +9,7 @@ const {
   Engine, Scene, UniversalCamera, HemisphericLight, Vector3,
   Color3, Color4, Quaternion, Matrix, MeshBuilder,
   HDRCubeTexture, ImageProcessingConfiguration, PointerEventTypes,
+  TAARenderingPipeline,
 } = BABYLON;
 
 export const GRID_MAJOR = 4;      // kit tile size, metres
@@ -112,6 +113,7 @@ export const state = {
   entities: new Map(),     // node name -> [{ name, linked: [] }]
   fluidSim: [],            // the global sim list from config.json
   unlit: false,            // show raw albedo, no lighting
+  taa: false,              // temporal anti-aliasing, see setTaa
   runtimeLight: false,     // drop the authoring rig, see what the game sees
   toneMapping: "Khronos PBR Neutral",
   // Two independent pairs. The editor's rig adds four analytic lights the game
@@ -450,6 +452,43 @@ export function setUnlit(on) {
   for (const mat of state.scene.materials) applyViewportMode(mat);
   emit("modes");
 }
+
+/**
+ * Temporal anti-aliasing over the viewport.
+ *
+ * This is here to be compared against Babylon-Lite's own TAA, so it is the
+ * stock pipeline at stock settings rather than a tuned one: whatever the two
+ * engines do differently is then the only difference on screen. The knobs are
+ * reachable through `taaPipeline()` for anyone who wants to match a particular
+ * configuration by hand.
+ *
+ * Built and thrown away on each toggle rather than left attached and switched
+ * off. An attached pipeline renders the scene into a texture whether or not it
+ * is enabled, and that alone changes the picture: the canvas MSAA the engine
+ * was created with only applies while the scene draws straight to the back
+ * buffer. Off has to give back exactly the image you had before it went on, or
+ * the comparison this exists for is not a comparison.
+ *
+ * `disableOnCameraMove` is left at its default, so the accumulation resets
+ * while you fly and settles once you stop - which is when you are looking.
+ */
+let taa = null;
+
+export function setTaa(on) {
+  state.taa = !!on && !!TAARenderingPipeline;
+  if (!state.scene || !state.camera) return state.taa;
+  if (state.taa && !taa) {
+    taa = new TAARenderingPipeline("taa", state.scene, [state.camera]);
+  } else if (!state.taa && taa) {
+    taa.dispose();
+    taa = null;
+  }
+  emit("modes");
+  return state.taa;
+}
+
+/** The live TAA pipeline, or null when it is off. Its settings are on it. */
+export function taaPipeline() { return taa; }
 
 /**
  * A translucent stand-in for a material, cached.
