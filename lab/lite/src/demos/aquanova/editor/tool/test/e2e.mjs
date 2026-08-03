@@ -5,10 +5,12 @@
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
+import { toolUrl } from "./target.mjs";
 
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
+const URL = toolUrl();
 const EXPORT = process.env.SHIP_EXPORT_DIR || "D:/alexis/TombRaider/Popov72/SciFiShip/export";
 const before = Object.fromEntries(fs.readdirSync(EXPORT)
   .map((f) => [f, fs.statSync(path.join(EXPORT, f)).size]));
@@ -20,7 +22,7 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 
-await page.goto(process.env.TOOL_URL || "http://localhost:5180/", { waitUntil: "domcontentloaded" });
+await page.goto(URL, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => document.querySelectorAll("#palette-list .item").length > 0,
   null, { timeout: 60000 });
 await page.waitForTimeout(2500);

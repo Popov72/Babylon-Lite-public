@@ -1,15 +1,18 @@
 // Headless smoke test for the layout tool. Run with:
-//   node test/smoke.mjs
+//   npm test
+// which starts an isolated server; the suite refuses to guess one, because it
+// is destructive and the editor you build in is on 5180.
 // Uses the Playwright already present in the Babylon.js checkout and drives
 // installed Edge, so nothing new has to be downloaded.
 
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { toolUrl } from "./target.mjs";
 
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
-const URL = process.env.TOOL_URL || "http://localhost:5180/";
+const URL = toolUrl();
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
