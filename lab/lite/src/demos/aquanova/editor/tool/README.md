@@ -1390,6 +1390,7 @@ where you are.
 box: a capsule for a barrel, a cylinder for a pipe, several boxes leaving a
 doorway open. **Fit a box** is only a starting point — it fits the module's
 bounding volume, which is exactly the shape authoring is meant to improve on.
+**Fit a hull** goes further and reads the actual triangles; see below.
 Whatever you drop is claimed by the staged element it sits on and becomes that
 module's collision.
 
@@ -1466,6 +1467,64 @@ time.
 **Fit a box** acts on the selection: exactly one element, and not a collision
 shape. Anything else says so plainly rather than guessing — "fit the current
 module" stopped meaning anything the moment the area could hold more than one.
+
+**Fit a hull** is the same rules with a better answer: it reads the element's
+own triangles instead of its bounding box, and lays out as many boxes as the
+shape asks for. Three candidates are fitted and the best-scoring one wins —
+
+| candidate | what it is | what it suits |
+| --- | --- | --- |
+| `box` | the whole module in one box | a crate, a floor plate, a door |
+| `slabs` | a slab per surface patch, laid on it and extending backwards | a wall with a lip |
+| `split` | cut in half and recurse until each piece is worth boxing | a corner, a door frame |
+
+The score is **coverage × solidity, less a small penalty per box**, where
+solidity is the share of the hull's volume that sits near real surface.
+Coverage alone is a bad judge: one enormous box covers every vertex and fills
+the room the player is meant to walk in. Letting the score choose means no
+single heuristic has to be right about which kind of module it is looking at.
+
+The `slabs` pass is the one that reads the kit's own convention: triangle
+normals point *out* of the solid, so laying a slab on a patch and extending it
+backwards puts the body away from the play space for free — without needing to
+know which side the room is on. Its depth is **capped**; using the patch's own
+extent instead let a curved patch, whose points wrap right round an arc, grow a
+slab that swallowed everything the arc enclosed (`WallAstra_Corner_Round_Outer`
+came out at 87 m³ against a hand-drawn 12).
+
+> **It declines rather than guess.** A hull that covers ≥ 97%, sits ≥ 80% on
+> surface and needed ≤ 4 boxes is reported plainly; anything else is fitted but
+> flagged *"worth checking by eye"*. In practice that is the curved corners,
+> which are genuinely better drawn by hand. Saying so is more use than a hull
+> that looks plausible and leaks.
+
+Measured against the 53 hand-authored hulls (`fit-boxes.mjs`, geometry dumped by
+`fit-dump.mjs`) it covers more in less volume for the same number of boxes:
+
+| | coverage | boxes | volume | on surface |
+| --- | --- | --- | --- | --- |
+| fitted | **99.7%** | 2.4 | **5.3 m³** | **87.4%** |
+| hand-authored | 88.4% | 1.7 | 7.4 m³ | 73.0% |
+
+It matches or beats the authored hull on 52 of 53, and is confident about 37 of
+them — those at 100% coverage and 92.8% solidity. Running it also turned up two
+real faults in the ship: `P0209` is a `Door_Frame_Square_Blocked` with **no hull
+at all** (the player walks through a blocked door), and the `Platform_Round1` /
+`Platform_Round2` hulls cover only **6.7% / 9.1%** — a square box on a round
+plate.
+
+> **Rotations cross the boundary as basis vectors, not Euler angles.** The
+> fitter is plain geometry with no Babylon in it, and converting by hand into
+> Babylon's YXZ convention is easy to get subtly wrong; `fitHullToSelection`
+> composes the frame into a matrix and lets `decompose`/`toEulerAngles` do it.
+
+> The fitter lives in `public/js/hullfit.js`, imported by *both* the editor and
+> the offline harness, so the thresholds baked into it are the ones the harness
+> measured.
+
+**A neural network was considered and rejected.** 53 examples — 42 of them a
+single box — is far too few to train on, and the geometry fully determines a
+good answer, so the problem is searched rather than learned.
 
 The area is read back into the record on every change that matters — leaving it,
 saving, or removing an element — so there is no separate commit step and nothing

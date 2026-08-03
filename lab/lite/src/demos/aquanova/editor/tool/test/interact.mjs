@@ -1355,6 +1355,95 @@ check("the collision shell is a minimum thickness on every axis",
     && fitRules.fitted.some((v, i) => Math.abs(v - fitRules.raw[i]) > 1e-6),
   `raw ${JSON.stringify(fitRules.raw)} -> ${JSON.stringify(fitRules.fitted)} at shell 0.5`);
 
+// Fit a hull reads the element's own triangles rather than its bounding box,
+// and lays out as many boxes as the shape asks for. It is measured through the
+// saved records, not the live colliders: collider ids are recycled, so an id
+// diff sees nothing at all when a fit replaces an existing hull.
+const hullFit = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const V = BABYLON.Vector3;
+  const out = {};
+  ed.select([]);
+  out.none = (await co.fitHullToSelection()).error;
+  const list = [...ed.state.placements.values()].filter((p) => p.stage);
+  ed.select(list.map((p) => p.id));
+  out.many = (await co.fitHullToSelection()).error;
+  const shape = co.addCollider("sphere", new V(320, 0, 0), { stage: true, silent: true });
+  ed.select([shape.id]);
+  out.onShape = (await co.fitHullToSelection()).error;
+  co.removeCollider(shape.id, true);
+
+  const target = list[0];
+  ed.select([target.id]);
+  const before = (ed.state.moduleCollision.get(target.module) || []).length;
+  const r = await co.fitHullToSelection();
+  out.ok = r.ok;
+  out.module = target.module;
+  out.how = r.how;
+  out.coverage = r.coverage;
+  out.confident = r.confident;
+  const shapes = ed.state.moduleCollision.get(target.module) || [];
+  out.recorded = shapes.length;
+  out.made = r.colliders.length;
+  out.kinds = [...new Set(shapes.map((s) => s.kind))];
+
+  // compose the records onto the element, the way the runtime has to
+  target.node.computeWorldMatrix(true);
+  const parent = target.node.getWorldMatrix();
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (const s of shapes) {
+    const w = BABYLON.Matrix.Compose(
+      new V(s.scale[0], s.scale[1], s.scale[2]),
+      BABYLON.Quaternion.FromEulerAngles(...s.rotation.map((d) => (d * Math.PI) / 180)),
+      new V(s.position[0], s.position[1], s.position[2])).multiply(parent);
+    for (const sx of [-0.5, 0.5]) {
+      for (const sy of [-0.5, 0.5]) {
+        for (const sz of [-0.5, 0.5]) {
+          const p = V.TransformCoordinates(new V(sx, sy, sz), w);
+          for (const [k, v] of [[0, p.x], [1, p.y], [2, p.z]]) {
+            if (v < min[k]) min[k] = v;
+            if (v > max[k]) max[k] = v;
+          }
+        }
+      }
+    }
+  }
+  const mb = target.node.getHierarchyBoundingVectors(true);
+  out.hull = { min, max };
+  out.mesh = { min: [mb.min.x, mb.min.y, mb.min.z], max: [mb.max.x, mb.max.y, mb.max.z] };
+
+  ed.undo();
+  await new Promise((res) => setTimeout(res, 400));
+  out.afterUndo = (ed.state.moduleCollision.get(target.module) || []).length;
+  out.before = before;
+  return out;
+});
+check("fitting a hull with nothing, or several, selected explains itself",
+  /select the element/.test(hullFit.none) && /single element/.test(hullFit.many),
+  `${hullFit.none} / ${hullFit.many}`);
+check("fitting a hull onto a shape rather than an element explains itself",
+  /collision shape/.test(hullFit.onShape), hullFit.onShape);
+check("a fitted hull is recorded exactly as it was made",
+  hullFit.ok && hullFit.recorded === hullFit.made && hullFit.made > 0
+    && hullFit.kinds.length === 1 && hullFit.kinds[0] === "box",
+  `${hullFit.made} made, ${hullFit.recorded} recorded, kinds ${hullFit.kinds}`);
+check("a fitted hull covers the geometry it was fitted to",
+  hullFit.coverage >= 0.97, `${(100 * hullFit.coverage).toFixed(1)}% of ${hullFit.module}`);
+check("a fitted hull spans its element rather than landing elsewhere",
+  [0, 1, 2].every((k) => hullFit.hull.min[k] <= hullFit.mesh.min[k] + 0.15
+    && hullFit.hull.max[k] >= hullFit.mesh.max[k] - 0.15),
+  `hull ${hullFit.hull.min.map((v) => v.toFixed(2))}..${hullFit.hull.max.map((v) => v.toFixed(2))}`
+  + ` mesh ${hullFit.mesh.min.map((v) => v.toFixed(2))}..${hullFit.mesh.max.map((v) => v.toFixed(2))}`);
+check("a confident hull is a tight one",
+  !hullFit.confident || [0, 1, 2].every((k) =>
+    hullFit.mesh.min[k] - hullFit.hull.min[k] < 0.35
+    && hullFit.hull.max[k] - hullFit.mesh.max[k] < 0.35),
+  `confident ${hullFit.confident}, by ${hullFit.how}`);
+check("undoing a fitted hull puts the old one back",
+  hullFit.afterUndo === hullFit.before, `${hullFit.recorded} -> ${hullFit.afterUndo},`
+  + ` wanted ${hullFit.before}`);
+
 // association is by position, which is what makes copying a hull work
 const assoc = await page.evaluate(async ([a, b]) => {
   const ed = await import("/js/editor.js");

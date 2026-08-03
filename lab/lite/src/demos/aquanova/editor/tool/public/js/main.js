@@ -10,7 +10,7 @@ import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
 import {
   removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE, COLLIDER_DEFAULT_SCALE,
   reconcileCollider, colliderDims,
-  enterCollisionMode, exitCollisionMode, fitBoxToSelection,
+  enterCollisionMode, exitCollisionMode, fitBoxToSelection, fitHullToSelection,
   stageModule, unstageModule, harvestStage, orphanCount,
 } from "./colliders.js";
 import {
@@ -1701,6 +1701,17 @@ $("btn-module-fit").addEventListener("click", async () => {
   refreshModuleBanner();
   setStatus(`${r.module}: fitted one box at the collision shell`
     + ` (${state.config.shellThickness} m minimum) — scale and split it as you like`);
+});
+
+$("btn-module-fit-hull").addEventListener("click", async () => {
+  setStatus("fitting a hull…");
+  const r = await fitHullToSelection();
+  if (!r.ok) { setStatus(r.error); return; }
+  refreshModuleBanner();
+  const how = { box: "one box", slabs: "a slab per face", split: "a split" }[r.how] || r.how;
+  setStatus(`${r.module}: ${r.colliders.length} box(es) by ${how}`
+    + ` — covers ${(100 * r.coverage).toFixed(0)}%, ${(100 * r.solid).toFixed(0)}% of it on surface`
+    + (r.confident ? "" : " — worth checking by eye, this is a shape better drawn by hand"));
 });
 
 function refreshModuleBanner() {

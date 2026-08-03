@@ -1011,6 +1011,100 @@ export async function fitBoxToSelection(boundsOf) {
   return { ok: true, collider: made, module: entry.module };
 }
 
+/**
+ * Fit a whole hull to one staged element.
+ *
+ * Where "fit a box" gives you a starting block to carve up by hand, this reads
+ * the element's own triangles and lays out as many boxes as the shape asks for.
+ * It declines rather than guess: a curved corner is still better drawn by a
+ * person, and saying so is more use than a hull that looks plausible and leaks.
+ */
+export async function fitHullToSelection() {
+  if (!state.collisionMode) return { ok: false, error: "open the collision area first" };
+  if (state.selection.length !== 1) {
+    return { ok: false,
+      error: state.selection.length
+        ? `select a single element — ${state.selection.length} are selected`
+        : "select the element to fit a hull to" };
+  }
+  const entry = state.placements.get(state.selection[0]);
+  if (!entry) {
+    return { ok: false, error: "that is a collision shape — select the element itself" };
+  }
+  if (!entry.stage) return { ok: false, error: "that element is not on the staging area" };
+
+  const tris = localTriangles(entry.node);
+  if (!tris.length) return { ok: false, error: `no geometry to read on ${entry.module}` };
+
+  const { fit } = await import("./hullfit.js");
+  const result = fit(tris);
+  if (!result.boxes.length) return { ok: false, error: `could not fit ${entry.module}` };
+
+  pushUndo();
+  const grown = grownBounds(entry.node);
+  if (grown) {
+    for (const c of stageColliders()) {
+      const cb = worldBounds(c.node);
+      if (cb && overlapVolume(cb, grown) > 0) removeCollider(c.id, true);
+    }
+  }
+  entry.node.computeWorldMatrix(true);
+  const parent = entry.node.getWorldMatrix();
+  const made = [];
+  for (const b of result.boxes) {
+    // the fitter hands back a frame, not angles, so compose the box's own
+    // matrix and let Babylon do the conversion it is already trusted for
+    const rot = Matrix.FromValues(
+      b.basis[0][0], b.basis[0][1], b.basis[0][2], 0,
+      b.basis[1][0], b.basis[1][1], b.basis[1][2], 0,
+      b.basis[2][0], b.basis[2][1], b.basis[2][2], 0,
+      0, 0, 0, 1);
+    const world = Matrix.Scaling(2 * b.half[0], 2 * b.half[1], 2 * b.half[2])
+      .multiply(rot)
+      .multiply(Matrix.Translation(b.centre[0], b.centre[1], b.centre[2]))
+      .multiply(parent);
+    const scale = new Vector3(), quat = new Quaternion(), pos = new Vector3();
+    world.decompose(scale, quat, pos);
+    const e = quat.toEulerAngles();
+    made.push(addCollider("box", pos, {
+      stage: true, silent: true,
+      rotation: [e.x, e.y, e.z].map((r) => Math.round((r * 180 / Math.PI) * 1e4) / 1e4),
+      // a box is the same box under an axis flip, so a mirrored placement's
+      // negative scale is noise here - the rotation already carries the flip
+      scale: [shellThick(scale.x), shellThick(scale.y), shellThick(scale.z)],
+    }));
+  }
+  harvestStage();
+  applyVisibility();
+  emit("colliders");
+  return { ok: true, colliders: made, module: entry.module,
+    coverage: result.coverage, solid: result.solid,
+    how: result.how, confident: result.confident };
+}
+
+/** Every triangle under a node, in that node's own space. */
+function localTriangles(node) {
+  node.computeWorldMatrix(true);
+  const inv = node.getWorldMatrix().clone().invert();
+  const tris = [];
+  for (const m of node.getChildMeshes()) {
+    const pos = m.getVerticesData && m.getVerticesData("position");
+    const idx = m.getIndices && m.getIndices();
+    if (!pos || !idx) continue;
+    m.computeWorldMatrix(true);
+    const w = m.getWorldMatrix().multiply(inv);
+    const at = (i) => {
+      const q = Vector3.TransformCoordinates(
+        new Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]), w);
+      return [q.x, q.y, q.z];
+    };
+    for (let i = 0; i < idx.length; i += 3) {
+      tris.push([at(idx[i]), at(idx[i + 1]), at(idx[i + 2])]);
+    }
+  }
+  return tris;
+}
+
 hooks.serializeColliders = serializeColliders;
 hooks.deserializeColliders = deserializeColliders;
 hooks.removeCollider = (id) => removeCollider(id, true);
