@@ -2,10 +2,11 @@
 // grab/drop, hover outline, wheel rotate/scale, grid elevation and axis modes.
 
 import { createRequire } from "node:module";
+import { toolUrl } from "./target.mjs";
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
-const URL = process.env.TOOL_URL || "http://localhost:5180/";
+const URL = toolUrl();
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
 const page = await browser.newPage({ viewport: { width: 1700, height: 950 } });
@@ -8195,6 +8196,73 @@ check("every door is back once isolation is off",
   JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
+// ---- 1x. an outline is the same thickness however close the camera is ------
+//
+// `edgesWidth` is not a pixel width: the line shader offsets the vertex in
+// clip space, *before* the perspective divide, so what you see is
+// `edgesWidth * renderHeight / (100 * viewDepth)` - it doubles every time you
+// halve your distance. A fixed width read as a fine line across a room and as
+// a slab of colour with the camera against a crate, hiding the thing it was
+// drawn to point at.
+const edgeScale = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const kit = await import("/js/kit.js");
+  const id = [...kit.getCatalogue().byId.keys()].find((k) => k.includes("Crate1"))
+    || [...kit.getCatalogue().byId.keys()][0];
+  const e = await ed.placeAt(id, new BABYLON.Vector3(0, 0, 0), {});
+  ed.select([e.id]);
+  await new Promise((r) => setTimeout(r, 300));
+
+  const mid = (() => {
+    const c = e.node.getHierarchyBoundingVectors(true);
+    return c.min.add(c.max).scale(0.5);
+  })();
+  const dir = new BABYLON.Vector3(0.6, 0.45, 0.66).normalize();
+
+  /** Frame the crate from `d` metres, then measure the outline off the buffer. */
+  const at = async (d) => {
+    ed.state.camera.position = mid.add(dir.scale(d));
+    ed.state.camera.setTarget(mid);
+    ed.state.scene.render();
+    await new Promise((r) => setTimeout(r, 200));
+    ed.state.scene.render();
+    const eng = ed.state.engine;
+    const w = eng.getRenderWidth(), h = eng.getRenderHeight();
+    const buf = await eng.readPixels(0, 0, w, h);
+    const runs = [];
+    for (let row = 0; row < h; row += 2) {
+      let run = 0;
+      for (let x = 0; x < w; x++) {
+        const i = ((row * w) + x) * 4;
+        // clearly blue: the select colour is (64, 191, 255)
+        const blue = buf[i + 2] > 150 && buf[i + 2] - buf[i] > 80
+          && buf[i + 1] > 90 && buf[i + 1] < buf[i + 2];
+        if (blue) run++;
+        else { if (run) runs.push(run); run = 0; }
+      }
+      if (run) runs.push(run);
+    }
+    runs.sort((a, b) => a - b);
+    return { width: +e.node.getChildMeshes()[0].edgesWidth.toFixed(3),
+      px: runs.length ? runs[Math.floor(runs.length / 2)] : 0, runs: runs.length };
+  };
+  const far = await at(12);
+  const near = await at(2.5);
+  ed.removePlacement(e.id);
+  return { far, near };
+});
+check("the outline width tracks the distance, which is what keeps it constant",
+  Math.abs(edgeScale.far.width / edgeScale.near.width - 12 / 2.5) < 0.3,
+  `${edgeScale.far.width} at 12 m vs ${edgeScale.near.width} at 2.5 m`
+  + ` — ratio ${(edgeScale.far.width / edgeScale.near.width).toFixed(2)}, wanted 4.80`);
+check("so the drawn outline does not fatten as the camera closes in",
+  edgeScale.near.px > 0 && edgeScale.far.px > 0
+    && edgeScale.near.px <= edgeScale.far.px * 1.6 && edgeScale.near.px <= 8,
+  `${edgeScale.far.px} px at 12 m -> ${edgeScale.near.px} px at 2.5 m,`
+  + ` over a 4.8x change in distance`);
+
+await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
+
 // ---- 1y. a module dropped on the collision bench is a one-shot -------------
 //
 // On the ship a palette tile stays armed, so a row of panels is just repeated
@@ -8266,6 +8334,46 @@ check("so a second click stages nothing",
 check("a collision primitive still stays armed for a run of boxes",
   benchShot.cAfter.colliders === benchShot.cBefore.colliders + 2,
   `${benchShot.cBefore.colliders} -> ${benchShot.cAfter.colliders}`);
+
+// Ctrl+D there copies shapes, never the module. The rule lives in
+// grabSelection rather than only at the key, which used to filter a list it
+// then did not pass on - so a module selected alongside a shape was copied
+// anyway, and the bench got a second stand-in of a module that may only be on
+// it once.
+const benchCopy = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const co = await import("/js/colliders.js");
+  const it = await import("/js/interact.js");
+  const mod = [...ed.state.placements.values()].find((p) => p.stage);
+  const a = co.addCollider("box", new BABYLON.Vector3(2, 0, 2), { stage: true, silent: true });
+  const b = co.addCollider("box", new BABYLON.Vector3(3, 0, 2), { stage: true, silent: true });
+
+  const carried = async (ids, opts) => {
+    ed.select(ids);
+    const g = await it.grabSelection(opts);
+    const n = it.ghostCount();
+    const mode = it.ghostMode();
+    it.cancelGhost();
+    return { got: !!g, n, mode };
+  };
+  const mixed = await carried([mod.id, a.id, b.id], { copy: true });
+  const alone = await carried([mod.id], { copy: true });
+  const move = await carried([mod.id], {});
+  const shapes = await carried([a.id, b.id], { copy: true });
+  co.removeCollider(a.id, true);
+  co.removeCollider(b.id, true);
+  ed.select([]);
+  return { mixed, alone, move, shapes };
+});
+check("Ctrl+D on the bench leaves a module behind and takes only its shapes",
+  benchCopy.mixed.n === 2, `carried ${benchCopy.mixed.n} of 3 selected (2 shapes + 1 module)`);
+check("and a module on its own copies nothing at all",
+  !benchCopy.alone.got && benchCopy.alone.n === 0, JSON.stringify(benchCopy.alone));
+check("but M still picks a staged module up to move it",
+  benchCopy.move.got && benchCopy.move.n === 1 && benchCopy.move.mode === "move",
+  JSON.stringify(benchCopy.move));
+check("and copying shapes alone is untouched",
+  benchCopy.shapes.n === 2, JSON.stringify(benchCopy.shapes));
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");

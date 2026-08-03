@@ -408,46 +408,64 @@ function fitSplit(tris, idx, opts = {}) {
   const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
   /**
-   * The tightest box round a piece, axis aligned.
+   * A piece's box, square to the world and turned to face its own surface.
    *
-   * Turning each piece to face its own surface makes a single piece smaller,
-   * but neighbouring pieces then overlap — and a decomposition whose parts
-   * overlap gets *bulkier* the more finely it is cut, which is the opposite
-   * of what the tolerance is for. Axis-aligned cuts nest inside their parent,
-   * so more cuts can only ever help. Angled surfaces are the slab pass's job.
+   * Both, because neither is always right. Square is right for most of the kit
+   * and its parts nest inside their parent, so cutting again can only help.
+   * Turned is far tighter on a curve — the whole reason a rounded corner wants
+   * a hull that follows it — but neighbouring pieces then overlap, and a set
+   * whose parts overlap can get *bulkier* the more finely it is cut.
+   *
+   * Which is why the choice is made per *level*, on total volume, rather than
+   * per piece. Summed volume counts an overlap twice, so a turned set that
+   * overlaps is charged for exactly what it wastes and only wins when it
+   * really is the smaller hull.
    */
-  const boxOf = (ts) => extents(ts, AXES);
+  const boxesOf = (ts) => {
+    const square = extents(ts, AXES);
+    let n = [0, 0, 0];
+    for (const [a, b, c] of ts) {
+      const f = cross(sub(b, a), sub(c, a));
+      // face them all the same way, or opposite sides of a shell cancel out
+      n = dot(f, n) < 0 ? sub(n, f) : add(n, f);
+    }
+    return { square, turned: len(n) < 1e-9 ? square : extents(ts, frameFrom(norm(n))) };
+  };
 
   const nodes = [];
   const walk = (ts, depth) => {
     if (!ts.length) return;
-    const bx = boxOf(ts);
+    const both = boxesOf(ts);
+    const bx = both.square;
     const longest = bx.half.indexOf(Math.max(...bx.half));
     if (depth >= splitDepth || 2 * bx.half[longest] < 2 * minPiece) {
-      nodes.push({ box: bx, depth, leaf: true });
+      nodes.push({ ...both, depth, leaf: true });
       return;
     }
     // cut across the box's own long axis, and where the material is rather
-    // than at the middle of empty space
+    // than at the middle of empty space. The cut is always square to the world
+    // so the pieces nest; only the box drawn round a piece may be turned.
     const axis = bx.basis[longest];
     const at = (t) => (dot(t[0], axis) + dot(t[1], axis) + dot(t[2], axis)) / 3;
     const cut = ts.map(at).sort((a, b) => a - b)[Math.floor(ts.length / 2)];
     const lo = [], hi = [];
     for (const t of ts) (at(t) <= cut ? lo : hi).push(t);
-    if (!lo.length || !hi.length) { nodes.push({ box: bx, depth, leaf: true }); return; }
-    nodes.push({ box: bx, depth, leaf: false });
+    if (!lo.length || !hi.length) { nodes.push({ ...both, depth, leaf: true }); return; }
+    nodes.push({ ...both, depth, leaf: false });
     walk(lo, depth + 1);
     walk(hi, depth + 1);
   };
   walk(tris, 0);
 
+  const vol = (bs) => bs.reduce((s, b) => s + 8 * b.half[0] * b.half[1] * b.half[2], 0);
   const levels = [];
   for (let d = 0; d <= splitDepth; d++) {
-    const set = nodes.filter((n) => n.depth === d || (n.leaf && n.depth < d)).map((n) => n.box);
+    const set = nodes.filter((n) => n.depth === d || (n.leaf && n.depth < d));
     if (!set.length || set.length > maxBoxes) break;
     const prev = levels[levels.length - 1];
     if (prev && prev.length === set.length) continue;   // nothing new to offer
-    levels.push(set);
+    const square = set.map((n) => n.square), turned = set.map((n) => n.turned);
+    levels.push(vol(turned) < vol(square) ? turned : square);
   }
   return levels;
 }

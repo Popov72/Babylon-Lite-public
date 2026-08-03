@@ -23,8 +23,8 @@ export const ROT_AXES = ["y", "x", "z"];export const SCALE_AXES = ["all", "x", "
 
 const HOVER_COLOR = new Color4(1.0, 0.55, 0.15, 1);
 const SELECT_COLOR = new Color4(0.25, 0.75, 1.0, 1);
-const EDGE_WIDTH = 5;
 const EDGE_EPSILON = 0.96;      // higher draws more interior edges
+const EDGE_PX = 3.5;            // how thick an outline should look, in pixels
 const GHOST_ALPHA = 0.7;
 
 let ghost = null;          // see armGhost()
@@ -69,6 +69,9 @@ export function initInteract() {
     refreshHover();
   });
   on("placements", () => { hoverId = null; refreshOutlines(); });
+  // The camera moves without emitting anything, and an outline drawn for where
+  // the camera *was* is the whole problem, so this rides the render loop.
+  state.scene?.onBeforeRenderObservable.add(resizeOutlines);
 
   const viewport = document.getElementById("viewport");
   // Capture on the parent so this runs before Babylon's canvas handler; without
@@ -337,7 +340,14 @@ export async function armColliderGhost(kind, opts = {}) {
  */
 export async function grabSelection(opts = {}) {
   const entries = state.selection.map(entryOf)
-    .filter((e) => e && (e.module || e.type === "collider"));
+    .filter((e) => e && (e.module || e.type === "collider"))
+    // A *module* can only be on the bench once: the association rule needs one
+    // answer to "which element is this shape on", and two instances give two.
+    // Shapes are a different matter - a hull is often several boxes. The rule
+    // belongs here rather than only at the Ctrl+D key, which filtered a list it
+    // then did not pass on, so a module selected alongside a shape was copied
+    // anyway. Carrying one with `M` is still fine; it is copying that is not.
+    .filter((e) => !(opts.copy && state.collisionMode && e.stage && e.type !== "collider"));
   if (!entries.length) return null;
   // A copy is a new thing being placed, so it wants the floor plane; a carry is
   // moving what is already there, and raising it is a fair reason to be in Y.
@@ -997,9 +1007,45 @@ function edgeMeshes(entry) {
 
 function applyEdges(mesh, color) {
   if (!mesh.edgesRenderer) mesh.enableEdgesRendering(EDGE_EPSILON);
-  mesh.edgesWidth = EDGE_WIDTH;
   mesh.edgesColor = color;
   outlined.set(mesh.uniqueId, mesh);
+  sizeEdges(mesh);
+}
+
+/**
+ * Keep an outline the same thickness on screen, wherever the camera is.
+ *
+ * `edgesWidth` is not a pixel width. The line shader offsets the vertex in
+ * *clip* space, before the perspective divide, and the renderer hands it
+ * `edgesWidth / 50` — so what you see is
+ *
+ *     pixels = edgesWidth * renderHeight / (100 * viewDepth)
+ *
+ * which doubles every time you halve your distance. A fixed 5 read as a fine
+ * line across a room and as a slab of colour with your nose against a crate,
+ * hiding the very thing it was drawn to point at. Turning that around gives
+ * the width to ask for, and the outline then reads the same at any zoom.
+ *
+ * The depth is the *view* depth, not the distance: it is what the shader
+ * divides by, and using the plain distance would fatten the outline on
+ * anything off to the side of the screen.
+ */
+function sizeEdges(mesh) {
+  const scene = state.scene;
+  const cam = scene?.activeCamera;
+  if (!cam || mesh.isDisposed()) return;
+  const c = mesh.getBoundingInfo().boundingSphere.centerWorld;
+  const m = scene.getViewMatrix().m;
+  const depth = Math.max(0.05, c.x * m[2] + c.y * m[6] + c.z * m[10] + m[14]);
+  mesh.edgesWidth = (100 * EDGE_PX * depth) / scene.getEngine().getRenderHeight();
+}
+
+/** Re-size every outline for where the camera is now. Cheap: it is the selection. */
+export function resizeOutlines() {
+  for (const mesh of outlined.values()) {
+    if (mesh.isDisposed()) continue;
+    sizeEdges(mesh);
+  }
 }
 
 function refreshOutlines() {

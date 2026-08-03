@@ -1475,6 +1475,12 @@ clears with it, which is the visible difference between the two modes.
 > along a wall, so the box, sphere, capsule and cylinder ghosts stay armed. The
 > rule is about *modules*, not about the bench.
 
+**`Ctrl+D` there copies shapes, never the module** — for the same reason: a
+module may only be on the bench once. The rule lives in `grabSelection()` rather
+than only at the key, which used to filter a list it then did not pass on, so a
+module *selected alongside a shape* was copied anyway. `M` still picks a staged
+module up to move it; it is copying that makes no sense, not carrying.
+
 **Fit a box** acts on the selection: exactly one element, and not a collision
 shape. Anything else says so plainly rather than guessing — "fit the current
 module" stopped meaning anything the moment the area could hold more than one.
@@ -1558,13 +1564,34 @@ tolerance from ever improving a rounded corner, because the slab pass kept
 winning with the same coarse three.
 
 The `split` pass cuts **axis-aligned** and offers *every depth* as a candidate.
-Both of those are deliberate. Turning each piece to face its own surface makes
-a single piece smaller but makes neighbours overlap, and a decomposition whose
-parts overlap gets bulkier the more finely it is cut — the opposite of what the
-tolerance is for. And stopping on a threshold meant the threshold was sometimes
-met one cut too early; handing the whole ladder to the score instead lets it
-pick, which it can do safely because axis-aligned parts nest inside their
-parent.
+Both of those are deliberate. Cutting square to the world means the pieces nest
+inside their parent, so an extra level can only shrink the hull; and stopping on
+a threshold meant the threshold was sometimes met one cut too early, so handing
+the whole ladder to the score lets it pick.
+
+The *box drawn round* a piece may still be turned, though, and each level takes
+whichever of the two is smaller **by total volume**. Turned boxes are far
+tighter on a curve — the whole reason a rounded corner wants a hull that follows
+it — but neighbouring pieces then overlap, and summed volume counts an overlap
+twice, so a turned set is charged for exactly what it wastes and only wins when
+it really is the smaller hull.
+
+> Choosing per *level* rather than per piece is what makes that safe. Choosing
+> per piece minimises each piece and lets the overlap between them run free,
+> which is how an earlier version made a hull *bulkier* the more finely it was
+> cut.
+
+This is what fixed the rounded corners with a lot of surface detail.
+`TopCables_Corner_Round_Outer` carries 3804 triangles of cable, which drowns the
+slab pass in tiny normal bins, so the split was the only candidate left — and
+while it was square-only that meant an axis-aligned box round an arc:
+
+| module | before | after |
+| --- | --- | --- |
+| `TopAstra_Corner_Round_Inner` | 16 square, 13.1 m³, 58% solid | **4 turned, 4.8 m³, 100%** |
+| `TopCables_Corner_Round_Outer` | 16 square, 10.4 m³, 63% solid | **4 turned, 7.3 m³, 100%** |
+| `TopCables_Corner_Round_Inner` | 16 square, 10.6 m³, 63% solid | **4 turned, 7.6 m³, 100%** |
+| `ShortWall_WhitePlate2_Corner_Inner` | 24 square, 10.8 m³ | **2 turned, 4.3 m³** |
 
 > **Solidity judges the shape, volume judges the price.** Solidity is measured
 > *before* the thickness is added. Measuring after it has a thin floor plate,
@@ -1915,6 +1942,21 @@ reads the instance world matrix every frame, so nothing has to be re-synced
 after a rotate or scale. Hover is orange, selection is blue, and the two can
 never land on the same element.
 
+> **`edgesWidth` is not a pixel width.** The line shader offsets the vertex in
+> *clip* space, before the perspective divide, and the renderer hands it
+> `edgesWidth / 50` — so what you see is
+> `edgesWidth * renderHeight / (100 * viewDepth)`, which doubles every time you
+> halve your distance. A fixed 5 read as a fine line across a room and as a
+> 16 px slab of colour with the camera against a crate, hiding the very thing
+> it was drawn to point at.
+>
+> Turning that around gives the width to ask for, so it is set from the view
+> depth of each outlined mesh on every frame — the camera moves without
+> emitting anything, so this rides the render loop. It is the *view* depth, not
+> the distance: that is what the shader divides by, and the plain distance
+> would fatten the outline on anything off to the side of the screen. Measured:
+> 4 px at 12 m and 3 px at 2.5 m, against 5 → 16 px before.
+
 **The ghost compensates for the module's origin.** Kit modules are not modelled
 around their own origin — `ShortWall_Band2_Straight`'s body sits 2 m away from
 it — so snapping the origin straight to the grid drops the piece a whole cell
@@ -2216,13 +2258,26 @@ straight into `export/`, which would have overwritten whatever you were working
 on. `SHIP_EXPORT_DIR` and `SHIP_PORT` override `config.json` if you want to
 point a server anywhere else.
 
-Individual suites can still be run by hand against an already-running server:
+Individual suites can still be run by hand, but they will not guess a server:
 
 ```
-node test/smoke.mjs        # catalogue, materials, markers, manifest, export
-node test/interact.mjs     # ghost, drag, hover, wheel, camera, keyboard
-node test/e2e.mjs          # clean-state build, save, artefact preservation
+TOOL_URL=http://localhost:5199/ node test/smoke.mjs      # catalogue, materials, markers, manifest, export
+TOOL_URL=http://localhost:5199/ node test/interact.mjs   # ghost, drag, hover, wheel, camera, keyboard
+TOOL_URL=http://localhost:5199/ node test/e2e.mjs        # clean-state build, save, artefact preservation
 ```
+
+> **`TOOL_URL` has no default, and 5180 is refused outright.** It used to
+> default to 5180 — the port the editor runs on for real work — so running a
+> suite by hand pointed it straight at the ship being built. The suites are
+> destructive: they call `clearAll()`, place and delete elements, change
+> settings and let the auto-save tick fire. Doing it once wrote a one-instance
+> manifest over `ship_autosave.json` and an empty hull set over
+> `ship_collision.json` (73 modules and 163 shapes, gone), recoverable only
+> because the server keeps timestamped backups of every write.
+>
+> `test/target.mjs` now refuses to start without `TOOL_URL`, and refuses 5180
+> even when named unless `TOOL_URL_I_MEAN_IT=yes`. The convenience of a default
+> was worth nothing against that.
 
 Drives installed Edge through the Playwright already present in the Babylon.js
 checkout, so nothing extra is downloaded. Between them they cover boot, palette

@@ -32,16 +32,16 @@ for (let k = 0; k < 30; k++) {
   prev = n;
 }
 
-const wanted = await page.evaluate(async () => {
+const wanted = await page.evaluate(async (extra) => {
   const ed = await import("/js/editor.js");
   const placed = new Set([...ed.state.placements.values()].filter((e) => !e.stage)
     .map((e) => e.module));
   return {
-    hulled: [...ed.state.moduleCollision.keys()],
+    hulled: [...new Set([...ed.state.moduleCollision.keys(), ...extra])],
     placed: [...placed],
     shapes: Object.fromEntries([...ed.state.moduleCollision.entries()]),
   };
-});
+}, (process.env.DUMP_ALSO || "").split(",").filter(Boolean));
 console.log(`${wanted.hulled.length} modules carry a hull; ${wanted.placed.length} are placed`);
 
 // read straight off placements first - no staging needed
