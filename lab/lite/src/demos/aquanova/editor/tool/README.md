@@ -1958,9 +1958,30 @@ batch validators):
 the same ~20 root-level textures and names its materials identically
 (`MI_Trim_01`, `MI_Trim_02`, `M_Light`…). Loading them naively would give you
 one copy of a 2–4 MB atlas per module. `kit.js` keeps the first material seen
-under each name and disposes the duplicates *with their textures*; `thumbs.js`
-does the same on its own engine. Placing 300 modules costs 8 materials and 9
-textures.
+under each key and disposes the duplicates *with their textures*; `thumbs.js`
+does the same on its own engine, using the same key function. Placing 300
+modules costs 8 materials and 9 textures.
+
+> **The key is the name *and* its transparency**, not the name alone. The kit
+> authors some of those shared names two different ways: `M_Glass` is `BLEND`
+> with an alpha of `0` in two files and `OPAQUE` in twelve, and `M_Decal_White`
+> is `MASK` in thirty-one and `OPAQUE` in twenty-six. Keyed by name alone,
+> whichever module happened to load first decided how glass looked *everywhere*
+> — and since the palette keeps its own cache, filled in a different order, a
+> window could be see-through on its tile and solid in the ship at the same
+> time. That is how this was found.
+>
+> Transparency is the only thing those pairs differ in and the one thing that
+> cannot be shared, so it goes in the key. It costs two extra materials across
+> the whole catalogue.
+
+**A cached thumbnail is versioned.** The stills and turntables live on the
+server's disk and outlive any reload, so a change to how a thumbnail is
+*rendered* would otherwise be invisible until someone deleted the folder by
+hand — which, for a bug whose whole symptom was a tile disagreeing with the
+ship, is exactly the wrong failure mode. `THUMB_VERSION` is stamped into every
+cache key, and a `PUT` sweeps the superseded copies of that module, unversioned
+ones included: bumping it costs one re-render each, not an orphaned folder.
 
 **Geometry is instanced.** Each module is loaded once as a disabled prototype;
 placements are `createInstance()` children of a `TransformNode` named after the

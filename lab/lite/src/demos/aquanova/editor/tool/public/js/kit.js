@@ -56,17 +56,39 @@ function applyKitValues(mat) {
   applyViewportMode(mat);
 }
 
+/**
+ * What makes two materials the same material.
+ *
+ * Not the name on its own. The kit names materials identically across modules
+ * *and* authors some of them two different ways: `M_Glass` is `BLEND` with an
+ * alpha of 0 in two files and `OPAQUE` in twelve, and `M_Decal_White` is
+ * `MASK` in thirty-one and `OPAQUE` in twenty-six. Keyed by name alone,
+ * whichever module loaded first decided how glass looked everywhere - and the
+ * palette keeps its own cache, filled in a different order, so a window could
+ * be see-through on its tile and solid in the ship at the same time.
+ *
+ * Transparency is the only thing they differ in, and it is the one thing you
+ * cannot share, so it goes in the key. Everything else about a material is the
+ * texture set, which is what the sharing is for.
+ */
+export function materialKey(mat) {
+  const mode = mat.transparencyMode === null || mat.transparencyMode === undefined
+    ? "opaque" : mat.transparencyMode;
+  return `${mat.name}|${mode}|${mat.alpha}`;
+}
+
 // Swap every material on `meshes` for the shared instance of the same name.
 function dedupeMaterials(meshes) {
   for (const mesh of meshes) {
     const mat = mesh.material;
     if (!mat) continue;
-    const shared = materialRegistry.get(mat.name);
+    const key = materialKey(mat);
+    const shared = materialRegistry.get(key);
     if (shared && shared !== mat) {
       mesh.material = shared;
       mat.dispose(false, true);          // true: drop this copy's textures too
     } else if (!shared) {
-      materialRegistry.set(mat.name, mat);
+      materialRegistry.set(key, mat);
       applyKitValues(mat);
     }
   }

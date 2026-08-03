@@ -151,6 +151,31 @@ function readFluidSim() {
   return Array.isArray(CONFIG.fluidSim) ? CONFIG.fluidSim : [];
 }
 
+/**
+ * Drop earlier-version copies of a cached image.
+ *
+ * The client stamps a version into every cache key so a change to how a
+ * thumbnail is *rendered* invalidates the pictures already on disk. Without
+ * this the superseded ones would sit there for ever, and 300 stills plus 300
+ * twelve-frame sheets is not a small folder to leave behind.
+ */
+async function dropOlderVersions(dir, key) {
+  const m = /^v(\d+)_(.*)$/.exec(key);
+  if (!m) return;
+  const [, version, id] = m;
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch { return; }
+  await Promise.all(names.map(async (f) => {
+    if (!f.endsWith(".png")) return;
+    const o = /^v(\d+)_(.*)\.png$/.exec(f);
+    // a file with no version at all predates the scheme, and is superseded by
+    // definition - the caches in the wild are entirely unversioned, so without
+    // this the very first bump would orphan every one of them
+    const stale = o ? (o[2] === id && o[1] !== version) : f.slice(0, -4) === id;
+    if (stale) await fsp.rm(path.join(dir, f), { force: true }).catch(() => {});
+  }));
+}
+
 // ------------------------------------------------------------------ routes
 
 async function handle(req, res) {
@@ -196,6 +221,7 @@ async function handle(req, res) {
       const body = await readBody(req, 4 * 1024 * 1024);
       await fsp.mkdir(THUMB_DIR, { recursive: true });
       await fsp.writeFile(file, body);
+      await dropOlderVersions(THUMB_DIR, key);
       return sendJson(res, 200, { ok: true });
     }
     return send(res, 405, "method not allowed");
@@ -221,6 +247,7 @@ async function handle(req, res) {
       const body = await readBody(req, 24 * 1024 * 1024);
       await fsp.mkdir(TURN_DIR, { recursive: true });
       await fsp.writeFile(file, body);
+      await dropOlderVersions(TURN_DIR, key);
       return sendJson(res, 200, { ok: true });
     }
     return send(res, 405, "method not allowed");

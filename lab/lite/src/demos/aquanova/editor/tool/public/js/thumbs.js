@@ -4,6 +4,8 @@
 // produced when its tile scrolls into view, and the result is pushed to the
 // server's disk cache so later sessions load it straight from /api/thumb.
 
+import { materialKey } from "./kit.js";
+
 const {
   Engine, Scene, ArcRotateCamera, HemisphericLight, DirectionalLight,
   Vector3, Color3, Color4, SceneLoader,
@@ -71,7 +73,17 @@ export async function initThumbs() {
   } catch { /* first run */ }
 }
 
-const keyOf = (id) => id.replace(/[^A-Za-z0-9_.-]/g, "_");
+/**
+ * Bumped whenever a change alters what a thumbnail *looks like*.
+ *
+ * The cache is on the server's disk and outlives any reload, so without this a
+ * rendering fix is invisible until someone deletes the folder by hand — and
+ * the whole point of the fix that added this was a tile disagreeing with the
+ * ship, which is exactly the sort of thing you would then still be staring at.
+ */
+const THUMB_VERSION = 2;
+
+const keyOf = (id) => `v${THUMB_VERSION}_${id.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
 
 /**
  * Checkerboard backdrop. Plenty of kit pieces have alpha-cut or genuinely
@@ -103,21 +115,25 @@ export function lastThumbView() {
 export const THUMB_VIEW = { alpha: THUMB_ALPHA, beta: THUMB_BETA };
 
 // The thumbnail scene lives on its own engine, so it needs its own material
-// cache. Without it every module re-uploads the same 2-4 MB atlas.
+// cache. Without it every module re-uploads the same 2-4 MB atlas. Keyed the
+// same way as the ship's, transparency included - two caches filled in
+// different orders is exactly how a window came out see-through on its tile
+// and solid in the ship.
 const thumbMaterials = new Map();
 
 function shareMaterials(meshes) {
   for (const mesh of meshes) {
     const mat = mesh.material;
     if (!mat) continue;
-    const shared = thumbMaterials.get(mat.name);
+    const key = materialKey(mat);
+    const shared = thumbMaterials.get(key);
     if (shared && shared !== mat) {
       mesh.material = shared;
       mat.dispose(false, true);
     } else if (!shared) {
       mat.backFaceCulling = false;      // thumbnails are viewed from one angle
       mat.twoSidedLighting = true;
-      thumbMaterials.set(mat.name, mat);
+      thumbMaterials.set(key, mat);
     }
   }
 }
