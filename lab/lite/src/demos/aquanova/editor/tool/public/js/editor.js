@@ -177,6 +177,11 @@ export async function initScene(canvas) {
   // undo hiding the cursor while a ghost is being placed.
   scene.doNotHandleCursors = true;
   window.__scene = scene;
+  // The devtools console cannot reach a module export, so the things worth
+  // poking at by hand go on the window. `__taa` is a getter rather than a
+  // value because the pipeline is replaced every time the checkbox is toggled,
+  // and a stale one would take settings that no longer reach the screen.
+  Object.defineProperty(window, "__taa", { get: () => taa, configurable: true });
   state.engine = engine;
   state.scene = scene;
 

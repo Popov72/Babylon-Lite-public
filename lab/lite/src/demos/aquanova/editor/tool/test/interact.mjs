@@ -8653,10 +8653,19 @@ await page.click("#taa");
 await page.evaluate(() => document.getElementById("taa").blur());
 await page.waitForTimeout(600);
 const taaOn = await taaShot();
+// what the devtools console reaches, and that it is live rather than a
+// reference taken once and left behind by the next toggle
+const taaWindow = await page.evaluate(() => {
+  const before = !!window.__taa;
+  const named = window.__taa?.getClassName?.();
+  window.__taa.samples = 24;
+  return { before, named, samples: window.__taa.samples };
+});
 await page.click("#taa");
 await page.evaluate(() => document.getElementById("taa").blur());
 await page.waitForTimeout(400);
 const taaOff2 = await taaShot();
+const taaGone = await page.evaluate(() => window.__taa);
 const taaStore = await page.evaluate(() => localStorage.getItem("taa"));
 
 check("TAA is off until asked for, with nothing on the camera",
@@ -8667,9 +8676,15 @@ check("the checkbox builds the pipeline and it reaches the camera",
   `pipeline ${taaOn.pipe}, ${taaOn.passes} pass(es)`);
 check("and it changes what is drawn",
   taaOn.sum !== taaOff1.sum, `frame ${taaOff1.sum} -> ${taaOn.sum}`);
+check("its knobs are on window.__taa, for the devtools console",
+  taaWindow.before && taaWindow.named === "TAARenderingPipeline"
+    && taaWindow.samples === 24,
+  `${taaWindow.named}, samples now ${taaWindow.samples}`);
 check("turning it off takes the pipeline back off the camera",
   !taaOff2.on && !taaOff2.pipe && taaOff2.passes === 0,
   `pipeline ${taaOff2.pipe}, ${taaOff2.passes} pass(es)`);
+check("and __taa follows it out, rather than going stale",
+  !taaGone, `__taa is ${taaGone}`);
 check("and gives back the exact frame that was there before it",
   taaOff2.sum === taaOff1.sum, `${taaOff1.sum} -> ${taaOff2.sum}`);
 check("the TAA choice is remembered outside the ship, in localStorage",

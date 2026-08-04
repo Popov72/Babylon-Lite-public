@@ -1868,8 +1868,19 @@ The **TAA** checkbox runs Babylon's stock `TAARenderingPipeline` over the
 viewport. It exists to be compared against Babylon-Lite's own TAA, so it is
 deliberately *untouched* — stock pipeline, stock settings — because the point is
 that whatever the two engines do differently is the only difference on screen.
-The live pipeline is returned by `taaPipeline()` for anyone who wants to match a
-particular configuration by hand.
+To match a particular configuration by hand, the live pipeline is on the window
+as **`__taa`**, so the devtools console reaches it without an import:
+
+```js
+__taa.samples = 32;          // more accumulation
+__taa.factor = 0.02;         // slower blend, cleaner but longer to settle
+__taa.disableOnCameraMove = false;
+__taa.msaaSamples = 4;       // MSAA underneath it as well
+```
+
+It is a getter, not a value, because the pipeline is rebuilt every time the
+checkbox is toggled — a reference kept across a toggle would take settings that
+no longer reach the screen. `taaPipeline()` is the same thing for module code.
 
 It is **built and thrown away on each toggle** rather than left attached and
 switched off. An attached pipeline renders the scene into a texture whether or
