@@ -98,6 +98,7 @@ import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { exportJsonFromPairState, presetFromExportJson } from "./fluid/preset-io.js";
 import type { FluidExportJson } from "./fluid/preset-io.js";
 import type { PairState } from "./fluid/demo.js";
+import { gridFloorY, gridTopY } from "./fluid/grid-bounds.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 
 // Box-preset render defaults (fluid/scenes/box.ts MLS-MPM preset).
@@ -116,6 +117,14 @@ const DEF_SURFACE_FILTER: "bilateral" | "narrowRange" = "narrowRange";
 const DEF_NARROW_DELTA = 10;
 const DEF_NARROW_MU = 1;
 
+// Which foe set the demo auditions, read from the URL. Declared up here because scene sizing below
+// branches on it.
+const FOE_SET: string = new URLSearchParams(location.search).get("foes") === "ship" ? "ship" : "props";
+/** Ship mode auditions the Aquanova meshes, and deliberately reproduces that demo's scene setup
+ *  (grading, lighting, environment build, camera clip range, puddle spread) so the two can be
+ *  compared frame by frame. The gallery keeps its own presentation. */
+const SHIP_MODE = FOE_SET === "ship";
+
 // World layout. Foes rest on the ground plane at y = 0; each sim grid drops one unit below
 // ground so the ground BC isn't fighting the grid's own border.
 const GROUND_Y = 0;
@@ -128,7 +137,11 @@ const LIFETIME = 5.0; // seconds a running sim lives before it starts fading
 const FADE_DUR = 1.2; // seconds the alpha fade-out takes before dispose
 const WRIGGLE_AMP = 0.04; // cartoon "pain" jitter amplitude (world units)
 const IMPULSE_RADIAL_BASE = 18; // outward explosion accel from the volume centre, all directions (× impulse intensity)
-const IMPULSE_UP_BASE = 6; // gentle uniform upward lift so the burst arcs up a little (× impulse intensity)
+// Uniform push along the configurable impulse direction (× impulse intensity). Kept in sync with
+// Aquanova, which reads the direction + intensity from the setting file: only these two bases live in
+// code, so a prop auditioned here bursts identically there.
+const IMPULSE_DIR_BASE = 6;
+const IMPULSE_DEFAULT_DIR: readonly [number, number, number] = [0, 1, 0]; // straight up — the original lift
 const MAX_TOTAL = 600000; // combined render-buffer capacity (particles across all live sims)
 
 // Studio HDR environment — drives the fluid-surface reflections + the skybox background.
@@ -164,7 +177,6 @@ const FOE_SETS = [
     { key: "props", label: "Sample props (default)" },
     { key: "ship", label: "Aquanova ship meshes" },
 ] as const;
-const FOE_SET: string = new URLSearchParams(location.search).get("foes") === "ship" ? "ship" : "props";
 
 // PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on it.
 const PBMPM_MATERIAL_LABELS: [string, number][] = [
@@ -175,22 +187,23 @@ const PBMPM_MATERIAL_LABELS: [string, number][] = [
 ];
 
 // Impulse force field: an EXPLOSION FROM THE INSIDE. Every particle inside the blast radius is
-// pushed radially OUTWARD from the volume centre (push.x, ~uniform through the core), plus a gentle
-// uniform upward lift (push.y) so the burst arcs up a little. center.xyz = volume centre, center.w =
-// blast radius (set well beyond the blob so the whole volume is in the flat region).
+// pushed radially OUTWARD from the volume centre (push.w, ~uniform through the core), plus a uniform
+// push along a configurable direction (push.xyz, already scaled: unit direction × base × intensity)
+// so the burst can be aimed. center.xyz = volume centre, center.w = blast radius (set well beyond the
+// blob so the whole volume is in the flat region).
 const IMPULSE_WGSL = /* wgsl */ `
 fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     let center = forceFieldParams.center.xyz;
     let radius = max(forceFieldParams.center.w, 1.0e-4);
     let toParticle = pos - center;
     let dist = length(toParticle);
-    var f = vec3<f32>(0.0, forceFieldParams.push.y, 0.0); // uniform upward lift
+    var f = forceFieldParams.push.xyz; // uniform push along the configured direction
     if (dist < radius) {
         let dir = select(vec3<f32>(0.0, 1.0, 0.0), toParticle / max(dist, 1.0e-4), dist > 1.0e-4);
         // ~uniform outward blast through the core; ramp up over the innermost 15% to avoid a hard
         // direction flip on particles sitting right at the centre.
         let core = smoothstep(0.0, 0.15, dist / radius);
-        f += dir * forceFieldParams.push.x * core;
+        f += dir * forceFieldParams.push.w * core;
     }
     return f * dt;
 }`;
@@ -227,8 +240,16 @@ interface Instance {
     shell: boolean; // which path produced the CURRENT particles: surface shell (true) or volume fill (false)
     sampleId: number; // id of the in-flight sample request (stale results are ignored)
     maxR: number;
-    volCenter: [number, number, number]; // world-space centre of the sampled volume (explosion origin)
-    volRadius: number; // half-diagonal of the sampled AABB (explosion reach)
+    /** Members of the shot this instance belongs to (its node's primitives + every linked node). One
+     *  shared array per shot, so the whole group can erupt on the same frame. Null when solid. */
+    shot: Instance[] | null;
+    /** True once this member's clip front has swept its whole volume. It then HOLDS — fully clipped,
+     *  water still frozen — until every member of `shot` has also finished, so a door's two panes
+     *  erupt together instead of the nearer one (smaller maxR) bursting first. */
+    dissolved: boolean;
+    /** Unit direction from the camera to the click point, captured when the shot was fired. Used for
+     *  an impulse direction of (0,0,0) — "push it the way I shot it". */
+    shotDir: [number, number, number];
     count: number;
     radius: number;
     impulseRemaining: number;
@@ -266,7 +287,9 @@ async function main(): Promise<void> {
     // key: ship mode uses Shift+LMB to liquefy.
     const cam = createFreeCamera({ x: -3, y: 31.6, z: -40.7 }, { x: -3, y: 2.5, z: 0 }); // the old arc-rotate vantage (alpha -PI/2, beta 0.95, radius 50)
     cam.nearPlane = 0.1;
-    cam.farPlane = 200;
+    // Ship mode matches Aquanova's clip range so depth precision (and therefore any depth-derived
+    // shading) is identical between the two demos.
+    cam.farPlane = SHIP_MODE ? 400 : 200;
     cam.speed = FOE_SET === "ship" ? 8.8 : 36; // the ship interior is metres across, the gallery tens
     scene.camera = cam;
 
@@ -517,8 +540,9 @@ async function main(): Promise<void> {
             shell: false,
             sampleId: 0,
             maxR: 0,
-            volCenter: [0, 0, 0],
-            volRadius: 1,
+            shot: null,
+            dissolved: false,
+            shotDir: [...IMPULSE_DEFAULT_DIR] as [number, number, number],
             count: 0,
             radius: 0.08,
             impulseRemaining: 0,
@@ -562,7 +586,12 @@ async function main(): Promise<void> {
             (c.aabb.min[2]! + c.aabb.max[2]!) / 2,
         ];
         const iblStrength = shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
-        const chunks = shipManifest?.chunks ?? [];
+        // A chunk is a room the ship editor laid out, and an EMPTY one (no meshes placed yet) is
+        // exported with `aabb: null` — it has no spatial extent to describe. Every use here is
+        // geometric (framing a room, hit-testing a point against one, building its collision shell),
+        // so those are filtered out once rather than guarded at each site. Dereferencing them is
+        // what broke this demo when the editor gained an empty room.
+        const chunks = (shipManifest?.chunks ?? []).filter((c): c is { aabb: { min: number[]; max: number[] } } => !!c.aabb);
         const liqNames = new Set(Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name))));
         let focus: [number, number, number] = chunks[0] ? chunkFocus(chunks[0]) : [0, 1.5, 0];
         let asset;
@@ -1074,7 +1103,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         environment?: ShipEnvironment;
         behaviors?: ShipBehaviorLibrary; // behaviour name → definition
         entities?: ShipEntities; // mesh name → assigned behaviours
-        chunks?: { aabb: { min: number[]; max: number[] } }[];
+        chunks?: { aabb: { min: number[]; max: number[] } | null }[];
     }
     let shipManifest: ShipManifestData | null = null;
     const shipManifestReady: Promise<void> =
@@ -1096,7 +1125,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // startup (studio) cube (the PBR builder bakes the specular cube per material at registerScene).
     interface EnvSlot {
         env: EnvironmentTextures;
-        sky: Renderable;
+        /** Null in ship mode, which uses the solid fallback skybox `loadHdrEnvironment` builds
+         *  itself (as Aquanova does) rather than this demo's own HDR cubemap sky. */
+        sky: Renderable | null;
         exposure: number;
         contrast: number;
     }
@@ -1121,13 +1152,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // The skybox snapshots scene.imageProcessing at build time, so grade FIRST.
         scene.imageProcessing.exposure = gradedExposure(exposure);
         scene.imageProcessing.contrast = gradedContrast(contrast);
-        return { env, sky: buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
+        // Ship mode has no sky of its own — loadHdrEnvironment already pushed the solid fallback
+        // skybox, matching Aquanova.
+        return { env, sky: SHIP_MODE ? null : buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
     };
     const loadEnvSlot = async (c: (typeof ENV_CHOICES)[number]): Promise<EnvSlot | null> => {
         if (envSlots.has(c.key)) return envSlots.get(c.key) ?? null;
         try {
             const env = c.hdr
-                ? await loadHdrEnvironment(scene, c.url, { faceSize: 512, skipGround: true, skipSkybox: true })
+                ? // Both demos build the IBL at 512-pixel cube faces (sharper specular reflections on
+                  // the ship's metal than the 256 default). Ship mode additionally mirrors Aquanova's
+                  // background: the solid fallback skybox `loadHdrEnvironment` builds, rather than this
+                  // demo's own HDR cubemap sky, which only the gallery's environment dropdown needs.
+                  await loadHdrEnvironment(scene, c.url, SHIP_MODE ? { faceSize: 512, skipGround: true } : { faceSize: 512, skipGround: true, skipSkybox: true })
                 : await loadEnvironment(scene, c.url, { brdfUrl, skipGround: true, skipSkybox: true });
             scene.imageProcessing.toneMappingEnabled = true;
             // Ship mode uses the view transform named in the manifest (Aquanova reads the same
@@ -1156,7 +1193,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 const i = scene._renderables.indexOf(activeSky);
                 if (i >= 0) scene._renderables.splice(i, 1);
             }
-            scene._renderables.push(slot.sky);
+            if (slot.sky) {
+                scene._renderables.push(slot.sky);
+            }
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
@@ -1179,10 +1218,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // plus the per-prop hollow hint in MODEL_FOES); the other two force the choice so the difference
     // can be auditioned on the same prop.
     let fillStrategy: MeshFillStrategy = "auto";
-    // Point spacing shared by BOTH fill paths, in units of the particle radius. 2 = one particle
-    // diameter (neighbours just touch), which is the convention the volume lattice already uses.
-    let fillSpacing = 2;
+    // Point spacing shared by BOTH fill paths, in units of the particle radius. Fixed at one particle
+    // diameter (neighbours just touch) — the convention the volume lattice uses and the only value the
+    // two demos agree on, so it is no longer exposed as a control.
+    const FILL_SPACING = 2;
     let impulseIntensity = 1.0;
+    // Direction of the uniform part of the eruption impulse. Normalised at use, so these are raw
+    // editable components rather than a unit vector. Serialised with the intensity into the setting
+    // file so Aquanova bursts the same way.
+    const impulseDir: [number, number, number] = [...IMPULSE_DEFAULT_DIR] as [number, number, number];
+    /** Blast-sphere radius in world units around the impact point. 0 = derive it per mesh from the
+     *  sampled volume (the old behaviour), which makes the falloff scale with the prop instead of
+     *  being a fixed distance. */
+    let impulseRadius = 0;
+    /** Simulation domain size in world units (FULL extent, not a half-width), per axis. 0 = derive it
+     *  from the prop's footprint via {@link SPREAD_MARGIN}. Exported so Aquanova uses the same box —
+     *  the domain wall is a hard boundary, so a prop tuned here only behaves the same there if the
+     *  grid matches. */
+    const gridSize: [number, number, number] = [0, 0, 0];
     let currentMethod = "MLS-MPM";
     let currentMaterial = 0;
 
@@ -1209,9 +1262,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const phys = physValues[currentMethod]!;
         const cx = (wMin[0] + wMax[0]) / 2;
         const cz = (wMin[2] + wMax[2]) / 2;
-        const half = Math.max(wMax[0] - wMin[0], wMax[2] - wMin[2]) / 2 + SPREAD_MARGIN;
-        const boundsMin: [number, number, number] = [cx - half, -1, cz - half];
-        const boundsMax: [number, number, number] = [cx + half, Math.max(wMax[1] + 3, 8), cz + half];
+        const autoHalf = Math.max(wMax[0] - wMin[0], wMax[2] - wMin[2]) / 2 + SPREAD_MARGIN;
+        const halfX = gridSize[0] > 0 ? gridSize[0] / 2 : autoHalf;
+        const halfZ = gridSize[2] > 0 ? gridSize[2] / 2 : autoHalf;
+        const floorY = gridFloorY(GROUND_Y, dx);
+        const topY = gridTopY(floorY, gridSize[1], wMax[1], dx, Math.max(wMax[1] + 3, 8));
+        const boundsMin: [number, number, number] = [cx - halfX, floorY, cz - halfZ];
+        const boundsMax: [number, number, number] = [cx + halfX, topY, cz + halfZ];
+        // eslint-disable-next-line no-console
+        console.log(
+            `[liquefactor] sim grid: ${(halfX * 2).toFixed(2)}×${(topY - floorY).toFixed(2)}×${(halfZ * 2).toFixed(2)} m ` +
+                `(${Math.ceil((halfX * 2) / dx)}×${Math.ceil((topY - floorY) / dx)}×${Math.ceil((halfZ * 2) / dx)} cells @ dx ${dx.toFixed(3)}), particles: ${count}`
+        );
         let sim: FluidSim;
         if (currentMethod === "PBF") {
             const pbfH = Math.max(radius * 4.0, 0.3);
@@ -1244,6 +1306,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 material: currentMaterial,
                 gravity: phys.gravity,
                 substeps: phys.substeps,
+                ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
                 iterations: phys.iterations,
                 liquidRelaxation: phys.liquidRelaxation,
                 liquidViscosity: phys.liquidViscosity,
@@ -1267,6 +1330,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 viscosity: phys.viscosity,
                 restDensity: phys.restDensity,
                 substeps: phys.substeps,
+                ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
                 damping: phys.damping,
                 affineDamping: phys.affineDamping,
                 groundDamp: phys.groundDamp,
@@ -1423,16 +1487,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const impulseData = new Float32Array(8);
     function startImpulse(inst: Instance): void {
         if (!inst.sim) return;
-        // Explode from INSIDE: centre on the volume, radius reaches past the whole blob so every
-        // particle is in the ~uniform-outward core (see IMPULSE_WGSL).
-        impulseData[0] = inst.volCenter[0];
-        impulseData[1] = inst.volCenter[1];
-        impulseData[2] = inst.volCenter[2];
-        impulseData[3] = Math.max(inst.volRadius * 2.0, inst.radius * 8, 1);
-        impulseData[4] = IMPULSE_RADIAL_BASE * impulseIntensity;
-        impulseData[5] = IMPULSE_UP_BASE * impulseIntensity;
-        impulseData[6] = 0;
-        impulseData[7] = 0;
+        // A zero intensity zeroes both the radial and the directional term, so the force pass would
+        // evaluate to exactly 0 for every particle. Skip it entirely: the engine builds the
+        // external-force compute pass lazily on the first non-null injection, so installing one here
+        // would compile a shader and add a dispatch per substep for 0.35 s to achieve nothing.
+        if (impulseIntensity <= 0) return;
+        // Explode from the LIQUEFACTION POINT — where the shot landed — not the volume centre, so the
+        // water is thrown away from the impact. A configured radius wins; at 0 it falls back to
+        // `maxR`, the distance from that point to the farthest corner of the sampled volume, which
+        // reaches every particle even though the centre sits off to one side.
+        impulseData[0] = inst.liquefyState.hit[0];
+        impulseData[1] = inst.liquefyState.hit[1];
+        impulseData[2] = inst.liquefyState.hit[2];
+        impulseData[3] = impulseRadius > 0 ? impulseRadius : Math.max(inst.maxR, inst.radius * 8, 1);
+        // Uniform push along the configured direction, normalised here so the vector's length is
+        // irrelevant and only `impulseIntensity` scales it; the radial burst rides in .w.
+        // (0,0,0) means "the way I shot it": the camera→click ray captured when the melt started.
+        const len = Math.hypot(impulseDir[0], impulseDir[1], impulseDir[2]);
+        const u = len > 1e-6 ? ([impulseDir[0] / len, impulseDir[1] / len, impulseDir[2] / len] as const) : inst.shotDir;
+        const dirMag = IMPULSE_DIR_BASE * impulseIntensity;
+        impulseData[4] = u[0] * dirMag;
+        impulseData[5] = u[1] * dirMag;
+        impulseData[6] = u[2] * dirMag;
+        impulseData[7] = IMPULSE_RADIAL_BASE * impulseIntensity;
         device.queue.writeBuffer(inst.impulseBuffer, 0, impulseData);
         inst.sim.setForceField(inst.impulseSpec);
         inst.impulseRemaining = 0.35;
@@ -1488,6 +1565,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!entry) return;
         if (count === 0) {
             entry.inst.sampling = false;
+            leaveShot(entry.inst);
             stopWriggle(entry.inst);
             setStatus();
             return;
@@ -1536,6 +1614,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!geom) {
             pendingSamples.delete(id);
             inst.sampling = false;
+            leaveShot(inst);
             stopWriggle(inst);
             setStatus();
             return false;
@@ -1548,16 +1627,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (geom.uvs) transfer.push(geom.uvs.buffer);
             if (geom.texIndices) transfer.push(geom.texIndices.buffer);
             pw.pending++;
-            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: fillSpacing, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
+            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: FILL_SPACING, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
         } else {
             // No worker available — sample synchronously on the main thread (blocks). No per-particle
             // UVs are computed here, so colours fall back to the instance baseColor.
             pendingSamples.delete(id);
-            const result = fillMeshParticles({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: fillSpacing });
+            const result = fillMeshParticles({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: FILL_SPACING });
             if (result.count > 0) {
                 applySample(inst, id, h, { ...bakeFill(geom.ox, geom.oy, geom.oz, result), uvs: null, texIndices: null });
             } else {
                 inst.sampling = false;
+                leaveShot(inst);
                 stopWriggle(inst);
                 setStatus();
             }
@@ -1569,6 +1649,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Ignore stale results (a Restart or re-shape happened while sampling).
         if (inst.sampleId !== id || !inst.sampling || inst.phase !== "solid") {
             inst.sampling = false;
+            leaveShot(inst);
             return;
         }
         inst.sampling = false;
@@ -1587,11 +1668,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         inst.liquefyState.hit = [hit[0], hit[1], hit[2]];
         inst.liquefyState.frontR = 0;
         inst.liquefyState.enabled = true;
+        // Distance from the hit point to the farthest corner of the sampled volume. Drives both the
+        // dissolve front and (at finishShot) the explosion reach, so the blast centred on that same
+        // point still covers every particle. The sim does NOT step during "dissolving", so this still
+        // matches the particles at explosion time.
         inst.maxR = computeMaxR(hit, fill.boundsMin, fill.boundsMax);
-        // Explosion origin = centre of the sampled volume; reach = half the AABB diagonal. The sim
-        // does NOT step during "dissolving", so these still match the particles at explosion time.
-        inst.volCenter = [(fill.boundsMin[0] + fill.boundsMax[0]) / 2, (fill.boundsMin[1] + fill.boundsMax[1]) / 2, (fill.boundsMin[2] + fill.boundsMax[2]) / 2];
-        inst.volRadius = Math.max(0.5 * Math.hypot(fill.boundsMax[0] - fill.boundsMin[0], fill.boundsMax[1] - fill.boundsMin[1], fill.boundsMax[2] - fill.boundsMin[2]), 0.5);
         inst.phase = "dissolving";
         setWaterWriggle(inst, fill.positions, fill.count); // add the water jitter; the mesh shake is already running
         bumpUbo(inst);
@@ -1608,6 +1689,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         bumpUbo(inst);
         inst.phase = "fluid";
         inst.fluidElapsed = 0;
+        inst.shot = null; // the shot has erupted; membership no longer gates anything
         startImpulse(inst);
         invalidateFilteredSceneTasks();
         setStatus();
@@ -1623,6 +1705,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             inst.colorBuffer = null;
             inst.phase = "solid";
             inst.sampling = false;
+            inst.shot = null;
+            inst.dissolved = false;
             inst.count = 0;
             inst.shell = false;
             inst.liquefyState.enabled = false;
@@ -1805,39 +1889,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     };
     const fillRow = labelledRow("Fill strategy", fillSelect);
 
-    // Sample spacing — the distance between adjacent particles, in units of the particle radius, used
-    // by BOTH fill paths so volume and surface counts mean the same thing. 2.0 = one diameter.
-    const spacingInput = document.createElement("input");
-    spacingInput.type = "range";
-    spacingInput.id = "liq-spacing";
-    spacingInput.min = "0.5";
-    spacingInput.max = "4";
-    spacingInput.step = "0.1";
-    spacingInput.value = String(fillSpacing);
-    spacingInput.style.cssText = "width:100%;";
-    const spacingVal = document.createElement("span");
-    spacingVal.style.cssText = "color:#9fb4cc;float:right;";
-    const showSpacing = (): void => {
-        spacingVal.textContent = `${fillSpacing.toFixed(1)}×r${Math.abs(fillSpacing - 2) < 0.05 ? " (touching)" : ""}`;
-    };
-    showSpacing();
-    spacingInput.oninput = () => {
-        fillSpacing = parseFloat(spacingInput.value);
-        showSpacing();
-    };
-    const spacingLabelWrap = document.createElement("div");
-    spacingLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
-    spacingLabelWrap.append(document.createTextNode("Sample spacing"), spacingVal);
-    const spacingRow = document.createElement("div");
-    spacingRow.style.cssText = "margin-bottom:8px;";
-    spacingRow.append(spacingLabelWrap, spacingInput);
-
     // Impulse intensity slider — scales the hand-off launch (0 = none, 1 = tuned default).
     const impulseInput = document.createElement("input");
     impulseInput.type = "range";
     impulseInput.id = "liq-impulse";
     impulseInput.min = "0";
-    impulseInput.max = "3";
+    impulseInput.max = "20";
     impulseInput.step = "0.05";
     impulseInput.value = String(impulseIntensity);
     impulseInput.style.cssText = "width:100%;";
@@ -1854,6 +1911,122 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const impulseRow = document.createElement("div");
     impulseRow.style.cssText = "margin-bottom:8px;";
     impulseRow.append(impulseLabelWrap, impulseInput);
+
+    // Impulse direction — the uniform part of the burst. Free-form components (normalised at use), so
+    // [0,1,0] is straight up, [-1,0,0] blows the prop back down the corridor, and the vector's length
+    // is ignored. (0,0,0) is special: it means the shot ray — camera to click point — so the water is
+    // thrown the way you fired. Exported with the intensity so Aquanova reproduces the same burst.
+    const dirInputs: HTMLInputElement[] = [];
+    const dirFieldRow = document.createElement("div");
+    dirFieldRow.style.cssText = "display:flex;gap:4px;";
+    for (let axis = 0; axis < 3; axis++) {
+        const box = document.createElement("input");
+        box.type = "number";
+        box.id = `liq-impulse-dir-${"xyz"[axis]}`;
+        box.step = "0.1";
+        box.value = String(impulseDir[axis]);
+        box.title = `Impulse direction ${"XYZ"[axis]} (normalised before use)`;
+        box.style.cssText = "width:100%;min-width:0;background:#1b2430;color:#dbe6f2;border:1px solid #33465c;border-radius:3px;padding:2px 4px;";
+        box.oninput = () => {
+            const v = parseFloat(box.value);
+            impulseDir[axis] = isFinite(v) ? v : 0;
+            showDirHint();
+        };
+        dirInputs.push(box);
+        dirFieldRow.append(box);
+    }
+    /** Push `impulseDir` back into the three boxes (after an import). */
+    const showImpulseDir = (): void => {
+        for (let axis = 0; axis < 3; axis++) dirInputs[axis]!.value = String(impulseDir[axis]);
+        showDirHint();
+    };
+    const dirLabelWrap = document.createElement("div");
+    dirLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    dirLabelWrap.append(document.createTextNode("Impulse direction (x, y, z)"));
+    dirLabelWrap.title = "Normalised before use, so only the direction matters. (0, 0, 0) = the shot ray (camera → click point).";
+    const dirHint = document.createElement("span");
+    dirHint.style.cssText = "color:#9fb4cc;float:right;";
+    const showDirHint = (): void => {
+        dirHint.textContent = Math.hypot(impulseDir[0], impulseDir[1], impulseDir[2]) > 1e-6 ? "" : "shot ray";
+    };
+    showDirHint();
+    dirLabelWrap.append(dirHint);
+    const impulseDirRow = document.createElement("div");
+    impulseDirRow.style.cssText = "margin-bottom:8px;";
+    impulseDirRow.append(dirLabelWrap, dirFieldRow);
+
+    // Impulse radius — the blast sphere around the impact point. At 0 the radius is derived per mesh
+    // from the sampled volume, so the falloff scales with the prop; any other value pins it in world
+    // units, which is what you want when several props should burst with the same reach.
+    const radiusImpInput = document.createElement("input");
+    radiusImpInput.type = "range";
+    radiusImpInput.id = "liq-impulse-radius";
+    radiusImpInput.min = "0";
+    radiusImpInput.max = "20";
+    radiusImpInput.step = "0.1";
+    radiusImpInput.value = String(impulseRadius);
+    radiusImpInput.style.cssText = "width:100%;";
+    const radiusImpVal = document.createElement("span");
+    radiusImpVal.style.cssText = "color:#9fb4cc;float:right;";
+    const showImpulseRadius = (): void => {
+        radiusImpVal.textContent = impulseRadius > 0 ? `${impulseRadius.toFixed(1)} m` : "auto (per mesh)";
+    };
+    showImpulseRadius();
+    radiusImpInput.oninput = () => {
+        impulseRadius = parseFloat(radiusImpInput.value);
+        showImpulseRadius();
+    };
+    const radiusImpLabelWrap = document.createElement("div");
+    radiusImpLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    radiusImpLabelWrap.append(document.createTextNode("Impulse radius"), radiusImpVal);
+    const impulseRadiusRow = document.createElement("div");
+    impulseRadiusRow.style.cssText = "margin-bottom:8px;";
+    impulseRadiusRow.append(radiusImpLabelWrap, radiusImpInput);
+
+    // Grid size — the simulation domain, in world units, as a FULL extent per axis. The domain wall is
+    // a hard boundary, so this decides how far a puddle may spread (X/Z) and how much headroom a burst
+    // has (Y). 0 on an axis keeps the automatic size derived from the prop's footprint. Exported so
+    // Aquanova builds the same box; without it a prop tuned here spreads differently there.
+    const gridInputs: HTMLInputElement[] = [];
+    const gridFieldRow = document.createElement("div");
+    gridFieldRow.style.cssText = "display:flex;gap:4px;";
+    for (let axis = 0; axis < 3; axis++) {
+        const box = document.createElement("input");
+        box.type = "number";
+        box.id = `liq-grid-${"xyz"[axis]}`;
+        box.min = "0";
+        box.step = "0.5";
+        box.value = String(gridSize[axis]);
+        box.title = `Simulation domain size on ${"XYZ"[axis]} in world units (full extent). 0 = automatic.${axis === 1 ? " Y is a minimum — raised when needed to clear the prop." : ""}`;
+        box.style.cssText = "width:100%;min-width:0;background:#1b2430;color:#dbe6f2;border:1px solid #33465c;border-radius:3px;padding:2px 4px;";
+        box.oninput = () => {
+            const v = parseFloat(box.value);
+            gridSize[axis] = isFinite(v) && v > 0 ? v : 0;
+            showGridHint();
+        };
+        gridInputs.push(box);
+        gridFieldRow.append(box);
+    }
+    /** Push `gridSize` back into the three boxes (after an import). */
+    const showGridSize = (): void => {
+        for (let axis = 0; axis < 3; axis++) gridInputs[axis]!.value = String(gridSize[axis]);
+        showGridHint();
+    };
+    const gridLabelWrap = document.createElement("div");
+    gridLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    gridLabelWrap.append(document.createTextNode("Grid size (x, y, z) m"));
+    gridLabelWrap.title = "Simulation domain, full extent in world units. Centred on the prop in X/Z, resting on the ground in Y. Y is a minimum — it is raised when needed to clear the prop. 0 on an axis = automatic (from the prop's footprint). Takes effect on the next liquefaction.";
+    const gridHint = document.createElement("span");
+    gridHint.style.cssText = "color:#9fb4cc;float:right;";
+    const showGridHint = (): void => {
+        const autoAxes = ["x", "y", "z"].filter((_, i) => gridSize[i]! <= 0);
+        gridHint.textContent = autoAxes.length === 3 ? "auto" : autoAxes.length ? `auto: ${autoAxes.join(", ")}` : "";
+    };
+    showGridHint();
+    gridLabelWrap.append(gridHint);
+    const gridRow = document.createElement("div");
+    gridRow.style.cssText = "margin-bottom:8px;";
+    gridRow.append(gridLabelWrap, gridFieldRow);
 
     // "Use mesh colours" — tint the water by the liquefied mesh's texture/vertex colours
     // (per-particle) instead of the uniform water colour.
@@ -2075,6 +2248,39 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (p.surfaceFilter !== undefined) controls.setSurfaceFilter(p.surfaceFilter);
         if (p.narrowDelta !== undefined && p.narrowMu !== undefined) controls.setNarrowRange(p.narrowDelta, p.narrowMu);
         if (p.thicknessDownscale !== undefined) controls.setThicknessDownscale(p.thicknessDownscale);
+        // Impulse — intensity + direction ride in their own block (absent in files written before it
+        // existed, and in fluid-demo presets, which leaves the current values alone).
+        const imp = j.impulse;
+        if (imp) {
+            if (typeof imp.intensity === "number" && isFinite(imp.intensity)) {
+                impulseIntensity = imp.intensity;
+                impulseInput.value = String(impulseIntensity);
+                impulseVal.textContent = `${impulseIntensity.toFixed(2)}×`;
+            }
+            const d = imp.direction;
+            if (Array.isArray(d) && d.length === 3 && d.every((v) => typeof v === "number" && isFinite(v))) {
+                impulseDir[0] = d[0];
+                impulseDir[1] = d[1];
+                impulseDir[2] = d[2];
+                showImpulseDir();
+            }
+            if (typeof imp.radius === "number" && isFinite(imp.radius) && imp.radius >= 0) {
+                impulseRadius = imp.radius;
+                radiusImpInput.value = String(impulseRadius);
+                showImpulseRadius();
+            }
+        }
+        // Grid size — same story: its own optional block, absent in older files, which keeps whatever
+        // the sliders currently hold rather than silently snapping back to automatic.
+        const g = j.grid;
+        if (g) {
+            const axes = [g.x, g.y, g.z];
+            for (let axis = 0; axis < 3; axis++) {
+                const v = axes[axis];
+                if (typeof v === "number" && isFinite(v) && v >= 0) gridSize[axis] = v;
+            }
+            showGridSize();
+        }
         refreshMaterialRow();
         refreshPhysicsParamVisibility();
     }
@@ -2083,6 +2289,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     exportBtn.style.cssText = IO_BTN_STYLE;
     exportBtn.onclick = () => {
         const data = exportJsonFromPairState("liquefactor", currentMethod, liqPairState());
+        // Impulse is a liquefaction concept the shared PairState has no slot for, so it is attached
+        // here. Aquanova reads the same block straight out of the setting file.
+        data.impulse = { intensity: impulseIntensity, direction: [impulseDir[0], impulseDir[1], impulseDir[2]], radius: impulseRadius };
+        data.grid = { x: gridSize[0], y: gridSize[1], z: gridSize[2] };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -2120,7 +2330,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ioRow.style.cssText = "display:flex;gap:6px;margin-top:6px;";
     ioRow.append(exportBtn, importBtn, importInput);
 
-    controls.demoSlot.append(title, subtitle, foeRow, labelledRow("Sampling mode", modeSelect), envRow, materialRow, radiusRow, fillRow, spacingRow, impulseRow, meshColorRow, restartBtn, ioRow, status, partCount);
+    controls.demoSlot.append(title, subtitle, foeRow, labelledRow("Sampling mode", modeSelect), envRow, materialRow, radiusRow, fillRow, impulseRow, impulseDirRow, impulseRadiusRow, gridRow, meshColorRow, restartBtn, ioRow, status, partCount);
     document.body.append(controls.root);
     if (controls.gpu) {
         // The demo's own panel is top-left, so pin the GPU pane top-right to avoid overlap.
@@ -2186,11 +2396,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         setFillStrategy: (s: MeshFillStrategy) => {            fillStrategy = s;
             fillSelect.value = s;
         },
-        setFillSpacing: (v: number) => {
-            fillSpacing = v;
-            spacingInput.value = String(v);
-            showSpacing();
-        },
         fillOf: (key: string): boolean | null => {
             const inst = instances.find((i) => i.key === key);
             return inst && inst.count > 0 ? inst.shell : null;
@@ -2199,6 +2404,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             impulseInput.value = String(v);
             impulseVal.textContent = `${v.toFixed(2)}×`;
         },
+        setImpulseDir: (x: number, y: number, z: number) => {
+            impulseDir[0] = x;
+            impulseDir[1] = y;
+            impulseDir[2] = z;
+            showImpulseDir();
+        },
+        setImpulseRadius: (r: number) => {
+            impulseRadius = r;
+            radiusImpInput.value = String(r);
+            showImpulseRadius();
+        },
+        impulseState: (): Record<string, unknown> => ({ intensity: impulseIntensity, direction: [...impulseDir], radius: impulseRadius }),
+        setGridSize: (x: number, y: number, z: number) => {
+            gridSize[0] = x;
+            gridSize[1] = y;
+            gridSize[2] = z;
+            showGridSize();
+        },
+        gridState: (): number[] => [...gridSize],
+        exportPreset: (): unknown => {
+            const data = exportJsonFromPairState("liquefactor", currentMethod, liqPairState());
+            data.impulse = { intensity: impulseIntensity, direction: [impulseDir[0], impulseDir[1], impulseDir[2]], radius: impulseRadius };
+            data.grid = { x: gridSize[0], y: gridSize[1], z: gridSize[2] };
+            return data;
+        },
+        importPreset: (j: FluidExportJson): void => applyImportedPreset(j),
         setUseMeshColors: (on: boolean) => {
             useMeshColors = on;
             meshColorInput.checked = on;
@@ -2242,6 +2473,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // node the manifest says nothing about simply melts its own primitives, as before. The FLUID is
     // always the demo's current panel settings — this demo exists to audition them.
     function liquefyGroup(inst: Instance, hit: readonly [number, number, number]): void {
+        // Direction of the click ray, captured NOW: the melt runs for over a second and the camera is
+        // free to move, so resolving it at eruption would use a stale-feeling direction. Used when the
+        // impulse direction is (0,0,0) — "push it the way I shot it".
+        const dx = hit[0] - cam.position.x;
+        const dy = hit[1] - cam.position.y;
+        const dz = hit[2] - cam.position.z;
+        const dl = Math.hypot(dx, dy, dz);
+        const shotDir: [number, number, number] = dl > 1e-6 ? [dx / dl, dy / dl, dz / dl] : ([...IMPULSE_DEFAULT_DIR] as [number, number, number]);
         const group: Instance[] = [];
         const seen = new Set<Instance>();
         const queue: Instance[] = [inst];
@@ -2254,6 +2493,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (const name of linkedMeshNames(behaviorOfInstance.get(next))) for (const o of instancesByNodeName.get(name) ?? []) if (!seen.has(o)) queue.push(o);
         }
         for (const m of group) if (m.phase === "solid" && !m.sampling) requestSample(m, hit);
+        // Everything actually taking part shares ONE member list, so the group can erupt on the same
+        // frame. Each member's clip front reaches its own maxR at a different time (the pane you hit is
+        // nearer the impact than its twin), and erupting on that alone made the near pane burst first.
+        const shot = group.filter((m) => m.sampling || m.phase === "dissolving");
+        for (const m of shot) {
+            m.shot = shot;
+            m.dissolved = false;
+            m.shotDir = shotDir;
+        }
+    }
+
+    /** Erupt every member of a shot at once, once none are still sampling and all have fully melted. */
+    function eruptIfReady(shot: Instance[] | null): void {
+        if (!shot) return;
+        for (const m of shot) if (m.sampling) return;
+        for (const m of shot) if (m.phase === "dissolving" && !m.dissolved) return;
+        for (const m of shot) if (m.phase === "dissolving") finishShot(m);
+    }
+
+    /** Drop an instance out of its shot — its sample failed, or it was reset — and let whatever is left
+     *  erupt. Without this a member that never reaches "dissolving" would strand its group forever. */
+    function leaveShot(inst: Instance): void {
+        const shot = inst.shot;
+        if (!shot) return;
+        inst.shot = null;
+        inst.dissolved = false;
+        const i = shot.indexOf(inst);
+        if (i >= 0) shot.splice(i, 1);
+        eruptIfReady(shot);
     }
 
     canvas.addEventListener("pointerdown", (ev) => {
@@ -2295,7 +2563,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (inst.phase === "dissolving") {
                 inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + (FOE_SET === "ship" ? LIQUEFY_SPEED_SHIP : LIQUEFY_SPEED) * growDt, inst.maxR);
                 bumpUbo(inst);
-                if (inst.liquefyState.frontR >= inst.maxR) finishShot(inst);
+                if (!inst.dissolved && inst.liquefyState.frontR >= inst.maxR) {
+                    // Solid gone, but hold here (fully clipped, water still frozen) until every member
+                    // of the shot has melted, so the whole group erupts on one frame.
+                    inst.dissolved = true;
+                    eruptIfReady(inst.shot);
+                }
             } else if (inst.phase === "fluid" || inst.phase === "fading") {
                 // Dispose BEFORE stepping so we never destroy a sim's buffers after having
                 // already encoded a step into this frame's (not-yet-submitted) encoder.
