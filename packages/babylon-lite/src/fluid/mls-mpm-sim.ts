@@ -1072,7 +1072,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const viscosity = options.viscosity ?? 0.1;
     const substeps = options.substeps ?? 3;
     let substepsMut = substeps;
-    const maxSubDt = options.maxSubDt ?? 1 / 120;
+    // Mutable so the host can trade stability against cost at runtime (setParam "maxSubDtMs"):
+    // it is the cap that decides whether `step()` has to run MORE sub-steps than requested.
+    let maxSubDt = options.maxSubDt ?? 1 / 120;
     const damping = options.damping ?? 0.98;
     const affineDamping = options.affineDamping ?? 0.95;
     const groundDamp = options.groundDamp ?? 0.9;
@@ -1574,9 +1576,19 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         step(encoder: GPUCommandEncoder, dt: number): void {
             // Split the (real-time) frame dt into `substeps` MLS-MPM steps, so the
             // substeps slider trades stability vs cost without changing playback
-            // speed. Cap each sub-step's dt so a hitch can't blow it up.
+            // speed.
+            //
+            // `maxSubDt` is honoured by ADDING sub-steps, never by shortening the frame:
+            // clamping the sub-step dt (the old `min(frameDt / substeps, maxSubDt)`) silently
+            // dropped simulated time whenever `frameDt / substeps` exceeded the cap, so playback
+            // speed tracked the frame rate instead of the clock — at substeps = 1 and 60 fps a
+            // frame advanced 1/120 s, i.e. HALF speed, and a machine rendering faster ran the
+            // fluid faster. The frame now always advances exactly `frameDt`.
             const frameDt = dt > 0 ? dt : 1 / 60;
-            pf[16] = Math.min(frameDt / substepsMut, maxSubDt);
+            // The epsilon absorbs float error so an exact multiple (1/60 over a 1/120 cap) stays
+            // at 2 sub-steps instead of rounding up to 3.
+            const stepCount = Math.max(substepsMut, Math.ceil(frameDt / maxSubDt - 1e-9));
+            pf[16] = frameDt / stepCount;
             pf[MISC2_BASE_F32 + 1] = frameDt; // misc2.y — frame dt for the foam emit count
             // Warm-up ramp: grow the live-particle count by one batch per frame. counts.z
             // gates the mass/integration passes; copyU32[2] gates the render copy pass.
@@ -1599,8 +1611,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 device.queue.writeBuffer(emittersBuffer, 0, emitData);
                 dispatch(encoder, "mpm-emit", emitPipe, emitBG, particleGroups);
             }
-            encoder.pushDebugGroup(`substeps (${substepsMut})`);
-            for (let s = 0; s < substepsMut; s++) {
+            encoder.pushDebugGroup(`substeps (${stepCount})`);
+            for (let s = 0; s < stepCount; s++) {
                 // Optional interactive force (setForceField) runs as its own pass at
                 // the start of each substep, so the per-frame velocity impulse is
                 // accel·substepDt × substeps = accel·frameDt — independent of the
@@ -1681,6 +1693,12 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                     break;
                 case "substeps":
                     substepsMut = Math.max(1, Math.round(value));
+                    break;
+                case "maxSubDtMs":
+                    // Largest dt a single sub-step may integrate, in MILLISECONDS. Raising it lets a
+                    // frame be covered by fewer sub-steps (cheaper, less stable); lowering it forces
+                    // more (costlier, more stable). It never changes how much time a frame advances.
+                    maxSubDt = Math.max(1e-4, value / 1000);
                     break;
             }
         },

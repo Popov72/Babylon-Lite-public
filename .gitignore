@@ -110,12 +110,26 @@ scratch/
 # not staged into the demo bundle either (see copyDemoRuntimeAssets).
 lab/public/waterfall/rock-high.glb
 lab/public/waterfall/rock-heightmap-high.bin
+# Same story for the oasis: `oasis.glb` is the un-tiled island the shipped `oasis-<tier>.glb` are
+# derived from, and `oasis-heightmap.bin` is a bake of it that the scene never reads (the fluid
+# collides with the ROCK's height map alone — the oasis is set dressing). 6.7 MB of build-time
+# intermediates, kept on disk for re-exports and likewise skipped by copyDemoRuntimeAssets.
+lab/public/waterfall/oasis.glb
+lab/public/waterfall/oasis-heightmap.bin
 # Aquanova demo: the ship model (33 MB), its pre-optimisation original (40 MB) and the 2k HDR
 # are far larger than anything else tracked here (the biggest committed asset is 10 MB), so they
 # stay local. Only the small text config — ship_manifest.json, the fluid-sim presets and the
 # asset licences — is committed; drop the binaries back in to run the demo.
 lab/public/aquanova/*.glb
 lab/public/aquanova/*.hdr
-lab/public/aquanova/ship_manifest.orig.json
+# Skybox cube faces (~4.5 MB of PNG). Public domain (Space 3D, Unlicense — see ASSET-LICENSES.md),
+# so this is a size decision only: committing them would not make a fresh clone runnable anyway,
+# because ship.glb above is ignored too.
+lab/public/aquanova/skybox/
+# SMAA oracle: a vendored copy of the third-party glsl-smaa reference (MIT), used by
+# lab/lite/smaa-lab.html to validate our SMAA against it.
+# lab/lite/src/smaa-pipelines.ts's header says how to re-fetch it.
+lab/public/smaa-ref/
+scripts/smaa-ref/
 playwright-report/
 lab/public/littlest-tokyo/CREDITS.txt

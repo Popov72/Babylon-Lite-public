@@ -738,7 +738,9 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     const boundsMax = options.boundsMax ?? [20, 15, 20];
     const groundY = options.groundY ?? boundsMin[1];
     const dx = options.dx ?? 0.25;
-    const maxSubDt = options.maxSubDt ?? 1 / 120;
+    // Mutable so the host can trade stability against cost at runtime (setParam "maxSubDtMs"):
+    // it is the cap that decides whether `step()` has to run MORE sub-steps than requested.
+    let maxSubDt = options.maxSubDt ?? 1 / 120;
     let gravity = options.gravity ?? 9.8;
     let substepsMut = Math.max(1, Math.round(options.substeps ?? 3));
     let iterationsMut = Math.max(1, Math.round(options.iterations ?? 5));
@@ -1130,7 +1132,12 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         },
         step(encoder: GPUCommandEncoder, dt: number): void {
             const frameDt = dt > 0 ? dt : 1 / 60;
-            const subDt = Math.min(frameDt / substepsMut, maxSubDt);
+            // `maxSubDt` is honoured by ADDING sub-steps, never by shortening the frame: clamping
+            // the sub-step dt would drop simulated time, making playback speed track the frame rate
+            // rather than the clock. The frame always advances exactly `frameDt`. (The epsilon
+            // absorbs float error so an exact multiple stays on the lower sub-step count.)
+            const stepCount = Math.max(substepsMut, Math.ceil(frameDt / maxSubDt - 1e-9));
+            const subDt = frameDt / stepCount;
             if (liveCount < count) {
                 // Release the next slice BEFORE writing params, so this frame simulates it.
                 liveCount = Math.min(count, liveCount + warmupStep);
@@ -1145,7 +1152,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                 device.queue.writeBuffer(emittersBuffer, 0, emitData);
                 dispatch(encoder, "pbmpm-emit", emitPipe, emitBG, particleGroups);
             }
-            for (let s = 0; s < substepsMut; s++) {
+            for (let s = 0; s < stepCount; s++) {
                 if (forceSpec && forcePipe && forceBG) {
                     dispatch(encoder, "pbmpm-force", forcePipe, forceBG, particleGroups);
                 }
@@ -1179,6 +1186,12 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                     break;
                 case "substeps":
                     substepsMut = Math.max(1, Math.round(value));
+                    break;
+                case "maxSubDtMs":
+                    // Largest dt a single sub-step may integrate, in MILLISECONDS. Raising it lets a
+                    // frame be covered by fewer sub-steps (cheaper, less stable); lowering it forces
+                    // more (costlier, more stable). It never changes how much time a frame advances.
+                    maxSubDt = Math.max(1e-4, value / 1000);
                     break;
                 case "iterations":
                     iterationsMut = Math.max(1, Math.round(value));

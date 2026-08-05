@@ -258,9 +258,8 @@ function copyDemoRuntimeAssets(demos: DemoConfigEntry[]): void {
         // nothing ever fetches it. Together they were 6.7 MB of dead weight per demo build.
         //
         // All three `oasis-<tier>.glb` ARE shipped: the scene's detail selector loads them lazily,
-        // and Draco keeps the set to 14.6 MB (the high tier alone is 108 MB uncompressed). Note
-        // that `oasis-high.glb` must NOT be caught by the rock's `-high.` source-file rule, hence
-        // the explicit keep below.
+        // and Draco keeps the set to 8.4 MB. Note that `oasis-high.glb` must NOT be caught by the
+        // rock's `-high.` source-file rule, hence the explicit keep below.
         const WATERFALL_SKIP = new Set(["scripts", "oasis.glb", "oasis-heightmap.bin"]);
         const isUnservedSource = (file: string): boolean => file.includes("-high.") && !file.startsWith("oasis-");
         copyRequiredDir(WATERFALL_SRC, resolve(demosDir, "waterfall"), "Waterfall rock", (file) => !WATERFALL_SKIP.has(file) && !isUnservedSource(file));

@@ -36,6 +36,7 @@ import { getViewMatrix, getProjectionMatrix } from "../camera/camera.js";
 import type { Camera } from "../camera/camera.js";
 import type { EngineContext } from "../engine/engine.js";
 import type { RenderTarget } from "../engine/render-target.js";
+import { buildRenderTarget } from "../engine/render-target.js";
 import type { SceneContext } from "../scene/scene-core.js";
 import type { Task } from "../frame-graph/task.js";
 import { mat4Invert } from "../math/mat4-invert.js";
@@ -89,6 +90,15 @@ const SPECULAR_POWER = 250.0;
 const MINIMUM_THICKNESS = 0;
 const PARTICLE_THICKNESS_ALPHA = 0.05;
 const FLUID_COLOR: [number, number, number] = [0.085, 0.6375, 0.765];
+// Environment-reflection shaping, uploaded in `Comp.env` (see the struct for why these are
+// uniforms rather than WGSL consts). The exposure/contrast pair should match the scene's
+// `imageProcessing` so the water reflects the same sky the skybox draws; the defaults are the
+// values these were previously hardcoded to, so an untouched caller renders exactly as before.
+const ENV_EXPOSURE = 1.0;
+const ENV_CONTRAST = 1.1;
+/** Water's Fresnel reflectance at normal incidence. 0.02 is physically right for water (IOR
+ *  1.333); raising it makes the surface read more mirror-like head-on. */
+const FRESNEL_F0 = 0.02;
 const DIR_LIGHT: [number, number, number] = [-2, -1, 1]; // normalized below
 const BLUR_DEPTH_FILTER_SIZE = 20;
 const BLUR_MAX_FILTER_SIZE = 64;
@@ -994,14 +1004,6 @@ const COMPOSITE_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
 const IOR: f32 = 1.333;
 const ETA: f32 = 1.0 / 1.333;
-const F0: f32 = 0.02;
-// Env reflections sample the LINEAR-HDR specular cube; tonemap it with the SAME
-// transform babylon-lite's HDR skybox uses (exposure -> gamma -> clamp ->
-// smoothstep contrast, no Reinhard), so the fluid reflection matches the sky it
-// reflects. Keep ENV_EXPOSURE / ENV_CONTRAST in sync with the demo's
-// scene.imageProcessing values.
-const ENV_EXPOSURE: f32 = 1.0;
-const ENV_CONTRAST: f32 = 1.1;
 // Depth-discontinuity limit for normal reconstruction, in depth-texel world heights. Above
 // this the neighbour is treated as a different surface (see axisDiff). Generous enough that
 // even near-grazing water keeps its real normal.
@@ -1027,6 +1029,12 @@ struct Comp {
     c: vec4<f32>,       // fresnelClamp, specularPower, minimumThickness, debugMode
     diffuse: vec4<f32>, // diffuseColor.rgb, _
     extra: vec4<f32>,   // depthTexel.xy (for normal offsets), envRotationY, _
+    // Reflection shaping. These were WGSL consts, but the environment reflection has to be
+    // tonemapped with the SAME transform as the sky it reflects (exposure, gamma, clamp,
+    // smoothstep contrast), and that transform lives in the scene's imageProcessing, which a demo
+    // is free to change. As consts they silently drifted out of step with it; as uniforms the
+    // caller can hand over its actual values (and expose them, which is how they get tuned).
+    env: vec4<f32>,     // envExposure, envContrast, fresnelF0, _
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthSamp: sampler;
@@ -1248,14 +1256,15 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
         reflW = vec3<f32>(reflW.x * ec + reflW.z * es, reflW.y, -reflW.x * es + reflW.z * ec);
     }
     let reflLin = textureSampleLevel(envTex, envSamp, vec3<f32>(reflW.x, reflW.y, -reflW.z), 0.0).rgb;
-    var reflC = reflLin * ENV_EXPOSURE;
+    var reflC = reflLin * u.env.x;
     reflC = pow(reflC, vec3<f32>(1.0 / 2.2));
     reflC = clamp(reflC, vec3<f32>(0.0), vec3<f32>(1.0));
     let reflHi = reflC * reflC * (3.0 - 2.0 * reflC); // smoothstep contrast (matches skybox)
-    reflC = mix(reflC, reflHi, ENV_CONTRAST - 1.0);
+    reflC = mix(reflC, reflHi, u.env.y - 1.0);
     let reflectionColor = max(reflC, vec3<f32>(0.0));
 
-    let fresnel = clamp(F0 + (1.0 - F0) * pow(1.0 - max(dot(normal, -rayDir), 0.0), 5.0), 0.0, u.c.x);
+    let f0 = u.env.z;
+    let fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - max(dot(normal, -rayDir), 0.0), 5.0), 0.0, u.c.x);
     var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
     // Overlay the (saturated) mesh colour so the liquefied model's colours clearly show — the faint
     // Beer-Lambert tint alone washes out to grey. Keeps some specular/refraction for a wet look.
@@ -1304,6 +1313,14 @@ export function createFluidSurfaceTask(
     /** Scene environment yaw (radians) — keeps the water's reflections in register with the
      *  skybox and the PBR IBL when the environment is rotated. */
     setEnvRotationY(v: number): void;
+    /** Tonemap applied to the environment reflection before it is mixed in: linear exposure, then
+     *  gamma, clamp, and a smoothstep contrast. Pass the scene's own `imageProcessing.exposure` /
+     *  `.contrast` so the water reflects the same sky the skybox draws — as WGSL consts these
+     *  silently drifted out of step with a demo that changed its image processing. */
+    setEnvReflection(exposure: number, contrast: number): void;
+    /** Fresnel reflectance at normal incidence. Water is ≈0.02; higher values make the surface
+     *  read more mirror-like when viewed head-on rather than only at grazing angles. */
+    setFresnelF0(v: number): void;
     setSurfaceFilter(m: "bilateral" | "narrowRange"): void;
     /** Narrow-range params (multipliers of the impostor `size`): `delta` = the
      *  base accepted depth range (δ, edge preservation) and `mu` = the front-clamp
@@ -1359,6 +1376,9 @@ export function createFluidSurfaceTask(
     // Narrow-range filter selection + params (multipliers of the impostor `size`).
     let surfaceFilter: "bilateral" | "narrowRange" = "bilateral";
     let envRotationY = 0; // scene environment yaw, mirrored into the composite uniform
+    let envExposure = ENV_EXPOSURE;
+    let envContrast = ENV_CONTRAST;
+    let fresnelF0 = FRESNEL_F0;
     let nrDelta = 10; // δ / size — base accepted depth range (edge preservation)
     let nrMu = 1; // µ / size — front-clamp offset
     // Anisotropic surface (Yu & Turk 2010) — default OFF. When ON the depth + thickness
@@ -2024,6 +2044,10 @@ export function createFluidSurfaceTask(
         comp[o + 1] = 1 / depthH;
         comp[o + 2] = envRotationY;
         comp[o + 3] = 0; // extra: depth texel, env yaw, _
+        comp[o + 4] = envExposure;
+        comp[o + 5] = envContrast;
+        comp[o + 6] = fresnelF0;
+        comp[o + 7] = 0; // env: reflection exposure/contrast, Fresnel F0, _
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -2143,6 +2167,16 @@ export function createFluidSurfaceTask(
         setEnvRotationY(v: number): void {
             envRotationY = v;
         },
+        /** Reflection tonemap. Pass the scene's own `imageProcessing.exposure` / `.contrast` to
+         *  keep the water's reflection matched to the sky it reflects. */
+        setEnvReflection(exposure: number, contrast: number): void {
+            envExposure = Math.max(0, exposure);
+            envContrast = Math.max(0, contrast);
+        },
+        /** Fresnel reflectance at normal incidence (water ≈ 0.02). Higher reads more mirror-like. */
+        setFresnelF0(v: number): void {
+            fresnelF0 = Math.max(0, Math.min(1, v));
+        },
         setSurfaceFilter(m: "bilateral" | "narrowRange"): void {
             surfaceFilter = m;
         },
@@ -2172,6 +2206,10 @@ export function createFluidSurfaceTask(
             return views.depthBlur ?? null;
         },
         record(): void {
+            // Allocate the output attachment, the way every other producing task does. A no-op for
+            // the swapchain (eager), and what lets the composite land in an offscreen target so a
+            // post-process — SMAA, tone mapping — can run on the finished fluid image.
+            buildRenderTarget(outRT, engine);
             build();
         },
         execute(): number {

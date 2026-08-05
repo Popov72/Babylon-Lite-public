@@ -13,7 +13,8 @@
         "groundDamp": 1,
         "groundDampHeight": 0,
         "restitution": 1,
-        "substeps": 1
+        "substeps": 1,
+        "maxSubDtMs": 16.7
     },
     "demoParams": {
         "meshScale": 4,

@@ -38,7 +38,7 @@ import type { Mesh, PhysicsBody, PhysicsShape, SceneNode } from "babylon-lite";
 import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createFloatingBodySystem } from "babylon-lite/fluid/floating-body.js";
 import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
-import type { FluidCtx, FluidDemo } from "../demo.js";
+import type { FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 import { demoAssetUrl } from "../../demo-asset-url.js";
 
@@ -748,10 +748,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         extraControls() {
             return [boxSizeRow, obstacleTitle, obstacleRow, speedRow, raftTitle, raftRow, raftReadout];
         },
-        snapshotState(): Record<string, number | boolean> {
+        snapshotState(): Record<string, DemoStateValue> {
             return { boxSize: boxScale, paddleOn: obstacleOn, paddleSpeed: obstacleSpeed };
         },
-        restoreState(state: Record<string, number | boolean>): void {
+        restoreState(state: Record<string, DemoStateValue>): void {
             if (typeof state.boxSize === "number") {
                 applyBoxScale(state.boxSize);
                 boxSizeInput.value = String(state.boxSize);

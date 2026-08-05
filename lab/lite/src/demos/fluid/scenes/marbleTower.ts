@@ -20,7 +20,7 @@ import type { ShaderMaterial } from "babylon-lite/material/shader/shader-materia
 import { createTexture2DFromPixels, updateTexture2DFromPixels } from "babylon-lite/texture/pixels-texture.js";
 import type { Texture2D } from "babylon-lite/texture/texture-2d.js";
 import { releaseTexture } from "babylon-lite/resource/gpu-pool.js";
-import type { DemoParam, FluidCtx, FluidDemo } from "../demo.js";
+import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
 const TOWER_URL = "https://assets.babylonjs.com/meshes/Marble/marbleTower/marbleTower.gltf";
@@ -1938,7 +1938,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             dbgChk.checked = dbgActive;
             return [bakedStatusEl, dbgRow, spinReadoutEl, vizRow, axisRow, sliceRow];
         },
-        snapshotState(): Record<string, number | boolean> {
+        snapshotState(): Record<string, DemoStateValue> {
             // The tower is always baked, the wheel always spins, and its shape/drive params are fixed,
             // so there is no demo-specific toggle state left to export or carry in presets.
             return {};

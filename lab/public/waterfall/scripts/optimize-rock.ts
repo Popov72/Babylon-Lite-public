@@ -16,18 +16,30 @@
  *                simplification: decimating the chunks separately lets their shared borders
  *                drift apart and opens cracks along every seam.
  *   weld       → merge bitwise-identical vertices, a prerequisite for good simplification.
- *   simplify   → repeatedly, re-aiming at the target after each pass. The scan's UV islands
- *                split vertices along every seam, and meshoptimizer treats an attribute
- *                discontinuity as a constraint, so a single pass stalls at ~37 k triangles no
- *                matter how much error budget it is given (0.01 → 37.7 k, 0.08 → 37.0 k).
- *                Re-running on the already-decimated mesh changes the topology enough to get
- *                past that plateau. A target ABOVE the stall point needs only one pass.
+ *   simplify   → TWO modes, see --error vs --tris below.
  *   resize     → 2048². The rock is set dressing; 4096² costs 4x the pixels for detail that
  *                is never resolved at the demo's framing.
  *   uastc      → the NORMAL map only. Normals are the one map where ETC1S's block artifacts
  *                show up as visible shading banding.
  *   etc1s      → base colour + metallic-roughness, where it is nearly free perceptually and
  *                roughly a third the size of UASTC.
+ *
+ * Choosing --error vs --tris
+ * --------------------------
+ * `--error` is the QUALITY-FIRST mode and the one to reach for by default: a SINGLE
+ * simplification pass, decimating as far as the error budget allows (meshoptimizer's own
+ * `--ratio 0`). The budget is a fraction of mesh radius, so it is a real geometric guarantee.
+ *
+ * `--tris` hits an exact triangle budget instead, and to do that it may run several passes
+ * (see the loop below). Be aware that this COMPOUNDS error: each pass measures its budget
+ * against the already-decimated mesh from the previous pass, not against the original, so the
+ * total deviation from the source is much larger than any single pass suggests. Use it only
+ * when a hard polygon budget matters more than fidelity.
+ *
+ * Both modes are bounded by the same wall: a mesh whose UV islands split vertices along every
+ * seam cannot be decimated past those constraints in one pass. This scan-style content
+ * saturates around 8% of its source triangles however much error budget it is handed — going
+ * below that is precisely what forces `--tris` into extra passes, and what costs the detail.
  *
  * The mesh changes shape slightly, so the collision height map MUST be re-baked from the
  * OUTPUT of this script — otherwise the fluid rides a surface the renderer no longer draws:
@@ -44,7 +56,9 @@
  * Options:
  *   --src <path>      source .glb (required) — the raw scan, NOT the optimised asset
  *   --out <path>      output .glb (default: rock.glb in the demo's asset folder)
- *   --tris <n>        target triangle count (default 60000)
+ *   --error <f>       error-driven: one pass, decimate within this fraction of mesh radius
+ *                     (default 0.001). Mutually exclusive with --tris.
+ *   --tris <n>        count-driven: hit this triangle count, multi-pass, compounds error
  *   --texture <px>    max texture dimension (default 2048)
  *   --keep-temp       leave the intermediate .glb files on disk for inspection
  */
@@ -70,13 +84,21 @@ if (!src) {
     process.exit(1);
 }
 const out = arg("out", join(ASSET_DIR, "rock.glb"))!;
-const targetTris = Number(arg("tris", "60000"));
 const texturePx = Number(arg("texture", "2048"));
 const keepTemp = argv.includes("--keep-temp");
+// Two mutually exclusive simplification modes. Error-driven is the default because it is a
+// single pass with a real geometric guarantee; count-driven exists for a hard polygon budget.
+const errorArg = arg("error");
+const trisArg = arg("tris");
+if (errorArg !== undefined && trisArg !== undefined) {
+    console.error("error: --error and --tris are alternative modes; pass only one");
+    process.exit(1);
+}
+const countDriven = trisArg !== undefined;
+const targetTris = Number(trisArg ?? "60000");
+/** Error budget as a fraction of mesh radius. Also used as the per-pass budget in count mode. */
+const SIMPLIFY_ERROR = Number(errorArg ?? (countDriven ? "0.02" : "0.001"));
 
-/** Error budget for each simplify pass, as a fraction of mesh radius. Above ~0.01 this model
- *  is topology-bound rather than error-bound, so there is nothing to gain by loosening it. */
-const SIMPLIFY_ERROR = 0.02;
 /** Stop once within this fraction of the target — chasing the last percent costs a whole pass. */
 const SIMPLIFY_TOLERANCE = 0.02;
 const SIMPLIFY_MAX_PASSES = 4;
@@ -137,31 +159,48 @@ try {
     gt("weld", step("3-join"), step("4-weld"));
     console.log(`  joined + welded → ${countTriangles(step("4-weld")).toLocaleString()} triangles`);
 
-    // Simplify toward the target, re-aiming after every pass.
-    //
-    // One pass is normally enough — but the scan's UV islands split vertices along every seam,
-    // and meshoptimizer treats an attribute discontinuity as a constraint, so a pass can stall
-    // well ABOVE the ratio it was asked for (this model bottoms out near 37 k however much
-    // error budget it is handed: 0.01 → 37.7 k, 0.08 → 37.0 k). Re-running on the already
-    // decimated mesh changes the topology enough to get past that, so keep going while each
-    // pass is still making progress. Targets above the stall point finish in a single pass.
+    // Simplify toward the target — see the two modes below.
     let current = step("4-weld");
     let currentTris = countTriangles(current);
-    for (let pass = 1; pass <= SIMPLIFY_MAX_PASSES; pass++) {
-        if (currentTris <= targetTris * (1 + SIMPLIFY_TOLERANCE)) {
-            break;
-        }
-        const next = step(`5-simplify-${pass}`);
-        const ratio = targetTris / currentTris;
-        gt("simplify", current, next, "--ratio", ratio.toFixed(5), "--error", String(SIMPLIFY_ERROR));
-        const tris = countTriangles(next);
-        console.log(`  simplify pass ${pass} (ratio ${ratio.toFixed(5)}) → ${tris.toLocaleString()} triangles`);
-        if (tris >= currentTris) {
-            console.log("    no further reduction possible — stopping");
-            break;
-        }
+
+    if (!countDriven) {
+        // ── Error-driven: ONE pass, `--ratio 0` so meshoptimizer decimates as far as the error
+        // budget allows and no further. One pass is the whole point — every extra pass re-spends
+        // the budget against an already-decimated mesh, so the deviation from the ORIGINAL
+        // compounds invisibly. Whatever this lands on is what the error bound permits.
+        const next = step("5-simplify");
+        gt("simplify", current, next, "--ratio", "0", "--error", String(SIMPLIFY_ERROR));
         current = next;
-        currentTris = tris;
+        currentTris = countTriangles(current);
+        console.log(`  simplify (error ${SIMPLIFY_ERROR}) → ${currentTris.toLocaleString()} triangles`);
+    } else {
+        // ── Count-driven: hit an exact triangle budget, re-aiming after every pass.
+        //
+        // One pass is normally enough — but the scan's UV islands split vertices along every
+        // seam, and meshoptimizer treats an attribute discontinuity as a constraint, so a pass
+        // can stall well ABOVE the ratio it was asked for. Re-running on the already decimated
+        // mesh changes the topology enough to get past that, so keep going while each pass is
+        // still making progress. Targets above the stall point finish in a single pass.
+        //
+        // The cost is compounding error (see the header): each pass measures SIMPLIFY_ERROR
+        // against the previous pass's output, not the source. If detail matters more than the
+        // exact count, use --error instead.
+        for (let pass = 1; pass <= SIMPLIFY_MAX_PASSES; pass++) {
+            if (currentTris <= targetTris * (1 + SIMPLIFY_TOLERANCE)) {
+                break;
+            }
+            const next = step(`5-simplify-${pass}`);
+            const ratio = targetTris / currentTris;
+            gt("simplify", current, next, "--ratio", ratio.toFixed(5), "--error", String(SIMPLIFY_ERROR));
+            const tris = countTriangles(next);
+            console.log(`  simplify pass ${pass} (ratio ${ratio.toFixed(5)}) → ${tris.toLocaleString()} triangles`);
+            if (tris >= currentTris) {
+                console.log("    no further reduction possible — stopping");
+                break;
+            }
+            current = next;
+            currentTris = tris;
+        }
     }
 
     gt("resize", current, step("7-resize"), "--width", String(texturePx), "--height", String(texturePx));

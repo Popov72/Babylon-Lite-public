@@ -5,7 +5,7 @@
 // plain data+behaviour object (a `FluidDemo`) built from a `FluidCtx` of the
 // services the core hands it. No demo references the core module directly.
 
-import type { ArcRotateCamera, DirectionalLight, EngineContext, Mat4, Mesh, SceneContext } from "babylon-lite";
+import type { ArcRotateCamera, DirectionalLight, EngineContext, HemisphericLight, Mat4, Mesh, SceneContext } from "babylon-lite";
 import type { EmitterConfig, FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 
 /** Default (capsule / box) spawn box: a tall central column that drops in to
@@ -32,6 +32,14 @@ export type DemoParam = { hidden?: boolean } & (
     | { key: string; label: string; type: "boolean"; value: boolean }
     | { key: string; label: string; type: "color"; value: string }
 );
+
+/** A value a demo may stash in its opaque `demoState` bag.
+ *
+ *  Strings are allowed alongside numbers and booleans so a demo can pin a NAMED choice rather than
+ *  encode it as a magic index — the waterfall's "Background detail" tier rides here as
+ *  `"low" | "mid" | "high"`, which keeps the exported JSON readable and, more importantly, stable:
+ *  an index would silently re-point at a different tier the day the list is reordered. */
+export type DemoStateValue = number | boolean | string;
 
 // Per-(demo, simulation) parameter snapshot. The core stores one of these per
 // (demo, method) pair so e.g. SPH-fountain and MLS-fountain keep independent
@@ -61,6 +69,11 @@ export interface PairState {
     renderMode?: "surface" | "spheres";
     refraction?: number;
     specular?: number;
+    /** Reflection tonemap (exposure + contrast) applied to the environment reflection, and the
+     *  water's Fresnel reflectance at normal incidence. Part of the surface LOOK a preset pins. */
+    reflectionExposure?: number;
+    reflectionContrast?: number;
+    reflectivity?: number;
     depthBlur?: number;
     depthBlurThreshold?: number;
     thicknessBlur?: number;
@@ -106,9 +119,15 @@ export interface PairState {
     };
     /** Opaque per-demo extra-control state (box: size / paddle), captured via
      *  {@link FluidDemo.snapshotState} and restored via {@link FluidDemo.restoreState}. */
-    demoState?: Record<string, number | boolean>;
+    demoState?: Record<string, DemoStateValue>;
     /** Whether the demo's container / nozzle meshes are shown ("Show container" toggle). */
     showContainer?: boolean;
+    /** Image-based-lighting multiplier ("Environment intensity"). Optional so presets/states
+     *  predating it fall back to the shader's own 1.0. Core-owned rather than per-demo, but it
+     *  is pinned per pair because it is part of the exported LOOK. */
+    envIntensity?: number;
+    /** 4× MSAA on the scene pass ("Anti-aliasing"). Optional, defaults off. */
+    msaa?: boolean;
 }
 
 /** Interactive push force applied for exactly one frame (box mouse-stir). */
@@ -148,9 +167,25 @@ export interface FluidCtx {
     addSceneHole(center: [number, number, number], radius: number): void;
     /** Clear all drain holes (zero the hole ring). */
     clearSceneHoles(): void;
-    /** Directional "sun" light (always in the scene). No fluid demo casts shadows, so it
-     *  carries no shadow generator and no shadow map is ever rendered. */
+    /** Directional "sun" light (always in the scene). It only carries a shadow generator while a
+     *  demo has explicitly enabled shadows via {@link setSunShadows}; otherwise no shadow map is
+     *  rendered at all. Its `direction` may be written at runtime — the generator recomputes its
+     *  light matrix (and re-fits the ortho box to the casters) on every shadow-map render. */
     readonly sun: DirectionalLight;
+    /** Hemispheric ambient fill, shared by every demo. It is there for the standard-material
+     *  demos, which sample no environment map — a PBR demo under a full HDR IBL gets ambient
+     *  from the IBL already, so for those this is a SECOND ambient term, and one no shadow can
+     *  attenuate. A demo that wants readable shadows should dim it in `onEnter` and put it back
+     *  in `onLeave`. `intensity` is a plain field with no observer, so a write only reaches the
+     *  lights UBO once something bumps the light version — set `direction` (ObservableVec3.set
+     *  always fires) in the same breath. */
+    readonly ambient: HemisphericLight;
+    /** Attach or detach the sun's shadow map, with the meshes that should cast into it.
+     *  The generator itself stays permanently attached to the light (see fluid.ts) — this only
+     *  swaps the caster list, which is what makes the toggle free when off. Demos MUST call
+     *  `setSunShadows(false, [])` in `onLeave`, or their casters keep drawing into the map
+     *  under the next demo. */
+    setSunShadows(on: boolean, casters: Mesh[]): void;
 
     /** Half-extent of the fluid-sim domain along X and Z at domain scale 1, in world units.
      *  A demo that scales its world multiplies this by its own scale (see `getDomainScale`).
@@ -238,6 +273,10 @@ export interface FluidDemo {
     applyParam(key: string, value: number | boolean | string): void;
     /** Demo-specific panel controls appended under "Physics simulation". */
     extraControls(): HTMLElement[];
+    /** Meshes this demo casts shadows from. Informational: the core does not call it during
+     *  startup — caster sets are registered through {@link setSunShadows} and preloaded
+     *  lazily. Omit → this demo never casts shadows. */
+    shadowCasters?(): Mesh[];
     /** Show/hide this demo's container / nozzle meshes (box glass, capsule shell,
      *  or fountain nozzle spouts). Optional: demos without any such mesh omit it. */
     setContainerVisible?(visible: boolean): void;
@@ -250,9 +289,9 @@ export interface FluidDemo {
      *  render task from these and strips them out of the scene-colour pass. */
     containerMeshes?(): Mesh[];
     /** Snapshot this demo's extra-control state (box: size/paddle) as a flat bag. */
-    snapshotState?(): Record<string, number | boolean>;
+    snapshotState?(): Record<string, DemoStateValue>;
     /** Restore extra-control state; MUST also update the extra-control UI to match. */
-    restoreState?(state: Record<string, number | boolean>): void;
+    restoreState?(state: Record<string, DemoStateValue>): void;
 
     /** Return true if this demo will handle the pointerdown itself, so the
      *  built-in arc-camera control should ignore it (e.g. capsule: LMB over the

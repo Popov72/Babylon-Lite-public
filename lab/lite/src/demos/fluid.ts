@@ -14,24 +14,34 @@
 
 import {
     addTask,
+    addTaskAfter,
+    addTaskBefore,
     addToScene,
     attachControl,
     createArcRotateCamera,
+    createDepthResolveTask,
     createDirectionalLight,
     createEngine,
     createGround,
     createHemisphericLight,
+    createMeshFromData,
+    createPbrMaterial,
+    createPcfDirectionalShadowGenerator,
     createRenderTarget,
     createRenderTask,
     createSceneContext,
     createStandardMaterial,
     getEffectiveAspectRatio,
+    getFrameGraph,
     getViewProjectionMatrix,
     loadEnvironment,
     loadHdrEnvironment,
     createBlurPostProcessTask,
+    markMaterialUboDirty,
     onBeforeRender,
-    registerScene,
+    registerSceneWithShadowSupport,
+    setMeshVisible,
+    setShadowTaskCasterMeshes,
     startEngine,
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
@@ -43,7 +53,7 @@ import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js"
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
 import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
-import type { Mesh, Task, EnvironmentTextures, Renderable } from "babylon-lite";
+import type { Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
 // re-exported from the package root, so the factory comes from its own module (the same
@@ -62,7 +72,7 @@ import { CAP_A, CAP_B, CAP_R, createCapsuleDemo } from "./fluid/scenes/capsule.j
 import { createBoxDemo } from "./fluid/scenes/box.js";
 import { createFountainDemo } from "./fluid/scenes/fountain.js";
 import { createMarbleTowerDemo } from "./fluid/scenes/marbleTower.js";
-import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_QUARRY_ENV_URL } from "./fluid/scenes/waterfall.js";
+import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_BELFAST_ENV_URL } from "./fluid/scenes/waterfall.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
@@ -142,15 +152,73 @@ async function main(): Promise<void> {
     const isForceGesture = (e: PointerEvent): boolean => e.button === 2 && e.shiftKey;
     attachControl(cam, canvas, scene, { shouldHandlePointerDown: (e) => !isForceGesture(e) && !activeDemo?.claimsPointer?.(e) });
 
-    addToScene(scene, createHemisphericLight([0.3, 1, 0.4], 0.75));
-
+    // Ambient fill. It exists for the STANDARD-material demos (capsule / box / fountain), which
+    // sample no environment map at all and would otherwise be lit by the sun alone. The waterfall
+    // is PBR under a full HDR IBL, so for that demo this is a second ambient term stacked on the
+    // first — and one that no shadow can touch, which is what used to flatten its shadows. It is
+    // exposed on the ctx so that demo can dim it while it is on screen (see waterfall.ts).
+    const ambient = createHemisphericLight([0.3, 1, 0.4], 0.75);
+    addToScene(scene, ambient);
     // Directional "sun". The PBR meshes + outdoor HDR IBL already carry most of the
     // lighting, so its intensity is tuned to add shape without blowing the scene out.
-    // No fluid demo casts shadows, so the sun has no generator attached and no shadow
-    // map is ever rendered — every demo's custom frame graph stays untouched.
+    // Only the waterfall casts shadows, and only when its "Sun shadows" toggle is on — see
+    // `setSunShadows` below for how that toggle is wired (the generator stays attached; the
+    // CASTER LIST is what switches).
     const sun = createDirectionalLight([-0.5, -0.72, -0.48], 2.4);
     sun.position.set(16, 24, 15);
     addToScene(scene, sun);
+    // PCF rather than CSM: this scene is a single compact formation framed by one camera,
+    // so a single ortho slice covers it — cascades would buy nothing for the extra maps.
+    //
+    // The ortho depth range is SYMMETRIC about the light's own position, which is the convention
+    // `computeDirectionalLightMatrix` is built for (see scene66: shadowMinZ -10 / shadowMaxZ 10
+    // with the light left at the origin). The light camera sits AT `light.position` looking along
+    // `direction`, and this range is measured from there — so a symmetric range lets the light sit
+    // in the middle of the scene and still cover geometry on both sides of it. A one-sided range
+    // like [1, 400] only works if the light is first stood off outside the scene, and getting that
+    // stand-off wrong silently clips casters out of the map.
+    // `normalBias` is not read by the PCF path, so it is not passed.
+    // The bias suits an ortho box that has to hold the whole island (~100 world units) once the
+    // oasis ring is a caster: at 2048² that is ~0.05 world units per texel. Expressed in NDC, so
+    // the world-space slack is bias/2 × the depth range — here 0.0005 × 500 ≈ 0.25 units.
+    const sunShadow = createPcfDirectionalShadowGenerator(engine, sun, { mapSize: 2048, bias: 0.001, orthoMinZ: -250, orthoMaxZ: 250 });
+    // The generator stays attached for the whole session, and the TOGGLE is the caster list.
+    // That matters because `receiveShadows` is folded into a material variant at renderable
+    // build time (pbr-renderable) and gated on "does any light have a generator right now" —
+    // so detaching would permanently build the rock without its shadow-receiving path, and
+    // re-attaching later would do nothing. Leaving it attached keeps that variant stable.
+    //
+    // Costing nothing when off relies on the task's own dirty check: swapping the caster set
+    // re-renders the map once, after which every frame early-outs without encoding a pass.
+    //
+    // The "off" set is a single degenerate triangle rather than an EMPTY array, and that is not
+    // cosmetic: a RenderTask with no meshes explicitly added auto-mirrors the whole scene, so an
+    // empty caster list makes the shadow pass try to draw every scene mesh with its normal
+    // colour material into a depth-only target — which fails outright with "Failed to read the
+    // 'format' property from 'GPUColorTargetState'". One zero-area caster keeps the pass
+    // explicit, draws nothing, and leaves the map cleared.
+    //
+    // No startup warm-up is needed: setShadowTaskCasterMeshes parks each new caster set on the
+    // generator (`_preloadPending`) and the task skips it until the no-colour material import
+    // for that caster family resolves, so enabling shadows mid-session cannot race the import.
+    sun.shadowGenerator = sunShadow;
+    const nullCaster = createMeshFromData(
+        engine,
+        "fluid-null-shadow-caster",
+        new Float32Array([0, 0, 0, 0.01, 0, 0, 0, 0.01, 0]),
+        new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        new Uint32Array([0, 1, 2]),
+        new Float32Array(6)
+    );
+    nullCaster.material = createPbrMaterial({ baseColorFactor: [1, 1, 1, 1] });
+    nullCaster.receiveShadows = true; // see waterfall.ts: keeps the PBR group's receiver path compiled
+    addToScene(scene, nullCaster);
+    setMeshVisible(nullCaster, false);
+    setShadowTaskCasterMeshes(sunShadow, [nullCaster]);
+    /** Turn the sun's shadow map on/off by swapping the caster list. */
+    const setSunShadows = (on: boolean, casters: Mesh[]): void => {
+        setShadowTaskCasterMeshes(sunShadow, on && casters.length > 0 ? casters : [nullCaster]);
+    };
 
     // Ground plane the escaping liquid falls onto (hidden by the box demo, whose
     // floor replaces it).
@@ -565,6 +633,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         task.execute = (): number => (active() ? run() : 0);
         addTask(scene, task);
     };
+    /** Wrap an ALREADY-registered task's execute so it only runs while `active()` holds. */
+    const gateExistingTask = (task: Task, active: () => boolean): void => {
+        const run = task.execute!.bind(task);
+        task.execute = (): number => (active() ? run() : 0);
+    };
     // Only the highlight extraction and the two blurs are switchable. The MERGE is always
     // registered and always executes: it is the one and only task that writes the swapchain,
     // and with weight 0 it is a plain blit. (Handing the swapchain to two alternating
@@ -574,6 +647,72 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         gateTask(t, () => bloomEnabled);
     }
     addTask(scene, bloomMerge);
+
+    // ── Optional MSAA on the scene (background geometry) pass ────────────────────────────
+    // The demo renders the world into an OFFSCREEN single-sample target because the fluid
+    // surface pass has to SAMPLE it for refraction, so it gets none of the engine's own MSAA
+    // (`createEngine(..., { msaaSamples: 1 })` above) — every polygon edge is hard-aliased.
+    // That is invisible on the simple demos, but the waterfall's oasis backdrop is a
+    // million-triangle model whose leaf blades land at or below one pixel: each frame a
+    // different sub-pixel sliver wins the coverage test and the foliage crawls with white
+    // speckle. Rendering that model on its own, 4× MSAA removed 92% of its isolated bright
+    // fringe pixels — because at sub-pixel triangle sizes each MSAA sample hits a DIFFERENT
+    // triangle, so MSAA degenerates into supersampling exactly where the aliasing is worst.
+    // (In the full waterfall frame the headline number is smaller, ~20%, simply because most of
+    // the remaining bright fringe is the water itself, which MSAA cannot touch — see below.)
+    //
+    // Only the SCENE pass is multisampled. The fluid surface is reconstructed in screen space
+    // from a depth/thickness buffer rather than rasterised, so MSAA would do nothing for it,
+    // and the particle/foam sprites are soft-edged impostors. Multisampling just the one pass
+    // that draws hard-edged triangles is where all of the benefit is and a fraction of the cost.
+    //
+    // Wiring: an MSAA colour+depth target is rendered instead of `sceneColorRT`, and the pass
+    // RESOLVES into `sceneColorRT` at the end (`rst`), so every downstream consumer keeps
+    // reading the same single-sample texture it always did. Depth needs an explicit pass —
+    // WebGPU has no hardware depth resolve — so `createDepthResolveTask` copies sample 0 of the
+    // MSAA depth into the shared `depthRT` that the particle, surface, foam and container-glass
+    // passes all depth-test against.
+    //
+    // Task order is [scene-msaa, scene, depth-resolve, particle, …]: the plain scene task must
+    // record LAST of the two so the colour view it bakes into its pass descriptor belongs to the
+    // live `sceneColorRT` texture (both tasks build that target — one as `rt`, one as `rst`), and
+    // the depth resolve must record after whoever (re)builds `depthRT`. Exactly one of the two
+    // scene tasks executes per frame, so the plain task never clears the depth the resolve wrote.
+    //
+    // Built LAZILY on first enable: off is the default, and the MSAA colour + depth textures are
+    // ~4× a normal canvas-sized pair, so a user who never asks for it never pays for it.
+    const MSAA_SAMPLES = 4;
+    let msaaOn = false;
+    let msaaSceneTask: Task | null = null;
+    let pendingFrameGraphRebuild = false;
+    gateExistingTask(sceneTask, () => !msaaOn);
+    const setMsaa = (on: boolean): void => {
+        if (on && !msaaSceneTask) {
+            const sceneMsaaRT = createRenderTarget({
+                lbl: "fluid-scene-msaa",
+                format: engine.format,
+                dFormat: depthRT._descriptor.dFormat,
+                samples: MSAA_SAMPLES,
+                size: engine,
+            });
+            // No `depth`: the MSAA target owns its own depth attachment (matching the engine's
+            // own MSAA scene task), which is what the resolve task then reads.
+            msaaSceneTask = createRenderTask({ name: "scene-msaa", rt: sceneMsaaRT, rst: sceneColorRT, clr: false }, engine, scene);
+            const depthResolveTask = createDepthResolveTask({ name: "fluid-depth-resolve", sourceTexture: sceneMsaaRT, targetTexture: depthRT }, engine, scene);
+            gateExistingTask(msaaSceneTask, () => msaaOn);
+            gateExistingTask(depthResolveTask, () => msaaOn);
+            addTaskBefore(scene, msaaSceneTask, sceneTask);
+            addTaskAfter(scene, depthResolveTask, sceneTask);
+            // Rebuild so the new tasks record and every canvas-sized target is re-allocated in
+            // the right order. Same call the engine makes on a canvas resize, so it is a
+            // supported mid-session operation — but it destroys and re-creates textures that
+            // other tasks' bind groups and pass descriptors point at, so it must not run from a
+            // UI event while a frame is being encoded. Deferred to the top of the next
+            // onBeforeRender, ahead of everything this frame encodes against them.
+            pendingFrameGraphRebuild = true;
+        }
+        msaaOn = on;
+    };
 
     // Foam (diffuse-particle) config lives in the shared controls panel (component-owned,
     // per-(demo, method)). `pushFoam` reads its live snapshot and (re)applies it to the
@@ -727,16 +866,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
     const ENV_CHOICES: EnvChoice[] = [
         { key: "studio", label: "Studio (default)", url: ENV_STUDIO_URL, hdr: false, exposure: 1.0, contrast: 1.1 },
-        { key: "belfast", label: "Belfast sunset sky", url: WATERFALL_ENV_URL, hdr: true, exposure: 0.8, contrast: 1.15 },
-        { key: "quarry", label: "Quarry pure sky", url: WATERFALL_QUARRY_ENV_URL, hdr: true, exposure: 0.55, contrast: 1.15 },
+        { key: "industrial", label: "Industrial sunset sky", url: WATERFALL_ENV_URL, hdr: true, exposure: 0.9, contrast: 1.15 },
+        { key: "belfast", label: "Belfast sunset sky", url: WATERFALL_BELFAST_ENV_URL, hdr: true, exposure: 0.8, contrast: 1.15 },
+        { key: "quarry", label: "Quarry pure sky", url: POLY_HAVEN_2K("quarry_04_puresky"), hdr: true, exposure: 0.55, contrast: 1.15 },
         { key: "driveway", label: "Tree-lined driveway", url: POLY_HAVEN_2K("tree_lined_driveway"), hdr: true, exposure: 1.0, contrast: 1.1 },
         { key: "drackenstein", label: "Drackenstein quarry sky", url: POLY_HAVEN_2K("drackenstein_quarry_puresky"), hdr: true, exposure: 0.6, contrast: 1.15 },
         { key: "dikhololo", label: "Dikhololo night", url: POLY_HAVEN_2K("dikhololo_night"), hdr: true, exposure: 1.2, contrast: 1.1 },
         { key: "rogland", label: "Rogland clear night", url: POLY_HAVEN_2K("rogland_clear_night"), hdr: true, exposure: 1.2, contrast: 1.1 },
         { key: "minedump", label: "Minedump flats", url: POLY_HAVEN_2K("minedump_flats"), hdr: true, exposure: 0.7, contrast: 1.15 },
         { key: "qwantani", label: "Qwantani night sky", url: POLY_HAVEN_2K("qwantani_night_puresky"), hdr: true, exposure: 1.2, contrast: 1.1 },
-        { key: "industrial", label: "Industrial sunset sky", url: POLY_HAVEN_2K("industrial_sunset_02_puresky"), hdr: true, exposure: 0.9, contrast: 1.15 },
     ];
+    /** The picker entry whose map is loaded EAGERLY into `skySlot` — the waterfall's own default
+     *  backdrop. Derived from the URL rather than spelled out, so that pointing WATERFALL_ENV_URL
+     *  at a different sky cannot leave the eager slot filed under the PREVIOUS default's key.
+     *  Doing exactly that is what made "Belfast sunset sky" silently install the industrial map:
+     *  the shortcut in `applyDemoEnv` still answered "belfast" with this slot, so the Belfast HDR
+     *  was never fetched at all. */
+    const EAGER_SKY = ENV_CHOICES.find((c) => c.url === WATERFALL_ENV_URL);
+    const EAGER_SKY_KEY = EAGER_SKY?.key ?? "industrial";
     /** Loaded slots by choice key. `null` marks a load that FAILED, so it is not retried. */
     const envSlots = new Map<string, EnvSlot | null>();
     /** Picker override; null = follow the active demo's own `envUrl`. */
@@ -762,14 +909,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         // `sky` is the waterfall's own env (WATERFALL_ENV_URL). Take its grade from the matching
         // picker entry rather than repeating the numbers, so the eager slot and the picker can
         // never disagree about how the same map is exposed.
-        const skyChoice = ENV_CHOICES.find((c) => c.url === WATERFALL_ENV_URL);
-        skySlot = sky ? makeSlot(sky, skyChoice?.exposure ?? 0.8, skyChoice?.contrast ?? 1.15) : null;
+        skySlot = sky ? makeSlot(sky, EAGER_SKY?.exposure ?? 0.8, EAGER_SKY?.contrast ?? 1.15) : null;
         studioSlot ??= skySlot;
         skySlot ??= studioSlot;
         // Cache AFTER the cross-fallback, so a failed map resolves to its survivor rather than
         // being remembered as "load failed" and leaving that demo with no sky at all.
         envSlots.set("studio", studioSlot);
-        envSlots.set(skyChoice?.key ?? "belfast", skySlot);
+        envSlots.set(EAGER_SKY_KEY, skySlot);
         if (!skySlot) {
             console.warn("[fluid] no environment loaded — the scene has no skybox and will render black");
             return;
@@ -827,8 +973,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return;
         }
         // The two built-ins are reachable through their eager slots before envReady has
-        // populated the cache (the very first switchPair runs before it resolves).
-        const builtin = key === "studio" ? studioSlot : key === "belfast" ? skySlot : null;
+        // populated the cache (the very first switchPair runs before it resolves). Only those
+        // two: any other key must go through `loadEnvChoice`, or it would be answered with a
+        // map that is not its own.
+        const builtin = key === "studio" ? studioSlot : key === EAGER_SKY_KEY ? skySlot : null;
         if (builtin) {
             installEnvSlot(builtin);
             return;
@@ -1063,6 +1211,87 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
     envRotRow.append(envRotHead, envRotInput);
     void envRotationDeg;
+
+    // Environment INTENSITY. babylon-lite has no scene-wide equivalent of BJS
+    // `scene.environmentIntensity`: the multiplier lives on each PBR material's own UBO slice
+    // (`material.environmentIntensity`, read by the IBL / clearcoat / sheen / refraction
+    // fragments), so the slider fans the value out over every PBR material in the scene and
+    // bumps their UBO version — that version bump is what makes the renderer re-upload the slice.
+    //
+    // This is NOT exposure. It scales only the image-based LIGHTING that lands on surfaces: the
+    // skybox snapshots its own grade into its mesh UBO at build time, and the fluid surface
+    // samples the reflection cube directly, so both keep their brightness. That is deliberate —
+    // the sky stays the fixed reference and the slider balances how hard it lights the geometry
+    // against the direct sun and the baked AO, instead of just making the whole frame darker.
+    //
+    // Global rather than per-demo (unlike the rotation, which each demo declares): every demo is
+    // authored to look right at 1.0, so there is no per-demo value to restore.
+    //
+    // It is a no-op on the capsule / box / fountain demos, and that is correct rather than a gap:
+    // their container and nozzle meshes are STANDARD materials, which have no image-based
+    // lighting term at all. Only the glTF-backed demos (the waterfall's rock + oasis) are PBR.
+    let envIntensity = 1;
+    /** Until the slider is touched, every material is already at the shader's own 1.0 default,
+     *  so the fan-out is skipped entirely — the common case costs nothing. */
+    let envIntensityTouched = false;
+    /** Last value pushed to each material, so a re-scan only dirties what actually changed. */
+    const envIntensityApplied = new WeakMap<Material, number>();
+    /** `scene.meshes` grows as demos resolve their glTFs, and a mesh that arrives after the
+     *  slider was moved would otherwise keep the default. Re-fanned out when the count changes. */
+    let envIntensityMeshCount = -1;
+    const pushEnvIntensity = (): void => {
+        for (const mesh of scene.meshes) {
+            const mat = mesh.material;
+            // Standard materials carry no IBL term at all. `specularPower` is the same
+            // discriminator babylon-lite's own material tracking uses to tell the two apart.
+            if (!mat || "specularPower" in mat || envIntensityApplied.get(mat) === envIntensity) {
+                continue;
+            }
+            (mat as PbrMaterialProps).environmentIntensity = envIntensity;
+            envIntensityApplied.set(mat, envIntensity);
+            markMaterialUboDirty(mat);
+        }
+        envIntensityMeshCount = scene.meshes.length;
+    };
+    const envIntRow = document.createElement("div");
+    const envIntHead = document.createElement("div");
+    envIntHead.style.cssText = "display:flex;justify-content:space-between;";
+    const envIntLab = document.createElement("span");
+    envIntLab.textContent = "Environment intensity";
+    const envIntVal = document.createElement("span");
+    envIntVal.style.cssText = "color:#9fb4cc;";
+    envIntVal.textContent = "1.00\u00d7";
+    envIntHead.append(envIntLab, envIntVal);
+    const envIntInput = document.createElement("input");
+    envIntInput.type = "range";
+    envIntInput.min = "0";
+    envIntInput.max = "3";
+    envIntInput.step = "0.05";
+    envIntInput.value = "1";
+    envIntInput.style.cssText = "width:100%;";
+    const applyEnvIntensity = (v: number): void => {
+        envIntensity = v;
+        envIntensityTouched = true;
+        envIntVal.textContent = `${v.toFixed(2)}\u00d7`;
+        pushEnvIntensity();
+    };
+    envIntInput.oninput = () => applyEnvIntensity(parseFloat(envIntInput.value));
+    envIntRow.append(envIntHead, envIntInput);
+
+    // Anti-aliasing toggle — applies to EVERY demo. Off by default: it is only worth its cost
+    // on scenes with dense hard-edged geometry (the waterfall's oasis backdrop), and the first
+    // enable allocates the multisampled colour + depth pair. See `setMsaa` for the wiring.
+    const msaaRow = document.createElement("label");
+    msaaRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+    const msaaChk = document.createElement("input");
+    msaaChk.type = "checkbox";
+    const msaaTxt = document.createElement("span");
+    // Concatenation, NOT a template literal: the WGSL minifier that runs over emitted chunks
+    // treats every backtick template as shader source and collapses its whitespace, which eats
+    // the space before "(MSAA" in the built bundle. (Same trap as the Poly Haven URLs above.)
+    msaaTxt.textContent = "Anti-aliasing (MSAA " + MSAA_SAMPLES + "\u00d7)";
+    msaaRow.append(msaaChk, msaaTxt);
+    msaaChk.onchange = () => setMsaa(msaaChk.checked);
     // Host for the active demo's live tunables ("Demo parameters") + its demo-specific
     // panel controls.
     const demoParamsHost = document.createElement("div");
@@ -1082,6 +1311,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             size: 1,
             refraction: 0.1,
             specular: 250,
+            // The reflection tonemap wants to match the scene's own image processing, but the HDR
+            // loader sets that per environment, so seed with the shader's historical constants and
+            // let each demo's env load correct them (see the loadHdrEnvironment call sites).
+            reflectionExposure: 1,
+            reflectionContrast: 1.1,
+            reflectivity: 0.02,
             depthBlur: 20,
             depthBlurThreshold: 10,
             thicknessBlur: 10,
@@ -1133,6 +1368,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
             onRefraction: (v) => surfaceTask.setRefractionStrength(v),
             onSpecular: (v) => surfaceTask.setSpecularPower(v),
+            onReflection: (exposure, contrast) => surfaceTask.setEnvReflection(exposure, contrast),
+            onReflectivity: (v) => surfaceTask.setFresnelF0(v),
             onDepthBlur: (size, threshold) => surfaceTask.setDepthBlur(size, threshold),
             onThicknessBlur: (v) => surfaceTask.setThicknessBlur(v),
             onHalf: (on) => surfaceTask.setHalfRender(on),
@@ -1205,7 +1442,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
+    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -1488,6 +1725,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         renderMode: initialValues.renderMode,
         refraction: initialValues.refraction,
         specular: initialValues.specular,
+        reflectionExposure: initialValues.reflectionExposure,
+        reflectionContrast: initialValues.reflectionContrast,
+        reflectivity: initialValues.reflectivity,
         depthBlur: initialValues.depthBlur,
         depthBlurThreshold: initialValues.depthBlurThreshold,
         thicknessBlur: initialValues.thicknessBlur,
@@ -1522,6 +1762,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             renderMode: RENDER_DEFAULTS.renderMode,
             refraction: RENDER_DEFAULTS.refraction,
             specular: RENDER_DEFAULTS.specular,
+            reflectionExposure: RENDER_DEFAULTS.reflectionExposure,
+            reflectionContrast: RENDER_DEFAULTS.reflectionContrast,
+            reflectivity: RENDER_DEFAULTS.reflectivity,
             depthBlur: RENDER_DEFAULTS.depthBlur,
             depthBlurThreshold: RENDER_DEFAULTS.depthBlurThreshold,
             thicknessBlur: RENDER_DEFAULTS.thicknessBlur,
@@ -1557,6 +1800,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             renderMode: p.renderMode ?? base.renderMode,
             refraction: p.refraction ?? base.refraction,
             specular: p.specular ?? base.specular,
+            reflectionExposure: p.reflectionExposure ?? base.reflectionExposure,
+            reflectionContrast: p.reflectionContrast ?? base.reflectionContrast,
+            reflectivity: p.reflectivity ?? base.reflectivity,
             depthBlur: p.depthBlur ?? base.depthBlur,
             depthBlurThreshold: p.depthBlurThreshold ?? base.depthBlurThreshold,
             thicknessBlur: p.thicknessBlur ?? base.thicknessBlur,
@@ -1568,6 +1814,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             foam: p.foam ? { ...base.foam!, ...p.foam } : base.foam,
             demoState: p.demoState ?? base.demoState,
             showContainer: p.showContainer ?? base.showContainer,
+            // Core-owned look settings. These are OPTIONAL on both sides — a preset written before
+            // they existed omits them, and `base` never sets them — so they must fall through as
+            // `undefined` rather than be defaulted here: `loadPairState` reads `undefined` as
+            // "leave the live value alone", which is what a legacy file should do. Being absent
+            // from this list at all is different, and was the bug: the merge enumerates every key
+            // explicitly, so an unlisted one is silently dropped and the preset's value never
+            // reached the UI.
+            envIntensity: p.envIntensity ?? base.envIntensity,
+            msaa: p.msaa ?? base.msaa,
         };
     }
     // Snapshot the current live UI/params for the given method into a PairState.
@@ -1592,6 +1847,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             renderMode: v.renderMode,
             refraction: v.refraction,
             specular: v.specular,
+            reflectionExposure: v.reflectionExposure,
+            reflectionContrast: v.reflectionContrast,
+            reflectivity: v.reflectivity,
             depthBlur: v.depthBlur,
             depthBlurThreshold: v.depthBlurThreshold,
             thicknessBlur: v.thicknessBlur,
@@ -1603,6 +1861,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             foam: v.foam,
             demoState: activeDemo!.snapshotState?.() ?? {},
             showContainer: v.showContainer,
+            envIntensity,
+            msaa: msaaOn,
         };
     }
     // Push a PairState into the live params + UI, then apply it (rebuild the sims
@@ -1637,6 +1897,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         if (st.specular !== undefined) {
             controls.setSpecular(st.specular);
+        }
+        // Reflection exposure/contrast share one host callback, so restore both together and fall
+        // back to the live value when a preset carries only one — otherwise the pair's second
+        // value would be pushed as whatever the previous demo left behind.
+        if (st.reflectionExposure !== undefined || st.reflectionContrast !== undefined) {
+            const cur = controls.getValues();
+            controls.setReflection(st.reflectionExposure ?? cur.reflectionExposure, st.reflectionContrast ?? cur.reflectionContrast);
+        }
+        if (st.reflectivity !== undefined) {
+            controls.setReflectivity(st.reflectivity);
         }
         // The two depth sliders share one setter — restore both (fall back to the current
         // value when a preset carries only one) so the final surface-filter call matches.
@@ -1698,6 +1968,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         // setContainerVisible(...) below).
         if (st.showContainer !== undefined) {
             controls.setShowContainer(st.showContainer);
+        }
+        // Core-owned viewing options the pair pins. Both are optional so files written before
+        // they existed restore the defaults rather than turning themselves off/on at random.
+        if (st.envIntensity !== undefined && st.envIntensity !== envIntensity) {
+            envIntInput.value = String(st.envIntensity);
+            applyEnvIntensity(st.envIntensity);
+        }
+        if (st.msaa !== undefined && st.msaa !== msaaOn) {
+            msaaChk.checked = st.msaa;
+            setMsaa(st.msaa);
         }
         if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale) {
             rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method (at the current domain scale)
@@ -1782,6 +2062,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         addSceneHole,
         clearSceneHoles,
         sun,
+        ambient,
+        setSunShadows,
         simHalfExtentXZ: BOUNDS_MAX[0],
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         getProfiler: () => (timingEnabled ? profiler : null),
@@ -1833,6 +2115,19 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
 
     let paused = false;
     onBeforeRender(scene, (deltaMs: number) => {
+        // A newly-inserted task (the MSAA scene pass + its depth resolve) needs the whole graph
+        // re-recorded, which re-allocates canvas-sized targets other tasks' bind groups point
+        // at. Do it here, at the very top of the frame, before anything is encoded against them.
+        if (pendingFrameGraphRebuild) {
+            pendingFrameGraphRebuild = false;
+            getFrameGraph(scene).build();
+        }
+        // A demo's glTF resolves long after its switchPair, so meshes keep arriving. Re-fan the
+        // environment intensity over them whenever the scene's mesh set grows, or a model loaded
+        // after the slider was moved would render at the default 1.0.
+        if (envIntensityTouched && scene.meshes.length !== envIntensityMeshCount) {
+            pushEnvIntensity();
+        }
         // Opt-in GPU timing: reset the profiler's per-frame query cursor BEFORE any
         // timed pass (sim.step below + the render tasks) is encoded this frame, then
         // open the whole-frame envelope (frameStart) so the "Total" row reports the real
@@ -2001,7 +2296,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // scene, so the HDR skybox renders as the sceneColorRT background from frame 0.
     await envReady;
     applyDemoEnv(activeDemo!); // install the initial (box) skybox + surface env before frame 0
-    await registerScene(scene);
+    await registerSceneWithShadowSupport(scene);
 
     // Strip the translucent container meshes out of the auto-mirrored scene-colour
     // pass: they are now drawn only by the container-glass overlay task (after the

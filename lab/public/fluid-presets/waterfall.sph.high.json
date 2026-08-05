@@ -21,14 +21,22 @@
         "bloomThreshold": 0
     },
     "demoState": {
-        "bloom": false
+        "bloom": true,
+        "shadows": true,
+        "sunAzimuth": 299,
+        "sunElevation": 38,
+        "sunIntensity": 7.5,
+        "ambientIntensity": 0.16,
+        "oasis": "high"
     },
     "showContainer": true,
+    "envIntensity": 0.6,
+    "msaa": true,
     "physicsParticleSize": 0.4,
     "particleCount": 300000,
     "camera": {
-        "alpha": -2.017695550245583,
-        "beta": 1.4123362767020209,
+        "alpha": -2.096342275594117,
+        "beta": 1.4153362767020206,
         "radius": 62.965727191577955
     },
     "render": {
@@ -64,7 +72,7 @@
         "foamBlurRadius": 3,
         "foamLightIntensity": 0.25,
         "foamAmbient": 1,
-        "foamAO": 0,
+        "foamAO": 0.22,
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.4

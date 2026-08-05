@@ -8,21 +8,50 @@
 // back into a Partial<PairState> the core merges over its defaults. Keeping both
 // directions here guarantees Export → drop-in file → import round-trips cleanly.
 
-import type { PairState } from "./demo.js";
+import type { DemoStateValue, PairState } from "./demo.js";
 
 /** The grouped, human-facing JSON shape (matches the "Export parameters" download). */
 export interface FluidExportJson {
     meta: { demo: string; method: string };
     physics: Record<string, number>;
     demoParams: Record<string, number>;
-    demoState: Record<string, number | boolean>;
+    demoState: Record<string, DemoStateValue>;
     showContainer: boolean;
+    /** Image-based-lighting multiplier ("Environment intensity"), default 1. Optional so files
+     *  written before it existed still load. */
+    envIntensity?: number;
+    /** 4× MSAA on the scene pass ("Anti-aliasing"), default false. Optional for the same reason. */
+    msaa?: boolean;
     physicsParticleSize: number;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
     /** Optional camera framing — omitted for pure-default pairs that pin no viewpoint. */
     camera?: { alpha: number; beta: number; radius: number };
+    /**
+     * Liquefaction hand-off impulse — the burst applied when a melted prop becomes fluid.
+     *
+     * Optional and demo-specific: the fluid demo has no impulse and omits it, and files written
+     * before this existed fall back to each demo's defaults. `direction` is normalised at use, so
+     * any non-zero vector is fine and its length carries no meaning — `intensity` is the only
+     * magnitude. `radius` is the blast sphere around the impact point in world units; 0 (or absent)
+     * keeps the automatic per-mesh radius that engulfs the mesh's own volume. Both Liquefactor and
+     * Aquanova read this, which is what keeps a prop auditioned in one demo behaving the same in the
+     * other.
+     */
+    impulse?: { intensity: number; direction: [number, number, number]; radius?: number };
+    /**
+     * Simulation domain size in world units — the FULL extent, not a half-width.
+     *
+     * The grid is centred on the sampled prop in X/Z and sits on the ground in Y, so `x`/`z` are how
+     * far the puddle can spread before it piles against the domain wall and `y` is the headroom above
+     * the floor. Any axis left at 0 (or absent) falls back to the demo's automatic size, derived from
+     * the prop's own footprint. `y` is a MINIMUM: it is raised when needed to clear the prop, since a
+     * box stopping below the prop would leave the seeded particles outside the domain. Pinning this
+     * matters for cross-demo parity: the domain wall is a hard boundary, so the same prop in a small
+     * grid and a large grid settles into visibly different shapes even with identical physics.
+     */
+    grid?: { x: number; y: number; z: number };
     render: {
         renderAsSpheres: boolean;
         waterColor: string;
@@ -30,6 +59,11 @@ export interface FluidExportJson {
         particleSize: number;
         refractionStrength: number;
         specularPower: number;
+        /** Environment-reflection tonemap and the water's head-on reflectance. Optional so files
+         *  written before these were exposed still load on the shader's own defaults. */
+        reflectionExposure?: number;
+        reflectionContrast?: number;
+        waterReflectivity?: number;
         surfaceDepthBlur: number;
         depthBlurEdgeThreshold: number;
         surfaceThicknessBlur: number;
@@ -75,6 +109,8 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         demoParams: { ...ps.demoParams },
         demoState: ps.demoState ? { ...ps.demoState } : {},
         showContainer: ps.showContainer ?? true,
+        ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
+        ...(ps.msaa !== undefined ? { msaa: ps.msaa } : {}),
         physicsParticleSize: ps.physScale,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
@@ -86,6 +122,9 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             particleSize: ps.size,
             refractionStrength: ps.refraction ?? 0,
             specularPower: ps.specular ?? 0,
+            ...(ps.reflectionExposure !== undefined ? { reflectionExposure: ps.reflectionExposure } : {}),
+            ...(ps.reflectionContrast !== undefined ? { reflectionContrast: ps.reflectionContrast } : {}),
+            ...(ps.reflectivity !== undefined ? { waterReflectivity: ps.reflectivity } : {}),
             surfaceDepthBlur: ps.depthBlur ?? 0,
             depthBlurEdgeThreshold: ps.depthBlurThreshold ?? 0,
             surfaceThicknessBlur: ps.thicknessBlur ?? 0,
@@ -141,6 +180,9 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         renderMode: r.renderAsSpheres ? "spheres" : "surface",
         refraction: r.refractionStrength,
         specular: r.specularPower,
+        ...(r.reflectionExposure !== undefined ? { reflectionExposure: r.reflectionExposure } : {}),
+        ...(r.reflectionContrast !== undefined ? { reflectionContrast: r.reflectionContrast } : {}),
+        ...(r.waterReflectivity !== undefined ? { reflectivity: r.waterReflectivity } : {}),
         depthBlur: r.surfaceDepthBlur,
         depthBlurThreshold: r.depthBlurEdgeThreshold,
         thicknessBlur: r.surfaceThicknessBlur,
@@ -174,5 +216,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         },
         demoState: { ...j.demoState },
         showContainer: j.showContainer,
+        ...(j.envIntensity !== undefined ? { envIntensity: j.envIntensity } : {}),
+        ...(j.msaa !== undefined ? { msaa: j.msaa } : {}),
     };
 }

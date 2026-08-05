@@ -193,7 +193,16 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 8,
             step: 1,
             value: 3,
-            info: "Simulation steps per rendered frame. More substeps allow higher stiffness and faster flow without blowing up, at a proportional GPU cost.",
+            info: "MINIMUM simulation steps per rendered frame. More substeps allow higher stiffness and faster flow without blowing up, at a proportional GPU cost. The solver runs more than this when a step would exceed the max sub-step below.",
+        },
+        {
+            key: "maxSubDtMs",
+            label: "Max sub-step (ms)",
+            min: 2,
+            max: 20,
+            step: 0.1,
+            value: 8.4,
+            info: "Largest slice of time one substep may integrate. A frame always advances by the real elapsed time, so this decides how many substeps that takes: at 60 fps (16.7 ms) a 8.3 ms cap needs 2 steps, a 16.7 ms cap needs 1 (half the cost, less stable). It never changes playback speed.",
         },
     ],
     "PB-MPM": [
@@ -285,7 +294,16 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 8,
             step: 1,
             value: 3,
-            info: "Simulation steps per rendered frame. More substeps allow stiffer settings and faster flow without blowing up, at a proportional GPU cost.",
+            info: "MINIMUM simulation steps per rendered frame. More substeps allow stiffer settings and faster flow without blowing up, at a proportional GPU cost. The solver runs more than this when a step would exceed the max sub-step below.",
+        },
+        {
+            key: "maxSubDtMs",
+            label: "Max sub-step (ms)",
+            min: 2,
+            max: 20,
+            step: 0.1,
+            value: 8.4,
+            info: "Largest slice of time one substep may integrate. A frame always advances by the real elapsed time, so this decides how many substeps that takes: at 60 fps (16.7 ms) a 8.3 ms cap needs 2 steps, a 16.7 ms cap needs 1 (half the cost, less stable). It never changes playback speed.",
         },
     ],
 };
@@ -329,6 +347,9 @@ export interface FluidControlValues {
     renderMode: "surface" | "spheres";
     refraction: number;
     specular: number;
+    reflectionExposure: number;
+    reflectionContrast: number;
+    reflectivity: number;
     depthBlur: number;
     depthBlurThreshold: number;
     thicknessBlur: number;
@@ -352,6 +373,12 @@ export interface FluidControlsInitial {
     size: number;
     refraction: number;
     specular: number;
+    /** Reflection tonemap exposure. Optional so hosts predating it keep the shader default. */
+    reflectionExposure?: number;
+    /** Reflection tonemap contrast. Optional for the same reason. */
+    reflectionContrast?: number;
+    /** Fresnel reflectance at normal incidence (water ≈ 0.02). Optional for the same reason. */
+    reflectivity?: number;
     depthBlur: number;
     depthBlurThreshold: number;
     thicknessBlur: number;
@@ -379,6 +406,10 @@ export interface FluidControlsCallbacks {
     onParticleSize?(v: number): void;
     onRefraction?(v: number): void;
     onSpecular?(v: number): void;
+    /** Reflection tonemap changed — exposure and contrast, matching the scene's image processing. */
+    onReflection?(exposure: number, contrast: number): void;
+    /** Fresnel reflectance at normal incidence changed. */
+    onReflectivity?(v: number): void;
     onDepthBlur?(size: number, threshold: number): void;
     onThicknessBlur?(v: number): void;
     onHalf?(on: boolean): void;
@@ -489,6 +520,8 @@ export interface FluidControlsHandle {
     setParticleSize(v: number): void;
     setRefraction(v: number): void;
     setSpecular(v: number): void;
+    setReflection(exposure: number, contrast: number): void;
+    setReflectivity(v: number): void;
     setDepthBlur(size: number, threshold: number): void;
     setThicknessBlur(v: number): void;
     setHalf(on: boolean): void;
@@ -784,6 +817,50 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         (v) => {
             surfSpecular = v;
             on.onSpecular?.(v);
+        }
+    );
+    // Reflection shaping. The first two are the tonemap the environment reflection is put through
+    // before it is mixed in, and want to match the scene's own image processing — they are exposed
+    // rather than pinned because a demo is free to change that, and a mismatch shows up directly as
+    // water whose reflection is brighter or flatter than the sky above it. Defaults come from the
+    // shader's own values so an omitted init leaves the surface untouched.
+    let surfReflExposure = init.reflectionExposure ?? 1;
+    let surfReflContrast = init.reflectionContrast ?? 1.1;
+    const reflExposureRow = makeRenderSlider(
+        "Reflection exposure",
+        0,
+        3,
+        0.05,
+        surfReflExposure,
+        (v) => v.toFixed(2),
+        (v) => {
+            surfReflExposure = v;
+            on.onReflection?.(surfReflExposure, surfReflContrast);
+        }
+    );
+    const reflContrastRow = makeRenderSlider(
+        "Reflection contrast",
+        0,
+        3,
+        0.05,
+        surfReflContrast,
+        (v) => v.toFixed(2),
+        (v) => {
+            surfReflContrast = v;
+            on.onReflection?.(surfReflExposure, surfReflContrast);
+        }
+    );
+    let surfReflectivity = init.reflectivity ?? 0.02;
+    const reflectivityRow = makeRenderSlider(
+        "Water reflectivity",
+        0,
+        1,
+        0.01,
+        surfReflectivity,
+        (v) => v.toFixed(2),
+        (v) => {
+            surfReflectivity = v;
+            on.onReflectivity?.(v);
         }
     );
     let surfDepthFilter = init.depthBlur;
@@ -1395,6 +1472,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         [refractionRow, "How far the background is displaced when seen through the fluid, scaled by the water's thickness. 0 disables refraction."],
         [specularRow, "Tightness of the specular highlight. Higher values give a smaller, sharper glint; lower values spread it into a broad sheen."],
         [
+            reflExposureRow,
+            "Exposure applied to the environment reflection before it is mixed into the water. Match it to the scene's own exposure so the reflection is as bright as the sky it is reflecting; raise it for a brighter, more mirror-like sheet.",
+        ],
+        [
+            reflContrastRow,
+            "Contrast applied to the environment reflection, as a smoothstep about mid-grey. 1 leaves it linear; higher deepens the reflection's darks and brightens its highlights, matching the skybox's own contrast.",
+        ],
+        [
+            reflectivityRow,
+            "How reflective the water is when looked at HEAD-ON (Fresnel F0). Real water is about 0.02, so it only turns mirror-like at grazing angles; raising this makes it reflective from every angle, toward a chrome look.",
+        ],
+        [
             surfDepthBlurRow,
             "Radius of the blur applied to the fluid's depth buffer. This is the main smoothness control: low values leave a bumpy blob surface, high values give a calm, glassy one. At 0 the bilateral filter becomes a pass-through; narrow-range still applies its fixed 5\u00d75 clean-up pass.",
         ],
@@ -1462,6 +1551,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         absorbRow,
         refractionRow,
         specularRow,
+        reflExposureRow,
+        reflContrastRow,
+        reflectivityRow,
         surfDepthBlurRow,
         thickDownRow,
         surfThickBlurRow,
@@ -1502,6 +1594,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         absorbRow,
         refractionRow,
         specularRow,
+        reflExposureRow,
+        reflContrastRow,
+        reflectivityRow,
         surfDepthBlurRow,
         surfDepthThreshRow,
         surfThickBlurRow,
@@ -1669,6 +1764,17 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setSpecular(v: number): void {
             specularRow.set(v);
         },
+        setReflection(exposure: number, contrast: number): void {
+            // Each `set` fires its own onInput, which calls onReflection with BOTH tracked values —
+            // so setting the exposure first would briefly push the old contrast. Harmless (the
+            // second call corrects it immediately) and it keeps both rows and both tracked vars in
+            // step, which is what getValues and the next slider drag read.
+            reflExposureRow.set(exposure);
+            reflContrastRow.set(contrast);
+        },
+        setReflectivity(v: number): void {
+            reflectivityRow.set(v);
+        },
         setDepthBlur(size: number, threshold: number): void {
             surfDepthBlurRow.set(size);
             surfDepthThreshRow.set(threshold);
@@ -1768,6 +1874,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 renderMode: renderChk.checked ? "spheres" : "surface",
                 refraction: surfRefraction,
                 specular: surfSpecular,
+                reflectionExposure: surfReflExposure,
+                reflectionContrast: surfReflContrast,
+                reflectivity: surfReflectivity,
                 depthBlur: surfDepthFilter,
                 depthBlurThreshold: surfDepthThreshold,
                 thicknessBlur: surfThicknessBlur,
