@@ -591,7 +591,12 @@ async function main(): Promise<void> {
         // geometric (framing a room, hit-testing a point against one, building its collision shell),
         // so those are filtered out once rather than guarded at each site. Dereferencing them is
         // what broke this demo when the editor gained an empty room.
-        const chunks = (shipManifest?.chunks ?? []).filter((c): c is { aabb: { min: number[]; max: number[] } } => !!c.aabb);
+        //
+        // The component check matches Aquanova's own loader (aquanova/manifest.ts), which reads the
+        // same file: a truthy-but-malformed AABB would not crash, it would quietly yield `undefined`
+        // corner components and propagate NaN into the room test and the collision box extents.
+        const hasBounds = (c: { aabb: { min: number[]; max: number[] } | null }): c is { aabb: { min: number[]; max: number[] } } => c.aabb?.min?.length === 3 && c.aabb?.max?.length === 3;
+        const chunks = (shipManifest?.chunks ?? []).filter(hasBounds);
         const liqNames = new Set(Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name))));
         let focus: [number, number, number] = chunks[0] ? chunkFocus(chunks[0]) : [0, 1.5, 0];
         let asset;
