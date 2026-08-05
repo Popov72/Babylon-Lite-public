@@ -161,6 +161,36 @@ function pagesDemoPlugin(): Plugin {
     };
 }
 
+/**
+ * Serve demo pages from their TypeScript SOURCE instead of the prebuilt bundle, so edits to a
+ * demo hot-reload instead of needing `pnpm build:bundle-demo <name>`.
+ *
+ * Opt-in via LAB_DEMO_SRC=1, and dev-only. The bundle stays the default because it is what
+ * production ships and what the bundle-size and perf tooling measure — running the lab off raw
+ * sources would quietly hide anything the bundling step does (chunking, the WGSL minifier,
+ * asset staging). This is a development convenience, not a second supported runtime.
+ *
+ * Assets still resolve correctly because demoAssetUrl() detects the /lite/src/ module URL and
+ * anchors demo asset paths at the server root, where lab/public serves them in dev.
+ */
+function demoSourcePlugin(): Plugin {
+    const enabled = process.env.LAB_DEMO_SRC?.trim() === "1";
+    return {
+        name: "lab-demo-source",
+        apply: "serve",
+        transformIndexHtml(html) {
+            if (!enabled) {
+                return html;
+            }
+            return html.replace(/src="\/lite\/bundle\/demos\/([\w-]+)\.js"/g, (match, name: string) => {
+                // Only redirect demos that actually have a source entry point; the rest (and any
+                // generated bundle) keep loading their built artifact.
+                return existsSync(resolve(__dirname, `lite/src/demos/${name}.ts`)) ? `src="/lite/src/demos/${name}.ts"` : match;
+            });
+        },
+    };
+}
+
 /** Serve reference images from the repo-root reference/lite/ directory */
 function serveReferenceImages(): Plugin {
     return {
@@ -182,7 +212,15 @@ function serveReferenceImages(): Plugin {
                         // overlay reiterates it next to the asset estimate, mirroring
                         // the build-time injection on the deployed flat demo site.
                         if (name.startsWith("demo-")) {
-                            res.end(injectDemoEngineSize(readFileSync(filePath, "utf-8"), name.slice("demo-".length)));
+                            const page = injectDemoEngineSize(readFileSync(filePath, "utf-8"), name.slice("demo-".length));
+                            // This middleware answers the request itself, so Vite's HTML pipeline
+                            // never runs unless we invoke it: without this the transformIndexHtml
+                            // hooks (notably the LAB_DEMO_SRC source redirect) are skipped and the
+                            // HMR client is never injected, so demo pages cannot live-reload.
+                            void server
+                                .transformIndexHtml(url, page, req.originalUrl)
+                                .then((out) => res.end(out))
+                                .catch(() => res.end(page));
                         } else {
                             createReadStream(filePath).pipe(res);
                         }
@@ -847,7 +885,7 @@ function compatScenesPlugin(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [pagesDemoPlugin(), compatScenesPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
+    plugins: [pagesDemoPlugin(), compatScenesPlugin(), demoSourcePlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
     optimizeDeps: {
         // BJS uses prototype-patching side-effect imports (e.g. abstractEngine.dom.js).
         // babylon-lite uses ?raw WGSL imports that esbuild can't handle.
