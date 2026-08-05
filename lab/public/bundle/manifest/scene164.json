@@ -15,12 +15,12 @@
     "scene164-gltf-json-asset-aTfFqszO.js",
     "scene164-morph-fragment-Gqvb5v0T.js",
     "scene164-pbr-pipeline-CO5XrLcN.js",
-    "scene164-pbr-renderable-CrIcWkrg.js",
+    "scene164-pbr-renderable-CgEbI1p-.js",
     "scene164-pbr-template-ext-CiHpOV5G.js",
     "scene164-samplers-DuUvRDBP.js",
     "scene164-singlelight-hemispheric-wgsl-B3eEzZwe.js",
     "scene164-skeleton-fragment-Dnx9CVHt.js",
     "scene164.js"
   ],
-  "rawBytes": 97688
+  "rawBytes": 97678
 }

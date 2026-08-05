@@ -11,7 +11,7 @@
     "scene29-gltf-pbr-builder-ext-C9VNK2kZ.js",
     "scene29-ibl-fragment-CeRrvT96.js",
     "scene29-pbr-pipeline-COdwygoc.js",
-    "scene29-pbr-renderable-DB3PB6eh.js",
+    "scene29-pbr-renderable-C3kapKGf.js",
     "scene29-pbr-template-ext-CiHpOV5G.js",
     "scene29-rgbd-decode-CwmTpUIN.js",
     "scene29-scene-uniforms-FTYH6Ct0.js",
@@ -20,5 +20,5 @@
     "scene29-uv-transform-fragment-B8ijWmAK.js",
     "scene29.js"
   ],
-  "rawBytes": 93363
+  "rawBytes": 93361
 }

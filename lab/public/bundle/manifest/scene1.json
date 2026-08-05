@@ -10,12 +10,12 @@
     "scene1-gltf-glb-parser-BAsz-rlr.js",
     "scene1-ibl-fragment-CeRrvT96.js",
     "scene1-pbr-pipeline-C6P2Yr1e.js",
-    "scene1-pbr-renderable-B-zCv3RI.js",
+    "scene1-pbr-renderable-BrFVAmB1.js",
     "scene1-rgbd-decode-BGE2GEn1.js",
     "scene1-scene-uniforms-FTYH6Ct0.js",
     "scene1-singlelight-hemispheric-wgsl-90xDRzhR.js",
     "scene1-wgsl-helpers-BgB2AJrF.js",
     "scene1.js"
   ],
-  "rawBytes": 91087
+  "rawBytes": 91085
 }

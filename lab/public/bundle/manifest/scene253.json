@@ -39,7 +39,7 @@
     "scene253-multilight-wgsl-DLargEvA.js",
     "scene253-pbr-pipeline-Bb8XOFNG.js",
     "scene253-pbr-refraction-NK2ztNM7.js",
-    "scene253-pbr-renderable-Dkr_2AA2.js",
+    "scene253-pbr-renderable-lV9ubZu2.js",
     "scene253-pbr-template-ext-CiHpOV5G.js",
     "scene253-pbr-transmission-ext-BrBJHf94.js",
     "scene253-reflectance-fragment-B8qGBhpg.js",
@@ -53,5 +53,5 @@
     "scene253-visibility-BVgAow7R.js",
     "scene253.js"
   ],
-  "rawBytes": 158284
+  "rawBytes": 158285
 }

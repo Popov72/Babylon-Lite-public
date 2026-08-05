@@ -31,7 +31,7 @@
     "scene241-light-matrix-CtsX4GmG.js",
     "scene241-pbr-pipeline-2ZNP_0CE.js",
     "scene241-pbr-refraction-X9uI4vse.js",
-    "scene241-pbr-renderable-CuxtX4XZ.js",
+    "scene241-pbr-renderable-CkE7vk5v.js",
     "scene241-pbr-template-ext-CiHpOV5G.js",
     "scene241-pbr-transmission-ext-DcrJg4MD.js",
     "scene241-reflectance-fragment-BhAmTdxw.js",
@@ -46,5 +46,5 @@
     "scene241-visibility-CKB7eGDU.js",
     "scene241.js"
   ],
-  "rawBytes": 166512
+  "rawBytes": 166511
 }

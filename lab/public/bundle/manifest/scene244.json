@@ -18,7 +18,7 @@
     "scene244-ibl-fragment-CeRrvT96.js",
     "scene244-pbr-pipeline-B-DH0t2-.js",
     "scene244-pbr-refraction-DGCx3yeL.js",
-    "scene244-pbr-renderable-Ygo1xWZl.js",
+    "scene244-pbr-renderable-C2Qwx9yx.js",
     "scene244-pbr-template-ext-CiHpOV5G.js",
     "scene244-pbr-transmission-ext-DZdIoPAV.js",
     "scene244-reflectance-fragment-D2laJLEG.js",
@@ -29,5 +29,5 @@
     "scene244-visibility-BcAL-WaI.js",
     "scene244.js"
   ],
-  "rawBytes": 137595
+  "rawBytes": 137598
 }

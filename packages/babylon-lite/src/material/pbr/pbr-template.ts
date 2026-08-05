@@ -469,9 +469,26 @@ return vec4<f32>(color,finalAlpha);`
     const doubleSidedGeomFlip = _flatGeometricNormal ? "" : " N_geom = -N_geom;";
     const doubleSidedFlip = _hasDoubleSided ? `if (!frontFacing) { N = -N;${doubleSidedGeomFlip} }` : "";
 
-    const lightDecls = _hasMultiLight ? _multiLightWGSL : _hasSingleLight ? _singleLightWGSL : "";
-    const lightBindingDecl = _hasSingleLight || _hasMultiLight ? `@group(0) @binding(1) var<uniform> lights: lightsUniforms;` : "";
-    const meshLightIndexHelper = _hasSingleLight || _hasMultiLight ? meshLightIndexWGSL("mesh") : "";
+    // Light declarations, binding and index helper travel together — they are only ever all
+    // present or all absent, so they are built as one block (which also keeps this cheaper in
+    // bytes than three separate consts).
+    //
+    // A depth-only caster variant (`_noColorOutput`) emits `return;` as its ENTIRE fragment body,
+    // so it reads no light data and must not declare the lights binding either. The
+    // `lightsUniforms` struct only ships next to a light block, which the depth-only composer has
+    // no reason to carry, so declaring the binding anyway left it pointing at an undefined type.
+    // That is not a cosmetic warning: the WGSL fails to compile, which makes an invalid shader
+    // module -> invalid pipeline -> invalid render bundle -> the whole frame's command encoder
+    // fails to `finish()`. The shadow map is then never written (it keeps its zero-initialised
+    // contents), so every receiver inside the ortho footprint samples depth 0 and reads as fully
+    // occluded — casters render solid black and the "shadow" is really just the map's footprint
+    // sweeping around as the light turns.
+    const lightBlock =
+        (_hasSingleLight || _hasMultiLight) && !_noColorOutput
+            ? `${_hasMultiLight ? _multiLightWGSL : _singleLightWGSL}
+@group(0) @binding(1) var<uniform> lights: lightsUniforms;
+${meshLightIndexWGSL("mesh")}`
+            : "";
 
     const anisoBrdfBlock = _hasAnisotropy ? _anisoBrdfFunctions : "";
 
@@ -491,9 +508,7 @@ ${BRDF_FUNCTIONS}
 ${toneMappingHelpersBlock}
 ${fogHelper}
 ${anisoBrdfBlock}
-${lightDecls}
-${lightBindingDecl}
-${meshLightIndexHelper}
+${lightBlock}
 ${fragmentHelpers}
 ${doubleSidedEntry}
 ${fragmentPrelude}/*SV*/

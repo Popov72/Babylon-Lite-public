@@ -18,7 +18,7 @@
     "scene73-node-renderable-CBCZLUmE.js",
     "scene73-pbr-metallic-roughness-block-full-CUhffh-6.js",
     "scene73-pbr-pipeline-DaWqb5BI.js",
-    "scene73-pbr-renderable-B92MWcu2.js",
+    "scene73-pbr-renderable-BJGb4zuK.js",
     "scene73-perturb-normal-Bqx-TYaB.js",
     "scene73-reflection-block-CIXuH-z0.js",
     "scene73-rgbd-decode-BSh_ziDi.js",
@@ -28,5 +28,5 @@
     "scene73-vertex-output-C7G5u6Y0.js",
     "scene73.js"
   ],
-  "rawBytes": 145777
+  "rawBytes": 145771
 }
