@@ -33,6 +33,22 @@ HDRI from **Poly Haven** (https://polyhaven.com/a/bank_vault), also **CC0 1.0**.
 The demo uses it purely as an IBL source (ambient + specular); the ship carries no
 punctual lights — its ceiling fixtures are emissive geometry.
 
+The skybox cube faces in `skybox/` (`sky_px.png` … `sky_nz.png`) were generated
+with **Space 3D** by **wwwtyro** (https://tools.wwwtyro.net/space-3d/), a
+procedural space-scene generator whose source
+(https://github.com/wwwtyro/space-3d) is released under **the Unlicense**, a
+public-domain dedication. The generated output may be used for any purpose,
+commercial or not, with no attribution required.
+
+- **What this is used for:** backdrop only — what you see through the ship's
+  openings. It is *not* an IBL source; the lighting still comes from
+  `bank_vault_2k.hdr` above.
+- **Why it is not committed:** purely size, as with the ship and the HDR. It is
+  freely redistributable, but at ~4.5 MB it would only pay off if a fresh clone
+  could run the demo — and it cannot, because `ship.glb` is gitignored too.
+  Re-generate or drop the six faces into `lab/public/aquanova/skybox/` to see it;
+  the demo logs a warning and runs against the clear colour without them.
+
 ## Non-free / restricted assets
 
 _None yet._

@@ -18,26 +18,34 @@
 // (-x, y, z); every manifest coordinate is converted through `toLite()` before use.
 //
 
-
 import HavokPhysics from "@babylonjs/havok";
 import {
     addTask,
+    addTaskAfter,
+    addTaskBefore,
     addToScene,
+    createDepthResolveTask,
     createEngine,
     createFreeCamera,
     createGpuPicker,
     createHavokWorld,
+    createCopyToTextureTask,
     createPhysicsBody,
     createPhysicsCharacterController,
     createPhysicsShape,
     createRenderTarget,
     createRenderTask,
     createSceneContext,
+    createSmaaPostProcessTask,
+    createTaaPostProcessTask,
     createTransformNode,
-    CharacterSupportedState,
+    AcesToneMapping,
+    NeutralToneMapping,
+    StandardToneMapping,
+    setSceneImageProcessing,
     enableMaterialPlugins,
     getMeshGeometry,
-    getPhysicsBodyAngularVelocity,
+    getFrameGraph,
     getPhysicsBodyLinearVelocity,
     getProjectionMatrix,
     getViewMatrix,
@@ -45,9 +53,7 @@ import {
     isPbrMaterial,
     loadGltf,
     loadHdrEnvironment,
-    onBeforeRender,
-    onPhysicsAfterStep,
-    pickAsync,
+    loadSkybox,
     PhysicsMotionType,
     PhysicsShapeType,
     registerScene,
@@ -59,8 +65,7 @@ import {
     setPhysicsTimestepMs,
     startEngine,
 } from "babylon-lite";
-import type { Material, Mesh, PhysicsBody, SceneNode } from "babylon-lite";
-import { createFloatingBodySystem } from "babylon-lite/fluid/floating-body.js";
+import type { Material, Mesh, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
@@ -69,35 +74,63 @@ import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/
 import { createLiquefyPlugin } from "../liquefy-plugin.js";
 import { buildLitParticleColors } from "../particle-lit-colors.js";
 import type { LitColorScene } from "../particle-lit-colors.js";
-import {
-    DEFAULT_SHIP_IBL_STRENGTH,
-    excludedSdfMeshNames,
-    findEntityWithBehavior,
-    isDynamicBehavior,
-    isLiquefiableBehavior,
-    linkedMeshNames,
-    PLAYER_START_BEHAVIOR,
-    resolveBehavior,
-    resolveExposure,
-    resolveToneMapping,
-    WEAPON_START_BEHAVIOR,
-} from "../ship-manifest.js";
-import type { ShipBehavior } from "../ship-manifest.js";
+import { DEFAULT_SHIP_IBL_STRENGTH, resolveExposure, resolveToneMapping } from "../ship-manifest.js";
 import type { LiquefyState } from "../liquefy-plugin.js";
 import { gridFloorY, gridTopY } from "../fluid/grid-bounds.js";
-import { CEIL_Y, ENV_URL, FLOOR_Y, SHIP_URL, toLite, type Vec3 } from "./constants.js";
-import { buildShipColliders, type ColliderBox } from "./colliders.js";
+import { CEIL_Y, ENV_URL, FLOOR_Y, SHIP_URL, SKYBOX_EXT, SKYBOX_SIZE, SKYBOX_URL, toLite, type Vec3 } from "./constants.js";
+import { buildManifestColliders, createWorldCollisionShape } from "./colliders.js";
+import { worldShapesForMatrix, type WorldCollisionShape } from "./collision-shapes.js";
+import { localizePrimitive, packPrimitive, packPrimitives, primBufferBytes, PRIMITIVES_WGSL, PRIM_HEADER, PRIM_STRIDE, type FluidPrimitive } from "./collision-field.js";
 import { fetchManifest } from "./manifest.js";
-import { createSdfOverlay } from "./debug/sdf-overlay.js";
 import { createInspectOverlay } from "./debug/inspect-overlay.js";
+import { createPerfOverlay } from "./debug/perf-overlay.js";
+import { createFluidProfiler, type FluidProfilerImpl } from "../fluid/gpu-profiler.js";
 import { createColliderOverlay } from "./debug/collider-overlay.js";
 import { LAB_DEBUG } from "./debug-flag.js";
-import { bakeWorldSdf, sampleBakedSdf, type BakedSdf } from "./sdf-bake.js";
+import { GRAPHICS_SETTING_DEFS, loadGraphicsSettings, saveGraphicsSettings } from "./settings.js";
+import { meshGroupBounds, type MeshGroupBounds } from "./mesh-bounds.js";
 import { canonicalSettingName, fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
+import { BehaviorManager, PlayerBehavior, type LiquefiableBehaviorConfig, type MeshBehaviorAvailability } from "./behaviors/index.js";
 
 export async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-    const engine = await createEngine(canvas, { msaaSamples: 1 });
+    /** Reflect a toggle's state in the HUD hint, e.g. "M: MSAA (on)". No-op if the span is absent. */
+    const setHudFlag = (id: string, on: boolean): void => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = on ? "on" : "off";
+    };
+    /**
+     * SSAA: render the whole frame at `scale`× the display resolution and let the compositor
+     * downscale it.
+     *
+     * Done through CSS rather than by resizing render targets, for two reasons. Every canvas-sized
+     * target already derives from `canvas.width` — including the fluid task's screen-space depth and
+     * thickness buffers — so scaling the backing store scales the entire pipeline at once with no
+     * chance of two passes disagreeing about size. And the engine calls `resizeEngine` every frame,
+     * recomputing the backing store from `clientWidth × devicePixelRatio`; setting the size directly
+     * would be undone immediately, whereas growing the ELEMENT makes the engine compute the size we
+     * want by itself. The transform shrinks it back to the layout box for display.
+     *
+     * Picking is unaffected: it uses `clientWidth / 2`, which is still the centre of the crosshair.
+     */
+    const applySsaa = (scale: number): void => {
+        const pct = `${scale * 100}%`;
+        canvas.style.width = pct;
+        canvas.style.height = pct;
+        canvas.style.transformOrigin = "0 0";
+        canvas.style.transform = scale === 1 ? "" : `scale(${1 / scale})`;
+        const el = document.getElementById("ssaaState");
+        if (el) el.textContent = `${scale}×`;
+        canvas.dataset.ssaa = String(scale);
+    };
+    // Player-tunable graphics (defaults ← localStorage ← ?msaa= query override). Resolved before the
+    // engine so a future setting that has to be chosen at engine-creation time can be read here too.
+    const graphics = loadGraphicsSettings();
+    applySsaa(graphics.ssaa);
+    // msaaSamples: 1 — the ship renders into an offscreen target the fluid surface samples, never
+    // straight to the swapchain, so the engine's own MSAA would never apply. The scene pass does its
+    // own multisampling instead; see the MSAA block further down.
+    const engine = await createEngine(canvas, { msaaSamples: 1, srgb: graphics.srgb });
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
     const cam = createFreeCamera({ x: 0, y: 1.5, z: 0 }, { x: -1, y: 1.5, z: 0 });
@@ -119,11 +152,15 @@ export async function main(): Promise<void> {
     const fluidSettingNames = (manifest?.fluidSim ?? []).map(canonicalSettingName);
     const behaviorSettingNames = new Set<string>();
     for (const b of Object.values(manifest?.behaviors ?? {})) {
-        for (const n of b?.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+        if ("fluidSim" in b) {
+            for (const n of b.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+        }
     }
     for (const e of Object.values(manifest?.entities ?? {})) {
         for (const ref of e?.behaviors ?? []) {
-            for (const n of ref?.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+            if ("fluidSim" in ref) {
+                for (const n of ref.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+            }
         }
     }
     const fluidSettings = new Map<string, FluidSimSetting>();
@@ -147,7 +184,16 @@ export async function main(): Promise<void> {
     // Build the HDR IBL (prefiltered specular cubemap + SH irradiance + BRDF LUT) from the .hdr.
     // 512-pixel cube faces rather than the 256 default: the prefiltered specular cube is what the
     // ship's metal reflects, and at 256 those reflections are visibly softer.
-    const env = await loadHdrEnvironment(scene, ENV_URL, { faceSize: 512, skipGround: true });
+    const env = await loadHdrEnvironment(scene, ENV_URL, { faceSize: 512, skipSkybox: true, skipGround: true });
+
+    // Backdrop seen through the ship's openings. Kept separate from the IBL above: the HDRI is what
+    // lights the metal, this is only what you see. Non-fatal — the cube faces are gitignored like
+    // the ship and the HDR, so a fresh clone without them still runs, just against the clear colour.
+    try {
+        await loadSkybox(scene, SKYBOX_URL, SKYBOX_EXT, SKYBOX_SIZE);
+    } catch (err) {
+        console.warn("[aquanova] skybox not loaded (missing cube faces?)", err);
+    }
 
     // Honour the manifest's IBL strength: environmentIntensity scales only the IBL contribution
     // (diffuse SH + specular) per material, leaving the emissive fixtures at full brightness.
@@ -183,6 +229,7 @@ export async function main(): Promise<void> {
     const PRIMITIVE_WRAPPER = /_primitive\d+$/;
     const allShipMeshes: Mesh[] = [];
     const nodeNameOfMesh = new Map<Mesh, string>(); // mesh → owning glTF node name
+    const ownerOfMesh = new Map<Mesh, SceneNode>(); // mesh → the glTF node that owns it (carries extras)
     const nodePrimitives = new Map<Mesh, Mesh[]>(); // mesh → every primitive of the SAME node (incl. itself)
     const meshesByNodeName = new Map<string, Mesh[]>(); // node name → all its primitives, ship-wide
     const primitivesByOwner = new Map<SceneNode, Mesh[]>();
@@ -192,14 +239,20 @@ export async function main(): Promise<void> {
     const chunkIdByRootNode = new Map<string, string>();
     for (const c of manifest?.chunks ?? []) if (c.node) chunkIdByRootNode.set(c.node, c.id);
     const chunkOfMesh = new Map<Mesh, string>();
+    /** Instance id → its placement node, from the exporter's `extras = { id, module, chunk }`. The
+     *  node is what carries the placement transform in the scene's own space. */
+    const placementNodes = new Map<string, { module: string; node: SceneNode }>();
     const collectMeshes = (node: SceneNode, owner: SceneNode, chunk: string | undefined): void => {
         for (const child of node.children) {
             const c = child as SceneNode;
             const inChunkNow = chunkIdByRootNode.get(c.name) ?? chunk;
+            const ex = c.metadata?.gltf?.extras as { id?: string; module?: string } | undefined;
+            if (ex?.id && ex.module && !placementNodes.has(ex.id)) placementNodes.set(ex.id, { module: ex.module, node: c });
             if ((c as Mesh).material) {
                 const m = c as Mesh;
                 allShipMeshes.push(m);
                 nodeNameOfMesh.set(m, owner.name);
+                ownerOfMesh.set(m, owner);
                 if (inChunkNow) chunkOfMesh.set(m, inChunkNow);
                 const group = primitivesByOwner.get(owner);
                 if (group) group.push(m);
@@ -216,6 +269,12 @@ export async function main(): Promise<void> {
     };
     collectMeshes(shipRoot, shipRoot, undefined);
     for (const group of primitivesByOwner.values()) for (const m of group) nodePrimitives.set(m, group);
+    const behaviorManager = new BehaviorManager({
+        library: manifest?.behaviors,
+        entities: manifest?.entities,
+        meshesByEntityName: meshesByNodeName,
+        entityNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
+    });
 
     // Portal meshes ("Portal_*") are doorway markers the exporter emits for culling / door pairing —
     // NOT real geometry. They render as a visible pane spanning the doorway (seen from the corridor)
@@ -244,12 +303,12 @@ export async function main(): Promise<void> {
         direction?: number[];
     }
     const resolveMarker = (behaviorName: string): Marker | null => {
-        const found = findEntityWithBehavior(manifest?.entities, behaviorName);
+        const found = behaviorManager.findEntityWithBehavior(behaviorName);
         if (!found) return null;
-        const meshes = meshesByNodeName.get(found.name) ?? [];
+        const meshes = found.meshes;
         if (!meshes.length) {
             // eslint-disable-next-line no-console
-            console.warn(`[aquanova] ${behaviorName} entity "${found.name}" matches no ship node — ignoring it`);
+            console.warn(`[aquanova] ${behaviorName} entity "${found.entityName}" matches no ship node — ignoring it`);
             return null;
         }
         // World AABB — already Lite space, since it comes from the loaded ship (mirror applied).
@@ -265,10 +324,10 @@ export async function main(): Promise<void> {
             min = min ? [Math.min(min[0]!, a[0]!), Math.min(min[1]!, a[1]!), Math.min(min[2]!, a[2]!)] : [a[0]!, a[1]!, a[2]!];
             max = max ? [Math.max(max[0]!, b[0]!), Math.max(max[1]!, b[1]!), Math.max(max[2]!, b[2]!)] : [b[0]!, b[1]!, b[2]!];
         }
-        return { entity: found.name, min, max, direction: found.ref.direction };
+        return { entity: found.entityName, min, max, direction: found.assignment.direction };
     };
-    const playerMarker = resolveMarker(PLAYER_START_BEHAVIOR);
-    const weaponMarker = resolveMarker(WEAPON_START_BEHAVIOR);
+    const playerMarker = resolveMarker("player");
+    const weaponMarker = resolveMarker("weapon");
     // Disabled marker geometry is treated exactly like a portal: excluded everywhere below.
     const isDisabledMesh = (m: Mesh): boolean => isPortalMesh(m) || markerMeshes.has(m);
 
@@ -300,55 +359,56 @@ export async function main(): Promise<void> {
     // baked into the storage room's SDF, which is what put a phantom wall across the middle of it.
     const roomOfMesh = (m: Mesh): string => chunkOfMesh.get(m) ?? "unknown";
 
-    const dynamicMeshes = new Set<Mesh>();
-    const liquefiableMeshes = new Set<Mesh>(); // SHOOTABLE targets (their own behaviour says liquefiable)
-    const dissolvableMeshes = new Set<Mesh>(); // liquefiable + everything reachable through `linked`
-    const behaviorByMesh = new Map<Mesh, ShipBehavior>(); // mesh → its effective manifest behaviour
+    // Node name → the kit module it was placed from, so collision policy can be decided per module.
+    const moduleOfNode = new Map<string, string>();
+    for (const inst of manifest?.instances ?? []) {
+        const node = inst.node ?? inst.name;
+        if (node && !moduleOfNode.has(node)) moduleOfNode.set(node, inst.module);
+    }
+
+    // The exporter stamps every PLACEMENT's glTF node with `extras = { id, module, chunk }`, so a mesh
+    // reaches its own instance in one hop. That is the only reliable key: node NAMES are not unique
+    // (both stacked crates are called `crate4`), and matching by name handed the second crate the
+    // first one's shape — its collider ended up a full crate below itself.
+    const instanceIdOfMesh = (m: Mesh): string | undefined => {
+        const extras = ownerOfMesh.get(m)?.metadata?.gltf?.extras as { id?: string } | undefined;
+        return extras?.id;
+    };
+
+    // Instance id → its authored collision primitives, resolved into world space from the LOADED
+    // node's matrix. Not from `instances[]`: the manifest's own `space` block says `moduleCollision`
+    // is glTF space while `instances[]` is editor space, so composing those two mixes spaces — it
+    // looks right on anything symmetrical and is wrong on everything turned. The loaded node already
+    // carries the glTF→scene mirror, so node.worldMatrix · shape is correct with no conversion.
+    const placementById = new Map<string, { node: string; shapes: WorldCollisionShape[] }>();
+    for (const [id, pn] of placementNodes) {
+        const shapes = manifest?.moduleCollision?.[pn.module];
+        if (!shapes) continue;
+        placementById.set(id, { node: pn.node.name, shapes: worldShapesForMatrix(pn.node.worldMatrix, shapes) });
+    }
+    /** Flattened view for the debug overlay and QA, tagged with the instance that produced each. */
+    const manifestPlacements: Array<{ id: string; node: string; shape: WorldCollisionShape }> = [];
+    for (const [id, { node, shapes }] of placementById) for (const shape of shapes) manifestPlacements.push({ id, node, shape });
+
     const chunkStaticMeshes = new Map<string, Mesh[]>();
-
-    // Node names that can dissolve: every liquefiable entity plus the transitive closure of its
-    // `linked` names. A linked node need NOT be liquefiable itself (a door's frame melts with the
-    // door but can't be shot on its own), yet it still needs the clip plugin, a rigid body and
-    // exclusion from the static SDF — so it is classified exactly like a liquefiable node, minus
-    // being a valid pick target.
-    const behaviorOfName = (name: string): ShipBehavior | undefined => resolveBehavior(manifest?.behaviors, manifest?.entities, name);
-    const dissolvableNames = new Set<string>();
-    const nameStack = Object.keys(manifest?.entities ?? {}).filter((n) => isLiquefiableBehavior(behaviorOfName(n)));
-    while (nameStack.length) {
-        const n = nameStack.pop()!;
-        if (dissolvableNames.has(n)) continue;
-        dissolvableNames.add(n);
-        for (const l of linkedMeshNames(behaviorOfName(n))) nameStack.push(l);
-    }
-
-    // Pass 1 — classify by NODE name. `entities` assigns behaviours once for the whole ship, so a
-    // named node qualifies wherever it sits (including nodes outside every chunk AABB), and ALL of a
-    // node's primitives are classified together. Anything that dissolves is dynamic too — it must be
-    // physically present before it melts.
-    for (const m of allShipMeshes) {
-        if (isDisabledMesh(m)) continue; // portals + placement markers: not collidable/SDF/liquefiable geometry
-        const nodeName = nodeNameOfMesh.get(m) ?? m.name;
-        const b = behaviorOfName(nodeName);
-        if (b) behaviorByMesh.set(m, b);
-        const dissolvable = dissolvableNames.has(nodeName);
-        if (dissolvable) dissolvableMeshes.add(m);
-        if (dissolvable || isDynamicBehavior(b)) dynamicMeshes.add(m);
-        if (isLiquefiableBehavior(b)) liquefiableMeshes.add(m);
-    }
+    behaviorManager.classifyMeshes(allShipMeshes, {
+        isDisabled: isDisabledMesh,
+        instanceIdOf: instanceIdOfMesh,
+    });
 
     // Pass 2 — per-room STATIC geometry (everything that neither moves nor melts) for the SDF bake.
     for (const c of manifest?.chunks ?? []) {
         const staticList: Mesh[] = [];
         for (const m of allShipMeshes) {
             if (isDisabledMesh(m)) continue;
-            if (dynamicMeshes.has(m) || dissolvableMeshes.has(m)) continue;
+            if (behaviorManager.dynamicMeshes.has(m) || behaviorManager.dissolvableMeshes.has(m)) continue;
             if (chunkOfMesh.get(m) !== c.id) continue;
             staticList.push(m);
         }
         chunkStaticMeshes.set(c.id, staticList);
     }
-    canvas.dataset.dynamicCount = String(dynamicMeshes.size);
-    canvas.dataset.liquefiableCount = String(liquefiableMeshes.size);
+    canvas.dataset.dynamicCount = String(behaviorManager.dynamicMeshes.size);
+    canvas.dataset.liquefiableCount = String(behaviorManager.liquefiableMeshes.size);
 
     // Match the Blender view transform the ship was authored against, straight from the manifest:
     // tone mapping (Khronos PBR Neutral keeps the strength-boosted emissive trim from clipping to
@@ -357,6 +417,49 @@ export async function main(): Promise<void> {
     const tone = resolveToneMapping(manifest?.environment?.toneMapping);
     scene.imageProcessing.toneMappingEnabled = tone !== null;
     if (tone) scene.imageProcessing.toneMapping = tone;
+
+    /** Assigned just below; declared here because the key handler further down closes over it. */
+    let cycleTone: () => void = () => {};
+
+    // ── Tone-mapping cycle (O) ───────────────────────────────────────────────────────────────────    // Every algorithm Babylon-Lite ships, plus "None" (no curve at all). The manifest still chooses
+    // the startup value — this is a look-dev comparison tool, so it deliberately does NOT persist:
+    // reloading returns to what `environment.toneMapping` authored.
+    //
+    // The curve is a compile-time PBR shader feature (it is injected WGSL, not a uniform), so
+    // switching recompiles the affected pipelines. setSceneImageProcessing does that for us; it is
+    // async, hence the in-flight guard — hammering the key would otherwise stack rebuilds.
+    const TONE_MAPPINGS: ReadonlyArray<{ name: string; tm: ToneMapping | null }> = [
+        { name: "Neutral", tm: NeutralToneMapping },
+        { name: "ACES", tm: AcesToneMapping },
+        { name: "Standard", tm: StandardToneMapping },
+        { name: "None", tm: null },
+    ];
+    let toneIndex = Math.max(
+        0,
+        TONE_MAPPINGS.findIndex((t) => (tone === null ? t.tm === null : t.tm?.id === tone.id))
+    );
+    let toneBusy = false;
+    const showTone = (): void => {
+        const el = document.getElementById("toneState");
+        if (el) el.textContent = TONE_MAPPINGS[toneIndex]!.name;
+        canvas.dataset.tonemap = TONE_MAPPINGS[toneIndex]!.name;
+    };
+    showTone();
+    cycleTone = (): void => {
+        if (toneBusy) return;
+        toneBusy = true;
+        toneIndex = (toneIndex + 1) % TONE_MAPPINGS.length;
+        const next = TONE_MAPPINGS[toneIndex]!;
+        showTone();
+        void setSceneImageProcessing(scene, next.tm ? { toneMappingEnabled: true, toneMapping: next.tm } : { toneMappingEnabled: false })
+            .catch((err: unknown) => {
+                // eslint-disable-next-line no-console
+                console.warn("[aquanova] tone mapping switch failed", err);
+            })
+            .finally(() => {
+                toneBusy = false;
+            });
+    };
     scene.imageProcessing.exposure = resolveExposure(manifest?.environment?.exposure);
     scene.imageProcessing.contrast = 1.05;
 
@@ -370,15 +473,26 @@ export async function main(): Promise<void> {
     // a 13 cm eye-height difference between machines. Babylon.js fixes its step at 1/60 for the same
     // reason. This also keeps the dynamic props' rest poses reproducible.
     setPhysicsTimestepMs(world, 1000 / 60);
-
-    // Static collider boxes, recorded so the B overlay can draw exactly what the player collides with.
-    const colliderBoxes: ColliderBox[] = [];
+    /** Manifest-authored collision primitives that became static bodies (QA/debug). */
+    let manifestShapes: WorldCollisionShape[] = [];
     // The raw ship geometry is one glTF hierarchy of 568 overlapping modules; a trimesh collider
     // built from it pins the character controller on countless coplanar/overlapping triangles.
     // Instead we collide against clean per-chunk box shells from the manifest — smooth for the
     // capsule, and a natural fit since each chunk is already an axis-aligned room.
     if (manifest) {
-        buildShipColliders(world, manifest, colliderBoxes);
+        // Per-element collision from the manifest: every placed module that has an authored shape
+        // becomes a solid static body, so props are collidable without anyone marking them
+        // `dynamic` — that flag now means only "Havok may MOVE this", nothing else.
+        //
+        // Dissolvable placements are skipped: they already get their own body in the dynamic-prop
+        // pass below (from the same manifest shape), and that body is removed when the prop melts.
+        // A second static body here would outlive the melt as an invisible wall. Matched by INSTANCE
+        // ID from the glTF node's extras, never by name — names repeat across placements.
+        manifestShapes = buildManifestColliders(
+            world,
+            [...placementById].filter(([id]) => !behaviorManager.dissolvableInstanceIds.has(id)).flatMap(([, p]) => p.shapes)
+        );
+        canvas.dataset.manifestColliders = String(manifestShapes.length);
     } else {
         // Fallback floor so the player at least stands if the manifest failed to load.
         const node = createTransformNode("shipFloor", -30, -0.2, 0);
@@ -400,169 +514,227 @@ export async function main(): Promise<void> {
     const character = createPhysicsCharacterController(world, { x: sx, y: sy, z: sz }, { capsuleHeight: CAP_H, capsuleRadius: CAP_R });
     character.characterStrength = 0; // player collides with dynamic bodies but cannot push them
 
-    // ── Dynamic meshes + per-room SDFs → one shared FloatingBodySystem ────────────────────
-    // All fluid boundaries live in ONE FloatingBodySystem (SceneSdfSpec has a single sdfGrid buffer;
-    // the system's `bodiesSdf` unions every body, each with its own dims/origin in the header):
-    //   • per-room STATIC SDFs (baked from room static meshes) — added in the room-SDF pass (C);
-    //   • per dynamic mesh: a baked SDF driven by a Havok DYNAMIC box body. The player collides but
-    //     can't push it (characterStrength 0); gravity/fluid move it; each step we push its Havok pose
-    //     to the floating body so the SDF boundary tracks the visible mesh (reparented under a display
-    //     root so the system can pose it, glTF __root__ mirror preserved via displayScale).
+    // ── Dynamic (dissolvable) props ──────────────────────────────────────────────────────
+    // A liquefiable prop needs three things: a Havok body so it is solid, a display root it can be
+    // posed through while it melts, and its own bounds for mass/inertia and the particle fill.
+    //
+    // It no longer needs a BAKED SDF. The fluid collides against the ship's authored collision
+    // primitives (see buildCollisionSet), so there are no distance grids anywhere in this demo — no
+    // bake at load, no per-room grid, no arena to size, and none of the sign problems that came with
+    // baking kit-bashed geometry (an open shell has no reliable inside).
     const MIRROR: [number, number, number] = [-1, 1, 1];
-    const ROOM_CELL = 0.18; // room SDF cell size (m)
-    const DYN_CELL = 0.06; // dynamic-mesh SDF cell size (m)
 
-
-    // Bake dynamic-mesh SDFs, and size the arena for the (larger) room grids added later in pass C.
-    const dynBaked = new Map<Mesh, { grid: BakedSdf; centre: [number, number, number]; half: [number, number, number] }>();
-    for (const m of dynamicMeshes) {
-        const b = bakeWorldSdf([m], DYN_CELL, (mm) => nodeNameOfMesh.get(mm) ?? mm.name);
-        if (b) dynBaked.set(m, b);
+    // One body per NODE, not per mesh: a glTF node with several primitives is ONE object to the
+    // player, so treating each primitive separately gave it that many independent rigid bodies and
+    // the parts drifted apart the moment physics ran.
+    const dynGroups: Mesh[][] = [];
+    const grouped = new Set<Mesh>();
+    for (const m of behaviorManager.dynamicMeshes) {
+        if (grouped.has(m)) {
+            continue;
+        }
+        const group = (nodePrimitives.get(m) ?? [m]).filter((p) => behaviorManager.dynamicMeshes.has(p));
+        for (const p of group) {
+            grouped.add(p);
+        }
+        dynGroups.push(group.length ? group : [m]);
     }
-    // Bake the ship's STATIC geometry (walls/floor/props — excludes dynamic + liquefiable meshes) so
-    // the fluid is confined and collides with static props. Baked once at load.
-    //
-    // ONE bake for the WHOLE ship, not one per chunk. `generateMeshSdf` signs a node by the odd/even
-    // parity of triangle crossings along its +X column, which is only valid for a closed surface. A
-    // single room is not closed: its doorway is a hole (the doors themselves are dissolvable and so
-    // excluded), so the parity leaks and flips for an entire X-line at a time — measured as a phantom
-    // "wall" of solid across the storage room at z = 2, y = 1.5 while z = 0 and z = -2 read as air.
-    // The ship's outer hull IS closed, and a doorway inside it is just a connection rather than a hole.
-    //
-    // Two bakes were also wrong for a second reason: `bodiesSdf` unions bodies with min(), which is a
-    // union of FORBIDDEN regions. Two inverted containers therefore forbid each other's interiors — any
-    // point in room A is outside room B, so the union marks the whole ship solid wherever the boxes
-    // overlap. One container has nothing to conflict with.
-    const staticMeshes = [...(manifest?.chunks ?? [])].flatMap((c) => chunkStaticMeshes.get(c.id) ?? []);
-    const shipBaked = new Map<string, { grid: BakedSdf; centre: [number, number, number] }>();
-    // `despeckle`: the wall kit does not meet exactly (adjacent panels are modelled 0.01–0.02 m apart),
-    // and a ray slipping through such a seam flips the parity behind it, leaving 1–2 node islands of
-    // "solid" floating in mid-air. Safe here because the ship's solid is one connected region.
-    const shipSdf = staticMeshes.length ? bakeWorldSdf(staticMeshes, ROOM_CELL, (mm) => nodeNameOfMesh.get(mm) ?? mm.name, { despeckle: 8 }) : null;
-    if (shipSdf) shipBaked.set("ship", { grid: shipSdf.grid, centre: shipSdf.centre });
-    // eslint-disable-next-line no-console
-    console.log(
-        `[aquanova] ship SDF baked from ${staticMeshes.length} static meshes` +
-            (shipSdf ? ` — ${shipSdf.grid.dims.join("×")} cells @ ${ROOM_CELL} m` : " — FAILED, the fluid will have no walls") +
-            ` (per chunk: ${(manifest?.chunks ?? []).map((c) => `${c.id} ${chunkStaticMeshes.get(c.id)?.length ?? 0}`).join(", ")})`
-    );
-    // The arena is `gridFloats × maxBodies`, so sizing it from the LARGEST grid wastes an entire
-    // ship-sized slot per dynamic prop. Size it from what is actually needed instead.
-    const maxBodies = shipBaked.size + dynBaked.size + 2;
-    let totalGridFloats = 0;
-    for (const b of dynBaked.values()) totalGridFloats += b.grid.data.length;
-    for (const b of shipBaked.values()) totalGridFloats += b.grid.data.length;
-
-    const floatingSystem = createFloatingBodySystem(engine._device, {
-        maxBodies,
-        gridFloats: Math.ceil(totalGridFloats / maxBodies) + 1,
-        externalPose: true,
-    });
-    floatingSystem.setEnabled(true);
-
-    // The ship SDF = a never-moved body (no display node; identity pose). bodiesSdf unions it with the
-    // dynamic props.
-    // `invertSdf`: the ship is baked from shell geometry (floor tiles, wall boxes, ceiling tiles), so
-    // the volume enclosed by that surface is the interior AIR, not solid. Without the flip the solver
-    // reads the whole interior as "penetrating a solid" (measured: −4.12 at head height mid-room) and
-    // the space under the floor as free (+4.14), and pushes the water down through its own floor.
-    const roomBodies = new Map<string, number>();
-    for (const [id, { grid, centre }] of shipBaked) {
-        const index = floatingSystem.addBody({ grid, mass: 1, inertia: [1, 1, 1], half: [1, 1, 1], position: centre, scale: 1, displayScale: [1, 1, 1], centre, externalPose: true, invertSdf: true });
-        floatingSystem.setBodyPose(index, centre, [0, 0, 0, 1], [0, 0, 0], [0, 0, 0]);
-        roomBodies.set(id, index);
+    const dynBounds = new Map<Mesh, MeshGroupBounds>(); // keyed by the group's FIRST primitive
+    for (const group of dynGroups) {
+        const b = meshGroupBounds(group);
+        if (b) {
+            dynBounds.set(group[0]!, b);
+        }
     }
-    canvas.dataset.roomBodies = String(roomBodies.size);
 
     interface DynBody {
-        index: number;
         proxy: SceneNode;
-        body: PhysicsBody;
+        /** Null for a decal: it dissolves and bounds the fluid, but the surface it sits on collides. */
+        body: PhysicsBody | null;
+        /** Representative primitive (the group's first) — what call sites that want "the" mesh use. */
         mesh: Mesh;
+        /** EVERY primitive of the node, all reparented under `disp` so they move as one rigid body. */
+        meshes: Mesh[];
+        /** World bounds of meshes at rest. */
+        bounds: MeshGroupBounds;
+        /** Display-root offset in its own frame, applied when the body is posed. */
+        dispOffset: [number, number, number];
+        /** Whether Havok may move this body (manifest `dynamic: true`). Immovable ones are STATIC. */
+        movable: boolean;
+        /** The manifest placement this prop came from, so its debug shape can be dropped on melt. */
+        instanceId: string | undefined;
         disp: SceneNode;
         wriggling?: boolean; // true while THIS body is dissolving: its Havok body still collides/supports,
-                             // but the wriggle owns the display node — so skip the pose sync below.
+        // but the wriggle owns the display node — so skip the pose sync below.
     }
     const dynBodies: DynBody[] = [];
     const dynBodyByMesh = new Map<Mesh, DynBody>();
-    for (const [m, baked] of dynBaked) {
-        const { grid, centre, half } = baked;
-        // Display root at the rest pose the floating system reproduces (mirror preserved); reparent the
-        // mesh under it (world-preserving) so the system poses the visible mesh through the root.
+    /** Placements whose prop has melted — their colliders and debug shapes are gone. */
+    const removedPlacements = new Set<string>();
+
+    // ── The fluid's collision set ────────────────────────────────────────────────────────────────
+    // The same authored primitives the player collides against, handed to the fluid as an analytic
+    // field instead of a baked SDF grid. `worldAabb` is only used to pick which ones a given
+    // simulation needs; the solver evaluates the exact primitive.
+    const shapeToPrimitive = (s: WorldCollisionShape): FluidPrimitive =>
+        s.kind === "box"
+            ? { kind: "box", a: s.centre, b: s.halfExtents ?? [0.05, 0.05, 0.05], rotation: s.rotation ?? [0, 0, 0, 1] }
+            : s.kind === "sphere"
+              ? { kind: "sphere", a: s.centre, radius: s.radius ?? 0.05 }
+              : { kind: s.kind, a: s.pointA ?? s.centre, b: s.pointB ?? s.centre, radius: s.radius ?? 0.05 };
+    const primAabb = (p: FluidPrimitive): { min: [number, number, number]; max: [number, number, number] } => {
+        if (p.kind === "box") {
+            // A rotated box's AABB is bounded by the sum of its half extents — coarse but never too
+            // small, which is what matters for a selection test.
+            const r = Math.hypot(...(p.b ?? [0, 0, 0]));
+            return { min: [p.a[0] - r, p.a[1] - r, p.a[2] - r], max: [p.a[0] + r, p.a[1] + r, p.a[2] + r] };
+        }
+        const r = p.radius ?? 0;
+        const b = p.b ?? p.a;
+        const lo = (i: number): number => Math.min(p.a[i]!, b[i]!) - r;
+        const hi = (i: number): number => Math.max(p.a[i]!, b[i]!) + r;
+        return { min: [lo(0), lo(1), lo(2)], max: [hi(0), hi(1), hi(2)] };
+    };
+    for (const group of dynGroups) {
+        const bounds = dynBounds.get(group[0]!);
+        if (!bounds) {
+            continue;
+        }
+        const { centre } = bounds;
+        // Display root at the prop's rest pose (the glTF root mirror preserved via `scaling`);
+        // reparent EVERY primitive of the node under it (world-preserving) so the whole node is posed
+        // through one root and the parts keep their relative placement.
         const r = createTransformNode(`dyn_disp_${dynBodies.length}`);
         r.scaling.set(MIRROR[0], MIRROR[1], MIRROR[2]);
         r.position.set(centre[0] - MIRROR[0] * centre[0], centre[1] - MIRROR[1] * centre[1], centre[2] - MIRROR[2] * centre[2]);
         addToScene(scene, r);
-        setParent(m, r);
-       // Havok DYNAMIC proxy (box from the mesh AABB).
+        for (const m of group) {
+            setParent(m, r);
+        }
+        // Havok proxy. Its shape comes from the manifest — that is the ONLY thing that decides
+        // whether a prop is solid. A prop with no authored collision (the "Caution" sticker on the
+        // door) simply gets no rigid body: the surface it is applied to already collides. Nothing
+        // is inferred from the element's kind or module path.
+        // STATIC unless the manifest marked the prop `dynamic: true` — a fixture stays put no matter
+        // how hard the player runs into it, while a genuinely loose prop still falls and can be shoved.
+        const movable = group.some((m) => behaviorManager.movableMeshes.has(m));
         const proxy = createTransformNode(`dyn_proxy_${dynBodies.length}`, centre[0], centre[1], centre[2]);
-        const shape = createPhysicsShape(world, { type: PhysicsShapeType.BOX, parameters: { extents: { x: Math.max(half[0] * 2, 0.05), y: Math.max(half[1] * 2, 0.05), z: Math.max(half[2] * 2, 0.05) } } });
-        const body = createPhysicsBody(world, proxy, PhysicsMotionType.DYNAMIC, true);
-        setPhysicsBodyShape(world, body, shape);
-        const mass = Math.max(0.5, half[0] * half[1] * half[2] * 8 * 200);
-        const inertia: [number, number, number] = [
-            (mass * (half[1] * half[1] + half[2] * half[2])) / 3,
-            (mass * (half[0] * half[0] + half[2] * half[2])) / 3,
-            (mass * (half[0] * half[0] + half[1] * half[1])) / 3,
-        ];
-        const index = floatingSystem.addBody({ grid, mass, inertia, half, position: centre, display: r, scale: 1, displayScale: MIRROR, centre, externalPose: true });
-        floatingSystem.setBodyPose(index, centre, [0, 0, 0, 1], [0, 0, 0], [0, 0, 0]);
-        const dyn: DynBody = { index, proxy, body, mesh: m, disp: r };
+        const instanceId = instanceIdOfMesh(group[0]!);
+        const authored = instanceId ? placementById.get(instanceId)?.shapes[0] : undefined;
+        // The proxy sits at the prop's bounds centre and the authored shape is offset WITHIN the body,
+        // so the display root (posed from the same pose) and the collider stay in agreement.
+        let body: PhysicsBody | null = null;
+        if (authored) {
+            body = createPhysicsBody(world, proxy, movable ? PhysicsMotionType.DYNAMIC : PhysicsMotionType.STATIC, true);
+            setPhysicsBodyShape(world, body, createWorldCollisionShape(world, authored, centre));
+        }
+        // The display root's offset in its OWN frame, so a moved body poses it as
+        // `position = pose ∘ (−displayScale · centre)` — the transform the floating-body system used
+        // to apply, kept identical so a melting prop still lines up with its water.
+        const dispOffset: [number, number, number] = [-MIRROR[0] * centre[0], -MIRROR[1] * centre[1], -MIRROR[2] * centre[2]];
+        const dyn: DynBody = { proxy, body, mesh: group[0]!, meshes: group, bounds, movable, instanceId, disp: r, dispOffset };
         dynBodies.push(dyn);
-        dynBodyByMesh.set(m, dyn);
+        for (const m of group) {
+            dynBodyByMesh.set(m, dyn);
+        }
     }
 
-    // Each physics step, push every dynamic mesh's Havok pose into its floating-body SDF header.
-    onPhysicsAfterStep(world, () => {
+    // Each physics step, pose a MOVABLE prop's display root from its Havok body, and refresh the
+    // primitive the fluid collides against. An immovable prop never moves, so it costs nothing.
+    behaviorManager.events.on("physicsStep", () => {
         for (const d of dynBodies) {
-            if (d.wriggling) continue; // dissolving: the wriggle owns the display; the body still collides
+            if (!d.movable) continue; // fixture: posed once at load
+            if (!d.body) continue; // decal: no rigid body to read a pose from
+            if (d.wriggling) continue; // dissolving: the wriggle owns the display
             const p = d.proxy.position;
             const q = d.proxy.rotationQuaternion;
-            const lv = getPhysicsBodyLinearVelocity(world, d.body);
-            const av = getPhysicsBodyAngularVelocity(world, d.body);
-            floatingSystem.setBodyPose(d.index, [p.x, p.y, p.z], [q.x, q.y, q.z, q.w], [lv.x, lv.y, lv.z], [av.x, av.y, av.z]);
+            const off = qRot(q, d.dispOffset);
+            d.disp.position.set(p.x + off[0], p.y + off[1], p.z + off[2]);
+            d.disp.rotationQuaternion.set(q.x, q.y, q.z, q.w);
+        }
+        // Movable props also move the fluid's boundary: rewrite just their slots in each running
+        // sim's primitive buffer. Only the changed primitives are uploaded, not the whole set.
+        for (const a of activeSims) {
+            for (const m of a.collision.moving) {
+                const live = livePrim(m.body);
+                if (!live) continue;
+                a.collision.prims[m.slot] = live;
+                packPrimitive(a.collision.scratch, m.slot, live);
+                device.queue.writeBuffer(a.collision.buffer, (PRIM_HEADER + m.slot * PRIM_STRIDE) * 4, a.collision.scratch, PRIM_HEADER + m.slot * PRIM_STRIDE, PRIM_STRIDE);
+            }
         }
     });
     canvas.dataset.dynBodies = String(dynBodies.length);
 
-    // Look = mouse (Pointer Lock); move = WASD/arrows in the HORIZONTAL plane. The initial facing
-    // comes from the player-start marker's `direction` (glTF space → Lite negates X); with the
-    // forward vector being (sin yaw, ·, cos yaw), that is atan2(x, z). Default −π/2 faces Lite −X,
-    // down the ship toward the first door.
-    const startDir = playerMarker?.direction;
-    let yaw = startDir && (startDir[0] || startDir[2]) ? Math.atan2(-startDir[0]!, startDir[2]!) : -Math.PI / 2;
-    let pitch = 0;
-    // Look INERTIA, the rotational counterpart of the walk/fly velocity smoothing below: the mouse
-    // writes these targets instantly, and yaw/pitch ease toward them each step. Without it every
-    // pointer event snapped the camera, which reads as harsh at high mouse-poll rates.
-    let yawTarget = yaw;
-    let pitchTarget = pitch;
-    const keys = new Set<string>();
-
-    // Free-fly (noclip): fly the camera straight through geometry with no collision or gravity.
-    // Toggling on snapshots the current eye position; toggling off drops the character controller
-    // back in at that spot (it re-grounds via gravity).
-    let noclip = false;
-    const freePos = { x: 0, y: 0, z: 0 };
-    // Smoothed velocities (m/s) so movement eases in/out instead of snapping on/off (inertia).
-    const walkVel = { x: 0, z: 0 };
-    const flyVel = { x: 0, y: 0, z: 0 };
-    let vy = 0; // vertical velocity (m/s) for gravity + jumping
-    let jumpQueued = false; // set on a Space press while grounded; consumed next step
-    const toggleNoclip = (): void => {
-        noclip = !noclip;
-        if (noclip) {
-            const p = character.getPosition();
-            freePos.x = p.x;
-            freePos.y = p.y + EYE;
-            freePos.z = p.z;
-            flyVel.x = flyVel.y = flyVel.z = 0;
-        } else {
-            character.setPosition({ x: freePos.x, y: Math.max(freePos.y - EYE, CAP_H / 2), z: freePos.z });
-            walkVel.x = walkVel.z = 0;
+    // Static collision primitives for the fluid: every authored placement EXCEPT the dissolvable
+    // ones, which move (and later vanish) and so are tracked per body below.
+    const staticPrims: Array<{ id: string; prim: FluidPrimitive; min: [number, number, number]; max: [number, number, number] }> = [];
+    for (const [id, pl] of placementById) {
+        if (behaviorManager.dissolvableInstanceIds.has(id)) continue;
+        for (const s of pl.shapes) {
+            const prim = shapeToPrimitive(s);
+            staticPrims.push({ id, prim, ...primAabb(prim) });
         }
-        canvas.dataset.noclip = String(noclip);
+    }
+    canvas.dataset.fluidStaticPrims = String(staticPrims.length);
+
+    /** A dissolvable prop's primitive, kept in its proxy's REST frame so a moved body can re-pose it. */
+    const dynPrims = new Map<DynBody, { local: FluidPrimitive; rest: [number, number, number] }>();
+    const dynPrimsSkipped: string[] = [];
+    for (const d of dynBodies) {
+        const s = d.instanceId ? placementById.get(d.instanceId)?.shapes[0] : undefined;
+        if (!s) {
+            // No authored collision → nothing for the fluid to collide with either. Reported because
+            // it is otherwise invisible: the prop still blocks the PLAYER (Havok) while water pours
+            // straight through it, which reads as a fluid bug rather than missing authoring.
+            dynPrimsSkipped.push(`${nodeNameOfMesh.get(d.mesh) ?? d.mesh.name}(${d.instanceId ?? "no-id"})`);
+            continue;
+        }
+        const c = d.bounds.centre;
+        const p = shapeToPrimitive(s);
+        // Express relative to the proxy's rest position; the proxy starts unrotated at `centre`.
+        // localizePrimitive knows a box's `b` is half extents and must not be re-based — see its doc.
+        dynPrims.set(d, { local: localizePrimitive(p, c), rest: [c[0], c[1], c[2]] });
+    }
+    if (dynPrimsSkipped.length) {
+        // eslint-disable-next-line no-console
+        console.warn(`[aquanova] ${dynPrimsSkipped.length} dynamic prop(s) have NO fluid collision primitive: ${dynPrimsSkipped.join(", ")}`);
+    }
+    canvas.dataset.fluidDynPrims = `${dynPrims.size}/${dynBodies.length}`;
+
+    /** Hamilton product — compose two rotations (`a` applied after `b`). */
+    const quatMul = (a: readonly [number, number, number, number], b: readonly [number, number, number, number]): [number, number, number, number] => [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ];
+    /** Rotate `v` by quaternion `q`. */
+    const qRot = (q: { x: number; y: number; z: number; w: number }, v: readonly [number, number, number]): [number, number, number] => {
+        const tx = 2 * (q.y * v[2] - q.z * v[1]);
+        const ty = 2 * (q.z * v[0] - q.x * v[2]);
+        const tz = 2 * (q.x * v[1] - q.y * v[0]);
+        return [v[0] + q.w * tx + (q.y * tz - q.z * ty), v[1] + q.w * ty + (q.z * tx - q.x * tz), v[2] + q.w * tz + (q.x * ty - q.y * tx)];
     };
+    /** A dissolvable prop's primitive at its CURRENT pose, with the velocity the solver needs. */
+    const livePrim = (d: DynBody): FluidPrimitive | null => {
+        const e = dynPrims.get(d);
+        if (!e) return null;
+        const p = d.proxy.position;
+        const q = d.proxy.rotationQuaternion;
+        const put = (v: readonly [number, number, number]): [number, number, number] => {
+            const r = qRot(q, v);
+            return [p.x + r[0], p.y + r[1], p.z + r[2]];
+        };
+        const vel = d.movable && d.body ? getPhysicsBodyLinearVelocity(world, d.body) : { x: 0, y: 0, z: 0 };
+        const base = e.local;
+        const out: FluidPrimitive = { ...base, a: put(base.a), velocity: [vel.x, vel.y, vel.z] };
+        if (base.b) out.b = base.b && base.kind !== "box" ? put(base.b) : base.b; // a box's `b` is half extents, not a point
+        if (base.kind === "box") out.rotation = quatMul([q.x, q.y, q.z, q.w], base.rotation ?? [0, 0, 0, 1]);
+        return out;
+    };
+
+    let playerBehavior: PlayerBehavior | null = null;
 
     // Which chunk (room) contains the camera. Camera is Lite-space; convert X back to glTF to test
     // against the manifest AABBs (which are glTF-space).
@@ -595,199 +767,217 @@ export async function main(): Promise<void> {
               getPicker,
               nodeNameOf: (m: Mesh) => nodeNameOfMesh.get(m),
               nodePrimitivesOf: (m: Mesh) => nodePrimitives.get(m),
-              isNoclip: () => noclip,
+              isNoclip: () => playerBehavior?.isNoclip ?? false,
           });
+    // Fluid GPU profiling. The sim is stepped directly onto the frame encoder (not as a frame-graph
+    // task), so the engine's per-task timer structurally cannot see it; the fluid's own profiler is
+    // the only way to attribute that time. Created once if the device supports timestamp queries,
+    // but only ATTACHED while the perf panel is open — detached, `profiler?.pass()` returns
+    // undefined and no pass requests timestamp writes, so it costs nothing.
+    let fluidProfiler: FluidProfilerImpl | null = null;
+    try {
+        fluidProfiler = engine._device.features.has("timestamp-query") ? createFluidProfiler(engine._device) : null;
+    } catch {
+        fluidProfiler = null; // never worth failing the demo over a profiler
+    }
+    let fluidProfilerOn = false;
+    const perfOverlay = createPerfOverlay({
+        engine,
+        fluidStages: () => (fluidProfilerOn ? (fluidProfiler?.results() ?? null) : null),
+        onToggle: (on) => {
+            fluidProfilerOn = on && fluidProfiler !== null;
+            attachFluidProfiler();
+        },
+    });
     const colliderOverlay = !LAB_DEBUG
         ? null
         : createColliderOverlay({
               engine,
               scene,
               canvas,
-              colliderBoxes,
-              dynBodies: () => dynBodies.map((d) => ({ name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name, position: d.proxy.position, half: dynBaked.get(d.mesh)?.half })),
-              roomAt,
-          });
-    const sdfOverlay = !LAB_DEBUG
-        ? null
-        : createSdfOverlay({
-              engine,
-              scene,
-              canvas,
-              roomCell: ROOM_CELL,
-              dynCell: DYN_CELL,
-              rooms: () => shipBaked.values(),
-              dynBodies: () =>
-                  dynBodies.flatMap((d) => {
-                      const baked = dynBaked.get(d.mesh);
-                      return baked ? [{ baked, position: d.proxy.position, rotationQuaternion: d.proxy.rotationQuaternion }] : [];
-                  }),
+              manifestShapes: manifestPlacements,
+              isRemoved: (id) => removedPlacements.has(id),
+              injectedPrims: () => activeSims.map((a) => ({ sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name, prims: a.collision.prims })),
+              dynBodies: () => dynBodies.map((d) => ({ name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name, position: d.proxy.position, half: d.bounds.half })),
               roomAt,
           });
     const inspectOn = (): boolean => inspectOverlay?.isOn() ?? false;
 
-    const LOOK_SENS = 1 / 600; // radians per pixel of mouse motion
-
-    // ── Liquefactor weapon: crosshair + centre-screen targeting ───────────────────────────
-    // The crosshair marks where the weapon points (screen centre). LMB while the mouse is captured
-    // fires: GPU-pick the mesh at the centre and, if it is in the liquefiable set, liquefy it.
-    const crosshair = document.createElement("div");
-    crosshair.id = "aq-crosshair";
-    crosshair.style.cssText = "position:fixed;left:50%;top:50%;width:24px;height:24px;transform:translate(-50%,-50%);z-index:15;pointer-events:none;";
-    const bar = (s: string): string => `<div style="position:absolute;background:rgba(120,232,255,.92);${s}"></div>`;
-    crosshair.innerHTML =
-        bar("left:50%;top:0;width:2px;height:8px;margin-left:-1px;") +
-        bar("left:50%;bottom:0;width:2px;height:8px;margin-left:-1px;") +
-        bar("top:50%;left:0;height:2px;width:8px;margin-top:-1px;") +
-        bar("top:50%;right:0;height:2px;width:8px;margin-top:-1px;");
-    document.body.appendChild(crosshair);
-
-    let firing = false;
-    // Assigned by the Milestone D fluid block below; called when the crosshair is on a liquefiable mesh.
-    let liquefyMesh: (mesh: Mesh, hitPoint?: readonly [number, number, number] | null) => void = () => {};
+    // Assigned by the Milestone D fluid block below. Liquefiable behaviors call this service after
+    // accepting a typed `hitWithWeapon` event addressed to their mesh.
+    let liquefyMesh: (mesh: Mesh, hitPoint?: readonly [number, number, number] | null, config?: LiquefiableBehaviorConfig) => void = () => {};
     // G key — swap the fluid's collision between the full ship SDF and a bare ground plane (the
     // Liquefactor demo's collision), so the two can be compared with only that variable changed.
     // Assigned by the same block, which owns both SDF specs.
     let toggleGroundOnly: () => void = () => {};
-    const fireLiquefactor = async (): Promise<void> => {
-        if (firing) return;
-        firing = true;
-        try {
-            const info = await pickAsync(getPicker(), canvas.clientWidth / 2, canvas.clientHeight / 2);
-            const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;
-            canvas.dataset.target = mesh ? `${nodeNameOfMesh.get(mesh) ?? mesh.name}|${liquefiableMeshes.has(mesh) ? "liq" : "no"}` : "none";
-            if (mesh && liquefiableMeshes.has(mesh)) liquefyMesh(mesh, info.pickedPoint);
-        } finally {
-            firing = false;
-        }
-    };
+    // M key — toggle 4× MSAA on the scene pass. Assigned by the render-path block below (which owns
+    // the MSAA target and its tasks); declared here because the key handler is registered first.
+    let toggleMsaa: () => void = () => {};
+    let toggleSmaa: () => void = () => {};
+    let toggleTaa: () => void = () => {};
+    let cycleSsaa: () => void = () => {};
+    /** Re-applies the fluid profiler to the surface task and every live sim. Assigned once they exist. */
+    let attachFluidProfiler: () => void = () => {};
+    let retargetTaa: (task: RenderTask) => void = () => {};
+    // Assigned once each subsystem exists. Split from the toggles so the three modes can switch each
+    // other off without recursing: a setter never touches another mode, only the toggles do.
+    let setMsaaEnabled: (on: boolean) => void = () => {};
+    let setSmaaEnabled: (on: boolean) => void = () => {};
+    let setTaaEnabled: (on: boolean) => void = () => {};
 
-    // Mouse look via Pointer Lock: clicking captures the pointer (hiding the cursor); moving the
-    // mouse then rotates the view with NO button held, leaving LMB free for shooting later. Esc
-    // releases the lock. The keyboard is bound on window so movement works without canvas focus.
-    canvas.addEventListener("click", () => {
-        if (inspectOn()) return; // in inspect mode a click must not re-capture the mouse
-        if (document.pointerLockElement !== canvas) {
-            void Promise.resolve(canvas.requestPointerLock()).catch(() => {});
-        }
+    behaviorManager.start({
+        canvas,
+        camera: cam,
+        character,
+        capsuleHeight: CAP_H,
+        eyeHeight: EYE,
+        getPicker,
+        nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
+        isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
+        isInspecting: inspectOn,
+        inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
+        liquefy: (mesh, point, config) => liquefyMesh(mesh, point, config),
     });
-    canvas.addEventListener("pointerdown", (e) => {
-        if (e.button !== 0) return; // LMB only
-        if (document.pointerLockElement !== canvas || inspectOn() || noclip) return; // only while playing
-        void fireLiquefactor();
-    });
-    canvas.addEventListener("pointermove", (e) => {
-        if (document.pointerLockElement === canvas) {
-            yawTarget += e.movementX * LOOK_SENS;
-            pitchTarget = Math.max(-1.45, Math.min(1.45, pitchTarget - e.movementY * LOOK_SENS));
-            return;
-        }
-        inspectOverlay?.pickAt(e.offsetX, e.offsetY); // hover-pick when the mouse is free
-    });
+    playerBehavior = behaviorManager.player;
+    if (!playerBehavior) {
+        // eslint-disable-next-line no-console
+        console.warn("[aquanova] manifest has no player behavior; first-person controls are disabled");
+    }
+
     window.addEventListener("keydown", (e) => {
-        if (e.code === "KeyV" && !e.repeat) toggleNoclip(); // V → toggle free-fly (noclip)
         if (e.code === "KeyI" && !e.repeat) inspectOverlay?.toggle(); // I → toggle inspect overlay
         if (e.code === "KeyB" && !e.repeat) colliderOverlay?.cycle(); // B → toggle collision-box overlay
         if (e.code === "KeyG" && !e.repeat) toggleGroundOnly(); // G → fluid collides with ground only
-        if (e.code === "KeyF" && !e.repeat) sdfOverlay?.toggle(e.shiftKey ? 2 : 1); // F → SDF surface, Shift+F → SDF solid volume
-        if (e.code === "Space" && !e.repeat && !noclip) jumpQueued = true; // Space → jump (walk mode)
-        keys.add(e.code);
-    });
-    window.addEventListener("keyup", (e) => keys.delete(e.code));
-
-    const SPEED = 4; // m/s walk speed (×2 while Shift is held)
-    const FLY_SPEED = 8; // m/s free-fly base speed
-    const MOVE_ACCEL = 12; // 1/s velocity-smoothing rate → gentle ease-in/out (higher = snappier)
-    // Look smoothing rate. Deliberately far higher than MOVE_ACCEL: a body can take ~80 ms to get
-    // moving and still feel weighty, but the same lag on the crosshair reads as input lag and hurts
-    // aim. At 30 the time constant is ~33 ms — enough to take the edge off each pointer event without
-    // the camera feeling like it is trailing the mouse.
-    const LOOK_ACCEL = 30;
-    const JUMP_SPEED = 6; // m/s upward launch (≈1.1 m apex)
-    const JUMP_GRAVITY = 16; // m/s² fall acceleration while airborne
-    const DOWN = { x: 0, y: -1, z: 0 };
-    let fpFrozen = false; // debug: when true, stop driving the camera (so QA can place it freely)
-    onPhysicsAfterStep(world, (dt) => {
-        // Ease the view toward where the mouse has asked it to be, BEFORE the basis vectors below are
-        // derived — movement is relative to where you are looking, so both must come from the same yaw.
-        const kLook = 1 - Math.exp(-dt * LOOK_ACCEL);
-        yaw += (yawTarget - yaw) * kLook;
-        pitch += (pitchTarget - pitch) * kLook;
-        const inZ = (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0) - (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0);
-        const inX = (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) - (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
-        const cos = Math.cos(yaw);
-        const sin = Math.sin(yaw);
-        const cp = Math.cos(pitch);
-        const sp = Math.sin(pitch);
-        const run = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 2 : 1; // Shift = go faster
-        // Frame-rate-independent exponential smoothing toward the target velocity → soft inertia.
-        const k = 1 - Math.exp(-dt * MOVE_ACCEL);
-
-        // Free-fly / noclip: move the camera directly along the view axis (Space/Ctrl or C for
-        // vertical), ignoring collisions and gravity.
-        if (noclip) {
-            const up = (keys.has("Space") ? 1 : 0) - (keys.has("ControlLeft") || keys.has("KeyC") ? 1 : 0);
-            const spd = FLY_SPEED * run;
-            flyVel.x += ((sin * cp * inZ + cos * inX) * spd - flyVel.x) * k;
-            flyVel.y += ((sp * inZ + up) * spd - flyVel.y) * k;
-            flyVel.z += ((cos * cp * inZ - sin * inX) * spd - flyVel.z) * k;
-            freePos.x += flyVel.x * dt;
-            freePos.y += flyVel.y * dt;
-            freePos.z += flyVel.z * dt;
-            cam.position.set(freePos.x, freePos.y, freePos.z);
-            cam.target.set(freePos.x + sin * cp, freePos.y + sp, freePos.z + cos * cp);
-            canvas.dataset.pos = `${freePos.x.toFixed(2)},${freePos.y.toFixed(2)},${freePos.z.toFixed(2)}`;
-            return;
-        }
-
-        // Walk: ease the horizontal velocity toward the input direction.
-        const spd = SPEED * run;
-        walkVel.x += ((inX * cos + inZ * sin) * spd - walkVel.x) * k;
-        walkVel.z += ((-inX * sin + inZ * cos) * spd - walkVel.z) * k;
-        // Vertical: grounded → stick to the floor (or launch a queued jump); airborne → integrate
-        // gravity so the jump arcs.
-        const grounded = character.checkSupport(dt, DOWN).supportedState === CharacterSupportedState.SUPPORTED;
-        if (grounded && vy <= 0) {
-            vy = jumpQueued ? JUMP_SPEED : -2;
-        } else {
-            vy -= JUMP_GRAVITY * dt;
-        }
-        jumpQueued = false;
-        character.moveWithCollisions({ x: walkVel.x * dt, y: vy * dt, z: walkVel.z * dt });
-        const p = character.getPosition();
-        if (fpFrozen) {
-            canvas.dataset.pos = `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
-            return;
-        }
-        cam.position.set(p.x, p.y + EYE, p.z);
-        cam.target.set(p.x + sin * cp, p.y + EYE + sp, p.z + cos * cp);
-        canvas.dataset.pos = `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
+        if (e.code === "KeyM" && !e.repeat) toggleMsaa(); // M → toggle 4x MSAA (anti-aliasing)
+        if (e.code === "KeyN" && !e.repeat) toggleSmaa(); // N → toggle SMAA post-process
+        if (e.code === "KeyT" && !e.repeat) toggleTaa(); // T → toggle TAA (only accumulates while still)
+        if (e.code === "KeyR" && !e.repeat) cycleSsaa(); // R → cycle SSAA render scale
+        if (e.code === "KeyP" && !e.repeat) perfOverlay.toggle(); // P → FPS + per-task GPU timing
+        if (e.code === "KeyO" && !e.repeat) cycleTone(); // O → cycle tone mapping
     });
 
     // Test hook (QA): read the player position + nudge look/movement programmatically.
     (window as unknown as { __aquanova?: unknown }).__aquanova = {
-        getPos: (): { x: number; y: number; z: number } => character.getPosition(),
+        getPos: (): { x: number; y: number; z: number } => playerBehavior?.getPosition() ?? character.getPosition(),
         // Both SNAP (target and current together) rather than easing like the mouse does: a test that
         // aims and then immediately fires must not have the shot land wherever the smoothing had got to.
         setYaw: (y: number): void => {
-            yaw = yawTarget = y;
+            playerBehavior?.setYaw(y);
         },
         look: (dx: number, dy: number): void => {
-            yaw = yawTarget = yawTarget + dx * LOOK_SENS;
-            pitch = pitchTarget = Math.max(-1.45, Math.min(1.45, pitchTarget - dy * LOOK_SENS));
+            playerBehavior?.look(dx, dy);
         },
         press: (code: string): void => {
-            keys.add(code);
+            playerBehavior?.press(code);
         },
         release: (code: string): void => {
-            keys.delete(code);
+            playerBehavior?.release(code);
         },
-        toggleNoclip: (): void => toggleNoclip(),
+        toggleNoclip: (): void => playerBehavior?.toggleNoclip(),
+        behaviors: (): Array<{ name: string; mesh: string }> => behaviorManager.describeInstances(),
+        /** Graphics settings (for the future config page + QA). `setMsaa` is idempotent. */
+        graphics: (): Record<string, unknown> => ({ ...graphics, msaaActive: msaaOn, smaaActive: smaaOn, taaActive: taaOn }),
+        setMsaa: (on: boolean): void => {
+            if (on !== msaaOn) toggleMsaa();
+        },
+        setSmaa: (on: boolean): void => {
+            if (on !== smaaOn) toggleSmaa();
+        },
+        setTaa: (on: boolean): void => {
+            if (on !== taaOn) toggleTaa();
+        },
+        /** SSAA render scale (1 = off). Applied immediately; the engine picks up the size next frame. */
+        setSsaa: (scale: number): void => {
+            graphics.ssaa = scale;
+            saveGraphicsSettings(graphics);
+            applySsaa(scale);
+        },
+        /** SMAA edge threshold — lower catches more edges. Live, for tuning and the config page. */
+        setSmaaThreshold: (t: number): void => {
+            smaaTask.threshold = t;
+            smaaTask.updateUniforms();
+        },
+        /** SMAA pattern-search length in pixels — longer reconstructs shallower edges. */
+        setSmaaSearchSteps: (n: number): void => {
+            smaaTask.maxSearchSteps = n;
+            smaaTask.updateUniforms();
+        },
+        /** SMAA blending rule: dominant-axis (canonical) vs all four neighbours. For A/B. */
+        setSmaaDominantAxis: (on: boolean): void => {
+            smaaTask.dominantAxisBlend = on;
+            smaaTask.updateUniforms();
+        },
+        /** Effective SMAA parameters after clamping — lets QA assert hostile inputs were rejected. */
+        smaaParams: (): Record<string, number | boolean> => ({
+            threshold: smaaTask.threshold,
+            maxSearchSteps: smaaTask.maxSearchSteps,
+            diagonalDetection: smaaTask.diagonalDetection,
+            minDiagonalRun: smaaTask.minDiagonalRun,
+            sourceIsSrgb: smaaTask.sourceIsSrgb,
+            dominantAxisBlend: smaaTask.dominantAxisBlend,
+        }),
+        /** SMAA 45-degree pattern detection on/off. Live, for A/B comparison. */
+        setSmaaDiagonal: (on: boolean, minRun?: number): void => {
+            smaaTask.diagonalDetection = on;
+            if (minRun !== undefined) smaaTask.minDiagonalRun = minRun;
+            smaaTask.updateUniforms();
+        },
         toggleInspect: (): void => inspectOverlay?.toggle(),
+        /** FPS + per-task GPU timing overlay (P). */
+        togglePerf: (): void => perfOverlay.toggle(),
+        /** Cycle tone mapping (O). Recompiles PBR pipelines, so it settles a frame or two later. */
+        cycleTone: (): void => cycleTone(),
+        /** Active tone-mapping algorithm name. */
+        toneMapping: (): string => canvas.dataset.tonemap ?? "?",
         toggleColliders: (): void => colliderOverlay?.cycle(),
-        /** Drive the SDF voxel overlay: 0 off, 1 surface (zero-crossing), 2 solid (sdf < 0). */
-        setSdfOverlay: (n: number): void => sdfOverlay?.setMode(n),
-        sdfOverlayState: (): Record<string, unknown> => sdfOverlay?.state() ?? {},
-        colliderBoxes: (): Array<{ chunk: string; c: number[]; e: number[] }> => colliderBoxes.map((b) => ({ chunk: b.chunk, c: [...b.c], e: [...b.e] })),
+        /** Manifest-authored collision primitives that became static bodies. */
+        manifestColliders: (): Array<{ kind: string; c: number[]; r?: number; he?: number[] }> =>
+            manifestShapes.map((s) => ({
+                kind: s.kind,
+                c: [...s.centre],
+                ...(s.radius !== undefined ? { r: s.radius } : {}),
+                ...(s.halfExtents ? { he: [...s.halfExtents] } : {}),
+            })),
+        /** Node name → the authored shape used for its rigid body (empty when it has none). */
+        shapedNodes: (): Array<{ node: string; kind: string; c: number[] }> => manifestPlacements.map(({ node, shape }) => ({ node, kind: shape.kind, c: [...shape.centre] })),
+        /** What each RUNNING simulation was handed: the primitives packed into its shader's buffer. */
+        injectedPrims: (): Array<{ sim: string; n: number; kinds: Record<string, number>; moving: number }> =>
+            activeSims.map((a) => {
+                const kinds: Record<string, number> = {};
+                for (const p of a.collision.prims) kinds[p.kind] = (kinds[p.kind] ?? 0) + 1;
+                return { sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name, n: a.collision.prims.length, kinds, moving: a.collision.moving.length };
+            }),
+        /** Instance ids whose prop has melted — their colliders and debug shapes are gone. */
+        removedPlacements: (): string[] => [...removedPlacements],
+        /** Full primitive data each running sim collides against — the exact values packed for the
+         *  shader. Verbose, so kept separate from the `injectedPrims` summary. */
+        fluidPrims: (): Array<{ sim: string; prims: FluidPrimitive[] }> => activeSims.map((a) => ({ sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name, prims: a.collision.prims })),
+        /** Particles currently inside a world-space AABB. The direct test of whether the fluid is
+         *  respecting a collider: a solid box should contain (almost) none. */
+        waterInAabb: async (min: [number, number, number], max: [number, number, number]): Promise<{ total: number; inside: number }> => {
+            let total = 0;
+            let inside = 0;
+            for (const a of activeSims) {
+                const n = a.sim.count;
+                const bytes = n * 16;
+                const rb = device.createBuffer({ size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+                const enc = device.createCommandEncoder();
+                enc.copyBufferToBuffer(a.sim.positionBuffer, 0, rb, 0, bytes);
+                device.queue.submit([enc.finish()]);
+                await rb.mapAsync(GPUMapMode.READ);
+                const f = new Float32Array(rb.getMappedRange().slice(0));
+                rb.unmap();
+                rb.destroy();
+                for (let i = 0; i < n; i++) {
+                    const x = f[i * 4]!;
+                    const y = f[i * 4 + 1]!;
+                    const z = f[i * 4 + 2]!;
+                    total++;
+                    if (x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1] && z >= min[2] && z <= max[2]) inside++;
+                }
+            }
+            return { total, inside };
+        },
         roomAt: (): string => roomAt(),
         camState: (): Record<string, number> => ({
             px: cam.position.x,
@@ -808,51 +998,44 @@ export async function main(): Promise<void> {
             ibl: (allShipMeshes.find((m) => m.material)?.material as unknown as { environmentIntensity?: number } | undefined)?.environmentIntensity,
         }),
         fire: (): void => {
-            void fireLiquefactor();
+            void playerBehavior?.fire();
         },
         liqTargets: (): Array<{ name: string; c: number[] | null }> =>
-            [...liquefiableMeshes].map((m) => ({
+            [...behaviorManager.liquefiableMeshes].map((m) => ({
                 name: nodeNameOfMesh.get(m) ?? m.name,
                 c: m.boundMin && m.boundMax ? [(m.boundMin[0] + m.boundMax[0]) / 2, (m.boundMin[1] + m.boundMax[1]) / 2, (m.boundMin[2] + m.boundMax[2]) / 2] : null,
             })),
-        dynPos: (): Array<{ name: string; pos: number[]; half: number[] }> =>
+        dynPos: (): Array<{ name: string; pos: number[]; half: number[]; movable: boolean; hasBody: boolean }> =>
             dynBodies.map((d) => ({
                 name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name,
                 pos: [d.proxy.position.x, d.proxy.position.y, d.proxy.position.z],
-                half: dynBaked.get(d.mesh)?.half ?? [0, 0, 0],
+                half: d.bounds.half,
+                movable: d.movable,
+                hasBody: d.body !== null,
             })),
         liquefyNamed: (name: string, hit?: [number, number, number]): string | null => {
-            for (const m of liquefiableMeshes) {
-                if ((nodeNameOfMesh.get(m) ?? m.name) === name) {
-                    liquefyMesh(m, hit ?? null);
-                    return name;
-                }
+            // When a hit point is given, pick the nearest match: several props legitimately share a
+            // node name (e.g. a stack of identical crates), so name alone is ambiguous.
+            let best: Mesh | null = null;
+            let bestD = Infinity;
+            for (const m of behaviorManager.liquefiableMeshes) {
+                if ((nodeNameOfMesh.get(m) ?? m.name) !== name) continue;
+                if (!hit) return (liquefyMesh(m, null), name);
+                const c: [number, number, number] =
+                    m.boundMin && m.boundMax ? [(m.boundMin[0] + m.boundMax[0]) / 2, (m.boundMin[1] + m.boundMax[1]) / 2, (m.boundMin[2] + m.boundMax[2]) / 2] : [0, 0, 0];
+                const d = (c[0] - hit[0]) ** 2 + (c[1] - hit[1]) ** 2 + (c[2] - hit[2]) ** 2;
+                if (d < bestD) [bestD, best] = [d, m];
             }
-            return null;
+            if (!best) return null;
+            liquefyMesh(best, hit ?? null);
+            return name;
         },
-        warp: (x: number, y: number, z: number): void => character.setPosition({ x, y, z }),
+        warp: (x: number, y: number, z: number): void => playerBehavior?.warp(x, y, z),
         freeze: (): void => {
-            fpFrozen = true;
+            playerBehavior?.freeze();
         },
         meltState: (): Array<{ name: string; phase: string; frontR: number; maxR: number }> =>
             activeSims.map((a) => ({ name: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name, phase: a.phase, frontR: a.state ? a.state.frontR : -1, maxR: a.maxR })),
-        sdfExcluded: (): number[] => [...sdfExcludeRefs.keys()].sort((x, y) => x - y),
-        /** Names + world AABBs of the meshes baked into a room's static SDF. */
-        roomSdfMeshes: (id: string): Array<{ name: string; min: number[]; max: number[] }> =>
-            (chunkStaticMeshes.get(id) ?? []).map((m) => ({
-                name: nodeNameOfMesh.get(m) ?? m.name,
-                min: m.boundMin ? [...m.boundMin] : [],
-                max: m.boundMax ? [...m.boundMax] : [],
-            })),
-        /** Evaluate a baked room SDF at world points on the CPU, mirroring `bodiesSdf`'s trilinear
-         *  sample (rooms have identity pose, so local = pt − centre). Returns 1e9 outside the grid.
-         *  This is the RAW baked field, before the per-body `invertSdf` flip the shader applies — so a
-         *  correctly baked room reads NEGATIVE in its own air here. */
-        probeRoomSdf: (id: string, pts: number[][]): number[] => {
-            const b = shipBaked.get(id);
-            if (!b) return pts.map(() => NaN);
-            return pts.map((p) => sampleBakedSdf(b.grid, b.centre, p[0]!, p[1]!, p[2]!));
-        },
         /** Read every live sim's particle positions back and report how the water sits relative to the
          *  floor. `below` counting anything but ~0 means the scene SDF has a hole the particles fell
          *  through, since the solver has no floor of its own. (Positions only — `velocityBuffer` is
@@ -870,9 +1053,16 @@ export async function main(): Promise<void> {
                 const f = new Float32Array(rb.getMappedRange().slice(0));
                 rb.unmap();
                 rb.destroy();
-                let minY = Infinity, below = 0, minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                let minY = Infinity,
+                    below = 0,
+                    minX = Infinity,
+                    maxX = -Infinity,
+                    minZ = Infinity,
+                    maxZ = -Infinity;
                 for (let i = 0; i < n; i++) {
-                    const x = f[i * 4]!, y = f[i * 4 + 1]!, z = f[i * 4 + 2]!;
+                    const x = f[i * 4]!,
+                        y = f[i * 4 + 1]!,
+                        z = f[i * 4 + 2]!;
                     if (y < -1e4) continue; // dormant particle parked off-screen
                     if (y < minY) minY = y;
                     if (y < FLOOR_Y - 1e-3) below++;
@@ -883,23 +1073,6 @@ export async function main(): Promise<void> {
                 }
                 out.push({ n, minY, below, spread: Math.max(maxX - minX, maxZ - minZ) });
             }
-            return out;
-        },
-        /** World-space box each baked room/dynamic SDF actually covers. Outside every one of these
-         *  `bodiesSdf` returns +1e9 — no wall AND no floor — so a fluid domain that reaches past them
-         *  has nothing holding its particles up. */
-        sdfCoverage: (): Array<{ id: string; min: number[]; max: number[]; cell: number }> => {
-            const out: Array<{ id: string; min: number[]; max: number[]; cell: number }> = [];
-            const box = (id: string, g: BakedSdf, centre: readonly [number, number, number]): void => {
-                out.push({
-                    id,
-                    min: [centre[0] + g.origin[0], centre[1] + g.origin[1], centre[2] + g.origin[2]],
-                    max: [centre[0] + g.origin[0] + g.dims[0] * g.cellSize, centre[1] + g.origin[1] + g.dims[1] * g.cellSize, centre[2] + g.origin[2] + g.dims[2] * g.cellSize],
-                    cell: g.cellSize,
-                });
-            };
-            for (const [id, b] of shipBaked) box(`room:${id}`, b.grid, b.centre);
-            for (const [m, b] of dynBaked) box(`dyn:${nodeNameOfMesh.get(m) ?? m.name}`, b.grid, b.centre);
             return out;
         },
         /** G-key state: true when the fluid collides with a bare ground plane instead of the ship. */
@@ -918,8 +1091,6 @@ export async function main(): Promise<void> {
             grid: activeGrid ?? null,
             physics: activePhysics ?? null,
         }),
-        dynBodyIndexOf: (nodeName: string): number[] =>
-            [...(meshesByNodeName.get(nodeName) ?? [])].map((m) => dynBodyByMesh.get(m)?.index ?? -1).filter((i) => i >= 0),
         camTo: (px: number, py: number, pz: number, tx: number, ty: number, tz: number): void => {
             cam.position.set(px, py, pz);
             cam.target.set(tx, ty, tz);
@@ -934,7 +1105,94 @@ export async function main(): Promise<void> {
     // from the pipelines and drop every draw. The surface samples this same baked depth for compositing.
     const device = engine._device;
     const sceneColorRT = createRenderTarget({ lbl: "aq-scene-color", format: engine.format, dFormat: "depth24plus", samples: 1, size: engine });
-    addTask(scene, createRenderTask({ name: "scene", rt: sceneColorRT, clr: true, clrColor: scene.clearColor }, engine, scene));
+    const sceneTask = createRenderTask({ name: "scene", rt: sceneColorRT, clr: true, clrColor: scene.clearColor }, engine, scene);
+    addTask(scene, sceneTask);
+
+    // The fluid composite's output. It cannot go straight to the swapchain any more: SMAA has to
+    // SAMPLE the finished image, and a swapchain texture is renderable but not sampleable. So the
+    // composite lands here and one of two presenting tasks copies it to the screen — SMAA when it is
+    // on, a plain blit when it is off. Both are always in the graph and gated, so toggling the
+    // setting never rebuilds the frame graph.
+    const presentRT = createRenderTarget({ lbl: "aq-present", format: engine.format, samples: 1, size: engine });
+
+    // ── Optional 4× MSAA on the scene (ship geometry) pass ───────────────────────────────
+    // The ship renders into an OFFSCREEN single-sample target because the fluid surface has to
+    // SAMPLE it when compositing, so it gets none of the engine's own MSAA (`createEngine(...,
+    // { msaaSamples: 1 })`) — every panel seam, railing and door frame is hard-aliased.
+    //
+    // Only the SCENE pass is multisampled. The fluid surface is reconstructed in screen space from
+    // a depth/thickness buffer rather than rasterised, so MSAA would do nothing for it.
+    // Multisampling the one pass that draws hard-edged triangles is where all the benefit is.
+    //
+    // Wiring: an MSAA colour+depth target is rendered instead of `sceneColorRT` and RESOLVES into
+    // it (`rst`), so every downstream consumer (fluid surface, lit-particle colours) keeps reading
+    // the same single-sample texture. Depth needs an explicit pass — WebGPU has no hardware depth
+    // resolve — so `createDepthResolveTask` copies sample 0 of the MSAA depth into sceneColorRT's
+    // own baked depth, which the surface composites against.
+    //
+    // Task order is [scene-msaa, scene, depth-resolve]: the plain scene task must record LAST of
+    // the two so the colour view it bakes into its pass descriptor belongs to the live
+    // `sceneColorRT` texture (both tasks build that target — one as `rt`, one as `rst`). Exactly
+    // one of the two executes per frame, so the plain task never clears the depth the resolve wrote.
+    //
+    // Built LAZILY on first enable: the MSAA colour + depth pair is ~4× a normal canvas-sized pair,
+    // so a player who leaves it off never pays for it.
+    const MSAA_SAMPLES = 4;
+    let msaaOn = false;
+    let msaaSceneTask: Task | null = null;
+    let pendingFrameGraphRebuild = false;
+    const gateExistingTask = (task: Task, active: () => boolean): void => {
+        const run = task.execute!.bind(task);
+        task.execute = (): number => (active() ? run() : 0);
+    };
+    gateExistingTask(sceneTask, () => !msaaOn);
+    const setMsaa = (on: boolean): void => {
+        if (on === msaaOn) return;
+        if (on && !msaaSceneTask) {
+            const sceneMsaaRT = createRenderTarget({
+                lbl: "aq-scene-msaa",
+                format: engine.format,
+                // Same depth format as sceneColorRT: the resolve copies between them, and the PBR
+                // pipelines are keyed on the depth format they were built against.
+                dFormat: "depth24plus",
+                samples: MSAA_SAMPLES,
+                size: engine,
+            });
+            msaaSceneTask = createRenderTask({ name: "scene-msaa", rt: sceneMsaaRT, rst: sceneColorRT, clr: true, clrColor: scene.clearColor }, engine, scene);
+            const depthResolveTask = createDepthResolveTask({ name: "aq-depth-resolve", sourceTexture: sceneMsaaRT, targetTexture: sceneColorRT }, engine, scene);
+            gateExistingTask(msaaSceneTask, () => msaaOn);
+            gateExistingTask(depthResolveTask, () => msaaOn);
+            addTaskBefore(scene, msaaSceneTask, sceneTask);
+            addTaskAfter(scene, depthResolveTask, sceneTask);
+            // Rebuild so the new tasks record and every canvas-sized target is re-allocated in the
+            // right order. This destroys and re-creates textures that other tasks' bind groups and
+            // pass descriptors point at, so it must not run from a UI/key event mid-frame — it is
+            // deferred to the next frameStart event.
+            pendingFrameGraphRebuild = true;
+        }
+        msaaOn = on;
+        // TAA jitters the UBO of the task it points at, so it has to follow the active scene task.
+        retargetTaa(on && msaaSceneTask ? (msaaSceneTask as RenderTask) : sceneTask);
+    };
+    setMsaaEnabled = (on: boolean): void => {
+        if (on === msaaOn) return;
+        graphics.msaa = on;
+        setMsaa(on);
+        saveGraphicsSettings(graphics);
+        canvas.dataset.msaa = String(on);
+        setHudFlag("msaaState", on);
+    };
+    toggleMsaa = (): void => {
+        const next = !msaaOn;
+        if (next) setTaaEnabled(false); // TAA is an alternative to MSAA, not a companion
+        setMsaaEnabled(next);
+    };
+    // Apply the resolved setting (defaults ← saved ← ?msaa= override). Enabling here rather than at
+    // target-creation time keeps a single code path: the first frame does the same deferred graph
+    // rebuild a mid-session toggle does.
+    setMsaa(graphics.msaa);
+    canvas.dataset.msaa = String(graphics.msaa);
+    setHudFlag("msaaState", graphics.msaa);
 
     // Where the ship was last drawn, plus that draw's matrices — the source for per-particle LIT
     // colours (see particle-lit-colors.ts). The scene target is written every frame before the fluid
@@ -999,7 +1257,7 @@ export async function main(): Promise<void> {
         setForceField: (): void => {},
         dispose: (): void => {},
     };
-    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: engine.scRT, depthRT: sceneColorRT, camera: cam, sim: virtualSim as unknown as FluidSim });
+    const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: presentRT, depthRT: sceneColorRT, camera: cam, sim: virtualSim as unknown as FluidSim });
     surfaceTask.setSim(virtualSim as unknown as FluidSim);
     surfaceTask.setParticleAlpha(combinedAlpha);
     surfaceTask.setParticleColor(combinedColor);
@@ -1010,6 +1268,157 @@ export async function main(): Promise<void> {
     surfaceTask.setDirLight([-0.4, -0.82, -0.45]);
     if (env.specularCubeView && env.cubeSampler) surfaceTask.setEnvMap({ view: env.specularCubeView, sampler: env.cubeSampler });
     addTask(scene, surfaceTask);
+
+    // ── Presenting: exactly one pass, chosen by which AA mode is active ─────────────────────────
+    // MSAA above only supersamples POLYGON coverage, so it cannot touch the aliasing that dominates
+    // this content: the hard straight lines painted into the panel, grate and hazard-stripe
+    // textures. SMAA works on the finished image and treats those the same as a silhouette. TAA
+    // jitters the camera by a sub-pixel Halton offset each frame and accumulates, so it supersamples
+    // EVERYTHING including texture interiors — but core TAA resets to the raw frame whenever the
+    // camera moves (disableOnCameraMove), so today it only pays off standing still. Fixing that
+    // needs motion-vector reprojection, which core TAA does not have yet.
+    //
+    // SMAA and TAA are mutually exclusive (see applyExclusivity in settings.ts), so these are
+    // PARALLEL alternatives rather than a chain: all three read presentRT and write the swapchain,
+    // and gating picks exactly one. A chained design was tried first and cost an extra fullscreen
+    // blit on every path, which measurably degraded the image — MSAA scored worse than no AA.
+    let smaaOn = false;
+    let taaOn = false;
+    // TAA must not accumulate while the view is actually changing: with no motion vectors it
+    // reprojects a moved camera onto stale history, which is the ghosting you see. Core TAA's own
+    // `disableOnCameraMove` cannot do this job here — it keys off the camera's version, and the
+    // first-person controller smooths yaw asymptotically (`yaw += (yawTarget - yaw) * k`), so the
+    // camera technically changes EVERY frame forever and the flag would fire permanently, leaving
+    // TAA resetting every frame (measured: worse than no AA at all). Compare the actual values with
+    // an epsilon instead: real walking moves centimetres per frame, the smoothing residual decays to
+    // ~1e-9, so 0.1 mm cleanly separates them.
+    const TAA_STILL_EPS = 1e-4;
+    const TAA_FACTOR = 0.05; // core default: blend weight of the current frame once accumulating
+    let taaMoving = true;
+    let taaResetPending = false;
+    const taaPrevCam = new Float64Array(6);
+    const smaaTask = createSmaaPostProcessTask(
+        {
+            name: "aq-smaa",
+            sourceTexture: presentRT,
+            targetTexture: engine.scRT,
+            // presentRT carries engine.format, which is an sRGB VIEW when the engine was created
+            // with srgb: true. Sampling that decodes to linear, so edge detection must be told or its
+            // fixed threshold silently means something different (and misses most dark-region edges).
+            sourceIsSrgb: graphics.srgb,
+        },
+        engine,
+        scene
+    );
+    // TAA writes its jitter into the source render task's own scene-uniform block, so it has to
+    // point at the task that is actually drawing — which flips when MSAA is toggled (setMsaa
+    // re-points it). Otherwise the jitter lands in an unused UBO and TAA accumulates identical
+    // frames, doing nothing at all.
+    // disableOnCameraMove: false — the character controller re-writes the camera transform every
+    // frame (physics runs even when the player is stationary), so the default `true` sees "moved"
+    // on every single frame and resets the history forever: TAA then costs three passes and, because
+    // the jitter is still applied, hands back a sub-pixel-shifted frame that measures WORSE than no
+    // AA at all. With it off, history accumulates and a still view converges; the cost is ghosting
+    // while actually moving, which is the trade this demo wants.
+    const taaTask = createTaaPostProcessTask(
+        { name: "aq-taa", sourceTexture: presentRT, targetTexture: engine.scRT, sourceRenderTask: sceneTask, disableOnCameraMove: false },
+        engine,
+        scene
+    );
+    const presentCopyTask = createCopyToTextureTask({ name: "aq-present-copy", sourceTexture: presentRT, targetTexture: engine.scRT }, engine, scene);
+    // While moving, TAA is skipped entirely and the plain blit presents the raw frame: no history,
+    // no jitter, so no ghosting and no sub-pixel wobble. The scene re-packs a clean (unjittered)
+    // matrix on its own whenever the camera changes, so nothing stale is left behind.
+    gateExistingTask(smaaTask, () => smaaOn);
+    gateExistingTask(taaTask, () => taaOn && !taaMoving);
+    gateExistingTask(presentCopyTask, () => !smaaOn && !(taaOn && !taaMoving));
+    addTask(scene, smaaTask);
+    addTask(scene, taaTask);
+    addTask(scene, presentCopyTask);
+
+    // Closes the whole-frame timing envelope and resolves the fluid profiler's queries. Draws
+    // nothing, and MUST be the last task added — resolveInto has to be recorded after every timed
+    // pass, before the frame's command buffer is submitted.
+    if (fluidProfiler) {
+        const prof = fluidProfiler;
+        addTask(scene, {
+            name: "aq-timing-resolve",
+            engine,
+            scene,
+            _passes: [],
+            record: (): void => {},
+            execute: (): number => {
+                if (!fluidProfilerOn) {
+                    return 0;
+                }
+                prof.frameStop(engine._currentEncoder);
+                prof.resolveInto(engine._currentEncoder);
+                return 0;
+            },
+            dispose: (): void => {},
+        });
+    }
+    attachFluidProfiler = (): void => {
+        const p = fluidProfilerOn ? fluidProfiler : null;
+        surfaceTask.setProfiler(p);
+        for (const a of activeSims) {
+            (a.sim as { setProfiler?: (x: typeof p) => void }).setProfiler?.(p);
+        }
+    };
+    retargetTaa = (task: RenderTask): void => {
+        // `_sourceRenderTask` is internal, but it is the only way to follow the MSAA toggle.
+        (taaTask as unknown as { _sourceRenderTask: RenderTask })._sourceRenderTask = task;
+    };
+    // setMsaa already ran during startup, when retargetTaa was still a no-op, so point TAA at the
+    // task that MSAA actually left active.
+    retargetTaa(msaaOn && msaaSceneTask ? (msaaSceneTask as RenderTask) : sceneTask);
+
+    smaaOn = graphics.smaa;
+    canvas.dataset.smaa = String(smaaOn);
+    setHudFlag("smaaState", smaaOn);
+    setSmaaEnabled = (on: boolean): void => {
+        if (on === smaaOn) return;
+        smaaOn = on;
+        graphics.smaa = on;
+        saveGraphicsSettings(graphics);
+        canvas.dataset.smaa = String(on);
+        setHudFlag("smaaState", on);
+    };
+    toggleSmaa = (): void => {
+        const next = !smaaOn;
+        if (next) setTaaEnabled(false); // exclusive with TAA
+        setSmaaEnabled(next);
+    };
+    taaOn = graphics.taa;
+    canvas.dataset.taa = String(taaOn);
+    setHudFlag("taaState", taaOn);
+    setTaaEnabled = (on: boolean): void => {
+        if (on === taaOn) return;
+        taaOn = on;
+        graphics.taa = on;
+        saveGraphicsSettings(graphics);
+        canvas.dataset.taa = String(on);
+        setHudFlag("taaState", on);
+    };
+    toggleTaa = (): void => {
+        const next = !taaOn;
+        if (next) {
+            // TAA supersamples by jittering the camera; running it over MSAA/SMAA would accumulate
+            // already-filtered frames and the jitter would fight their edge detection.
+            setMsaaEnabled(false);
+            setSmaaEnabled(false);
+        }
+        setTaaEnabled(next);
+    };
+    // SSAA is deliberately NOT exclusive with the others: it is a different axis (how many pixels
+    // you render) and composes with any of them, which is exactly what makes it a useful baseline.
+    cycleSsaa = (): void => {
+        const opts = GRAPHICS_SETTING_DEFS.find((d) => d.key === "ssaa")?.options ?? [1];
+        const next = opts[(Math.max(0, opts.indexOf(graphics.ssaa)) + 1) % opts.length] ?? 1;
+        graphics.ssaa = next;
+        saveGraphicsSettings(graphics);
+        applySsaa(next);
+    };
 
     // The setting that most recently drove the shared surface pass, for the QA hook below.
     let activeRender: FluidRenderSetting | undefined;
@@ -1073,7 +1482,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = textureLoad(tex, coord, 0);             // sRGB view → linear
     outCol[i] = vec4<f32>(pow(max(c.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2)), 1.0);
 }`;
-    const colorPipe = device.createComputePipeline({ label: "aq-color-sample", layout: "auto", compute: { module: device.createShaderModule({ label: "aq-color-sample", code: COLOR_SAMPLE_WGSL }), entryPoint: "main" } });
+    const colorPipe = device.createComputePipeline({
+        label: "aq-color-sample",
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label: "aq-color-sample", code: COLOR_SAMPLE_WGSL }), entryPoint: "main" },
+    });
 
     // Build a per-particle RGBA colour buffer by texture-sampling each particle's UV. The UVs are
     // computed alongside the particles (in the worker when one is available), so nothing here touches
@@ -1109,51 +1522,75 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     };
 
     // ── Milestone D: Liquefaction ────────────────────────────────────────────────────────────────
-    // Shared scene SDF for every liquefaction sim: the UNION of every room + dynamic-mesh floating
-    // body (bodiesSdf reads the pose header + baked grids from the floating system's storage buffer,
-    // so Havok-driven pose changes on dynamic meshes flow straight into the fluid collision each step)
-    // AND an infinite ground plane.
+    // Fluid collision is the SHIP'S OWN AUTHORED PRIMITIVES, evaluated analytically — no baked SDF
+    // grids anywhere. Each simulation gets the subset of primitives whose bounds meet its domain,
+    // packed into a storage buffer; the WGSL is identical for every sim, so they all share one
+    // compiled pipeline (the solvers cache on shader source — a per-shot shader would pay a ~450 ms
+    // compile every time).
     //
-    // The plane is a BACKSTOP, not the room's floor — the room's own baked floor does that job (see the
-    // `invertSdf` note where the room bodies are added). It is here because `bodiesSdf` returns +1e9 for
-    // a point outside every baked grid, i.e. "no solid here" — no wall AND no floor — and a baked room
-    // grid is only the room's AABB. A fluid domain wide enough to let a puddle spread reaches past it
-    // (for crate4: 2.0 m in +X and 2.6 m in +Z, leaving 40% of the domain footprint uncovered), and the
-    // solver has no floor of its own: `groundY` only drives the near-ground anti-ripple damping. Water
-    // that escaped the room box would otherwise fall clean through the world to the domain clamp.
+    // A liquefied prop's own primitive is left out of its sim: it has just become the water, so
+    // colliding the water against it would trap every particle inside a solid.
     //
-    // Caveat: it is a single plane at FLOOR_Y, so it is right for the main deck only — a liquefiable
-    // prop on the upper deck would rest on it instead of falling. None are tagged today.
+    // The ground plane is a BACKSTOP for a domain that reaches past the authored floor slabs. It is a
+    // single plane at FLOOR_Y, so it is right for the main deck only — a liquefiable prop on an upper
+    // deck would rest on it rather than falling. None are tagged today.
     const sceneSdfUbo = device.createBuffer({ label: "aq-scene-sdf", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(sceneSdfUbo, 0, new Float32Array([FLOOR_Y, 0, 0, 0]));
-    const sceneSdf: SceneSdfSpec = {
-        struct: "struct SceneSdfParams { ground: vec4<f32>, };",
-        sdf: `${floatingSystem.sdfWgsl}
-fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(bodiesSdf(pt, dt), pt.y - sceneSdfParams.ground.x); }`,
-        buffer: sceneSdfUbo,
-        sdfGrid: floatingSystem.sdfBuffer,
-    };
+    const SCENE_SDF_STRUCT = "struct SceneSdfParams { ground: vec4<f32>, };";
+    const SCENE_SDF_BODY = `${PRIMITIVES_WGSL}
+fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), pt.y - sceneSdfParams.ground.x); }`;
 
-    // A/B alternative (G key): a bare ground plane, byte-for-byte the collision the Liquefactor demo
-    // gives its sims. The two demos otherwise share the solver, the setting file and the sampling, so
-    // toggling this isolates how much of the difference in how the water behaves comes from Aquanova
-    // colliding the fluid against the whole ship (rooms + every dynamic body) rather than a floor.
-    const groundSdfUbo = device.createBuffer({ label: "aq-ground-sdf", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(groundSdfUbo, 0, new Float32Array([FLOOR_Y, 0, 0, 0]));
-    const groundOnlySdf: SceneSdfSpec = {
-        struct: "struct SceneSdfParams { ground: vec4<f32>, };",
-        sdf: "fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return pt.y - sceneSdfParams.ground.x; }",
-        buffer: groundSdfUbo,
+    /** Buffer + spec for one sim's collision set, with the slots that need refreshing each step. */
+    interface CollisionSet {
+        buffer: GPUBuffer;
+        scratch: Float32Array;
+        /** The selected primitives, kept live so the debug overlay can draw exactly what the shader sees. */
+        prims: FluidPrimitive[];
+        /** Movable props in this set and the slot each occupies — only these are rewritten per step. */
+        moving: Array<{ body: DynBody; slot: number }>;
+        spec: SceneSdfSpec;
+    }
+    /** Select, pack and upload the primitives one simulation collides against. */
+    const buildCollisionSet = (min: readonly [number, number, number], max: readonly [number, number, number], exclude: ReadonlySet<string>): CollisionSet => {
+        const hit = (lo: readonly [number, number, number], hi: readonly [number, number, number]): boolean =>
+            lo[0] <= max[0] && hi[0] >= min[0] && lo[1] <= max[1] && hi[1] >= min[1] && lo[2] <= max[2] && hi[2] >= min[2];
+        const prims: FluidPrimitive[] = [];
+        const moving: Array<{ body: DynBody; slot: number }> = [];
+        if (!groundOnly) {
+            for (const s of staticPrims) if (!exclude.has(s.id) && hit(s.min, s.max)) prims.push(s.prim);
+            for (const d of dynBodies) {
+                // The melting prop is excluded: it has just BECOME this water, so colliding against it
+                // would trap every particle inside a solid.
+                if (d.instanceId && exclude.has(d.instanceId)) continue;
+                const p = livePrim(d);
+                if (!p) continue;
+                const bb = primAabb(p);
+                if (!hit(bb.min, bb.max)) continue;
+                if (d.movable) moving.push({ body: d, slot: prims.length });
+                prims.push(p);
+            }
+        }
+        const capacity = Math.max(prims.length, 1);
+        const buffer = device.createBuffer({ label: "aq-fluid-prims", size: primBufferBytes(capacity), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const scratch = new Float32Array(PRIM_HEADER + capacity * PRIM_STRIDE);
+        packPrimitives(scratch, prims);
+        device.queue.writeBuffer(buffer, 0, scratch);
+        return { buffer, scratch, prims, moving, spec: { struct: SCENE_SDF_STRUCT, sdf: SCENE_SDF_BODY, buffer: sceneSdfUbo, sdfGrid: buffer } };
     };
     let groundOnly = false;
-    const currentSceneSdf = (): SceneSdfSpec => (groundOnly ? groundOnlySdf : sceneSdf);
     toggleGroundOnly = (): void => {
         groundOnly = !groundOnly;
-        // Apply to water that is already running too, so the change is visible without re-shooting.
-        for (const a of activeSims) a.sim.setSceneSdf(currentSceneSdf());
+        // Rebuild every live sim's primitive set: ground-only simply packs ZERO primitives, so the
+        // shader (and its compiled pipeline) is unchanged — only the buffer's count header moves.
+        for (const a of activeSims) {
+            const set = buildCollisionSet(a.domainMin, a.domainMax, a.group.excluded);
+            a.collision.buffer.destroy();
+            a.collision = set;
+            a.sim.setSceneSdf(set.spec);
+        }
         canvas.dataset.groundOnly = groundOnly ? "on" : "off";
         // eslint-disable-next-line no-console
-        console.log(`[aquanova] fluid collision: ${groundOnly ? "GROUND PLANE ONLY (Liquefactor-equivalent)" : "full ship SDF (rooms + dynamic bodies)"}`);
+        console.log(`[aquanova] fluid collision: ${groundOnly ? "GROUND PLANE ONLY (Liquefactor-equivalent)" : "ship collision primitives + ground"}`);
     };
 
     // A radial burst from the volume centre plus a uniform directional push, so a liquefied prop
@@ -1191,7 +1628,19 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     // Fallback MLS-MPM water used when the manifest lists no fluidSim settings (or a name fails to load).
     // `maxSubDtMs` mirrors the solver default (1/120 s): the largest slice one sub-step may integrate,
     // which decides how many sub-steps a frame needs — never how much time it advances.
-    const FLUID_SETTING = { gravity: 9.8, stiffness: 350, viscosity: 0.3, restDensity: 3, damping: 0.995, affineDamping: 0.9, groundDamp: 0.85, groundDampHeight: 1.5, restitution: 0.3, substeps: 3, maxSubDtMs: 1000 / 120 };
+    const FLUID_SETTING = {
+        gravity: 9.8,
+        stiffness: 350,
+        viscosity: 0.3,
+        restDensity: 3,
+        damping: 0.995,
+        affineDamping: 0.9,
+        groundDamp: 0.85,
+        groundDampHeight: 1.5,
+        restitution: 0.3,
+        substeps: 3,
+        maxSubDtMs: 1000 / 120,
+    };
     // Build the solver a liquefied prop erupts into, honouring the chosen setting's method + params. The
     // settings can be MLS-MPM or PB-MPM. Render (colour/absorption/…) is a SHARED surface pass across all
     // active blobs, so it stays global — only the simulation varies per setting.
@@ -1199,26 +1648,57 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         setting: FluidSimSetting | undefined,
         o: { count: number; particleRadius: number; initialPositions: Float32Array; boundsMin: [number, number, number]; boundsMax: [number, number, number]; dx: number }
     ): FluidSim => {
-        const base = { count: o.count, particleRadius: o.particleRadius, initialPositions: o.initialPositions, boundsMin: o.boundsMin, boundsMax: o.boundsMax, dx: o.dx, groundY: FLOOR_Y };
+        const sim = buildFluidSimRaw(setting, o);
+        // Sims are created per shot, so a newly-spawned blob has to pick up the current profiler
+        // state or its passes would go untimed while the panel is open.
+        (sim as { setProfiler?: (p: FluidProfilerImpl | null) => void }).setProfiler?.(fluidProfilerOn ? fluidProfiler : null);
+        return sim;
+    };
+    const buildFluidSimRaw = (
+        setting: FluidSimSetting | undefined,
+        o: { count: number; particleRadius: number; initialPositions: Float32Array; boundsMin: [number, number, number]; boundsMax: [number, number, number]; dx: number }
+    ): FluidSim => {
+        const base = {
+            count: o.count,
+            particleRadius: o.particleRadius,
+            initialPositions: o.initialPositions,
+            boundsMin: o.boundsMin,
+            boundsMax: o.boundsMax,
+            dx: o.dx,
+            groundY: FLOOR_Y,
+        };
         if (setting?.method === "PB-MPM") {
             const p = setting.physics;
             return createPbMpmSim(engine, {
                 ...base,
                 material: setting.material ?? 0,
-                gravity: p.gravity, substeps: p.substeps, iterations: p.iterations,
+                gravity: p.gravity,
+                substeps: p.substeps,
+                iterations: p.iterations,
                 ...(p.maxSubDtMs ? { maxSubDt: p.maxSubDtMs / 1000 } : {}),
-                liquidRelaxation: p.liquidRelaxation, liquidViscosity: p.liquidViscosity,
-                elasticityRatio: p.elasticityRatio, elasticRelaxation: p.elasticRelaxation,
-                frictionAngle: p.frictionAngle, plasticity: p.plasticity, restitution: p.restitution,
+                liquidRelaxation: p.liquidRelaxation,
+                liquidViscosity: p.liquidViscosity,
+                elasticityRatio: p.elasticityRatio,
+                elasticRelaxation: p.elasticRelaxation,
+                frictionAngle: p.frictionAngle,
+                plasticity: p.plasticity,
+                restitution: p.restitution,
             });
         }
         const p = setting?.method === "MLS-MPM" ? setting.physics : FLUID_SETTING;
         return createMlsMpmSim(engine, {
             ...base,
-            gravity: p.gravity, stiffness: p.stiffness, viscosity: p.viscosity, restDensity: p.restDensity,
-            substeps: p.substeps, damping: p.damping, affineDamping: p.affineDamping,
+            gravity: p.gravity,
+            stiffness: p.stiffness,
+            viscosity: p.viscosity,
+            restDensity: p.restDensity,
+            substeps: p.substeps,
+            damping: p.damping,
+            affineDamping: p.affineDamping,
             ...(p.maxSubDtMs ? { maxSubDt: p.maxSubDtMs / 1000 } : {}),
-            groundDamp: p.groundDamp, groundDampHeight: p.groundDampHeight, restitution: p.restitution,
+            groundDamp: p.groundDamp,
+            groundDampHeight: p.groundDampHeight,
+            restitution: p.restitution,
         });
     };
     /**
@@ -1254,12 +1734,14 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 boundsMax: [1, 1, 1],
                 dx: 0.18,
             });
-            sim.setSceneSdf(currentSceneSdf());
+            const warmSet = buildCollisionSet([-1, -1, -1], [1, 1, 1], new Set());
+            sim.setSceneSdf(warmSet.spec);
             const enc = device.createCommandEncoder({ label: "aq-fluid-warmup" });
             sim.step(enc, 1 / 60);
             device.queue.submit([enc.finish()]);
             await device.queue.onSubmittedWorkDone();
             sim.dispose();
+            warmSet.buffer.destroy();
         }
         // eslint-disable-next-line no-console
         console.log(`[aquanova] fluid pipelines warmed (${[...methods].join(", ")}) in ${(performance.now() - t0).toFixed(0)} ms`);
@@ -1281,7 +1763,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     // pipeline is compiled with the plugin; disabled (no-op) until a shot fires.
     type PluginMat = { plugins?: unknown[]; _uboVersion: number };
     const liquefyStates = new Map<Mesh, LiquefyState>();
-    for (const m of dissolvableMeshes) {
+    for (const m of behaviorManager.dissolvableMeshes) {
         const mat = m.material;
         if (!mat || !isPbrMaterial(mat)) continue;
         const st: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
@@ -1290,11 +1772,14 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         m.material = clone;
         liquefyStates.set(m, st);
     }
-    const bumpMat = (mat: Material): void => { (mat as unknown as PluginMat)._uboVersion++; };
+    const bumpMat = (mat: Material): void => {
+        (mat as unknown as PluginMat)._uboVersion++;
+    };
     // Front radius that fully engulfs the mesh AABB from the hit point (+ edge band + margin).
     const computeMaxR = (hit: readonly [number, number, number], bMin: readonly [number, number, number], bMax: readonly [number, number, number]): number => {
         let maxD = 0;
-        for (const px of [bMin[0], bMax[0]]) for (const py of [bMin[1], bMax[1]]) for (const pz of [bMin[2], bMax[2]]) maxD = Math.max(maxD, Math.hypot(px - hit[0]!, py - hit[1]!, pz - hit[2]!));
+        for (const px of [bMin[0], bMax[0]])
+            for (const py of [bMin[1], bMax[1]]) for (const pz of [bMin[2], bMax[2]]) maxD = Math.max(maxD, Math.hypot(px - hit[0]!, py - hit[1]!, pz - hit[2]!));
         return maxD + LIQUEFY_EDGE + 0.5;
     };
 
@@ -1309,9 +1794,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         impulseRemaining: number;
         impulseBuffer: GPUBuffer;
         impulseSpec: ForceFieldSpec; // applied at the END of the dissolve (finishShot), not before
-    /** False when the setting's intensity is 0: the burst would be exactly zero, so the force pass is
-     *  never installed (the engine compiles it lazily on first use — see finishShot). */
-    impulseActive: boolean;
+        /** False when the setting's intensity is 0: the burst would be exactly zero, so the force pass is
+         *  never installed (the engine compiles it lazily on first use — see finishShot). */
+        impulseActive: boolean;
         // Dissolve/wriggle state:
         state: LiquefyState | null; // material clip state (null if the mesh had no PBR material)
         material: Material | null;
@@ -1324,6 +1809,10 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         useMeshColors: boolean;
         group: ShotGroup; // members erupt together, not as each one finishes melting
         dissolved: boolean; // front fully grown; waiting on the rest of the group
+        /** This sim's own collision primitives (see buildCollisionSet) and the domain they were picked for. */
+        collision: CollisionSet;
+        domainMin: [number, number, number];
+        domainMax: [number, number, number];
     }
     const activeSims: ActiveSim[] = [];
 
@@ -1335,39 +1824,18 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         sampling: number;
         sims: ActiveSim[];
         /** Floating-body indices this shot removes from the SDF union while its water is alive. */
-        excluded: number[];
+        /** Instance ids this shot's water must NOT collide against (its own prop + any xcludeSDF). */
+        excluded: ReadonlySet<string>;
         /** True once the exclusions are actually held, so the release runs exactly once. */
-        held: boolean;
         /** Unit direction from the player to the crosshair when the shot was fired. Used for a
          *  setting whose `impulse.direction` is (0,0,0) — "push it the way I shot it". */
         shotDir: [number, number, number];
     }
 
-    // `excludeSDF` refcount: two shots may exclude the same body (a door melted while its twin's water
-    // is still running), so a body is only restored once the LAST shot holding it is gone.
-    const sdfExcludeRefs = new Map<number, number>();
-    const holdSdfExclusions = (group: ShotGroup): void => {
-        if (group.held) return;
-        group.held = true;
-        for (const i of group.excluded) {
-            const n = (sdfExcludeRefs.get(i) ?? 0) + 1;
-            sdfExcludeRefs.set(i, n);
-            if (n === 1) floatingSystem.setBodySdfActive(i, false);
-        }
-    };
-    const releaseSdfExclusions = (group: ShotGroup): void => {
-        if (!group.held) return;
-        group.held = false;
-        for (const i of group.excluded) {
-            const n = (sdfExcludeRefs.get(i) ?? 1) - 1;
-            if (n > 0) {
-                sdfExcludeRefs.set(i, n);
-            } else {
-                sdfExcludeRefs.delete(i);
-                floatingSystem.setBodySdfActive(i, true);
-            }
-        }
-    };
+    // `excludeSDF` no longer needs refcounting. It existed because every sim shared ONE distance
+    // field, so excluding a body for one shot hid it from all of them and it could only be restored
+    // once the last shot let go. Each sim now owns the primitive set it was built with, so a shot
+    // simply omits what it should and nothing global changes.
 
     // ── Sampling worker pool ─────────────────────────────────────────────────────────────
     // The CPU particle fill is 100–400 ms for a typical prop and scales with the group size (a
@@ -1385,8 +1853,17 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         wriggleNode: SceneNode; // jittered from the moment the shot lands, before the seed arrives
         wriggleBase: [number, number, number];
         group: ShotGroup;
+        behaviorAvailability: MeshBehaviorAvailability;
     }
-    type SampleMsg = { id: number; positions: Float32Array; uvs: Float32Array | null; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number] };
+    type SampleMsg = {
+        id: number;
+        positions: Float32Array;
+        uvs: Float32Array | null;
+        count: number;
+        radius: number;
+        boundsMin: [number, number, number];
+        boundsMax: [number, number, number];
+    };
     interface PoolWorker {
         worker: Worker;
         pending: number;
@@ -1405,8 +1882,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         if (entry.dyn) entry.dyn.wriggling = false;
         // Nothing sampled — hand the mesh back so it stays shootable rather than becoming an inert
         // solid that can never be liquefied.
-        liquefiableMeshes.add(entry.mesh);
-        dissolvableMeshes.add(entry.mesh);
+        behaviorManager.restoreMesh(entry.mesh, entry.behaviorAvailability);
         eruptIfReady(entry.group); // the rest of the group may have been waiting on this one
     };
 
@@ -1460,7 +1936,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         const src = g.positions;
         const worldPos = new Float32Array(src.length);
         for (let i = 0; i < src.length; i += 3) {
-            const lx = src[i]!, ly = src[i + 1]!, lz = src[i + 2]!;
+            const lx = src[i]!,
+                ly = src[i + 1]!,
+                lz = src[i + 2]!;
             worldPos[i] = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
             worldPos[i + 1] = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
             worldPos[i + 2] = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
@@ -1477,8 +1955,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         const radius = setting?.particleRadius ?? DEFAULT_SAMPLE_RADIUS;
         // Retire the mesh as a target IMMEDIATELY: sampling is async now, so leaving it in the sets
         // would let a second shot (or a linked cascade) start a duplicate sim for the same mesh.
-        liquefiableMeshes.delete(mesh);
-        dissolvableMeshes.delete(mesh);
+        const behaviorAvailability = behaviorManager.retireMesh(mesh);
         // Start the pain shake NOW, on the click, rather than when the seed arrives — the sample takes
         // 100–400 ms in the worker and the prop would otherwise stand still through it. `wriggling`
         // decouples the display node from its Havok pose so the shake doesn't fight physics; the base
@@ -1495,6 +1972,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             wriggleNode,
             wriggleBase: [wriggleNode.position.x, wriggleNode.position.y, wriggleNode.position.z],
             group,
+            behaviorAvailability,
         };
         group.sampling++;
         samplingShots.add(entry);
@@ -1527,7 +2005,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         activeFoam = setting?.foam;
         activeSettingName = settingName;
         const { min, max } = sample;
-        const cx = (min[0] + max[0]) / 2, cy = (min[1] + max[1]) / 2, cz = (min[2] + max[2]) / 2;
+        const cx = (min[0] + max[0]) / 2,
+            cy = (min[1] + max[1]) / 2,
+            cz = (min[2] + max[2]) / 2;
         // Domain: the file's explicit `grid` when it pins an axis, else the automatic size from the
         // prop's own footprint. The wall is a hard boundary, so this is what decides how far a puddle
         // may spread — and the reason a prop tuned in Liquefactor only matches here when it carries
@@ -1549,7 +2029,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 `(${Math.ceil((halfX * 2) / dx)}×${Math.ceil((topY - floorY) / dx)}×${Math.ceil((halfZ * 2) / dx)} cells @ dx ${dx.toFixed(3)})`
         );
         const sim = buildFluidSim(setting, { count: sample.count, particleRadius: sample.radius, initialPositions: sample.positions, boundsMin, boundsMax, dx });
-        sim.setSceneSdf(currentSceneSdf());
+        // Collision: the authored primitives around THIS domain, minus the prop that just melted.
+        const collision = buildCollisionSet(boundsMin, boundsMax, entry.group.excluded);
+        sim.setSceneSdf(collision.spec);
+        // eslint-disable-next-line no-console
+        console.log(`[aquanova]   collision: ${collision.scratch[0]} primitive(s), ${collision.moving.length} movable`);
         // Per-particle mesh colours when the chosen setting asks for them (else the water stays uniform).
         // sample.positions (the seed) and worldPos (mesh vertices) share world space; g.uvs aligns with worldPos.
         const wantColor = !!setting?.useMeshColors;
@@ -1596,7 +2080,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         // a programmatic fire supplied none. The sim is NOT stepped during this phase: the water stays
         // mesh-shaped and is revealed as the solid clips away.
         const state = liquefyStates.get(mesh) ?? null;
-        const material = state ? mesh.material ?? null : null;
+        const material = state ? (mesh.material ?? null) : null;
         const hitPoint = entry.hit;
         const hit: [number, number, number] = hitPoint ? [hitPoint[0]!, hitPoint[1]!, hitPoint[2]!] : [cx, cy, cz];
         const maxR = computeMaxR(hit, min, max);
@@ -1613,10 +2097,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         device.queue.writeBuffer(
             impulseBuffer,
             0,
-            new Float32Array([
-                hit[0], hit[1], hit[2], blastR,
-                unit[0] * dirMag, unit[1] * dirMag, unit[2] * dirMag, IMPULSE_RADIAL_BASE * intensity,
-            ])
+            new Float32Array([hit[0], hit[1], hit[2], blastR, unit[0] * dirMag, unit[1] * dirMag, unit[2] * dirMag, IMPULSE_RADIAL_BASE * intensity])
         );
         activeImpulse = { intensity, direction: [unit[0], unit[1], unit[2]], radius: blastR, fromShotRay: dirLen <= 1e-6 };
         activePhysics = { method: setting?.method ?? "(fallback)", ...(setting?.method === "MLS-MPM" || setting?.method === "PB-MPM" ? setting.physics : FLUID_SETTING) };
@@ -1627,7 +2108,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         // its rest pose captured at request time, so the shake carries straight over.
         const dyn = entry.dyn;
 
-        if (state) { state.hit = hit; state.frontR = 0; state.enabled = true; }
+        if (state) {
+            state.hit = hit;
+            state.frontR = 0;
+            state.enabled = true;
+        }
         if (material) bumpMat(material);
         const wriggleNode = entry.wriggleNode;
         const wriggleBase = entry.wriggleBase;
@@ -1639,14 +2124,35 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             waterBase[i * 4 + 3] = 1;
         }
         activeSims.push({
-            sim, mesh, disp: dyn ? dyn.disp : null, dyn, phase: "dissolving",
-            fluidElapsed: 0, fadeElapsed: 0, impulseRemaining: 0, impulseBuffer, impulseSpec, impulseActive: intensity > 0,
-            state, material, maxR, wriggleNode, wriggleBase, waterBase, waterScratch: new Float32Array(sample.count * 4),
-            colorBuffer, useMeshColors: wantColor, group: entry.group, dissolved: false,
+            sim,
+            mesh,
+            disp: dyn ? dyn.disp : null,
+            dyn,
+            phase: "dissolving",
+            fluidElapsed: 0,
+            fadeElapsed: 0,
+            impulseRemaining: 0,
+            impulseBuffer,
+            impulseSpec,
+            impulseActive: intensity > 0,
+            state,
+            material,
+            maxR,
+            wriggleNode,
+            wriggleBase,
+            waterBase,
+            waterScratch: new Float32Array(sample.count * 4),
+            colorBuffer,
+            useMeshColors: wantColor,
+            group: entry.group,
+            dissolved: false,
+            collision,
+            domainMin: boundsMin,
+            domainMax: boundsMax,
         });
         entry.group.sims.push(activeSims[activeSims.length - 1]!);
     }
-    liquefyMesh = (mesh: Mesh, hitPoint?: readonly [number, number, number] | null): void => {
+    liquefyMesh = (mesh: Mesh, hitPoint?: readonly [number, number, number] | null, sourceConfig?: LiquefiableBehaviorConfig): void => {
         // Melting a node melts it WHOLE: every primitive of that node goes at once (a node with 4
         // primitives is one object to the player). A liquefiable behaviour may also name LINKED
         // nodes that have to melt at the same moment (e.g. a door's two leaves); linked names are
@@ -1667,11 +2173,13 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         while (queue.length) {
             const next = queue.shift()!;
             if (seen.has(next)) continue;
-            if (next !== mesh && !dissolvableMeshes.has(next)) continue; // already melting / not dissolvable
+            if (next !== mesh && !behaviorManager.isDissolvable(next)) continue; // already melting / not dissolvable
             seen.add(next);
             group.push(next);
             for (const s of nodePrimitives.get(next) ?? []) queue.push(s);
-            for (const name of linkedMeshNames(behaviorByMesh.get(next))) for (const other of meshesByNodeName.get(name) ?? []) queue.push(other);
+            for (const name of behaviorManager.getLinkedEntityNames(next)) {
+                for (const other of meshesByNodeName.get(name) ?? []) queue.push(other);
+            }
         }
 
         const bMin = mesh.boundMin;
@@ -1683,11 +2191,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
               : null;
         // Candidates come from the SHOT mesh's behaviour (its own `fluidSim` list when it has one,
         // otherwise the manifest's global list); the winner then applies to every member.
-        const ownSettings = behaviorByMesh.get(mesh)?.fluidSim;
+        const ownSettings = sourceConfig?.fluidSim ?? behaviorManager.getLiquefiableConfig(mesh)?.fluidSim;
         const candidates = ownSettings?.length ? ownSettings : fluidSettingNames;
         const settingName = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)]! : undefined;
 
-        const shot: ShotGroup = { sampling: 0, sims: [], excluded: excludedBodies(group), held: false, shotDir: shotDirection(origin) };
+        const shot: ShotGroup = { sampling: 0, sims: [], excluded: excludedIds(group), shotDir: shotDirection(origin) };
         for (const m of group) requestSample(m, origin, settingName, shot);
     };
 
@@ -1705,38 +2213,53 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         return len > 1e-6 ? [dx / len, dy / len, dz / len] : ([...IMPULSE_DEFAULT_DIR] as [number, number, number]);
     }
 
-    // Floating-body indices named by `excludeSDF` across a shot's members. A door names its frame: the
-    // water is seeded in the door's own volume, which sits INSIDE the frame, so leaving the frame in the
-    // SDF union would eject the seeded particles and dam the opening the door just left behind.
-    // Resolved before any member melts, while every body is still registered.
-    function excludedBodies(group: readonly Mesh[]): number[] {
-        const out = new Set<number>();
+    // Placements named by `excludeSDF` across a shot's members, plus the shot's own props. A door
+    // names its frame: the water is seeded in the door's own volume, which sits INSIDE the frame, so
+    // leaving the frame in the collision set would eject the seeded particles and dam the opening the
+    // door just left behind. Keyed by INSTANCE ID, so this now covers static placements too — the old
+    // version resolved to floating-body indices and so silently missed a frame, which is static and
+    // never had one.
+    function excludedIds(group: readonly Mesh[]): ReadonlySet<string> {
+        const out = new Set<string>();
+        const add = (m: Mesh): void => {
+            const id = instanceIdOfMesh(m);
+            if (id) out.add(id);
+        };
         for (const m of group) {
-            for (const name of excludedSdfMeshNames(behaviorByMesh.get(m))) {
-                for (const other of meshesByNodeName.get(name) ?? []) {
-                    const dyn = dynBodyByMesh.get(other);
-                    if (dyn) out.add(dyn.index);
-                }
+            add(m); // the prop that is becoming this water
+            for (const name of behaviorManager.getExcludedEntityNames(m)) {
+                for (const other of meshesByNodeName.get(name) ?? []) add(other);
             }
         }
-        return [...out];
+        return out;
     }
 
     // finishShot: this member's solid is fully melted → hide it, stop colliding, erupt its water.
     function finishShot(a: ActiveSim): void {
         a.wriggleNode.position.set(a.wriggleBase[0], a.wriggleBase[1], a.wriggleBase[2]);
-        if (a.state) { a.state.enabled = false; a.state.frontR = a.maxR; }
+        if (a.state) {
+            a.state.enabled = false;
+            a.state.frontR = a.maxR;
+        }
         if (a.material) bumpMat(a.material);
         setMeshVisible(a.mesh, false);
-        if (a.dyn) {
+        if (a.dyn && dynBodies.includes(a.dyn)) {
             // Solid has fully melted: NOW remove its Havok collider — any prop that was resting on it
             // drops into the erupting water (not before) — and park its SDF body far below so the
             // fluid no longer collides with the vanished solid.
-            removePhysicsBody(world, a.dyn.body);
-            dynBodyByMesh.delete(a.dyn.mesh);
+            //
+            // Guarded on the body still being live: every primitive of a multi-primitive node shares
+            // ONE body now, and each primitive finishes its own melt, so this runs once per node
+            // rather than once per primitive.
+            if (a.dyn.body) removePhysicsBody(world, a.dyn.body);
+            // The prop is gone: stop drawing its authored collision in the B overlay too, or the
+            // shape hangs in the air exactly where the melted prop used to be.
+            if (a.dyn.instanceId) removedPlacements.add(a.dyn.instanceId);
+            for (const m of a.dyn.meshes) {
+                dynBodyByMesh.delete(m);
+            }
             const di = dynBodies.indexOf(a.dyn);
             if (di >= 0) dynBodies.splice(di, 1);
-            floatingSystem.setBodyPose(a.dyn.index, [0, -1e6, 0], [0, 0, 0, 1], [0, 0, 0], [0, 0, 0]);
         }
         // A zero intensity zeroes both the radial and directional terms, so the pass would evaluate to
         // exactly 0 for every particle. Skip it: the engine builds the external-force compute pass
@@ -1758,7 +2281,6 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         for (const s of group.sims) if (s.phase === "dissolving" && !s.dissolved) return;
         // The sims start STEPPING now (they are frozen while dissolving), so this is the first moment
         // the scene SDF matters — and the last moment every body is still resolvable.
-        holdSdfExclusions(group);
         for (const s of group.sims) if (s.phase === "dissolving") finishShot(s);
     }
 
@@ -1768,28 +2290,78 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     // solid, remove its Havok collider + park its SDF body, fire the impulse). FLUID/FADING — step the
     // sim, drive the impulse + lifetime, then fade out and dispose. Encoded BEFORE the surface task reads
     // combinedPos.
-    onBeforeRender(scene, (deltaMs: number) => {
+    behaviorManager.events.on("frameStart", ({ deltaMs }) => {
+        // A newly-inserted task (the MSAA scene pass + its depth resolve) needs the whole graph
+        // re-recorded, which re-allocates canvas-sized targets other tasks' bind groups point at.
+        // Do it here, at the very top of the frame, before anything is encoded against them.
+        if (pendingFrameGraphRebuild) {
+            pendingFrameGraphRebuild = false;
+            getFrameGraph(scene).build();
+        }
+        // Open the fluid profiler's frame BEFORE anything is encoded: beginFrame resets the query
+        // cursor, frameStart stamps the whole-frame envelope that "aq-timing-resolve" closes.
+        if (fluidProfilerOn && fluidProfiler) {
+            fluidProfiler.beginFrame();
+            fluidProfiler.frameStart(engine._currentEncoder);
+        }
+        // Has the view actually changed since last frame? Position and target together cover both
+        // walking and looking. On the first still frame after moving, burn one frame at factor 1 to
+        // throw away the history accumulated at the old viewpoint — otherwise it bleeds in as a
+        // slowly-fading ghost for about a second.
+        const camMoved =
+            Math.abs(cam.position.x - taaPrevCam[0]!) > TAA_STILL_EPS ||
+            Math.abs(cam.position.y - taaPrevCam[1]!) > TAA_STILL_EPS ||
+            Math.abs(cam.position.z - taaPrevCam[2]!) > TAA_STILL_EPS ||
+            Math.abs(cam.target.x - taaPrevCam[3]!) > TAA_STILL_EPS ||
+            Math.abs(cam.target.y - taaPrevCam[4]!) > TAA_STILL_EPS ||
+            Math.abs(cam.target.z - taaPrevCam[5]!) > TAA_STILL_EPS;
+        taaPrevCam[0] = cam.position.x;
+        taaPrevCam[1] = cam.position.y;
+        taaPrevCam[2] = cam.position.z;
+        taaPrevCam[3] = cam.target.x;
+        taaPrevCam[4] = cam.target.y;
+        taaPrevCam[5] = cam.target.z;
+        taaMoving = camMoved;
+        if (camMoved) {
+            taaResetPending = true;
+        } else if (taaResetPending) {
+            taaResetPending = false;
+            taaTask.factor = 1;
+        } else {
+            taaTask.factor = TAA_FACTOR;
+        }
+        canvas.dataset.taaAccum = String(taaOn && !taaMoving);
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         const growDt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
         // Shots still waiting on their seed: shake the solid so the hit reads instantly. There is no
         // water to shake in lock-step yet — that starts with the ActiveSim below.
         for (const s of samplingShots) {
-            const ox = (Math.random() * 2 - 1) * WRIGGLE_AMP, oy = (Math.random() * 2 - 1) * WRIGGLE_AMP, oz = (Math.random() * 2 - 1) * WRIGGLE_AMP;
+            const ox = (Math.random() * 2 - 1) * WRIGGLE_AMP,
+                oy = (Math.random() * 2 - 1) * WRIGGLE_AMP,
+                oz = (Math.random() * 2 - 1) * WRIGGLE_AMP;
             s.wriggleNode.position.set(s.wriggleBase[0] + ox, s.wriggleBase[1] + oy, s.wriggleBase[2] + oz);
         }
         canvas.dataset.sampling = String(samplingShots.size);
         colliderOverlay?.onFrame(); // dynamic proxies move; the chunk changes as you walk
+        perfOverlay.onFrame(deltaMs); // FPS + GPU timing readout (P)
         // The room voxels cover EVERY baked room and are world-anchored, so neither walking around nor
         // crossing a chunk boundary changes them. Only the dynamic bodies actually move.
-        sdfOverlay?.onFrame();
         for (let k = activeSims.length - 1; k >= 0; k--) {
             const a = activeSims[k]!;
             if (a.phase === "dissolving") {
                 // Pain-shake the solid + the mesh-shaped water in lock-step.
-                const ox = (Math.random() * 2 - 1) * WRIGGLE_AMP, oy = (Math.random() * 2 - 1) * WRIGGLE_AMP, oz = (Math.random() * 2 - 1) * WRIGGLE_AMP;
+                const ox = (Math.random() * 2 - 1) * WRIGGLE_AMP,
+                    oy = (Math.random() * 2 - 1) * WRIGGLE_AMP,
+                    oz = (Math.random() * 2 - 1) * WRIGGLE_AMP;
                 a.wriggleNode.position.set(a.wriggleBase[0] + ox, a.wriggleBase[1] + oy, a.wriggleBase[2] + oz);
-                const wb = a.waterBase, ws = a.waterScratch;
-                for (let i = 0; i < wb.length; i += 4) { ws[i] = wb[i]! + ox; ws[i + 1] = wb[i + 1]! + oy; ws[i + 2] = wb[i + 2]! + oz; ws[i + 3] = 1; }
+                const wb = a.waterBase,
+                    ws = a.waterScratch;
+                for (let i = 0; i < wb.length; i += 4) {
+                    ws[i] = wb[i]! + ox;
+                    ws[i + 1] = wb[i + 1]! + oy;
+                    ws[i + 2] = wb[i + 2]! + oz;
+                    ws[i + 3] = 1;
+                }
                 device.queue.writeBuffer(a.sim.positionBuffer, 0, ws);
                 if (a.state) a.state.frontR = Math.min(a.state.frontR + LIQUEFY_SPEED * growDt, a.maxR);
                 if (a.material) bumpMat(a.material);
@@ -1808,13 +2380,20 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                     a.sim.setForceField(null);
                     a.sim.dispose();
                     a.impulseBuffer.destroy();
+                    a.collision.buffer.destroy();
                     a.colorBuffer?.destroy();
                     // Fully remove the (already-hidden) solid: a dynamic prop's display root takes its
-                    // reparented mesh with it; a static prop is the mesh itself.
-                    removeFromScene(scene, a.disp ?? a.mesh);
+                    // reparented meshes with it; a static prop is the mesh itself. A multi-primitive
+                    // node shares ONE root, so it can only go once its last primitive's water is done —
+                    // dropping it on the first would take the node's other, still-melting parts with it.
+                    const sharedRootBusy = !!a.disp && activeSims.some((o, oi) => oi !== k && o.disp === a.disp);
+                    if (!sharedRootBusy) {
+                        removeFromScene(scene, a.disp ?? a.mesh);
+                    } else {
+                        setMeshVisible(a.mesh, false);
+                    }
                     activeSims.splice(k, 1);
                     // Last of this shot's water gone → put any SDF bodies it excluded back in the union.
-                    if (!activeSims.some((s) => s.group === a.group)) releaseSdfExclusions(a.group);
                     continue;
                 }
             }
@@ -1862,6 +2441,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         canvas.dataset.particleCount = String(off);
         canvas.dataset.activeSims = String(activeSims.length);
     });
+    behaviorManager.bindSystemEvents(scene, world);
 
     enableMaterialPlugins(scene);
     await registerScene(scene);

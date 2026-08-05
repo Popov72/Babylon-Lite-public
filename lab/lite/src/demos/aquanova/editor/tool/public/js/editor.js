@@ -1765,8 +1765,26 @@ export function focusNodes(nodes) {
 
 // ----------------------------------------------------------------- chunks
 
+/**
+ * The far side of a door that opens onto space rather than onto a room.
+ *
+ * A window looking out of the hull is still a portal - the renderer has to know
+ * there is an opening and what shape it is - but there is no chunk on the other
+ * side to draw. So it is expressed as a reserved chunk id rather than as yet
+ * another boolean: everything that already reasons about a door's two sides -
+ * isolation, validation, the portal record, the manifest - keeps working
+ * unchanged, and a side is still just a name.
+ *
+ * Double-underscored so it cannot be confused with a room, and `addChunk` and
+ * `renameChunk` both refuse it, so no real chunk can ever collide with it.
+ */
+export const SKYBOX_CHUNK = "__SKYBOX__";
+
+/** True for the one side value that names space instead of a room. */
+export function isSkyboxChunk(id) { return id === SKYBOX_CHUNK; }
+
 export function addChunk(name) {
-  if (!name || state.chunks.includes(name)) return false;
+  if (!name || name === SKYBOX_CHUNK || state.chunks.includes(name)) return false;
   state.chunks.push(name);
   emit("chunks");
   return true;
@@ -1783,6 +1801,7 @@ export function addChunk(name) {
 export function renameChunk(from, to) {
   const name = String(to || "").trim();
   if (!from || !name || from === name) return false;
+  if (name === SKYBOX_CHUNK) return false;
   if (!state.chunks.includes(from) || state.chunks.includes(name)) return false;
   pushUndo();
 

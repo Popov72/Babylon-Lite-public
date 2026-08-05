@@ -145,9 +145,38 @@ const glbFailures = [];
     glbFailures.push(`${tagged.length - resolvable.length} node(s) name an instance`
       + " the manifest does not have");
   }
+  // ---- the glass never asks for transmission -------------------------------
+  // A window here is a green base colour and an alpha. `KHR_materials_ior` is
+  // welcome - it is what takes the white sheen off the pane - but
+  // `KHR_materials_transmission` is not: Babylon-Lite's refraction path
+  // retargets the scene to an offscreen HDR buffer, which hides the fluid
+  // surface that composites after it, and aquanova/main.ts already has to strip
+  // the sub-feature at load time to get the water back. Nothing in the editor
+  // sets `subSurface.isRefractionEnabled`, so the serializer has no reason to
+  // emit it - this is here to catch the day something does.
+  const glass = (json.materials || []).filter((m) => /glass/i.test(m.name || ""));
+  const transmissive = glass.filter((m) => m.extensions?.KHR_materials_transmission);
+  const green = glass.filter((m) => {
+    const c = m.pbrMetallicRoughness?.baseColorFactor;
+    return c && c[1] > c[0] && c[1] > c[2] && c[3] < 1 && m.alphaMode === "BLEND";
+  });
+  const exts = [...new Set(glass.flatMap((m) => Object.keys(m.extensions || {})))];
+  console.log(`glb glass    : ${glass.length} material(s), green and see-through:`
+    + ` ${green.length}, extensions: ${exts.join("+") || "(none)"}`);
+  if (transmissive.length) {
+    glbFailures.push(`${transmissive.length} glass material(s) ask for KHR_materials_transmission`);
+  }
+  if ((json.extensionsUsed || []).includes("KHR_materials_transmission")) {
+    glbFailures.push("the glb declares KHR_materials_transmission in extensionsUsed");
+  }
+  if (glass.length && green.length !== glass.length) {
+    glbFailures.push(`${glass.length - green.length} glass material(s) not green and blended`);
+  }
+
+
   if (glbFailures.length) {
-    console.log("GLB EXTRAS BROKEN:", glbFailures.join(" | "));
-    errors.push("glb extras: " + glbFailures.join(" | "));
+    console.log("EXPORTED GLB BROKEN:", glbFailures.join(" | "));
+    errors.push("exported glb: " + glbFailures.join(" | "));
   }
 }
 

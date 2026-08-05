@@ -8,7 +8,7 @@ import {
   state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
   loadModuleCollision, serializeModuleCollision, emit, hooks,
   serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
-  applyEnvironment, whileBusy, withVeilSuspended, isVeilClone,
+  applyEnvironment, whileBusy, withVeilSuspended, isVeilClone, SKYBOX_CHUNK,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -299,7 +299,12 @@ export function buildManifest() {  const layout = serialize();
       // than a doorway. Written on the door only for now; collision generation
       // will read it when that work happens. Default false, so every manifest
       // written before this reads back as an ordinary doorway.
-      sealed: !!m.sealed,
+      //
+      // A skybox side implies it: `normalizeDoorSides` already settles the pair
+      // whenever a door is made or loaded, and this restates it at the point
+      // the contract is actually written, so a hand-edited manifest cannot
+      // describe a window onto space you could walk out of.
+      sealed: !!m.sealed || b === SKYBOX_CHUNK,
       leaves: m.leaves
         .filter((id) => state.placements.has(id))
         .map((id) => ({
@@ -311,6 +316,11 @@ export function buildManifest() {  const layout = serialize();
 
   const adjacency = Object.fromEntries(state.chunks.map((c) => [c, []]));
   for (const p of portals) {
+    // The skybox is a destination, not a room: it is deliberately absent from
+    // `chunks`, so the guards below leave it out of the reverse direction. The
+    // forward edge is kept - a portal renderer standing in the room has to know
+    // this opening leads to space and not to another chunk - and the door's
+    // `sealed` flag says nobody can walk it.
     if (adjacency[p.chunkA]) adjacency[p.chunkA].push({ to: p.chunkB, portal: p.id });
     if (adjacency[p.chunkB]) adjacency[p.chunkB].push({ to: p.chunkA, portal: p.id });
   }

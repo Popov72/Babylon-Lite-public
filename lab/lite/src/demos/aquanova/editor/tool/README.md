@@ -43,7 +43,9 @@ as a module id plus a transform, so a layout reloads exactly:
   "markers":  [ /* doors, see below */ ],
   "chunks":   [ { "id": "CH00_Storage", "node": "CHUNK_CH00_Storage", "aabb": {...} } ],
   "portals":  [ { "id", "chunkA", "chunkB", "door", "centre", "normal", "corners" } ],
-  "doors":    [ { "id", "chunkA", "chunkB", "position", "triggerRadius", "leaves" } ],
+  "doors":    [ { "id", "chunkA", "chunkB", "position", "triggerRadius", "sealed", "leaves" } ],
+  // chunkB may be "__SKYBOX__": a window through the hull, with space behind it
+  // rather than a room. Such a door is always sealed, and is not in "chunks".
   "adjacency": { "CH00_Storage": [ { "to": "CH01_CorridorA", "portal": "Portal_Door_D00" } ] },
   "view":     { "position": [...], "rotation": [...], "target": [...] },
   "environment": { "strength", "toneMapping", "exposure" },
@@ -1274,6 +1276,8 @@ Doors carry the portal:
   placements registered as the animated leaves.
 * Chunk A/B default to `(auto)`, which resolves to the two nearest chunk
   volumes at save time. Set them explicitly when that guess is wrong.
+* **Chunk B also offers `Skybox (outer space)`** — a window through the hull
+  rather than a doorway between rooms. See below.
 * **Sealed** marks a portal you can see through but not walk through — a window
   onto space rather than a doorway. The renderer still draws the far chunk;
   collision generation keeps the opening solid. It is written on the door
@@ -1290,6 +1294,33 @@ Doors carry the portal:
 
 Portals and the adjacency graph are derived from doors, so there is nothing
 extra to keep in sync.
+
+**A door onto space is a reserved chunk id, not a fourth boolean.** Chunk B
+offers `Skybox (outer space)`, which writes `__SKYBOX__`. A window through the
+hull is still a portal — the renderer needs the opening and its shape — but
+there is no room behind it to draw. Expressing that as a *side* means
+everything that already reasons about a door's two sides keeps working
+untouched: isolation still shows the door in the room it belongs to, validation
+still sees both sides resolved, `portalOf()` still produces a portal record. A
+`skybox: true` flag beside `sealed` would have needed every one of those places
+taught about it.
+
+The id buys that at the cost of two obligations, both enforced:
+
+* **It cannot collide with a real room.** `addChunk` and `renameChunk` both
+  refuse `__SKYBOX__`, so no chunk can ever be given that name by any route.
+* **"Opens onto space" and "not sealed" cannot both be true.** There is nothing
+  out there to walk into. Picking Skybox ticks **Sealed** and disables the box;
+  `normalizeDoorSides()` settles the pair wherever a door is made or loaded, and
+  `buildManifest` restates it (`sealed: !!m.sealed || b === SKYBOX_CHUNK`) so a
+  hand-edited manifest cannot describe a window you could step out of.
+
+Two smaller consequences fall out of it. Space is **not** listed in `chunks` —
+it has no aabb and no contents — so the adjacency edge is deliberately one-way:
+`CH_x → __SKYBOX__` is written, because a renderer standing in the room has to
+know this opening leads outside, but nothing leads back. And the "no leaves
+assigned" warning is suppressed for these doors: a hole in the hull has nothing
+to slide, so the warning would be permanent noise.
 
 **Isolation shows a door in both the rooms it joins.** A door is not *in* a
 chunk, so markers were exempt from isolation outright - which left a door
@@ -2038,6 +2069,24 @@ glass.
 `ior` is why it reads as a tint rather than a shine. A dielectric's reflectance
 is `((n−1)/(n+1))²`, so an index of refraction of 1 makes it zero: the pane
 stops catching a white highlight and the colour is left to be read on its own.
+
+> **There is no `KHR_materials_transmission` in the export, and there must not
+> be.** Babylon's serializer only emits it when `subSurface.isRefractionEnabled`
+> and the refraction intensity is non-zero; nothing here touches either, and
+> setting `indexOfRefraction` does *not* turn them on — measured: after
+> `mat.indexOfRefraction = 1`, `isRefractionEnabled` is still `false` and the
+> material exports with `KHR_materials_ior` alone. `e2e.mjs` asserts the
+> absence.
+>
+> Worth knowing anyway, because the two get confused: **Babylon-Lite's loader
+> starts its refraction sub-feature from `KHR_materials_ior` on its own.**
+> `gltf-ext-dielectric.ts` writes `subsurface.refraction = { indexOfRefraction }`
+> for any material carrying the ior extension, and `RefractionProps` is
+> presence-enabled — no transmission factor needed. That path retargets the
+> scene to an offscreen HDR buffer, which hides the fluid surface compositing
+> after it, so `aquanova/main.ts` (~line 348) walks the ship meshes and clears
+> `subsurface.refraction` at load. So an exported `ior` is harmless in the file
+> and handled at the far end; it is not the transmission extension.
 
 All of it is applied to the ship and the palette alike, and all of it **is
 exported**: the glb comes out `alphaMode: "BLEND"` with the tint and alpha in

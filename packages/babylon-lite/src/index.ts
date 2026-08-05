@@ -123,6 +123,8 @@ export { createDepthOfFieldPostProcessTask, DepthOfFieldBlurLevel } from "./post
 export type { DepthOfFieldPostProcessTask, DepthOfFieldPostProcessTaskConfig } from "./post-process/depth-of-field.js";
 export { createTaaPostProcessTask } from "./post-process/taa.js";
 export type { TaaPostProcessTask, TaaPostProcessTaskConfig } from "./post-process/taa.js";
+export { createSmaaPostProcessTask } from "./post-process/smaa.js";
+export type { SmaaPostProcessTask, SmaaPostProcessTaskConfig } from "./post-process/smaa.js";
 
 // ─── Camera ──────────────────────────────────────────────────────────
 export { createArcRotateCamera } from "./camera/arc-rotate.js";

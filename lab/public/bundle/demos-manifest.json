@@ -1,58 +1,70 @@
 {
   "offscreen": {
-    "rawKB": 220.3,
-    "gzipKB": 91.6
+    "rawKB": 225.2,
+    "gzipKB": 94.9
   },
   "torus-states": {
-    "rawKB": 27.2,
-    "gzipKB": 9.8
+    "rawKB": 27.5,
+    "gzipKB": 9.9
   },
   "doom": {
-    "rawKB": 127.4,
-    "gzipKB": 42.8
+    "rawKB": 146.8,
+    "gzipKB": 51.1
   },
   "quake": {
-    "rawKB": 129.8,
-    "gzipKB": 47
+    "rawKB": 135.7,
+    "gzipKB": 49.6
   },
   "minecraft": {
-    "rawKB": 108.2,
-    "gzipKB": 38.9
+    "rawKB": 116.4,
+    "gzipKB": 42.2
   },
   "freeciv": {
-    "rawKB": 67.3,
-    "gzipKB": 25.4
+    "rawKB": 69.3,
+    "gzipKB": 26.6
   },
   "tetris": {
-    "rawKB": 73.9,
-    "gzipKB": 27.4
+    "rawKB": 123.2,
+    "gzipKB": 47.6
   },
   "break-meshes": {
-    "rawKB": 183.2,
-    "gzipKB": 70.1
+    "rawKB": 185.6,
+    "gzipKB": 71.5
   },
   "mosquito-amber": {
-    "rawKB": 109,
-    "gzipKB": 43.6
+    "rawKB": 111.7,
+    "gzipKB": 45.1
   },
   "littlest-tokyo": {
-    "rawKB": 62.9,
-    "gzipKB": 25.6
+    "rawKB": 118.7,
+    "gzipKB": 49.9
   },
   "bath-day": {
-    "rawKB": 182.8,
-    "gzipKB": 63.8
+    "rawKB": 187.2,
+    "gzipKB": 66.2
   },
   "platformer": {
-    "rawKB": 84.3,
-    "gzipKB": 30.1
+    "rawKB": 84.1,
+    "gzipKB": 30.2
   },
   "sandblox": {
-    "rawKB": 113.2,
-    "gzipKB": 40.9
+    "rawKB": 148.2,
+    "gzipKB": 54.6
   },
   "racer": {
-    "rawKB": 200.6,
-    "gzipKB": 77
+    "rawKB": 202,
+    "gzipKB": 78.1
+  },
+  "fluid": {
+    "rawKB": 495.5,
+    "gzipKB": 160.8
+  },
+  "liquefactor": {
+    "rawKB": 467.3,
+    "gzipKB": 158.1
+  },
+  "aquanova": {
+    "rawKB": 450.2,
+    "gzipKB": 154.5
   }
 }

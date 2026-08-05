@@ -6,7 +6,7 @@ import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
   saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, resolveDoorChunks,
 } from "./manifest.js";
-import { addDoor, doorFromSelection, resizeDoor } from "./markers.js";
+import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
   removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE, COLLIDER_DEFAULT_SCALE,
   reconcileCollider, colliderDims,
@@ -25,7 +25,7 @@ import {
   shipPlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
   renameChunk, renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
-  setVeilAlpha,
+  setVeilAlpha, SKYBOX_CHUNK,
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
@@ -69,6 +69,9 @@ function setStatus(msg) { statusText.textContent = msg; }
 const posIn = ["pos-x", "pos-y", "pos-z"].map($);
 const rotIn = ["rot-x", "rot-y", "rot-z"].map($);
 const sclIn = ["scl-x", "scl-y", "scl-z"].map($);
+// Read from the markup rather than restated here, so the tooltip a door onto
+// space temporarily replaces has exactly one author.
+const SEALED_TITLE = $("door-sealed").parentElement.title;
 let syncing = false;
 
 function refreshInspector() {
@@ -112,10 +115,17 @@ function refreshInspector() {
     setField($("door-w"), e.width);
     setField($("door-h"), e.height);
     fillChunkSelect($("door-a"), e.chunkA);
-    fillChunkSelect($("door-b"), e.chunkB);
+    fillChunkSelect($("door-b"), e.chunkB, { skybox: true });
     setField($("door-trig"), e.triggerRadius);
     setField($("door-slide"), e.slideDistance);
+    // A window onto space is sealed and cannot be anything else, so the box
+    // shows the truth but stops being an argument.
+    const toSpace = e.chunkB === SKYBOX_CHUNK;
     $("door-sealed").checked = !!e.sealed;
+    $("door-sealed").disabled = toSpace;
+    $("door-sealed").parentElement.title = toSpace
+      ? "Forced: a door onto the skybox opens onto space, which cannot be walked into."
+      : SEALED_TITLE;
     $("door-leaves").textContent = e.leaves.length ? e.leaves.join(", ") : "none";
   }
   refreshDimensions();
@@ -420,15 +430,26 @@ function refreshDimensions() {
   $("dim-note").textContent = counted > 1 ? `— combined, ${counted} objects` : "— metres, X/Y/Z";
 }
 
-function fillChunkSelect(sel, value) {
+/**
+ * The chunk list as a dropdown, plus the two entries that are not chunks.
+ *
+ * "(auto)" is the empty value - let the manifest infer the side. `skybox: true`
+ * adds the reserved id that means "space", offered on Chunk B only: a portal
+ * has to lead *from* somewhere, and a door with space on both sides would be a
+ * hole in nothing.
+ */
+function fillChunkSelect(sel, value, { skybox = false } = {}) {
   sel.innerHTML = "";
-  for (const c of ["", ...state.chunks]) {
+  const entries = [["", "(auto)"], ...state.chunks.map((c) => [c, c])];
+  if (skybox) entries.push([SKYBOX_CHUNK, "Skybox (outer space)"]);
+  for (const [v, label] of entries) {
     const o = document.createElement("option");
-    o.value = c;
-    o.textContent = c || "(auto)";
+    o.value = v;
+    o.textContent = label;
     sel.appendChild(o);
   }
-  sel.value = state.chunks.includes(value) ? value : "";
+  const known = state.chunks.includes(value) || (skybox && value === SKYBOX_CHUNK);
+  sel.value = known ? value : "";
 }
 
 /**
@@ -575,6 +596,15 @@ for (const [id, key] of [["door-a", "chunkA"], ["door-b", "chunkB"]]) {
     if (!e || e.type !== "door" || syncing) return;
     pushUndo();
     e[key] = $(id).value;
+    // Choosing space as the far side seals the door; the inspector is redrawn
+    // so the checkbox shows it and greys out, rather than sitting there stale.
+    normalizeDoorSides(e);
+    if (key === "chunkB") {
+      setStatus(e.chunkB === SKYBOX_CHUNK
+        ? `${e.id} opens onto space — sealed, see through only`
+        : `${e.id}: chunk B is ${e.chunkB || "(auto)"}`);
+    }
+    refreshInspector();
     validate();
   });
 }
@@ -1575,7 +1605,9 @@ function validate() {
     linked.add(a); linked.add(b);
     if (!a || !b) out.push(["err", `${d.id}: only one side resolves (${a || b || "none"})`]);
     else if (a === b) out.push(["err", `${d.id}: both sides resolve to ${a}`]);
-    if (!d.leaves.length) out.push(["warn", `${d.id}: no leaves assigned`]);
+    // A window onto space has nothing to slide: it is a hole in the hull, not a
+    // doorway, so the missing-leaves warning would be permanent noise.
+    if (!d.leaves.length && b !== SKYBOX_CHUNK) out.push(["warn", `${d.id}: no leaves assigned`]);
   }
   const orphans = state.chunks.filter((c) =>
     !linked.has(c) && shipPlacements().some((p) => p.chunk === c));

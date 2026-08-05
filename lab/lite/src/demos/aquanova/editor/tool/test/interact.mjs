@@ -8355,6 +8355,97 @@ check("every door is back once isolation is off",
   JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
+// ---- 1w. a door onto the skybox ------------------------------------------
+//
+// A window through the hull is still a portal - the renderer needs the opening
+// and its shape - but there is no room behind it. It is expressed as a reserved
+// chunk id rather than another boolean, so everything that already reasons
+// about a door's two sides keeps working; the price is that the id must be
+// unusable as a real chunk, and that "opens onto space" and "not sealed" must
+// not both be true at once.
+const sky = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const man = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const W = "Walls/ShortWall_Band2_Straight";
+  ed.addChunk("CH_SKY_A");
+  ed.state.activeChunk = "CH_SKY_A";
+  await ed.placeAt(W, new V(0, 0, 0), { silent: true });
+
+  const out = { id: ed.SKYBOX_CHUNK };
+  // The reserved id cannot be taken by a room, whichever way it is reached.
+  out.addRefused = ed.addChunk(ed.SKYBOX_CHUNK) === false
+    && !ed.state.chunks.includes(ed.SKYBOX_CHUNK);
+  out.renameRefused = ed.renameChunk("CH_SKY_A", ed.SKYBOX_CHUNK) === false
+    && ed.state.chunks.includes("CH_SKY_A");
+
+  // Set through the inspector, the way a user would.
+  const door = mk.addDoor(new V(4, 0, 0), { chunkA: "CH_SKY_A", silent: true });
+  ed.select([door.id]);
+  const sel = document.getElementById("door-b");
+  out.offered = [...sel.options].map((o) => o.value);
+  out.offeredOnA = [...document.getElementById("door-a").options].map((o) => o.value);
+  sel.value = ed.SKYBOX_CHUNK;
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const box = document.getElementById("door-sealed");
+  out.afterPick = { chunkB: door.chunkB, sealed: door.sealed,
+                    checked: box.checked, disabled: box.disabled };
+
+  // The manifest is the contract: the side is written through, and the portal
+  // edge is one-way because space is not a room with an aabb to come back from.
+  const m = man.buildManifest();
+  const d = m.doors.find((x) => x.id === door.id);
+  const p = m.portals.find((x) => x.door === door.id);
+  out.written = { chunkB: d?.chunkB, sealed: d?.sealed, portalB: p?.chunkB };
+  out.chunkList = m.chunks.map((c) => c.id);
+  out.adjacency = m.adjacency;
+
+  // ...and it survives a round trip through serialize/deserialize.
+  const saved = mk.serializeMarkers();
+  mk.deserializeMarkers(saved);
+  const back = [...ed.state.markers.values()][0];
+  out.roundTrip = { chunkB: back?.chunkB, sealed: back?.sealed };
+
+  // An unsealed window onto space is not a state the ship can be in, even if a
+  // hand-edited file says so.
+  const forced = mk.addDoor(new V(9, 0, 0),
+    { chunkA: "CH_SKY_A", chunkB: ed.SKYBOX_CHUNK, sealed: false, silent: true });
+  out.forcedOnLoad = forced.sealed;
+
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("the skybox id cannot be taken by a real chunk",
+  sky.addRefused && sky.renameRefused,
+  `add refused=${sky.addRefused}, rename refused=${sky.renameRefused}`);
+check("Chunk B offers Skybox and Chunk A does not",
+  sky.offered.includes(sky.id) && !sky.offeredOnA.includes(sky.id),
+  `B ${JSON.stringify(sky.offered)}, A ${JSON.stringify(sky.offeredOnA)}`);
+check("picking it seals the door and takes the choice away",
+  sky.afterPick.chunkB === sky.id && sky.afterPick.sealed === true
+    && sky.afterPick.checked === true && sky.afterPick.disabled === true,
+  JSON.stringify(sky.afterPick));
+check("the manifest writes the side through, sealed",
+  sky.written.chunkB === sky.id && sky.written.sealed === true
+    && sky.written.portalB === sky.id,
+  JSON.stringify(sky.written));
+check("space is not listed as a chunk of the ship",
+  !sky.chunkList.includes(sky.id), JSON.stringify(sky.chunkList));
+check("the portal leads out to space, and nothing leads back",
+  sky.adjacency["CH_SKY_A"]?.some((e) => e.to === sky.id)
+    && !(sky.id in sky.adjacency),
+  JSON.stringify(sky.adjacency));
+check("the side survives a save and a load",
+  sky.roundTrip.chunkB === sky.id && sky.roundTrip.sealed === true,
+  JSON.stringify(sky.roundTrip));
+check("and a door onto space is sealed even if the file says otherwise",
+  sky.forcedOnLoad === true, `sealed=${sky.forcedOnLoad}`);
+await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
+
 // ---- 1x. an outline is the same thickness however close the camera is ------
 //
 // `edgesWidth` is not a pixel width: the line shader offsets the vertex in

@@ -4,7 +4,7 @@
 // A door marker owns the portal rectangle between two chunks and, optionally,
 // the placements that act as its sliding leaves.
 
-import { state, emit, pushUndo, worldBounds, hooks, refreshVeil } from "./editor.js";
+import { state, emit, pushUndo, worldBounds, hooks, refreshVeil, SKYBOX_CHUNK } from "./editor.js";
 
 const { MeshBuilder, StandardMaterial, Color3, Vector3, Quaternion, TransformNode } = BABYLON;
 
@@ -19,6 +19,19 @@ function nextDoorId() {
 }
 
 let doorMat = null;
+
+/**
+ * A door onto space is sealed, always.
+ *
+ * There is nothing on the far side of the hull to walk into, so "open onto the
+ * skybox" and "not sealed" is not a state the ship can be in. Rather than
+ * trusting every caller to keep the two in step - the inspector, a loaded
+ * manifest, a test - the pair is settled in one place, on the way in.
+ */
+export function normalizeDoorSides(door) {
+  if (door.chunkB === SKYBOX_CHUNK) door.sealed = true;
+  return door;
+}
 
 function materials(scene) {
   if (!doorMat) {
@@ -48,6 +61,7 @@ export function addDoor(position, opts = {}) {
     height: opts.height ?? DEFAULT_DOOR.height,
     // empty means "auto": the manifest resolves it from the chunk volumes on
     // either side. Defaulting to the active chunk would bias that guess.
+    // `chunkB` may also be SKYBOX_CHUNK - space rather than a room.
     chunkA: opts.chunkA ?? "",
     chunkB: opts.chunkB ?? "",
     triggerRadius: opts.triggerRadius ?? DEFAULT_DOOR.triggerRadius,
@@ -59,6 +73,7 @@ export function addDoor(position, opts = {}) {
     sealed: !!opts.sealed,
     leaves: opts.leaves ? [...opts.leaves] : [],
   };
+  normalizeDoorSides(data);
 
   const root = new TransformNode(id, scene);
   root.position.copyFrom(position);
