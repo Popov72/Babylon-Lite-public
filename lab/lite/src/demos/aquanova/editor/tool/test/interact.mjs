@@ -635,6 +635,174 @@ check("an element name survives a save/load round-trip",
 check("a named element shows its name rather than its module",
   naming.label === "weapon locker", `"${naming.label}"`);
 
+// ---- 1d-quinquies-bis. the chunks pane -------------------------------------
+// Deleting a chunk that still holds anything would turn one keystroke into
+// unbounded loss, so it refuses and names what is in the way. The per-chunk
+// bake settings are overrides rather than absolutes: a field left alone has to
+// keep following the ship's defaults, or raising the sample count later would
+// silently miss every room that had ever been touched.
+const pane = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const mf = await import("/js/manifest.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  // The chunk list survives `clearAll` - it is the ship's layout, not its
+  // contents - so it is emptied by hand to make the "last chunk" case reachable.
+  ed.state.chunks = []; ed.state.chunkBake.clear();
+  ed.addChunk("CH_P_A"); ed.addChunk("CH_P_B");
+  ed.state.activeChunk = "CH_P_A";
+  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+
+  const busy = ed.removeChunk("CH_P_A");
+  const users = ed.chunkUsers("CH_P_A");
+  ed.removePlacement(a.id);
+  const freed = ed.removeChunk("CH_P_A");
+  const gone = !ed.state.chunks.includes("CH_P_A");
+
+  // Overrides: one field set, the rest following the defaults.
+  ed.setBakeDefaults({ samples: 256 });
+  ed.setChunkBake("CH_P_B", { width: 2048, height: 512 });
+  const sparse = ed.chunkBakeOf("CH_P_B");
+  const resolved = ed.resolveChunkBake("CH_P_B");
+  // Raising the ship's default has to reach the field the room never claimed.
+  ed.setBakeDefaults({ samples: 512 });
+  const followed = ed.resolveChunkBake("CH_P_B").samples;
+  const inManifest = mf.buildManifest().chunks.find((c) => c.id === "CH_P_B")?.bake;
+  const defaultsInManifest = mf.buildManifest().bakeDefaults;
+
+  await ed.deserialize(JSON.parse(JSON.stringify(ed.serialize())));
+  const survived = ed.resolveChunkBake("CH_P_B");
+  // Clearing a field puts it back on the default rather than freezing today's.
+  ed.setChunkBake("CH_P_B", { width: null, height: null });
+  const cleared = Object.keys(ed.chunkBakeOf("CH_P_B")).length;
+  // Out of range is clamped, not accepted: the bake would refuse it later, in
+  // Blender, minutes into a run.
+  ed.setChunkBake("CH_P_B", { samples: 999999 });
+  const clamped = ed.chunkBakeOf("CH_P_B").samples;
+
+  ed.renameChunk("CH_P_B", "CH_P_C");
+  const rekeyed = ed.chunkBakeOf("CH_P_C").samples;
+  const last = ed.removeChunk("CH_P_C");
+  ed.setBakeDefaults({ samples: 128, width: 1024, height: 1024, margin: 4 });
+  ed.setChunkBake("CH_P_C", { samples: null });
+  ed.clearAll(); ed.select([]);
+  return { busy, users, freed, gone, sparse, resolved, followed, inManifest,
+           defaultsInManifest, survived, cleared, clamped, rekeyed, last };
+});
+check("a chunk that still holds something refuses to be deleted, and says what",
+  pane.busy.ok === false && pane.busy.reason === "in use"
+    && pane.users.placements.length === 1,
+  `${pane.busy.reason}, ${pane.users.placements.length} placement(s)`);
+check("an emptied chunk can be deleted, and the last one cannot",
+  pane.freed.ok === true && pane.gone && pane.last.ok === false
+    && pane.last.reason === "last",
+  `freed=${pane.freed.ok}, gone=${pane.gone}, last=${pane.last.reason}`);
+check("per-chunk bake settings are stored sparse and resolved against defaults",
+  Object.keys(pane.sparse).join() === "width,height"
+    && pane.resolved.width === 2048 && pane.resolved.height === 512
+    && pane.resolved.samples === 256 && pane.resolved.margin === 4,
+  `${JSON.stringify(pane.sparse)} -> ${JSON.stringify(pane.resolved)}`);
+check("a field a chunk never overrode keeps following the ship's default",
+  pane.followed === 512, `samples=${pane.followed}`);
+check("the manifest carries the overrides sparse, and the defaults beside them",
+  pane.inManifest && Object.keys(pane.inManifest).join() === "width,height"
+    && pane.defaultsInManifest?.samples === 512,
+  `${JSON.stringify(pane.inManifest)} / ${JSON.stringify(pane.defaultsInManifest)}`);
+check("bake settings survive a save/load round-trip",
+  pane.survived.width === 2048 && pane.survived.height === 512
+    && pane.survived.samples === 512,
+  JSON.stringify(pane.survived));
+check("clearing an override drops it rather than freezing today's default",
+  pane.cleared === 0, `${pane.cleared} field(s) left`);
+check("an out-of-range bake setting is clamped where it is typed",
+  pane.clamped === 16384, `samples=${pane.clamped}`);
+check("renaming a chunk carries its bake settings with it",
+  pane.rekeyed === 16384, `samples=${pane.rekeyed}`);
+
+// The pane itself, driven through the DOM rather than through the module: the
+// wiring between the two is where the buttons that were removed from the
+// toolbar actually went, and none of the checks above would notice a form that
+// never reaches the state it edits.
+const paneUi = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const $ = (id) => document.getElementById(id);
+  let refreshedAlone = false;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.state.chunks = []; ed.state.chunkBake.clear();
+  ed.addChunk("CH_UI_A");
+
+  $("btn-chunks").click();
+  const opened = !$("chunk-modal").hidden;
+  $("btn-chunk-new").click();
+  const added = ed.state.chunks.length === 2;
+  const listed = $("chunk-list").options.length;
+
+  // Pick the first room and give it a size through the form.
+  $("chunk-list").value = "CH_UI_A";
+  $("chunk-list").dispatchEvent(new Event("change"));
+  const placeholder = $("chunk-samples").placeholder;
+  $("chunk-name").value = "CH_UI_Renamed";
+  $("chunk-width").value = "512";
+  $("btn-chunk-apply").click();
+  const applied = ed.chunkBakeOf("CH_UI_Renamed");
+  const renamed = ed.state.chunks.includes("CH_UI_Renamed");
+  const dotted = [...$("chunk-list").options].find((o) => o.value === "CH_UI_Renamed")?.text;
+
+  // Blank means "follow the default", and must not read back as a 16px map.
+  $("chunk-width").value = "";
+  $("btn-chunk-apply").click();
+  const cleared = Object.keys(ed.chunkBakeOf("CH_UI_Renamed")).length;
+
+  // The defaults section writes through to the ship.
+  $("bake-samples").value = "64";
+  $("bake-samples").dispatchEvent(new Event("change"));
+  const defaulted = ed.state.bakeDefaults.samples;
+
+  // Deleting a room that still holds something has to say what, in the pane.
+  ed.state.activeChunk = "CH_UI_Renamed";
+  const obj = await ed.placeAt("Walls/ShortWall_Band2_Straight",
+    new BABYLON.Vector3(0, 0, 0), { silent: true });
+  $("chunk-list").value = "CH_UI_Renamed";
+  $("chunk-list").dispatchEvent(new Event("change"));
+  $("btn-chunk-delete").click();
+  const refused = $("chunk-error").textContent;
+  const survived = ed.state.chunks.includes("CH_UI_Renamed");
+
+  // And the last room cannot go at all, which the pane says by going grey
+  // rather than by waiting for the click and then refusing it.
+  ed.removePlacement(obj.id);
+  ed.removeChunk("CH01_New");
+  refreshedAlone = $("btn-chunk-delete").disabled;
+
+  $("btn-chunk-close").click();
+  const closed = $("chunk-modal").hidden;
+  ed.setBakeDefaults({ samples: 128, width: 1024, height: 1024, margin: 4 });
+  ed.clearAll(); ed.select([]);
+  return { opened, added, listed, placeholder, applied, renamed, dotted,
+           cleared, defaulted, refused, survived, refusedId: obj.id,
+           lastIsGrey: refreshedAlone, closed };
+});
+check("the Chunks pane opens, lists the ship's rooms and adds one",
+  paneUi.opened && paneUi.added && paneUi.listed === 2 && paneUi.closed,
+  `open=${paneUi.opened}, ${paneUi.listed} listed, closed=${paneUi.closed}`);
+check("an empty field shows the ship's default as its placeholder",
+  paneUi.placeholder === "128", `"${paneUi.placeholder}"`);
+check("Apply renames and retunes in one action, and marks the tuned room",
+  paneUi.renamed && paneUi.applied.width === 512 && /•/.test(paneUi.dotted || ""),
+  `${paneUi.dotted} -> ${JSON.stringify(paneUi.applied)}`);
+check("emptying a field in the pane clears the override rather than zeroing it",
+  paneUi.cleared === 0, `${paneUi.cleared} field(s) left`);
+check("the Defaults section writes through to the ship",
+  paneUi.defaulted === 64, `samples=${paneUi.defaulted}`);
+check("and Delete explains what is in the way instead of just failing",
+  /still holds/i.test(paneUi.refused) && paneUi.refused.includes(paneUi.refusedId)
+    && paneUi.survived,
+  `"${paneUi.refused}"`);
+check("and the last remaining chunk cannot be deleted at all",
+  paneUi.lastIsGrey === true, `disabled=${paneUi.lastIsGrey}`);
+
 // ---- 1d-sexies. names carry into the .glb ----------------------------------
 // glTF node names come straight off the Babylon nodes, so the export renames
 // them and puts them back. Two things have to hold: the file has to be
@@ -2631,49 +2799,35 @@ check("only the liquefiable one gets a linked picker",
   both.applied.join() === "meltable,heavy" && both.pickers === 1,
   `${JSON.stringify(both.applied)}, ${both.pickers} picker(s)`);
 
-// excludeSDF: the same shape as linked, but only dynamic nodes are worth
-// offering - a node with no rigid body has no SDF in the sim to drop
-const sdf = await page.evaluate(async () => {
+// isDynamicNode: only `dynamic: true` counts - liquefiable no longer implies it
+const dyn = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  // crateB carries nothing yet, so it must not be offered
-  const before = [...document.querySelectorAll("#bhv-applied [data-sdf] option")]
-    .map((o) => o.value || o.textContent);
+  const mf = await import("/js/manifest.js");
   ed.addEntityBehavior("crateB", "heavy");          // heavy is { dynamic: true }
   ed.select([]);
   ed.select([[...ed.state.placements.values()].find((p) => p.name === "crate").id]);
-  const after = [...document.querySelectorAll("#bhv-applied [data-sdf] option")]
-    .map((o) => o.value);
-  return { before, after, dynamic: ed.isDynamicNode("crateB"),
-    notDynamic: ed.isDynamicNode("nothing") };
-});
-check("excludeSDF offers only the dynamic nodes in the room",
-  sdf.before.join() === "(nothing dynamic in this room)"
-    && sdf.after.join() === "crateB" && sdf.dynamic && !sdf.notDynamic,
-  `before ${JSON.stringify(sdf.before)} -> after ${JSON.stringify(sdf.after)}`);
-
-await page.selectOption('#bhv-applied [data-sdf="meltable"]', ["crateB"]);
-await page.waitForTimeout(250);
-const sdfStored = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const mf = await import("/js/manifest.js");
   return {
-    entity: ed.entityBehaviors("crate").find((b) => b.name === "meltable").excludeSDF,
-    written: mf.buildManifest().entities.crate.behaviors.find((b) => b.name === "meltable"),
+    dynamic: ed.isDynamicNode("crateB"),
+    unknown: ed.isDynamicNode("nothing"),
     heavy: mf.buildManifest().entities.crateB.behaviors.find((b) => b.name === "heavy"),
   };
 });
-check("the chosen node is written as excludeSDF",
-  sdfStored.entity.join() === "crateB" && sdfStored.written.excludeSDF.join() === "crateB",
-  JSON.stringify(sdfStored.written));
-check("an empty excludeSDF is left out, like linked",
-  !("excludeSDF" in sdfStored.heavy) && !("linked" in sdfStored.heavy),
-  JSON.stringify(sdfStored.heavy));
+check("`dynamic: true` makes a node dynamic",
+  dyn.dynamic && !dyn.unknown, JSON.stringify(dyn));
+check("an empty linked list is left out of the manifest",
+  !("linked" in dyn.heavy), JSON.stringify(dyn.heavy));
 
 await page.click("#bhv-applied [data-remove='heavy']");
 await page.waitForTimeout(250);
-const removed = await page.evaluate(async () =>
-  (await import("/js/editor.js")).entityBehaviors("crate").map((b) => b.name));
-check("Remove detaches it again", removed.join() === "meltable", `[${removed}]`);
+const removed = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { names: ed.entityBehaviors("crate").map((b) => b.name),
+    // "meltable" is { liquefiable: true }, which no longer implies dynamic
+    stillDynamic: ed.isDynamicNode("crate") };
+});
+check("Remove detaches it again", removed.names.join() === "meltable", `[${removed.names}]`);
+check("liquefiable alone does not make a node dynamic",
+  !removed.stillDynamic, JSON.stringify(removed));
 
 // direction: optional on every applied behaviour, no declaration needed
 const dirFields = await page.evaluate(() => ({
@@ -2700,7 +2854,7 @@ check("the manifest writes it beside the name",
   JSON.stringify(dirStored.written.find((b) => b.name === "meltable"))
     // X is negated: the manifest is glTF space, the editor's gizmo is not
     === JSON.stringify({
-      name: "meltable", linked: ["crateB"], excludeSDF: ["crateB"], direction: [1, 0, 0],
+      name: "meltable", linked: ["crateB"], direction: [1, 0, 0],
     }),
   JSON.stringify(dirStored.written));
 
@@ -3667,10 +3821,15 @@ check("a manifest saved before this simply has no view to apply",
 const envRound = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  // `environment` carries the RUNTIME pair - the one the demos read - so the
-  // values have to be set with that mode active
-  ed.setRuntimeLighting(true);
+  // Baked mode is what selects the RUNTIME pair - the one the demos read - so
+  // the values have to be set with it active. The preview itself needs a bake
+  // on disk, which this suite has no business producing, so the flag is moved
+  // directly and syncLightingMode() is asked to follow it: that is exactly what
+  // setBakedPreview does, minus the glb.
+  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
+  bakedMode(true);
   ed.setEnvIntensity(2.4);
+  ed.setDynamicEnvIntensity(0.7);
   ed.setExposure(0.82);
   const saved = mf.buildManifest().environment;
 
@@ -3693,6 +3852,7 @@ const envRound = await page.evaluate(async () => {
   try {
     await mf.saveLayout();
     ed.setEnvIntensity(0.2);          // wander off before loading it back
+    ed.setDynamicEnvIntensity(2.1);
     ed.setExposure(1.9);
     loaded = await mf.loadLayout();
     sliders = {
@@ -3714,7 +3874,7 @@ const envRound = await page.evaluate(async () => {
 
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
-  ed.setRuntimeLighting(false);
+  bakedMode(false);
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   ed.clearAll(); ed.select([]);
@@ -3722,11 +3882,12 @@ const envRound = await page.evaluate(async () => {
 });
 check("the manifest carries an environment section",
   envRound.saved?.strength === 2.4
+    && envRound.saved?.dynamicStrength === 0.7
     && envRound.saved.toneMapping === "Khronos PBR Neutral"
     // the exposure is the linear multiplier, exactly as the slider shows it:
     // the demos apply it as-is, so there is only one number to know
     && envRound.saved.exposure === 0.82
-    && Object.keys(envRound.saved).sort().join() === "exposure,strength,toneMapping",
+    && Object.keys(envRound.saved).sort().join() === "dynamicStrength,exposure,strength,toneMapping",
   JSON.stringify(envRound.saved));
 check("loading puts the lighting back on the scene",
   Math.abs(envRound.scene.strength - 2.4) < 1e-6
@@ -3798,20 +3959,21 @@ const redone = await page.evaluate(async () =>
   (await import("/js/editor.js")).state.envIntensity);
 check("redo brings it back", Math.abs(redone - 3.0) < 1e-6, `${redone}`);
 
-// the *inactive* light set must travel too, or switching Runtime light after an
-// undo would surface a value that was never restored
+// the *inactive* light set must travel too, or switching Baked after an undo
+// would surface a value that was never restored
 const bothSets = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.setRuntimeLighting(false);
+  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
+  bakedMode(false);
   ed.setEnvIntensity(1.2);
   ed.pushUndo();
-  ed.setRuntimeLighting(true);
+  bakedMode(true);
   ed.setEnvIntensity(3.9);                 // edits the runtime set
-  ed.setRuntimeLighting(false);
+  bakedMode(false);
   const before = { ...ed.state.lightSets.runtime };
   await ed.undo();
   const after = { ...ed.state.lightSets.runtime };
-  ed.setRuntimeLighting(false);
+  bakedMode(false);
   ed.setEnvIntensity(1.5); ed.setExposure(0.55);
   ed.clearAll(); ed.select([]);
   return { before: before.strength, after: after.strength };
@@ -3915,41 +4077,43 @@ await page.evaluate(async () => {
   ed.clearAll(); ed.select([]);
 });
 
-// ---- 1d-vicies. the runtime-light preview ---------------------------------
+// ---- 1d-vicies. baked mode silences the authoring rig ----------------------
 // The editor's four analytic lights are an authoring aid the game does not
 // have, and they are the reason it looks nothing like the runtime - not the
-// exposure conversion, which round-trips exactly.
-const runtimeLight = await page.evaluate(async () => {
+// exposure conversion, which round-trips exactly. Baked mode is the one state
+// where dropping them says something true, so it owns the switch.
+const bakedRig = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
+  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
   const rig = () => ed.state.scene.lights
     .filter((l) => ["hemi", "hemiUp", "key", "fill"].includes(l.name))
     .map((l) => l.intensity);
 
   const before = rig();
-  ed.setRuntimeLighting(true);
+  bakedMode(true);
   const off = rig();
-  ed.setRuntimeLighting(false);
+  bakedMode(false);
   const back = rig();
 
   // the numbers the demos read must be the ones the slider shows
-  ed.setRuntimeLighting(true);
+  bakedMode(true);
   ed.setExposure(0.55);
   ed.setEnvIntensity(1.7);
   const env = mf.buildManifest().environment;
-  ed.setRuntimeLighting(false);
-  return { before, off, back, env, mode: ed.state.runtimeLight };
+  bakedMode(false);
+  return { before, off, back, env, mode: ed.state.baked };
 });
-check("runtime light silences the authoring rig, and only it",
-  runtimeLight.before.length === 4 && runtimeLight.off.every((v) => v === 0)
-    && runtimeLight.before.some((v) => v > 0),
-  `${JSON.stringify(runtimeLight.before)} -> ${JSON.stringify(runtimeLight.off)}`);
+check("baked mode silences the authoring rig, and only it",
+  bakedRig.before.length === 4 && bakedRig.off.every((v) => v === 0)
+    && bakedRig.before.some((v) => v > 0),
+  `${JSON.stringify(bakedRig.before)} -> ${JSON.stringify(bakedRig.off)}`);
 check("switching back restores the authored intensities exactly",
-  runtimeLight.back.join() === runtimeLight.before.join() && !runtimeLight.mode,
-  JSON.stringify(runtimeLight.back));
+  bakedRig.back.join() === bakedRig.before.join() && !bakedRig.mode,
+  JSON.stringify(bakedRig.back));
 check("the exposure is written as the slider shows it, no conversion",
-  runtimeLight.env.exposure === 0.55 && runtimeLight.env.strength === 1.7,
-  `exposure ${runtimeLight.env.exposure}, strength ${runtimeLight.env.strength}`);
+  bakedRig.env.exposure === 0.55 && bakedRig.env.strength === 1.7,
+  `exposure ${bakedRig.env.exposure}, strength ${bakedRig.env.strength}`);
 
 // ---- 1d-unvicies. two light sets, one per mode ----------------------------
 // The rig adds four lights the game does not have, so one pair of Env/Exposure
@@ -3958,13 +4122,15 @@ check("the exposure is written as the slider shows it, no conversion",
 const lightSets = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  ed.setRuntimeLighting(false);
+  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
+  bakedMode(false);
   ed.setEnvIntensity(1.5); ed.setExposure(0.55);        // editor pair
-  ed.setRuntimeLighting(true);
+  bakedMode(true);
   ed.setEnvIntensity(3.2); ed.setExposure(1.1);         // runtime pair
-  const inRuntime = { env: ed.state.envIntensity, exp: ed.state.exposure };
-  ed.setRuntimeLighting(false);
-  const backInEditor = { env: ed.state.envIntensity, exp: ed.state.exposure };
+  ed.setDynamicEnvIntensity(0.7);
+  const inRuntime = { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure };
+  bakedMode(false);
+  const backInEditor = { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure };
 
   const man = mf.buildManifest();
   const written = { environment: man.environment, editorEnvironment: man.editorEnvironment };
@@ -3975,7 +4141,7 @@ const lightSets = await page.evaluate(async () => {
   const restored = {
     editor: { ...ed.state.lightSets.editor },
     runtime: { ...ed.state.lightSets.runtime },
-    active: { env: ed.state.envIntensity, exp: ed.state.exposure },
+    active: { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure },
   };
 
   // an old single-pair manifest gives its values to both
@@ -3985,27 +4151,34 @@ const lightSets = await page.evaluate(async () => {
     runtime: { ...ed.state.lightSets.runtime },
   };
 
-  ed.setRuntimeLighting(false);
+  ed.state.baked = false; ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
+  ed.setDynamicEnvIntensity(ed.DYNAMIC_ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { inRuntime, backInEditor, written, restored, legacy };
 });
 check("each mode keeps its own Env/Exposure",
   lightSets.inRuntime.env === 3.2 && lightSets.inRuntime.exp === 1.1
-    && lightSets.backInEditor.env === 1.5 && lightSets.backInEditor.exp === 0.55,
+    && lightSets.inRuntime.dynamic === 0.7
+    && lightSets.backInEditor.env === 1.5 && lightSets.backInEditor.dynamic === 1.5
+    && lightSets.backInEditor.exp === 0.55,
   `runtime ${JSON.stringify(lightSets.inRuntime)}, editor ${JSON.stringify(lightSets.backInEditor)}`);
 check("the demos get the runtime pair, the editor pair is filed separately",
   lightSets.written.environment.strength === 3.2
+    && lightSets.written.environment.dynamicStrength === 0.7
     && lightSets.written.environment.exposure === 1.1
     && lightSets.written.editorEnvironment.strength === 1.5
+    && lightSets.written.editorEnvironment.dynamicStrength === 1.5
     && lightSets.written.editorEnvironment.exposure === 0.55,
   JSON.stringify(lightSets.written));
 check("a round trip keeps the two pairs apart",
-  lightSets.restored.runtime.strength === 3.2 && lightSets.restored.editor.strength === 1.5
+  lightSets.restored.runtime.strength === 3.2 && lightSets.restored.runtime.dynamicStrength === 0.7
+    && lightSets.restored.editor.strength === 1.5 && lightSets.restored.editor.dynamicStrength === 1.5
     && lightSets.restored.active.env === 1.5,
   JSON.stringify(lightSets.restored));
 check("a manifest with one pair gives it to both, rather than to neither",
   lightSets.legacy.editor.strength === 2 && lightSets.legacy.runtime.strength === 2
+    && lightSets.legacy.editor.dynamicStrength === 2 && lightSets.legacy.runtime.dynamicStrength === 2
     && lightSets.legacy.editor.exposure === 0.9,
   JSON.stringify(lightSets.legacy));
 
@@ -4017,8 +4190,9 @@ const oldStops = await page.evaluate(async () => {
   const migrated = { ...ed.state.lightSets.runtime };
   ed.applyEnvironment({ strength: 1.7, exposure: 0.55 }, undefined);
   const literal = { ...ed.state.lightSets.runtime };
-  ed.setRuntimeLighting(false);
+  ed.state.baked = false; ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
+  ed.setDynamicEnvIntensity(ed.DYNAMIC_ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { migrated, literal };
 });
@@ -5844,7 +6018,7 @@ check("lower exposure restores contrast on pale panels",
   `sd ${exposure.hot.sd.toFixed(2)} @1.0 -> ${exposure.tuned.sd.toFixed(2)} @${exposure.applied} ` +
   `(mean ${exposure.hot.mean.toFixed(0)} -> ${exposure.tuned.mean.toFixed(0)})`);
 check("exposure is clamped to a sane range",
-  exposure.clampHi === 2 && exposure.clampLo === 0.15,
+  exposure.clampHi === 4 && exposure.clampLo === 0.15,
   `high=${exposure.clampHi} low=${exposure.clampLo}`);
 
 // ---- 1h. palette turntables --------------------------------------------------
@@ -8446,6 +8620,175 @@ check("and a door onto space is sealed even if the file says otherwise",
   sky.forcedOnLoad === true, `sealed=${sky.forcedOnLoad}`);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
+// ---- 1w-bis. B brings what is in hand to the camera ------------------------
+//
+// Arming a module does not choose a position: the ghost lands wherever the
+// cursor ray happens to cross the build plane. From inside a finished room,
+// with the plane still down on the deck you started from, that is routinely
+// behind you - `cursorOnPlane` returns null for anything at or above the eye
+// and the ghost simply stays where it last was - or hundreds of metres off.
+// Neither can be dragged back into view, because it is not in view to drag.
+//
+// So B fetches it, and takes the **build plane** with it. That second half is
+// the one that matters: a one-shot teleport would be undone by the very next
+// mouse move, which re-derives the ghost's position from the plane.
+const WALL = "Walls/ShortWall_Band2_Straight";
+const bringGhost = await page.evaluate(async (WALL) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  // One deck, scaled up, a long way from the origin - so "wherever the ghost
+  // already was" is unmistakably the wrong answer.
+  await ed.placeAt("Platforms/Platform_Simple", new V(96, 0, 96),
+    { scale: [8, 1, 8], silent: true });
+  ed.state.scene.pointerX = ed.state.engine.getRenderWidth() / 2;
+  ed.state.scene.pointerY = ed.state.engine.getRenderHeight() / 2;
+
+  // the broken case exactly: standing on the deck, the build plane left up on
+  // another one, looking very slightly down
+  ed.setGridElevation(20);
+  ed.state.camera.position.set(100, 1.6, 100);
+  ed.state.camera.setTarget(new V(104, -1.2, 104));
+  ed.state.scene.render();
+
+  await i.armGhost(WALL);
+  const g = ed.state.scene.getTransformNodeByName("GHOST");
+  const mid = () => { const b = ed.worldBounds(g); return b.min.add(b.max).scale(0.5); };
+  const away = V.Distance(mid(), ed.state.camera.position);
+  const reachedBefore = !!ed.cursorOnPlane(ed.state.gridY);
+
+  const r = i.bringToCamera();
+  ed.state.scene.render();
+  const after = ed.cursorOnPlane(ed.state.gridY);
+  const step = ed.state.snap.pos || 0;
+  const onGrid = (v) => !step || Math.abs(v / step - Math.round(v / step)) < 1e-6;
+  return {
+    r, step, reachedBefore,
+    away: +away.toFixed(1),
+    near: +V.Distance(mid(), ed.state.camera.position).toFixed(2),
+    gridY: +ed.state.gridY.toFixed(3),
+    deck: ed.groundHeightAt(g.position.x, g.position.z, 10, 30),
+    onGrid: onGrid(g.position.x) && onGrid(g.position.z),
+    origin: g.position.asArray().map((v) => +v.toFixed(3)),
+    reachable: after ? +V.Distance(after, ed.state.camera.position).toFixed(1) : null,
+  };
+}, WALL);
+check("before B the ghost is nowhere near you, and the plane is out of reach",
+  bringGhost.away > 50 && bringGhost.reachedBefore === false,
+  `${bringGhost.away} m away, plane reachable: ${bringGhost.reachedBefore}`);
+check("B brings it to arm's length",
+  bringGhost.r?.kind === "ghost" && bringGhost.near < 10,
+  `${bringGhost.near} m away, ${JSON.stringify(bringGhost.r)}`);
+check("it lands on the deck under your feet, not at eye height",
+  bringGhost.r?.floor === true && bringGhost.deck != null
+    && Math.abs(bringGhost.r.y - bringGhost.deck) < 0.01,
+  `dropped at y ${bringGhost.r?.y}, deck at ${bringGhost.deck}`);
+check("still aligned on the grid",
+  bringGhost.onGrid, `step ${bringGhost.step}, origin [${bringGhost.origin}]`);
+// the crux: without this the next mouse move sends it straight back
+check("and the build plane comes with it, so it stays reachable",
+  Math.abs(bringGhost.gridY - bringGhost.r.y) < 1e-6 && bringGhost.reachable < 15,
+  `plane 20 -> ${bringGhost.gridY}, cursor meets it ${bringGhost.reachable} m away`);
+
+// Facing something close, it stops short rather than landing through it: the
+// preferred distance would put the piece in the next room every time you built
+// against a wall.
+const bringClose = await page.evaluate(async (WALL) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost();
+  ed.state.camera.position.set(100, 1.0, 100);
+  ed.state.camera.setTarget(new V(100.02, 0, 100.02));   // all but straight down
+  ed.state.scene.render();
+  await i.armGhost(WALL);
+  const r = i.bringToCamera();
+  const g = ed.state.scene.getTransformNodeByName("GHOST");
+  const b = ed.worldBounds(g), mid = b.min.add(b.max).scale(0.5);
+  const cam = ed.state.camera.position;
+  i.cancelGhost();
+  return { r, flat: +Math.hypot(mid.x - cam.x, mid.z - cam.z).toFixed(2) };
+}, WALL);
+check("what you are looking at stops it, so it never lands through a wall",
+  bringClose.flat < 2.5, `${bringClose.flat} m out, the free-air distance is ~4 m`);
+
+// A placed selection moves too - same spot, one undo entry, shape intact.
+const bringSel = await page.evaluate(async (WALL) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost();
+  const was = ed.state.placements.size;
+  const a = await ed.placeAt(WALL, new V(0, 0, 0), { silent: true });
+  const b = await ed.placeAt(WALL, new V(0, 0, 6), { silent: true });
+  ed.select([a.id, b.id]);
+  ed.setGridElevation(20);
+  ed.state.camera.position.set(100, 1.6, 100);
+  ed.state.camera.setTarget(new V(104, -1.2, 104));
+  ed.state.scene.render();
+
+  const r = i.bringToCamera();
+  const step = ed.state.snap.pos || 0;
+  const cam = ed.state.camera.position;
+  const bb = ed.worldBounds(a.node);
+  const out = {
+    r, added: ed.state.placements.size - was,
+    dist: +Math.hypot(a.node.position.x - cam.x, a.node.position.z - cam.z).toFixed(2),
+    dz: +(b.node.position.z - a.node.position.z).toFixed(3),
+    bottom: +bb.min.y.toFixed(2),
+    gridY: +ed.state.gridY.toFixed(3),
+    onGrid: !step || Math.abs(a.node.position.x / step - Math.round(a.node.position.x / step)) < 1e-6,
+  };
+  // undo rebuilds the placements, so the node has to be looked up again
+  await ed.undo();
+  const back = ed.state.placements.get(a.id).node.position;
+  out.undone = [+back.x.toFixed(2), +back.z.toFixed(2)];
+  return out;
+}, WALL);
+check("a placed selection is fetched the same way, and moved rather than copied",
+  bringSel.r?.kind === "selection" && bringSel.r.count === 2 && bringSel.added === 2
+    && bringSel.dist < 10,
+  `${bringSel.dist} m away, ${bringSel.added} new placements, ${JSON.stringify(bringSel.r)}`);
+check("the set keeps its spacing and its grid, and rests on the deck",
+  bringSel.dz === 6 && bringSel.onGrid && Math.abs(bringSel.bottom - bringSel.r.y) < 0.05
+    && Math.abs(bringSel.gridY - bringSel.r.y) < 1e-6,
+  `dz ${bringSel.dz}, on grid ${bringSel.onGrid}, bottom ${bringSel.bottom} vs y ${bringSel.r.y}`);
+check("and it is one undo away",
+  bringSel.undone.join() === "0,0", `back at [${bringSel.undone}]`);
+
+// Out in the open there is no deck to find, and it still has to land somewhere
+// you can see rather than refusing.
+const bringSpace = await page.evaluate(async (WALL) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.state.camera.position.set(500, 30, 500);
+  ed.state.camera.setTarget(new V(508, 30, 508));
+  ed.state.scene.render();
+  await i.armGhost(WALL);
+  const r = i.bringToCamera();
+  const g = ed.state.scene.getTransformNodeByName("GHOST");
+  const b = ed.worldBounds(g), mid = b.min.add(b.max).scale(0.5);
+  i.cancelGhost();
+  return { r, near: +V.Distance(mid, ed.state.camera.position).toFixed(2) };
+}, WALL);
+check("with no floor under it, it lands in front of you at your own height",
+  bringSpace.r?.floor === false && Math.abs(bringSpace.r.y - 30) < 0.01
+    && bringSpace.near < 10,
+  `y ${bringSpace.r?.y}, ${bringSpace.near} m out`);
+
+const bringNone = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost(); ed.select([]);
+  return i.bringToCamera();
+});
+check("with nothing in hand it does nothing at all",
+  bringNone === null, `returned ${JSON.stringify(bringNone)}`);
+await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
+
 // ---- 1x. an outline is the same thickness however close the camera is ------
 //
 // `edgesWidth` is not a pixel width: the line shader offsets the vertex in
@@ -8709,77 +9052,383 @@ check("unfolding brings the controls back, and the window is as it was",
   paneBack.open && paneBack.shown && paneBack.h > 700,
   `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`);
 
-// ---- 2a. TAA over the viewport ---------------------------------------------
-//
-// Babylon's stock TAA pipeline, here so it can be compared against
-// Babylon-Lite's own. It is built and thrown away on each toggle rather than
-// left attached and switched off, and that is what this checks: an attached
-// pipeline draws the scene into a texture whether or not it is enabled, and
-// that alone changes the picture, because the canvas MSAA the engine was made
-// with applies only while the scene draws straight to the back buffer. Off has
-// to give back the exact frame you had before it went on, or the comparison
-// the feature exists for is not a comparison.
-//
-// At the end of the run because clicking a toolbar control moves the real
-// mouse onto the toolbar, and the wheel blocks scroll wherever the pointer was
-// left. Nothing else here is disturbed: no camera move, no selection change.
-const taaShot = () => page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const eng = ed.state.engine;
-  ed.state.scene.render();
-  const buf = await eng.readPixels(0, 0, eng.getRenderWidth(), eng.getRenderHeight());
-  let sum = 0;
-  for (let i = 0; i < buf.length; i += 4) sum = (sum + buf[i] * (i + 1)) % 4294967296;
-  const cam = ed.state.camera;
+const editorCleanup = await page.evaluate(() => {
+  const settings = document.getElementById("settings-pane");
+  const source = BABYLON.ShaderStore?.IncludesShadersStore?.imageProcessingFunctions || "";
+  const clamp = source.indexOf("result.rgb = max(result.rgb, vec3(1e-7));");
+  const neutral = source.lastIndexOf("PBRNeutralToneMapping(result.rgb);");
   return {
-    sum,
-    on: ed.state.taa,
-    pipe: !!ed.taaPipeline(),
-    passes: (cam._postProcesses || []).filter(Boolean).length,
+    ghostInSettings: settings?.contains(document.getElementById("veil-alpha")),
+    bigIconsInSettings: settings?.contains(document.getElementById("big-palette")),
+    taaRemoved: !document.getElementById("taa"),
+    neutralPatchBeforeCall: clamp >= 0 && neutral > clamp,
   };
 });
+check("Ghost and Big icons live in global Settings",
+  editorCleanup.ghostInSettings && editorCleanup.bigIconsInSettings,
+  `ghost ${editorCleanup.ghostInSettings}, big icons ${editorCleanup.bigIconsInSettings}`);
+check("TAA is removed from the editor",
+  editorCleanup.taaRemoved, `TAA control present: ${!editorCleanup.taaRemoved}`);
+check("Khronos PBR Neutral shader patch is installed before the tone mapper",
+  editorCleanup.neutralPatchBeforeCall,
+  `clamp before call: ${editorCleanup.neutralPatchBeforeCall}`);
 
-const taaOff1 = await taaShot();
-await page.click("#taa");
-await page.evaluate(() => document.getElementById("taa").blur());
-await page.waitForTimeout(600);
-const taaOn = await taaShot();
-// what the devtools console reaches, and that it is live rather than a
-// reference taken once and left behind by the next toggle
-const taaWindow = await page.evaluate(() => {
-  const before = !!window.__taa;
-  const named = window.__taa?.getClassName?.();
-  window.__taa.samples = 24;
-  return { before, named, samples: window.__taa.samples };
+// ---- authored lights -------------------------------------------------------
+// A light rides a placement, so the module's transform carries it, and it holds
+// two halves - a Blender area light and a runtime Babylon light - that describe
+// the same lamp to two consumers that cannot see each other.
+const lightModel = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const M = "Walls/ShortWall_Band2_Straight";
+  const owner = await ed.placeAt(M, new V(10, 0, 0), { silent: true });
+  const bench = await ed.placeAt(M, new V(0, 0, 0), { silent: true, stage: true });
+
+  const l = lt.addLight(owner.id, { offset: [0, 2.5, 0], silent: true });
+  return {
+    id: l.id,
+    parented: l.node.parent === owner.node,
+    // the offset is the OWNER's local space, so it lands beside the owner
+    world: l.node.getAbsolutePosition().asArray().map((v) => +v.toFixed(3)),
+    bake: l.bake,
+    runtime: l.runtime,
+    onBench: lt.addLight(bench.id, { silent: true }),
+    unknown: lt.addLight("nope", { silent: true }),
+    listed: lt.lightsOf(owner.id).length,
+  };
 });
-await page.click("#taa");
-await page.evaluate(() => document.getElementById("taa").blur());
-await page.waitForTimeout(400);
-const taaOff2 = await taaShot();
-const taaGone = await page.evaluate(() => window.__taa);
-const taaStore = await page.evaluate(() => localStorage.getItem("taa"));
+check("a light attaches to a placement and hangs off its node",
+  lightModel.parented && lightModel.listed === 1
+    && lightModel.world.join() === "10,2.5,0",
+  `${lightModel.id} at [${lightModel.world}], parented ${lightModel.parented}`);
+check("it defaults to a ceiling panel: a square area light, shining down",
+  lightModel.bake.shape === "square" && lightModel.bake.watts === 40
+    && lightModel.runtime.type === "point" && lightModel.runtime.clustered,
+  `${JSON.stringify(lightModel.bake)} / ${JSON.stringify(lightModel.runtime)}`);
+check("nothing that cannot reach the ship can own one",
+  lightModel.onBench === null && lightModel.unknown === null,
+  `bench ${lightModel.onBench}, unknown ${lightModel.unknown}`);
 
-check("TAA is off until asked for, with nothing on the camera",
-  !taaOff1.on && !taaOff1.pipe && taaOff1.passes === 0,
-  `pipeline ${taaOff1.pipe}, ${taaOff1.passes} pass(es)`);
-check("the checkbox builds the pipeline and it reaches the camera",
-  taaOn.on && taaOn.pipe && taaOn.passes > 0,
-  `pipeline ${taaOn.pipe}, ${taaOn.passes} pass(es)`);
-check("and it changes what is drawn",
-  taaOn.sum !== taaOff1.sum, `frame ${taaOff1.sum} -> ${taaOn.sum}`);
-check("its knobs are on window.__taa, for the devtools console",
-  taaWindow.before && taaWindow.named === "TAARenderingPipeline"
-    && taaWindow.samples === 24,
-  `${taaWindow.named}, samples now ${taaWindow.samples}`);
-check("turning it off takes the pipeline back off the camera",
-  !taaOff2.on && !taaOff2.pipe && taaOff2.passes === 0,
-  `pipeline ${taaOff2.pipe}, ${taaOff2.passes} pass(es)`);
-check("and __taa follows it out, rather than going stale",
-  !taaGone, `__taa is ${taaGone}`);
-check("and gives back the exact frame that was there before it",
-  taaOff2.sum === taaOff1.sum, `${taaOff1.sum} -> ${taaOff2.sum}`);
-check("the TAA choice is remembered outside the ship, in localStorage",
-  taaStore === "0", `taa = ${taaStore}`);
+// The combinations the engine has no meaning for are settled on the way in,
+// rather than trusted to the inspector, a loaded manifest and kit_lights.json
+// each getting it right on their own.
+const lightRules = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const id = [...ed.state.lights.keys()][0];
+  const run = (patch) => ({ ...lt.setLightPart(id, "runtime", patch).runtime });
+  const bake = (patch) => ({ ...lt.setLightPart(id, "bake", patch).bake });
+  return {
+    // no cube shadow generator exists, so a point light can never cast
+    point: run({ type: "point", clustered: false, castsShadows: true }),
+    // a clustered light is packed into a data texture with no shadow map
+    clusteredSpot: run({ type: "spot", clustered: true, castsShadows: true }),
+    // ... but an ordinary spot can
+    spot: run({ type: "spot", clustered: false, castsShadows: true }),
+    // a directional has no position to bin and no falloff to cluster
+    dir: run({ type: "directional", clustered: true, castsShadows: true }),
+    bogus: run({ type: "lava-lamp" }),
+    // Blender reads ONE size for a square or a disk
+    rect: bake({ shape: "rectangle", sizeX: 2, sizeY: 0.25 }),
+    square: bake({ shape: "square" }),
+    clamped: bake({ spread: 500, watts: -3, color: [2, -1, 0.5] }),
+  };
+});
+check("a point light cannot cast a shadow, and neither can a clustered one",
+  !lightRules.point.castsShadows && !lightRules.clusteredSpot.castsShadows,
+  `point ${lightRules.point.castsShadows}, clustered spot ${lightRules.clusteredSpot.castsShadows}`);
+check("an ordinary spot can, which is the whole reason for the flag",
+  lightRules.spot.castsShadows && lightRules.spot.type === "spot",
+  JSON.stringify(lightRules.spot));
+check("a directional light is never clustered",
+  !lightRules.dir.clustered && lightRules.dir.castsShadows,
+  JSON.stringify(lightRules.dir));
+check("an unknown kind falls back rather than reaching the bake",
+  lightRules.bogus.type === "point", JSON.stringify(lightRules.bogus));
+check("a two-sided shape keeps its second size, a square folds it back",
+  lightRules.rect.sizeY === 0.25 && lightRules.square.sizeY === lightRules.square.sizeX,
+  `rect ${lightRules.rect.sizeX}x${lightRules.rect.sizeY}, square ${lightRules.square.sizeX}x${lightRules.square.sizeY}`);
+check("out-of-range bake values are clamped, not stored",
+  lightRules.clamped.spread === 180 && lightRules.clamped.watts === 0
+    && lightRules.clamped.color.join() === "1,0,0.5",
+  JSON.stringify(lightRules.clamped));
+
+// A light is part of what the element IS - it goes with a copy and dies with
+// the original, the same way its collision shapes do.
+const lightLife = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const ownerId = [...ed.state.lights.values()][0].owner;
+  ed.select([ownerId]);
+  await ed.duplicateSelected();
+  const copyId = ed.state.selection[0];
+  const copied = lt.lightsOf(copyId);
+  const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
+  ed.removePlacement(ownerId);
+  const afterDelete = ed.state.lights.size;
+  await ed.deserialize(snapshot);
+  const back = lt.serializeLights();
+  // a light whose owner did not come back has nowhere to hang
+  const orphaned = { ...snapshot, lights: snapshot.lights.map((l) => ({ ...l, owner: "P9999" })) };
+  await ed.deserialize(orphaned);
+  return {
+    copies: copied.length,
+    distinct: copied.length === 1 && copied[0].id !== snapshot.lights[0].id,
+    sameSpot: copied[0] && lt.lightOffset(copied[0]).join(),
+    saved: snapshot.lights.length,
+    afterDelete,
+    restored: back.length,
+    // both halves, field for field, not just the count
+    identical: JSON.stringify(back) === JSON.stringify(snapshot.lights),
+    edited: `${back[0]?.bake.shape} ${back[0]?.bake.sizeX} ${back[0]?.bake.watts}`,
+    orphans: ed.state.lights.size,
+  };
+});
+check("a copied element brings its lights, as new entries of its own",
+  lightLife.copies === 1 && lightLife.distinct && lightLife.sameSpot === "0,2.5,0",
+  JSON.stringify(lightLife));
+check("deleting the element it rides takes the light with it",
+  lightLife.afterDelete === 1, `${lightLife.afterDelete} left`);
+check("lights ride the undo stack, both halves intact",
+  lightLife.saved === 2 && lightLife.restored === 2 && lightLife.identical
+    // the edits above, not the defaults a fresh light would come back with
+    && lightLife.edited === "square 2 0",
+  JSON.stringify(lightLife));
+check("and one whose element is gone is dropped, not stranded",
+  lightLife.orphans === 0, `${lightLife.orphans} orphan(s)`);
+
+// Ctrl+D has a direct duplicate path for a light: it has no module to put in a
+// ghost, so the copy is placed beside it in the owner's local space.
+const lightDuplicate = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  ed.state.snap.pos = 1;
+  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
+    { silent: true });
+  const source = lt.addLight(owner.id, { offset: [0, 2, 0], silent: true });
+  ed.select([source.id]);
+  document.getElementById("btn-duplicate").click();
+  const selected = ed.state.selection.map((id) => ed.entryOf(id));
+  return {
+    count: ed.state.lights.size,
+    selected: selected.length,
+    owner: selected[0]?.owner,
+    offset: selected[0] ? lt.lightOffset(selected[0]).join() : null,
+    status: document.getElementById("status-text").textContent,
+  };
+});
+check("Ctrl+D duplicates a selected light beside its source",
+  lightDuplicate.count === 2 && lightDuplicate.selected === 1
+    && lightDuplicate.owner?.startsWith("P")
+    && lightDuplicate.offset === "1,2,0"
+    && /copy of light/.test(lightDuplicate.status),
+  JSON.stringify(lightDuplicate));
+
+// The undo stack is not what persists - the manifest is. A light that rode the
+// snapshot but never reached buildManifest() would survive every undo and be
+// lost by the next save.
+const lightManifest = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const mf = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
+  lt.addLight(owner.id, {
+    offset: [0, 3, 0],
+    bake: { shape: "disk", sizeX: 1.25, watts: 90 },
+    runtime: { type: "spot", clustered: false, castsShadows: true, angle: 45 },
+    silent: true,
+  });
+  const man = JSON.parse(JSON.stringify(mf.buildManifest()));
+  await ed.deserialize(man);
+  const back = lt.serializeLights();
+  return {
+    written: man.lights,
+    declared: (man.space?.editor || []).includes("lights"),
+    identical: JSON.stringify(back) === JSON.stringify(man.lights),
+  };
+});
+check("the manifest carries the lights, in the space it declares them in",
+  lightManifest.written?.length === 1 && lightManifest.declared,
+  JSON.stringify(lightManifest.written));
+check("and a saved ship reloads them unchanged",
+  lightManifest.identical, JSON.stringify(lightManifest));
+
+// kit_lights.json: a light module arrives lit, so nobody has to find the spot
+// under its face by hand for every panel in the ship.
+const kitLights = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const mf = await import("/js/manifest.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  const wide = await ed.placeAt("Props/Prop_Light_Wide", new V(0, 3, 0), { silent: true });
+  const seeded = lt.lightsOf(wide.id);
+  // an arc cannot be one flat area light, so the corner strip is three
+  const corner = await ed.placeAt("Props/Prop_Light_Corner", new V(20, 3, 0), { silent: true });
+  // nothing in the kit lights a plain wall
+  const wall = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(40, 0, 0), { silent: true });
+  // ... and the collision bench is a stand-in, not ship geometry
+  const bench = await ed.placeAt("Props/Prop_Light_Wide", new V(0, 0, 0), { silent: true, stage: true });
+
+  // the seed is a starting point, not a derivation: edit it, then copy and save
+  lt.setLightPart(seeded[0].id, "bake", { watts: 7 });
+  ed.select([wide.id]);
+  await ed.duplicateSelected();
+  const copied = lt.lightsOf(ed.state.selection[0]);
+
+  const before = ed.state.lights.size;
+  const man = JSON.parse(JSON.stringify(mf.buildManifest()));
+  await ed.deserialize(man);
+  const reloaded = [...ed.state.lights.values()];
+
+  return {
+    wideCount: seeded.length,
+    offset: seeded[0] && lt.lightOffset(seeded[0]).join(),
+    shape: seeded[0]?.bake.shape,
+    sizeX: seeded[0]?.bake.sizeX,
+    cornerCount: lt.lightsOf(corner.id).length,
+    cornerTurned: lt.lightsOf(corner.id).map((l) => lt.lightRotation(l)[1]).join(),
+    wallCount: lt.lightsOf(wall.id).length,
+    benchCount: lt.lightsOf(bench.id).length,
+    copies: copied.length,
+    copiedWatts: copied[0]?.bake.watts,
+    before,
+    after: reloaded.length,
+    keptEdit: reloaded.filter((l) => l.bake.watts === 7).length,
+  };
+});
+check("placing a light module brings its lamp, on the face of its strip",
+  kitLights.wideCount === 1 && kitLights.offset === "0.58,-0.1,0"
+    && kitLights.shape === "rectangle" && kitLights.sizeX === 1.16,
+  JSON.stringify(kitLights));
+check("a curved strip gets one segment per chord, each turned to its tangent",
+  kitLights.cornerCount === 3 && kitLights.cornerTurned === "-17.3,-45.7,-74.1",
+  `${kitLights.cornerCount} at [${kitLights.cornerTurned}]`);
+check("a module with nothing to light gets nothing, and neither does the bench",
+  kitLights.wallCount === 0 && kitLights.benchCount === 0,
+  `wall ${kitLights.wallCount}, bench ${kitLights.benchCount}`);
+check("a copy carries the edited light rather than a fresh default",
+  kitLights.copies === 1 && kitLights.copiedWatts === 7,
+  `${kitLights.copies} copy(ies) at ${kitLights.copiedWatts} W`);
+check("and a reload restores what was saved instead of seeding a second lamp",
+  kitLights.after === kitLights.before && kitLights.keptEdit === 2,
+  `${kitLights.before} -> ${kitLights.after}, ${kitLights.keptEdit} edited`);
+
+// The inspector, and the plate that stands in for the light in the viewport.
+// A light is the only thing in this editor parented to another element, so the
+// gizmo has to be visible to the eye and invisible to everything that walks an
+// element's meshes.
+const lightUi = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const bare = ed.worldBounds(owner.node);
+  const light = lt.addLight(owner.id, { offset: [0, 6, 0], silent: true });
+  const withLight = ed.worldBounds(owner.node);
+  ed.select([light.id]);
+  const shown = (id) => !document.getElementById(id).hidden;
+  const val = (id) => document.getElementById(id).value;
+  const off = (id) => document.getElementById(id).disabled;
+
+  const panel = {
+    light: shown("light-fields"), scale: shown("scale-fields"),
+    behavior: shown("behavior-fields"), door: shown("door-fields"),
+    ownerId: document.getElementById("lgt-owner").value,
+    ownerLabel: document.getElementById("lgt-owner").selectedOptions[0]?.textContent,
+    shape: val("lgt-shape"), watts: val("lgt-watts"),
+    // a square reads one size, so Size Z is shown but not arguable
+    sizeYOff: off("lgt-size-y"), angleOff: off("lgt-angle"),
+    shadowsOff: off("lgt-shadows"),
+    // the offset row is the light's own, in its owner's space
+    posY: val("pos-y"),
+  };
+
+  // editing a field lands on the record, through the same normalisation
+  const shapeEl = document.getElementById("lgt-shape");
+  shapeEl.value = "rectangle";
+  shapeEl.dispatchEvent(new Event("change", { bubbles: true }));
+  const wattsEl = document.getElementById("lgt-watts");
+  wattsEl.value = "12";
+  wattsEl.dispatchEvent(new Event("input", { bubbles: true }));
+  const typeEl = document.getElementById("lgt-type");
+  typeEl.value = "spot";
+  typeEl.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const newOwner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0),
+    { silent: true });
+  const beforeRehome = light.node.getAbsolutePosition().clone();
+  ed.select([light.id]);
+  const ownerEl = document.getElementById("lgt-owner");
+  ownerEl.value = newOwner.id;
+  ownerEl.dispatchEvent(new Event("change", { bubbles: true }));
+  const afterRehome = light.node.getAbsolutePosition().clone();
+
+  const gizmo = ed.state.scene.meshes.filter((m) => ed.isGizmoMesh(m));
+  const shipMeshes = owner.node.getChildMeshes()
+    .filter((m) => !ed.isGizmoMesh(m)).length;
+
+  // selecting a placement again must not leave the light panel on screen
+  ed.select([owner.id]);
+  const afterOwner = shown("light-fields");
+
+  return {
+    panel,
+    editedShape: light.bake.shape,
+    editedWatts: light.bake.watts,
+    editedType: light.runtime.type,
+    rehomed: light.owner === newOwner.id && light.node.parent === newOwner.node,
+    rehomeWorldGap: BABYLON.Vector3.Distance(beforeRehome, afterRehome),
+    // a rectangle can be told apart in Z, and a spot has a cone
+    sizeYNow: off("lgt-size-y") === false,
+    angleNow: off("lgt-angle") === false,
+    gizmos: gizmo.length,
+    gizmoOwned: gizmo.every((m) => m.metadata.lightRoot === light.node),
+    shipMeshes,
+    boundsUnchanged: bare && withLight
+      && bare.max.y.toFixed(3) === withLight.max.y.toFixed(3),
+    afterOwner,
+  };
+});
+check("selecting a light shows its two forms and drops the ones it has none of",
+  lightUi.panel.light && !lightUi.panel.scale && !lightUi.panel.behavior
+    && !lightUi.panel.door && lightUi.panel.posY === "6",
+  JSON.stringify(lightUi.panel));
+check("the panel says what the light rides, and starts on the kit defaults",
+  lightUi.panel.ownerId === "P0001"
+    && lightUi.panel.ownerLabel === "P0001 — Walls/ShortWall_Band2_Straight"
+    && lightUi.panel.shape === "square" && lightUi.panel.watts === "40",
+  JSON.stringify(lightUi.panel));
+check("the light owner is editable and reparenting keeps its world position",
+  lightUi.rehomed && lightUi.rehomeWorldGap < 1e-5,
+  JSON.stringify({ rehomed: lightUi.rehomed, worldGap: lightUi.rehomeWorldGap }));
+check("rows the engine has no meaning for are disabled, not silently ignored",
+  lightUi.panel.sizeYOff && lightUi.panel.angleOff && lightUi.panel.shadowsOff,
+  JSON.stringify(lightUi.panel));
+check("editing a field lands on the record, and reopens the rows it unlocks",
+  lightUi.editedShape === "rectangle" && lightUi.editedWatts === 12
+    && lightUi.editedType === "spot" && lightUi.sizeYNow && lightUi.angleNow,
+  JSON.stringify(lightUi));
+check("the light has a plate and a stub in the viewport, both hung off its node",
+  lightUi.gizmos === 2 && lightUi.gizmoOwned, `${lightUi.gizmos} gizmo mesh(es)`);
+check("neither reaches the ship: not its meshes, not its size, not the export",
+  lightUi.shipMeshes > 0 && lightUi.boundsUnchanged,
+  `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`);
+check("and selecting the element it rides puts the light panel away",
+  !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
 
 await page.fill("#palette-search", "");
 await page.waitForTimeout(400);

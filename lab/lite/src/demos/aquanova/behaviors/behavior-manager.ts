@@ -77,7 +77,7 @@ export class BehaviorManager {
             const assignments = this.assignmentsOf(entityName);
             const liquefiableConfig = this.liquefiableConfigOf(entityName);
             if (liquefiableConfig) this.liquefiableConfigByMesh.set(mesh, liquefiableConfig);
-            const explicitlyDynamic = assignments.some((assignment) => assignment.name === "dynamic" && assignment.dynamic === true);
+            const explicitlyDynamic = assignments.some((assignment) => assignment.name === "dynamic");
             const dissolvable = dissolvableEntityNames.has(entityName);
             if (dissolvable) {
                 this.dissolvableMeshes.add(mesh);
@@ -126,10 +126,6 @@ export class BehaviorManager {
 
     public getLinkedEntityNames(mesh: Mesh): readonly string[] {
         return nonEmptyNames(this.liquefiableConfigByMesh.get(mesh)?.linked);
-    }
-
-    public getExcludedEntityNames(mesh: Mesh): readonly string[] {
-        return nonEmptyNames(this.liquefiableConfigByMesh.get(mesh)?.excludeSDF);
     }
 
     public retireMesh(mesh: Mesh): MeshBehaviorAvailability {

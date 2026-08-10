@@ -283,6 +283,17 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 }
 #dim-note { font-size: 9px; letter-spacing: 0; text-transform: none; }
 
+/* The light panel is two stacked forms - Blender's half and the engine's - so
+   each gets a sub-heading a step below the h3 that names the whole thing. */
+#light-fields h4 { font-size: 10px; color: var(--accent); margin: 9px 0 2px; font-weight: 600; }
+#light-fields .row label:has(input[type="checkbox"]) { flex: 1 1 auto; }
+#light-fields .row .unit { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+#light-fields input[type="color"] {
+  flex: 1 1 auto; min-width: 0; height: 20px; padding: 0;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+}
+#lgt-hint { margin: 4px 0 0; line-height: 1.35; }
+
 .muted { color: var(--muted); }
 
 #chunk-stats table { width: 100%; border-collapse: collapse; }
@@ -333,24 +344,31 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 @keyframes busy-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { #busy .spinner { animation: none; } }
 
-/* ------------------------------------------------- behaviour library */
+/* ------------------------------------------- modal panes (behaviours, chunks) */
 
-#bhv-modal {
+#bhv-modal, #chunk-modal {
   position: fixed; inset: 0; z-index: 90;
   display: flex; align-items: center; justify-content: center;
   background: rgba(10, 12, 16, 0.6);
 }
-#bhv-modal .panel {
+#bhv-modal .panel, #chunk-modal .panel {
   width: 620px; max-width: 92vw;
   padding: 14px 16px; border-radius: 6px;
   background: var(--panel); border: 1px solid var(--line);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
 }
-#bhv-modal h2 { margin: 0 0 4px; font-size: 13px; }
-#bhv-modal p { margin: 0 0 10px; }
-#bhv-modal .split { display: flex; gap: 12px; align-items: stretch; }
-#bhv-list { flex: 0 0 180px; }
-#bhv-modal .editor { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+#bhv-modal h2, #chunk-modal h2 { margin: 0 0 4px; font-size: 13px; }
+#bhv-modal p, #chunk-modal p { margin: 0 0 10px; }
+#bhv-modal .split, #chunk-modal .split { display: flex; gap: 12px; align-items: stretch; }
+#bhv-list, #chunk-list { flex: 0 0 180px; }
+#bhv-modal .editor, #chunk-modal .editor {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+}
+#chunk-modal .editor h2 { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+#chunk-modal .row input[type="number"] { width: 72px; }
+#chunk-modal .row input[type="text"] { flex: 1 1 auto; min-width: 0; }
+#chunk-resolved { font-size: 11px; min-height: 14px; }
+#chunk-error { min-height: 14px; color: var(--danger); font-size: 11px; }
 #bhv-json {
   width: 100%; box-sizing: border-box; resize: vertical;
   font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
@@ -452,6 +470,9 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   align-items: center; margin-bottom: 6px; font-size: 11px;
 }
 #settings-pane .cfg-row input { width: 100%; }
+#settings-pane .cfg-row input[type="checkbox"] {
+  width: auto; justify-self: start;
+}
 #settings-pane .cfg-row .unit { color: var(--muted); font-size: 10px; }
 #settings-pane button { width: 100%; }
 

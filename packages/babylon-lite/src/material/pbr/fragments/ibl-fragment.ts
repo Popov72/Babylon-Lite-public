@@ -9,6 +9,7 @@
  */
 
 import type { ShaderFragment } from "../../../shader/fragment-types.js";
+import type { PbrExt } from "../pbr-flags.js";
 
 // WebGPU shader stage constants
 const STAGE_FRAGMENT = 0x2;
@@ -98,8 +99,6 @@ export function createIblFragment(hasNormalMap: boolean, anisoBentNormalCode: st
     };
 }
 
-import type { PbrExt } from "../pbr-flags.js";
-
 export const pbrExt: PbrExt = {
     id: "ibl",
     phase: "ibl",
@@ -113,10 +112,10 @@ export const pbrExt: PbrExt = {
         if (!ctx._env) {
             return b;
         }
-        entries.push({ binding: b++, resource: ctx._env.brdfLutView });
-        entries.push({ binding: b++, resource: ctx._env.brdfSampler });
-        entries.push({ binding: b++, resource: ctx._env.specularCubeView });
-        entries.push({ binding: b++, resource: ctx._env.cubeSampler });
+        entries.push({ binding: b++, resource: ctx._env._brdfLutView });
+        entries.push({ binding: b++, resource: ctx._env._brdfSampler });
+        entries.push({ binding: b++, resource: ctx._env._specularCubeView });
+        entries.push({ binding: b++, resource: ctx._env._cubeSampler });
         return b;
     },
 };

@@ -1,23 +1,23 @@
 {
-  "rawKB": 86.9,
-  "gzipKB": 36.9,
+  "rawKB": 86.8,
+  "gzipKB": 36.8,
   "ignoredRawKB": 0,
   "runtimeChunks": [
     "scene247-generate-mipmaps-CXuyVbUw.js",
     "scene247-gltf-feature-extras-VHPteGay.js",
     "scene247-gltf-feature-gpu-instancing-DTnuOgFM.js",
-    "scene247-gltf-feature-registry-DyabTCXa.js",
+    "scene247-gltf-feature-registry-UsiCXCsW.js",
     "scene247-gltf-json-asset-D3Ff21Oe.js",
     "scene247-gltf-multi-buffer-BBZMiyn3.js",
     "scene247-gltf-share-DF9ijqo2.js",
-    "scene247-ibl-fragment-CeRrvT96.js",
-    "scene247-pbr-pipeline-BgILxA0p.js",
-    "scene247-pbr-renderable-CE3kBMVI.js",
+    "scene247-ibl-fragment-D9e9c66T.js",
+    "scene247-pbr-pipeline-BBjWSS5Y.js",
+    "scene247-pbr-renderable-P4_7ufGY.js",
     "scene247-rgbd-decode-BGfzKZhs.js",
     "scene247-scene-uniforms-FTYH6Ct0.js",
     "scene247-thin-instance-fragment-CBn2miAC.js",
     "scene247-thin-instance-gpu-C6ns5TmC.js",
     "scene247.js"
   ],
-  "rawBytes": 88974
+  "rawBytes": 88860
 }

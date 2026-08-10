@@ -10,6 +10,7 @@ import type { Texture2D } from "../../texture/texture-2d.js";
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import type { Material, StencilState } from "../material.js";
 import type { MaterialPlugin } from "../plugin/material-plugin.js";
+import type { CubeTexture } from "../../texture/cube-texture.js";
 import {
     AMBIENT_USES_UV2,
     DIFFUSE_USES_UV2,
@@ -91,7 +92,7 @@ export interface StandardMaterialProps extends Material {
     /** Optional reflection texture (2D spherical map). Null = no reflection. */
     reflectionTexture: Texture2D | null;
     /** Optional cube reflection texture. Null = no cube reflection. */
-    reflectionCubeTexture: { texture: GPUTexture; view: GPUTextureView; sampler: GPUSampler } | null;
+    reflectionCubeTexture: CubeTexture | null;
     /** Reflection intensity. Default 1.0. */
     reflectionLevel: number;
     /** Reflection coordinate mode. 1=spherical, 2=planar. Default 1. */

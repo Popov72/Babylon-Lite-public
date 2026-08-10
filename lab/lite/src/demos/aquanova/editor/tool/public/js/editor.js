@@ -4,12 +4,12 @@
 // in interact.js, so this module only owns scene setup and the data stores.
 
 import { instantiate, getModule } from "./kit.js";
+import { patchKhronosPbrNeutralShader } from "./shader-patches.js";
 
 const {
   Engine, Scene, UniversalCamera, HemisphericLight, Vector3,
   Color3, Color4, Quaternion, Matrix, MeshBuilder,
   HDRCubeTexture, ImageProcessingConfiguration, PointerEventTypes,
-  TAARenderingPipeline,
 } = BABYLON;
 
 export const GRID_MAJOR = 4;      // kit tile size, metres
@@ -90,6 +90,49 @@ const CONFIG_RANGE = {
   hullOffset: { choices: ["centered", "negative", "positive"] },
 };
 
+/**
+ * What a chunk's lightmap is rendered at, when the chunk does not say otherwise.
+ *
+ * A chunk is the unit the bake works in - one atlas per room - so these are the
+ * natural per-room dials, and most rooms want the same numbers. They live here
+ * as ship-wide defaults and each chunk may override any of the four; see
+ * `setChunkBake`. `bake_lightmaps.py` reads the pair out of the manifest and
+ * resolves them the same way.
+ */
+export const BAKE_DEFAULTS = {
+  // Cycles samples per pixel. The noise floor of the map, and the only one of
+  // the four that costs render time rather than memory.
+  samples: 128,
+  // Atlas size. Square by default; a long corridor may be worth 2048x512,
+  // which is half the texels of 1024x1024 for the same density along the run.
+  width: 1024,
+  height: 1024,
+  // The gap left between UV islands, in pixels, and the number of pixels each
+  // island is then dilated by. Too small and light leaks between islands -
+  // which reads as light leaking through a wall.
+  margin: 4,
+};
+
+/** Lighting multipliers used by Blender's static bake, kept separate from
+ * the editor/runtime environment pairs. */
+export const BAKE_LIGHTING_DEFAULTS = {
+  power: 1,
+  sky: 1,
+};
+
+const BAKE_LIGHTING_RANGE = {
+  power: { min: 0, max: 10 },
+  sky: { min: 0, max: 300 },
+};
+
+/** What each of the four will accept. Sizes are texels, so integers only. */
+const BAKE_RANGE = {
+  samples: { min: 1, max: 16384 },
+  width: { min: 16, max: 8192 },
+  height: { min: 16, max: 8192 },
+  margin: { min: 0, max: 64 },
+};
+
 export const state = {
   scene: null,
   engine: null,
@@ -97,8 +140,16 @@ export const state = {
   placements: new Map(),   // id -> { id, module, chunk, node }
   markers: new Map(),      // id -> door / spawn marker (see markers.js)
   colliders: new Map(),    // id -> collision primitive (see colliders.js)
+  lights: new Map(),       // id -> authored light, riding a placement (see lights.js)
   chunks: ["CH00_Storage"],
   activeChunk: "CH00_Storage",
+  // What the bake renders a room at, ship-wide, and the per-room exceptions.
+  // `chunkBake` is deliberately SPARSE - a chunk holds only the fields it
+  // overrides, so raising the ship's sample count later still reaches every
+  // room that never asked for its own. See setChunkBake / resolveChunkBake.
+  bakeDefaults: { ...BAKE_DEFAULTS },
+  chunkBake: new Map(),    // chunk id -> { samples?, width?, height?, margin? }
+  bakeLighting: { ...BAKE_LIGHTING_DEFAULTS },
   selection: [],
   brush: null,             // module id armed for placement
   markerBrush: null,       // "door" - the only marker kind left
@@ -111,22 +162,28 @@ export const state = {
   veilAlpha: 0.5,          // how see-through a ghosted element is
   behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
   entities: new Map(),     // node name -> [{ name, linked: [] }]
+  // node name -> "exclude" | "include": the author's override of what the bake
+  // works out for itself. Absent means "auto", which is the normal case. See
+  // setBakeOverride.
+  bakeOverride: new Map(),
   fluidSim: [],            // the global sim list from config.json
   unlit: false,            // show raw albedo, no lighting
-  taa: false,              // temporal anti-aliasing, see setTaa
-  runtimeLight: false,     // drop the authoring rig, see what the game sees
+  baked: false,            // show ship_baked.glb and its lightmaps, see baked.js
+  bakedSpecularAA: true,   // Babylon.js specular anti-aliasing for baked-preview reflections
+  bakedRoughnessFactor: 1, // preview-only multiplier over authored metallic roughness
   toneMapping: "Khronos PBR Neutral",
   // Two independent pairs. The editor's rig adds four analytic lights the game
   // does not have, so one pair of Env/Exposure values cannot serve both: what
-  // reads well while building is nothing like what the game needs. The active
-  // pair is mirrored into envIntensity/exposure above, which is what the scene
-  // actually gets.
+  // reads well while building is nothing like what the game needs. Baked mode
+  // picks the runtime pair; the active one is mirrored into
+  // envIntensity/exposure above, which is what the scene actually gets.
   lightSets: {
-    editor: { strength: 1.5, exposure: 0.55 },
-    runtime: { strength: 1.5, exposure: 0.55 },
+    editor: { strength: 1.5, dynamicStrength: 1.5, exposure: 0.55 },
+    runtime: { strength: 1.5, dynamicStrength: 1.5, exposure: 0.55 },
   },
   exposure: 0.55,          // see EXPOSURE_DEFAULT
   envIntensity: 1.5,       // see ENV_INTENSITY_DEFAULT
+  dynamicEnvIntensity: 1.5, // environment intensity for unbaked/dynamic meshes
   walk: false,             // see setWalk
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
@@ -147,7 +204,27 @@ export const state = {
 /** Selection holds ids from any store; resolve without caring which. */
 export function entryOf(id) {
   return state.placements.get(id) || state.markers.get(id)
-    || state.colliders.get(id) || null;
+    || state.colliders.get(id) || state.lights.get(id) || null;
+}
+
+/**
+ * Which element a mesh belongs to, whoever is drawing it.
+ *
+ * Every editor mesh carries a back-pointer to the node it hangs off; a baked
+ * stand-in carries the *id* of the element it is standing in for instead,
+ * because it outlives that element's node - undo rebuilds every placement from
+ * the snapshot, and a stored node reference would survive exactly one Ctrl+Z.
+ *
+ * `placementsOnly` is for the walk-mode floor probe, which wants something to
+ * stand on and not a door marker's portal quad.
+ */
+export function ownerIdOf(mesh, placementsOnly = false) {
+  const md = mesh?.metadata;
+  if (!md) return null;
+  const id = md.standInFor || md.placementRoot?.name
+    || (placementsOnly ? null
+      : (md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name));
+  return id || null;
 }
 
 const listeners = new Map();
@@ -170,6 +247,7 @@ let stageRedo = [];
 // ------------------------------------------------------------------ setup
 
 export async function initScene(canvas) {
+  patchKhronosPbrNeutralShader();
   const engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
   const scene = new Scene(engine);
   scene.clearColor = new Color4(0.055, 0.063, 0.075, 1);
@@ -177,11 +255,6 @@ export async function initScene(canvas) {
   // undo hiding the cursor while a ghost is being placed.
   scene.doNotHandleCursors = true;
   window.__scene = scene;
-  // The devtools console cannot reach a module export, so the things worth
-  // poking at by hand go on the window. `__taa` is a getter rather than a
-  // value because the pipeline is replaced every time the checkbox is toggled,
-  // and a stale one would take settings that no longer reach the screen.
-  Object.defineProperty(window, "__taa", { get: () => taa, configurable: true });
   state.engine = engine;
   state.scene = scene;
 
@@ -311,18 +384,31 @@ export const EXPOSURE_DEFAULT = 0.55;
  * metal ceilings and platform undersides, which no hemisphere can help.
  */
 export const ENV_INTENSITY_DEFAULT = 1.5;
+export const DYNAMIC_ENV_INTENSITY_DEFAULT = ENV_INTENSITY_DEFAULT;
+export const BAKED_SPECULAR_AA_DEFAULT = true;
+export const BAKED_ROUGHNESS_FACTOR_DEFAULT = 1;
 
-// ------------------------------------------------------------ runtime light
+// -------------------------------------------------------- the authoring rig
 //
 // The four analytic lights are an authoring aid: they exist so every module
 // stays legible from any angle while you build. The game has none of them - it
-// lights the ship from the HDRI and its own emissive fixtures - so they are
-// measurably the reason the editor looks nothing like the runtime. Measured on
-// the real ship: mean 165.7 with the rig, 35.0 without, so the rig supplies
+// lights the ship from a Blender bake plus the authored runtime lamps - so they
+// are measurably the reason the editor looks nothing like the runtime. Measured
+// on the real ship: mean 165.7 with the rig, 35.0 without, so the rig supplies
 // about four fifths of what you see here and none of what you will ship.
 //
-// Turning them off is therefore the only honest preview, and the only sound way
-// to judge the Env and Exposure sliders, which *are* written to the manifest.
+// The rig is therefore tied to **Baked**, and to nothing else. There used to be
+// a separate "Runtime light" checkbox that silenced it over the authored ship,
+// but that preview was only ever half a truth: the authored ship has no
+// lightmaps, so switching the rig off left it lit by the HDRI alone - a picture
+// the game never renders either. Baked mode shows the real thing (the baked glb
+// with its atlases, and the authored lamps rebuilt over the dynamic props), so
+// it is the only state in which silencing the rig means anything, and the
+// checkbox was one more thing to get wrong.
+//
+// The two Env/Exposure pairs survive the merge unchanged: `runtime` is what the
+// manifest's `environment` block carries and the demos read, `editor` is what
+// the rig wants, and Baked decides which pair the sliders edit.
 
 const authoredIntensity = new WeakMap();
 
@@ -330,20 +416,32 @@ function applyRuntimeLighting() {
   if (!state.scene) return;
   for (const l of state.scene.lights) {
     if (!authoredIntensity.has(l)) continue;
-    l.intensity = state.runtimeLight ? 0 : authoredIntensity.get(l);
+    // Baked preview supplies its own clustered/regular runtime lights. The
+    // editor rig must be disabled, not merely set to zero: enabled rig lights
+    // still consume Babylon material light slots and can evict the clustered
+    // container from the compiled shader.
+    l.setEnabled(!state.baked);
+    l.intensity = state.baked ? 0 : authoredIntensity.get(l);
   }
 }
 
-export function setRuntimeLighting(on) {
-  state.runtimeLight = !!on;
+/**
+ * Put the viewport lighting in step with `state.baked`.
+ *
+ * Called by setBakedPreview on both edges, after it has moved the flag. Kept
+ * separate from that function rather than folded into it because the Env and
+ * Exposure sliders have to be refreshed by the caller afterwards, and a mode
+ * switch that half-applied itself would be worse than one that did nothing.
+ */
+export function syncLightingMode() {
   applyRuntimeLighting();
   // Swap in the pair that belongs to this mode. Both are kept whole, so
   // switching back and forth never costs you the values you tuned.
   const set = activeLightSet();
   setEnvIntensity(set.strength);
+  setDynamicEnvIntensity(set.dynamicStrength ?? set.strength);
   setExposure(set.exposure);
   emit("modes");
-  return state.runtimeLight;
 }
 
 export function setEnvIntensity(v) {
@@ -356,21 +454,79 @@ export function setEnvIntensity(v) {
   emit("modes");
 }
 
+/** Set the IBL strength used by materials the bake left out. */
+export function setDynamicEnvIntensity(v) {
+  const n = Number(v);
+  state.dynamicEnvIntensity = Number.isFinite(n)
+    ? Math.min(6, Math.max(0, n))
+    : DYNAMIC_ENV_INTENSITY_DEFAULT;
+  activeLightSet().dynamicStrength = state.dynamicEnvIntensity;
+  hooks.setDynamicEnvironment(state.dynamicEnvIntensity);
+  emit("environment");
+}
+
+/** Toggle Babylon.js PBR specular anti-aliasing for the baked preview only. */
+export function setBakedSpecularAA(on) {
+  const next = !!on;
+  if (state.bakedSpecularAA === next) return false;
+  state.bakedSpecularAA = next;
+  emit("reflection");
+  return true;
+}
+
+/**
+ * Scale the authored roughness in the baked preview without changing exported materials.
+ * Values above 1 deliberately make glossy metal less likely to shimmer by broadening its IBL lobe.
+ */
+export function setBakedRoughnessFactor(v) {
+  const n = Number(v);
+  const next = Number.isFinite(n)
+    ? Math.min(2, Math.max(0.5, n))
+    : BAKED_ROUGHNESS_FACTOR_DEFAULT;
+  if (state.bakedRoughnessFactor === next) return false;
+  state.bakedRoughnessFactor = next;
+  emit("reflection");
+  return true;
+}
+
 export function setExposure(v) {
   const n = Number(v);
   // Number.isFinite, not `|| DEFAULT`: a literal 0 is falsy and would silently
   // jump back to the default instead of clamping to the floor.
+  //
+  // The ceiling is 4 rather than 2 because of the baked view. There the scene
+  // is albedo times a lightmap holding absolute irradiance, and this ship's
+  // lamps are dim enough that the product needs lifting well past the 0.55 the
+  // lit viewport wants. Exposure is the only honest knob for that - the
+  // alternative is more lamp power in the bake, which is a different decision.
   state.exposure = Number.isFinite(n)
-    ? Math.min(2, Math.max(0.15, n))
+    ? Math.min(4, Math.max(0.15, n))
     : EXPOSURE_DEFAULT;
   activeLightSet().exposure = state.exposure;
   if (state.scene) state.scene.imageProcessingConfiguration.exposure = state.exposure;
   emit("modes");
 }
 
+function bakeLightingValue(key, value) {
+  const n = Number(value);
+  const range = BAKE_LIGHTING_RANGE[key];
+  return Number.isFinite(n)
+    ? Math.min(range.max, Math.max(range.min, n))
+    : BAKE_LIGHTING_DEFAULTS[key];
+}
+
+export function setBakeLighting(key, value) {
+  if (!(key in BAKE_LIGHTING_DEFAULTS)) return false;
+  const next = bakeLightingValue(key, value);
+  if (state.bakeLighting[key] === next) return false;
+  state.bakeLighting[key] = next;
+  emit("bakeLighting");
+  return true;
+}
+
 /** The Env/Exposure pair the sliders are currently editing. */
 export function activeLightSet() {
-  return state.lightSets[state.runtimeLight ? "runtime" : "editor"];
+  return state.lightSets[state.baked ? "runtime" : "editor"];
 }
 
 /**
@@ -431,6 +587,12 @@ export function noteAuthoredEmissive(mat, force = false) {
 /** Put one material into the current viewport mode. */
 export function applyViewportMode(mat) {
   if (!("unlit" in mat)) return;
+  // The baked preview's clones do their own compositing and must be left out
+  // of this sweep. Their PBR lighting is intentional: the lightmap remains a
+  // multiplier while the scene environment supplies metallic reflections.
+  // They are preview-only and never reach the export, so nothing downstream
+  // needs them swept either.
+  if (mat.metadata?.bakedPreview) return;
   mat.unlit = state.unlit;
   noteAuthoredEmissive(mat);
   const authored = authoredEmissive.get(mat);
@@ -457,43 +619,6 @@ export function setUnlit(on) {
   for (const mat of state.scene.materials) applyViewportMode(mat);
   emit("modes");
 }
-
-/**
- * Temporal anti-aliasing over the viewport.
- *
- * This is here to be compared against Babylon-Lite's own TAA, so it is the
- * stock pipeline at stock settings rather than a tuned one: whatever the two
- * engines do differently is then the only difference on screen. The knobs are
- * reachable through `taaPipeline()` for anyone who wants to match a particular
- * configuration by hand.
- *
- * Built and thrown away on each toggle rather than left attached and switched
- * off. An attached pipeline renders the scene into a texture whether or not it
- * is enabled, and that alone changes the picture: the canvas MSAA the engine
- * was created with only applies while the scene draws straight to the back
- * buffer. Off has to give back exactly the image you had before it went on, or
- * the comparison this exists for is not a comparison.
- *
- * `disableOnCameraMove` is left at its default, so the accumulation resets
- * while you fly and settles once you stop - which is when you are looking.
- */
-let taa = null;
-
-export function setTaa(on) {
-  state.taa = !!on && !!TAARenderingPipeline;
-  if (!state.scene || !state.camera) return state.taa;
-  if (state.taa && !taa) {
-    taa = new TAARenderingPipeline("taa", state.scene, [state.camera]);
-  } else if (!state.taa && taa) {
-    taa.dispose();
-    taa = null;
-  }
-  emit("modes");
-  return state.taa;
-}
-
-/** The live TAA pipeline, or null when it is off. Its settings are on it. */
-export function taaPipeline() { return taa; }
 
 /**
  * A translucent stand-in for a material, cached.
@@ -762,13 +887,19 @@ export function elementsInRect(rect) {
   return out;
 }
 
-/** Height of the walkable surface under `x, z`, or null if there is none. */
-export function groundHeightAt(x, z, fromY, reach = FALL_LIMIT) {
+/**
+ * Height of the walkable surface under `x, z`, or null if there is none.
+ *
+ * `skip` drops meshes from the search - used when the thing being placed is
+ * itself in the way, and would otherwise report its own roof as the floor.
+ */
+export function groundHeightAt(x, z, fromY, reach = FALL_LIMIT, skip = null) {
   const scene = state.scene;
   if (!scene) return null;
   const ray = new BABYLON.Ray(new Vector3(x, fromY, z), Vector3.Down(), reach);
   const hit = scene.pickWithRay(ray, (m) =>
-    m.isPickable && m.isEnabled() && !!m.metadata?.placementRoot);
+    m.isPickable && m.isEnabled() && !!ownerIdOf(m, true)
+    && !(skip && skip(m)));
   return hit?.hit ? hit.pickedPoint.y : null;
 }
 
@@ -1559,11 +1690,7 @@ export function pickUnderCursor() {
   const scene = state.scene;
   const pick = scene.pick(scene.pointerX, scene.pointerY,
     (m) => m.isPickable && m.isEnabled());
-  const id = pick?.hit
-    ? (pick.pickedMesh?.metadata?.placementRoot?.name
-      || pick.pickedMesh?.metadata?.markerRoot?.name
-      || pick.pickedMesh?.metadata?.colliderRoot?.name)
-    : null;
+  const id = pick?.hit ? ownerIdOf(pick.pickedMesh) : null;
   if (id && entryOf(id)) return { kind: "entry", id, entry: entryOf(id), pick };
 
   const point = cursorOnGrid();
@@ -1610,8 +1737,17 @@ export async function placeAt(moduleId, position, opts = {}) {
   node.metadata = { placement: entry };
   state.placements.set(id, entry);
   if (!entry.stage && !state.chunks.includes(entry.chunk)) state.chunks.push(entry.chunk);
+  // A ceiling panel arrives lit: kit_lights.json says where the lamp sits in
+  // the module's own space. Skipped by the two callers that bring lights with
+  // them - a duplicate copies the original's, a load restores what was saved -
+  // because seeding those would add a second lamp beside every one of them.
+  const seeded = opts.noLights ? [] : hooks.seedKitLights(id);
   applyVisibility();
   if (!opts.silent) { emit("placements"); select([id]); }
+  // Not folded into the branch above: a run of tiles dropped in one go places
+  // every one but the first silently, and the lights panel still has to see
+  // the lamps that came with them.
+  if (seeded.length) emit("lights");
   return entry;
 }
 
@@ -1626,6 +1762,7 @@ export function removeSelected() {
     if (p?.stage) hooks.unstageModule(id);
     else if (p) removePlacement(id);
     else if (state.colliders.has(id)) hooks.removeCollider(id);
+    else if (state.lights.has(id)) hooks.removeLight(id);
     else removeMarkerNode(id);
   }
   select([]);
@@ -1633,6 +1770,7 @@ export function removeSelected() {
   emit("placements");
   emit("markers");
   emit("colliders");
+  emit("lights");
 }
 
 function removeMarkerNode(id) {
@@ -1646,6 +1784,13 @@ function removeMarkerNode(id) {
 export function removePlacement(id) {
   const entry = state.placements.get(id);
   if (!entry) return;
+  // Before the node goes: the light nodes are its children and would be
+  // disposed with it, leaving entries pointing at scene nodes that no longer
+  // exist.
+  hooks.removeLightsOf(id);
+  // The stand-in drawing this element in the baked view outlives the element's
+  // own node, so it has to be told to stop.
+  hooks.settleStandIns(id);
   entry.node.getChildMeshes().forEach((m) => m.dispose());
   entry.node.dispose();
   state.placements.delete(id);
@@ -1661,10 +1806,14 @@ export async function duplicateSelected() {
     const rot = eulerOf(e.node);
     const copy = await placeAt(e.module,
       e.node.position.add(new Vector3(state.snap.pos || 1, 0, 0)),
-      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: e.name, silent: true });
+      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: e.name, silent: true, noLights: true });
+    // A copied ceiling panel that arrived dark would be a trap: the light is
+    // part of what the element IS, the same way its collision shapes are.
+    hooks.copyLightsTo(id, copy.id);
     made.push(copy.id);
   }
   emit("placements");
+  emit("lights");
   select(made);
 }
 
@@ -1673,6 +1822,9 @@ export function clearAll() {
   for (const id of [...state.placements.keys()]) removePlacement(id);
   for (const id of [...state.markers.keys()]) removeMarkerNode(id);
   for (const id of [...state.colliders.keys()]) hooks.removeCollider(id);
+  // removePlacement drops the lights it owns, so this only catches a light that
+  // somehow outlived its owner - cheap insurance against a leak across a load.
+  state.lights.clear();
   state.selection = [];
   state.nextId = 1;
   // ids restart at P0001, so a leftover entry would hide a brand new element
@@ -1681,6 +1833,7 @@ export function clearAll() {
   // behaviours into the new one
   state.behaviors.clear();
   state.entities.clear();
+  state.bakeOverride.clear();
   emit("placements");
   emit("markers");
   emit("selection");
@@ -1763,6 +1916,49 @@ export function focusNodes(nodes) {
   cam.setTarget(c);
 }
 
+// How far in front of the camera a brought piece lands, in metres. Anything
+// under BRING_NEAR ends up inside your face; anything past BRING_FAR is no
+// longer "close to us", which is the whole request.
+const BRING_NEAR = 3;
+const BRING_FAR = 8;
+const BRING_DROP = 6;        // how far below the spot a floor still counts
+
+/**
+ * A spot just in front of the camera to drop something on.
+ *
+ * Two searches, because a ship interior and open space want different answers.
+ * **Forward** first, so the spot is never pushed through the wall you are
+ * facing - in a corridor the preferred distance would otherwise put the piece
+ * in the next room. **Down** from there, so it lands on the deck you are
+ * standing on rather than floating at eye height. With neither - out in the
+ * open, or over a gap - the raw point in front of the camera is still somewhere
+ * you can see, which is all that was asked for.
+ *
+ * `size` is the piece's diagonal: a 4 m wall wants standing-back room, a
+ * handrail wants to be within reach. `skip` excludes the piece itself, which
+ * would otherwise be the thing the forward ray hits.
+ *
+ * Deliberately *not* snapped. Modules are not modelled around their origin, so
+ * only the caller knows which offset has to come off before the grid applies -
+ * snapping here would align the origin and leave the body off-grid.
+ */
+export function cameraDropPoint(size = 2, skip = null) {
+  const cam = state.camera, scene = state.scene;
+  if (!cam || !scene) return null;
+  const fwd = cam.getDirection(Vector3.Forward()).normalize();
+  const want = Math.min(Math.max(size * 0.9, BRING_NEAR), BRING_FAR);
+  const ahead = scene.pickWithRay(
+    new BABYLON.Ray(cam.position.clone(), fwd, want),
+    (m) => m.isPickable && m.isEnabled() && !(skip && skip(m)));
+  // Stop just short of what is in the way rather than on its surface, so the
+  // piece does not start out intersecting the wall you were looking at.
+  const dist = ahead?.hit ? Math.max(ahead.distance - 0.25, 0.5) : want;
+  const point = cam.position.add(fwd.scale(dist));
+  const floor = groundHeightAt(point.x, point.z, point.y + 0.1, BRING_DROP + 0.1, skip);
+  if (floor != null) point.y = floor;
+  return { point, floor: floor != null };
+}
+
 // ----------------------------------------------------------------- chunks
 
 /**
@@ -1791,6 +1987,51 @@ export function addChunk(name) {
 }
 
 /**
+ * Everything that would be orphaned if a chunk went away.
+ *
+ * A chunk id is not a label: placements carry it and doors name it as one of
+ * their two sides. Deleting the list entry alone would leave both pointing at
+ * a room that no longer exists - placements invisible to isolation, doors with
+ * a portal to nowhere - so `removeChunk` refuses while this finds anything.
+ */
+export function chunkUsers(name) {
+  const placements = shipPlacements().filter((e) => e.chunk === name).map((e) => e.id);
+  const doors = [...state.markers.values()]
+    .filter((m) => m.chunkA === name || m.chunkB === name).map((m) => m.id);
+  return { placements, doors };
+}
+
+/**
+ * Delete a chunk, but only once nothing refers to it.
+ *
+ * Refusing is the whole design. The alternatives were to drag the contents into
+ * some other room - which silently rewrites the ship's layout to service a
+ * button press - or to delete them with it, which turns one keystroke into an
+ * unbounded loss. Emptying the room first is a deliberate act, and `Assign`
+ * already exists to do it.
+ *
+ * Returns `{ ok }` or `{ ok: false, reason, users }`, so the caller can say
+ * exactly what is still in the way rather than just failing.
+ */
+export function removeChunk(name) {
+  if (!name || !state.chunks.includes(name)) return { ok: false, reason: "unknown" };
+  // The ship is always in some chunk: `activeChunk` is what new placements
+  // join, and there has to be one for them to join.
+  if (state.chunks.length < 2) return { ok: false, reason: "last" };
+  const users = chunkUsers(name);
+  if (users.placements.length || users.doors.length) {
+    return { ok: false, reason: "in use", users };
+  }
+  pushUndo();
+  state.chunks = state.chunks.filter((c) => c !== name);
+  state.chunkBake.delete(name);
+  if (state.activeChunk === name) state.activeChunk = state.chunks[0];
+  applyVisibility();
+  emit("chunks");
+  return { ok: true };
+}
+
+/**
  * Rename a chunk everywhere it is referenced.
  *
  * A chunk id is not just a label: placements carry it, doors name the two
@@ -1806,6 +2047,12 @@ export function renameChunk(from, to) {
   pushUndo();
 
   state.chunks = state.chunks.map((c) => (c === from ? name : c));
+  // Keyed by id like everything else, so the room's own bake settings have to
+  // travel with it or a rename would quietly reset it to the ship's defaults.
+  if (state.chunkBake.has(from)) {
+    state.chunkBake.set(name, state.chunkBake.get(from));
+    state.chunkBake.delete(from);
+  }
   for (const e of state.placements.values()) if (e.chunk === from) e.chunk = name;
   for (const m of state.markers.values()) {
     if (m.chunkA === from) m.chunkA = name;
@@ -1817,6 +2064,75 @@ export function renameChunk(from, to) {
   emit("chunks");
   emit("placements");
   emit("markers");
+  return true;
+}
+
+/** One of the four dials, rounded and clamped, or null if it is not a number. */
+function asBakeSetting(key, value) {
+  const range = BAKE_RANGE[key];
+  if (!range) return null;
+  // Explicitly, because `Number(null)` and `Number("")` are both 0, not NaN:
+  // an empty input box would otherwise clamp to the minimum and read back as a
+  // 16-pixel lightmap rather than as "follow the default".
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return null;
+  return Math.min(range.max, Math.max(range.min, n));
+}
+
+/** A chunk's own overrides, if it has any. Sparse: absent means "the default". */
+export function chunkBakeOf(id) {
+  return { ...(state.chunkBake.get(id) || {}) };
+}
+
+/** What the bake will actually render this chunk at, defaults folded in. */
+export function resolveChunkBake(id) {
+  return { ...state.bakeDefaults, ...(state.chunkBake.get(id) || {}) };
+}
+
+/**
+ * Override some of a chunk's bake settings, or clear the override.
+ *
+ * A field is cleared by passing null (or anything that is not a number), and
+ * clearing is not the same as writing today's default in: a cleared field
+ * follows `bakeDefaults` forever after, so raising the ship's sample count
+ * still reaches the room. That is the whole reason the map is sparse.
+ */
+export function setChunkBake(id, patch) {
+  if (!state.chunks.includes(id)) return false;
+  const next = chunkBakeOf(id);
+  for (const [key, raw] of Object.entries(patch || {})) {
+    if (!(key in BAKE_RANGE)) continue;
+    const v = asBakeSetting(key, raw);
+    if (v === null) delete next[key]; else next[key] = v;
+  }
+  const before = JSON.stringify(state.chunkBake.get(id) || {});
+  if (JSON.stringify(next) === before) return false;
+  pushUndo();
+  if (Object.keys(next).length) state.chunkBake.set(id, next);
+  else state.chunkBake.delete(id);
+  emit("chunks");
+  return true;
+}
+
+/**
+ * Change the ship-wide bake defaults.
+ *
+ * Unlike a chunk's, these cannot be cleared - they are the floor every chunk
+ * falls through to - so a value that will not parse is simply left alone.
+ */
+export function setBakeDefaults(patch) {
+  const next = { ...state.bakeDefaults };
+  for (const [key, raw] of Object.entries(patch || {})) {
+    if (!(key in BAKE_RANGE)) continue;
+    const v = asBakeSetting(key, raw);
+    if (v !== null) next[key] = v;
+  }
+  if (JSON.stringify(next) === JSON.stringify(state.bakeDefaults)) return false;
+  pushUndo();
+  state.bakeDefaults = next;
+  emit("chunks");
   return true;
 }
 
@@ -1839,7 +2155,21 @@ export function renamePlacement(id, name) {
   const next = String(name || "").trim();
   if (e.name === next) return false;
   pushUndo();
+  const before = e.name || e.id;
   e.name = next;
+  // Behaviours are keyed by name and stay with the NAME, which is the whole
+  // point of them - renaming one of six crates leaves the other five governed.
+  // A bake override is the opposite: it is set on the element in front of you,
+  // and an unnamed element is keyed by its id, which naming it would strand.
+  // So it travels, and only stops governing the old name once nothing is left
+  // under it.
+  const mode = state.bakeOverride.get(before);
+  const after = next || e.id;
+  if (mode && before !== after) {
+    if (!state.bakeOverride.has(after)) state.bakeOverride.set(after, mode);
+    const stillUsed = [...state.placements.values()].some((p) => (p.name || p.id) === before);
+    if (!stillUsed) state.bakeOverride.delete(before);
+  }
   emit("placements");
   emit("current");
   emit("behaviors");
@@ -1925,7 +2255,6 @@ export function entityBehaviors(nodeName) {
   return list.map((b) => ({
     name: b.name,
     linked: [...(b.linked || [])],
-    excludeSDF: [...(b.excludeSDF || [])],
     ...(b.direction ? { direction: [...b.direction] } : {}),
   }));
 }
@@ -1937,7 +2266,7 @@ export function addEntityBehavior(nodeName, behaviorName) {
   const list = state.entities.get(node) || [];
   if (list.some((b) => b.name === behaviorName)) return false;
   pushUndo();
-  state.entities.set(node, [...list, { name: behaviorName, linked: [], excludeSDF: [] }]);
+  state.entities.set(node, [...list, { name: behaviorName, linked: [] }]);
   emit("behaviors");
   return true;
 }
@@ -1976,41 +2305,124 @@ export function isLiquefiable(behaviorName) {
 }
 
 /**
- * Names whose baked SDF the fluid sim must drop while this shot's water lives.
+ * Whether a node carries a behaviour that gives it a rigid body.
  *
- * A door names its frame: the water is seeded inside the door's own volume,
- * which sits *within* the frame, so leaving the frame in the SDF union would
- * eject the particles and dam the opening the door just left behind.
+ * The runtime's own rule: `dynamic` alone. `liquefiable` does NOT imply it - a
+ * mesh can be authored to melt without ever having been a rigid body.
  */
-export function setEntityExcludeSDF(nodeName, behaviorName, names) {
-  const node = String(nodeName || "").trim();
-  const entry = state.entities.get(node)?.find((b) => b.name === behaviorName);
-  if (!entry) return false;
-  const next = [...new Set(names.map((s) => String(s).trim()).filter(Boolean))];
-  if (JSON.stringify(entry.excludeSDF || []) === JSON.stringify(next)) return false;
+export function isDynamicNode(nodeName) {
+  return entityBehaviors(nodeName).some((b) => getBehaviorDef(b.name)?.dynamic === true);
+}
+
+// ----------------------------------------------------------- force baking
+//
+// The bake works out on its own which meshes it must leave out of a chunk's
+// atlas: the ones the runtime *moves* (`dynamic`) or *melts* (`liquefiable`,
+// and everything they are `linked` to). That rule is right almost always, and
+// it is the one place the three halves of the pipeline agree without being told
+// - `bake_lightmaps.py` drops them, and both the editor's Baked preview and the
+// game read the decision straight back off the geometry, as a missing UV2.
+//
+// This is the escape hatch for the cases where it is not right, and there are
+// two of them, in both directions:
+//
+//   exclude - a mesh the rule would bake but that must not be. A holographic
+//             panel or a light strip whose emission the author means to drive at
+//             runtime has a baked-in glow that fights it, and the fix is to keep
+//             it out of the atlas without inventing a behaviour it does not
+//             otherwise have.
+//   include - a mesh the rule would drop but that must be baked. The commonest
+//             case is a `liquefiable` fixture that never actually moves until it
+//             is destroyed - a wall panel, a locker - where a lightmap is right
+//             for the whole of the time the player is looking at it, and the
+//             runtime lamps are a poor substitute for the bounce it sits in.
+//
+// Keyed by NODE NAME, like behaviours and for the same reason: the bake matches
+// Blender objects back to the manifest by name, so an override keyed any other
+// way could not be applied. Unnamed elements fall back to their id, which is
+// what the exporter calls them, so every mesh can carry one.
+
+/** The three settings, in the order the inspector offers them. */
+export const BAKE_OVERRIDES = ["auto", "exclude", "include"];
+
+/** The override on a node name: "auto" when none is set. */
+export function bakeOverrideOf(nodeName) {
+  return state.bakeOverride.get(String(nodeName || "").trim()) || "auto";
+}
+
+/**
+ * Force a node into or out of the bake, or hand it back to the rule.
+ *
+ * "auto" deletes the entry rather than storing it: the manifest writes only
+ * what is set, so a stored "auto" would be noise in the diff of every element
+ * that had ever been looked at.
+ */
+export function setBakeOverride(nodeName, mode) {
+  return setBakeOverrides([nodeName], mode);
+}
+
+/**
+ * The same, over a whole selection and on ONE undo step.
+ *
+ * Forcing a room's worth of light strips out of the atlas is the reason to
+ * reach for this at all, and an undo that took them back one at a time would
+ * make the operation practically irreversible.
+ */
+export function setBakeOverrides(nodeNames, mode) {
+  if (!BAKE_OVERRIDES.includes(mode)) return false;
+  const next = mode === "auto" ? undefined : mode;
+  const nodes = [...new Set(nodeNames.map((n) => String(n || "").trim()).filter(Boolean))]
+    .filter((n) => (state.bakeOverride.get(n) || undefined) !== next);
+  if (!nodes.length) return false;
   pushUndo();
-  entry.excludeSDF = next;
+  for (const node of nodes) {
+    if (next) state.bakeOverride.set(node, next);
+    else state.bakeOverride.delete(node);
+  }
   emit("behaviors");
   return true;
 }
 
 /**
- * Whether a node carries a behaviour that gives it a rigid body.
+ * What "Automatic" decides for a node name: true when the bake would leave it
+ * out of the atlas.
  *
- * The runtime's own rule: `dynamic`, or `liquefiable` - which implies it, since
- * a mesh has to be physically present before it can melt. Only such a node has
- * an SDF in the simulation to drop, so only such a node is worth offering.
+ * This mirrors `unbaked_names()` in bake_lightmaps.py statement for statement,
+ * including the `linked` closure and the "first liquefiable assignment wins"
+ * rule the runtime's own `liquefiableConfigOf` uses. It exists so the inspector
+ * can say what the setting above actually means for the element in front of
+ * you - a switch offering "Automatic" without showing what automatic came out
+ * as is a switch you have to guess at.
  */
-export function isDynamicNode(nodeName) {
-  return entityBehaviors(nodeName).some((b) => {
-    const def = getBehaviorDef(b.name);
-    return def?.dynamic === true || def?.liquefiable === true;
-  });
+export function autoBakeExcluded(nodeName) {
+  const node = String(nodeName || "").trim();
+  if (!node) return false;
+  const assignments = (n) => state.entities.get(n) || [];
+  if (assignments(node).some((b) => getBehaviorDef(b.name)?.dynamic === true)) return true;
+  // The melt closure, walked backwards: this node is out if any node whose
+  // liquefaction it is dragged into reaches it through `linked`.
+  const meltConfig = (n) => assignments(n).find((b) => isLiquefiable(b.name)) || null;
+  const seen = new Set();
+  const pending = [...state.entities.keys()].filter((n) => meltConfig(n));
+  while (pending.length) {
+    const n = pending.pop();
+    if (seen.has(n)) continue;
+    seen.add(n);
+    if (n === node) return true;
+    for (const linked of meltConfig(n)?.linked || []) {
+      if (linked && !seen.has(linked)) pending.push(linked);
+    }
+  }
+  return false;
 }
 
-/** Dynamic node names in a chunk - the candidates for `excludeSDF`. */
-export function dynamicNodeNamesInChunk(chunk, exclude = "") {
-  return nodeNamesInChunk(chunk, exclude).filter(isDynamicNode);
+/**
+ * Whether a node is left out of the bake once its override is applied - the
+ * question the Baked preview and the game both answer off the geometry.
+ */
+export function bakeExcluded(nodeName) {
+  const mode = bakeOverrideOf(nodeName);
+  return mode === "exclude" ? true : mode === "include" ? false : autoBakeExcluded(nodeName);
 }
 
 /**
@@ -2102,8 +2514,18 @@ const veilClones = new Map();          // element id -> the translucent stand-in
 
 export function isVeilClone(mesh) { return !!mesh?.metadata?.veilClone; }
 
+/**
+ * Editor furniture hanging off an element's node rather than part of its art.
+ *
+ * Only a light's gizmo, so far - and only lights are parented to another
+ * element at all. Everything that walks a placement's meshes has to skip it: it
+ * is not a primitive to export, not a shape to measure, and veiling a wall must
+ * not clone the lamp inside it.
+ */
+export function isGizmoMesh(m) { return !!m?.metadata?.gizmo; }
+
 function realMeshes(node) {
-  return node.getChildMeshes().filter((m) => !isVeilClone(m));
+  return node.getChildMeshes().filter((m) => !isVeilClone(m) && !isGizmoMesh(m));
 }
 
 /**
@@ -2187,8 +2609,21 @@ export function applyVisibility() {
       && (!state.isolate || e.chunk === state.activeChunk)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
-    for (const m of realMeshes(e.node)) m.isPickable = veil !== "ghost";
+    // The baked preview draws the exported copy of this element in place of the
+    // element's own meshes - never both, which would z-fight the whole vessel.
+    // It is offered the visibility already decided above rather than deciding
+    // any of it again, and a ghosted element keeps its own translucent clones,
+    // the point of the veil being that the thing is not really there.
+    const stood = hooks.showStandIn(e, on && veil !== "ghost");
+    for (const m of realMeshes(e.node)) {
+      if (veil !== "ghost") m.setEnabled(!stood);
+      m.isPickable = veil !== "ghost";
+    }
+    for (const m of hooks.standInMeshes(e.id)) m.isPickable = veil !== "ghost";
   }
+  // A stand-in whose element has been deleted is not reached by the loop above,
+  // which is exactly how it gets noticed.
+  hooks.settleStandIns();
   // A door is not in a chunk, but it *joins* two - so isolation does have
   // something to say about it: show it when the active chunk is one of its two
   // sides. Sides left on "(auto)" are resolved the same way the manifest
@@ -2409,6 +2844,13 @@ export const hooks = {
   serializeColliders: () => [],
   deserializeColliders: () => {},
   removeCollider: () => {},
+  serializeLights: () => [],
+  deserializeLights: () => {},
+  removeLightsOf: () => {},
+  removeLight: () => {},
+  copyLightsTo: () => {},
+  seedKitLights: () => [],
+  lightsForExport: () => [],
   reconcileCollider: () => false,
   // interact.js owns the placement ghost; the axes need its node, and importing
   // interact.js back would close a cycle
@@ -2416,6 +2858,14 @@ export const hooks = {
   // palette.js owns the brush, and imports interact.js - so putting the tile
   // back down after a one-shot drop has to come back through here
   clearBrush: () => {},
+  // baked.js registers these three. While the baked preview is up the exported
+  // ship stands in for the authored one element by element, so that the one
+  // honest view of the ship is also one you can work in. Defaults that answer
+  // "there is no stand-in" keep every caller free of a mode check.
+  standInMeshes: () => [],
+  showStandIn: () => false,
+  settleStandIns: () => {},
+  setDynamicEnvironment: () => {},
 };
 
 /**
@@ -2457,8 +2907,8 @@ export function applyView(view) {
  * getting it wrong is as much an edit to take back as moving a wall. The camera
  * stays off the stack, because where you happen to be standing is not an edit.
  *
- * These are the **Runtime light** values - the pair tuned with the editor's own
- * lights switched off - because that is the picture the demos render. `strength`
+ * These are the values tuned in **Baked** mode - the rig switched off, the
+ * lightmaps on - because that is the picture the demos render. `strength`
  * is `scene.environmentIntensity`, `exposure` is the linear multiplier exactly
  * as the slider shows it, and `toneMapping` names the view transform both ends
  * apply.
@@ -2467,6 +2917,7 @@ export function serializeEnvironment() {
   const set = state.lightSets.runtime;
   return {
     strength: round3([set.strength])[0],
+    dynamicStrength: round3([set.dynamicStrength ?? set.strength])[0],
     toneMapping: state.toneMapping,
     exposure: round3([set.exposure])[0],
   };
@@ -2482,8 +2933,31 @@ export function serializeEditorEnvironment() {
   const set = state.lightSets.editor;
   return {
     strength: round3([set.strength])[0],
+    dynamicStrength: round3([set.dynamicStrength ?? set.strength])[0],
     exposure: round3([set.exposure])[0],
   };
+}
+
+export function serializeBakeLighting() {
+  return {
+    power: round3([state.bakeLighting.power])[0],
+    sky: round3([state.bakeLighting.sky])[0],
+  };
+}
+
+export function applyBakeLighting(values) {
+  if (!values || typeof values !== "object") return false;
+  let changed = false;
+  for (const key of ["power", "sky"]) {
+    if (!Number.isFinite(values[key])) continue;
+    const next = bakeLightingValue(key, values[key]);
+    if (state.bakeLighting[key] !== next) {
+      state.bakeLighting[key] = next;
+      changed = true;
+    }
+  }
+  if (changed) emit("bakeLighting");
+  return changed;
 }
 
 /**
@@ -2494,11 +2968,15 @@ export function applyEnvironment(env, editorEnv) {
   if (!env && !editorEnv) return false;
   if (env && typeof env === "object") {
     if (Number.isFinite(env.strength)) state.lightSets.runtime.strength = env.strength;
+    state.lightSets.runtime.dynamicStrength = Number.isFinite(env.dynamicStrength)
+      ? env.dynamicStrength : state.lightSets.runtime.strength;
     if (Number.isFinite(env.exposure)) state.lightSets.runtime.exposure = asLinearExposure(env.exposure);
     if (env.toneMapping) setToneMapping(env.toneMapping);
   }
   if (editorEnv && typeof editorEnv === "object") {
     if (Number.isFinite(editorEnv.strength)) state.lightSets.editor.strength = editorEnv.strength;
+    state.lightSets.editor.dynamicStrength = Number.isFinite(editorEnv.dynamicStrength)
+      ? editorEnv.dynamicStrength : state.lightSets.editor.strength;
     if (Number.isFinite(editorEnv.exposure)) {
       state.lightSets.editor.exposure = asLinearExposure(editorEnv.exposure);
     }
@@ -2509,6 +2987,7 @@ export function applyEnvironment(env, editorEnv) {
   }
   const set = activeLightSet();
   setEnvIntensity(set.strength);
+  setDynamicEnvIntensity(set.dynamicStrength ?? set.strength);
   setExposure(set.exposure);
   emit("environment");
   return true;
@@ -2533,12 +3012,18 @@ export function serialize() {
   return {
     chunks: [...state.chunks],
     activeChunk: state.activeChunk,
+    // Bake settings are ship data too - retuning a room changes what Blender
+    // renders next - so they ride the undo stack with everything else, and a
+    // restore has to clear the ones the loaded ship does not have.
+    bakeDefaults: { ...state.bakeDefaults },
+    chunkBake: Object.fromEntries([...state.chunkBake].map(([k, v]) => [k, { ...v }])),
+    bakeLighting: { ...state.bakeLighting },
     // The Env/Exposure pairs and the tone mapping. On the stack because they
     // are *authored* values that the manifest carries and the runtime reads -
     // getting the lighting wrong is as much an edit to undo as moving a wall.
-    // Both pairs travel together: the Runtime-light toggle only decides which
-    // one the sliders edit, so restoring one and not the other would leave the
-    // hidden set behind.
+    // Both pairs travel together: Baked only decides which one the sliders
+    // edit, so restoring one and not the other would leave the hidden set
+    // behind.
     lightSets: {
       editor: { ...state.lightSets.editor },
       runtime: { ...state.lightSets.runtime },
@@ -2554,10 +3039,14 @@ export function serialize() {
       .map(([k, v]) => [k, v.map((b) => ({
         name: b.name,
         linked: [...b.linked],
-        excludeSDF: [...(b.excludeSDF || [])],
         // glTF space, matching the manifest - readBehaviorExtras() flips it back
         ...(b.direction ? { direction: flipX(b.direction) } : {}),
       }))])),
+    // Ship data too, and on its own key rather than folded into `entities`: an
+    // override can sit on a node that carries no behaviour at all, and
+    // `entities` entries with an empty behaviour list are dropped everywhere
+    // else in the tool.
+    bakeOverride: Object.fromEntries([...state.bakeOverride]),
     instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
@@ -2569,6 +3058,7 @@ export function serialize() {
     })),
     colliders: hooks.serializeColliders(),
     markers: hooks.serializeMarkers(),
+    lights: hooks.serializeLights(),
     // Authored per kit module, in the module's own local space and the editor's
     // own coordinates. This is the *source*; the manifest's `moduleCollision`
     // is the mirrored, Havok-shaped copy derived from it - exactly the way
@@ -2711,6 +3201,29 @@ async function restoreFrom(data) {
   state.chunks = ids.length ? ids : ["CH00_Storage"];
   state.activeChunk = data.activeChunk && state.chunks.includes(data.activeChunk)
     ? data.activeChunk : state.chunks[0];
+  // Read from either shape as well: `serialize()` writes a flat `chunkBake`
+  // map, `buildManifest()` hangs each chunk's overrides off the chunk record
+  // it was already writing. Both are sparse, and both are filtered through
+  // setChunkBake's own clamping so a hand-edited manifest cannot ask Blender
+  // for a 40000-texel atlas.
+  state.bakeDefaults = { ...BAKE_DEFAULTS };
+  for (const [key, v] of Object.entries(data.bakeDefaults || {})) {
+    const clamped = asBakeSetting(key, v);
+    if (clamped !== null) state.bakeDefaults[key] = clamped;
+  }
+  state.chunkBake.clear();
+  const overrides = data.chunkBake || Object.fromEntries((data.chunks || [])
+    .filter((c) => c && typeof c === "object" && c.bake).map((c) => [c.id, c.bake]));
+  for (const id of state.chunks) {
+    const own = {};
+    for (const [key, v] of Object.entries(overrides[id] || {})) {
+      const clamped = asBakeSetting(key, v);
+      if (clamped !== null) own[key] = clamped;
+    }
+    state.bakeLighting = { ...BAKE_LIGHTING_DEFAULTS };
+    applyBakeLighting(data.bakeLighting);
+    if (Object.keys(own).length) state.chunkBake.set(id, own);
+  }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
   // `environment` / `editorEnvironment` blocks, which loadLayout() applies
   // through applyEnvironment() instead.
@@ -2719,6 +3232,7 @@ async function restoreFrom(data) {
       const set = data.lightSets[k];
       if (!set) continue;
       if (Number.isFinite(set.strength)) state.lightSets[k].strength = set.strength;
+      if (Number.isFinite(set.dynamicStrength)) state.lightSets[k].dynamicStrength = set.dynamicStrength;
       if (Number.isFinite(set.exposure)) state.lightSets[k].exposure = set.exposure;
     }
     if (data.toneMapping) setToneMapping(data.toneMapping);
@@ -2734,12 +3248,15 @@ async function restoreFrom(data) {
     }
     await placeAt(inst.module, Vector3.FromArray(inst.position), {
       id: inst.id, rotation: inst.rotation, scale: inst.scale,
-      chunk: inst.chunk, name: inst.name, silent: true,
+      chunk: inst.chunk, name: inst.name, silent: true, noLights: true,
     });
   }
   applyVisibility();
   hooks.deserializeMarkers(data.markers || []);
   hooks.deserializeColliders(data.colliders || []);
+  // After the instances loop: a light is attached to a placement and is dropped
+  // when its owner is missing, so restoring it any earlier would lose every one.
+  hooks.deserializeLights(data.lights || []);
   // Restored before the final applyVisibility(), so an undo puts back exactly
   // what was on screen. Absent in a manifest, which never carries it.
   for (const item of data.hidden || []) {
@@ -2768,7 +3285,14 @@ async function restoreFrom(data) {
   }
   for (const [node, list] of Object.entries(data.entities || {})) {
     const key = String(node || "").trim();
-    if (!key || !Array.isArray(list?.behaviors ?? list)) continue;
+    if (!key) continue;
+    // Read before the shape guard below: an entry may carry a bake override and
+    // no behaviours at all, which is exactly what forcing an ordinary kit wall
+    // out of the atlas looks like.
+    if (!Array.isArray(list) && BAKE_OVERRIDES.includes(list?.bake) && list.bake !== "auto") {
+      state.bakeOverride.set(key, list.bake);
+    }
+    if (!Array.isArray(list?.behaviors ?? list)) continue;
     // accept both the manifest's { behaviors: [...] } and a bare array
     const raw = Array.isArray(list) ? list : list.behaviors;
     const kept = [];
@@ -2787,9 +3311,16 @@ async function restoreFrom(data) {
         continue;
       }
       if (!state.behaviors.has(b.name)) continue;
-      kept.push({ name: b.name, linked: [], excludeSDF: [], ...readBehaviorExtras(b) });
+      kept.push({ name: b.name, linked: [], ...readBehaviorExtras(b) });
     }
     if (kept.length) state.entities.set(key, kept);
+  }
+  // The undo snapshot's own flat form. `entities` there holds bare arrays, so
+  // there is nowhere on them to hang a `bake` - and an override on a node with
+  // no behaviours would have no entry to sit in at all.
+  for (const [node, mode] of Object.entries(data.bakeOverride || {})) {
+    const key = String(node || "").trim();
+    if (key && BAKE_OVERRIDES.includes(mode) && mode !== "auto") state.bakeOverride.set(key, mode);
   }
   emit("chunks");
   emit("placements");
@@ -2811,7 +3342,6 @@ function flipX(v) { return [-Number(v[0]), Number(v[1]), Number(v[2])]; }
 function readBehaviorExtras(b) {
   const out = {};
   if (Array.isArray(b.linked)) out.linked = b.linked.map(String);
-  if (Array.isArray(b.excludeSDF)) out.excludeSDF = b.excludeSDF.map(String);
   if (Array.isArray(b.direction) && b.direction.length === 3
     && b.direction.every(Number.isFinite)) {
     out.direction = flipX(b.direction);
@@ -2981,6 +3511,10 @@ function round3(a) { return a.map((v) => Math.round(v * 1000) / 1000); }
 export function worldBounds(node) {
   let min = null, max = null;
   for (const m of node.getChildMeshes()) {
+    // A light's gizmo rides the placement it lights. Measured with it, a wall
+    // panel would report the lamp's size as its own and "Drop to plane" would
+    // lift the panel off the floor by however far the lamp hangs below it.
+    if (isGizmoMesh(m) && m.metadata.lightRoot !== node) continue;
     m.computeWorldMatrix(true);
     const bb = m.getBoundingInfo().boundingBox;
     min = min ? Vector3.Minimize(min, bb.minimumWorld) : bb.minimumWorld.clone();
@@ -2988,4 +3522,3 @@ export function worldBounds(node) {
   }
   return min ? { min, max } : null;
 }
-

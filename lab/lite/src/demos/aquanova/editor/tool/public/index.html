@@ -15,6 +15,9 @@
     <button id="btn-save" title="Save the layout to export/ship_manifest.json — Ctrl+S">Save</button>
     <button id="btn-load" title="Reload the saved layout, discarding unsaved changes. No shortcut">Load</button>
     <button id="btn-export" title="Write export/ship.glb and the manifest beside it. No shortcut">Export glb</button>
+    <button id="btn-bake" title="Bake lightmaps in Blender from the exported ship.glb. Minutes, not seconds. Shift-click re-bakes every chunk. No shortcut">Bake</button>
+    <button id="btn-session" title="Open the ship in a Blender window, set up and ready to bake, so the lighting can be judged and re-baked room by room. No shortcut">Blender</button>
+    <button id="btn-powers" title="Pull the light powers a Blender session sent back, and apply them to the lights here. No shortcut">Get powers</button>
   </div>
 
   <div class="group">
@@ -70,8 +73,7 @@
     <button id="btn-isolate" class="toggle" aria-pressed="false"
             title="Show only the active chunk — every other chunk is hidden. No shortcut">Chunk</button>
     <select id="chunk-select" title="The chunk new placements join, and the one the Chunk button isolates. No shortcut"></select>
-    <button id="btn-chunk-add" title="New chunk. No shortcut">+</button>
-    <button id="btn-chunk-rename" title="Rename the active chunk everywhere it is used. No shortcut">Rename</button>
+    <button id="btn-chunks" title="Add, rename, delete chunks and set what the bake renders each one at. No shortcut">Chunks…</button>
     <button id="btn-chunk-assign" title="Move the selection into the active chunk. No shortcut">Assign</button>
   </div>
 
@@ -89,17 +91,27 @@
   </div>
 
   <div class="group">
+    <label title="Strength of the image-based lighting on meshes left out of the bake, such as dynamic or liquefiable props. Only active in Baked preview. No shortcut">Dynamic Env</label>
+    <input type="range" id="dynamic-env-intensity" min="0" max="4" step="0.1" value="1.5" disabled
+           title="Strength of the image-based lighting on unbaked/dynamic meshes. Only active in Baked preview. No shortcut">
+    <span id="dynamic-env-intensity-val" class="readout">1.5</span>
+  </div>
+
+  <div class="group">
     <label title="Lower exposure keeps pale panels off the tone-mapping shoulder, where surface detail flattens out. Saved in the manifest and read by the runtime. No shortcut">Exposure</label>
-    <input type="range" id="exposure" min="0.15" max="1.5" step="0.05" value="0.55"
+    <input type="range" id="exposure" min="0.15" max="4" step="0.05" value="0.55"
            title="Tone-mapping exposure, saved in the manifest. No shortcut">
     <span id="exposure-val" class="readout">0.55</span>
   </div>
 
   <div class="group">
-    <label title="How see-through Shift+H makes an element. Editor-only: it never reaches the .glb. No shortcut">Ghost</label>
-    <input type="range" id="veil-alpha" min="0.05" max="0.95" step="0.05" value="0.5"
-           title="How see-through Shift+H makes an element. No shortcut">
-    <span id="veil-alpha-val" class="readout">50%</span>
+    <label title="View transform applied after exposure. Saved in the manifest's environment block and read by the runtime, so both ends agree. No shortcut">Tone</label>
+    <select id="tone-mapping" title="Tone mapping curve, saved in the manifest. No shortcut">
+      <option value="Khronos PBR Neutral">Khronos PBR Neutral</option>
+      <option value="ACES">ACES</option>
+      <option value="Standard">Standard</option>
+      <option value="None">None (linear)</option>
+    </select>
   </div>
 
   <div class="group">
@@ -115,10 +127,8 @@
       <option value="collision">Collision only</option>
     </select>
     <label title="Show raw albedo with no lighting. No shortcut"><input type="checkbox" id="unlit"> Unlit</label>
-    <label title="Temporal anti-aliasing over the viewport — Babylon's stock TAARenderingPipeline at stock settings, for comparing against Babylon-Lite's. It accumulates only while the camera is still, so fly, stop, and watch the edges settle. Its knobs are on window.__taa in the devtools console. Editor-only: it never reaches the .glb. No shortcut"><input type="checkbox" id="taa"> TAA</label>
-    <label title="Drop the editor's own lights and show only the HDRI, which is all the game has. The only honest preview of the Env and Exposure sliders. No shortcut"><input type="checkbox" id="runtime-light"> Runtime&nbsp;light</label>
+    <label title="Show the baked ship instead of the authored one: ship_baked.glb with the Blender lightmaps on it, which is what the runtime will load. Also drops the editor's authoring rig and rebuilds the authored runtime lamps over the dynamic props, so this is the only honest preview of the Env and Exposure sliders. Needs a bake first. No shortcut"><input type="checkbox" id="baked"> Baked</label>
     <label title="Walk at the player's eye height (1.8 m), following whatever floor is underfoot, instead of flying. No shortcut"><input type="checkbox" id="walk"> Walk</label>
-    <label title="Double the palette width and tile size. No shortcut"><input type="checkbox" id="big-palette" checked> Big&nbsp;icons</label>
   </div>
 </header>
 
@@ -144,6 +154,40 @@
       <summary>Settings</summary>
       <p class="muted">Ship-wide constants. Saved with the layout and undoable,
         because changing one changes what the ship is.</p>
+      <label class="cfg-row" title="How see-through Shift+H makes an element. Editor-only: it never reaches the .glb.">
+        <span>Ghost</span>
+        <input type="range" id="veil-alpha" min="0.05" max="0.95" step="0.05" value="0.5"
+               title="How see-through Shift+H makes an element. No shortcut">
+        <span id="veil-alpha-val" class="unit">50%</span>
+      </label>
+      <label class="cfg-row" title="Double the palette width and tile size.">
+        <span>Big icons</span>
+        <input type="checkbox" id="big-palette" checked
+               title="Double the palette width and tile size. No shortcut">
+        <span class="unit"></span>
+      </label>
+      <label class="cfg-row" title="Multiplier for authored lamp watts in the Blender lightmap bake. Saved in the manifest.">
+        <span>Light power</span>
+        <input type="range" id="bake-light-power" min="0" max="10" step="0.1" value="1"
+               title="Multiplier for authored lamp watts in the Blender bake. No shortcut">
+        <span id="bake-light-power-val" class="unit">1.0</span>
+      </label>
+      <label class="cfg-row" title="Strength of the sky environment used by the Blender lightmap bake. Saved in the manifest.">
+        <span>Sky</span>
+        <input type="range" id="bake-sky" min="0" max="300" step="1" value="1"
+               title="Strength of the sky environment used by the Blender bake. No shortcut">
+        <span id="bake-sky-val" class="unit">1</span>
+      </label>
+      <label class="cfg-row" title="Enable Babylon.js specular anti-aliasing on the baked preview materials. Editor-only; it is not exported or saved in the manifest.">
+        <span>Specular AA</span>
+        <input type="checkbox" id="baked-specular-aa" checked>
+        <span class="unit"></span>
+      </label>
+      <label class="cfg-row" title="Multiply authored roughness in the baked preview. Values above 1 broaden metallic reflections and can reduce shimmering. Editor-only; it is not exported or saved in the manifest.">
+        <span>Reflection roughness</span>
+        <input type="range" id="baked-roughness" min="0.5" max="2" step="0.05" value="1">
+        <span id="baked-roughness-val" class="unit">1.00×</span>
+      </label>
       <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
         <span>Collision shell</span>
         <input type="number" id="cfg-shell" min="0.001" max="1" step="0.001">
@@ -216,7 +260,20 @@
         <button id="btn-bhv-library">Edit behaviours…</button>
       </div>
 
-      <h3>Position</h3>
+      <div id="bake-fields">
+        <h3>Lighting</h3>
+        <div class="row">
+          <label title="Whether these elements get a baked lightmap. Automatic reads the behaviours: anything the runtime moves (dynamic) or melts (liquefiable, and everything they are linked to) is left out of the atlas and lit by the runtime lamps instead. Override it when that rule is wrong — force a liquefiable fixture that never actually moves back into the bake, or force a mesh out of it so its lighting can be driven at runtime.">Force baking</label>
+          <select id="insp-bake">
+            <option value="auto">Automatic (from behaviours)</option>
+            <option value="exclude">Exclusion — never bake</option>
+            <option value="include">Inclusion — always bake</option>
+          </select>
+        </div>
+        <div id="bake-hint" class="muted"></div>
+      </div>
+
+      <h3 id="insp-h-pos">Position</h3>
       <div class="vec">
         <input type="number" id="pos-x" step="0.25"><input type="number" id="pos-y" step="0.25"><input type="number" id="pos-z" step="0.25">
       </div>
@@ -224,19 +281,21 @@
       <div class="vec">
         <input type="number" id="rot-x" step="15"><input type="number" id="rot-y" step="15"><input type="number" id="rot-z" step="15">
       </div>
-      <h3>Scale</h3>
-      <div class="vec">
-        <input type="number" id="scl-x" step="0.1"><input type="number" id="scl-y" step="0.1"><input type="number" id="scl-z" step="0.1">
-      </div>
-      <div class="row">
-        <label><input type="checkbox" id="scl-uniform" checked> Uniform scale</label>
-      </div>
+      <div id="scale-fields">
+        <h3>Scale</h3>
+        <div class="vec">
+          <input type="number" id="scl-x" step="0.1"><input type="number" id="scl-y" step="0.1"><input type="number" id="scl-z" step="0.1">
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="scl-uniform" checked> Uniform scale</label>
+        </div>
 
-      <h3>Size <span id="dim-note" class="muted"></span></h3>
-      <div class="vec dims">
-        <span id="dim-x" class="readout"></span>
-        <span id="dim-y" class="readout"></span>
-        <span id="dim-z" class="readout"></span>
+        <h3>Size <span id="dim-note" class="muted"></span></h3>
+        <div class="vec dims">
+          <span id="dim-x" class="readout"></span>
+          <span id="dim-y" class="readout"></span>
+          <span id="dim-z" class="readout"></span>
+        </div>
       </div>
 
       <div id="door-fields" hidden>
@@ -256,7 +315,35 @@
         <button id="btn-door-leaves">Use selection as leaves</button>
       </div>
 
+      <div id="light-fields" hidden>
+        <h3>Light</h3>
+        <div class="row"><label title="The placement this light rides. The ID is the unique owner reference; the module name is shown for context. Changing it reattaches the light without moving it in the viewport.">Owner</label><select id="lgt-owner" class="mono"></select></div>
+
+        <h4 title="Rebuilt in Blender by the bake script, from the glTF extras. Shape, size, spread, colour and power are Blender's own units, so what you author here is what Cycles gets.">Bake — Cycles area light</h4>
+        <div class="row"><label title="Blender's area-light shapes. &quot;none&quot; leaves this lamp out of the bake entirely, which is what a flickering light wants — baking it would freeze one frame of the flicker into the wall.">Shape</label><select id="lgt-shape"></select></div>
+        <div class="row"><label title="Width of the emitting rectangle along the light's own X axis, in metres.">Size X</label><input type="number" id="lgt-size-x" step="0.05" min="0.001"><span class="unit">m</span></div>
+        <div class="row"><label title="Depth of the emitting rectangle along the light's own Z axis, in metres. A square or a disk has only one size, so this follows Size X.">Size Z</label><input type="number" id="lgt-size-y" step="0.05" min="0.001"><span class="unit">m</span></div>
+        <div class="row"><label title="How wide the emission fans out. 180° is a bare panel radiating over the whole hemisphere; narrowing it aims the light, the way a recessed housing would.">Spread</label><input type="number" id="lgt-spread" step="5" min="0" max="180"><span class="unit">°</span></div>
+        <div class="row"><label title="Total watts over the whole surface, which is how Blender measures an area light — so making a light bigger without changing this spreads the same power over more area and reads dimmer.">Power</label><input type="number" id="lgt-watts" step="5" min="0"><span class="unit">W</span></div>
+        <div class="row"><label>Colour</label><input type="color" id="lgt-bake-color"></div>
+
+        <h4 title="The light the game creates at runtime, for everything a baked lightmap cannot cover: dynamic props, the player, specular highlights.">Runtime — engine light</h4>
+        <div class="row"><label title="&quot;none&quot; makes this a bake-only lamp — a bounce fill that lifts a dark corner and costs the runtime nothing.">Type</label><select id="lgt-type"></select></div>
+        <div class="row"><label>Level</label><input type="number" id="lgt-intensity" step="0.1" min="0"></div>
+        <div class="row"><label title="How far the light reaches before it is cut off, in metres.">Range</label><input type="number" id="lgt-range" step="0.5" min="0.001"><span class="unit">m</span></div>
+        <div class="row"><label title="Full cone angle of a spot light.">Cone</label><input type="number" id="lgt-angle" step="5" min="1" max="179"><span class="unit">°</span></div>
+        <div class="row"><label>Colour</label><input type="color" id="lgt-run-color"></div>
+        <div class="row"><label title="Pack this light into the clustered light texture instead of giving it a uniform slot of its own. The ship has far more lamps than an uncluttered forward pass can hold, so this is normally on — but a clustered light carries no shadow map.">
+          <input type="checkbox" id="lgt-clustered"> Clustered
+        </label></div>
+        <div class="row"><label title="Give this light a shadow map. Only an unclustered spot or directional light can: there is no cube shadow generator, so a point light never casts.">
+          <input type="checkbox" id="lgt-shadows"> Casts shadows
+        </label></div>
+        <div id="lgt-hint" class="muted"></div>
+      </div>
+
       <div class="group vertical">
+        <button id="btn-add-light" title="Attach a light to the selected element. It rides that element, so moving or turning it carries the light along. Undoable">Add light</button>
         <button id="btn-duplicate">Duplicate (Ctrl+D)</button>
         <button id="btn-focus" title="Frame the selection — or just double-click an element">Focus</button>
         <button id="btn-ground" title="Rest the selection on the build plane">Drop to plane</button>
@@ -278,6 +365,48 @@
 
 <div id="busy">
   <div class="card"><span class="spinner"></span><span id="busy-msg">loading…</span></div>
+</div>
+
+<div id="chunk-modal" hidden>
+  <div class="panel">
+    <h2>Chunks</h2>
+    <p class="muted">A chunk is one room or corridor: the unit the portal
+      renderer draws and culls by, and the unit the bake renders one lightmap
+      for. The four numbers are what Blender renders that room at — leave one
+      blank to follow the ship's default.</p>
+    <div class="split">
+      <select id="chunk-list" size="12"></select>
+      <div class="editor">
+        <div class="row"><label>Name</label><input type="text" id="chunk-name" placeholder="CH02_Engineering"></div>
+        <div class="row"><label title="Cycles samples per pixel. The noise floor of the map, and the only one of the four that costs render time rather than memory.">Samples</label>
+          <input type="number" id="chunk-samples" min="1" max="16384" step="1" placeholder="—"></div>
+        <div class="row"><label title="Atlas size in texels. A long corridor may be worth 2048 x 512: half the texels of 1024 x 1024 for the same density along the run. Non-square atlases are packed without island rotation, so they pack a little looser.">Size</label>
+          <input type="number" id="chunk-width" min="16" max="8192" step="1" placeholder="—">
+          <span class="muted">×</span>
+          <input type="number" id="chunk-height" min="16" max="8192" step="1" placeholder="—"></div>
+        <div class="row"><label title="The gap left between UV islands, in pixels, and how far each island is then dilated. Too small and light leaks between islands — which reads as light leaking through a wall.">Margin</label>
+          <input type="number" id="chunk-margin" min="0" max="64" step="1" placeholder="—"></div>
+        <div id="chunk-resolved" class="muted"></div>
+        <div id="chunk-error" class="err"></div>
+        <div class="group">
+          <button id="btn-chunk-new">New</button>
+          <button id="btn-chunk-apply">Apply</button>
+          <button id="btn-chunk-delete" class="danger">Delete</button>
+          <button id="btn-chunk-close">Close</button>
+        </div>
+        <h2>Defaults</h2>
+        <p class="muted">What every chunk that has not been given its own uses.</p>
+        <div class="row"><label>Samples</label>
+          <input type="number" id="bake-samples" min="1" max="16384" step="1"></div>
+        <div class="row"><label>Size</label>
+          <input type="number" id="bake-width" min="16" max="8192" step="1">
+          <span class="muted">×</span>
+          <input type="number" id="bake-height" min="16" max="8192" step="1"></div>
+        <div class="row"><label>Margin</label>
+          <input type="number" id="bake-margin" min="0" max="64" step="1"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="bhv-modal" hidden>

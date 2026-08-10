@@ -1,11 +1,19 @@
 /**
  * Unlit Fragment (KHR_materials_unlit).
  *
- * Replaces the lit-color computation with `baseColor * unlitColor` right
- * before the tonemap/gamma/contrast chain runs.  Depends on the IBL fragment
- * when present so our AI injection runs *after* IBL's, overwriting the IBL
- * color contribution.  The subsequent tonemap/gamma/contrast stages still
+ * Replaces the lit-color computation with `baseColor * unlitColor + emissive`
+ * right before the tonemap/gamma/contrast chain runs.  Depends on the IBL
+ * fragment when present so our AI injection runs *after* IBL's, overwriting the
+ * IBL color contribution.  The subsequent tonemap/gamma/contrast stages still
  * apply, matching BJS's unlit output under `createDefaultEnvironment`.
+ *
+ * Emissive is kept because BJS adds it outside the `UNLIT` guard
+ * (`pbrBlockFinalColorComposition.fx` ends with an unconditional
+ * `finalColor.rgb += finalEmissive;`), so an unlit material with an emissive
+ * texture still glows.  Re-adding it here also restores the lightmap
+ * fragment's `(color - emissive) * lm + emissive` identity: that fragment
+ * subtracts the emissive Lite folded into `color` early, which only balances
+ * out if `color` still carries it by the time the lightmap runs.
  *
  * Zero bytes in bundles for scenes that don't use unlit materials.
  */
@@ -17,7 +25,7 @@ import type { PbrExt } from "../pbr-flags.js";
 const PBR2_HAS_UNLIT = 1 << 8;
 
 export function createUnlitFragment(hasIbl: boolean): ShaderFragment {
-    const assign = `color = baseColor * material.unlitColor;`;
+    const assign = `color = baseColor * material.unlitColor + emissive;`;
     return {
         _id: "unlit",
         _dependencies: hasIbl ? ["ibl"] : undefined,

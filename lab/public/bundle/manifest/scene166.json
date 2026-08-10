@@ -1,0 +1,14 @@
+{
+  "rawKB": 75.9,
+  "rawBytes": 77743,
+  "gzipKB": 31.5,
+  "ignoredRawKB": 0,
+  "runtimeChunks": [
+    "scene166-alpha-test-fragment-C7TvFrHg.js",
+    "scene166-generate-mipmaps-68m1CZOg.js",
+    "scene166-gltf-json-asset-BejpPX_1.js",
+    "scene166-pbr-pipeline-mWHSZuCl.js",
+    "scene166-pbr-renderable-CNgYp1sv.js",
+    "scene166.js"
+  ]
+}

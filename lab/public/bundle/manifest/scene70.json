@@ -1,5 +1,5 @@
 {
-  "rawKB": 89.7,
+  "rawKB": 89.5,
   "gzipKB": 36.5,
   "ignoredRawKB": 14.9,
   "runtimeChunks": [
@@ -8,7 +8,7 @@
     "scene70-clearcoat-block-BPLkmxQ1.js",
     "scene70-fragment-output-CfRmfbPv.js",
     "scene70-input-block--zXIBMmW.js",
-    "scene70-node-env-KAffcg54.js",
+    "scene70-node-env-D88lfP7u.js",
     "scene70-node-registry-DnANlQOe.js",
     "scene70-node-renderable-B4GMiYAk.js",
     "scene70-pbr-metallic-roughness-block-full-Zq2JK_8G.js",
@@ -19,5 +19,5 @@
     "scene70-vertex-output-C7G5u6Y0.js",
     "scene70.js"
   ],
-  "rawBytes": 91833
+  "rawBytes": 91686
 }

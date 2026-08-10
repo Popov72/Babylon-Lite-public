@@ -160,7 +160,7 @@ export interface NodeBuildState {
     /** Set by ReflectionBlock or any block that needs scene env textures
      *  (specular cube + BRDF LUT + SH irradiance). The pipeline allocates
      *  4 group-1 bindings (env_iblTexture/sampler + env_brdfLUT/sampler) and
-     *  reads SH coefficients + envRotationY + lodGenerationScale from the
+     *  reads SH coefficients + envRotationY + _lodGenerationScale from the
      *  canonical frame-graph scene UBO. Materials without env
      *  pay zero — empty default. */
     usesEnv: boolean;

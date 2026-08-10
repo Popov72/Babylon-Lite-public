@@ -368,6 +368,23 @@ All fragments live in `src/material/pbr/fragments/` and export factory functions
 - **Fragment slots**:
     - `AT` — sets `emissive` from `mesh.emissiveColor`, optionally multiplied by emissive texture sample
 
+### `lightmap-fragment.ts` — Baked Lightmap (opt-in)
+
+- **Factory**: `createLightmapFragment(usesUV2, shadowmap, gamma, flipV): ShaderFragment`
+- **ID**: `"lightmap"`
+- **Opt-in**: not detected by `pbr-renderable.ts`. The app calls `await enablePbrLightmap()`
+  (from `enable-pbr-lightmap.ts`) before `registerScene`, which imports this module and calls
+  `_registerPbrExt`. Scenes that never call it pay **zero bytes** — the always-loaded PBR core
+  has no lightmap branch at all.
+- **Fragment slots**:
+    - `NI` — additive `color += lm`, or multiplicative `color = (color - emissive) * lm + emissive`
+      when `useLightmapAsShadowmap` (BJS applies the lightmap to a `finalColor` that does not yet
+      include emissive; Lite folds emissive in earlier, so it is removed and re-added)
+- **UV2**: `setPbrLightmap()` sets bit 64 of the material's `_uv2Mask`, which is what makes the
+  core plumb the `uv2` attribute + varying through — no lightmap-specific gate in the core.
+- **BJS equivalence**: `pbrBlockLightmapInit.fx` + `pbrBlockFinalColorComposition.fx`
+  (`GAMMALIGHTMAP`, `USELIGHTMAPASSHADOWMAP`, `vLightmapInfos.y` = `texture.level`).
+
 ### `morph-fragment.ts` — Morph Targets
 
 - **Factory**: `createMorphFragment(): ShaderFragment`
@@ -704,6 +721,8 @@ BRDF evaluation (GGX NDF + Smith-GGX geometry + Schlick Fresnel) for the primary
 | `src/material/pbr/fragments/sheen-fragment.ts`       | ~115 lines | Sheen layer fragment (Charlie NDF, Ashikhmin visibility, direct + IBL sheen)                                                                    |
 | `src/material/pbr/fragments/reflectance-fragment.ts` | ~79 lines  | Metallic reflectance extension fragment (F0 computation, reflectance maps)                                                                      |
 | `src/material/pbr/fragments/emissive-fragment.ts`    | ~29 lines  | Emissive color uniform fragment                                                                                                                 |
+| `src/material/pbr/fragments/lightmap-fragment.ts`    | ~130 lines | Baked lightmap fragment (additive / shadowmap-multiply, sRGB decode, UV1 or UV2) — opt-in                                                        |
+| `src/material/pbr/enable-pbr-lightmap.ts`            | ~70 lines  | Published `enablePbrLightmap()` / `setPbrLightmap()` opt-in seam for the lightmap fragment                                                       |
 | `src/material/pbr/fragments/morph-fragment.ts`       | ~48 lines  | Morph target vertex animation fragment                                                                                                          |
 | `src/material/pbr/fragments/skeleton-fragment.ts`    | ~71 lines  | Skeletal animation fragment (4-bone or 8-bone)                                                                                                  |
 | `src/material/pbr/fragments/pbr-shadow-fragment.ts`  | ~143 lines | PBR shadow receiving fragment (ESM + PCF, per-light)                                                                                            |

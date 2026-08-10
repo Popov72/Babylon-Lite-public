@@ -23,6 +23,8 @@ export const PRIM_BOX = 0;
 export const PRIM_SPHERE = 1;
 export const PRIM_CAPSULE = 2;
 export const PRIM_CYLINDER = 3;
+/** Offset of the active flag inside one packed primitive. */
+export const PRIM_ACTIVE_OFFSET = 15;
 
 /** One collision primitive in world space, as the fluid sees it. */
 export interface FluidPrimitive {
@@ -37,6 +39,8 @@ export interface FluidPrimitive {
     rotation?: readonly [number, number, number, number];
     /** Linear velocity (m/s). Lets the solver recover boundary motion from -∂sdf/∂t. */
     velocity?: readonly [number, number, number];
+    /** False makes the shader skip this slot without rebuilding or compacting the collision set. */
+    active?: boolean;
 }
 
 const KIND_CODE: Record<FluidPrimitive["kind"], number> = { box: PRIM_BOX, sphere: PRIM_SPHERE, capsule: PRIM_CAPSULE, cylinder: PRIM_CYLINDER };
@@ -62,7 +66,12 @@ export function packPrimitive(out: Float32Array, i: number, p: FluidPrimitive): 
     out[o + 12] = v[0];
     out[o + 13] = v[1];
     out[o + 14] = v[2];
-    out[o + 15] = 0;
+    out[o + PRIM_ACTIVE_OFFSET] = p.active === false ? 0 : 1;
+}
+
+/** Update only one packed primitive's active flag. */
+export function setPackedPrimitiveActive(out: Float32Array, i: number, active: boolean): void {
+    out[PRIM_HEADER + i * PRIM_STRIDE + PRIM_ACTIVE_OFFSET] = active ? 1 : 0;
 }
 
 /** Pack a whole set, writing the count into the header. `out` must hold `PRIM_HEADER + n*PRIM_STRIDE`. */
@@ -104,7 +113,10 @@ export function localizePrimitive(p: FluidPrimitive, centre: readonly [number, n
 
 /** Rotate `v` by the INVERSE of quaternion `q` (world → box local). */
 function qRotInv(q: readonly [number, number, number, number], v: readonly [number, number, number]): [number, number, number] {
-    const ux = -q[0], uy = -q[1], uz = -q[2], s = q[3];
+    const ux = -q[0],
+        uy = -q[1],
+        uz = -q[2],
+        s = q[3];
     const d = ux * v[0] + uy * v[1] + uz * v[2];
     const uu = ux * ux + uy * uy + uz * uz;
     const cx = uy * v[2] - uz * v[1];
@@ -116,6 +128,7 @@ function qRotInv(q: readonly [number, number, number, number], v: readonly [numb
 
 /** Signed distance to one primitive. Negative inside. `dt` advances the primitive along its velocity. */
 export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, number], dt = 0): number {
+    if (p.active === false) return 1e9;
     const v = p.velocity ?? [0, 0, 0];
     const a: [number, number, number] = [p.a[0] + v[0] * dt, p.a[1] + v[1] * dt, p.a[2] + v[2] * dt];
     if (p.kind === "sphere") {
@@ -124,15 +137,21 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
     if (p.kind === "box") {
         const h = p.b ?? [0, 0, 0];
         const l = qRotInv(p.rotation ?? [0, 0, 0, 1], [pt[0] - a[0], pt[1] - a[1], pt[2] - a[2]]);
-        const ex = Math.abs(l[0]) - h[0], ey = Math.abs(l[1]) - h[1], ez = Math.abs(l[2]) - h[2];
+        const ex = Math.abs(l[0]) - h[0],
+            ey = Math.abs(l[1]) - h[1],
+            ez = Math.abs(l[2]) - h[2];
         const outside = Math.hypot(Math.max(ex, 0), Math.max(ey, 0), Math.max(ez, 0));
         return outside + Math.min(Math.max(ex, Math.max(ey, ez)), 0);
     }
     const bb = p.b ?? [0, 0, 0];
     const b: [number, number, number] = [bb[0] + v[0] * dt, bb[1] + v[1] * dt, bb[2] + v[2] * dt];
     const r = p.radius ?? 0;
-    const bax = b[0] - a[0], bay = b[1] - a[1], baz = b[2] - a[2];
-    const pax = pt[0] - a[0], pay = pt[1] - a[1], paz = pt[2] - a[2];
+    const bax = b[0] - a[0],
+        bay = b[1] - a[1],
+        baz = b[2] - a[2];
+    const pax = pt[0] - a[0],
+        pay = pt[1] - a[1],
+        paz = pt[2] - a[2];
     const baba = bax * bax + bay * bay + baz * baz;
     const paba = pax * bax + pay * bay + paz * baz;
     if (p.kind === "capsule") {
@@ -141,7 +160,9 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
     }
     // Capped cylinder (Inigo Quilez): flat ends, unlike the capsule's rounded caps.
     if (baba < 1e-12) return Math.hypot(pax, pay, paz) - r;
-    const px = pax * baba - bax * paba, py = pay * baba - bay * paba, pz = paz * baba - baz * paba;
+    const px = pax * baba - bax * paba,
+        py = pay * baba - bay * paba,
+        pz = paz * baba - baz * paba;
     const x = Math.hypot(px, py, pz) - r * baba;
     const y = Math.abs(paba - baba * 0.5) - baba * 0.5;
     const x2 = x * x;
@@ -207,7 +228,10 @@ fn primitivesSdf(pt: vec3<f32>, dt: f32) -> f32 {
     var d = 1e9;
     let n = u32(sceneSdfGrid[0]);
     for (var i = 0u; i < n; i = i + 1u) {
-        d = min(d, primSdf(${PRIM_HEADER}u + i * ${PRIM_STRIDE}u, pt, dt));
+        let o = ${PRIM_HEADER}u + i * ${PRIM_STRIDE}u;
+        if (sceneSdfGrid[o + ${PRIM_ACTIVE_OFFSET}u] > 0.5) {
+            d = min(d, primSdf(o, pt, dt));
+        }
     }
     return d;
 }`;

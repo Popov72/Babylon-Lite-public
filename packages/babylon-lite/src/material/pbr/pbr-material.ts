@@ -8,8 +8,9 @@ import type { MeshGroupBuilder } from "../../render/renderable.js";
 import type { SceneContext } from "../../scene/scene.js";
 import type { Material, StencilState } from "../material.js";
 import type { MaterialPlugin } from "../plugin/material-plugin.js";
+import type { EnvironmentTextures } from "../../loader-env/load-env.js";
 import { createSolidTexture2D } from "../../texture/solid-texture.js";
-import { _installPbrFallbackResolver } from "./pbr-pipeline.js";
+import { _installPbrFallbackResolver, _installPbrLocalEnvironmentResolver } from "./pbr-pipeline.js";
 import {
     _getPbrExts,
     PBR2_HAS_BASE_COLOR_FACTOR,
@@ -83,6 +84,8 @@ export interface PbrMaterialProps extends Material {
     alphaCutOff?: number;
     /** Scale factor for environment/IBL contribution. Default 1.0. */
     environmentIntensity?: number;
+    /** Optional local prefiltered environment cubemap used for specular IBL on this material. */
+    localEnvironment?: EnvironmentTextures | null;
     /** Scale factor for direct light contribution. Default 1.0. */
     directIntensity?: number;
     /** Whether direct point/spot lights use physical inverse-square falloff.
@@ -111,6 +114,25 @@ export interface PbrMaterialProps extends Material {
     /** Separate occlusion texture sampled with UV2 when occlusionTexCoord=1.
      *  R channel is occlusion. When set, ORM.r is NOT used for occlusion. */
     occlusionTexture?: Texture2D;
+    /** Baked lightmap texture. Blended into the shaded color after direct lighting and
+     *  IBL: added by default, or multiplied when `useLightmapAsShadowmap` is true.
+     *  Matches BJS PBRMaterial.lightmapTexture. Tree-shakable — only bundled when used. */
+    lightmapTexture?: Texture2D;
+    /** Lightmap intensity multiplier (BJS `lightmapTexture.level`). Default 1.0. */
+    lightmapLevel?: number;
+    /** UV set the lightmap samples: 0 = TEXCOORD_0, 1 = TEXCOORD_1. Default 1, matching the
+     *  BJS convention (`lightmapTexture.coordinatesIndex = 1`). UV2 requires the mesh to
+     *  provide a `uv2` vertex buffer; without one the lightmap falls back to TEXCOORD_0. */
+    lightmapCoordIndex?: 0 | 1;
+    /** When true, the lightmap is a baked shadowmap that multiplies the shaded color
+     *  instead of being added. Matches BJS PBRMaterial.useLightmapAsShadowmap. Default false. */
+    useLightmapAsShadowmap?: boolean;
+    /** When true, the lightmap texture is in sRGB/gamma space and the shader applies
+     *  pow(lightmap, 2.2) before use. Matches BJS `GAMMALIGHTMAP` (i.e. a lightmap
+     *  `Texture` with `gammaSpace = true`, which is the BJS default). Default false —
+     *  as with `gammaAlbedo`, Lite assumes the texture already provides linear values
+     *  (e.g. an `rgba8unorm-srgb` format or a float lightmap). */
+    gammaLightmap?: boolean;
     /** Scales dielectric F0 (default 1.0). Maps to BJS metallicF0Factor. */
     metallicF0Factor?: number;
     /** Grazing specular/F90 weight (default follows metallicF0Factor for legacy callers). */
@@ -421,6 +443,7 @@ export function createPbrMaterial(props?: Partial<PbrMaterialProps>): PbrMateria
     // roughnessFactor — the glTF defaults). Reachable only via createPbrMaterial, so
     // loader-only PBR scenes (e.g. BoomBox) tree-shake it entirely.
     _installPbrFallbackResolver((engine) => (engine._pbrFallbackTex ??= createSolidTexture2D(engine, 1, 1, 1)));
+    _installPbrLocalEnvironmentResolver((material) => material.localEnvironment);
     return {
         ...props,
         _buildGroup: getPbrGroupBuilder(),

@@ -406,11 +406,10 @@ let surfaceAlbedo=baseColor*(1.0-dielectricF0)*(1.0-metallic);`;
     // Specular AA + geometric-curvature roughness factors (BJS getAARoughnessFactors).
     // AA_factor_x is the direct-light roughness floor (matches BJS `computeSheenLighting`
     // which clamps info.roughness upward). AA_factor_y is the IBL/alphaG additive bump.
-    // Emitted unconditionally as var so sheen/other fragments can reference them
-    // without needing a define; zero on the no-curvature path makes them a no-op.
-    const specularAABlock =
-        _hasSpecularAA || hasAnyNormal
-            ? `var AA_factor_x=0.0;
+    // Emitted unconditionally as vars so sheen/other fragments can reference them
+    // without needing a define; when SPECULARAA is disabled they remain zero.
+    const specularAABlock = _hasSpecularAA
+        ? `var AA_factor_x=0.0;
 var AA_factor_y=0.0;
 {let nDfdx_AA=dpdx(N);
 let nDfdy_AA=dpdy(N);
@@ -418,7 +417,7 @@ let slopeSquare_AA=max(dot(nDfdx_AA,nDfdx_AA),dot(nDfdy_AA,nDfdy_AA));
 AA_factor_x=pow(saturate(slopeSquare_AA),0.333);
 AA_factor_y=sqrt(slopeSquare_AA)*0.75;
 alphaG+=AA_factor_y;}`
-            : `var AA_factor_x=0.0;
+        : `var AA_factor_x=0.0;
 var AA_factor_y=0.0;`;
 
     // Direct lighting block — use the compact non-looping shader for one non-shadow light,

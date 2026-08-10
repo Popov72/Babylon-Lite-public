@@ -585,7 +585,9 @@ async function main(): Promise<void> {
             1.5,
             (c.aabb.min[2]! + c.aabb.max[2]!) / 2,
         ];
-        const iblStrength = shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
+        const iblStrength = shipManifest?.environment?.dynamicStrength
+            ?? shipManifest?.environment?.strength
+            ?? DEFAULT_SHIP_IBL_STRENGTH;
         // A chunk is a room the ship editor laid out, and an EMPTY one (no meshes placed yet) is
         // exported with `aabb: null` — it has no spatial extent to describe. Every use here is
         // geometric (framing a room, hit-testing a point against one, building its collision shell),
@@ -621,8 +623,8 @@ async function main(): Promise<void> {
         //    buffer and appends a tonemap pass that would hide the water. (It also keeps the refraction
         //    fragment out of the composed shader, which otherwise collides with Liquefactor's punctual
         //    lights and aborts the material build.)
-        //  • environmentIntensity from the manifest — the ship is authored for a dimmed IBL, and at the
-        //    default 1.0 the interior reads roughly twice as bright as it does in Aquanova.
+        //  • environmentIntensity from the manifest's dynamic value — this demo loads the authored
+        //    unbaked ship, so it should match Aquanova's dynamic/unbaked materials.
         const seenMats = new Set<object>();
         const prepMaterials = (node: SceneNode): void => {
             const mat = (node as Mesh).material;
@@ -1204,7 +1206,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+        surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
     };
     const applyEnv = async (key: string): Promise<void> => {
         await shipManifestReady; // ship grading comes from the manifest — read it before building a slot

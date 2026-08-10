@@ -15,17 +15,20 @@ export const materialRegistry = new Map();
 
 let catalogue = null;
 let kitMaterials = null;
+let kitLights = null;
 const protoCache = new Map();
 const protoPending = new Map();
 
 export async function loadCatalogue() {
   if (!catalogue) {
-    const [cat, mats] = await Promise.all([
+    const [cat, mats, lights] = await Promise.all([
       fetch("/api/modules").then((r) => r.json()),
       fetch("/data/kit_materials.json").then((r) => r.json()),
+      fetch("/data/kit_lights.json").then((r) => r.json()),
     ]);
     catalogue = cat;
     kitMaterials = mats;
+    kitLights = lights;
     catalogue.byId = new Map();
     for (const c of catalogue.categories) {
       for (const m of c.modules) catalogue.byId.set(m.id, m);
@@ -37,6 +40,18 @@ export async function loadCatalogue() {
 export function getCatalogue() { return catalogue; }
 export function getModule(id) { return catalogue?.byId.get(id) || null; }
 export function getKitMaterials() { return kitMaterials; }
+
+/**
+ * The lights a module comes with, as authored partials.
+ *
+ * Read once per placement, never re-read: see kit_lights.json's `_note`. The
+ * array is per module because one strip is not always one lamp - the corner
+ * light is an arc, and an area light is flat.
+ */
+export function getKitLights(moduleId) {
+  const list = kitLights?.modules?.[moduleId];
+  return Array.isArray(list) ? list : [];
+}
 
 function applyKitValues(mat) {
   // Modules are single-sided, so a wall seen from behind vanishes. That is

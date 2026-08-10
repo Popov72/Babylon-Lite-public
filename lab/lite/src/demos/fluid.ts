@@ -1015,7 +1015,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+        surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
     }
 
     // On-screen FPS accumulators (smoothed over ~0.5 s windows). The FPS read-out element

@@ -29,15 +29,20 @@ export function assembleEnvironmentTextures(
     lodGenerationScale: number,
     engine: EngineContext
 ): EnvironmentTextures {
+    const specularCubeView = specularCube.createView({ dimension: "cube" });
+    const cubeSampler = getTrilinearSampler(engine);
     return {
-        specularCube,
-        specularCubeView: specularCube.createView({ dimension: "cube" }),
-        brdfLut,
-        brdfLutView: brdfLut.createView(),
-        cubeSampler: getTrilinearSampler(engine),
-        brdfSampler: getBilinearSampler(engine),
-        irradianceSH,
-        sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
-        lodGenerationScale,
+        _specularCube: specularCube,
+        _specularCubeView: specularCubeView,
+        _brdfLut: brdfLut,
+        _brdfLutView: brdfLut.createView(),
+        _cubeSampler: cubeSampler,
+        _brdfSampler: getBilinearSampler(engine),
+        _irradianceSH: irradianceSH,
+        _sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
+        _lodGenerationScale: lodGenerationScale,
+        _t: specularCube,
+        _v: specularCubeView,
+        _s: cubeSampler,
     };
 }

@@ -161,8 +161,21 @@ export type { HemisphericLight } from "./light/hemispheric.js";
 export { createPointLight } from "./light/point-light.js";
 export { createDirectionalLight } from "./light/directional-light.js";
 export { createSpotLight } from "./light/spot-light.js";
-export type { ClusteredLightContainer, ClusteredLightContainerOptions, ClusteredPointLight, ClusteredPointLightOptions } from "./light/clustered.js";
-export { createClusteredLightContainer, createClusteredPointLight, addClusteredLightContainer, markClusteredLightContainerDirty } from "./light/clustered.js";
+export type {
+    ClusteredLightContainer,
+    ClusteredLightContainerOptions,
+    ClusteredPointLight,
+    ClusteredPointLightOptions,
+    ClusteredSpotLight,
+    ClusteredSpotLightOptions,
+} from "./light/clustered.js";
+export {
+    createClusteredLightContainer,
+    createClusteredPointLight,
+    createClusteredSpotLight,
+    addClusteredLightContainer,
+    markClusteredLightContainerDirty,
+} from "./light/clustered.js";
 export type { LightBase } from "./light/types.js";
 export { setMaxLights, MAX_LIGHTS } from "./light/types.js";
 
@@ -245,6 +258,8 @@ export { enableStandardSkeleton, enableStandardUvOffset } from "./material/stand
 export { enableStandardVertexColors } from "./material/standard/enable-standard-vertex-colors.js";
 export { enableMirroredMeshes } from "./mesh/enable-mirrored-meshes.js";
 export { createPbrMaterial } from "./material/pbr/pbr-material.js";
+export { enablePbrLightmap, setPbrLightmap } from "./material/pbr/enable-pbr-lightmap.js";
+export type { PbrLightmapOptions } from "./material/pbr/enable-pbr-lightmap.js";
 export {
     createShaderMaterial,
     setShaderUniform,
@@ -564,6 +579,7 @@ export type { BoundingBoxGizmo, BoundingBoxGizmoOptions } from "./gizmo/bounding
 
 // ─── Low-level (for advanced/custom rendering) ──────────────────────
 export type { EnvironmentTextures } from "./loader-env/load-env.js";
+export type { CubeTexture } from "./texture/cube-texture.js";
 export type { Renderable, PrePassRenderable, SceneUniformUpdater, DrawBinding, DrawUpdateContext } from "./render/renderable.js";
 export type { RenderTargetSignature } from "./engine/render-target.js";
 

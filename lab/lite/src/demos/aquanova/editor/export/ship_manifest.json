@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 2,
-  "savedAt": "2026-08-05T18:58:21.261Z",
+  "savedAt": "2026-08-10T11:34:56.369Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -16,6 +16,7 @@
       "instances",
       "markers",
       "colliders",
+      "lights",
       "moduleShapes",
       "stageLayout",
       "view"
@@ -35,8 +36,11 @@
       "entities",
       "environment",
       "editorEnvironment",
+      "bakeLighting",
       "adjacency",
-      "space"
+      "space",
+      "bakeDefaults",
+      "chunks[].bake"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
@@ -68,85 +72,100 @@
           -4.1
         ],
         "max": [
-          11.701,
-          5,
+          -3.7466,
+          5.0342,
           4.4267
         ]
       },
-      "instanceCount": 32,
-      "meshCount": 52
+      "instanceCount": 37,
+      "meshCount": 72,
+      "bake": {
+        "samples": 128,
+        "width": 512,
+        "height": 512
+      }
     },
     {
-      "id": "CH01_StorageCorridor",
-      "node": "CHUNK_CH01_StorageCorridor",
+      "id": "CH01_StorageC",
+      "node": "CHUNK_CH01_StorageC",
       "aabb": {
         "min": [
           -4.0017,
+          -0.0065,
+          -4
+        ],
+        "max": [
+          12,
+          5.0046,
+          4.774
+        ]
+      },
+      "instanceCount": 24,
+      "meshCount": 53,
+      "bake": {
+        "samples": 128,
+        "width": 512,
+        "height": 512,
+        "margin": 8
+      }
+    },
+    {
+      "id": "CH02_StorageCTL",
+      "node": "CHUNK_CH02_StorageCTL",
+      "aabb": {
+        "min": [
+          3.9983,
+          -0.0065,
+          -4.0017
+        ],
+        "max": [
+          12.774,
+          5.0046,
+          4.774
+        ]
+      },
+      "instanceCount": 18,
+      "meshCount": 47,
+      "bake": {
+        "samples": 256,
+        "width": 256,
+        "height": 256
+      }
+    },
+    {
+      "id": "CH03_StorageC2",
+      "node": "CHUNK_CH03_StorageC2",
+      "aabb": {
+        "min": [
+          7.226,
           -0.013,
           -20.774
         ],
         "max": [
           16.2534,
           5.006,
-          4.774
+          -3.9983
         ]
       },
-      "instanceCount": 71,
-      "meshCount": 158
-    },
-    {
-      "id": "CH02_test",
-      "node": "CHUNK_CH02_test",
-      "aabb": null,
-      "instanceCount": 0,
-      "meshCount": 0
+      "instanceCount": 36,
+      "meshCount": 82,
+      "bake": {
+        "width": 512,
+        "height": 512
+      }
     }
   ],
+  "bakeDefaults": {
+    "samples": 128,
+    "width": 1024,
+    "height": 1024,
+    "margin": 4
+  },
+  "bakeLighting": {
+    "power": 1.1,
+    "sky": 0
+  },
   "instances": [
-    {
-      "id": "P0007",
-      "module": "Platforms/Door_Metal",
-      "chunk": "CH00_Storage",
-      "name": "storageDoorR",
-      "position": [
-        4,
-        0.075,
-        2
-      ],
-      "rotation": [
-        0,
-        -90,
-        0
-      ],
-      "scale": [
-        0.65,
-        0.85,
-        1
-      ],
-      "node": "storageDoorR"
-    },
-    {
-      "id": "P0009",
-      "module": "Platforms/Door_Metal",
-      "chunk": "CH00_Storage",
-      "name": "storageDoorL",
-      "position": [
-        4,
-        0.073,
-        2
-      ],
-      "rotation": [
-        0,
-        -90,
-        0
-      ],
-      "scale": [
-        -0.65,
-        0.85,
-        1
-      ],
-      "node": "storageDoorL"
-    },
     {
       "id": "P0011",
       "module": "Platforms/Door_Frame_Square",
@@ -214,7 +233,7 @@
     {
       "id": "P0040",
       "module": "Walls/WallAstra_Straight_Broken",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -235,7 +254,7 @@
     {
       "id": "P0041",
       "module": "Walls/WallAstra_Straight_Window",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -256,7 +275,7 @@
     {
       "id": "P0043",
       "module": "Walls/WallAstra_Corner_Square_Outer",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -16,
         0,
@@ -277,7 +296,7 @@
     {
       "id": "P0045",
       "module": "Walls/WallAstra_Corner_Round_Inner",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -8,
         0,
@@ -298,7 +317,7 @@
     {
       "id": "P0046",
       "module": "Walls/WallAstra_Straight_Broken",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         0,
@@ -319,7 +338,7 @@
     {
       "id": "P0060",
       "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -8,
         0,
@@ -340,7 +359,7 @@
     {
       "id": "P0061",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -361,7 +380,7 @@
     {
       "id": "P0062",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -382,7 +401,7 @@
     {
       "id": "P0064",
       "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -16,
         0,
@@ -403,7 +422,7 @@
     {
       "id": "P0067",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -424,7 +443,7 @@
     {
       "id": "P0068",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -445,7 +464,7 @@
     {
       "id": "P0069",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -466,7 +485,7 @@
     {
       "id": "P0070",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -487,7 +506,7 @@
     {
       "id": "P0071",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -508,7 +527,7 @@
     {
       "id": "P0072",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -529,7 +548,7 @@
     {
       "id": "P0075",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         4.98,
@@ -550,7 +569,7 @@
     {
       "id": "P0076",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -571,7 +590,7 @@
     {
       "id": "P0077",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         4.98,
@@ -592,7 +611,7 @@
     {
       "id": "P0079",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0,
@@ -613,7 +632,7 @@
     {
       "id": "P0080",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0,
@@ -634,7 +653,7 @@
     {
       "id": "P0081",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -655,7 +674,7 @@
     {
       "id": "P0099",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         4.98,
@@ -676,7 +695,7 @@
     {
       "id": "P0101",
       "module": "Props/Prop_Cable_3",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -11,
         0,
@@ -697,7 +716,7 @@
     {
       "id": "P0108",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -718,7 +737,7 @@
     {
       "id": "P0109",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -739,7 +758,7 @@
     {
       "id": "P0110",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -760,7 +779,7 @@
     {
       "id": "P0111",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.01,
@@ -781,7 +800,7 @@
     {
       "id": "P0123",
       "module": "Platforms/Platform_Metal_Curve",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0.006,
@@ -802,7 +821,7 @@
     {
       "id": "P0129",
       "module": "Walls/WallAstra_Corner_Square_Outer",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "name": "ssssssss",
       "position": [
         -4,
@@ -824,7 +843,7 @@
     {
       "id": "P0130",
       "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -4,
         0,
@@ -845,7 +864,7 @@
     {
       "id": "P0131",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         4.98,
@@ -866,7 +885,7 @@
     {
       "id": "P0133",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         4.98,
@@ -887,7 +906,7 @@
     {
       "id": "P0134",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         0,
@@ -908,7 +927,7 @@
     {
       "id": "P0135",
       "module": "Walls/WallAstra_Straight_Window",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0,
@@ -929,7 +948,7 @@
     {
       "id": "P0136",
       "module": "Walls/WallAstra_Straight_Divided",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0,
@@ -950,7 +969,7 @@
     {
       "id": "P0137",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0,
@@ -971,7 +990,7 @@
     {
       "id": "P0138",
       "module": "Walls/WallAstra_Straight_Divided",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0,
@@ -992,7 +1011,7 @@
     {
       "id": "P0139",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0,
@@ -1013,7 +1032,7 @@
     {
       "id": "P0140",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0,
@@ -1034,7 +1053,7 @@
     {
       "id": "P0141",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0,
@@ -1055,7 +1074,7 @@
     {
       "id": "P0142",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0,
@@ -1076,7 +1095,7 @@
     {
       "id": "P0143",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         4.98,
@@ -1097,7 +1116,7 @@
     {
       "id": "P0144",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         4.98,
@@ -1118,7 +1137,7 @@
     {
       "id": "P0145",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -10,
         0.01,
@@ -1139,7 +1158,7 @@
     {
       "id": "P0146",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -10,
         0.01,
@@ -1160,7 +1179,7 @@
     {
       "id": "P0150",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -6,
         0.01,
@@ -1181,7 +1200,7 @@
     {
       "id": "P0151",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0.01,
@@ -1202,7 +1221,7 @@
     {
       "id": "P0152",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0.01,
@@ -1223,7 +1242,7 @@
     {
       "id": "P0153",
       "module": "Walls/BottomSimple_Corner_Square_Outer_1",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -4,
         0.01,
@@ -1244,7 +1263,7 @@
     {
       "id": "P0155",
       "module": "Walls/BottomSimple_Corner_Round_Inner",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -8,
         0.01,
@@ -1265,7 +1284,7 @@
     {
       "id": "P0156",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -6,
         0.01,
@@ -1286,7 +1305,7 @@
     {
       "id": "P0157",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0.01,
@@ -1307,7 +1326,7 @@
     {
       "id": "P0158",
       "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0.01,
@@ -1539,7 +1558,7 @@
     {
       "id": "P0180",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -1560,7 +1579,7 @@
     {
       "id": "P0181",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -1581,7 +1600,7 @@
     {
       "id": "P0182",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0,
@@ -1602,7 +1621,7 @@
     {
       "id": "P0183",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0,
@@ -1623,7 +1642,7 @@
     {
       "id": "P0184",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         0,
@@ -1644,7 +1663,7 @@
     {
       "id": "P0185",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         -2,
         0,
@@ -1665,7 +1684,7 @@
     {
       "id": "P0186",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH01_StorageC",
       "position": [
         2,
         0,
@@ -1797,7 +1816,7 @@
       "chunk": "CH00_Storage",
       "name": "storageDoor_caution",
       "position": [
-        4,
+        4.13,
         2,
         2
       ],
@@ -1922,7 +1941,7 @@
     {
       "id": "P0203",
       "module": "Walls/WallAstra_Corner_Round_Inner",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -12,
         0,
@@ -1943,7 +1962,7 @@
     {
       "id": "P0204",
       "module": "Walls/WallAstra_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -14,
         0,
@@ -1964,7 +1983,7 @@
     {
       "id": "P0205",
       "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -12,
         0,
@@ -1985,7 +2004,7 @@
     {
       "id": "P0206",
       "module": "Walls/TopPadded_Incline_Straight",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -14,
         0,
@@ -2006,7 +2025,7 @@
     {
       "id": "P0207",
       "module": "Platforms/Platform_Metal2",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -14,
         0,
@@ -2027,7 +2046,7 @@
     {
       "id": "P0208",
       "module": "Platforms/Platform_Metal_Curve",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -10,
         0.006,
@@ -2048,7 +2067,7 @@
     {
       "id": "P0209",
       "module": "Platforms/Door_Frame_Square_Blocked",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -16,
         0.006,
@@ -2069,7 +2088,7 @@
     {
       "id": "P0210",
       "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "position": [
         -14,
         4.98,
@@ -2090,7 +2109,7 @@
     {
       "id": "P0213",
       "module": "Props/Prop_Pod",
-      "chunk": "CH01_StorageCorridor",
+      "chunk": "CH03_StorageC2",
       "name": "capsule",
       "position": [
         -10,
@@ -2129,27 +2148,6 @@
         1
       ],
       "node": "P0231"
-    },
-    {
-      "id": "P0232",
-      "module": "Walls/WallWideBand_Corner_Square_Inner",
-      "chunk": "CH00_Storage",
-      "position": [
-        8,
-        0,
-        0
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0232"
     },
     {
       "id": "P0234",
@@ -2194,51 +2192,9 @@
       "node": "P0241"
     },
     {
-      "id": "P0249",
-      "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
-      "position": [
-        -10.2,
-        5,
-        -17.3
-      ],
-      "rotation": [
-        0,
-        180,
-        180
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0249"
-    },
-    {
-      "id": "P0267",
-      "module": "Platforms/Platform_DarkPlates",
-      "chunk": "CH01_StorageCorridor",
-      "position": [
-        -10,
-        5,
-        1.75
-      ],
-      "rotation": [
-        0,
-        -90,
-        180
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0267"
-    },
-    {
       "id": "P0306",
       "module": "Props/Prop_Barrel_Small",
-      "chunk": "CH00_Storage",
+      "chunk": "CH02_StorageCTL",
       "name": "Barrel2",
       "position": [
         -11.5,
@@ -2260,7 +2216,7 @@
     {
       "id": "P0307",
       "module": "Props/Prop_Barrel_Small",
-      "chunk": "CH00_Storage",
+      "chunk": "CH02_StorageCTL",
       "name": "Barrel1",
       "position": [
         -9,
@@ -2278,6 +2234,368 @@
         1
       ],
       "node": "Barrel1"
+    },
+    {
+      "id": "P0308",
+      "module": "Props/Prop_Light_Wide",
+      "chunk": "CH00_Storage",
+      "position": [
+        7.937,
+        5,
+        -1.017
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0308"
+    },
+    {
+      "id": "P0312",
+      "module": "Props/Prop_Light_Wide",
+      "chunk": "CH00_Storage",
+      "position": [
+        7.937,
+        5,
+        -1.017
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ],
+      "node": "P0312"
+    },
+    {
+      "id": "P0314",
+      "module": "Aliens/Alien_Oculichrysalis",
+      "chunk": "CH03_StorageC2",
+      "name": "alien1StorageCorridor",
+      "position": [
+        -10,
+        2,
+        -18
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "alien1StorageCorridor"
+    },
+    {
+      "id": "P0315",
+      "module": "Props/Prop_Light_Floor",
+      "chunk": "CH00_Storage",
+      "position": [
+        4.3,
+        4.3,
+        2
+      ],
+      "rotation": [
+        -90,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0315"
+    },
+    {
+      "id": "P0316",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorLF",
+      "position": [
+        4,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        0.65,
+        0.9,
+        1
+      ],
+      "node": "storageDoorLF"
+    },
+    {
+      "id": "P0318",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorLFB",
+      "position": [
+        4,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        0.65,
+        0.9,
+        -1
+      ],
+      "node": "storageDoorLFB"
+    },
+    {
+      "id": "P0319",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorRB",
+      "position": [
+        4,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        -0.65,
+        0.9,
+        -1
+      ],
+      "node": "storageDoorRB"
+    },
+    {
+      "id": "P0320",
+      "module": "Platforms/Door_Metal",
+      "chunk": "CH00_Storage",
+      "name": "storageDoorRF",
+      "position": [
+        4,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        -0.65,
+        0.9,
+        1
+      ],
+      "node": "storageDoorRF"
+    },
+    {
+      "id": "P0321",
+      "module": "Platforms/Platform_DarkPlates_Curves",
+      "chunk": "CH02_StorageCTL",
+      "position": [
+        -9.5,
+        4.98,
+        1.5
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        0.75,
+        0.75,
+        0.75
+      ],
+      "node": "P0321"
+    },
+    {
+      "id": "P0322",
+      "module": "Platforms/Platform_DarkPlates_Curves",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -10.5,
+        4.98,
+        -17.5
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        0.75,
+        0.75
+      ],
+      "node": "P0322"
+    },
+    {
+      "id": "P0323",
+      "module": "Props/Prop_Light_Floor",
+      "chunk": "CH01_StorageC",
+      "position": [
+        -2.012,
+        2.821,
+        -0.181
+      ],
+      "rotation": [
+        -43,
+        0,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0323"
+    },
+    {
+      "id": "P0324",
+      "module": "Props/Prop_Light_Wide",
+      "chunk": "CH00_Storage",
+      "position": [
+        7.943,
+        5,
+        0.991
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0324"
+    },
+    {
+      "id": "P0325",
+      "module": "Props/Prop_Light_Wide",
+      "chunk": "CH00_Storage",
+      "position": [
+        7.943,
+        5,
+        0.991
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ],
+      "node": "P0325"
+    },
+    {
+      "id": "P0329",
+      "module": "Walls/WallWideBand_Corner_Square_Inner",
+      "chunk": "CH00_Storage",
+      "position": [
+        8,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0329"
+    },
+    {
+      "id": "P0330",
+      "module": "Props/Prop_Light_Floor",
+      "chunk": "CH01_StorageC",
+      "position": [
+        -3.085,
+        2.821,
+        4.172
+      ],
+      "rotation": [
+        -43,
+        180,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0330"
+    },
+    {
+      "id": "P0331",
+      "module": "Props/Prop_Light_Floor",
+      "chunk": "CH02_StorageCTL",
+      "position": [
+        -10.921,
+        2.821,
+        2.881
+      ],
+      "rotation": [
+        -43,
+        132,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0331"
+    },
+    {
+      "id": "P0332",
+      "module": "Props/Prop_Light_Floor",
+      "chunk": "CH02_StorageCTL",
+      "position": [
+        -12.168,
+        2.821,
+        -3.098
+      ],
+      "rotation": [
+        -43,
+        90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0332"
     }
   ],
   "markers": [
@@ -2302,7 +2620,7 @@
       "width": 4.211441993713379,
       "height": 4.0489020347595215,
       "chunkA": "CH00_Storage",
-      "chunkB": "CH01_StorageCorridor",
+      "chunkB": "CH01_StorageC",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
       "sealed": false,
@@ -2331,7 +2649,7 @@
       ],
       "width": 4.000000953674316,
       "height": 3.000000256487027,
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
@@ -2360,7 +2678,7 @@
       ],
       "width": 4.000000953674316,
       "height": 3.000000256487027,
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
@@ -2368,9 +2686,459 @@
       "leaves": [
         "P0041"
       ]
+    },
+    {
+      "id": "Door_D03",
+      "type": "door",
+      "position": [
+        -4,
+        -0.0134,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "width": 4.853449821472168,
+      "height": 5.013425212353468,
+      "chunkA": "CH01_StorageC",
+      "chunkB": "CH02_StorageCTL",
+      "triggerRadius": 3.5,
+      "slideDistance": 1.51,
+      "sealed": false,
+      "leaves": [
+        "P0011"
+      ]
+    },
+    {
+      "id": "Door_D04",
+      "type": "door",
+      "position": [
+        -10,
+        0.006,
+        -4
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "width": 4.853449821472168,
+      "height": 4.999999523162842,
+      "chunkA": "CH02_StorageCTL",
+      "chunkB": "CH03_StorageC2",
+      "triggerRadius": 3.5,
+      "slideDistance": 1.51,
+      "sealed": false,
+      "leaves": [
+        "P0209"
+      ]
     }
   ],
   "colliders": [],
+  "lights": [
+    {
+      "id": "L0001",
+      "owner": "P0315",
+      "offset": [
+        0,
+        0.2516,
+        0.0183
+      ],
+      "rotation": [
+        78,
+        0,
+        0
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.6,
+        "sizeY": 0.2,
+        "spread": 70,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 40
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 80,
+        "range": 4.6,
+        "angle": 70,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0002",
+      "owner": "P0308",
+      "offset": [
+        0.5624,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 1.1,
+        "sizeY": 0.15,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 120
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 150,
+        "range": 6,
+        "angle": 120,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0003",
+      "owner": "P0136",
+      "offset": [
+        1.568,
+        0.04,
+        0.002
+      ],
+      "rotation": [
+        0,
+        0,
+        -93.5
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.015,
+        "sizeY": 0.06,
+        "spread": 180,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 50
+      },
+      "runtime": {
+        "type": "none",
+        "clustered": false,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 1,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0004",
+      "owner": "P0323",
+      "offset": [
+        0,
+        0.2436,
+        0.1207
+      ],
+      "rotation": [
+        61.4024,
+        -180,
+        -180
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.89,
+        "sizeY": 0.18,
+        "spread": 180,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 120
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 130,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0005",
+      "owner": "P0312",
+      "offset": [
+        0.538,
+        -0.138,
+        -0.004
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 1.1,
+        "sizeY": 0.15,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 120
+      },
+      "runtime": {
+        "type": "none",
+        "clustered": false,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 1,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0006",
+      "owner": "P0324",
+      "offset": [
+        0.58,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 1.1,
+        "sizeY": 0.15,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 120
+      },
+      "runtime": {
+        "type": "none",
+        "clustered": false,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 1,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0007",
+      "owner": "P0325",
+      "offset": [
+        0.5229,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 1.1,
+        "sizeY": 0.15,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 120
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 150,
+        "range": 6,
+        "angle": 120,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0008",
+      "owner": "P0330",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.89,
+        "sizeY": 0.18,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 80
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 130,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0009",
+      "owner": "P0331",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.89,
+        "sizeY": 0.18,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 80
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 130,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0010",
+      "owner": "P0332",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "bake": {
+        "shape": "rectangle",
+        "sizeX": 0.89,
+        "sizeY": 0.18,
+        "spread": 120,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "watts": 80
+      },
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 130,
+        "range": 8,
+        "angle": 90,
+        "castsShadows": false
+      }
+    }
+  ],
   "collision": {},
   "moduleCollision": {
     "Platforms/Platform_Metal2": [
@@ -10743,7 +11511,7 @@
       ]
     }
   ],
-  "activeChunk": "CH01_StorageCorridor",
+  "activeChunk": "CH01_StorageC",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -10782,7 +11550,8 @@
             0
           ]
         }
-      ]
+      ],
+      "bake": "exclude"
     },
     "storageDoorL": {
       "behaviors": [
@@ -10806,28 +11575,27 @@
         }
       ]
     },
-    "weaponHolder": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction"
-        }
-      ]
-    },
     "storageDoor_caution": {
       "behaviors": [
         {
           "name": "stdLiquefaction",
           "linked": [
-            "storageDoorL",
-            "storageDoorR"
+            "storageDoorLF",
+            "storageDoorLFB",
+            "storageDoorRB",
+            "storageDoorRF"
           ]
         }
-      ]
+      ],
+      "bake": "include"
     },
     "crate2": {
       "behaviors": [
         {
           "name": "explosiveLiquefaction"
+        },
+        {
+          "name": "dynamic"
         }
       ]
     },
@@ -10845,6 +11613,9 @@
       "behaviors": [
         {
           "name": "stdLiquefaction"
+        },
+        {
+          "name": "dynamic"
         }
       ]
     },
@@ -10852,6 +11623,9 @@
       "behaviors": [
         {
           "name": "stdLiquefaction"
+        },
+        {
+          "name": "dynamic"
         }
       ]
     },
@@ -10859,41 +11633,119 @@
       "behaviors": [
         {
           "name": "stdLiquefaction"
+        },
+        {
+          "name": "dynamic"
+        }
+      ]
+    },
+    "alien1StorageCorridor": {
+      "behaviors": [
+        {
+          "name": "explosiveLiquefaction"
+        },
+        {
+          "name": "dynamic"
+        }
+      ]
+    },
+    "storageDoorLF": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction",
+          "linked": [
+            "storageDoor_caution",
+            "storageDoorLFB",
+            "storageDoorRB",
+            "storageDoorRF"
+          ]
+        }
+      ],
+      "bake": "include"
+    },
+    "storageDoorLFB": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction",
+          "linked": [
+            "storageDoor_caution",
+            "storageDoorLF",
+            "storageDoorRB",
+            "storageDoorRF"
+          ]
+        }
+      ],
+      "bake": "include"
+    },
+    "storageDoorRB": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction",
+          "linked": [
+            "storageDoor_caution",
+            "storageDoorLF",
+            "storageDoorLFB",
+            "storageDoorRF"
+          ]
+        }
+      ],
+      "bake": "include"
+    },
+    "storageDoorRF": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction",
+          "linked": [
+            "storageDoor_caution",
+            "storageDoorLF",
+            "storageDoorLFB",
+            "storageDoorRB"
+          ]
+        }
+      ],
+      "bake": "include"
+    },
+    "test": {
+      "behaviors": [
+        {
+          "name": "explosiveLiquefaction"
         }
       ]
     }
   },
   "view": {
     "position": [
-      9.709,
-      2.424,
-      -0.149
+      -9.015,
+      2.221,
+      0.044
     ],
     "rotation": [
-      0.293,
-      36.387,
+      0.209,
+      85.23,
       0
     ],
     "target": [
-      0.455,
-      -0.469,
-      2.299
+      -12.885,
+      0.149,
+      -8.941
     ]
   },
   "environment": {
-    "strength": 1.7,
+    "strength": 1.1,
+    "dynamicStrength": 0.8,
     "toneMapping": "Khronos PBR Neutral",
-    "exposure": 0.55
+    "exposure": 1.05
   },
   "editorEnvironment": {
-    "strength": 1.7,
+    "strength": 1,
+    "dynamicStrength": 1.5,
     "exposure": 0.55
   },
   "portals": [
     {
       "id": "Portal_Door_D00",
       "chunkA": "CH00_Storage",
-      "chunkB": "CH01_StorageCorridor",
+      "chunkB": "CH01_StorageC",
       "door": "Door_D00",
       "centre": [
         -3.949,
@@ -10930,7 +11782,7 @@
     },
     {
       "id": "Portal_Door_D01",
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "door": "Door_D01",
       "centre": [
@@ -10968,7 +11820,7 @@
     },
     {
       "id": "Portal_Door_D02",
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "door": "Door_D02",
       "centre": [
@@ -11003,6 +11855,82 @@
           -4.44
         ]
       ]
+    },
+    {
+      "id": "Portal_Door_D03",
+      "chunkA": "CH01_StorageC",
+      "chunkB": "CH02_StorageCTL",
+      "door": "Door_D03",
+      "centre": [
+        4,
+        2.4933,
+        2
+      ],
+      "normal": [
+        -1,
+        0,
+        0
+      ],
+      "corners": [
+        [
+          4,
+          -0.0134,
+          4.4267
+        ],
+        [
+          4,
+          -0.0134,
+          -0.4267
+        ],
+        [
+          4,
+          5,
+          -0.4267
+        ],
+        [
+          4,
+          5,
+          4.4267
+        ]
+      ]
+    },
+    {
+      "id": "Portal_Door_D04",
+      "chunkA": "CH02_StorageCTL",
+      "chunkB": "CH03_StorageC2",
+      "door": "Door_D04",
+      "centre": [
+        10,
+        2.506,
+        -4
+      ],
+      "normal": [
+        0,
+        0,
+        -1
+      ],
+      "corners": [
+        [
+          7.5733,
+          0.006,
+          -4
+        ],
+        [
+          12.4267,
+          0.006,
+          -4
+        ],
+        [
+          12.4267,
+          5.006,
+          -4
+        ],
+        [
+          7.5733,
+          5.006,
+          -4
+        ]
+      ]
     }
   ],
   "doors": [
@@ -11010,7 +11938,7 @@
       "id": "Door_D00",
       "node": "Door_D00",
       "chunkA": "CH00_Storage",
-      "chunkB": "CH01_StorageCorridor",
+      "chunkB": "CH01_StorageC",
       "position": [
         -3.949,
         0,
@@ -11020,21 +11948,12 @@
       "height": 3.644,
       "triggerRadius": 3.5,
       "sealed": false,
-      "leaves": [
-        {
-          "node": "storageDoorL",
-          "openDistance": 1.51
-        },
-        {
-          "node": "storageDoorR",
-          "openDistance": 1.51
-        }
-      ]
+      "leaves": []
     },
     {
       "id": "Door_D01",
       "node": "Door_D01",
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "position": [
         1.9949,
@@ -11055,7 +11974,7 @@
     {
       "id": "Door_D02",
       "node": "Door_D02",
-      "chunkA": "CH01_StorageCorridor",
+      "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "position": [
         12.1632,
@@ -11072,16 +11991,58 @@
           "openDistance": 1.51
         }
       ]
+    },
+    {
+      "id": "Door_D03",
+      "node": "Door_D03",
+      "chunkA": "CH01_StorageC",
+      "chunkB": "CH02_StorageCTL",
+      "position": [
+        4,
+        -0.0134,
+        2
+      ],
+      "width": 4.8534,
+      "height": 5.0134,
+      "triggerRadius": 3.5,
+      "sealed": false,
+      "leaves": [
+        {
+          "node": "storageDoor_frame",
+          "openDistance": 1.51
+        }
+      ]
+    },
+    {
+      "id": "Door_D04",
+      "node": "Door_D04",
+      "chunkA": "CH02_StorageCTL",
+      "chunkB": "CH03_StorageC2",
+      "position": [
+        10,
+        0.006,
+        -4
+      ],
+      "width": 4.8534,
+      "height": 5,
+      "triggerRadius": 3.5,
+      "sealed": false,
+      "leaves": [
+        {
+          "node": "P0209",
+          "openDistance": 1.51
+        }
+      ]
     }
   ],
   "adjacency": {
     "CH00_Storage": [
       {
-        "to": "CH01_StorageCorridor",
+        "to": "CH01_StorageC",
         "portal": "Portal_Door_D00"
       }
     ],
-    "CH01_StorageCorridor": [
+    "CH01_StorageC": [
       {
         "to": "CH00_Storage",
         "portal": "Portal_Door_D00"
@@ -11093,8 +12054,27 @@
       {
         "to": "__SKYBOX__",
         "portal": "Portal_Door_D02"
+      },
+      {
+        "to": "CH02_StorageCTL",
+        "portal": "Portal_Door_D03"
       }
     ],
-    "CH02_test": []
+    "CH02_StorageCTL": [
+      {
+        "to": "CH01_StorageC",
+        "portal": "Portal_Door_D03"
+      },
+      {
+        "to": "CH03_StorageC2",
+        "portal": "Portal_Door_D04"
+      }
+    ],
+    "CH03_StorageC2": [
+      {
+        "to": "CH02_StorageCTL",
+        "portal": "Portal_Door_D04"
+      }
+    ]
   }
 }

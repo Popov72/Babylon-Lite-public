@@ -5,17 +5,17 @@
   "runtimeChunks": [
     "scene27-generate-mipmaps-6gqEmcRs.js",
     "scene27-gltf-ext-dielectric-C6hvXXiF.js",
-    "scene27-gltf-feature-registry-BKh2_Nlc.js",
+    "scene27-gltf-feature-registry-BjJIu2qn.js",
     "scene27-gltf-feature-variants-B9CyzjJR.js",
     "scene27-gltf-glb-parser-IhOVHLBA.js",
     "scene27-gltf-pbr-builder-ext-C-bx7EG5.js",
     "scene27-gltf-variants-C5Nsj1a-.js",
-    "scene27-pbr-pipeline-DBFpdlD-.js",
-    "scene27-pbr-renderable-ESlIu0Z8.js",
+    "scene27-pbr-pipeline-CSTn5P53.js",
+    "scene27-pbr-renderable-XflYTynt.js",
     "scene27-reflectance-fragment-B7sTD9Vl.js",
     "scene27-singlelight-hemispheric-wgsl-CY3dPlaq.js",
     "scene27-texture-2d-DQo3n8D6.js",
     "scene27.js"
   ],
-  "rawBytes": 85358
+  "rawBytes": 85353
 }

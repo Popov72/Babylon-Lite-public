@@ -1,0 +1,17 @@
+{
+  "rawKB": 79.3,
+  "rawBytes": 81205,
+  "gzipKB": 33.2,
+  "ignoredRawKB": 0,
+  "runtimeChunks": [
+    "scene169-ibl-fragment-D9e9c66T.js",
+    "scene169-pbr-renderable-DV5_5vRU.js",
+    "scene169-rgbd-decode-D43WOUpt.js",
+    "scene169-scene-uniforms-FTYH6Ct0.js",
+    "scene169-shader-composer-DaKyaECf.js",
+    "scene169-singlelight-hemispheric-wgsl-bfWgf5tj.js",
+    "scene169-standard-renderable-D50f28sG.js",
+    "scene169-std-cube-reflection-fragment-B3Qus3Yi.js",
+    "scene169.js"
+  ]
+}

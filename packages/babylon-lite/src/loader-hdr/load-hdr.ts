@@ -104,7 +104,7 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
         // Hoisted: both branches below need the same value, and evaluating it here keeps the
         // original read-at-deferred-build-time semantics while emitting the literal once.
         const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
-        if (useHdr && !skipSkybox && textures.specularCubeView) {
+        if (useHdr && !skipSkybox && textures._specularCubeView) {
             const { computeSceneSize } = await import("../material/pbr/scene-size.js");
             const { skyboxSize: autoSkyboxSize, rootPosition } = computeSceneSize(scene, options?.skyboxSize);
             const { buildHdrSkyboxRenderable } = await import("../material/pbr/background-hdr-skybox.js");

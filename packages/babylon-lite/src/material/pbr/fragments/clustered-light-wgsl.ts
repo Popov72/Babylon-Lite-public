@@ -12,7 +12,34 @@ batchCount: u32,
 fn clusteredTexel(index:u32)->vec2<u32>{return vec2<u32>(index%clusteredLightParams.dataTextureWidth,index/clusteredLightParams.dataTextureWidth);}
 `;
 
-export const CLUSTERED_LIGHT_BLOCK = `
+/** Direct-lighting loop over the clustered light set.
+ *
+ *  `hasSpots` widens the per-light data-texture stride from 2 texels to 3 and
+ *  emits the spot cone term. A point-only container keeps the narrower layout, so
+ *  scenes without spot lights pay neither the extra texel fetch nor the branch.
+ *
+ *  Layout (rgba32float, `stride` texels per light):
+ *    +0  position.xyz, range
+ *    +1  diffuse.rgb, intensity
+ *    +2  direction.xyz, cosHalfAngle   (spot containers only; `w < 0` means point)
+ *
+ *  Falloff matches Babylon.js' glTF mode (`useGLTFLightFalloff`), which is what
+ *  `ClusteredLightContainer` is compared against: `computeDistanceLightFalloff_GLTF`
+ *  for range and `computeDirectionalLightFalloff_GLTF` for the cone. The cone's
+ *  `lightAngleScale` / `lightAngleOffset` are derived from `cosHalfAngle` in the
+ *  shader instead of being uploaded, which is exact for BJS' default inner angle of 0. */
+export function CLUSTERED_LIGHT_BLOCK(hasSpots: boolean): string {
+    const stride = hasSpots ? "3u" : "2u";
+    const cone = hasSpots
+        ? `let dirCone=textureLoad(clusteredLights,clusteredTexel(lightTexel+2u),0);
+if(dirCone.w>=0.0){
+let cd=dot(-dirCone.xyz,Lc);
+let coneAtt=saturate((cd-dirCone.w)/max(1.0-dirCone.w,0.001));
+rangeAtt*=coneAtt*coneAtt;
+}
+`
+        : "";
+    return `
 {
 let clip=scene.viewProjection*vec4<f32>(input.worldPos,1.0);
 let ndc=clip.xyz/clip.w;
@@ -39,7 +66,7 @@ while(mask!=0u){
 let trailing=firstTrailingBit(mask);
 mask^=1u<<trailing;
 let li=batchOffset+maskOffset+trailing;
-let lightTexel=li*2u;
+let lightTexel=li*${stride};
 let positionRange=textureLoad(clusteredLights,clusteredTexel(lightTexel),0);
 let colorIntensity=textureLoad(clusteredLights,clusteredTexel(lightTexel+1u),0);
 let toLight=positionRange.xyz-input.worldPos;
@@ -55,7 +82,7 @@ var rangeAtt=1.0/max(d2,0.0000001);
 var smoothRange=saturate(1.0-falloffFactor*falloffFactor);
 smoothRange*=smoothRange;
 rangeAtt*=smoothRange;
-let lightRadiance=colorIntensity.rgb*colorIntensity.a*rangeAtt*material.directIntensity;
+${cone}let lightRadiance=colorIntensity.rgb*colorIntensity.a*rangeAtt*material.directIntensity;
 directDiffuse+=surfaceAlbedo*(1.0/PI)*NdotLc*lightRadiance;
 if(NdotLc>0.0){
 let Hc=normalize(V+Lc);
@@ -72,3 +99,4 @@ directSpecular+=Fc*Dc*Gc*NdotLc*lightRadiance;
 }
 }
 `;
+}

@@ -14,14 +14,14 @@ instantiated independently.
 The manifest's `behaviors` object is the source of truth for behavior names and
 parameters. The current definitions are:
 
-| Behavior                | Responsibility                                       |
-| ----------------------- | ---------------------------------------------------- |
-| `dynamic`               | Marks a prop as physically movable                   |
-| `anyLiquefaction`       | Liquefies with the manifest's default fluid setting  |
-| `stdLiquefaction`       | Liquefies with the standard fluid setting            |
-| `explosiveLiquefaction` | Liquefies with the explosive fluid setting           |
-| `player`                | Owns first-person input, movement, and weapon firing |
-| `weapon`                | Represents the weapon entity                         |
+| Behavior                | Responsibility                                        |
+| ----------------------- | ----------------------------------------------------- |
+| `dynamic`               | Makes a prop physically simulated and player-pushable |
+| `anyLiquefaction`       | Liquefies with the manifest's default fluid setting   |
+| `stdLiquefaction`       | Liquefies with the standard fluid setting             |
+| `explosiveLiquefaction` | Liquefies with the explosive fluid setting            |
+| `player`                | Owns first-person input, movement, and weapon firing  |
+| `weapon`                | Represents the weapon entity                          |
 
 Definition parameters are merged with per-entity overrides while retaining the
 behavior identity; assignments are never flattened into one anonymous parameter
@@ -61,6 +61,18 @@ know whether the picked mesh is liquefiable. Each liquefiable behavior listens
 for that event, accepts hits addressed to its own mesh while it remains an
 active target, and invokes the shared liquefaction service.
 
+The `player` definition may set `characterStrength`, the maximum force applied
+to contacted dynamic bodies. It defaults to `100`; setting it to `0` preserves
+collision while disabling player pushes.
+
+`C` toggles crouching. Over `0.2 s`, the character controller keeps the
+capsule's foot position fixed while smoothly changing its total height from
+`1.8 m` to `0.8 m`; camera height and the 25% crouched movement-speed reduction
+interpolate with the same progress. The transition is reversible and works on
+the ground or during a jump. A jump request or held run key requests standing
+first; expansion is accepted only while the taller capsule has overhead
+clearance. Jump input is buffered through the standing transition.
+
 ## Runtime lifecycle
 
 `BehaviorManager` owns manifest assignment resolution, linked-entity
@@ -83,3 +95,60 @@ simulation, collision construction, render graph, and debug tooling remain
 services in `main.ts`; they are invoked through the typed behavior context. This
 keeps the migration behavior-preserving while allowing those subsystems to move
 behind narrower services later.
+
+Fluid collision primitives retain stable buffer slots with an `active` flag.
+When a placement stops being collidable, Aquanova updates only that flag in
+every running simulation; the collision shader skips inactive slots. A prop's
+collision is deactivated at the same point its Havok body is removed:
+immediately before the fluid simulation's first step.
+
+Primitive inclusion is tested against the exact world-space AABB passed to the
+fluid solver as its simulation grid. The liquefied mesh's sampled AABB is used
+to position and automatically size that grid, but never directly filters the
+collision shapes.
+
+The third `B` collider-debug mode shows the deduplicated union of primitives
+packed into all running simulations, avoiding misleading colour accumulation
+where independently liquefied objects use the same collision primitive.
+
+A hit and every mesh reached through its linked-entity closure produce one
+shared fluid simulation. Their asynchronously sampled particles are concatenated
+into one solver buffer, while per-mesh dissolve state, wriggle transform,
+particle range, and colour buffer remain separate. The solver stays frozen until
+every linked member has dissolved, then all members enter the fluid phase
+together.
+
+Fusion advances only while the left mouse button remains pressed. Releasing it
+reverses the dissolve at twice the forward speed. Pressing again performs a new
+center-screen pick but resumes the same shot, origin, sampled particles, and
+linked group only when that pick hits one of the group's meshes; a miss or a hit
+on a non-liquefiable object leaves the reversal running. Hitting a different
+available liquefiable mesh detaches the old reversing group and starts a new
+forward fusion for the newly picked mesh. The same direction state and target
+validation apply while particle sampling is still running: a paused sample
+keeps its original shot pose and can resume, while a completed reversal restores
+target availability without creating a solver.
+
+The `P` performance panel reports the current number of fluid simulations and
+their total particle count alongside CPU and GPU timing.
+
+The `L` runtime-light overlay shows the lights authored for the player's current
+chunk using the exact records consumed by the renderer. A small light-coloured
+sphere marks each source; three wire rings show a point-light range, while a
+wire base ring and ribs show a spot-light cone and a directional light uses an
+arrow. The panel reports colour, intensity,
+clustered/scoped mode, range, direction, and actual/requested shadow state.
+Transforms come from the baked glTF `LIGHT_*` nodes, while matching
+`ship_manifest.json` records override runtime parameters by light id.
+Bake-only values such as lamp watts still require rebaking the lightmaps.
+Runtime lamps are material-gated to meshes carrying the literal `dynamic`
+behavior. Liquefiable-only meshes do not receive them.
+
+Every non-ground-only fluid collision set also reserves one capsule slot for
+the player, even when the player starts outside that simulation's domain. The
+slot is refreshed from the character controller's position and velocity before
+fluid stepping, and is disabled while the player is in noclip mode. The fluid
+capsule uses twice the physical character radius (0.8 m instead of 0.4 m)
+to make displacement around the player more visible. Its lower endpoint also
+extends downward by half the physical capsule radius so the boundary remains
+partially submerged at floor level.

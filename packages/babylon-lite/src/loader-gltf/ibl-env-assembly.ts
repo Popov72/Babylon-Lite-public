@@ -85,16 +85,21 @@ export function assembleEnvironmentTextures(
     lodGenerationScale: number,
     engine: EngineContext
 ): EnvironmentTextures {
+    const specularCubeView = specularCube.createView({ dimension: "cube" });
+    const cubeSampler = engine._device.createSampler(_trilinearDesc);
     return {
-        specularCube,
-        specularCubeView: specularCube.createView({ dimension: "cube" }),
-        brdfLut,
-        brdfLutView: brdfLut.createView(),
-        cubeSampler: engine._device.createSampler(_trilinearDesc),
-        brdfSampler: engine._device.createSampler(_bilinearDesc),
-        irradianceSH,
-        sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
-        lodGenerationScale,
+        _specularCube: specularCube,
+        _specularCubeView: specularCubeView,
+        _brdfLut: brdfLut,
+        _brdfLutView: brdfLut.createView(),
+        _cubeSampler: cubeSampler,
+        _brdfSampler: engine._device.createSampler(_bilinearDesc),
+        _irradianceSH: irradianceSH,
+        _sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
+        _lodGenerationScale: lodGenerationScale,
+        _t: specularCube,
+        _v: specularCubeView,
+        _s: cubeSampler,
     };
 }
 
@@ -161,7 +166,7 @@ export async function resolveImage(json: any, binChunk: DataView, imageIdx: numb
 /** Copy of scene-ubo-extras.ts `writeEnvShUbo` — writes the environment
  *  spherical-harmonics slice (float offsets 40–75) of the SceneUniforms struct. */
 function writeEnvShUbo(data: Float32Array, scene: SceneContext): void {
-    const sh = scene._envTextures?.sphericalHarmonics;
+    const sh = scene._envTextures?._sphericalHarmonics;
     if (sh) {
         data.set(sh, 40);
     }

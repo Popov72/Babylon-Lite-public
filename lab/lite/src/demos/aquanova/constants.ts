@@ -4,8 +4,11 @@
 // (scale x = -1), so glTF (x, y, z) renders at Lite (-x, y, z) — every manifest coordinate goes
 // through `toLite` before use.
 
-export const SHIP_URL = "/aquanova/ship.glb";
+export const SHIP_URL = "/aquanova/ship_baked.glb";
 export const MANIFEST_URL = "/aquanova/ship_manifest.json";
+/** Per-chunk baked-lightmap index written by `scripts/sync-baked-ship.ts`: which KTX2 atlas belongs
+ *  to which chunk, and the scale the bake divided out to fit 8 bits. */
+export const LIGHTMAPS_URL = "/aquanova/lightmaps.json";
 /** Image-based lighting: the ship is lit by this HDRI (Poly Haven "bank_vault" 2k, CC0) plus its own
  *  emissive ceiling fixtures — the glTF export carries no punctual lights. */
 export const ENV_URL = "/aquanova/bank_vault_2k.hdr";

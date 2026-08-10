@@ -73,8 +73,8 @@ export function pushEnvBindGroupEntries(
     if (!env) {
         throw new Error("NodeMaterial: PBR/Reflection block requires scene environment but scene._envTextures is unset. Call loadEnvironment() before registerScene().");
     }
-    entries.push({ binding: envBindings._iblTexture, resource: env.specularCubeView });
-    entries.push({ binding: envBindings._iblSampler, resource: env.cubeSampler });
-    entries.push({ binding: envBindings._brdfLUT, resource: env.brdfLutView });
-    entries.push({ binding: envBindings._brdfSampler, resource: env.brdfSampler });
+    entries.push({ binding: envBindings._iblTexture, resource: env._specularCubeView });
+    entries.push({ binding: envBindings._iblSampler, resource: env._cubeSampler });
+    entries.push({ binding: envBindings._brdfLUT, resource: env._brdfLutView });
+    entries.push({ binding: envBindings._brdfSampler, resource: env._brdfSampler });
 }

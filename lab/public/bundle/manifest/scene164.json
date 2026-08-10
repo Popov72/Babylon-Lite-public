@@ -10,17 +10,17 @@
     "scene164-gltf-color-normalize-4-WGzPL2.js",
     "scene164-gltf-feature-animations-CezTXKjn.js",
     "scene164-gltf-feature-morph-7lwtFhBO.js",
-    "scene164-gltf-feature-registry-C37v46n-.js",
+    "scene164-gltf-feature-registry-CHQBJyWh.js",
     "scene164-gltf-feature-skeleton-Baf9dxYD.js",
     "scene164-gltf-json-asset-aTfFqszO.js",
-    "scene164-morph-fragment-Gqvb5v0T.js",
-    "scene164-pbr-pipeline-CO5XrLcN.js",
-    "scene164-pbr-renderable-CgEbI1p-.js",
+    "scene164-morph-fragment-B33D2jsm.js",
+    "scene164-pbr-pipeline-CiEUv1ST.js",
+    "scene164-pbr-renderable-WEuze9O7.js",
     "scene164-pbr-template-ext-CiHpOV5G.js",
     "scene164-samplers-DuUvRDBP.js",
     "scene164-singlelight-hemispheric-wgsl-B3eEzZwe.js",
-    "scene164-skeleton-fragment-Dnx9CVHt.js",
+    "scene164-skeleton-fragment-M5B_7M68.js",
     "scene164.js"
   ],
-  "rawBytes": 97678
+  "rawBytes": 97683
 }

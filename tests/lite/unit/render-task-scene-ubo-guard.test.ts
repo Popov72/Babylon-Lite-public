@@ -73,9 +73,9 @@ function makeMockEngine(writeCount: { n: number }): EngineContext {
 
 function makeEnvTextures(): EnvironmentTextures {
     return {
-        specularCube: {} as GPUTexture,
-        sphericalHarmonics: new Float32Array(36).fill(0.5),
-        lodGenerationScale: 0.8,
+        _specularCube: {} as GPUTexture,
+        _sphericalHarmonics: new Float32Array(36).fill(0.5),
+        _lodGenerationScale: 0.8,
     } as unknown as EnvironmentTextures;
 }
 

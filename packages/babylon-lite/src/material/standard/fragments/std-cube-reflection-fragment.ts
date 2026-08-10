@@ -11,7 +11,7 @@ export function createStdCubeReflectionFragment(): ShaderFragment {
             { _name: "cRS", _type: { _kind: "sampler", _samplerType: "sampler" }, _visibility: 0x2 },
         ],
         _fragmentSlots: {
-            AD: `{let v=normalize(input.vp-scene.vEyePosition.xyz);reflectionColor=textureSample(cRT,cRS,reflect(v,normalW)).rgb*mat.rLvl;}`,
+            AD: `{let v=normalize(input.vp-scene.vEyePosition.xyz);let sample=textureSample(cRT,cRS,reflect(v,normalW)).rgb;reflectionColor=pow(sample,vec3<f32>(1.0/2.2))*mat.rLvl;}`,
         },
     };
 }
@@ -23,8 +23,8 @@ export const stdCubeReflectionExt: StdExt = {
     _frag: createStdCubeReflectionFragment,
     _bind(mat, entries, b) {
         const cube = mat.reflectionCubeTexture!;
-        entries.push({ binding: b++, resource: cube.view });
-        entries.push({ binding: b++, resource: cube.sampler });
+        entries.push({ binding: b++, resource: cube._v });
+        entries.push({ binding: b++, resource: cube._s });
         return b;
     },
     // Cube textures are tracked separately; no Texture2D[] contribution.

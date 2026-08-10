@@ -6,13 +6,13 @@
     "scene171-generate-mipmaps-rDI5JKHy.js",
     "scene171-gltf-glb-parser-CQORRVo7.js",
     "scene171-mesh-features-DFqvRi8F.js",
-    "scene171-pbr-pipeline-pJOUXGJD.js",
-    "scene171-pbr-renderable-C6FsM0xX.js",
+    "scene171-pbr-pipeline-CHMbA_UV.js",
+    "scene171-pbr-renderable-C7CVL4AG.js",
     "scene171-recast-navigation-CYBQI-zY-Dry_z7x_.js",
     "scene171-shader-composer-qxmZVcOJ.js",
     "scene171-singlelight-hemispheric-wgsl-BrjBFvL6.js",
     "scene171-standard-renderable-BnpluU3S.js",
     "scene171.js"
   ],
-  "rawBytes": 98568
+  "rawBytes": 98570
 }

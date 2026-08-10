@@ -8,7 +8,9 @@ import {
   state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
   loadModuleCollision, serializeModuleCollision, emit, hooks,
   serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
-  applyEnvironment, whileBusy, withVeilSuspended, isVeilClone, SKYBOX_CHUNK,
+  serializeBakeLighting, applyEnvironment, whileBusy, withVeilSuspended,
+  isVeilClone, isGizmoMesh, SKYBOX_CHUNK,
+  chunkBakeOf,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -84,6 +86,12 @@ export function nodeNameOf(placement) {
  * `linked` is omitted when empty rather than written as `[]` - the absence is
  * what "this one stands alone" means - and entries pointing at a behaviour that
  * no longer exists are dropped, since the runtime would only ignore them.
+ *
+ * `bake` is the author's override of what the bake works out for itself, and it
+ * rides here because it is keyed the same way - by node name - and read by the
+ * same consumer. "auto" is written as an absent key for the same reason `linked`
+ * is: it is the default, and storing it would put every element ever inspected
+ * into the diff. An entry may hold a `bake` and no behaviours at all.
  */
 function serializeBehaviors() {
   return Object.fromEntries(
@@ -92,16 +100,19 @@ function serializeBehaviors() {
 
 function serializeEntities() {
   const out = {};
-  for (const [node, list] of state.entities) {
-    const kept = list
+  const nodes = [...new Set([...state.entities.keys(), ...state.bakeOverride.keys()])];
+  for (const node of nodes) {
+    const kept = (state.entities.get(node) || [])
       .filter((b) => state.behaviors.has(b.name))
       .map((b) => ({
         name: b.name,
         ...(b.linked.length ? { linked: [...b.linked] } : {}),
-        ...(b.excludeSDF?.length ? { excludeSDF: [...b.excludeSDF] } : {}),
         ...(b.direction ? { direction: toGltf(b.direction) } : {}),
       }));
-    if (kept.length) out[node] = { behaviors: kept };
+    const bake = state.bakeOverride.get(node);
+    if (kept.length || bake) {
+      out[node] = { ...(kept.length ? { behaviors: kept } : {}), ...(bake ? { bake } : {}) };
+    }
   }
   return out;
 }
@@ -260,12 +271,20 @@ export function buildManifest() {  const layout = serialize();
       max = max ? Vector3.Maximize(max, b.max) : b.max.clone();
     }
     if (min) boxes.push({ id, min, max });
+    const bake = chunkBakeOf(id);
     return {
       id,
       node: `CHUNK_${id}`,
       aabb: min ? boxToGltf(r(min.asArray()), r(max.asArray())) : null,
       instanceCount: members.length,
       meshCount,
+      // What Blender renders THIS room at, where it differs from the ship's
+      // `bakeDefaults` below. Sparse and omitted when empty, on purpose: a
+      // room that never asked for its own settings must keep following the
+      // defaults, so writing today's resolved numbers in would quietly freeze
+      // every room at whatever the defaults happened to be the day it was
+      // saved. bake_lightmaps.py resolves the pair the same way.
+      ...(Object.keys(bake).length ? { bake } : {}),
     };
   });
 
@@ -346,10 +365,11 @@ export function buildManifest() {  const layout = serialize();
     // lets a reader assert instead of remember.
     space: {
       gltf: ["chunks[].aabb", "collision", "moduleCollision", "portals", "doors"],
-      editor: ["instances", "markers", "colliders", "moduleShapes", "stageLayout", "view"],
+      editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
       none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kitDir",
         "activeChunk", "fluidSim", "behaviors", "entities", "environment",
-        "editorEnvironment", "adjacency", "space"],
+        "editorEnvironment", "bakeLighting", "adjacency", "space", "bakeDefaults",
+        "chunks[].bake"],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",
@@ -372,6 +392,11 @@ export function buildManifest() {  const layout = serialize();
     config: layout.config,
     kitDir: state.kitDir || null,
     chunks,
+    // What the bake renders a room at when the room does not say otherwise.
+    // Read by bake_lightmaps.py, which resolves each chunk as
+    // `--flag (if given) > chunks[].bake > bakeDefaults > its own built-in`.
+    bakeDefaults: { ...state.bakeDefaults },
+    bakeLighting: serializeBakeLighting(),
     // "node" is what the element is called in ship.glb - its own name, or its
     // id when it has none - and is the only handle the runtime needs. "id" is
     // the editor's, and is what the tool reloads from.
@@ -385,6 +410,11 @@ export function buildManifest() {  const layout = serialize();
     // this is the source. Without it a saved ship came back with no collision
     // at all, because restoreFrom() reads this key and nothing wrote it.
     colliders: layout.colliders,
+    // Authored lights, each riding a placement. Editor space and local to the
+    // owner, like `moduleShapes`: this is what the tool reloads from. What the
+    // BAKE reads is the exported TransformNode's own extras, not this - so the
+    // two never have to agree about handedness.
+    lights: layout.lights,
     // A room's own one-off shapes, in glTF space, in the form Havok's
     // constructors take. Grouped by chunk because collision is streamed per
     // room, and a flat list would make every room filter the whole ship.
@@ -579,7 +609,10 @@ async function exportGlbInner() {
     const name = nodeNameOf(p);
     renamed.push([p.node, p.node.name]);
     p.node.name = name;
-    p.node.getChildMeshes().forEach((m, i) => {
+    // Gizmos are skipped, not just left unexported: they hang off the same node
+    // as the module's parts, so counting them here would shift every primitive
+    // number after the one they sit next to.
+    artMeshes(p.node).forEach((m, i) => {
       renamed.push([m, m.name]);
       m.name = `${name}_primitive${i}`;
     });
@@ -602,12 +635,36 @@ async function exportGlbInner() {
     };
   }
 
+  // Lights ride out as bare nodes carrying their whole record.
+  //
+  // There is nothing to draw: the bake script rebuilds each one as a Cycles
+  // Area light from `extras`, and the runtime builds a Babylon light from the
+  // same numbers - so what has to survive the trip is the transform and the two
+  // halves, not geometry. Being a child of the element it rides means the glTF
+  // hierarchy carries the offset for free, in exactly the space it was authored
+  // in.
+  //
+  // The gizmo meshes hanging off the same node are left out of `exportable`, so
+  // the node reaches the file with no children at all - which the exporter is
+  // fine with: a node with a name, a transform and extras is still a node.
+  const lights = hooks.lightsForExport();
+  for (const l of lights) {
+    renamed.push([l.node, l.node.name]);
+    l.node.name = `LIGHT_${l.id}`;
+    tagged.push([l.node, l.node.metadata]);
+    l.node.metadata = {
+      ...(l.node.metadata || {}),
+      gltf: { extras: l.extras },
+    };
+  }
+
   const exportable = new Set();
   for (const t of holders.values()) exportable.add(t);
   for (const p of shipPlacements()) {
     exportable.add(p.node);
-    for (const m of p.node.getChildMeshes()) exportable.add(m);
+    for (const m of artMeshes(p.node)) exportable.add(m);
   }
+  for (const l of lights) exportable.add(l.node);
 
   try {
     const glb = await withAuthoredMaterials(() =>
@@ -635,3 +692,8 @@ async function exportGlbInner() {
 }
 
 function r(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
+
+/** A placement's own primitives - its module's parts, and nothing else. */
+function artMeshes(node) {
+  return node.getChildMeshes().filter((m) => !isGizmoMesh(m));
+}

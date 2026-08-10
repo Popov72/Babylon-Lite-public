@@ -12,7 +12,7 @@ import {
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
-  constrainMove, axisBasis,
+  constrainMove, axisBasis, cameraDropPoint, isGizmoMesh, ownerIdOf,
 } from "./editor.js";
 
 const {
@@ -558,6 +558,105 @@ function moveGhostToCursor() {
   ghost.root.position.set(x + lift.x, planeY + lift.y, z + lift.z);
 }
 
+/**
+ * Bring whatever is in hand to a spot in front of the camera.
+ *
+ * Arming a module from the palette leaves the ghost wherever the build plane
+ * happens to meet the cursor ray, and inside a finished room that is often
+ * nowhere useful: with the plane down at the deck you started from, looking
+ * level or up misses it entirely - `cursorOnPlane` returns null and the ghost
+ * simply stays wherever it last was - while looking barely down puts it
+ * hundreds of metres away. Neither can be dragged back, because you cannot see
+ * it to drag it.
+ *
+ * So this moves the **build plane** as well as the piece. That is the part that
+ * makes it stick: a one-shot teleport would be undone by the very next mouse
+ * move, which re-derives the position from the plane. A placed selection moves
+ * the plane too, so that a following `M` grab picks up from here rather than
+ * dropping back to the old height.
+ *
+ * Returns what happened, for the status line, or null when nothing is in hand.
+ */
+export function bringToCamera() {
+  if (ghost) {
+    const b = worldBounds(ghost.root);
+    const size = b ? b.max.subtract(b.min).length() : 2;
+    // The ghost's own clones are unpickable, so nothing to skip: the rays see
+    // the room, not the piece being carried through it.
+    const drop = cameraDropPoint(size);
+    if (!drop) return null;
+
+    ghost.baseY = null;               // ride the build plane again
+    ghost.vFrom = null;               // a half-finished V drag lost its reference
+    setGridElevation(drop.point.y);
+
+    // Same arithmetic as a drop on the cursor: take the body offset off first
+    // so the grid aligns the origin, then put a lone collision primitive back
+    // on its corner.
+    const off = centreOffset();
+    const lift = colliderLift();
+    const s = state.snap.pos || 0;
+    const snap = (v) => (s ? Math.round(v / s) * s : v);
+    ghost.root.position.set(
+      snap(drop.point.x - off.x) + lift.x,
+      drop.point.y + lift.y,
+      snap(drop.point.z - off.z) + lift.z);
+
+    // A grab moves by how far the cursor has travelled since it started, so the
+    // reference has to be re-taken here or the next mouse move would drag the
+    // piece straight back to where it was picked up.
+    if (ghost.anchor) {
+      ghost.anchor = {
+        cursor: cursorOnPlane(state.gridY + centreOffset().y),
+        base: ghost.root.position.clone(),
+      };
+    }
+    emit("current");
+    return { kind: "ghost", count: ghost.items.length, y: drop.point.y, floor: drop.floor };
+  }
+
+  const nodes = state.selection.map((id) => entryOf(id)?.node).filter(Boolean);
+  if (!nodes.length) return null;
+  let min = null, max = null;
+  for (const n of nodes) {
+    const b = worldBounds(n);
+    if (!b) continue;
+    min = min ? Vector3.Minimize(min, b.min) : b.min.clone();
+    max = max ? Vector3.Maximize(max, b.max) : b.max.clone();
+  }
+  if (!min) return null;
+
+  // Without this the forward ray stops on the selection itself whenever it is
+  // already in view, and the piece would only ever creep a little closer.
+  const chosen = new Set(state.selection);
+  const skip = (m) => {
+    const id = ownerIdOf(m);
+    return !!id && chosen.has(id);
+  };
+  const drop = cameraDropPoint(max.subtract(min).length(), skip);
+  if (!drop) return null;
+
+  // The group's bottom centre lands on the spot - bottom, not centre, so it
+  // rests on the floor the way a fresh drop does.
+  const from = new Vector3((min.x + max.x) / 2, min.y, (min.z + max.z) / 2);
+  const delta = drop.point.subtract(from);
+  // Grid alignment is applied to where the anchor's *origin* ends up, and then
+  // fed back into the shared delta, so the set keeps its internal spacing
+  // instead of every member snapping independently.
+  const s = state.snap.pos || 0;
+  if (s) {
+    const to = nodes[0].position.add(delta);
+    delta.x += Math.round(to.x / s) * s - to.x;
+    delta.z += Math.round(to.z / s) * s - to.z;
+  }
+
+  pushUndo();
+  for (const n of nodes) n.position.addInPlace(delta);
+  setGridElevation(drop.point.y);
+  emit("transform");
+  return { kind: "selection", count: nodes.length, y: drop.point.y, floor: drop.floor };
+}
+
 function setCursorHidden(hidden) {
   const canvas = state.engine?.getRenderingCanvas();
   if (canvas) canvas.style.cursor = hidden ? "none" : "";
@@ -769,7 +868,7 @@ function beginDragCandidate(id, ev, pickedPoint) {
   // plane down at the base is then behind the camera (t <= 0), so there was no
   // reference point and the piece simply refused to move.
   const centre = entries
-    .reduce((a, e) => a.addInPlace(e.node.position), Vector3.Zero())
+    .reduce((a, e) => a.addInPlace(e.node.getAbsolutePosition()), Vector3.Zero())
     .scale(1 / entries.length);
   const anchor = pickedPoint ? pickedPoint.clone() : centre;
 
@@ -783,6 +882,13 @@ function beginDragCandidate(id, ev, pickedPoint) {
     startX: ev.clientX, startY: ev.clientY,
     entries,
     origins: entries.map((e) => e.node.position.clone()),
+    // A light rides its owner's node; everything else in the editor is
+    // top-level, where local and world are the same thing. `position` is local,
+    // so the world-space travel a gesture produces has to be turned into the
+    // owner's frame before it can be added - otherwise dragging a lamp inside a
+    // turned module sends it off at the module's angle.
+    toLocal: entries.map((e) => (e.node.parent
+      ? e.node.parent.getWorldMatrix().clone().invert() : null)),
     // The frame is taken once, from the element under the cursor rather than
     // the first of the selection: it is the one you grabbed. Taking it once
     // also means turning a piece mid-drag cannot make its own axes run away
@@ -916,7 +1022,7 @@ export function toggleAxisSpace() {
 export function rebaseDrag() {
   if (!drag) return;
   const live = drag.entries
-    .reduce((a, e) => a.addInPlace(e.node.position), Vector3.Zero())
+    .reduce((a, e) => a.addInPlace(e.node.getAbsolutePosition()), Vector3.Zero())
     .scale(1 / drag.entries.length);
   drag.origins = drag.entries.map((e) => e.node.position.clone());
   anchorDrag(live);
@@ -973,7 +1079,8 @@ function updateDrag(ev) {
 function applyDelta(raw, snap) {
   const d = constrainMove(raw, snap, drag.basis);
   for (let i = 0; i < drag.entries.length; i++) {
-    drag.entries[i].node.position.copyFrom(drag.origins[i].add(d));
+    const local = drag.toLocal[i] ? Vector3.TransformNormal(d, drag.toLocal[i]) : d;
+    drag.entries[i].node.position.copyFrom(drag.origins[i].add(local));
   }
   emit("transform");
 }
@@ -1002,7 +1109,14 @@ export function cancelDrag() { return endDrag(false); }
 // nothing has to be re-synced after an edit.
 
 function edgeMeshes(entry) {
-  return entry?.node ? entry.node.getChildMeshes() : [];
+  if (!entry?.node) return [];
+  // A light's gizmo hangs off the placement it rides, so outlining a wall must
+  // not also light up the lamp inside it - but selecting the lamp still does.
+  const own = entry.node.getChildMeshes()
+    .filter((m) => !isGizmoMesh(m) || m.metadata.lightRoot === entry.node);
+  // In baked mode the element's own meshes are off and its exported copy is
+  // what is on screen. An outline has to trace what you can see.
+  return [...own, ...hooks.standInMeshes(entry.id)];
 }
 
 function applyEdges(mesh, color) {

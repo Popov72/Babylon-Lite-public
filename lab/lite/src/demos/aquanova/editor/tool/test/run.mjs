@@ -58,7 +58,7 @@ let failures = 0;
 try {
   await waitForServer();
   console.log(`\nscratch export dir: ${scratch}\n`);
-  for (const script of ["smoke.mjs", "interact.mjs", "e2e.mjs"]) {
+  for (const script of ["smoke.mjs", "interact.mjs", "e2e.mjs", "bake.mjs"]) {
     console.log(`\n=== ${script} ${"=".repeat(60 - script.length)}`);
     const code = await run(script);
     if (code !== 0) failures++;
@@ -66,7 +66,10 @@ try {
   }
 } finally {
   server.kill();
-  await fsp.rm(scratch, { recursive: true, force: true }).catch(() => {});
+  // SHIP_TEST_KEEP leaves the scratch export directory behind, for looking at
+  // what a suite actually wrote when one of them disagrees with you.
+  if (process.env.SHIP_TEST_KEEP) console.log(`kept scratch: ${scratch}`);
+  else await fsp.rm(scratch, { recursive: true, force: true }).catch(() => {});
 }
 
 console.log(`\n${failures ? `${failures} suite(s) failed` : "all suites passed"}`);

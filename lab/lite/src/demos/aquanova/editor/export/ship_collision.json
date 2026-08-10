@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 1,
-  "savedAt": "2026-08-05T18:58:21.288Z",
+  "savedAt": "2026-08-10T11:34:56.382Z",
   "units": "metres",
   "note": "Collision authored per kit module, in each module's local space. Editor space: the manifest's own collision block is the mirrored, runtime-facing copy.",
   "moduleShapes": {

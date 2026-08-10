@@ -15,6 +15,9 @@ export interface GraphicsSettings {
     /** SMAA post-process on the final image. Catches the aliasing MSAA cannot: the hard lines inside
      *  the ship's panel/grate textures, which are most of what reads as "jaggy" here. */
     smaa: boolean;
+    /** PBR specular anti-aliasing. Increases effective roughness where the screen-space normal
+     *  changes rapidly, reducing metallic reflection shimmer without blurring the whole frame. */
+    specularAA: boolean;
     /** TAA — jittered temporal accumulation. Supersamples everything, including inside textures, but
      *  core TAA resets on camera movement, so today it only pays off while standing still. */
     taa: boolean;
@@ -44,6 +47,9 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
     // MSAA cannot touch because it only supersamples polygon coverage. SMAA is an image-space
     // filter, so it treats those the same as a silhouette. Three cheap fullscreen passes.
     smaa: true,
+    // On by default, matching the glTF loader. This specifically targets shader-generated metallic
+    // reflection/highlight aliasing, which coverage and image-space edge filters cannot prevent.
+    specularAA: true,
     // Off by default: core TAA resets to the raw frame whenever the camera moves, so while walking
     // it costs three passes and changes nothing. It is worth turning on to look at a static view,
     // where the jittered accumulation supersamples texture interiors that no spatial filter can.
@@ -71,6 +77,12 @@ export interface GraphicsSettingDef {
 export const GRAPHICS_SETTING_DEFS: readonly GraphicsSettingDef[] = [
     { key: "msaa", kind: "toggle", label: "Anti-aliasing (4× MSAA)", help: "Smooths jagged polygon edges. Costs GPU memory and some fill rate." },
     { key: "smaa", kind: "toggle", label: "Anti-aliasing (SMAA)", help: "Smooths hard lines inside textures, which MSAA cannot. Costs a little fill rate." },
+    {
+        key: "specularAA",
+        kind: "toggle",
+        label: "Specular anti-aliasing",
+        help: "Reduces metallic reflection shimmer by filtering rapid normal changes. Rebuilds PBR shaders when changed.",
+    },
     {
         key: "taa",
         kind: "toggle",

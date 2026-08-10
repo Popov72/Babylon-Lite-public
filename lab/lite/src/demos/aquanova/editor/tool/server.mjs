@@ -12,6 +12,7 @@ import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -174,6 +175,148 @@ async function dropOlderVersions(dir, key) {
     const stale = o ? (o[2] === id && o[1] !== version) : f.slice(0, -4) === id;
     if (stale) await fsp.rm(path.join(dir, f), { force: true }).catch(() => {});
   }));
+}
+
+// ------------------------------------------------------------------- baking
+//
+// A bake is minutes of Cycles, not milliseconds of file I/O, so it cannot be
+// the response to a request: the browser would time out long before Blender
+// finished. POST starts it and returns at once, GET reports on it. Only one
+// runs at a time - two Blenders writing the same lightmaps/ folder would race
+// each other, and the second one to finish would win at random.
+
+const BLENDER_CANDIDATES = [
+  process.env.BLENDER,
+  CONFIG.blenderPath && path.resolve(HERE, CONFIG.blenderPath),
+  "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe",
+  "C:/Program Files/Blender Foundation/Blender 4.2/blender.exe",
+  "/usr/bin/blender",
+  "/Applications/Blender.app/Contents/MacOS/Blender",
+].filter(Boolean);
+
+const BAKE_SCRIPT = path.join(HERE, "bake_lightmaps.py");
+const LIGHTMAP_DIR = path.join(EXPORT_DIR, "lightmaps");
+
+let bakeJob = null;
+
+function findBlender() {
+  return BLENDER_CANDIDATES.find((p) => fs.existsSync(p)) || null;
+}
+
+/** The equirect that lights the ship through its windows, if the project has one. */
+function findSkybox(asked) {
+  const wanted = asked || CONFIG.skybox;
+  if (!wanted) return null;
+  const full = path.resolve(HERE, wanted);
+  return fs.existsSync(full) ? full : null;
+}
+
+function bakeArgs(opts) {
+  const out = ["--glb", GLB, "--manifest", MANIFEST, "--out", LIGHTMAP_DIR];
+  const sky = findSkybox(opts.skybox);
+  if (sky) out.push("--skybox", sky);
+  if (Number.isFinite(opts.envStrength)) out.push("--env-strength", String(opts.envStrength));
+  if (Number.isFinite(opts.samples)) out.push("--samples", String(Math.round(opts.samples)));
+  if (Number.isFinite(opts.resolution)) out.push("--resolution", String(Math.round(opts.resolution)));
+  // Size and margin normally come from the manifest, per chunk - these are the
+  // "render me something now" override, and they apply to every chunk.
+  if (Number.isFinite(opts.width)) out.push("--width", String(Math.round(opts.width)));
+  if (Number.isFinite(opts.height)) out.push("--height", String(Math.round(opts.height)));
+  if (Number.isFinite(opts.margin)) out.push("--margin", String(Math.round(opts.margin)));
+  if (opts.device === "GPU" || opts.device === "CPU") out.push("--device", opts.device);
+  for (const c of opts.chunks || []) out.push("--chunk", String(c));
+  if (opts.force) out.push("--force");
+  if (opts.gui) out.push("--interactive");
+  if (opts.dryRun) out.push("--no-bake");
+  return out;
+}
+
+/**
+ * Open the ship in a Blender window, set up but not baked.
+ *
+ * Deliberately not a `bakeJob`: this one belongs to the user, not to the
+ * editor. It has no end the server can wait for, its output is a window rather
+ * than a report, and polling it for progress would be answering a question the
+ * user is already looking at. So it is spawned detached and forgotten - the
+ * only thing the editor ever hears back is the files the session writes.
+ */
+function startSession(opts) {
+  const blender = findBlender();
+  if (!blender) throw new Error("no Blender found - set BLENDER or config.blenderPath");
+  if (!fs.existsSync(GLB)) throw new Error("no ship.glb to open - export the ship first");
+
+  const args = bakeArgs({ ...opts, gui: true });
+  // Inherited stdio, not ignored: a session that dies during setup would
+  // otherwise fail in complete silence, and its traceback is the only thing
+  // that would say why. It lands in this server's own console.
+  const child = spawn(blender,
+    ["--factory-startup", "--python", BAKE_SCRIPT, "--", ...args],
+    { detached: true, stdio: "inherit" });
+  child.unref();
+  return { pid: child.pid, blender, args };
+}
+
+/** What a live session left for the editor to pick back up, if anything. */
+function readLightPowers() {
+  const file = path.join(EXPORT_DIR, "light_powers.json");
+  if (!fs.existsSync(file)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!data || typeof data.watts !== "object" || !data.watts) return null;
+    return { ...data, at: fs.statSync(file).mtimeMs };
+  } catch { return null; }
+}
+
+function startBake(opts) {
+  const blender = findBlender();
+  if (!blender) throw new Error("no Blender found - set BLENDER or config.blenderPath");
+  if (!fs.existsSync(GLB)) throw new Error("no ship.glb to bake - export the ship first");
+
+  const args = bakeArgs(opts);
+  const child = spawn(blender,
+    ["-b", "--factory-startup", "--python", BAKE_SCRIPT, "--", ...args],
+    { windowsHide: true });
+
+  const job = {
+    startedAt: Date.now(), finishedAt: null, running: true, ok: null,
+    error: null, report: null, blender, args, log: [], child,
+  };
+  bakeJob = job;
+
+  const note = (buf) => {
+    for (const line of String(buf).split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      if (line.startsWith("BAKE_REPORT ")) {
+        try {
+          job.report = JSON.parse(line.slice("BAKE_REPORT ".length));
+        } catch { /* a truncated line is not worth failing the bake over */ }
+        continue;
+      }
+      // Cycles prints a progress line per tile; keeping the last few hundred is
+      // enough to see what it is doing without holding a whole render in RAM.
+      job.log.push(line);
+      if (job.log.length > 400) job.log.splice(0, job.log.length - 400);
+    }
+  };
+  child.stdout.on("data", note);
+  child.stderr.on("data", note);
+  child.on("error", (err) => { job.error = String(err.message || err); });
+  child.on("close", (code) => {
+    job.running = false;
+    job.finishedAt = Date.now();
+    job.ok = code === 0 && !!job.report;
+    if (!job.ok && !job.error) {
+      job.error = code === 0 ? "blender wrote no report" : `blender exited ${code}`;
+    }
+    job.child = null;
+  });
+  return job;
+}
+
+function bakeStatus() {
+  if (!bakeJob) return { running: false, started: false };
+  const { child, log, ...rest } = bakeJob;
+  return { started: true, ...rest, log: log.slice(-40) };
 }
 
 // ------------------------------------------------------------------ routes
@@ -372,6 +515,56 @@ async function handle(req, res) {
     await backupGlbIfForeign();
     await fsp.writeFile(GLB, body);
     return sendJson(res, 200, { ok: true, path: GLB, bytes: body.length });
+  }
+
+  if (p === "/api/bake") {
+    if (req.method === "GET") {
+      return sendJson(res, 200, { ...bakeStatus(), available: !!findBlender() });
+    }
+    if (req.method === "POST") {
+      if (bakeJob?.running) return sendJson(res, 409, { ok: false, error: "a bake is running" });
+      let opts = {};
+      try {
+        const body = await readBody(req, 64 * 1024);
+        if (body.length) opts = JSON.parse(body.toString("utf8"));
+      } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
+      try {
+        if (opts.gui) {
+          const started = startSession(opts);
+          return sendJson(res, 202, { ok: true, gui: true, ...started });
+        }
+        const job = startBake(opts);
+        return sendJson(res, 202, { ok: true, startedAt: job.startedAt, args: job.args });
+      } catch (err) {
+        return sendJson(res, 503, { ok: false, error: String(err.message || err) });
+      }
+    }
+    if (req.method === "DELETE") {
+      if (!bakeJob?.running) return sendJson(res, 200, { ok: true, running: false });
+      bakeJob.error = "cancelled";
+      bakeJob.child?.kill();
+      return sendJson(res, 200, { ok: true, cancelled: true });
+    }
+    return send(res, 405, "method not allowed");
+  }
+
+  if (p === "/api/light-powers" && req.method === "GET") {
+    const powers = readLightPowers();
+    return sendJson(res, 200, powers || { watts: null });
+  }
+
+  if (p.startsWith("/lightmaps/")) {
+    const file = safeJoin(LIGHTMAP_DIR, p.slice("/lightmaps/".length));
+    if (!file) return send(res, 403, "forbidden");
+    return serveFile(res, file);
+  }
+
+  // Read-only, and only ever read by the baked preview: the editor writes here
+  // through /api/export, never through a URL.
+  if (p.startsWith("/export/") && req.method === "GET") {
+    const file = safeJoin(EXPORT_DIR, p.slice("/export/".length));
+    if (!file) return send(res, 403, "forbidden");
+    return serveFile(res, file);
   }
 
   // static app

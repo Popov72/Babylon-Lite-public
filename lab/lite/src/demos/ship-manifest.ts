@@ -14,6 +14,8 @@ export interface ShipEnvironment {
     hdri?: string;
     /** IBL intensity applied as each PBR material's `environmentIntensity`. */
     strength?: number;
+    /** IBL intensity for meshes without baked lightmap UVs, such as dynamic props. */
+    dynamicStrength?: number;
     /** Linear exposure multiplier, used exactly as authored (see {@link resolveExposure}). */
     exposure?: number;
     /** Human-readable view-transform name (see {@link resolveToneMapping}). */
@@ -36,12 +38,6 @@ export interface ShipBehavior {
      * Applied SHIP-WIDE: every mesh carrying a listed name melts, not just nearby instances.
      */
     linked?: string[];
-    /**
-     * Mesh names whose baked SDF must be dropped from the fluid simulation this behaviour spawns
-     * (liquefiable behaviours only), for as long as that shot's water is alive. Matched SHIP-WIDE,
-     * like {@link ShipBehavior.linked}.
-     */
-    excludeSDF?: string[];
     /** Facing direction, in glTF space, for the marker behaviours (see {@link PLAYER_START_BEHAVIOR}). */
     direction?: number[];
 }
@@ -114,21 +110,6 @@ export function resolveBehavior(library: ShipBehaviorLibrary | undefined, entiti
  */
 export function linkedMeshNames(b: ShipBehavior | undefined): string[] {
     return (b?.linked ?? []).filter((n) => typeof n === "string" && n.length > 0);
-}
-
-/**
- * Mesh names whose baked SDF must NOT be injected into the fluid simulation this behaviour spawns.
- *
- * A liquefiable prop is usually surrounded by geometry it was fitted into — a door sits inside its
- * frame — and the water is seeded in the prop's own volume, which overlaps that neighbour. Left in the
- * SDF union the neighbour would eject the seeded particles and dam the opening the prop just left
- * behind, so the manifest names it here and the demo drops it from the union while the shot is live.
- *
- * @param b - the mesh's effective behaviour.
- * @returns the excluded mesh names, with blank placeholder entries dropped.
- */
-export function excludedSdfMeshNames(b: ShipBehavior | undefined): string[] {
-    return (b?.excludeSDF ?? []).filter((n) => typeof n === "string" && n.length > 0);
 }
 
 /**

@@ -12,6 +12,8 @@ packages/babylon-lite/build/
 .vite/
 .playwright-cli/
 *.py
+__pycache__/
+*.py[cod]
 our-render*
 our-*
 test-actual*.png
@@ -116,11 +118,6 @@ lab/public/waterfall/rock-heightmap-high.bin
 # intermediates, kept on disk for re-exports and likewise skipped by copyDemoRuntimeAssets.
 lab/public/waterfall/oasis.glb
 lab/public/waterfall/oasis-heightmap.bin
-# Aquanova demo: the ship model (33 MB), its pre-optimisation original (40 MB) and the 2k HDR
-# are far larger than anything else tracked here (the biggest committed asset is 10 MB), so they
-# stay local. Only the small text config — ship_manifest.json, the fluid-sim presets and the
-# asset licences — is committed; drop the binaries back in to run the demo.
-lab/public/aquanova/*.glb
 lab/public/aquanova/*.hdr
 # Skybox cube faces (~4.5 MB of PNG). Public domain (Space 3D, Unlicense — see ASSET-LICENSES.md),
 # so this is a size decision only: committing them would not make a fresh clone runnable anyway,

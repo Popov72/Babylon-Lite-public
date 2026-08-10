@@ -1,0 +1,53 @@
+{
+  "_source": "Measured off the M_Light primitive of each kit .gltf - the emissive strip is the lamp, so the area light is placed on its face and sized to it.",
+  "_note": "A SEED, not a derivation. These fire once, when a module is first placed; from then on the light belongs to that element, so an edit survives a save and a copy carries it. Changing this file never touches a ship that is already laid out.",
+  "_axes": "Editor space. Babylon's glTF loader turns the file 180 degrees about Y and mirrors Z, which nets out to x_editor = -x_gltf, so the strip centres below are the .gltf values with X negated. A light emits along its own local -Y, and its rectangle lies in the local XZ plane: sizeX spans local X, sizeY spans local Z.",
+  "modules": {
+    "Props/Prop_Light_Small": [
+      {
+        "offset": [0.35, -0.1, 0],
+        "rotation": [0, 0, 0],
+        "bake": { "shape": "rectangle", "sizeX": 0.7, "sizeY": 0.2, "spread": 180, "color": [1, 1, 1], "watts": 25 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 1, "range": 6 }
+      }
+    ],
+    "Props/Prop_Light_Wide": [
+      {
+        "offset": [0.58, -0.1, 0],
+        "rotation": [0, 0, 0],
+        "bake": { "shape": "rectangle", "sizeX": 1.16, "sizeY": 0.2, "spread": 180, "color": [1, 1, 1], "watts": 40 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 1, "range": 8 }
+      }
+    ],
+    "_Props/Prop_Light_Corner": "A quarter-circle strip, centre [0.083, -0.08], radius 3.889, sweeping -87 to -2 degrees. An area light is flat, so the arc is served by three chord segments; the rotations are the tangent at each segment's midpoint.",
+    "Props/Prop_Light_Corner": [
+      {
+        "offset": [1.24, -0.1, -3.79],
+        "rotation": [0, -17.3, 0],
+        "bake": { "shape": "rectangle", "sizeX": 1.9, "sizeY": 0.2, "spread": 180, "color": [1, 1, 1], "watts": 40 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 1, "range": 8 }
+      },
+      {
+        "offset": [2.87, -0.1, -2.8],
+        "rotation": [0, -45.7, 0],
+        "bake": { "shape": "rectangle", "sizeX": 1.9, "sizeY": 0.2, "spread": 180, "color": [1, 1, 1], "watts": 40 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 1, "range": 8 }
+      },
+      {
+        "offset": [3.82, -0.1, -1.15],
+        "rotation": [0, -74.1, 0],
+        "bake": { "shape": "rectangle", "sizeX": 1.9, "sizeY": 0.2, "spread": 180, "color": [1, 1, 1], "watts": 40 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 1, "range": 8 }
+      }
+    ],
+    "_Props/Prop_Light_Floor": "The only one that does not point down: its face is tilted 18 degrees off vertical, so it is turned 161.6 degrees about X to throw the light up the wall instead of at the floor it is standing on.",
+    "Props/Prop_Light_Floor": [
+      {
+        "offset": [0, 0.16, -0.07],
+        "rotation": [161.6, 0, 0],
+        "bake": { "shape": "rectangle", "sizeX": 0.89, "sizeY": 0.18, "spread": 180, "color": [1, 1, 1], "watts": 15 },
+        "runtime": { "type": "point", "clustered": true, "color": [1, 1, 1], "intensity": 0.6, "range": 5 }
+      }
+    ]
+  }
+}

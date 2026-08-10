@@ -12,6 +12,8 @@ import {
     primBufferBytes,
     primitiveSdf,
     primitivesSdf,
+    setPackedPrimitiveActive,
+    PRIM_ACTIVE_OFFSET,
     PRIM_HEADER,
     PRIM_STRIDE,
     PRIM_BOX,
@@ -135,6 +137,12 @@ describe("collision-field: union", () => {
     it("is far-positive when empty, so an empty set adds no solid", () => {
         expect(primitivesSdf([], [0, 0, 0])).toBeGreaterThan(1e8);
     });
+    it("skips inactive primitives without removing their slots", () => {
+        const active: FluidPrimitive = { kind: "sphere", a: [0, 0, 0], radius: 1 };
+        const inactive: FluidPrimitive = { ...active, active: false };
+        expect(primitiveSdf(inactive, [0, 0, 0])).toBeGreaterThan(1e8);
+        expect(primitivesSdf([inactive, { kind: "sphere", a: [10, 0, 0], radius: 1 }], [0, 0, 0])).toBeCloseTo(9, 6);
+    });
     // A floor slab is the case that matters most: water must rest ON it, not sink through.
     it("a floor slab reads solid below its top face and free above", () => {
         // Centre y = -0.25, half 0.25 → the slab spans y ∈ [-0.5, 0]: its TOP face is the walking
@@ -182,6 +190,7 @@ describe("collision-field: packing", () => {
         expect([at(0, 4), at(0, 5), at(0, 6)]).toEqual([4, 5, 6]);
         expect([at(0, 8), at(0, 9), at(0, 10)]).toEqual([0.1, 0.2, 0.3].map((v) => Math.fround(v)));
         expect([at(0, 12), at(0, 13), at(0, 14)]).toEqual([7, 8, 9]);
+        expect(at(0, PRIM_ACTIVE_OFFSET)).toBe(1);
         expect(at(1, 0)).toBe(PRIM_SPHERE);
         expect(at(1, 7)).toBe(2.5);
         expect(at(2, 0)).toBe(PRIM_CAPSULE);
@@ -193,6 +202,15 @@ describe("collision-field: packing", () => {
         // identity quaternion and zero velocity, so an unrotated static primitive behaves
         expect(buf[PRIM_HEADER + 11]).toBe(1); // q.w
         expect(buf.slice(PRIM_HEADER + 12, PRIM_HEADER + 15)).toEqual(new Float32Array([0, 0, 0]));
+        expect(buf[PRIM_HEADER + PRIM_ACTIVE_OFFSET]).toBe(1);
+    });
+    it("updates one active flag without changing the primitive count or adjacent fields", () => {
+        const buf = new Float32Array(PRIM_HEADER + PRIM_STRIDE);
+        packPrimitives(buf, [{ kind: "sphere", a: [1, 2, 3], radius: 1 }]);
+        setPackedPrimitiveActive(buf, 0, false);
+        expect(buf[0]).toBe(1);
+        expect(buf[PRIM_HEADER + PRIM_ACTIVE_OFFSET]).toBe(0);
+        expect(Array.from(buf.slice(PRIM_HEADER + 1, PRIM_HEADER + 4))).toEqual([1, 2, 3]);
     });
     it("sizes the buffer for the header plus the primitives", () => {
         expect(primBufferBytes(0)).toBe(PRIM_HEADER * 4);

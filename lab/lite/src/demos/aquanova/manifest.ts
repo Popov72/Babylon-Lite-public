@@ -23,6 +23,45 @@ export interface ShipChunk {
     aabb: Aabb;
 }
 
+/**
+ * Resolve an XZ position to the most specific containing chunk.
+ *
+ * Chunk bounds come from their meshes, so doorway pieces and modules spanning a split can make
+ * neighboring AABBs overlap. Choosing the smallest containing footprint makes the narrower split
+ * chunk win instead of whichever chunk happens to appear first in the manifest.
+ */
+export function chunkAt(chunks: readonly ShipChunk[], x: number, z: number): ShipChunk | undefined {
+    let best: ShipChunk | undefined;
+    let bestArea = Number.POSITIVE_INFINITY;
+    for (const chunk of chunks) {
+        const [x0, , z0] = chunk.aabb.min;
+        const [x1, , z1] = chunk.aabb.max;
+        if (x < x0 || x > x1 || z < z0 || z > z1) continue;
+        const area = (x1 - x0) * (z1 - z0);
+        if (area < bestArea) {
+            best = chunk;
+            bestArea = area;
+        }
+    }
+    return best;
+}
+
+export interface ShipRuntimeLight {
+    type: "none" | "point" | "spot" | "directional";
+    clustered?: boolean;
+    color: Vec3;
+    intensity: number;
+    range: number;
+    angle: number;
+    castsShadows?: boolean;
+}
+
+export interface ShipLight {
+    id: string;
+    owner: string;
+    runtime?: ShipRuntimeLight;
+}
+
 // `behaviors` is a library of named behaviour definitions; `entities` assigns them to MESH NAMES,
 // optionally overriding parameters per entity. Mesh names are shared across rooms, so an entity
 // applies to every mesh carrying that name. Assignments remain separate so several strongly typed
@@ -40,6 +79,8 @@ export interface ShipManifest {
     instances?: ShipInstance[];
     /** Kit module path → its collision primitive(s), in module-local space. One shape or several. */
     moduleCollision?: Record<string, ShipCollisionShape | ShipCollisionShape[]>;
+    /** Runtime parameters keyed by the matching `LIGHT_<id>` transform node in the baked glTF. */
+    lights?: ShipLight[];
 }
 
 export async function fetchManifest(): Promise<ShipManifest | undefined> {

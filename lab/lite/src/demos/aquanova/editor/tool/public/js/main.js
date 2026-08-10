@@ -4,7 +4,7 @@ import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
-  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, resolveDoorChunks,
+  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, resolveDoorChunks, nodeNameOf,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
@@ -13,31 +13,41 @@ import {
   enterCollisionMode, exitCollisionMode, fitBoxToSelection, fitHullToSelection,
   stageModule, unstageModule, harvestStage, orphanCount,
 } from "./colliders.js";
+// Side-effect import for the hooks; the named ones drive the inspector.
+import {
+  LIGHT_SHAPES, LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart,
+} from "./lights.js";
 import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
   ghostActive, ghostModule, ghostCollider, armColliderGhost, colliderHalf, hoveredId,
   cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
   toggleDragAxis, setDragAxis, toggleAxisSpace, setAxisSpace, cancelMarquee, grabSelection,
+  bringToCamera,
 } from "./interact.js";
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
   nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
   shipPlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
-  renameChunk, renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
-  setVeilAlpha, SKYBOX_CHUNK,
+  renameChunk, removeChunk, chunkUsers, chunkBakeOf, resolveChunkBake,
+  setChunkBake, setBakeDefaults,
+  renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
+  setVeilAlpha, SKYBOX_CHUNK, setBakeLighting,
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
-  setEntityExcludeSDF, dynamicNodeNamesInChunk,
+  bakeOverrideOf, setBakeOverrides, autoBakeExcluded, bakeExcluded,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
-  noteKey, releaseAllKeys, setUnlit, setTaa, setExposure, EXPOSURE_DEFAULT,
+  noteKey, releaseAllKeys, setUnlit, setExposure, EXPOSURE_DEFAULT,
   setConfig, resetConfig, CONFIG_DEFAULTS,
-  setWalk, EYE_HEIGHT, setEnvIntensity, ENV_INTENSITY_DEFAULT, setSelectMode,
-  setRuntimeLighting, activeLightSet, setShowLayer, SHOW_LAYERS,
+  setWalk, EYE_HEIGHT, setEnvIntensity, ENV_INTENSITY_DEFAULT,
+  setDynamicEnvIntensity, DYNAMIC_ENV_INTENSITY_DEFAULT, setSelectMode,
+  activeLightSet, setShowLayer, SHOW_LAYERS,
+  setToneMapping, resolveToneMapping, setBakedSpecularAA, setBakedRoughnessFactor,
 } from "./editor.js";
+import { setBakedPreview, bakedPreview, bakedDrift } from "./baked.js";
 
 const $ = (id) => document.getElementById(id);
 const statusText = $("status-text");
@@ -84,6 +94,7 @@ function refreshInspector() {
   if (!e) return;
   const isDoor = e.type === "door";
   const isMarker = !!e.type;
+  const isLight = e.type === "light";
 
   syncing = true;
   // Always the element whose values fill the rest of the panel, even in a
@@ -105,6 +116,11 @@ function refreshInspector() {
   const isModuleCollider = e.type === "collider" && !!e.stage;
   $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider;
   if (!isMarker && !isModuleCollider) $("insp-chunk").value = e.chunk;
+  // A light's node hangs off the element it rides, so its "position" is really
+  // an offset within that element - and it has no scale to speak of: how big it
+  // is, is the bake shape's size, which the Light panel owns.
+  $("insp-h-pos").textContent = isLight ? "Offset (local)" : "Position";
+  $("scale-fields").hidden = isLight;
   const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
   posIn.forEach((el, i) => setField(el, round(p.asArray()[i])));
   rotIn.forEach((el, i) => setField(el, round(r[i])));
@@ -128,9 +144,98 @@ function refreshInspector() {
       : SEALED_TITLE;
     $("door-leaves").textContent = e.leaves.length ? e.leaves.join(", ") : "none";
   }
+
   refreshDimensions();
   refreshBehavior();
+  refreshBakeOverride();
+  refreshLight(isLight ? e : null);
   syncing = false;
+}
+
+/** #rrggbb from a linear-ish [0..1] triple, and back. The picker is 8-bit, so
+ *  a round trip quantises - which is why the field is only written from the
+ *  record, never from itself. */
+function hexOf(c) {
+  const b = (v) => Math.max(0, Math.min(255, Math.round((v ?? 0) * 255)));
+  return `#${[0, 1, 2].map((i) => b(c?.[i]).toString(16).padStart(2, "0")).join("")}`;
+}
+function rgbOf(hex) {
+  const m = /^#?([\da-f]{6})$/i.exec(hex || "");
+  if (!m) return [1, 1, 1];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => Math.round((v / 255) * 1e4) / 1e4);
+}
+
+/**
+ * The light panel: one form for Blender's area lamp, one for the engine's.
+ *
+ * The two halves describe the same fixture but answer to different renderers,
+ * so they are shown apart rather than merged into a single set of "light"
+ * fields that would silently mean something different on each side.
+ *
+ * Rows that cannot apply are disabled rather than hidden, with #lgt-hint saying
+ * why: a disabled Cone row still tells you a spot light is the thing that has
+ * one. The rules mirror normalizeLight() exactly - this panel must never be
+ * able to author a light the model would rewrite behind your back.
+ */
+function refreshLight(light) {
+  $("light-fields").hidden = !light;
+  if (!light) return;
+  const ownerSelect = $("lgt-owner");
+  ownerSelect.replaceChildren();
+  for (const owner of shipPlacements()) {
+    const option = document.createElement("option");
+    option.value = owner.id;
+    option.textContent = `${owner.id} — ${owner.module}`;
+    ownerSelect.appendChild(option);
+  }
+  ownerSelect.value = light.owner;
+  ownerSelect.title = light.owner;
+
+  const b = light.bake, rt = light.runtime;
+  setField($("lgt-shape"), b.shape);
+  setField($("lgt-size-x"), b.sizeX);
+  setField($("lgt-size-y"), b.sizeY);
+  setField($("lgt-spread"), b.spread);
+  setField($("lgt-watts"), b.watts);
+  $("lgt-bake-color").value = hexOf(b.color);
+  setField($("lgt-type"), rt.type);
+  setField($("lgt-intensity"), rt.intensity);
+  setField($("lgt-range"), rt.range);
+  setField($("lgt-angle"), rt.angle);
+  $("lgt-run-color").value = hexOf(rt.color);
+  $("lgt-clustered").checked = !!rt.clustered;
+  $("lgt-shadows").checked = !!rt.castsShadows;
+
+  const baked = b.shape !== "none";
+  const oneSize = b.shape === "square" || b.shape === "disk";
+  const live = rt.type !== "none";
+  for (const id of ["lgt-size-x", "lgt-spread", "lgt-watts", "lgt-bake-color"]) $(id).disabled = !baked;
+  $("lgt-size-y").disabled = !baked || oneSize;
+  for (const id of ["lgt-intensity", "lgt-range", "lgt-run-color"]) $(id).disabled = !live;
+  $("lgt-clustered").disabled = !(rt.type === "point" || rt.type === "spot");
+  $("lgt-angle").disabled = rt.type !== "spot";
+  $("lgt-shadows").disabled = rt.clustered
+    || !(rt.type === "spot" || rt.type === "directional");
+
+  const why = [];
+  if (!baked) why.push("Left out of the bake, so it lights nothing that stands still.");
+  else if (oneSize) why.push("A square or a disk has one size, so Size Z follows Size X.");
+  if (!live) why.push("Bake-only: nothing is created at runtime.");
+  else if (rt.type === "directional") why.push("A directional light has no position to bin, so it cannot be clustered.");
+  else if (rt.clustered) why.push("A clustered light carries no shadow map. Uncluster it to cast.");
+  else if (rt.type === "point") why.push("A point light cannot cast: there is no cube shadow map.");
+  $("lgt-hint").textContent = why.join(" ");
+}
+
+/** One undo entry per visit to the panel, matching the transform fields. */
+function editLight(part, patch) {
+  if (syncing) return;
+  const light = entryOf(state.selection[0]);
+  if (light?.type !== "light") return;
+  if (!inspectorPushed) { pushUndo(); inspectorPushed = true; }
+  setLightPart(light.id, part, patch);
+  refreshInspector();
 }
 
 /**
@@ -172,6 +277,58 @@ function refreshBehavior() {
     : library.length ? "" : "No behaviours defined yet.";
 }
 
+/**
+ * The Force baking row.
+ *
+ * Keyed on each element's *node* name, which is its Name when it has one and
+ * its id when it does not - the same fallback the exporter uses, so every
+ * element can carry an override without being named first. That is the one
+ * place this differs from the behaviour panel above, which needs a real name
+ * because a behaviour is meant to govern every element sharing it.
+ *
+ * Unlike that panel this one survives a multi-selection, because forcing a
+ * room's worth of light strips out of the atlas is the reason it exists.
+ *
+ * The hint spells out what the setting resolves to, because the interesting
+ * half of the answer is invisible otherwise: "Automatic" is right almost
+ * always, and what makes it right is the behaviour list - which may be on
+ * another element entirely, when this one is only `linked` into a melt.
+ */
+function refreshBakeOverride() {
+  const nodes = selectedBakeNodes();
+  $("bake-fields").hidden = !nodes.length;
+  if (!nodes.length) return;
+
+  const modes = [...new Set(nodes.map(bakeOverrideOf))];
+  const sel = $("insp-bake");
+  // A mixed selection gets a blank slot rather than one member's value shown as
+  // if it were everyone's; picking any real option still applies to them all.
+  sel.querySelector('option[value=""]')?.remove();
+  if (modes.length > 1) sel.insertAdjacentHTML("afterbegin", '<option value="">(mixed)</option>');
+  setField(sel, modes.length > 1 ? "" : modes[0]);
+
+  if (modes.length > 1) {
+    const n = nodes.filter((node) => bakeExcluded(node)).length;
+    $("bake-hint").textContent = `${nodes.length} elements — ${n} not baked, ${nodes.length - n} baked.`;
+    return;
+  }
+  const node = nodes[0];
+  const auto = autoBakeExcluded(node);
+  const excluded = bakeExcluded(node);
+  const because = auto ? "the runtime moves or melts it" : "nothing moves or melts it";
+  $("bake-hint").textContent = modes[0] === "auto"
+    ? `${excluded ? "Not baked" : "Baked"} — ${because}.`
+    : `${excluded ? "Not baked" : "Baked"} — forced. Automatic would ${auto ? "not bake" : "bake"} it.`;
+}
+
+/** The node names of every real ship element in the selection - markers have no mesh to bake. */
+function selectedBakeNodes() {
+  return state.selection
+    .map(entryOf)
+    .filter((e) => e && !e.type)
+    .map(nodeNameOf);
+}
+
 const esc = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
@@ -197,15 +354,12 @@ function renderApplied(nodeName, applied) {
   }
   const chunk = entryOf(state.selection[0])?.chunk;
   const candidates = nodeNamesInChunk(chunk, nodeName);
-  const dynamics = dynamicNodeNamesInChunk(chunk, nodeName);
   const picker = (kind, label, options, chosen, name) => {
     const opts = options.length
       ? options.map((n) =>
         `<option value="${esc(n)}"${chosen.includes(n) ? " selected" : ""}>${esc(n)}</option>`)
         .join("")
-      : `<option disabled>(${kind === "linked"
-        ? "nothing else named in this room"
-        : "nothing dynamic in this room"})</option>`;
+      : `<option disabled>(nothing else named in this room)</option>`;
     return `<div class="linked"><div class="lbl">${label}</div>`
       + `<select multiple size="4" data-${kind}="${esc(name)}">${opts}</select></div>`;
   };
@@ -216,10 +370,6 @@ function renderApplied(nodeName, applied) {
     ];
     if (isLiquefiable(b.name)) {
       rows.push(picker("linked", "linked — melts together", candidates, b.linked, b.name));
-      // Only a body with an SDF in the simulation is worth dropping from it,
-      // so the list is the dynamic nodes rather than every named one.
-      rows.push(picker("sdf", "excludeSDF — kept out of the fluid sim",
-        dynamics, b.excludeSDF || [], b.name));
     }
     // Optional on every applied behaviour - the definition only supplies a
     // starting value. Gating this on the definition declaring it made an
@@ -237,17 +387,11 @@ function renderApplied(nodeName, applied) {
       removeEntityBehavior(nodeName, btn.dataset.remove);
       refreshBehavior();
     });
+
   }
   for (const sel of host.querySelectorAll("[data-linked]")) {
     sel.addEventListener("change", () => {
       setEntityLinked(nodeName, sel.dataset.linked,
-        [...sel.selectedOptions].map((o) => o.value));
-      refreshBehavior();
-    });
-  }
-  for (const sel of host.querySelectorAll("[data-sdf]")) {
-    sel.addEventListener("change", () => {
-      setEntityExcludeSDF(nodeName, sel.dataset.sdf,
         [...sel.selectedOptions].map((o) => o.value));
       refreshBehavior();
     });
@@ -521,6 +665,85 @@ for (const el of [...posIn, ...rotIn, ...sclIn]) {
 }
 
 $("insp-chunk").addEventListener("change", (ev) => assignSelectionToChunk(ev.target.value));
+
+// ------------------------------------------------------------------ lights
+
+for (const [id, list] of [["lgt-shape", LIGHT_SHAPES], ["lgt-type", LIGHT_TYPES]]) {
+  $(id).innerHTML = list.map((v) => `<option value="${v}">${v}</option>`).join("");
+}
+
+$("lgt-owner").addEventListener("change", (ev) => {
+  if (syncing) return;
+  const light = entryOf(state.selection[0]);
+  if (light?.type !== "light") return;
+  inspectorPushed = false;
+  pushUndo();
+  const owner = setLightOwner(light.id, ev.target.value);
+  if (!owner) {
+    refreshInspector();
+    setStatus("that placement cannot own a light");
+    return;
+  }
+  refreshInspector();
+  setStatus(`${light.id} now rides ${owner.owner}`);
+});
+
+// Number fields fire on every keystroke like the transform ones, so they share
+// the arm-on-focus undo; a select or a checkbox is a single decision and pushes
+// on its own.
+const LIGHT_NUM = {
+  "lgt-size-x": ["bake", "sizeX"], "lgt-size-y": ["bake", "sizeY"],
+  "lgt-spread": ["bake", "spread"], "lgt-watts": ["bake", "watts"],
+  "lgt-intensity": ["runtime", "intensity"], "lgt-range": ["runtime", "range"],
+  "lgt-angle": ["runtime", "angle"],
+};
+for (const [id, [part, key]] of Object.entries(LIGHT_NUM)) {
+  const el = $(id);
+  el.addEventListener("focus", () => { inspectorPushed = false; });
+  el.addEventListener("input", () => {
+    const v = num(el, null);
+    if (v !== null) editLight(part, { [key]: v });
+  });
+}
+for (const [id, part, key] of [
+  ["lgt-shape", "bake", "shape"], ["lgt-type", "runtime", "type"],
+]) {
+  $(id).addEventListener("change", (ev) => {
+    inspectorPushed = false;
+    editLight(part, { [key]: ev.target.value });
+  });
+}
+for (const [id, part, key] of [
+  ["lgt-clustered", "runtime", "clustered"], ["lgt-shadows", "runtime", "castsShadows"],
+]) {
+  $(id).addEventListener("change", (ev) => {
+    inspectorPushed = false;
+    editLight(part, { [key]: ev.target.checked });
+  });
+}
+for (const [id, part] of [["lgt-bake-color", "bake"], ["lgt-run-color", "runtime"]]) {
+  // A colour picker streams while the user drags around the wheel, so it gets
+  // the same one-undo-per-visit treatment as a number field.
+  $(id).addEventListener("focus", () => { inspectorPushed = false; });
+  $(id).addEventListener("input", (ev) => editLight(part, { color: rgbOf(ev.target.value) }));
+}
+
+$("btn-add-light").addEventListener("click", () => {
+  const e = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
+  // A light rides a placement. Adding one to the light already selected is the
+  // obvious second click, so that resolves to its owner rather than doing
+  // nothing - but nothing else can own one.
+  const owner = e && (e.type === "light" ? e.owner : (e.type ? null : e.id));
+  if (!owner) {
+    setStatus("select one module or prop to attach a light to");
+    return;
+  }
+  const light = addLight(owner);
+  if (!light) { setStatus("that element cannot hold a light"); return; }
+  select([light.id]);
+  setStatus(`added ${light.id} to ${owner}`);
+});
+
 $("btn-duplicate").addEventListener("click", () => duplicateCurrent());
 $("btn-delete").addEventListener("click", () => removeSelected());
 $("btn-focus").addEventListener("click", () => focusSelection());
@@ -669,27 +892,150 @@ $("chunk-select").addEventListener("change", (ev) => {
   applyVisibility();
   refreshStats();
 });
-$("btn-chunk-add").addEventListener("click", () => {
-  const n = String(state.chunks.length).padStart(2, "0");
-  const name = prompt("New chunk id", `CH${n}_New`);
-  if (name && addChunk(name.trim())) {
-    state.activeChunk = name.trim();
-    refreshChunks();
-  }
-});
-$("btn-chunk-rename").addEventListener("click", () => {
-  const from = state.activeChunk;
-  const to = prompt(`Rename "${from}" to`, from);
-  if (to === null) return;
-  if (renameChunk(from, to)) {
-    refreshChunks();
-    refreshInspector();
-    setStatus(`renamed ${from} → ${to.trim()}`);
-  } else {
-    setStatus(`could not rename ${from} — "${to.trim()}" is empty or already used`);
-  }
-});
 $("btn-chunk-assign").addEventListener("click", () => assignSelectionToChunk(state.activeChunk));
+
+// ----------------------------------------------------------- chunks dialog
+//
+// A chunk carries more than a name now - it carries what Blender renders its
+// lightmap at - and a toolbar with a "+" and a "Rename" had nowhere to put
+// four numbers. So the whole of a chunk's identity lives in one pane, and the
+// toolbar keeps only the two things you reach for while building: which chunk
+// is active, and Assign.
+
+/** Which chunk the pane is editing. Not `state.activeChunk`: browsing the
+ *  list to retune a far room should not move where new placements land. */
+let chunkSelected = null;
+
+/** The four dials, paired with the fields that show them. */
+const BAKE_FIELDS = [["samples", "samples"], ["width", "width"],
+  ["height", "height"], ["margin", "margin"]];
+
+function openChunks() {
+  $("chunk-modal").hidden = false;
+  refreshChunkPane(chunkSelected || state.activeChunk);
+}
+
+function closeChunks() {
+  $("chunk-modal").hidden = true;
+}
+
+function refreshChunkPane(pick) {
+  chunkSelected = pick && state.chunks.includes(pick) ? pick : state.chunks[0];
+  const own = chunkBakeOf(chunkSelected);
+  const resolved = resolveChunkBake(chunkSelected);
+
+  $("chunk-list").innerHTML = state.chunks.map((c) => {
+    // A dot on the rooms that have been given settings of their own, so the
+    // ones still following the defaults are visible at a glance - otherwise
+    // the only way to find them is to click every entry.
+    const tuned = Object.keys(chunkBakeOf(c)).length ? " •" : "";
+    return `<option value="${esc(c)}"${c === chunkSelected ? " selected" : ""}>${esc(c)}${tuned}</option>`;
+  }).join("");
+  $("chunk-name").value = chunkSelected || "";
+  for (const [key, field] of BAKE_FIELDS) {
+    const input = $(`chunk-${field}`);
+    input.value = own[key] === undefined ? "" : String(own[key]);
+    // The placeholder IS the affordance: an empty field is not "unset", it is
+    // "whatever the ship says", and the placeholder shows what that currently
+    // works out to.
+    input.placeholder = String(state.bakeDefaults[key]);
+  }
+  for (const [key, field] of BAKE_FIELDS) $(`bake-${field}`).value = String(state.bakeDefaults[key]);
+
+  const users = chunkSelected ? chunkUsers(chunkSelected) : { placements: [], doors: [] };
+  const texels = resolved.width * resolved.height;
+  $("chunk-resolved").textContent = chunkSelected
+    ? `bakes at ${resolved.width}×${resolved.height} (${(texels / 1e6).toFixed(2)} Mtexel)`
+      + ` · ${resolved.samples} samples · ${resolved.margin} px margin`
+      + ` · holds ${users.placements.length} object(s), ${users.doors.length} door(s)`
+    : "";
+  $("chunk-error").textContent = "";
+  $("btn-chunk-delete").disabled = state.chunks.length < 2;
+}
+
+$("btn-chunks").addEventListener("click", openChunks);
+$("btn-chunk-close").addEventListener("click", closeChunks);
+$("chunk-list").addEventListener("change", (e) => refreshChunkPane(e.target.value));
+
+$("btn-chunk-new").addEventListener("click", () => {
+  const n = String(state.chunks.length).padStart(2, "0");
+  let name = `CH${n}_New`;
+  for (let i = 1; state.chunks.includes(name); i++) name = `CH${n}_New${i}`;
+  if (!addChunk(name)) return;
+  refreshChunkPane(name);
+  $("chunk-name").select();
+  setStatus(`added chunk ${name}`);
+});
+
+// One button for both halves of the form on purpose: renaming re-keys the
+// settings, so applying them in either order separately would either write
+// them onto the old name or lose them.
+$("btn-chunk-apply").addEventListener("click", () => {
+  if (!chunkSelected) return;
+  const was = chunkSelected;
+  const wanted = $("chunk-name").value.trim();
+  // Read the form BEFORE renaming. `renameChunk` emits `chunks`, which
+  // refreshes this very pane and rewrites every input from what is stored -
+  // so anything typed but not yet applied would be read back as blank, and a
+  // rename would silently wipe the numbers entered alongside it.
+  //
+  // A blank field clears the override rather than writing a zero: the chunk
+  // goes back to following the ship's default, and keeps following it.
+  const patch = {};
+  for (const [key, field] of BAKE_FIELDS) {
+    const raw = $(`chunk-${field}`).value.trim();
+    patch[key] = raw === "" ? null : Number(raw);
+  }
+  let now = was;
+  if (wanted && wanted !== was) {
+    if (!renameChunk(was, wanted)) {
+      $("chunk-error").textContent =
+        `Cannot rename to "${wanted}" — it is empty or already used.`;
+      return;
+    }
+    now = wanted;
+  }
+  const changed = setChunkBake(now, patch);
+  refreshChunkPane(now);
+  refreshChunks();
+  setStatus(now !== was
+    ? `renamed ${was} → ${now}${changed ? " and retuned its bake" : ""}`
+    : (changed ? `${now}: bake settings updated` : `${now}: nothing to apply`));
+});
+
+$("btn-chunk-delete").addEventListener("click", () => {
+  if (!chunkSelected) return;
+  const gone = chunkSelected;
+  const res = removeChunk(gone);
+  if (res.ok) {
+    refreshChunkPane(state.chunks[0]);
+    refreshChunks();
+    setStatus(`deleted chunk ${gone}`);
+    return;
+  }
+  // Say what is in the way, not just that something is: "in use" with no names
+  // leaves you clicking through the ship looking for it.
+  if (res.reason === "last") {
+    $("chunk-error").textContent = "A ship needs at least one chunk.";
+  } else if (res.reason === "in use") {
+    const bits = [];
+    if (res.users.placements.length) bits.push(`${res.users.placements.length} object(s)`);
+    if (res.users.doors.length) bits.push(`${res.users.doors.length} door(s)`);
+    $("chunk-error").textContent =
+      `"${gone}" still holds ${bits.join(" and ")} — move them out with Assign first`
+      + ` (${[...res.users.placements, ...res.users.doors].slice(0, 6).join(", ")}`
+      + `${res.users.placements.length + res.users.doors.length > 6 ? ", …" : ""}).`;
+  } else {
+    $("chunk-error").textContent = `Cannot delete "${gone}".`;
+  }
+});
+
+for (const [key, field] of BAKE_FIELDS) {
+  $(`bake-${field}`).addEventListener("change", (e) => {
+    setBakeDefaults({ [key]: e.target.value });
+    refreshChunkPane(chunkSelected);
+  });
+}
 
 $("insp-name").addEventListener("change", (e) => {
   if (syncing || !state.selection.length) return;
@@ -698,6 +1044,12 @@ $("insp-name").addEventListener("change", (e) => {
 // Behaviours are keyed by name, so leaving the field is the moment to go and
 // look: type a name another element already uses and its flags appear here.
 $("insp-name").addEventListener("blur", () => refreshBehavior());
+
+$("insp-bake").addEventListener("change", (e) => {
+  if (syncing || !e.target.value) return;
+  setBakeOverrides(selectedBakeNodes(), e.target.value);
+  refreshBakeOverride();
+});
 
 // ---------------------------------------------------------------- toolbar
 
@@ -819,7 +1171,7 @@ function pushLightUndoOnce() {
   pushUndo();
   lightPushed = true;
 }
-for (const id of ["env-intensity", "exposure"]) {
+for (const id of ["env-intensity", "dynamic-env-intensity", "exposure"]) {
   const el = $(id);
   el.addEventListener("pointerdown", () => { lightPushed = false; });
   el.addEventListener("keydown", () => { lightPushed = false; });
@@ -835,12 +1187,53 @@ $("env-intensity").addEventListener("input", (e) => {
   localStorage.setItem("envIntensity", String(v));
 });
 
+$("dynamic-env-intensity").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  pushLightUndoOnce();
+  setDynamicEnvIntensity(v);
+  $("dynamic-env-intensity-val").textContent = v.toFixed(1);
+});
+
 $("exposure").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   pushLightUndoOnce();
   setExposure(v);
   showExposure(v);
   localStorage.setItem("exposure", String(v));
+});
+
+for (const id of ["bake-light-power", "bake-sky"]) {
+  const el = $(id);
+  el.addEventListener("pointerdown", () => { lightPushed = false; });
+  el.addEventListener("keydown", () => { lightPushed = false; });
+  el.addEventListener("wheel", () => { lightPushed = false; }, { passive: true });
+}
+
+$("bake-light-power").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  pushLightUndoOnce();
+  setBakeLighting("power", v);
+  $("bake-light-power-val").textContent = v.toFixed(1);
+});
+
+$("bake-sky").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  pushLightUndoOnce();
+  setBakeLighting("sky", v);
+  $("bake-sky-val").textContent = v.toFixed(1);
+});
+
+/**
+ * The view transform, which belongs to the ship rather than to this browser.
+ *
+ * Unlike the exposure slider beside it there is no localStorage copy: the demos
+ * read `environment.toneMapping` out of the manifest, so a value kept only
+ * locally would be one the runtime never sees. Undoable for the same reason
+ * the exposure is - it is an edit to the ship.
+ */
+$("tone-mapping").addEventListener("change", (e) => {
+  pushUndo();
+  setToneMapping(e.target.value);
 });
 
 /**
@@ -884,9 +1277,24 @@ function refreshLighting() {
   $("env-intensity").value = String(state.envIntensity);
   $("env-intensity-val").textContent = state.envIntensity.toFixed(1);
   localStorage.setItem("envIntensity", String(state.envIntensity));
+  $("dynamic-env-intensity").value = String(state.dynamicEnvIntensity);
+  $("dynamic-env-intensity-val").textContent = state.dynamicEnvIntensity.toFixed(1);
+  $("dynamic-env-intensity").disabled = !state.baked;
   $("exposure").value = String(state.exposure);
   showExposure(state.exposure);
   localStorage.setItem("exposure", String(state.exposure));
+  // No localStorage: the manifest is the only home for this one.
+  const tone = $("tone-mapping");
+  tone.value = state.toneMapping;
+  if (!tone.value) {
+    // The manifest may name the transform loosely ("aces", "KHR_PBR_NEUTRAL").
+    // The scene resolves those fine, but the combo box only holds the four
+    // canonical spellings, so match on what they resolve to rather than
+    // leaving the control blank and lying about the state.
+    const want = resolveToneMapping(state.toneMapping);
+    tone.value = [...tone.options]
+      .find((o) => resolveToneMapping(o.value) === want)?.value ?? "Khronos PBR Neutral";
+  }
 }
 
 $("show-grid").addEventListener("change", (e) => setGridVisible(e.target.checked));
@@ -915,29 +1323,34 @@ $("unlit").addEventListener("change", (e) => {
     : "lit — hemi + key/fill + IBL");
 });
 
-$("taa").addEventListener("change", (e) => {
-  const wanted = e.target.checked;
-  const on = setTaa(wanted);
-  // The pipeline is missing from older Babylon builds; do not leave a ticked
-  // box doing nothing.
-  e.target.checked = on;
-  localStorage.setItem("taa", on ? "1" : "0");
-  setStatus(on
-    ? "TAA on — stock pipeline, accumulating whenever the camera is still"
-    : wanted
-      ? "this Babylon has no TAARenderingPipeline"
-      : "TAA off — back to the canvas' own anti-aliasing");
-});
-
-$("runtime-light").addEventListener("change", (e) => {
-  setRuntimeLighting(e.target.checked);
-  localStorage.setItem("runtimeLight", e.target.checked ? "1" : "0");
-  // the mode swaps in its own Env/Exposure pair, so the sliders must follow
-  refreshLighting();
-  refreshHud();
-  setStatus(e.target.checked
-    ? "runtime light — HDRI only, with the values the demos read"
-    : "editor light — the authoring rig and its own Env/Exposure are back");
+/** The last bake, on screen: ship_baked.glb with its lightmaps, in place of
+ * the ship the editor is holding, plus the authored runtime lamps rebuilt over
+ * the dynamic props. See baked.js for why it cannot be shown on the authored
+ * meshes instead. This is also what silences the editor's authoring rig - the
+ * two used to be separate toggles and only ever made sense together. */
+$("baked").addEventListener("change", async (e) => {
+  const box = e.target;
+  try {
+    box.disabled = true;
+    setStatus(box.checked ? "loading the baked ship…" : "unloading the bake…");
+    await setBakedPreview(box.checked);
+    // The mode drops the authoring rig and swaps in its own Env/Exposure pair,
+    // so the sliders must follow.
+    refreshLighting();
+    const p = bakedPreview();
+    setStatus(box.checked
+      ? `baked — ${p.lit} mesh(es) lit by ${p.textures.length} lightmap(s), `
+        + `${p.skipped} dynamic prop(s) by ${p.lights.length} runtime lamp(s)`
+        + `, ${p.standIns.size} element(s) editable through the bake`
+      : "authored ship — the editor's own geometry and lights are back");
+  } catch (err) {
+    console.error(err);
+    box.checked = false;
+    setStatus("baked preview: " + err.message);
+  } finally {
+    box.disabled = false;
+    refreshHud();
+  }
 });
 
 $("walk").addEventListener("change", (e) => {
@@ -1144,15 +1557,182 @@ async function doExport() {
   }
 }
 
-// --------------------------------------------------------------- keyboard
+// ------------------------------------------------------------------- baking
+//
+// The bake is minutes of Cycles in a Blender the server shells out to, so the
+// button cannot wait on it: it exports the ship, asks the server to start, and
+// then polls. Exporting first is not a convenience - Blender reads `ship.glb`
+// and `ship_manifest.json` off disk, so baking without it would quietly bake
+// the ship as it was the last time it was written.
 
+let bakePoll = null;
+
+function stopBakePoll() {
+  if (bakePoll) { clearInterval(bakePoll); bakePoll = null; }
+}
+
+function bakeSummary(s) {
+  if (s.error) return `bake failed: ${s.error}`;
+  const baked = s.report?.baked || [];
+  const reused = (s.report?.reused || []).length;
+  const secs = Math.round(((s.finishedAt || Date.now()) - s.startedAt) / 1000);
+  // Reused maps are the common case once a ship is lit, so saying so is the
+  // difference between "that was suspiciously quick" and "nothing changed".
+  const kept = reused ? `, ${reused} unchanged` : "";
+  return `baked ${baked.length - reused} lightmap(s)${kept} in ${secs}s`
+    + ` → ${s.report?.out || "lightmaps/"}`;
+}
+
+async function pollBake() {
+  const s = await (await fetch("/api/bake")).json();
+  if (s.running) {
+    const secs = Math.round((Date.now() - s.startedAt) / 1000);
+    // The last line Blender printed is the only progress Cycles offers, and it
+    // is more use than a spinner: it names the chunk and the sample count.
+    setStatus(`baking… ${secs}s — ${s.log?.[s.log.length - 1] || "starting Blender"}`);
+    return;
+  }
+  stopBakePoll();
+  $("btn-bake").disabled = false;
+  setStatus(bakeSummary(s));
+  // A preview left up across a bake would still be showing the previous render.
+  if (state.baked && !s.error) {
+    await setBakedPreview(false);
+    await setBakedPreview(true).catch(() => { $("baked").checked = false; });
+  }
+}
+
+async function doBake(force = false) {
+  const btn = $("btn-bake");
+  try {
+    btn.disabled = true;
+    setStatus("exporting glb for the bake…");
+    await saveLayout();
+    await exportGlb();
+    setStatus("starting Blender…");
+    const r = await fetch("/api/bake", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    const started = await r.json();
+    if (!r.ok) throw new Error(started.error || `server said ${r.status}`);
+    stopBakePoll();
+    bakePoll = setInterval(() => pollBake().catch(() => {}), 2000);
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false;
+    setStatus("bake failed: " + e.message);
+  }
+}
+
+// Shift-click re-bakes everything, for when the hash says nothing changed but
+// the images on disk are suspect.
+$("btn-bake").addEventListener("click", (e) => doBake(e.shiftKey));
+
+/**
+ * Open the ship in a Blender window instead of baking it here.
+ *
+ * Nothing is polled afterwards: the session belongs to the user, its progress
+ * is on their screen, and it ends when they close the window. What comes back
+ * comes back as files - the lightmaps it writes, which the Baked view reloads,
+ * and the light powers, which "Get powers" pulls in.
+ */
+async function doSession() {
+  const btn = $("btn-session");
+  try {
+    btn.disabled = true;
+    setStatus("exporting glb for Blender…");
+    await saveLayout();
+    await exportGlb();
+    const r = await fetch("/api/bake", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gui: true }),
+    });
+    const started = await r.json();
+    if (!r.ok) throw new Error(started.error || `server said ${r.status}`);
+    setStatus("Blender is opening on the Aquanova sidebar tab. Takes a moment.");
+  } catch (e) {
+    console.error(e);
+    setStatus("could not open Blender: " + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("btn-session").addEventListener("click", () => doSession());
+
+/**
+ * Take the watts a Blender session settled on and write them onto the lights.
+ *
+ * Only the bake half moves: the session has no opinion about what the runtime
+ * draws, and silently rewriting the clustered lights from a Cycles slider is
+ * not something anybody asked for.
+ */
+export async function syncLightPowers() {
+  try {
+    const data = await (await fetch("/api/light-powers")).json();
+    const watts = data?.watts;
+    if (!watts || !Object.keys(watts).length) {
+      setStatus("no light powers from Blender yet — use “Send powers to the editor” there");
+      return;
+    }
+    let changed = 0, missing = 0;
+    pushUndo();
+    const powerChanged = Number.isFinite(data.multiplier)
+      && setBakeLighting("power", data.multiplier);
+    const skyChanged = Number.isFinite(data.env)
+      && setBakeLighting("sky", data.env);
+    for (const [id, w] of Object.entries(watts)) {
+      const light = state.lights.get(id);
+      if (!light) { missing++; continue; }
+      if (Math.abs(light.bake.watts - w) < 1e-4) continue;
+      setLightPart(id, "bake", { watts: w });
+      changed++;
+    }
+    refreshInspector();
+    setStatus(`${changed} light(s) repowered from Blender`
+      + (missing ? `, ${missing} no longer here` : "")
+      + (powerChanged || skyChanged ? ", bake lighting updated" : "")
+      + (changed || powerChanged || skyChanged ? " — Save to keep it" : ""));
+  } catch (e) {
+    console.error(e);
+    setStatus("could not read the light powers: " + e.message);
+  }
+}
+
+$("btn-powers").addEventListener("click", () => syncLightPowers());
+
+/** For tests: run a bake and wait for it, rather than polling in the UI. */
+export async function bakeNow(opts = {}) {
+  const r = await fetch("/api/bake", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  const started = await r.json();
+  if (!r.ok) return { ok: false, error: started.error };
+  for (;;) {
+    const s = await (await fetch("/api/bake")).json();
+    if (!s.running) return s;
+    await new Promise((done) => setTimeout(done, 500));
+  }
+}
+
+// --------------------------------------------------------------- keyboard
 window.addEventListener("keydown", async (e) => {
   // Every shortcut is an edit or a mode change, and the scene is mid-rebuild.
   if (isBusy()) { e.preventDefault(); return; }
-  // The behaviour library is modal: nothing behind it should be editable, and
-  // a stray X or Del while a button in it holds focus would act on the ship.
+  // The behaviour library and the chunks pane are modal: nothing behind them
+  // should be editable, and a stray X or Del while a button in one holds focus
+  // would act on the ship.
   if (!$("bhv-modal").hidden) {
     if (e.key === "Escape") { e.preventDefault(); closeLibrary(); }
+    return;
+  }
+  if (!$("chunk-modal").hidden) {
+    if (e.key === "Escape") { e.preventDefault(); closeChunks(); }
     return;
   }
   const t = e.target;
@@ -1333,6 +1913,9 @@ window.addEventListener("keydown", async (e) => {
     // M picks the selection up onto the cursor (see grabCurrent). G was the
     // Blender-idiomatic key for this, but it already toggles the grid here.
     case "m": case "M": e.preventDefault(); grabCurrent(); break;
+    // B brings whatever is in hand to your feet. The physical key is KeyB on
+    // both QWERTY and AZERTY, so matching the label costs nothing here.
+    case "b": case "B": e.preventDefault(); bringCurrentToCamera(); break;
     case "Delete": case "Backspace": deleteCurrent(); break;
     case "Escape": cancelEverything(); break;
     case "g": case "G": {
@@ -1417,6 +2000,18 @@ function duplicateCurrent() {
     setStatus("a module can only be on the bench once — copy its shapes instead");
     return;
   }
+  const lights = cur.ids.map(entryOf).filter((e) => e?.type === "light");
+  if (lights.length === cur.ids.length) {
+    pushUndo();
+    const made = lights.map((light) => duplicateLight(light.id)).filter(Boolean);
+    if (!made.length) return;
+    emit("lights");
+    select(made.map((light) => light.id));
+    setStatus(made.length === 1
+      ? `copy of light ${lights[0].id} created beside the original`
+      : `copies of ${made.length} lights created beside the originals`);
+    return;
+  }
   if (many.length > 1) {
     const axisNote = axisNoteForGhost();
     grabSelection({ copy: true }).then((g) => {
@@ -1483,6 +2078,30 @@ function grabCurrent() {
           + " — click to drop, Esc to put it back");
     }
   });
+}
+
+/**
+ * Move what is in hand to a grid spot just in front of the camera.
+ *
+ * The answer to "I clicked a module in the palette and the ghost went
+ * somewhere I cannot find". Arming does not choose a position - the ghost is
+ * wherever the cursor ray happens to cross the build plane - so from inside a
+ * finished room it is routinely behind you, or across the map. Rather than
+ * teach the palette to guess, `B` fetches it, and takes the build plane with
+ * it so it stays fetched.
+ */
+function bringCurrentToCamera() {
+  if (isDragging()) return;
+  const r = bringToCamera();
+  if (!r) {
+    setStatus("nothing in hand — arm a module or select an element first");
+    return;
+  }
+  const what = r.kind === "ghost"
+    ? (r.count > 1 ? `${r.count} ghosts` : "the ghost")
+    : (r.count > 1 ? `${r.count} elements` : "the selection");
+  setStatus(`brought ${what} here — build plane`
+    + `${r.floor ? " on the floor" : ""} at y ${r.y.toFixed(2)}`);
 }
 
 /**
@@ -1616,6 +2235,18 @@ function validate() {
   }
   if (!doors.length && state.chunks.length > 1) out.push(["warn", "no doors placed yet"]);
 
+  // The baked view is a preview of the bake that produced it, and editing
+  // through it is allowed - so anything moved, added or deleted since is being
+  // drawn with light computed for a ship that no longer exists. Saying so is
+  // what keeps it the honest view; bakedDrift() is all zeros when the preview
+  // is off, so this costs nothing the rest of the time.
+  const drift = bakedDrift();
+  const stale = [];
+  if (drift.moved) stale.push(`${drift.moved} moved`);
+  if (drift.missing) stale.push(`${drift.missing} not in it`);
+  if (drift.gone) stale.push(`${drift.gone} deleted`);
+  if (stale.length) out.push(["warn", `bake is behind: ${stale.join(", ")}`]);
+
   const el = $("validation");
   el.innerHTML = out.length
     ? out.map(([k, m]) => `<div class="${k}">${m}</div>`).join("")
@@ -1626,15 +2257,21 @@ function validate() {
 
 on("selection", () => { refreshInspector(); refreshStats(); });
 on("placements", () => { refreshChunks(); refreshStats(); validate(); });
-on("chunks", refreshChunks);
+on("chunks", () => {
+  refreshChunks();
+  // An undo can add, remove, rename or retune a chunk while the pane is open.
+  if (!$("chunk-modal").hidden) refreshChunkPane(chunkSelected);
+});
 on("markers", () => { refreshStats(); validate(); });
 on("transform", () => { refreshInspector(); validate(); });
 on("grid", refreshHud);
 on("modes", refreshHud);
 on("current", refreshHud);
 on("environment", refreshLighting);
+on("bakeLighting", refreshSettings);
 on("behaviors", () => {
   refreshBehavior();
+  refreshBakeOverride();
   if (!$("bhv-modal").hidden) refreshLibrary(libSelected);
 });
 on("busy", refreshBusy);
@@ -1823,6 +2460,14 @@ on("focus", () => focusSelection());
 // on the undo stack and in the saved layout like any other edit.
 
 function refreshSettings() {
+  const power = $("bake-light-power");
+  if (document.activeElement !== power) power.value = state.bakeLighting.power;
+  $("bake-light-power-val").textContent = state.bakeLighting.power.toFixed(1);
+  const sky = $("bake-sky");
+  if (document.activeElement !== sky) sky.value = state.bakeLighting.sky;
+  $("bake-sky-val").textContent = Number.isInteger(state.bakeLighting.sky)
+    ? String(state.bakeLighting.sky)
+    : state.bakeLighting.sky.toFixed(1);
   const shell = $("cfg-shell");
   if (document.activeElement !== shell) shell.value = state.config.shellThickness;
   const auto = $("cfg-autosave");
@@ -1832,6 +2477,10 @@ function refreshSettings() {
   const thick = $("cfg-hull-thick");
   if (document.activeElement !== thick) thick.value = state.config.hullThickness;
   $("cfg-hull-offset").value = state.config.hullOffset;
+  $("baked-specular-aa").checked = state.bakedSpecularAA;
+  const roughness = $("baked-roughness");
+  if (document.activeElement !== roughness) roughness.value = state.bakedRoughnessFactor;
+  $("baked-roughness-val").textContent = `${state.bakedRoughnessFactor.toFixed(2)}×`;
 }
 
 $("cfg-hull-tol").addEventListener("change", () => {
@@ -1861,6 +2510,19 @@ $("cfg-hull-offset").addEventListener("change", () => {
   }
   refreshSettings();
 });
+
+$("baked-specular-aa").addEventListener("change", (e) => {
+  setBakedSpecularAA(e.target.checked);
+  setStatus(e.target.checked ? "baked-preview specular AA on" : "baked-preview specular AA off");
+});
+
+$("baked-roughness").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  setBakedRoughnessFactor(v);
+  $("baked-roughness-val").textContent = `${state.bakedRoughnessFactor.toFixed(2)}×`;
+});
+
+on("reflection", refreshSettings);
 
 $("cfg-shell").addEventListener("change", () => {
   if (setConfig("shellThickness", $("cfg-shell").value)) {
@@ -1900,15 +2562,9 @@ async function bootstrap() {
   refreshModuleBanner();
   rearmAutoSave();
   setBigPalette(localStorage.getItem("bigPalette") !== "0");
+  localStorage.removeItem("taa");
   if (localStorage.getItem("unlit") === "1") {
     $("unlit").checked = true;
-  }
-  if (localStorage.getItem("taa") === "1") {
-    $("taa").checked = true;
-  }
-  if (localStorage.getItem("runtimeLight") === "1") {
-    $("runtime-light").checked = true;
-    state.runtimeLight = true;    // read by initScene when it builds the rig
   }
   {
     const saved = parseFloat(localStorage.getItem("envIntensity"));
@@ -1918,6 +2574,8 @@ async function bootstrap() {
     state.envIntensity = v;
     activeLightSet().strength = v;
   }
+  state.dynamicEnvIntensity = activeLightSet().dynamicStrength ?? DYNAMIC_ENV_INTENSITY_DEFAULT;
+  activeLightSet().dynamicStrength = state.dynamicEnvIntensity;
   {
     const saved = parseFloat(localStorage.getItem("exposure"));
     const v = Number.isFinite(saved) ? saved : EXPOSURE_DEFAULT;
@@ -1944,6 +2602,7 @@ async function bootstrap() {
   state.fluidSim = getCatalogue().fluidSim || [];
 
   await initScene($("render-canvas"));
+  refreshLighting();
   // Returning to the viewport must restore keyboard control: a toolbar select
   // that still holds focus swallows every shortcut, numpad included.
   $("render-canvas").addEventListener("pointerdown", () => {
@@ -1952,8 +2611,6 @@ async function bootstrap() {
   });
   initInteract();
   if ($("unlit").checked) setUnlit(true);
-  // After initScene, which is what makes the camera the pipeline attaches to.
-  if ($("taa").checked) $("taa").checked = setTaa(true);
   await initThumbs();
   initPalette();
   refreshChunks();

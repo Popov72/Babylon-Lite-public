@@ -8,7 +8,19 @@
 // (Until recently the fluid collided against an SDF baked from the raw triangles, so water and the
 // player genuinely saw different worlds and each needed its own overlay.)
 
-import { addToScene, createBox, createCapsule, createCylinder, createSphere, createStandardMaterial, removeFromScene, type EngineContext, type Material, type Mesh, type SceneContext } from "babylon-lite";
+import {
+    addToScene,
+    createBox,
+    createCapsule,
+    createCylinder,
+    createSphere,
+    createStandardMaterial,
+    removeFromScene,
+    type EngineContext,
+    type Material,
+    type Mesh,
+    type SceneContext,
+} from "babylon-lite";
 import type { WorldCollisionShape } from "../collision-shapes.js";
 import type { FluidPrimitive } from "../collision-field.js";
 
@@ -54,7 +66,8 @@ function quatFromYTo(d: readonly [number, number, number]): [number, number, num
     if (y > 0.999999) return [0, 0, 0, 1];
     if (y < -0.999999) return [1, 0, 0, 0]; // 180° about X
     // axis = (+Y) × d, angle = acos(dot) — built directly in half-angle form.
-    const ax = z, az = -x; // cross([0,1,0], [x,y,z]) = (1*z - 0*y, 0*x - 0*z, 0*y - 1*x)
+    const ax = z,
+        az = -x; // cross([0,1,0], [x,y,z]) = (1*z - 0*y, 0*x - 0*z, 0*y - 1*x)
     const s = Math.sqrt((1 + y) * 2);
     return [ax / s, 0, az / s, s * 0.5];
 }
@@ -118,8 +131,9 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
 
     // ── Stage 3: what the RUNNING simulations actually collide against ───────────────────────────
     // Each live sim was handed the subset of primitives whose bounds met its domain, packed into its
-    // own buffer; this draws that subset, so you can see exactly what the shader loops over — and
-    // spot a prop that should have been picked up but was not, or one that should have been left out.
+    // own buffer. Linked multi-mesh props can create several simulations with identical sets, so the
+    // overlay draws their deduplicated union; otherwise the same translucent mesh is drawn repeatedly
+    // and appears increasingly pink, falsely suggesting that some colliders are more active than others.
     //
     // Meshes are rebuilt only when the SET changes (a liquefaction starts or ends), not per frame: a
     // capsule's proportions are baked into its geometry, so a moving prop can be re-posed cheaply but
@@ -132,11 +146,15 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
     injMat.backFaceCulling = false;
     let injMeshes: Mesh[] = [];
     let injSignature = "";
+    const vecKey = (v: readonly number[] | undefined): string => v?.map((n) => n.toFixed(3)).join(",") ?? "";
+    /** Full visual identity, used to collapse the same primitive packed into several linked sims. */
+    const injVisualKey = (p: FluidPrimitive): string => `${p.kind}:${vecKey(p.a)}:${vecKey(p.b)}:${p.radius?.toFixed(3) ?? ""}:${vecKey(p.rotation)}`;
     /** Geometry identity of a primitive — two prims with the same signature can share a mesh. */
     const injKey = (p: FluidPrimitive): string => {
         if (p.kind === "box") return `b:${p.b?.map((v) => v.toFixed(3)).join(",")}`;
         if (p.kind === "sphere") return `s:${p.radius?.toFixed(3)}`;
-        const a = p.a, b = p.b ?? p.a;
+        const a = p.a,
+            b = p.b ?? p.a;
         return `${p.kind[0]}:${p.radius?.toFixed(3)}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
     };
     const buildInjMesh = (p: FluidPrimitive): Mesh => {
@@ -144,7 +162,8 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         if (p.kind === "sphere") {
             m = createSphere(engine, { diameter: Math.max((p.radius ?? 0.1) * 2, 1e-3) });
         } else if (p.kind === "capsule" || p.kind === "cylinder") {
-            const a = p.a, b = p.b ?? p.a;
+            const a = p.a,
+                b = p.b ?? p.a;
             const h = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), 1e-3);
             const r = Math.max(p.radius ?? 0.1, 1e-3);
             m = p.kind === "capsule" ? createCapsule(engine, { radius: r, height: h + 2 * r }) : createCylinder(engine, { height: h, diameter: r * 2 });
@@ -158,7 +177,11 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
     };
     const refreshInjected = (): void => {
         const sets = colliderMode === 3 ? injectedPrims() : [];
-        const flat = sets.flatMap((s) => s.prims);
+        const unique = new Map<string, FluidPrimitive>();
+        for (const { prims } of sets) {
+            for (const primitive of prims) unique.set(injVisualKey(primitive), primitive);
+        }
+        const flat = [...unique.values()];
         const sig = flat.map(injKey).join("|");
         if (sig !== injSignature) {
             for (const m of injMeshes) removeFromScene(scene, m);
@@ -177,7 +200,8 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             } else if (p.kind === "sphere") {
                 m.position.set(p.a[0], p.a[1], p.a[2]);
             } else {
-                const a = p.a, b = p.b ?? p.a;
+                const a = p.a,
+                    b = p.b ?? p.a;
                 m.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
                 const q = quatFromYTo([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
                 m.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
@@ -243,16 +267,22 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             const room = roomAt();
             if (colliderMode === 3) {
                 const sets = injectedPrims();
+                const unique = new Set<string>();
+                for (const { prims } of sets) {
+                    for (const primitive of prims) unique.add(injVisualKey(primitive));
+                }
                 // eslint-disable-next-line no-console
                 console.log(
                     sets.length
-                        ? `[aquanova] fluid-injected collision — ${sets.length} running sim(s):` +
+                        ? `[aquanova] fluid-injected collision — ${sets.length} running sim(s), ${unique.size} unique primitive(s):` +
                               sets
                                   .map((s) => {
                                       const k: Record<string, number> = {};
                                       for (const p of s.prims) k[p.kind] = (k[p.kind] ?? 0) + 1;
                                       const moving = s.prims.filter((p) => p.velocity && (p.velocity[0] || p.velocity[1] || p.velocity[2])).length;
-                                      return `\n    ${s.sim}: ${s.prims.length} primitive(s) (${Object.entries(k).map(([kk, n]) => `${n} ${kk}`).join(", ")})${moving ? `, ${moving} moving` : ""}`;
+                                      return `\n    ${s.sim}: ${s.prims.length} primitive(s) (${Object.entries(k)
+                                          .map(([kk, n]) => `${n} ${kk}`)
+                                          .join(", ")})${moving ? `, ${moving} moving` : ""}`;
                                   })
                                   .join("")
                         : "[aquanova] fluid-injected collision: no simulation running — liquefy something to see its set"
@@ -264,7 +294,9 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             // eslint-disable-next-line no-console
             console.log(
                 `[aquanova] colliders (${MODES[colliderMode]}) in ${room}: ${manifestShapes.length} authored ` +
-                    `(${Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(", ")})` +
+                    `(${Object.entries(kinds)
+                        .map(([k, n]) => `${n} ${k}`)
+                        .join(", ")})` +
                     (colliderMode >= 2
                         ? dynBodies()
                               .map((d) => (d.half ? `\n    dynamic ${d.half.map((v) => (v * 2).toFixed(2)).join(" x ")} m  ${d.name}` : ""))

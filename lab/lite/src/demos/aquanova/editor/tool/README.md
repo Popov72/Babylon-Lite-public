@@ -41,6 +41,7 @@ as a module id plus a transform, so a layout reloads exactly:
       "chunk": "CH00_Storage", "position": [0,0,0], "rotation": [0,90,0], "scale": [1,1,1] }
   ],
   "markers":  [ /* doors, see below */ ],
+  "lights":   [ /* authored lights, riding a placement — see below */ ],
   "chunks":   [ { "id": "CH00_Storage", "node": "CHUNK_CH00_Storage", "aabb": {...} } ],
   "portals":  [ { "id", "chunkA", "chunkB", "door", "centre", "normal", "corners" } ],
   "doors":    [ { "id", "chunkA", "chunkB", "position", "triggerRadius", "sealed", "leaves" } ],
@@ -48,11 +49,13 @@ as a module id plus a transform, so a layout reloads exactly:
   // rather than a room. Such a door is always sealed, and is not in "chunks".
   "adjacency": { "CH00_Storage": [ { "to": "CH01_CorridorA", "portal": "Portal_Door_D00" } ] },
   "view":     { "position": [...], "rotation": [...], "target": [...] },
-  "environment": { "strength", "toneMapping", "exposure" },
-  "editorEnvironment": { "strength", "exposure" },
+  "environment": { "strength", "dynamicStrength", "toneMapping", "exposure" },
+  "editorEnvironment": { "strength", "dynamicStrength", "exposure" },
   "fluidSim": [ "viscosity-inplace", "liquid-slow.json" ],
   "behaviors": { "door_liquefiable": { "liquefiable": true } },
-  "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ] } }
+  // "bake" is the Force baking override: "exclude" | "include", absent for the
+  // default "automatic". An entry may carry one with no behaviours at all.
+  "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ], "bake": "include" } }
 }
 ```
 
@@ -160,17 +163,6 @@ practice, and a ship-wide list would be hundreds of entries long. The list is
 de-duplicated, drops the node itself, and is omitted from the manifest when
 empty — the absence is what "this one stands alone" means.
 
-**`excludeSDF`** sits beside it, on the same liquefiable-only gate, and names
-the nodes whose baked SDF the fluid simulation must drop while that shot's water
-is alive. A door names its frame: the water is seeded inside the door's own
-volume, which sits *within* the frame, so leaving the frame in the SDF union
-would eject the particles and dam the opening the door just left behind.
-
-Its candidates are the **dynamic** nodes in the room, not every named one — a
-node with no rigid body has no SDF in the simulation to drop, so offering it
-would only be a way to get it wrong. "Dynamic" uses the runtime's own rule:
-`dynamic: true`, or `liquefiable: true`, which implies it.
-
 **`direction`** is the way an entity faces — what a start position needs — and
 rides the applied entry beside `name`:
 
@@ -203,30 +195,277 @@ since it names no direction at all.
 > the `entities` key being absent rather than empty, since `serialize()` always
 > writes both.
 
+### Force baking
+
+Which meshes get a lightmap is worked out, not authored. The bake leaves out
+everything the runtime **moves** (`dynamic`) or **melts** (`liquefiable`, and
+every node they are `linked` to), because for those the mesh Cycles would light
+is not the mesh the game ends up drawing — a door leaf baked shut leaves its own
+shadow painted across the floor it slid off. Everything else is baked, and the
+game reads the verdict straight off the geometry: **no lightmap ⇒ lit by the
+runtime lamps instead**, one rule, no second list to keep in sync.
+
+The inspector's **Lighting ▸ Force baking** is the escape hatch for the cases
+where that rule is wrong, and there are two, in both directions:
+
+* **Exclusion — never bake.** A mesh the rule would bake but that must not be: a
+  holographic panel or a light strip whose emission the author means to drive at
+  runtime, where a baked-in glow fights it. The alternative was inventing a
+  `dynamic` behaviour for something that never moves.
+* **Inclusion — always bake.** A mesh the rule would drop but that must be
+  baked: a `liquefiable` fixture that never actually moves until it is
+  destroyed — a wall panel, a locker — where a lightmap is right for the whole
+  of the time the player is looking at it, and a runtime lamp is a poor
+  substitute for the bounce it sits in.
+
+**Automatic** is the third setting and the default. The hint under the combo
+says what it resolved to and why (`Not baked — the runtime moves or melts it`),
+because the interesting half of that answer is invisible otherwise: the
+behaviour that excludes a node may be on a *different* element entirely, when
+this one is only `linked` into someone else's melt. When the setting is forced,
+the hint also says what Automatic *would* have done, so the override can be
+recognised as redundant and dropped.
+
+Keyed by **node name**, like behaviours and for the same reason — the bake
+matches Blender objects back to the manifest by name, so an override keyed any
+other way could not be applied. Unnamed elements fall back to their id, which is
+what the exporter calls them, so every mesh can carry one **without being named
+first**. That is the one place this differs from the Behaviour panel above,
+which needs a real name because a behaviour is meant to govern every element
+sharing it. Renaming an element carries its override across.
+
+Unlike the Behaviour panel it **survives a multi-selection** — forcing a room's
+worth of light strips out of the atlas is the reason it exists — and the whole
+selection changes on **one undo step**. A mixed selection shows `(mixed)` and a
+count (`31 elements — 4 not baked, 27 baked`); picking any real option applies
+it to all of them.
+
+It rides in `entities` beside `behaviors`, because it is keyed the same way and
+read by the same consumer. `"auto"` is written as an **absent key**, so an
+element that was merely looked at never enters the diff, and an entry may hold a
+`bake` and no behaviours at all:
+
+```jsonc
+"entities": {
+  "storageDoorL":  { "behaviors": [ { "name": "door_liquefiable" } ], "bake": "include" },
+  "hologramPanel": { "bake": "exclude" }
+}
+```
+
+`bake_lightmaps.py` reads it in `unbaked_names()`, which returns the excluded set
+**and the forced-in names separately**. The two directions are not symmetric: an
+exclusion only has to join the set, but an inclusion must also beat an
+*ancestor's* exclusion, and `is_unbaked()` walks parents — so it short-circuits
+on the nearest instruction, whichever way it points. The resolved verdict is
+already part of each chunk's fingerprint, so changing an override rebakes the
+room it touched, and the rooms one portal away: the prop it dropped was
+bouncing light through the doorway, so that map is wrong now too.
+
+> Nothing in the game or in the editor's **Baked** preview had to change for
+> this. Both decide where a mesh gets its light by asking whether it *has* a
+> lightmap, so honouring the override in the bake propagates on its own.
+
+### Lights
+
+A light **rides a placement**: its node is a child of that element's node, so
+moving or turning the module carries its light, and the authored `offset` /
+`rotation` are read in the module's own local space. That is the whole reason
+per-module defaults are possible — "the panel's lamp sits 5 cm under its face"
+is true of every copy of the panel, wherever it ends up.
+
+```jsonc
+"lights": [
+  {
+    "id": "L0001", "owner": "P0192",
+    "offset": [0, -0.05, 0], "rotation": [0, 0, 0],
+    "bake":    { "shape": "square", "sizeX": 0.5, "sizeY": 0.5,
+                 "spread": 180, "color": [1,1,1], "watts": 40 },
+    "runtime": { "type": "point", "clustered": true, "color": [1,1,1],
+                 "intensity": 1, "range": 8, "angle": 90, "castsShadows": false }
+  }
+]
+```
+
+The two halves describe the **same lamp to two consumers that cannot see each
+other**. `bake` is a Blender Cycles Area light, rebuilt from the glTF `extras`
+by the bake script — shape, size, spread, colour and watts are Blender's own
+units, so what is authored here is what Cycles gets. Power is **total watts over
+the surface**, which is why resizing a light also changes its brightness.
+`runtime` is the Babylon-Lite light the game creates for everything a lightmap
+cannot cover: dynamic props, the player, specular highlights.
+
+Either half may be **`"none"`**, and that is the point of having two. A
+flickering lamp is runtime-only — baking it would freeze one frame of the
+flicker into the wall. A bounce fill that exists only to lift a dark corner is
+bake-only, and costs the runtime nothing.
+
+**A light emits along its own local −Y**, so the default rotation `[0,0,0]` is a
+ceiling panel shining at the floor. glTF export turns the ship +90° about X on
+the way into Blender, which lands that −Y on Blender's **−Z** — the axis an Area
+light emits along. The two conventions meet with no fix-up, which is why −Y was
+chosen over the more obvious −Z.
+
+Four combinations are **settled on the way in** rather than trusted to the
+inspector, a loaded manifest and `kit_lights.json` each getting them right on
+their own — the same treatment `sealed` gets on a skybox door:
+
+| Rule | Why |
+|---|---|
+| a point light never casts a shadow | Babylon-Lite has no cube shadow generator |
+| a clustered light never casts a shadow | the cluster is a data texture with no shadow map |
+| a directional light is never clustered | it has no position to bin and no falloff to cluster |
+| a square or a disk mirrors `sizeY` onto `sizeX` | Blender reads one size for those two shapes |
+
+The rectangle lies in the light's **local XZ plane**, since −Y is where the
+light goes: `sizeX` spans local X and `sizeY` spans local **Z**. After the +90°
+turn into Blender those land on Blender's own X and Y, which is what an Area
+light's `size` and `size_y` mean.
+
+A light is part of what an element **is**, so it is copied with `Ctrl+D` and
+deleted with its owner, exactly like that element's collision shapes. A light
+whose owner is missing on load is dropped rather than stranded at the origin.
+
+#### Modules arrive lit — `public/data/kit_lights.json`
+
+Placing `Prop_Light_Wide` and then hunting for where its lamp should go, every
+time, for every panel in the ship, is the kind of work the editor exists to
+remove. `kit_lights.json` keys a list of light partials by module id, and
+`placeAt` applies them:
+
+```jsonc
+"modules": {
+  "Props/Prop_Light_Wide": [
+    { "offset": [0.58, -0.1, 0], "rotation": [0, 0, 0],
+      "bake":    { "shape": "rectangle", "sizeX": 1.16, "sizeY": 0.2, "watts": 40 },
+      "runtime": { "type": "point", "clustered": true, "range": 8 } }
+  ]
+}
+```
+
+The values were **measured off each module's `M_Light` primitive** — the
+emissive strip *is* the lamp, so the area light sits on its face and is sized to
+it. Anything left out falls back to `DEFAULT_LIGHT`, and the whole record goes
+through `normalizeLight()`, so the file cannot author an impossible light.
+
+A **list**, because one strip is not always one lamp: `Prop_Light_Corner` is a
+quarter-circle arc and an area light is flat, so it is served by three chord
+segments turned to the tangent at their midpoints. `Prop_Light_Floor` is the one
+that does not point down — its face is tilted 18° off vertical, so it is rolled
+161.6° about X to throw the light up the wall rather than at the floor it is
+standing on.
+
+Offsets are in **editor space**, which is not the space the `.gltf` is written
+in: Babylon's loader turns the file 180° about Y and mirrors Z, and the two net
+out to `x_editor = −x_gltf`. Reading a strip's centre out of the file and using
+it unchanged puts the lamp on the wrong side of the module.
+
+These defaults are a **seed, not a derivation**. They fire once, when the module
+is first placed; from then on the lights belong to that element, so an edit
+survives a save and a copy carries the edit rather than the default. Editing
+`kit_lights.json` therefore never touches a ship that is already laid out — and
+the two paths that bring their own lights, `Ctrl+D` and loading, place with
+`noLights` so the seed cannot fire a second time beside them.
+
+#### Authoring one — the panel and the plate
+
+**Add light** in the inspector attaches one to the selected element; with a
+light already selected it attaches a second to the same owner, which is the
+obvious next click. Selecting it swaps the inspector into two forms, `Bake` and
+`Runtime`, matching the two halves of the record. Position is relabelled
+**Offset** — a light's node hangs off its owner, so those three numbers are read
+in that element's own space — and Scale and Size go away, because how big a
+light is *is* its bake size.
+
+Rows the engine or Blender has no meaning for are **disabled rather than
+hidden**, with a line underneath saying why: a greyed-out Cone row still tells
+you a spot light is the thing that has one. The rules are exactly
+`normalizeLight()`'s, so the panel can never author a light the model would
+quietly rewrite behind it.
+
+In the viewport a light draws as an **amber plate the size and shape of the bake
+surface** — a disc for a disk or an ellipse, a rectangle otherwise — with a
+short line out of its face showing which way it emits. A light the bake ignores
+(`shape: "none"`) still needs something to click on, so it falls back to a fixed
+25 cm plate in a cold blue-grey. The plate is pickable and draggable like
+anything else, and dragging it moves the light within its owner rather than
+through the world.
+
+Lights are the **only** thing in this editor parented to another element, so the
+plate carries `metadata.gizmo` and every path that walks an element's meshes
+skips it: the ghosting veil, the Size readout and chunk volumes, the outline,
+and — the one that would have shipped a lamp-shaped hole into the game — the
+glTF export.
+
+#### Leaving in the .glb
+
+Each light reaches `ship.glb` as a **bare node named `LIGHT_<id>`**, still a
+child of the element it rides, carrying its whole record in the glTF node's
+`extras`:
+
+```jsonc
+{ "name": "LIGHT_L0001",
+  "translation": [0, 2.5, 0],
+  "extras": { "id": "L0001", "kind": "light", "owner": "P0192",
+              "chunk": "CH00_Storage",
+              "bake":    { "shape": "rectangle", "sizeX": 1.2, … },
+              "runtime": { "type": "point", "clustered": true, … } } }
+```
+
+There is nothing to draw, so the node has **no mesh and no children** — the
+gizmo is left out of the export, and Babylon's serializer is happy to write a
+node that is only a name, a transform and `extras`. The offset rides in that
+transform rather than in `extras`, because the node is parented exactly as it
+was authored: the hierarchy carries the offset across for free, in the module's
+own space.
+
+`kind: "light"` is what tells these apart from a placement's extras, which carry
+a `module` instead — anything reading the file can pick out the lamps in one
+pass. `chunk` rides along so the bake can work one chunk at a time without
+walking back up the hierarchy. The whole record goes out rather than a summary
+of it: the bake script and the runtime each read a different half, and neither
+can see the editor, so anything they would have to re-derive is something that
+will eventually drift.
+
 ### Environment
 
 ```jsonc
 "environment": {                // what the DEMOS read
   "strength": 1.7,              // scene.environmentIntensity
+  "dynamicStrength": 1.2,       // IBL on meshes left out of the bake
   "toneMapping": "Khronos PBR Neutral",
   "exposure": 0.55              // the linear multiplier, exactly as the slider shows it
 },
 "editorEnvironment": {          // this tool only — the demos must not read it
   "strength": 1.5,
+  "dynamicStrength": 1.5,
   "exposure": 0.55
+},
+"bakeLighting": {                // Blender static-lightmap controls
+  "power": 1.0,                // multiplier for authored lamp watts, 0..10
+  "sky": 1.0                   // strength of the bake environment, 0..300
 }
 ```
 
 **Two pairs, because there are two pictures.** The editor's authoring rig adds
 four analytic lights the game does not have, so one pair of Env/Exposure values
 cannot serve both: what reads well while building is nothing like what the game
-needs. The **Runtime light** checkbox switches which pair the sliders edit, and
-each keeps its own values, so flipping between them never costs you a setting.
+needs. **Baked** switches which pair the sliders edit, and each keeps its own
+values, so flipping between them never costs you a setting.
 
-`environment` is the pair tuned with **Runtime light on** — the picture the
+`environment` is the pair tuned with **Baked on** — the picture the
 demos render — and it is what `aquanova` and `liquefactor` read.
 `editorEnvironment` is the other one, filed separately because it describes this
 tool and not the ship.
+
+`dynamicStrength` is the separate IBL intensity for meshes without baked UV2
+lightmaps. In the editor it is exposed as **Dynamic Env** while **Baked** is
+enabled, so dynamic or liquefiable props can be toned down without changing
+the baked room surfaces.
+
+`bakeLighting` is separate again: **Light power** and **Sky** in the editor
+control Blender's Cycles bake only. They do not change runtime lamp intensity or
+the editor's viewport environment. The Blender extension reads these values
+when it opens and refreshes them before each interactive bake.
 
 **`exposure` is the plain linear multiplier**, used identically at both ends:
 what the slider shows is what `scene.imageProcessingConfiguration.exposure` gets
@@ -261,12 +500,17 @@ Measured on the real ship, they are the whole story: **mean 165.7 with the rig,
 that will never ship. The `environment` numbers, by contrast, pass through
 untouched — the demos apply `strength` and `exposure` exactly as this does.
 
-So the **Runtime light** checkbox silences the rig, leaving the HDRI alone, and
-the toolbar checkbox says which mode you are in — "is this what the game shows?"
-should never be a guess. It is the only honest preview, and the only sound way to set the
-`environment` pair, which *is* what the demos read. The authored intensities are
-remembered, so switching back restores them exactly, along with the editor's own
-`Env`/`Exposure`.
+So **Baked** silences the rig, leaving the HDRI, the lightmaps and the authored
+runtime lamps — which is exactly the set of lights the game has. That is the
+only honest preview, and the only sound way to set the `environment` pair, which
+*is* what the demos read. The authored intensities are remembered, so switching
+back restores them exactly, along with the editor's own `Env`/`Exposure`.
+
+This used to be a **Runtime light** checkbox of its own, next to **Baked**.
+Silencing the rig over the *authored* ship was only half a truth: with no
+lightmaps to stand in, it showed an HDRI-only picture the game never renders,
+and it was one more switch to forget. Baked mode is the single state where
+dropping the rig means something, so it now owns the switch.
 
 `export/ship.glb` is a **derived artefact** and is never read back — one file
 with every chunk as a named `CHUNK_<id>` parent node. Reloading from a .glb
@@ -420,6 +664,7 @@ the same thing.
 | Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot. |
 | Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
 | Frame | **double-click** an element |
+| Bring | **`B`** — moves whatever is in hand to a grid spot just in front of the camera, resting on the deck under your feet, and **takes the build plane with it**. Works on the armed ghost and on a placed selection alike |
 | Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. Showing them **also puts moving and turning in that space**, since asking to see an axis is nearly always asking to work along it; `Y` overrides afterwards. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them (without touching the space), the other key re-aims them, and pressing either with nothing selected or hovered hides them |
 | Axis modes | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste |
 | Mirror | **`Alt` + `F`** — mirrors on the current Scale axis (`all` is treated as X) |
@@ -435,15 +680,16 @@ the same thing.
 | Id | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show |
 | Name | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id |
 | Behaviour | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body) |
+| Force baking | inspector `Lighting` panel — **Automatic** (the default: no lightmap for anything the runtime moves or melts) · **Exclusion** forces a mesh out of the atlas so its lighting can be driven at runtime · **Inclusion** forces one back in. Works on a multi-selection, on one undo step, and on unnamed elements. The hint says what the setting resolved to and what Automatic would have done |
 | Eyedropper | `Alt`-click a placed element to arm its module |
 | Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen |
 | Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard *step sizes*, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns |
 | Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
-| Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load · **Runtime light** drops the editor's own lights, leaving the HDRI the game actually uses |
+| Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load, and each mode keeps its own pair · **Baked** drops the editor's own lights, leaving the HDRI, the lightmaps and the authored runtime lamps — the lights the game actually has |
 | Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
 | Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the Env and Exposure sliders, every inspector field and every behaviour edit |
 | Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
-| Grid | `G` · **Big icons** doubles the palette width and tile size (on by default) · **Unlit** shows raw albedo with no lighting · **TAA** runs Babylon's stock temporal anti-aliasing over the viewport · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
+| Grid | `G` · **Unlit** shows raw albedo with no lighting · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
 | Palette | hover a tile to spin the module through a full 360° turn |
 | Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab |
 
@@ -1247,14 +1493,108 @@ Grabbing an element also moves the build plane to that element's height, so
 picking up a ceiling piece keeps you working at ceiling level instead of
 dropping the next one to the floor.
 
+### `B` fetches what you cannot find
+
+Arming a module does not choose a position. The ghost is simply wherever the
+cursor ray crosses the build plane, and from inside a finished room that is
+routinely nowhere useful: with the plane still down on the deck you started
+from, looking level or up misses it entirely — `cursorOnPlane` returns `null`
+for anything at or above the eye, so the ghost stays wherever it last was —
+while looking barely down puts it hundreds of metres away. Neither can be
+dragged back into view, because it is not in view to drag. `B` fetches it.
+
+Two rays decide where it lands. **Forward** first, so the spot is never pushed
+through the wall you are facing — the preferred stand-back distance would
+otherwise drop the piece in the next room every time you built against
+something. Then **straight down** from there, so it rests on the deck you are
+standing on rather than floating at eye height. With neither — out in the open,
+or over a gap — the raw point in front of the camera is still somewhere you can
+see, which is all that was asked for. How far in front scales with the piece's
+own size, clamped to 3–8 m: a hull section needs room, a handrail wants to be
+within reach.
+
+> **It moves the build plane too, and that is the half that matters.** A
+> one-shot teleport would be undone by the very next mouse move, which
+> re-derives the ghost's position from the plane — the piece would spring
+> straight back to the far side of the map and the shortcut would look broken.
+> The same applies to a placed selection: leaving the plane behind means a
+> following `M` grab drops it back to the old height.
+
+It is deliberately not a *frame* — the camera does not move. Framing answers
+"where is it", which double-click already does; `B` answers "bring it here",
+which is what you want when the answer to "where is it" is 300 m away in a
+direction you were never going to fly.
+
 ## Chunks, doors and portals
 
 Chunks are what the portal renderer streams and culls. Pick the active chunk in
 the toolbar; new placements join it. **Assign** moves the current selection to
-it, **`+`** adds one and **Rename** renames it, and the **Chunk** button itself
-toggles isolation — pressed, everything outside the active chunk is hidden, and
-it turns orange so the view being partial is never a mystery. Switching the
-dropdown while isolated follows the new chunk.
+it, **Chunks…** opens the pane that owns everything else about them, and the
+**Chunk** button itself toggles isolation — pressed, everything outside the
+active chunk is hidden, and it turns orange so the view being partial is never a
+mystery. Switching the dropdown while isolated follows the new chunk.
+
+### The Chunks pane
+
+`+` and `Rename` used to sit in the toolbar as two `prompt()` boxes. They are
+now one **Chunks…** pane, because a chunk stopped being a name the moment it
+grew bake settings: a room's samples and lightmap size are per room, and there
+was nowhere to type them. The pane lists every chunk, marks the tuned ones with
+a `•`, and holds:
+
+* **New** and **Apply** — add and rename. Renaming still rewrites every
+  reference, exactly as before, and carries the room's bake settings with it.
+* **Delete** — which **refuses while anything still refers to the chunk**, and
+  says what. The alternatives were to drag the contents into some other room,
+  which silently rewrites the ship's layout to service a button press, or to
+  delete them with it, which turns one keystroke into unbounded loss. Emptying
+  the room first is a deliberate act, and **Assign** already exists to do it.
+  The last remaining chunk cannot go either: `activeChunk` is what new
+  placements join, so there has to be one.
+* **Samples, Width × Height and Margin** — this room's bake, and
+* **Defaults** — the ship's, at the bottom of the same pane.
+
+**The per-room fields are overrides, and blank means "follow the default".**
+Not "use today's default": a field left blank keeps following `bakeDefaults`
+forever after, so raising the ship's sample count later still reaches every room
+that never asked for its own. That is also why the manifest stores them sparse —
+`chunks[].bake` holds only the fields a room actually claimed, and is omitted
+entirely when it claimed none. Writing the resolved numbers instead would freeze
+every room at whatever the defaults happened to be the day it was saved.
+
+`bake_lightmaps.py` resolves four sources, in order:
+
+```
+--samples/--resolution/--width/--height/--margin   (every chunk, deliberate override)
+chunks[].bake                                      (this room, from the pane)
+bakeDefaults                                       (the ship, from the pane)
+128 / 1024x1024 / 4                                (a manifest older than any of this)
+```
+
+A command-line flag beats everything because that is what makes
+`--resolution 64` a usable "render me something to look at now" — and it is what
+the test suite bakes at. The Blender panel's numbers work the same way, with
+`-1` meaning "leave every room on what the pane asked for".
+
+**A non-square map is why width and height are separate fields.** A long
+corridor wastes half a square atlas on nothing. Blender's packer works in the
+0-1 square and knows nothing about the image it will be sampled from, so on a
+2048×512 map an island packed square is drawn four times wider than it is tall;
+the UVs are pre-squeezed by the aspect before packing to cancel exactly that.
+The cost is that **island rotation is switched off whenever width ≠ height** — a
+cardinal rotation swaps an island's U and V *after* the squeeze, which un-does
+the correction for that island alone and stretches it by the aspect squared.
+
+That cost is not small: the test fixture packs to about 60% of a square atlas
+and about 33% of a 4:1 one, because a rect packer leans on 90-degree swaps to
+fit an L-shaped wall panel against its neighbour, and there are a great many of
+those. Four times the pixels still buys a bit over twice the texels, so a
+non-square map is worth asking for when a room really is long and thin — but
+**a square map is the better default**, and that is what `bakeDefaults` ships.
+
+**Retuning one room re-bakes that room only.** The resolved numbers go into that
+chunk's own hash and not its neighbours': a neighbour's resolution cannot change
+how much light reaches this room.
 
 **Renaming a chunk rewrites every reference**, not just the list entry. A chunk
 id is not a label: placements carry it, door markers name the two chunks they
@@ -1893,44 +2233,10 @@ word. It runs through `applyVisibility()`, the one place that decides what is
 enabled, for exactly that reason. Hiding a layer drops any selection it hides,
 so the gizmo and the inspector never act on something nobody can see.
 
-### TAA
-
-The **TAA** checkbox runs Babylon's stock `TAARenderingPipeline` over the
-viewport. It exists to be compared against Babylon-Lite's own TAA, so it is
-deliberately *untouched* — stock pipeline, stock settings — because the point is
-that whatever the two engines do differently is the only difference on screen.
-To match a particular configuration by hand, the live pipeline is on the window
-as **`__taa`**, so the devtools console reaches it without an import:
-
-```js
-__taa.samples = 32;          // more accumulation
-__taa.factor = 0.02;         // slower blend, cleaner but longer to settle
-__taa.disableOnCameraMove = false;
-__taa.msaaSamples = 4;       // MSAA underneath it as well
-```
-
-It is a getter, not a value, because the pipeline is rebuilt every time the
-checkbox is toggled — a reference kept across a toggle would take settings that
-no longer reach the screen. `taaPipeline()` is the same thing for module code.
-
-It is **built and thrown away on each toggle** rather than left attached and
-switched off. An attached pipeline renders the scene into a texture whether or
-not it is enabled, and that alone changes the picture: the canvas MSAA the
-engine was created with only applies while the scene draws straight to the back
-buffer. Off has to give back the exact frame you had before it went on, or the
-comparison the feature exists for is not a comparison — and that is what the
-test asserts, byte for byte.
-
-> Which also means **turning TAA on turns canvas MSAA off**, since the scene is
-> no longer drawing to the back buffer. That is the honest comparison — one
-> anti-aliasing technique against the other, not one on top of the other — and
-> it is the same trade Babylon-Lite makes. `msaaSamples` on the pipeline puts
-> MSAA back if you want both.
-
-`disableOnCameraMove` is left at its default, so the accumulation resets while
-you fly and settles once you stop, which is when you are looking at it. The
-setting is remembered in `localStorage` and is **editor-only**: like `Unlit` and
-the `Ghost` slider it never reaches the manifest or the `.glb`.
+The **Baked** checkbox is a fourth world of its own, alongside the ship, the
+collision staging area and the palette's ghost: it swaps the authored ship for
+`ship_baked.glb` and its Blender lightmaps. See
+[Seeing the bake](#seeing-the-bake--the-baked-view).
 
 ### The shell thickness
 
@@ -1968,6 +2274,10 @@ the same shell, or its collision silently changes. So they are **saved with the
 layout**, go through the **undo stack** like any other edit, and are read back
 through `{ ...CONFIG_DEFAULTS, ...saved }` so a layout written before a setting
 existed returns that setting's default rather than `undefined`.
+
+The pane also holds the editor-only **Ghost** transparency slider and **Big
+icons** palette toggle. Those are view preferences, so they remain in
+`localStorage` and never enter the manifest or exported `.glb`.
 
 | setting | default | what it does |
 | --- | --- | --- |
@@ -2431,6 +2741,509 @@ not code:
 | manifest schema | `manifest.js` |
 | EEVEE render / compositor / probes | still Blender's job, if you want stills |
 
+Blender is also the **lightmap baker** — see below. That is the one place it is
+not superseded at all: Babylon-Lite has no global illumination and no baker, and
+the ship is a corridor crawler lit almost entirely by bounce off close walls,
+which is exactly what a real-time direct-lighting pass cannot give.
+
+## Baking lightmaps — `bake_lightmaps.py`
+
+```
+blender -b --factory-startup --python bake_lightmaps.py -- --glb ../export/ship.glb
+```
+
+The other end of the `extras` contract: the editor writes lights as bare nodes,
+this reads them back and rebuilds each one as a **Cycles Area light**. Cycles
+and not EEVEE because EEVEE cannot bake — that is the whole reason Blender is
+still in the loop.
+
+| Flag | |
+|---|---|
+| `--glb` | the ship the editor exported (required) |
+| `--manifest` | `ship_manifest.json`, for the portals. Default: beside the glb |
+| `--out` | where the lightmap images go, default `<glb dir>/lightmaps` |
+| `--skybox` | equirectangular image lighting the ship through its windows |
+| `--env-strength` | skybox intensity, matching the runtime environment |
+| `--samples` `--resolution` `--margin` | Cycles samples, square atlas size, bake margin — **for every chunk**, overriding what the manifest asked for. Default: per chunk, from the Chunks pane |
+| `--width` `--height` | a non-square atlas, again for every chunk. Both beat `--resolution` |
+| `--chunk` | bake only this chunk; repeatable. A name that is not in the ship stops the run |
+| `--device` | `AUTO` (default) selects the best available Cycles GPU and falls back to CPU; `CPU` forces the processor; `GPU` requires a supported GPU |
+| `--keep-emission` | leave glowing lamp materials alone, and double-count them |
+| `--force` | re-bake every chunk, even the ones nothing changed in |
+| `--report` | write the per-stage summary as JSON |
+| `--interactive` | set the scene up, then hand Blender over with a bake panel |
+| `--no-bake` | set the scene up and stop, rendering nothing |
+| `--no-unwrap` | skip the UV2 atlases, for inspecting the scene as imported |
+| `--no-export` | bake the images but write no `ship_baked.glb` |
+| `--baked-glb` | where the baked ship goes, default `<glb dir>/ship_baked.glb` |
+
+Everything after the bare `--` is the script's; Blender eats the rest.
+
+**The axis contract holds with no fix-up, and that is by design.** A light emits
+along its own local −Y. The glTF importer turns Y-up into Z-up, which lands that
+−Y on Blender's **−Z** — the axis an Area light emits along — and lands `sizeX`
+and `sizeY` on Blender's own `size` and `size_y`. So the lamp is built as a
+**child of the imported empty with an identity local transform**: it inherits
+that empty's world matrix whole, and the conversion is never re-derived. Working
+it out here instead would mean re-implementing the importer's convention and
+then owning it forever.
+
+The bake is **diffuse, direct + indirect, with the colour pass off**. What is
+wanted is how much light reaches a surface, not what that surface looks like:
+leaving colour in multiplies the albedo into the map and then again at runtime,
+and every wall comes out twice as brown as it should be.
+
+A light with `shape: "none"` is **skipped**, which is what a flickering lamp
+wants — baking it would freeze one frame of the flicker into the wall. The
+runtime half of the record is none of Blender's business and is ignored.
+
+### The stars outside, and the windows they come through
+
+`--skybox` takes an **equirectangular** image and wires it straight into the
+world through an Environment Texture node. Equirectangular and not the cube map
+the runtime uses, because Blender's node has no cube input — which is what
+`scripts/skybox-cube-to-equirect.mjs` exists to produce. That script already
+writes the star field in Blender's own orientation, so there is deliberately
+**no mapping or rotation node here**; adding one would rotate the sky away from
+what the runtime shows. `--env-strength` matches the runtime's environment
+intensity.
+
+With no `--skybox` the world is left **black**, not Blender's default grey. A
+uniform grey world is an ambient term the runtime does not have, and it would
+wash the whole bake flat.
+
+Then every door whose far side is `__SKYBOX__` becomes a **Cycles portal**, read
+from `ship_manifest.json` — doors never reach the `.glb`, so the manifest is the
+only place the openings exist. A portal emits nothing. It marks a hole the world
+light comes through, so Cycles can aim its environment samples at the windows
+instead of firing them at the inside of the hull and throwing almost all of them
+away. In a sealed ship lit through a handful of small panes that is the
+difference between a clean bake and a blizzard.
+
+Doors between two rooms are **left out**: no world light comes through them, and
+a portal there would send samples at a wall.
+
+The rectangle is built from the portal's **corners**, not from its stored
+normal — a door that was rotated, scaled or mirrored still gets a portal that
+covers exactly the hole it left. Its −Z, which is the axis an Area light emits
+along, is turned to face **into the room**, using the chunk's `aabb` centre to
+pick the sign. Facing it the other way is not a smaller win but a loss: it would
+guide every sample out into space, and the room would bake noisier than with no
+portal at all.
+
+### The lamp that lights itself twice
+
+A kit lamp module carries the emissive material `M_Light`, and
+`kit_lights.json` seeds an **area light** onto the same strip. Both are correct
+on their own and wrong together: Cycles would count the strip once as a glowing
+surface and once as a lamp, and the wall opposite would bake at roughly double
+brightness. So before the bake every emissive material on a lamp that carries a
+light record is **zeroed**.
+
+It is zeroed on a **copy**, `<name>_NoEmit`. Kit materials are shared across
+every placement of a module — that is what `kit.js`'s registry is for — so
+dimming the original would put out every other lamp in the ship, including the
+ones that have no area light and are the only thing lighting their corner.
+
+The swaps are **undone** before `ship_baked.glb` is written. The lightmap
+replaced the *light the fixture cast*, not the look of the fixture: the strip
+still has to glow in the game. `--keep-emission` skips the whole pass, which is
+how the two bakes can be compared side by side.
+
+### One atlas per chunk, in a second UV set
+
+Every static mesh of a chunk is unwrapped into **one shared 0–1 square** with
+`smart_project` in multi-object edit mode, and bakes into **one image**. A chunk
+is exactly the unit the portal renderer already draws and culls by, so the
+runtime binds one lightmap per room rather than one per wall panel.
+
+Props the runtime redraws are left out, and the rule is the runtime's own read
+back from the manifest: `behaviors[name].dynamic === true` says which nodes it
+**moves** — a door leaf that slides open would otherwise leave its own shadow
+painted across the floor it used to cover — and `behaviors[name].liquefiable
+=== true` says which it **melts**, whose geometry is replaced by a fluid the
+moment it is hit and which is a rigid body the player can shove before that.
+Liquefaction spreads down the assignment's `linked` names, exactly as
+`BehaviorManager.resolveDissolvableEntityNames` spreads it, and those go too:
+the runtime puts every linked node in `dynamicMeshes`, so a node left in the
+bake would have had its shadow painted in and then be lit as if it had not.
+Note that `liquefiable` deliberately does *not* imply `dynamic` in the editor —
+that rule is about rigid bodies — so the bake has its own, wider one. Glass
+panes are taken out of the *shadow* pass but keep their own map, so a window
+lights the room instead of sealing it.
+
+> **The UV2 layer index is the trap.** The glTF exporter numbers `TEXCOORD_n` by
+> **UV layer order**, and the runtime samples `TEXCOORD_1`. Of the ship's mesh
+> data, most arrive with a single `UVMap` — but a few kit meshes arrive with
+> **no UV layer at all**, and on those the new `UV2` became layer 0 and exported
+> as `TEXCOORD_0`. The lightmap would then have been sampled as if it were the
+> kit's own texture atlas: not a missing map, a *wrong* one. A placeholder
+> `UVMap` is now created first when a mesh has none, and the atlas report
+> carries a `misplaced` list that the test suite asserts is empty.
+
+### HDR for truth, PNG for the browser
+
+The authoritative output is **Radiance HDR**. Bounced light in a lit corridor
+runs well past 1.0, and clamping it at the bake would bake in the clipping the
+runtime's tone mapping exists to do properly.
+
+A **PNG** is written beside it, because a web texture is 8-bit. The map is
+divided by its own peak on the way out — `view_settings.exposure = −log2(peak)`
+— and the peak is written into `lightmaps.json` as `level`, which the runtime
+multiplies back. Clamping instead would flatten every highlight to white, and a
+fixed exposure would clip a bright room and crush a dim one. The view transform
+is forced to **Standard**: Blender's default AgX is a film look, and baking a
+look into data the runtime then tone maps again is tone mapping twice.
+
+### What comes out
+
+`ship_baked.glb` — the same ship, plus the UV2 the lightmaps are in. A *second*
+file and not an edit of the first, because `ship.glb` is what the editor writes
+and the bake reads: overwriting it would make the input of the next bake the
+output of the last one, and any error would compound instead of being corrected.
+`export_extras=True` carries the light records and the placement ids back out
+intact, nested objects included.
+
+`lightmaps.json` — which map goes on which chunk:
+
+```json
+{ "glb": "ship_baked.glb", "uv": 1, "gamma": true,
+  "chunks": { "CH00_Storage": { "png": "lightmap_CH00_Storage.png",
+                                "hdr": "lightmap_CH00_Storage.hdr",
+                                "level": 2.7, "resolution": 1024, "height": 1024,
+                                "meshes": 32, "hash": "b2d7…" } } }
+```
+
+`resolution` is the width and `height` the height — the two differ on a room the
+Chunks pane gave a non-square map.
+Shaped to feed `setPbrLightmap(material, texture, { coordIndex: 1, level,
+gamma: true })` in `packages/babylon-lite/src/material/pbr/enable-pbr-lightmap.ts`
+directly. The index is **merged** with the previous one rather than replacing
+it, so a `--chunk` run that bakes one room does not delete the other rooms from
+the file the runtime reads; entries for chunks that no longer exist in the ship
+are dropped.
+
+### Only what changed gets re-baked
+
+A full ship is minutes of Cycles and most edits touch one room, so each chunk is
+hashed and a map whose hash still matches is **kept rather than rendered again**.
+The hash is written into `lightmaps.json` beside the map it describes.
+
+What goes into it:
+
+* the chunk's own placements — id, module, position, rotation, scale;
+* its lights, but **only the `bake` half** of each record. Reading the runtime
+  half would re-render the ship every time somebody nudged a flicker speed;
+* its portals, and which of its nodes the bake leaves out — a prop that starts
+  moving, or that starts melting, drops out of the bake;
+* **everything one portal away.** A corridor lights the storage room through an
+  open doorway, so a lamp moved on the far side changes this side's map too. One
+  hop is where it stops: light that has bounced through two doorways is below
+  the noise floor of the bake that would have to be redone to catch it;
+* the bake settings that change the picture — environment strength, the
+  skybox's name and size, `--keep-emission`, `--keep-metals`, denoising and the
+  indirect clamp;
+* **this room's own samples, size and margin** — and not its neighbours'. They
+  decide the noise floor, the texel density and the packing of this map and
+  nothing else, so retuning one room in the Chunks pane re-bakes that room
+  alone.
+
+The device is deliberately **out** of the cache hash: CPU and GPU render the
+same scene, and invalidating every map because a bake moved machine would defeat
+the point. `AUTO` prefers OptiX, then CUDA, HIP and oneAPI, and reports the
+selected backend in the bake report. It falls back to CPU when no supported GPU
+is available; explicit `GPU` requests fail instead of silently using the CPU.
+The hash comes from the **manifest**, not the `.glb` — the glb is regenerated on
+every export and its bytes need not be stable, whereas the manifest is the
+authored truth the glb is built from.
+
+`--force` renders anyway, for when the images on disk are suspect. The reuse
+also checks that the files are still there, so a `lightmaps.json` that outlived
+its images cannot let a bake report success while writing nothing.
+
+The live **Blender** session has one extra rule: its first bake may have to
+repack the UV2 atlases for the whole ship. When that happens, every chunk is
+queued, even if the dropdown names only one room. Later changes to a chunk's
+width, height or margin repack and queue only that chunk; UV2 belongs to the
+chunk's own mesh data, so unrelated rooms keep their coordinates and images.
+
+### Baking from the editor
+
+The **Bake** button exports the ship and then runs the script, so what is baked
+is always what is on screen rather than whatever `ship.glb` happened to hold.
+`POST /api/bake` starts a background job and returns `202` immediately; `GET`
+polls it — Cycles' per-tile progress lines are the only progress it offers, and
+the last one names the chunk and the sample count — and `DELETE` cancels. A
+second bake while one is running is refused with `409`, and a machine with no
+Blender answers `503` rather than pretending. Set `BLENDER=<path>` or
+`config.blenderPath` if the search does not find it.
+
+**Shift-click** the button to force a full re-bake.
+
+### Seeing the bake — the **Baked** view
+
+The **Baked** checkbox shows `ship_baked.glb` with its lightmaps on it, in place
+of the ship the editor is holding. It cannot be shown on the authored meshes
+instead, for two structural reasons:
+
+* those meshes have **one UV set**, the kit's own. The lightmap atlas is a
+  second set, and it only exists after Blender has unwrapped it — which happens
+  on the way into `ship_baked.glb` and nowhere else;
+* kit materials are **deduplicated across the whole catalogue**, so one
+  `MI_Trim_01` serves every room in the ship. A lightmap is per chunk, and there
+  is no way to hang two of them on one material.
+
+Which makes the preview an honest one: what is on screen is the file the runtime
+will load. Each chunk gets its own **copy** of every material it uses — Blender
+shares materials across chunks exactly as the kit does, so without the copy the
+last chunk processed would win and every other room would wear its lightmap. The
+map is bound with `coordinatesIndex = 1`, `level` put back from
+`lightmaps.json`, and `useLightmapAsShadowmap` **off**: the bake is diffuse
+direct + indirect with no colour in it, so it is not a shadow over the runtime's
+lighting, it *is* the lighting.
+
+Turning it on also drops the editor's own light rig, which would otherwise sit
+on top of the bake and hide exactly what is being inspected, and in its place it
+rebuilds the **authored runtime lamps** over the props the bake skipped. Those
+props are the ones carrying the `dynamic` behaviour: they are pulled out of the
+bake precisely because they move, so they come back with no lightmap and no UV2
+and would render as black silhouettes with nothing lighting them.
+
+> **The lamps are read from `state.lights`, not from the glb** — the opposite of
+> the meshes beside them, and the opposite of what this used to do. The glb's
+> `LIGHT_*` extras are the bake's record of the lamps, frozen at the moment it
+> rendered, so a preview built from them ignored the inspector: **Range**,
+> **Intensity**, colour and cone could all be edited with nothing happening on
+> screen. The argument for reading the file was consistency with the walls, and
+> it does not survive contact with what these lights *are*. A wall's lighting is
+> in the atlas, so the file is authoritative about it. A lamp's **runtime** half
+> is by definition the half no bake consumes — the engine applies it over the
+> atlas, every frame — so the file has no claim on it, and there was no re-bake
+> that would have shown an edit either. The **bake** half is still the file's to
+> state, because that is precisely what the file is: a record of a render that
+> already happened, with `bakedDrift()` to report when the ship has moved out
+> from under it.
+>
+> This costs no conversion. The authored lamps are in the editor's frame and the
+> glb arrives under the loader's handedness flip, but `syncStandIns` puts every
+> baked node back onto its authored element — so the props these lamps light are
+> rendered in the editor's frame too, and the two agree by construction. The
+> e2e `standOffset` check is what holds them to it.
+>
+> Edits are **poked into the existing light**, and only a change of *shape*
+> rebuilds. A slider emits on every tick, and disposing a light dirties every
+> material it touched, which is a shader recompile per frame for a number.
+> `lightSignature()` is the line between the two: type, `clustered` and the mesh
+> scope pick the constructor, the falloff curve and `includedOnlyMeshes`, none of
+> which can be changed after the fact — everything else is a scalar. Lamps also
+> follow their owner every frame, because a light is a child of the element it
+> rides and the stand-in beside it is already following the drag.
+
+The scoping rule is the runtime's — a clustered lamp lights the whole ship, a
+non-clustered one only the props of its own chunk — so what the preview shows is
+what `demos/aquanova/lights.ts` will build.
+
+**The `Env` slider affects both baked surfaces and dynamic props.** Baked
+materials keep their lightmap as a multiplicative diffuse contribution, but
+remain on the normal PBR path so the environment can provide reflections on
+metal ceilings, walls, crates, and consoles. Dynamic props continue to receive
+the environment normally, alongside the authored runtime lamps. This makes the
+baked preview a better approximation of the final game image without adding
+the editor's authoring rig on top of the bake.
+
+The container is loaded fresh on every switch and disposed on the way out, and a
+bake finishing while the preview is up reloads it: a preview that outlived the
+bake it came from would show the last render of a room that has since been
+rebuilt, which is worse than showing nothing.
+
+### Editing through the bake
+
+The ship stays editable while the preview is up: pick, drag, rotate, duplicate,
+delete and undo all work, and the baked geometry follows. There is no separate
+"look at it" mode to leave, because the whole point of looking at the bake is to
+find things to fix, and a view you have to leave before fixing them turns every
+fix into a round trip.
+
+What makes it possible is that Blender leaves the ship's structure intact.
+`bake_lightmaps.py` exports **one node per placement**, named with the element's
+name or, failing that, its id, parented to `CHUNK_<id>`. Every node comes back
+drawing **exactly the geometry it left as, in the same place** — which is what
+lets each baked node be paired with the element it came from and driven from
+that element's world matrix.
+
+> **The pairing is exact; the matrix is not.** glTF is right-handed and Babylon
+> is left-handed, and the loader reconciles them by negating local X in the data
+> and hanging a `scaling = (1, 1, -1)` off `__root__`. Those cancel *as a
+> rendered result*, but they do not cancel as a matrix: `__root__`'s world
+> matrix is `diag(-1, 1, 1)`, a **reflection**, and the baked vertices are still
+> in glTF's frame underneath it. So the baked node's world matrix is not the
+> element's — it is the element's with that reflection applied.
+>
+> Driving the stand-in from the element's matrix alone therefore *drops* the
+> reflection. The node lands in the right place with its basis mirrored, so the
+> geometry renders flipped about its own origin with its winding inverted. It is
+> a quiet failure: every symmetric module looks perfect, and only the asymmetric
+> ones move, which reads on screen as "some walls are in the wrong place" rather
+> than as the ship turning inside out.
+>
+> `conversionAbove()` reads that reflection back off whatever node the loader
+> parked it on — rather than hardcoding `diag(-1, 1, 1)`, so a loader that ever
+> converts differently keeps working — and `syncStandIns` re-applies it:
+> `local = flip * elementWorld * inverse(chunkWorld)`. The same matrix, inverted,
+> is what recovers the element's pose *as the bake saw it*, which is what
+> `atBake` stores. Reading `atBake` off the element instead would compare it
+> against itself, and an element dragged between the bake and the preview could
+> never be reported as drift.
+
+So each element gets a **stand-in**: the baked node that is drawn in its place.
+Its own meshes are disabled and the stand-in is made pickable and stamped with
+`metadata.standInFor`, which is what turns a click on baked geometry back into a
+selection of the element that owns it (`ownerIdOf`, alongside `entryOf`). The
+selection and hover outlines trace the stand-in's meshes rather than the
+element's, because an outline has to trace what is on screen, not what is
+behind it.
+
+Three details are load-bearing:
+
+* **the map is keyed by id, never by node reference.** Undo restores through
+  `deserialize` → `clearAll` → `removePlacement`, which disposes *every*
+  placement node and builds new ones — so any stored node reference survives
+  exactly one Ctrl+Z and then lies. Keying by id also rules out the tidier
+  design of reparenting each stand-in under its placement, which would have made
+  transforms, deletion and the veil free but would have been wiped by the first
+  undo;
+* **matching is by name and broken by position.** Elements sharing a name share
+  one behaviour entry, so names are not unique, and Blender cannot hold two
+  objects called `crate4` — it appends `.001`. The suffix is stripped and the
+  tie is broken by the *nearest unclaimed* candidate, with no distance
+  tolerance: an element moved since the bake should still find its stand-in and
+  be reported as moved, rather than be drawn twice;
+* **the sync forces the recompute.** While the bake stands in for an element,
+  the element's own meshes are disabled, so the scene never renders them and
+  never refreshes their world matrix — an unforced `computeWorldMatrix()` hands
+  back the position the element had when it was last *drawn*, and the stand-in
+  then follows a drag only when something else in the frame happens to force the
+  update. Forcing it makes `updateFlag` useless as a gate, so the work is gated
+  on the matrix having actually changed: sixteen float compares against a
+  decompose and two matrix multiplies.
+
+Because the ship can now drift away from the bake that is being drawn, the
+preview says so. **CHECKS** grows a `bake is behind` line counting what the file
+no longer describes: `moved` (dragged since the bake, so it is showing light
+computed somewhere else), `not in it` (placed since, so it draws its own unlit
+geometry — the honest answer, since there is no lighting for it yet) and
+`deleted`. All three mean the room wants baking again.
+
+The stand-in swap runs *after* the element's own visibility has been decided, so
+it is never a second opinion on isolation, the layer filter or the Shift+H veil
+— a ghosted element keeps its own translucent clones and its stand-in stands
+down. Deletion is caught in `removePlacement` rather than by a sweep, because
+that is the one moment a placement actually disappears.
+
+### Baking in a live Blender — the **Blender** button
+
+A headless bake is a few minutes during which nothing can be seen and nothing
+can be changed. That is the wrong loop for the question it is usually asked to
+answer, which is *"is this room lit right?"* — and that question has a much
+cheaper answer.
+
+The **Blender** button exports the ship and opens it in a real Blender window,
+set up exactly as the headless path would have set it up and stopped one step
+short of rendering. The window opens **standing in the first room, at head
+height**, with the 3D view's sidebar already out **on its Aquanova tab** —
+which takes a retry: a sidebar only learns its tab names by drawing its panels,
+so the category cannot be set until the window has drawn at least one frame. A
+timer keeps trying until it takes, and a session whose sidebar came up on the
+wrong tab still works, so a failure here is reported rather than fatal.
+
+| | |
+|---|---|
+| **Chunk** | which room to look at and to bake, or all of them. This dropdown is the bake selector; selecting a collection or object in Blender's Scene Collection does not change it |
+| **Look inside** | hides every other chunk (Local View) and puts the eye 1.8 m over that room's floor, facing down its long axis |
+| **In the ship** | the same spot with the whole vessel back around you |
+| **Walk** | Blender's walk navigation: **WASD** moves, the mouse looks, **Q**/**E** drop and rise, the wheel changes speed, **Esc** leaves |
+| **Rendered** / **Solid** | viewport shading. Rendered is Cycles refining the *actual* lighting in a second or two — no lightmap involved |
+| **Light power** | scales every lamp off the watts the editor authored. `1.0` is what the editor has |
+| **Sky** | how hard the star field pushes through the windows |
+| **Samples**, **Resolution**, **Margin** | the same three the CLI takes, and with the same meaning: an override for **every** chunk this session bakes. **`-1` leaves each room on what the editor's Chunks pane asked for**, which is what they start at — a session that opened by forcing 1024 on a room the pane had set to 2048 would be quietly disagreeing with the editor. A map rendered at the panel's size carries the panel's numbers in its hash, so the next headless run notices and re-bakes it rather than keeping it |
+| **Bake** | re-reads the manifest's bake settings before rendering, with `Baking CH01_StorageCorridor (2/3) - 2 texture(s) remaining` in the panel and Blender's status bar, and **Esc** to cancel. A selected room is the only room queued unless UV2 was repacked for that room or the first bake initialized every room |
+| **Re-bake up-to-date rooms** | off by default: a room whose fingerprint has not moved already has the map this scene would render, so **All chunks** costs only the rooms the last change actually reached. Turn it on when the images on disk are suspect. The panel says how many rooms it spared |
+| **Export baked ship** | writes `ship_baked.glb` and the index. It is disabled while a bake is running |
+| **Send powers to the editor** | writes the lamps' current watts to `export/light_powers.json` |
+
+So the loop becomes: pick a room, **Look inside**, turn Rendered on, drag
+**Light power** until it looks right, bake *that one chunk*, look again, and
+only then export. Every button runs the same function the headless path runs —
+the panel is a second front end on the pipeline, not a second implementation
+of it.
+
+Head height is not a nicety. A ceiling panel looks even from above and blinding
+from under it, and a corridor that reads bright from outside the hull can still
+be a dark tunnel to walk down; 1.8 m over the floor is the only height that
+answers the question being asked. **Look inside** takes the room's lamps and
+portals with it — Local View shows the selection and nothing else, so isolating
+a room's *meshes* alone would leave it lit by lights that are no longer there.
+**Home** still frames the whole ship in one key.
+
+A few things are worth knowing about how it behaves:
+
+* **Opening a session does not unwrap.** `smart_project` over a whole ship is
+  minutes, and the rendered viewport — the reason to open a window at all —
+  needs no UV2 whatsoever. The atlases are packed by the **first bake**, which
+  is why that one bake is slower than the ones after it and why the panel says
+  so. Changing **Resolution** or **Margin** repacks them, because the island
+  margin is a fraction of the resolution.
+* **Bake refreshes the manifest's bake controls.** Samples, atlas sizes,
+  margins and bake inclusion rules are re-read from `ship_manifest.json` before
+  the queue is built. Placement, light or portal edits are reported as a
+  warning and ignored until the Blender session is reopened, because those
+  values are already imported into the open scene.
+* **The bake is asynchronous, which is what makes Esc work.** Called straight
+  from a script, Blender's bake operator renders on the main thread: the window
+  stops redrawing and Esc does nothing. Invoked instead, it runs as a Blender
+  job with a progress bar — but it returns immediately, so saving the image has
+  to wait for the job to end. A modal timer watches the bake handlers, finishes
+  each chunk as it lands, writes `lightmaps.json`, and starts the next.
+* **The tweaks are folded into the chunk hash.** A light-power multiplier lives
+  nowhere in the manifest, so a room baked at 3× would otherwise keep the hash
+  of the 1× one and the next headless run would decide it was already current.
+  That is also what makes the panel's skip safe: dragging **Light power** moves
+  the fingerprint, so the very next **Bake** re-renders rather than deciding the
+  room is up to date. Nothing but a genuinely unchanged scene reads as fresh —
+  and the check tests the *files* as well as the hash, so an index that outlived
+  its images cannot make the panel skip a room it has nothing on disk for.
+* **Walk is bound to the letters W/A/S/D, not to their positions.** On an
+  AZERTY keyboard those four are scattered, and Blender ships no AZERTY preset.
+  Remap them in *Edit ▸ Preferences ▸ Keymap ▸ 3D View ▸ View3D Walk Modal Map*
+  if it gets in the way. The **Walk** button exists mostly because the shortcut
+  itself — <kbd>Shift</kbd>+<kbd>`</kbd> — is <kbd>Alt Gr</kbd>+<kbd>7</kbd>
+  there and not worth hunting for.
+
+Exporting from a session is deliberately *not* the headless export: that one
+deletes every light on the way out (an Area light has no glTF equivalent, and
+the Cycles portals are lights too), which would leave a session that can never
+bake again. The session unlinks them for the duration and links them straight
+back instead.
+
+`POST /api/bake {"gui": true}` is what the button posts. Nothing is polled
+afterwards — the session belongs to you, its progress is on your screen, and it
+ends when you close the window. What comes back comes back as **files**: the
+lightmaps, which the **Baked** view reloads, and the powers, which **Get
+powers** pulls in.
+
+### Getting the powers back — **Get powers**
+
+**Send powers to the editor** in Blender writes `export/light_powers.json`;
+**Get powers** in the editor reads it and writes those watts onto the matching
+lights, by id. Only the **bake** half moves — the session has no opinion about
+the clustered lights the runtime draws, and silently rewriting those from a
+Cycles slider is not something anybody asked for. It is one undo step, and it
+does not save: the change is yours to keep or drop.
+
+A light that has since been deleted is counted and skipped rather than
+recreated. The editor is the authority on which lights exist; Blender is only
+ever the authority on how bright they should be.
+
 ## Testing
 
 ```
@@ -2438,11 +3251,13 @@ npm test           # spins up a private server and runs every suite
 ```
 
 The runner starts its own server instance on port 5199 pointed at a **throwaway
-export directory**, runs the three suites against it, then deletes it. A test
+export directory**, runs the four suites against it, then deletes it. A test
 run therefore cannot touch a real ship — earlier the suites saved and exported
 straight into `export/`, which would have overwritten whatever you were working
 on. `SHIP_EXPORT_DIR` and `SHIP_PORT` override `config.json` if you want to
-point a server anywhere else.
+point a server anywhere else. `SHIP_TEST_KEEP=1` leaves the throwaway directory
+behind instead of deleting it, which is the only way to look at the `.glb`, the
+manifest and the lightmaps a failing run actually produced.
 
 Individual suites can still be run by hand, but they will not guess a server:
 
@@ -2450,7 +3265,14 @@ Individual suites can still be run by hand, but they will not guess a server:
 TOOL_URL=http://localhost:5199/ node test/smoke.mjs      # catalogue, materials, markers, manifest, export
 TOOL_URL=http://localhost:5199/ node test/interact.mjs   # ghost, drag, hover, wheel, camera, keyboard
 TOOL_URL=http://localhost:5199/ node test/e2e.mjs        # clean-state build, save, artefact preservation
+SHIP_EXPORT_DIR=… node test/bake.mjs                     # the Blender half of the lightmap pipeline
 ```
+
+`bake.mjs` runs **real Blender** against the `ship.glb` `e2e.mjs` just exported,
+so it has to come after it. Blender is a tool the pipeline shells out to rather
+than a dependency of the editor, so a machine without it **skips** the suite
+instead of failing — set `BLENDER=<path>` to point at a copy the search does not
+know about.
 
 > **`TOOL_URL` has no default, and 5180 is refused outright.** It used to
 > default to 5180 — the port the editor runs on for real work — so running a

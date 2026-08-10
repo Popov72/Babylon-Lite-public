@@ -9,7 +9,18 @@
 // player, because those are the numbers that say whether the character controller has actually
 // settled on the floor or is still at its spawn pose.
 
-import { addToScene, createBox, createGpuPicker, createStandardMaterial, pickAsync, physicsRaycast, type EngineContext, type Mesh, type PhysicsWorld, type SceneContext } from "babylon-lite";
+import {
+    addToScene,
+    createBox,
+    createGpuPicker,
+    createStandardMaterial,
+    pickAsync,
+    physicsRaycast,
+    type EngineContext,
+    type Mesh,
+    type PhysicsWorld,
+    type SceneContext,
+} from "babylon-lite";
 
 export interface InspectOverlayOptions {
     engine: EngineContext;
@@ -20,7 +31,7 @@ export interface InspectOverlayOptions {
     cam: { position: { x: number; y: number; z: number } };
     /** Player capsule, for the foot height and the support raycast. */
     character: { getPosition(): { x: number; y: number; z: number } };
-    capsuleHeight: number;
+    getCapsuleHeight: () => number;
     roomAt: () => string;
     /** The demo's shared GPU picker, created lazily — the weapon needs one anyway, and two pickers
      *  would mean two sets of GPU targets for no benefit. */
@@ -38,12 +49,14 @@ export interface InspectOverlay {
     toggle(): void;
     /** Whether the overlay is on — the click/fire handlers must not act while it is. */
     isOn(): boolean;
+    /** Refresh the player and room readout while the overlay is visible. */
+    onFrame(): void;
     /** Hover handler — a no-op unless the overlay is on. Keeps one GPU readback in flight. */
     pickAt(x: number, y: number): void;
 }
 
 export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverlay {
-    const { engine, scene, canvas, world, cam, character, capsuleHeight, roomAt, getPicker, nodeNameOf, nodePrimitivesOf, isNoclip } = opts;
+    const { engine, scene, canvas, world, cam, character, getCapsuleHeight, roomAt, getPicker, nodeNameOf, nodePrimitivesOf, isNoclip } = opts;
 
     let inspect = false;
     let inspectPicking = false; // one in-flight GPU readback at a time
@@ -75,7 +88,7 @@ export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverla
     const refreshPanel = (): void => {
         const what = hoverNode ? `${hoverNode}\nMesh: ${hoverMesh}` : "—  (hover a surface)";
         const cp = character.getPosition();
-        const footY = cp.y - capsuleHeight / 2;
+        const footY = cp.y - getCapsuleHeight() / 2;
         const hit = physicsRaycast(world, { x: cp.x, y: footY + 0.05, z: cp.z }, { x: cp.x, y: footY - 3, z: cp.z });
         const ground = hit.hasHit ? `${hit.body?.node?.name ?? "?"} @ y ${hit.hitPoint.y.toFixed(3)}` : "nothing within 3 m";
         const cam3 = `${cam.position.x.toFixed(2)}, ${cam.position.y.toFixed(2)}, ${cam.position.z.toFixed(2)}`;
@@ -126,6 +139,9 @@ export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverla
 
     return {
         isOn: () => inspect,
+        onFrame(): void {
+            if (inspect) refreshPanel();
+        },
         toggle(): void {
             inspect = !inspect;
             if (inspect) {

@@ -7,11 +7,11 @@
     "scene12-generate-mipmaps-BeuA_ap5.js",
     "scene12-gltf-animation-B9C_mtEe.js",
     "scene12-gltf-feature-animations-DBsep52O.js",
-    "scene12-gltf-feature-registry-MFsRdyF_.js",
+    "scene12-gltf-feature-registry-CQ5DvjA3.js",
     "scene12-gltf-feature-skeleton-Ed7gPwjZ.js",
     "scene12-gltf-glb-parser-B39GIy7V.js",
-    "scene12-ibl-fragment-CeRrvT96.js",
-    "scene12-pbr-renderable-CWdHl2hf.js",
+    "scene12-ibl-fragment-D9e9c66T.js",
+    "scene12-pbr-renderable-VQdz0Dhj.js",
     "scene12-reflectance-fragment-DCD0BBZS.js",
     "scene12-rgbd-decode-Dv_uzcWF.js",
     "scene12-scene-uniforms-FTYH6Ct0.js",
@@ -19,5 +19,5 @@
     "scene12-skeleton-fragment-B3HcVmlw.js",
     "scene12.js"
   ],
-  "rawBytes": 106640
+  "rawBytes": 106549
 }

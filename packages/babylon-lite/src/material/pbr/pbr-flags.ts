@@ -49,9 +49,9 @@ export interface _PbrBindCtx {
     /** @internal */
     readonly _material: unknown;
     /** @internal Populated for "vertex" phase (skeleton, morph). */
-    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null };
+    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null } | null;
     /** @internal Populated for "ibl" phase. */
-    readonly _env?: { brdfLutView: GPUTextureView; brdfSampler: GPUSampler; specularCubeView: GPUTextureView; cubeSampler: GPUSampler } | null;
+    readonly _env?: { _brdfLutView: GPUTextureView; _brdfSampler: GPUSampler; _specularCubeView: GPUTextureView; _cubeSampler: GPUSampler } | null;
     /** @internal Per-render-task scene-color snapshot for transmissive RTT refraction. */
     readonly _refractionTexture?: Texture2D | null;
 }

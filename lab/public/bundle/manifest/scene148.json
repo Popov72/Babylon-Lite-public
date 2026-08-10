@@ -6,15 +6,15 @@
     "scene148-directional-light-DbBbX6ni.js",
     "scene148-generate-mipmaps-BesDMdXx.js",
     "scene148-gltf-feature-lights-punctual-Cs5ZPfka.js",
-    "scene148-gltf-feature-registry-B4lfu8Ny.js",
+    "scene148-gltf-feature-registry-C54xO4h-.js",
     "scene148-gltf-glb-parser-KLm0TPtr.js",
     "scene148-gltf-light-pointer-state-B7kFTRxK.js",
-    "scene148-pbr-geometry-view-BhA6XTUa.js",
-    "scene148-pbr-renderable-BlfqRIlc.js",
+    "scene148-pbr-geometry-view-DMas6oII.js",
+    "scene148-pbr-renderable-CSfz1tkc.js",
     "scene148-scene-uniforms-Ha63NnVx.js",
     "scene148-shader-composer-BCkp8e9Y.js",
     "scene148-singlelight-hemispheric-wgsl-NCHNMAPW.js",
     "scene148.js"
   ],
-  "rawBytes": 112503
+  "rawBytes": 112541
 }

@@ -1604,6 +1604,37 @@
         "skipPerf": true
     },
     {
+        "id": 166,
+        "slug": "scene166-clustered-spot-lights",
+        "name": "Scene 166 — Clustered Sponza Spot Lights",
+        "maxMad": 0.5,
+        "maxRawKB": 76.5,
+        "description": "Khronos Sponza glTF lit by 1000 deterministic clustered SPOT lights. Companion to scene 179 (same model, camera and light field generator) that exercises the clustered cone falloff instead of the point-light-only path.",
+        "tags": ["pbr", "gltf", "clustered", "lights"],
+        "skipPerf": true,
+        "bundleTimeoutMs": 180000
+    },
+    {
+        "id": 167,
+        "slug": "scene167-pbr-lightmap",
+        "name": "Scene 167 — PBR Lightmap",
+        "maxMad": 0.15,
+        "maxRawKB": 76.65,
+        "description": "PBR material lightmap channel. The levelTest.glb level keeps its glTF PBR materials and receives a baked lightmap on TEXCOORD_1 as a shadowmap (multiply, level 3.2, sRGB-decoded, uAng = π V-flip); two procedural PBR boxes receive the same texture additively on TEXCOORD_0. Covers every branch of the PBR lightmap fragment.",
+        "tags": ["pbr", "gltf", "lightmap", "texture"],
+        "skipPerf": true
+    },
+    {
+        "id": 169,
+        "slug": "scene169-local-cubemap",
+        "name": "Scene 169 — Local Cubemap Reflections",
+        "maxMad": 0.2,
+        "maxRawKB": 100,
+        "description": "A StandardMaterial and a PBRMaterial sample a per-material prefiltered cubemap while the scene also provides a global environment fallback.",
+        "tags": ["standard", "pbr", "environment", "cubemap"],
+        "skipPerf": true
+    },
+    {
         "id": 170,
         "slug": "scene170-navigation-basic",
         "name": "Scene 170 - Navigation Basic",

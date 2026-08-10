@@ -1,0 +1,37 @@
+{
+ "glb": "ship_baked.glb",
+ "uv": 1,
+ "gamma": false,
+ "srgb": true,
+ "encoding": "uastc",
+ "chunks": {
+  "CH00_Storage": {
+   "url": "lightmaps/CH00_Storage.ktx2",
+   "level": 4.5567,
+   "resolution": 512,
+   "meshes": 58,
+   "bytes": 231402
+  },
+  "CH01_StorageC": {
+   "url": "lightmaps/CH01_StorageC.ktx2",
+   "level": 14.2929,
+   "resolution": 512,
+   "meshes": 47,
+   "bytes": 193631
+  },
+  "CH02_StorageCTL": {
+   "url": "lightmaps/CH02_StorageCTL.ktx2",
+   "level": 1.3292,
+   "resolution": 256,
+   "meshes": 39,
+   "bytes": 59808
+  },
+  "CH03_StorageC2": {
+   "url": "lightmaps/CH03_StorageC2.ktx2",
+   "level": 1,
+   "resolution": 512,
+   "meshes": 76,
+   "bytes": 144646
+  }
+ }
+}

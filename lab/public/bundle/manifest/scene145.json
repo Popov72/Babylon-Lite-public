@@ -1,10 +1,10 @@
 {
   "rawKB": 89.6,
-  "gzipKB": 36.5,
+  "gzipKB": 36.6,
   "ignoredRawKB": 0,
   "runtimeChunks": [
     "scene145-bake-local-matrix-67U-IT8C.js",
-    "scene145-cube-texture-B4ynCovS.js",
+    "scene145-cube-texture-NpuHGPcZ.js",
     "scene145-generate-mipmaps-TrG6m0Ig.js",
     "scene145-geometry-view-ZvL2IEqo.js",
     "scene145-mesh-features-CoWix6zs.js",
@@ -17,10 +17,10 @@
     "scene145-standard-pipeline-CzsWXxPN.js",
     "scene145-standard-renderable-DEcTODK7.js",
     "scene145-std-ambient-fragment-B5679WBY.js",
-    "scene145-std-cube-reflection-fragment-Cvep7myF.js",
+    "scene145-std-cube-reflection-fragment-B70vr12D.js",
     "scene145-std-opacity-fragment-DXlO3KCA.js",
     "scene145-std-specular-fragment-DwjAhaXY.js",
     "scene145.js"
   ],
-  "rawBytes": 91787
+  "rawBytes": 91799
 }

@@ -5,22 +5,32 @@ import { assembleEnvironmentTextures, loadBrdfImage } from "./env-helpers.js";
 import { mipLevelCount } from "../texture/mip-count.js";
 import { computeSceneSize } from "../material/pbr/scene-size.js";
 import { registerEnvSceneUniforms } from "../scene/scene-ubo-extras.js";
+import type { CubeTexture } from "../texture/cube-texture.js";
 
 /** GPU-resident environment textures. */
-export interface EnvironmentTextures {
-    specularCube: GPUTexture;
-    specularCubeView: GPUTextureView;
-    brdfLut: GPUTexture;
-    brdfLutView: GPUTextureView;
-    cubeSampler: GPUSampler;
-    brdfSampler: GPUSampler;
-    irradianceSH: Float32Array;
+export interface EnvironmentTextures extends CubeTexture {
+    /** @internal */
+    _specularCube: GPUTexture;
+    /** @internal */
+    _specularCubeView: GPUTextureView;
+    /** @internal */
+    _brdfLut: GPUTexture;
+    /** @internal */
+    _brdfLutView: GPUTextureView;
+    /** @internal */
+    _cubeSampler: GPUSampler;
+    /** @internal */
+    _brdfSampler: GPUSampler;
+    /** @internal */
+    _irradianceSH: Float32Array;
     /** Pre-scaled SH coefficients for shader, 36 floats in stride-4 layout:
      *  [L00.rgb, 0, L1_1.rgb, 0, L10.rgb, 0, L11.rgb, 0, L2_2.rgb, 0,
      *   L2_1.rgb, 0, L20.rgb, 0, L21.rgb, 0, L22.rgb, 0] */
-    sphericalHarmonics: Float32Array;
+    /** @internal */
+    _sphericalHarmonics: Float32Array;
     /** LOD generation scale for specular IBL sampling. Default 0.8 (matches BJS BaseTexture). */
-    lodGenerationScale: number;
+    /** @internal */
+    _lodGenerationScale: number;
 }
 
 const ENV_MAGIC = new U8([0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36]);

@@ -46,6 +46,12 @@ export function _installPbrFallbackResolver(resolve: (engine: EngineContext) => 
     _pbrFallbackResolver = resolve;
 }
 
+let _pbrLocalEnvironmentResolver: ((material: PbrMaterialProps) => EnvironmentTextures | null | undefined) | null = null;
+/** @internal Install the material-local environment resolver (called by `createPbrMaterial`). */
+export function _installPbrLocalEnvironmentResolver(resolve: (material: PbrMaterialProps) => EnvironmentTextures | null | undefined): void {
+    _pbrLocalEnvironmentResolver = resolve;
+}
+
 /** Primitive-state resolver, installed only by the glTF primitive feature (non-triangle topology
  *  or negative-winding meshes). Module-local with a single exported setter: when no such mesh is in
  *  the bundle the setter tree-shakes, the bundler proves this is always null, and the
@@ -230,8 +236,8 @@ export function createPbrMeshBindGroup(
         _features2: features2,
         _meshFeatures: meshFeatures,
         _material: material,
-        _mesh: meshCtx ?? undefined,
-        _env: env,
+        _mesh: meshCtx,
+        _env: _pbrLocalEnvironmentResolver?.(material) ?? env,
         _refractionTexture: refractionTexture,
     };
 

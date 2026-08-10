@@ -14,6 +14,10 @@ export const PBR_HAS_COTANGENT_NORMAL = 1 << 9;
 export const PBR_HAS_METALLIC_REFLECTANCE_MAP = 1 << 10;
 export const PBR_HAS_REFLECTANCE_MAP = 1 << 11;
 export const PBR_HAS_USE_ALPHA_ONLY_MR = 1 << 12;
+// 1<<13, 1<<14, 1<<16, 1<<18 and 1<<19 are lightmap-local (fragments/lightmap-fragment.ts):
+// PBR_HAS_LIGHTMAP / PBR_LIGHTMAP_UV2 / PBR_LIGHTMAP_SHADOWMAP / PBR_LIGHTMAP_GAMMA /
+// PBR_LIGHTMAP_FLIP_V. Declared inside that lazy module per GUIDANCE §4c′; reserved here
+// so nothing reuses them.
 export const PBR_HAS_OCCLUSION = 1 << 15;
 export const PBR_HAS_SPECULAR_AA = 1 << 17;
 export const PBR_HAS_CLEARCOAT = 1 << 20;
@@ -50,8 +54,9 @@ export const PBR2_HAS_BASE_COLOR_FACTOR = 1 << 12;
 export const PBR2_NO_COLOR_OUTPUT = 1 << 15;
 /** Material view runs discard/clip logic and writes exponential shadow-map color. */
 export const PBR2_ESM_SHADOW_OUTPUT = 1 << 16;
-// 1<<17 .. 1<<19 are iridescence-local; 1<<20 is refraction-local;
-// 1<<21 is geometry-output-local.
+// 1<<17 .. 1<<19 are iridescence-local (also 1<<17 / 1<<18 clustered-lighting-local,
+// see light/clustered.ts — clustered lighting and iridescence are mutually exclusive);
+// 1<<20 is refraction-local; 1<<21 is geometry-output-local.
 // ─── Extension-local features2 bits (1<<22 .. 1<<28) ────────────────
 // RESERVED here but DEFINED inside their lazy fragment modules so the constants
 // are never retained in the entry/shared chunk for scenes that don't load those

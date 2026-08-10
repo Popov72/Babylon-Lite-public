@@ -5,7 +5,16 @@ import { generateMipmaps } from "./generate-mipmaps.js";
 import { mipLevelCount } from "./mip-count.js";
 import type { EngineContext } from "../engine/engine.js";
 
-type CubeResult = { texture: GPUTexture; view: GPUTextureView; sampler: GPUSampler };
+/** Managed cube texture resource used by StandardMaterial reflections. */
+export interface CubeTexture {
+    /** @internal */
+    readonly _t: GPUTexture;
+    /** @internal */
+    readonly _v: GPUTextureView;
+    /** @internal */
+    readonly _s: GPUSampler;
+}
+type CubeResult = CubeTexture;
 let _cc: WeakMap<GPUDevice, Map<string, Promise<CubeResult>>> | null = null;
 
 export function loadCubeTexture(engine: EngineContext, baseUrl: string, ext = ".jpg"): Promise<CubeResult> {
@@ -47,9 +56,9 @@ export function loadCubeTexture(engine: EngineContext, baseUrl: string, ext = ".
             generateMipmaps(engine, tex, i);
         }
         return {
-            texture: tex,
-            view: tex.createView({ dimension: "cube", format: "rgba8unorm" }),
-            sampler: getTrilinearSampler(engine),
+            _t: tex,
+            _v: tex.createView({ dimension: "cube", format: "rgba8unorm" }),
+            _s: getTrilinearSampler(engine),
         };
     })();
     dc.set(key, p);

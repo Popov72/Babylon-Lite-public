@@ -285,11 +285,13 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
     // bakes its own copy).
     let _toneMappingHelpers = "";
     let _toneMappingCall = "";
+    let toneMappingKey = "";
     const hasTonemap = scene.imageProcessing.toneMappingEnabled;
     if (hasTonemap) {
         const toneMapping = scene.imageProcessing.toneMapping ?? StandardToneMapping;
         _toneMappingHelpers = toneMapping.helpersWGSL;
         _toneMappingCall = toneMapping.callWGSL;
+        toneMappingKey = toneMapping.id;
     }
 
     // Fog WGSL is dynamically imported only when the scene has fog, so non-fog PBR scenes
@@ -362,7 +364,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
             meshFeatures,
             sceneFeatures,
             composed,
-            `${lightMode}:${singleLightType}${vbKey}:${uv2Mask}`,
+            `${lightMode}:${singleLightType}${vbKey}:${uv2Mask}:${toneMappingKey}`,
             mat.stencil ?? null
         );
 

@@ -14,6 +14,8 @@ import { getRenderTaskGpuTimings, setRenderTaskGpuTimingEnabled, type EngineCont
 
 export interface PerfOverlayOptions {
     engine: EngineContext;
+    /** Current fluid workload displayed independently of GPU timestamp availability. */
+    fluidWorkload?: () => { simulations: number; particles: number };
     /**
      * Latest fluid stage times in ms, or null when unavailable.
      *
@@ -56,7 +58,7 @@ const PANEL_CH = 52;
  * @returns The overlay handle; call `onFrame` every frame and `toggle` from the key handler.
  */
 export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
-    const { engine, fluidStages, onToggle } = opts;
+    const { engine, fluidWorkload, fluidStages, onToggle } = opts;
     let on = false;
     let winFrames = 0;
     let winElapsed = 0;
@@ -133,22 +135,22 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
      */
     const refresh = (): void => {
         const head = fps > 0 ? `FPS ${fps.toFixed(1)}   cpu ${cpuMs.toFixed(2)} ms/frame` : "FPS —";
+        const workload = fluidWorkload?.() ?? { simulations: 0, particles: 0 };
+        const fluidHead = `Fluid ${workload.simulations} sim(s)   ${workload.particles.toLocaleString("en-US")} particles`;
         if (lastStatus === "unsupported") {
-            panel.textContent = `PERF (P)\n${head}\nGPU: timestamp-query unsupported on this device`;
+            panel.textContent = `PERF (P)\n${head}\n${fluidHead}\nGPU: timestamp-query unsupported on this device`;
             return;
         }
         if (taskSamples === 0) {
             // "pending" is normal for the first frames: the readback lands a frame or two behind.
-            panel.textContent = `PERF (P)\n${head}\nGPU: ${lastStatus || "pending"}`;
+            panel.textContent = `PERF (P)\n${head}\n${fluidHead}\nGPU: ${lastStatus || "pending"}`;
             return;
         }
         const taskSum = taskSumAcc / taskSamples;
         const outsideGraph = fluidSamples > 0 ? outsideAcc / fluidSamples : 0;
         const envelope = fluidSamples > 0 ? envAcc / fluidSamples : 0;
 
-        const rows = [...rowAcc.entries()]
-            .map(([name, sum]) => ({ name, ms: sum / (name.endsWith(" *") ? Math.max(1, fluidSamples) : taskSamples) }))
-            .sort((a, b) => b.ms - a.ms);
+        const rows = [...rowAcc.entries()].map(([name, sum]) => ({ name, ms: sum / (name.endsWith(" *") ? Math.max(1, fluidSamples) : taskSamples) })).sort((a, b) => b.ms - a.ms);
         const shown = rows.slice(0, MAX_TASK_LINES);
         let rest = 0;
         for (const r of rows.slice(MAX_TASK_LINES)) {
@@ -189,7 +191,7 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
             header = `GPU ${accounted.toFixed(3)} ms  (sum of parts, no envelope)`;
         }
         const foot = outsideGraph > 0 ? "\n  * encoded outside the frame graph" : "";
-        panel.textContent = `PERF (P)\n${head}\n${header}\n${lines.join("\n")}${foot}`;
+        panel.textContent = `PERF (P)\n${head}\n${fluidHead}\n${header}\n${lines.join("\n")}${foot}`;
     };
 
     return {

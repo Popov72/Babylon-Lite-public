@@ -27,6 +27,7 @@ export/*.glb
 export/ship_manifest.*-*.json
 export/ship_collision.*-*.json
 export/ship_autosave.*-*.json
+export/lightmaps/
 
 # The current recovery copy, rewritten every couple of minutes while you work.
 # Never a deliberate save, so never part of the history.

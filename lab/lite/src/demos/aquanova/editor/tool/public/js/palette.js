@@ -130,7 +130,7 @@ export function setBrush(id, opts = {}) {
   document.getElementById("hint").textContent = id
     ? (state.collisionMode
       ? "Click to put it on the bench · Shift+wheel turns · Ctrl+wheel scales · Esc to stop"
-      : "Click to place · Shift+wheel turns · Ctrl+wheel scales · Esc or right-click to stop")
+      : "Click to place · B brings it to you · Shift+wheel turns · Ctrl+wheel scales · Esc or right-click to stop")
     : "";
   if (id) armGhost(id, opts); else cancelGhost();
   emit("brush");

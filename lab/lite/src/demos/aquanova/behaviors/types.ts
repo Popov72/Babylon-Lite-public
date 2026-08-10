@@ -9,11 +9,12 @@ export interface LiquefiableBehaviorConfig {
     liquefiable: true;
     fluidSim?: string[];
     linked?: string[];
-    excludeSDF?: string[];
 }
 
 export interface PlayerBehaviorConfig {
     direction?: number[];
+    /** Maximum force the character controller applies while pushing dynamic bodies. */
+    characterStrength?: number;
 }
 
 export interface WeaponBehaviorConfig {
@@ -26,8 +27,8 @@ export interface BehaviorConfig {
     liquefiable?: boolean;
     fluidSim?: string[];
     linked?: string[];
-    excludeSDF?: string[];
     direction?: number[];
+    characterStrength?: number;
 }
 
 export function isLiquefiableBehaviorConfig<Config extends BehaviorConfig>(config: Config): config is Config & LiquefiableBehaviorConfig {
@@ -54,6 +55,10 @@ export interface BehaviorContext {
     readonly isLiquefiable: (mesh: Mesh) => boolean;
     readonly isInspecting: () => boolean;
     readonly inspectAt: (x: number, y: number) => void;
+    /** Begin validating a re-press against the reversing fusion. Null means there is no fusion to resume. */
+    readonly requestFusionResume: () => number | null;
+    readonly resolveFusionResume: (token: number, mesh: Mesh | null) => "resumed" | "start-new" | "continue";
+    readonly reverseFusion: () => void;
     readonly liquefy: (mesh: Mesh, point: readonly [number, number, number] | null, config: LiquefiableBehaviorConfig) => void;
 }
 
