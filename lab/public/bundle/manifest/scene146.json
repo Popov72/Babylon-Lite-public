@@ -1,17 +1,18 @@
 {
-  "rawKB": 110.8,
-  "gzipKB": 45.9,
+  "rawKB": 111.2,
+  "gzipKB": 46.2,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene146-alpha-test-fragment-B1oJH8yp.js",
-    "scene146-background-ground-B12I79Z5.js",
-    "scene146-background-solid-skybox-B9RRK6aG.js",
-    "scene146-generate-mipmaps-C7bWV_xp.js",
-    "scene146-gltf-json-asset-CWkbTcab.js",
+    "scene146-alpha-test-fragment-DHg1slQK.js",
+    "scene146-background-ground-BifEHFEP.js",
+    "scene146-background-solid-skybox-CtNrdzkG.js",
+    "scene146-bgl-helpers-Bob3fM5m.js",
+    "scene146-generate-mipmaps-Cga8Me24.js",
+    "scene146-gltf-json-asset-CfpiR91t.js",
     "scene146-ibl-fragment-D9e9c66T.js",
-    "scene146-pbr-geometry-view-h9fZEn4F.js",
-    "scene146-pbr-renderable-ffm556jP.js",
-    "scene146-rgbd-decode-DKiZKzZ0.js",
+    "scene146-pbr-geometry-view-D1Gw0JJN.js",
+    "scene146-pbr-renderable-Bch-kfnX.js",
+    "scene146-rgbd-decode-DjacYvdz.js",
     "scene146-scene-uniforms-FTYH6Ct0.js",
     "scene146-shader-composer-DOjPUQGI.js",
     "scene146-skybox.vertex-N0PI02X6-BmZ0CPPT.js",
@@ -19,5 +20,5 @@
     "scene146-wgsl-helpers-BxdFLrVn.js",
     "scene146.js"
   ],
-  "rawBytes": 113476
+  "rawBytes": 113861
 }

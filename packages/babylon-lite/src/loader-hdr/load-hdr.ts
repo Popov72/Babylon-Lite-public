@@ -37,6 +37,8 @@ export interface HdrLoadOptions {
     skipGround?: boolean;
     /** Skybox size matching BJS createDefaultEnvironment skyboxSize option. */
     skyboxSize?: number;
+    /** Explicit skybox origin. When paired with `skyboxSize`, skips automatic scene-bounds sizing. */
+    skyboxPosition?: [number, number, number];
 }
 
 /**
@@ -96,17 +98,23 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
 
     // Background renderables (skybox + ground) — deferred so they run AFTER the user
     // has finished tweaking `scene.imageProcessing.*` (skybox materials snapshot
-    // exposure/contrast at build time into their per-mesh UBO).
+    // exposure/contrast at build time into their per-mesh UBO). Backgrounds cost nothing here:
+    // each builder stamps its own rebuild descriptor onto the renderable it returns.
     const useHdr = !!options?.useCubemapSkybox;
     const skipSkybox = !!options?.skipSkybox;
     const skipGround = !!options?.skipGround;
+    engine._dlr?.h(scene, url, faceSize);
     scene._deferredBuilders.push(async () => {
-        // Hoisted: both branches below need the same value, and evaluating it here keeps the
-        // original read-at-deferred-build-time semantics while emitting the literal once.
         const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
         if (useHdr && !skipSkybox && textures._specularCubeView) {
-            const { computeSceneSize } = await import("../material/pbr/scene-size.js");
-            const { skyboxSize: autoSkyboxSize, rootPosition } = computeSceneSize(scene, options?.skyboxSize);
+            let autoSkyboxSize = options?.skyboxSize;
+            let rootPosition = options?.skyboxPosition;
+            if (autoSkyboxSize === undefined || rootPosition === undefined) {
+                const { computeSceneSize } = await import("../material/pbr/scene-size.js");
+                const size = computeSceneSize(scene, autoSkyboxSize);
+                autoSkyboxSize = size.skyboxSize;
+                rootPosition = size.rootPosition;
+            }
             const { buildHdrSkyboxRenderable } = await import("../material/pbr/background-hdr-skybox.js");
             scene._renderables.push(buildHdrSkyboxRenderable(scene, textures, autoSkyboxSize / 2, rootPosition, primaryColor));
         }

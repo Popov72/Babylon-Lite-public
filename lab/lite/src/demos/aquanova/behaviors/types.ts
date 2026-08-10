@@ -50,6 +50,8 @@ export interface BehaviorContext {
     readonly events: EventManager;
     readonly capsuleHeight: number;
     readonly eyeHeight: number;
+    /** Whether the standing capsule can expand upward without intersecting the ship. */
+    readonly canStand: () => boolean;
     readonly getPicker: () => GpuPicker;
     readonly nodeNameOf: (mesh: Mesh) => string;
     readonly isLiquefiable: (mesh: Mesh) => boolean;

@@ -308,12 +308,11 @@ export class PhysicsCharacterController {
 
     private readonly _world: PhysicsWorld;
     private _shape: PhysicsShape;
+    private _shapeOptions: PhysicsCharacterControllerOptions;
     private readonly _node: TransformNode;
     private readonly _body: PhysicsBody;
     private readonly _startCollector: any;
     private readonly _castCollector: any;
-    private readonly _capsuleRadius: number;
-    private _capsuleHeight: number;
 
     private _position: Vec3;
     private _velocity: Vec3 = v();
@@ -332,9 +331,13 @@ export class PhysicsCharacterController {
         this._world = world;
         this._position = vclone(position);
 
-        this._capsuleRadius = options.capsuleRadius ?? 0.6;
-        this._capsuleHeight = options.capsuleHeight ?? 1.8;
-        this._shape = this._createCapsuleShape(this._capsuleHeight);
+        const r = options.capsuleRadius ?? 0.6;
+        const h = options.capsuleHeight ?? 1.8;
+        this._shapeOptions = options;
+        this._shape = createPhysicsShape(world, {
+            type: PhysicsShapeType.CAPSULE,
+            parameters: { pointA: { x: 0, y: h * 0.5 - r, z: 0 }, pointB: { x: 0, y: -h * 0.5 + r, z: 0 }, radius: r },
+        });
 
         this._node = createTransformNode("CCTransformNode", position.x, position.y, position.z);
         this._body = createPhysicsBody(world, this._node, PhysicsMotionType.ANIMATED);
@@ -367,53 +370,56 @@ export class PhysicsCharacterController {
         this._node.position.set(position.x, position.y, position.z);
     }
 
-    /** Get the current character velocity (world space). The returned vector is owned by the controller. */
-    public getVelocity(): Vec3 {
-        return this._velocity;
-    }
-
-    /** Get the capsule's current total height, from bottom tip to top tip. */
-    public getCapsuleHeight(): number {
-        return this._capsuleHeight;
+    /**
+     * The shape options used to build the collision capsule. Reflects the values passed at
+     * construction or the last call to {@link setShapeOptions}.
+     */
+    public get shapeOptions(): PhysicsCharacterControllerOptions {
+        return this._shapeOptions;
     }
 
     /**
-     * Resize the collision capsule while preserving its world-space foot position.
+     * Set new shape options and rebuild the collision capsule accordingly.
      *
-     * Shrinking always succeeds. Expansion first checks the proposed capsule against the world
-     * and leaves the current capsule unchanged when there is not enough overhead clearance.
-     * @param height - New total capsule height, in metres. Must be at least the capsule diameter.
-     * @returns `true` when the requested height is active, or `false` when expansion was blocked.
+     * This is the supported way to change the capsule for common character features such as
+     * crouching, standing, crawling or sliding without recreating the controller (which would lose
+     * its position, velocity, support state and event subscriptions). The old Havok shape is
+     * released and replaced with a new one built from `options.capsuleHeight` / `options.capsuleRadius`.
+     *
+     * @param options - New capsule dimensions.
+     * @param preserveFootPosition - When `true` (default), the controller position is adapted so the
+     * world-space foot position (center - up * height/2) is kept fixed as the height changes; when
+     * `false`, the position is left unchanged.
      */
-    public trySetCapsuleHeight(height: number): boolean {
-        const minimumHeight = this._capsuleRadius * 2;
-        if (!Number.isFinite(height) || height < minimumHeight) {
-            throw new Error(`Character capsule height must be finite and at least its diameter (${minimumHeight}), received ${String(height)}`);
-        }
-        if (Math.abs(height - this._capsuleHeight) <= Number.EPSILON) {
-            return true;
+    public setShapeOptions(options: PhysicsCharacterControllerOptions, preserveFootPosition = true): void {
+        const r = options.capsuleRadius ?? 0.6;
+        const h = options.capsuleHeight ?? 1.8;
+
+        if (preserveFootPosition) {
+            // Compute the current world-space foot position (center - up * oldHeight/2) and move the
+            // center so the feet stay fixed for the new half-height: center = foot + up * newHeight/2.
+            const oldH = this._shapeOptions.capsuleHeight ?? 1.8;
+            const delta = (h - oldH) * 0.5;
+            vaddIn(this._position, vscale(this.up, delta));
+            this._node.position.set(this._position.x, this._position.y, this._position.z);
         }
 
-        const nextShape = this._createCapsuleShape(height);
-        const nextPosition = {
-            x: this._position.x,
-            y: this._position.y + (height - this._capsuleHeight) * 0.5,
-            z: this._position.z,
-        };
-        if (height > this._capsuleHeight && !this._capsuleFitsAt(nextShape, nextPosition)) {
-            this._world._hknp.HP_Shape_Release(nextShape._hkShape);
-            return false;
-        }
+        this._shapeOptions = options;
 
-        const previousShape = this._shape;
-        setPhysicsBodyShape(this._world, this._body, nextShape);
-        this._shape = nextShape;
-        this._capsuleHeight = height;
-        vcopy(this._position, nextPosition);
-        this._node.position.set(nextPosition.x, nextPosition.y, nextPosition.z);
-        this._manifold.length = 0;
-        this._world._hknp.HP_Shape_Release(previousShape._hkShape);
-        return true;
+        const newShape = createPhysicsShape(this._world, {
+            type: PhysicsShapeType.CAPSULE,
+            parameters: { pointA: { x: 0, y: h * 0.5 - r, z: 0 }, pointB: { x: 0, y: -h * 0.5 + r, z: 0 }, radius: r },
+        });
+
+        const oldShape = this._shape;
+        setPhysicsBodyShape(this._world, this._body, newShape);
+        this._world._hknp.HP_Shape_Release(oldShape._hkShape);
+        this._shape = newShape;
+    }
+
+    /** Get the current character velocity (world space). The returned vector is owned by the controller. */
+    public getVelocity(): Vec3 {
+        return this._velocity;
     }
 
     /** Set the character velocity (world space). */
@@ -651,40 +657,6 @@ export class PhysicsCharacterController {
         }
         const castQuery = [shapeHandle, orientation, startNative, [endPos.x, endPos.y, endPos.z], false, ignoreSelf];
         hknp.HP_World_ShapeCastWithCollector(hkWorld, this._castCollector, castQuery);
-    }
-
-    private _createCapsuleShape(height: number): PhysicsShape {
-        const axisHalf = Math.max(0, height * 0.5 - this._capsuleRadius);
-        const negativeAxisHalf = axisHalf === 0 ? 0 : -axisHalf;
-        return createPhysicsShape(this._world, {
-            type: PhysicsShapeType.CAPSULE,
-            parameters: {
-                pointA: { x: 0, y: axisHalf, z: 0 },
-                pointB: { x: 0, y: negativeAxisHalf, z: 0 },
-                radius: this._capsuleRadius,
-            },
-        });
-    }
-
-    private _capsuleFitsAt(shape: PhysicsShape, position: Vec3): boolean {
-        const hknp = this._world._hknp;
-        const query = [
-            shape._hkShape,
-            [position.x, position.y, position.z],
-            [this._orientation.x, this._orientation.y, this._orientation.z, this._orientation.w],
-            0,
-            false,
-            [this._body._hkBody[0]],
-        ];
-        hknp.HP_World_ShapeProximityWithCollector(this._world._hkWorld, this._startCollector, query);
-        const hitCount = hknp.HP_QueryCollector_GetNumHits(this._startCollector)[1];
-        for (let i = 0; i < hitCount; i++) {
-            const [distance] = hknp.HP_QueryCollector_GetShapeProximityResult(this._startCollector, i)[1];
-            if (distance < -1e-4) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private _findBody(id: unknown): PhysicsBody | null {

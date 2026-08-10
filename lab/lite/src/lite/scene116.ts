@@ -34,6 +34,7 @@ async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
+    scene.clearColor = { r: 0.2, g: 0.2, b: 0.302, a: 1.0 };
     scene.fixedDeltaMs = 16.0;
 
     const mainCamera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2.35, 8.5, { x: 0, y: -0.25, z: 0 });

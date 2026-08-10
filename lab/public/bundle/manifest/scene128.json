@@ -1,11 +1,11 @@
 {
   "rawKB": 60.3,
-  "gzipKB": 23.4,
+  "gzipKB": 23.5,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene128-shader-renderable-vqQYH63G.js",
-    "scene128-uniform-copy-batch-rlZTooAw.js",
+    "scene128-shader-renderable--0LsZ_kc.js",
+    "scene128-uniform-copy-batch-lCE46Ap4.js",
     "scene128.js"
   ],
-  "rawBytes": 61775
+  "rawBytes": 61782
 }

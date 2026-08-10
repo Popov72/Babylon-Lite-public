@@ -1,9 +1,10 @@
 /** Cube reflection fragment — dynamically imported for scenes with cube reflection textures. */
 import type { ShaderFragment } from "../../../shader/fragment-types.js";
 import type { StdExt } from "../standard-flags.js";
-import { HAS_CUBE_REFLECTION } from "../standard-flags.js";
+import { CUBE_REFLECTION_GAMMA, HAS_CUBE_REFLECTION } from "../standard-flags.js";
 
-export function createStdCubeReflectionFragment(): ShaderFragment {
+export function createStdCubeReflectionFragment(features: number): ShaderFragment {
+    const gamma = features & CUBE_REFLECTION_GAMMA;
     return {
         _id: "std-cube-reflection",
         _bindings: [
@@ -11,7 +12,7 @@ export function createStdCubeReflectionFragment(): ShaderFragment {
             { _name: "cRS", _type: { _kind: "sampler", _samplerType: "sampler" }, _visibility: 0x2 },
         ],
         _fragmentSlots: {
-            AD: `{let v=normalize(input.vp-scene.vEyePosition.xyz);let sample=textureSample(cRT,cRS,reflect(v,normalW)).rgb;reflectionColor=pow(sample,vec3<f32>(1.0/2.2))*mat.rLvl;}`,
+            AD: `{let v=normalize(input.vp-scene.vEyePosition.xyz);reflectionColor=${gamma ? "pow(" : ""}textureSample(cRT,cRS,reflect(v,normalW)).rgb${gamma ? ",vec3<f32>(1.0/2.2))" : ""}*mat.rLvl;}`,
         },
     };
 }

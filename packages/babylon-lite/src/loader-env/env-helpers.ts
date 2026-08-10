@@ -21,25 +21,34 @@ export async function loadBrdfImage(url: string): Promise<ImageBitmap> {
     throw new Error(`BRDF LUT '${url}' is not an image (${response.status} ${response.headers.get("content-type") ?? ""}).`);
 }
 
-/** Assemble the EnvironmentTextures object from pre-computed components */
+/**
+ * Assemble the EnvironmentTextures object from pre-computed components.
+ *
+ * `sphericalHarmonics` may be supplied to reuse the array from a previous assembly — device-lost
+ * recovery re-parses the same source file, so recomputing would only rebuild an identical array.
+ */
 export function assembleEnvironmentTextures(
     specularCube: GPUTexture,
     brdfLut: GPUTexture,
     irradianceSH: Float32Array,
     lodGenerationScale: number,
-    engine: EngineContext
+    engine: EngineContext,
+    sphericalHarmonics?: Float32Array
 ): EnvironmentTextures {
     const specularCubeView = specularCube.createView({ dimension: "cube" });
     const cubeSampler = getTrilinearSampler(engine);
+    const brdfLutView = brdfLut.createView();
+    const brdfSampler = getBilinearSampler(engine);
+    const harmonics = sphericalHarmonics ?? polynomialToPreScaledHarmonics(irradianceSH);
     return {
         _specularCube: specularCube,
         _specularCubeView: specularCubeView,
         _brdfLut: brdfLut,
-        _brdfLutView: brdfLut.createView(),
+        _brdfLutView: brdfLutView,
         _cubeSampler: cubeSampler,
-        _brdfSampler: getBilinearSampler(engine),
+        _brdfSampler: brdfSampler,
         _irradianceSH: irradianceSH,
-        _sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
+        _sphericalHarmonics: harmonics,
         _lodGenerationScale: lodGenerationScale,
         _t: specularCube,
         _v: specularCubeView,

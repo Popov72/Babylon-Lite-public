@@ -87,15 +87,18 @@ export function assembleEnvironmentTextures(
 ): EnvironmentTextures {
     const specularCubeView = specularCube.createView({ dimension: "cube" });
     const cubeSampler = engine._device.createSampler(_trilinearDesc);
+    const brdfLutView = brdfLut.createView();
+    const brdfSampler = engine._device.createSampler(_bilinearDesc);
+    const sphericalHarmonics = polynomialToPreScaledHarmonics(irradianceSH);
     return {
         _specularCube: specularCube,
         _specularCubeView: specularCubeView,
         _brdfLut: brdfLut,
-        _brdfLutView: brdfLut.createView(),
+        _brdfLutView: brdfLutView,
         _cubeSampler: cubeSampler,
-        _brdfSampler: engine._device.createSampler(_bilinearDesc),
+        _brdfSampler: brdfSampler,
         _irradianceSH: irradianceSH,
-        _sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
+        _sphericalHarmonics: sphericalHarmonics,
         _lodGenerationScale: lodGenerationScale,
         _t: specularCube,
         _v: specularCubeView,

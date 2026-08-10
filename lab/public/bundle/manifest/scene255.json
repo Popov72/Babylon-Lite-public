@@ -1,24 +1,23 @@
 {
-  "rawKB": 94.9,
-  "gzipKB": 40.2,
+  "rawKB": 94.8,
+  "rawBytes": 97094,
+  "gzipKB": 40,
   "ignoredRawKB": 0,
   "runtimeChunks": [
     "scene255-create-skeleton-B2bD2bod.js",
     "scene255-flat-normal-wgsl-Cm9mM4tC.js",
-    "scene255-generate-mipmaps-C9duVcBt.js",
-    "scene255-gltf-animation-BdNI7eQz.js",
-    "scene255-gltf-feature-animations-DWGTy8Ey.js",
-    "scene255-gltf-feature-registry-BgbvH6Eh.js",
-    "scene255-gltf-feature-skeleton-DXWdHHtm.js",
-    "scene255-gltf-json-asset-CPXLjjkH.js",
+    "scene255-generate-mipmaps-CwS-SesP.js",
+    "scene255-gltf-animation-oRG8KTym.js",
+    "scene255-gltf-feature-animations-H1Q2ykEt.js",
+    "scene255-gltf-feature-registry-C6lgA8p4.js",
+    "scene255-gltf-feature-skeleton-9zODAoS6.js",
+    "scene255-gltf-json-asset-W_mZ09Sr.js",
     "scene255-gltf-normals-DYhLwXNX.js",
     "scene255-ibl-fragment-D9e9c66T.js",
-    "scene255-pbr-pipeline-Bi2U1qvP.js",
-    "scene255-pbr-renderable-BHOlnvZv.js",
+    "scene255-pbr-renderable-Dd8PAXao.js",
     "scene255-rgbd-decode-jKIQpb6O.js",
     "scene255-scene-uniforms-FTYH6Ct0.js",
-    "scene255-skeleton-fragment-Bvk9fdnP.js",
+    "scene255-skeleton-fragment-CSAfWZYT.js",
     "scene255.js"
-  ],
-  "rawBytes": 97152
+  ]
 }

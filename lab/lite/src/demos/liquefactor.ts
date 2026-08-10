@@ -1079,7 +1079,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const invalidateFilteredSceneTasks = (): void => {
         for (const task of [sceneTask, foeTask]) {
             task._lastVersion = -1;
-            task._opaqueBundles.length = 0;
+            task._ob.length = 0;
         }
     };
 

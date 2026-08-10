@@ -1,8 +1,8 @@
-import { F32, U8 } from "../engine/typed-arrays.js";
+import { F32 } from "../engine/typed-arrays.js";
 import type { SceneContext } from "../scene/scene.js";
 import { acquireGPUTexture, releaseGPUTexture } from "../resource/gpu-pool.js";
 import { assembleEnvironmentTextures, loadBrdfImage } from "./env-helpers.js";
-import { mipLevelCount } from "../texture/mip-count.js";
+import { parseEnvFile } from "./env-parse.js";
 import { computeSceneSize } from "../material/pbr/scene-size.js";
 import { registerEnvSceneUniforms } from "../scene/scene-ubo-extras.js";
 import type { CubeTexture } from "../texture/cube-texture.js";
@@ -23,17 +23,11 @@ export interface EnvironmentTextures extends CubeTexture {
     _brdfSampler: GPUSampler;
     /** @internal */
     _irradianceSH: Float32Array;
-    /** Pre-scaled SH coefficients for shader, 36 floats in stride-4 layout:
-     *  [L00.rgb, 0, L1_1.rgb, 0, L10.rgb, 0, L11.rgb, 0, L2_2.rgb, 0,
-     *   L2_1.rgb, 0, L20.rgb, 0, L21.rgb, 0, L22.rgb, 0] */
     /** @internal */
     _sphericalHarmonics: Float32Array;
-    /** LOD generation scale for specular IBL sampling. Default 0.8 (matches BJS BaseTexture). */
     /** @internal */
     _lodGenerationScale: number;
 }
-
-const ENV_MAGIC = new U8([0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36]);
 
 /**
  * Load a Babylon.js .env environment file and upload cubemap + BRDF LUT to GPU.
@@ -120,6 +114,10 @@ export async function loadEnvironment(
     // Background renderables (skybox + ground) — deferred so they run AFTER the user
     // has finished tweaking `scene.imageProcessing.*` (skybox/ground/dds materials
     // snapshot exposure/contrast at build time into their per-mesh UBO).
+    // Only `url` / `brdfUrl` are captured here. Backgrounds cost nothing on this path: each
+    // builder stamps its own rebuild thunk onto the renderable it returns (`Renderable._rebuild`),
+    // and recovery rediscovers them by traversal.
+    engine._dlr?.e(scene, url, options.brdfUrl);
     scene._deferredBuilders.push(async () => {
         const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
         const { groundSize, skyboxSize: autoSkyboxSize, rootPosition } = computeSceneSize(scene, options?.skyboxSize);
@@ -144,62 +142,6 @@ export async function loadEnvironment(
     });
 
     return textures;
-}
-
-// ─── .env Parsing ───────────────────────────────────────────────────────────
-
-interface ParsedEnv {
-    faceBlobs: Blob[];
-    irradianceSH: Float32Array;
-    width: number;
-    mipCount: number;
-}
-
-function parseEnvFile(buffer: ArrayBuffer): ParsedEnv {
-    const bytes = new U8(buffer);
-
-    for (let i = 0; i < 8; i++) {
-        if (bytes[i] !== ENV_MAGIC[i]) {
-            throw new Error("Invalid .env file: bad magic");
-        }
-    }
-
-    // JSON manifest: UTF-8 from byte 8 until null terminator
-    let pos = 8;
-    while (pos < bytes.length && bytes[pos] !== 0) {
-        pos++;
-    }
-    const jsonStr = new TextDecoder().decode(bytes.subarray(8, pos));
-    pos++; // skip null
-    const binaryStart = pos;
-
-    const manifest = JSON.parse(jsonStr);
-    const width: number = manifest.width;
-    const mipCount = mipLevelCount(width, width);
-
-    // Irradiance spherical harmonics (9 vec3 coefficients = 27 floats)
-    const irr = manifest.irradiance;
-    const irradianceSH = new F32(27);
-    const shKeys = ["x", "y", "z", "xx", "yy", "zz", "yz", "zx", "xy"];
-    for (let i = 0; i < 9; i++) {
-        const coeff = irr[shKeys[i]!];
-        irradianceSH[i * 3] = coeff[0];
-        irradianceSH[i * 3 + 1] = coeff[1];
-        irradianceSH[i * 3 + 2] = coeff[2];
-    }
-
-    // Extract face image blobs (flat: mip0_face0..5, mip1_face0..5, ...)
-    const mipmaps: { position: number; length: number }[] = manifest.specular.mipmaps;
-    const imageType: string = manifest.imageType || "image/png";
-    const faceBlobs: Blob[] = [];
-
-    for (const entry of mipmaps) {
-        const start = binaryStart + entry.position;
-        const slice = buffer.slice(start, start + entry.length);
-        faceBlobs.push(new Blob([slice], { type: imageType }));
-    }
-
-    return { faceBlobs, irradianceSH, width, mipCount };
 }
 
 // ─── SH Polynomial → Pre-scaled Harmonics Conversion ────────────────────────

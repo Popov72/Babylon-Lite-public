@@ -7,6 +7,27 @@
         "mobile": false
     },
     {
+        "slug": "liquefactor",
+        "name": "Liquefactor",
+        "description": "Liquefy an enemy mesh into GPU fluid by sampling its interior volume into particles: the new volume sampler fills a procedural shape with particles that occupy its exact form, then MLS-MPM melts the fill into a flowing puddle on the ground.",
+        "tags": ["compute", "simulation", "showcase"],
+        "mobile": false
+    },
+    {
+        "slug": "aquanova",
+        "name": "Aquanova",
+        "description": "First-person sci-fi shooter tech demo: traverse a confined spaceship (modular rooms + corridors joined by doors, with portal culling) wielding the Liquefactor — melt flying alien foes and ship props into GPU fluid. Environment built from the CC0 Quaternius Modular SciFi MegaKit.",
+        "tags": ["game", "fps", "simulation", "showcase"],
+        "mobile": false
+    },
+    {
+        "slug": "screen-space-effects",
+        "name": "Screen-Space Effects",
+        "description": "Interactive contact shadows and one-bounce screen-space global illumination running as composable Babylon Lite frame-graph tasks. Toggle each effect independently while the camera moves to inspect temporal reprojection, disocclusion handling, and colored light bleed.",
+        "tags": ["effect", "lighting", "showcase"],
+        "mobile": false
+    },
+    {
         "slug": "offscreen",
         "name": "Offscreen (Worker)",
         "description": "Side-by-side proof that Lite renders identically on the main thread (left, regular canvas) and inside a Web Worker via OffscreenCanvas (right). A button runs heavy synchronous work on the main thread: the left canvas freezes while the worker-driven right canvas keeps spinning at full speed. Reproduction of the Babylon.js Offscreen demo.",
@@ -96,24 +117,10 @@
         "mobile": true
     },
     {
-        "slug": "liquefactor",
-        "name": "Liquefactor",
-        "description": "Liquefy an enemy mesh into GPU fluid by sampling its interior volume into particles: the new volume sampler fills a procedural shape with particles that occupy its exact form, then MLS-MPM melts the fill into a flowing puddle on the ground.",
-        "tags": ["compute", "simulation", "showcase"],
-        "mobile": false
-    },
-    {
         "slug": "sandblox",
         "name": "Sandblox",
         "description": "Build-and-play sandbox for small block worlds. Drop blocks into a starter scene, reshape them with move, clone, resize, paint, and delete tools, then run your character through what you built.",
         "tags": ["game", "sandbox", "showcase"],
-        "mobile": false
-    },
-    {
-        "slug": "aquanova",
-        "name": "Aquanova",
-        "description": "First-person sci-fi shooter tech demo: traverse a confined spaceship (modular rooms + corridors joined by doors, with portal culling) wielding the Liquefactor — melt flying alien foes and ship props into GPU fluid. Environment built from the CC0 Quaternius Modular SciFi MegaKit.",
-        "tags": ["game", "fps", "simulation", "showcase"],
         "mobile": false
     },
     {

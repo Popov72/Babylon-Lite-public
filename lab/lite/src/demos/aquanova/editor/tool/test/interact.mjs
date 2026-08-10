@@ -7468,15 +7468,29 @@ const rmbCursor = await page.evaluate(() =>
   window.__scene.getEngine().getRenderingCanvas().style.cursor);
 await page.mouse.down({ button: "right" });
 await page.waitForTimeout(200);
-const heldCursor = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().style.cursor);
+const heldPointer = await page.evaluate(() => {
+  const canvas = window.__scene.getEngine().getRenderingCanvas();
+  return {
+    cursor: canvas.style.cursor,
+    locked: document.pointerLockElement === canvas,
+  };
+});
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(250);
-const freeCursor = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().style.cursor);
+const freePointer = await page.evaluate(() => ({
+  cursor: window.__scene.getEngine().getRenderingCanvas().style.cursor,
+  locked: document.pointerLockElement !== null,
+}));
 check("the cursor is hidden while the right button is held",
-  rmbCursor !== "none" && heldCursor === "none" && freeCursor !== "none",
-  `"${rmbCursor}" -> "${heldCursor}" -> "${freeCursor}"`);
+  rmbCursor !== "none" && heldPointer.cursor === "none" && freePointer.cursor !== "none",
+  `"${rmbCursor}" -> "${heldPointer.cursor}" -> "${freePointer.cursor}"`);
+check("RMB look locks the pointer until release",
+  heldPointer.locked && !freePointer.locked,
+  `held=${heldPointer.locked}, released=${!freePointer.locked}`);
+await page.mouse.click(rmbPt.x, rmbPt.y, { button: "right" });
+await page.waitForTimeout(200);
+check("a quick RMB click cannot leave a late pointer lock behind",
+  await page.evaluate(() => document.pointerLockElement === null));
 
 // ---- 1i-nonies. no context menu anywhere in the editor ---------------------
 // The right button is a camera control, so the menu is never wanted. It is also
@@ -7510,6 +7524,7 @@ await page.mouse.down({ button: "right" });
 await page.mouse.move(menuPts.mid.x + 30, menuPts.mid.y + 15, { steps: 4 });
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(200);
+const canvasMenuCount = await page.evaluate(() => window.__menus.length);
 
 // the release that actually bites: outside the canvas, over the palette
 await page.mouse.move(menuPts.mid.x, menuPts.mid.y, { steps: 3 });
@@ -7517,6 +7532,7 @@ await page.mouse.down({ button: "right" });
 await page.mouse.move(menuPts.tile.x, menuPts.tile.y, { steps: 8 });
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(200);
+const edgeMenuCount = await page.evaluate(() => window.__menus.length);
 
 // and every other area, including a plain right-click that never went near the
 // canvas: Ctrl+C/Ctrl+V still work, only the menu is gone
@@ -7527,12 +7543,14 @@ for (const at of [menuPts.search, menuPts.toolbar, menuPts.inspector]) {
 
 const menus = await page.evaluate(() => window.__menus);
 check("a right-drag released on the canvas raises no menu",
-  menus[0]?.prevented === true, JSON.stringify(menus[0]));
-check("a right-drag released off the canvas raises no menu",
-  menus[1] && menus[1].target !== "CANVAS#render-canvas" && menus[1].prevented === true,
-  JSON.stringify(menus[1]));
+  menus.slice(0, canvasMenuCount).every((m) => m.prevented === true),
+  JSON.stringify(menus.slice(0, canvasMenuCount)));
+check("a right-drag driven past the canvas edge raises no menu",
+  menus.slice(canvasMenuCount, edgeMenuCount).every((m) => m.prevented === true),
+  JSON.stringify(menus.slice(canvasMenuCount, edgeMenuCount)));
 check("no editor area raises a menu, text fields included",
-  menus.length === 5 && menus.every((m) => m.prevented === true),
+  menus.length === edgeMenuCount + 3
+    && menus.slice(edgeMenuCount).every((m) => m.prevented === true),
   JSON.stringify(menus.map((m) => `${m.target}:${m.prevented}`)));
 
 // the loading overlay is the one place there is no scene to hang a handler off

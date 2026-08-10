@@ -1,21 +1,20 @@
 {
-  "rawKB": 93.2,
-  "gzipKB": 39.2,
+  "rawKB": 93.1,
+  "rawBytes": 95360,
+  "gzipKB": 39,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene254-generate-mipmaps-CYYOn21m.js",
-    "scene254-gltf-animation-WU-R3ods.js",
-    "scene254-gltf-feature-animations-BWpXxloW.js",
-    "scene254-gltf-feature-registry-CJjuIfTn.js",
-    "scene254-gltf-json-asset-BYZEaydC.js",
-    "scene254-gltf-sampler-denorm-BzFzUiaO.js",
+    "scene254-generate-mipmaps-CO7DFb3U.js",
+    "scene254-gltf-animation-BqqSZGbh.js",
+    "scene254-gltf-feature-animations-BTVyAoXK.js",
+    "scene254-gltf-feature-registry-DK2mNwZy.js",
+    "scene254-gltf-json-asset-BGYtMmWZ.js",
+    "scene254-gltf-sampler-denorm-DVo-blr9.js",
     "scene254-ibl-fragment-D9e9c66T.js",
-    "scene254-pbr-pipeline-DB4V86Nv.js",
-    "scene254-pbr-renderable-2GbDoH8O.js",
+    "scene254-pbr-renderable-BxOzBQP8.js",
     "scene254-rgbd-decode-CsBw0n-g.js",
     "scene254-scene-uniforms-FTYH6Ct0.js",
     "scene254-singlelight-hemispheric-wgsl-CqFh488F.js",
     "scene254.js"
-  ],
-  "rawBytes": 95430
+  ]
 }

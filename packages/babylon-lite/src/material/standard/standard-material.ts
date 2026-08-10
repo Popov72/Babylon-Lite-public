@@ -13,6 +13,7 @@ import type { MaterialPlugin } from "../plugin/material-plugin.js";
 import type { CubeTexture } from "../../texture/cube-texture.js";
 import {
     AMBIENT_USES_UV2,
+    CUBE_REFLECTION_GAMMA,
     DIFFUSE_USES_UV2,
     DISABLE_LIGHTING,
     DOUBLE_SIDED,
@@ -171,6 +172,11 @@ export function _computeStandardMaterialFeatures(m: StandardMaterialProps): numb
         f |= MATERIAL_ALPHA_BLEND;
     }
     return f;
+}
+
+/** @internal Select Babylon's gamma path for a prefiltered Standard reflection environment. */
+export function _enableStandardPrefilteredReflection(m: StandardMaterialProps): void {
+    m._renderFeatures = { features: _computeStandardMaterialFeatures(m) | CUBE_REFLECTION_GAMMA };
 }
 
 /** @internal Key for Standard shader features, including mesh/pass features. */

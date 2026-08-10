@@ -47,21 +47,21 @@ export class ClusteredLightContainer {
 }
 
 // ─── Particles ───────────────────────────────────────────────────────
-export class ParticleSystem {
-    public constructor() {
-        unsupported("ParticleSystem", "Particle systems are not implemented in Babylon Lite.");
-    }
-}
-
 export class GPUParticleSystem {
     public constructor() {
-        unsupported("GPUParticleSystem", "Particle systems are not implemented in Babylon Lite.");
+        unsupported(
+            "GPUParticleSystem",
+            "Babylon Lite has no GPU-compute particle path. Its node-particle runtime (`NodeParticleSystemSet`) is a CPU struct-of-arrays simulation; use `NodeParticleSystemSet.ParseFromSnippetAsync` → `buildAsync` instead."
+        );
     }
 }
 
 export class SolidParticleSystem {
     public constructor() {
-        unsupported("SolidParticleSystem", "Solid particle systems are not implemented in Babylon Lite. Consider native thin instances for many-copies use cases.");
+        unsupported(
+            "SolidParticleSystem",
+            "Solid particle systems (per-particle mesh copies) are not backed by Babylon Lite. Consider native thin instances for many-copies use cases; node-particle billboards are available via `NodeParticleSystemSet`."
+        );
     }
 }
 
@@ -79,12 +79,6 @@ export class GlowLayer {
 }
 
 // ─── Mesh-attached renderers / projectors ────────────────────────────
-export class LinesMesh {
-    public constructor() {
-        unsupported("LinesMesh", "Line meshes are not implemented in Babylon Lite.");
-    }
-}
-
 export class GreasedLineMesh {
     public constructor() {
         unsupported("GreasedLineMesh", "Greased-line meshes are not implemented in Babylon Lite.");

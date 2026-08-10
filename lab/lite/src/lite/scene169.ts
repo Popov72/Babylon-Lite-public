@@ -16,6 +16,7 @@ import {
     registerScene,
     startEngine,
 } from "babylon-lite";
+import { _enableStandardPrefilteredReflection } from "babylon-lite/material/standard/standard-material.js";
 
 const GLOBAL_ENV_URL = "https://assets.babylonjs.com/core/environments/environmentSpecular.env";
 const LOCAL_ENV_URL = "https://playground.babylonjs.com/textures/environment.env";
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
     standardMaterial.specularPower = 96;
     standardMaterial.reflectionLevel = 1;
     standardMaterial.reflectionCubeTexture = localEnvironment;
+    _enableStandardPrefilteredReflection(standardMaterial);
     const standardBox = createBox(engine, 2);
     standardBox.position.set(-1.6, 1, 0);
     standardBox.material = standardMaterial;

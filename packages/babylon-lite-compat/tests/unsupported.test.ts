@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { LiteCompatError, unsupported } from "../src/error";
+import { ParticleSystem } from "../src/particles/particle-system";
 import {
     MultiMaterial,
     ShaderMaterial,
     RectAreaLight,
     ClusteredLightContainer,
-    ParticleSystem,
     GPUParticleSystem,
     SolidParticleSystem,
     HighlightLayer,
     GlowLayer,
-    LinesMesh,
     GreasedLineMesh,
     EdgesRenderer,
     OutlineRenderer,
@@ -40,7 +39,7 @@ import {
     GeospatialClippingBehavior,
     SceneSerializer,
 } from "../src/unsupported/unsupported-apis";
-import { MeshBuilder } from "../src/meshes/meshes";
+import { MeshBuilder, CreateTiledBox, CreateTiledPlane } from "../src/meshes/meshes";
 import { SceneLoader } from "../src/loading/scene-loader";
 
 describe("LiteCompatError", () => {
@@ -72,7 +71,6 @@ describe("Unsupported API stubs throw on construction", () => {
         ["SolidParticleSystem", () => new SolidParticleSystem()],
         ["HighlightLayer", () => new HighlightLayer()],
         ["GlowLayer", () => new GlowLayer()],
-        ["LinesMesh", () => new LinesMesh()],
         ["GreasedLineMesh", () => new GreasedLineMesh()],
         ["EdgesRenderer", () => new EdgesRenderer()],
         ["OutlineRenderer", () => new OutlineRenderer()],
@@ -125,10 +123,15 @@ describe("SceneSerializer", () => {
 });
 
 describe("MeshBuilder unsupported primitives", () => {
-    it.each(["CreateLines", "CreateLineSystem", "CreateDashedLines", "CreateDecal", "CreateText"] as const)("%s throws LiteCompatError", (method) => {
+    it.each(["CreateDashedLines", "CreateDecal", "CreateText", "CreateTiledBox", "CreateTiledPlane"] as const)("%s throws LiteCompatError", (method) => {
         const fn = MeshBuilder[method] as () => never;
         expect(fn).toThrow(LiteCompatError);
         expect(fn).toThrow(new RegExp(method));
+    });
+
+    it("standalone CreateTiledBox / CreateTiledPlane exports throw LiteCompatError", () => {
+        expect(() => CreateTiledBox()).toThrow(LiteCompatError);
+        expect(() => CreateTiledPlane()).toThrow(LiteCompatError);
     });
 });
 

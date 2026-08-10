@@ -1,20 +1,20 @@
 {
-  "rawKB": 109.9,
-  "gzipKB": 43.6,
+  "rawKB": 110.3,
+  "rawBytes": 112994,
+  "gzipKB": 43.8,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene148-directional-light-DbBbX6ni.js",
-    "scene148-generate-mipmaps-BesDMdXx.js",
-    "scene148-gltf-feature-lights-punctual-Cs5ZPfka.js",
-    "scene148-gltf-feature-registry-C54xO4h-.js",
-    "scene148-gltf-glb-parser-KLm0TPtr.js",
+    "scene148-directional-light-BhbwNKrb.js",
+    "scene148-generate-mipmaps-DwUUAYSG.js",
+    "scene148-gltf-feature-lights-punctual-B8Y3lTDv.js",
+    "scene148-gltf-feature-registry-C70bvgIj.js",
+    "scene148-gltf-glb-parser-DxfprSau.js",
     "scene148-gltf-light-pointer-state-B7kFTRxK.js",
-    "scene148-pbr-geometry-view-DMas6oII.js",
-    "scene148-pbr-renderable-CSfz1tkc.js",
+    "scene148-pbr-geometry-view-BmUIYb8v.js",
+    "scene148-pbr-renderable-D4t8_fKO.js",
     "scene148-scene-uniforms-Ha63NnVx.js",
     "scene148-shader-composer-BCkp8e9Y.js",
-    "scene148-singlelight-hemispheric-wgsl-NCHNMAPW.js",
+    "scene148-singlelight-hemispheric-wgsl-Dl8TI5wG.js",
     "scene148.js"
-  ],
-  "rawBytes": 112541
+  ]
 }

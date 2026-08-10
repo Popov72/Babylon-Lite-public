@@ -30,8 +30,8 @@ export const GEOMETRY_OUTPUT = 1 << 21;
 export const LIGHTMAP_SHADOWMAP = 1 << 15;
 /** Lightmap UVs are V-flipped (BJS Texture.uAng === π → uv'=(u, 1-v)). */
 export const LIGHTMAP_FLIP_V = 1 << 22;
-// Bit 23 is free (was `HAS_VERTEX_COLOR`; vertex colour is now keyed off the mesh
-// bit `MSH_HAS_VERTEX_COLOR` + the `_stdVertexColorFragment` seam, master #430).
+/** Cube reflection texture is a prefiltered environment requiring the Standard gamma path. */
+export const CUBE_REFLECTION_GAMMA = 1 << 23;
 /** RGBA vertex color drives alpha (Babylon `VERTEXALPHA`). Set only when the mesh
  *  carries vertex colour AND explicitly opts in via `mesh.hasVertexAlpha`. Gates the
  *  vertex-colour fragment's `alpha *= vColor.a` + vertex-alpha alpha-test; without it

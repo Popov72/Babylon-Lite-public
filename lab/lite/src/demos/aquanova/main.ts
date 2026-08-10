@@ -57,6 +57,7 @@ import {
     loadSkybox,
     PhysicsMotionType,
     PhysicsShapeType,
+    physicsRaycast,
     rebuildScenePbrPipelines,
     registerScene,
     registerUtilityLayer,
@@ -603,6 +604,29 @@ export async function main(): Promise<void> {
     const sz = pMin && pMax ? (pMin[2]! + pMax[2]!) / 2 : fallback[2];
     const sy = pMax ? pMax[1]! + CAP_H / 2 + 0.1 : CAP_H / 2 + 0.1;
     const character = createPhysicsCharacterController(world, { x: sx, y: sy, z: sz }, { capsuleHeight: CAP_H, capsuleRadius: CAP_R });
+    const capsuleHeight = (): number => character.shapeOptions.capsuleHeight ?? CAP_H;
+    const canStand = (): boolean => {
+        const currentHeight = capsuleHeight();
+        if (currentHeight >= CAP_H - 1e-4) return true;
+        const position = character.getPosition();
+        const footY = position.y - currentHeight * 0.5;
+        const fromY = footY + currentHeight + 1e-3;
+        const toY = footY + CAP_H;
+        const ring = CAP_R * 0.85;
+        const diagonal = ring / Math.SQRT2;
+        const offsets: ReadonlyArray<readonly [number, number]> = [
+            [0, 0],
+            [ring, 0],
+            [-ring, 0],
+            [0, ring],
+            [0, -ring],
+            [diagonal, diagonal],
+            [diagonal, -diagonal],
+            [-diagonal, diagonal],
+            [-diagonal, -diagonal],
+        ];
+        return offsets.every(([dx, dz]) => !physicsRaycast(world, { x: position.x + dx, y: fromY, z: position.z + dz }, { x: position.x + dx, y: toY, z: position.z + dz }).hasHit);
+    };
 
     // ── Dynamic (dissolvable) props ──────────────────────────────────────────────────────
     // A liquefiable prop needs three things: a Havok body so it is solid, a display root it can be
@@ -829,7 +853,7 @@ export async function main(): Promise<void> {
     const livePlayerPrimitive = (): FluidPrimitive => {
         const p = character.getPosition();
         const velocity = character.getVelocity();
-        const axisHalf = character.getCapsuleHeight() * 0.5 - CAP_R;
+        const axisHalf = capsuleHeight() * 0.5 - CAP_R;
         return {
             kind: "capsule",
             a: [p.x, p.y + axisHalf, p.z],
@@ -863,7 +887,7 @@ export async function main(): Promise<void> {
               world,
               cam,
               character,
-              getCapsuleHeight: () => character.getCapsuleHeight(),
+              getCapsuleHeight: capsuleHeight,
               roomAt,
               getPicker,
               nodeNameOf: (m: Mesh) => nodeNameOfMesh.get(m),
@@ -962,6 +986,7 @@ export async function main(): Promise<void> {
         character,
         capsuleHeight: CAP_H,
         eyeHeight: EYE,
+        canStand,
         getPicker,
         nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
         isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
@@ -1013,7 +1038,7 @@ export async function main(): Promise<void> {
             playerBehavior?.release(code);
         },
         isCrouched: (): boolean => playerBehavior?.isCrouched ?? false,
-        capsuleHeight: (): number => character.getCapsuleHeight(),
+        capsuleHeight,
         toggleNoclip: (): void => playerBehavior?.toggleNoclip(),
         behaviors: (): Array<{ name: string; mesh: string }> => behaviorManager.describeInstances(),
         /** Graphics settings (for the future config page + QA). `setMsaa` is idempotent. */
@@ -1444,7 +1469,7 @@ export async function main(): Promise<void> {
     // parameter (colour, absorption, blur, filter, impostor size…) comes from the active fluidSim
     // file's `render` block instead; see applyRenderSetting.
     surfaceTask.setDirLight([-0.4, -0.82, -0.45]);
-    if (env._specularCubeView && env._cubeSampler) surfaceTask.setEnvMap({ view: env._specularCubeView, sampler: env._cubeSampler });
+    surfaceTask.setEnvMap({ view: env._specularCubeView, sampler: env._cubeSampler });
     addTask(scene, surfaceTask);
 
     // ── Presenting: exactly one pass, chosen by which AA mode is active ─────────────────────────

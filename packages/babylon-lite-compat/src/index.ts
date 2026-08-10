@@ -59,8 +59,20 @@ export {
 export { Light, HemisphericLight, DirectionalLight, PointLight, SpotLight } from "./lights/lights.js";
 
 // ─── Meshes ──────────────────────────────────────────────────────────
-export { Mesh, AbstractMesh, TransformNode, GroundMesh, InstancedMesh, VertexData, VertexBuffer, MeshBuilder } from "./meshes/meshes.js";
-export { CreateBox, CreateSphere, CreateGround, CreatePlane, CreateCylinder, CreateTorus, CreateDisc } from "./meshes/meshes.js";
+export { Mesh, LinesMesh, AbstractMesh, TransformNode, GroundMesh, InstancedMesh, VertexData, VertexBuffer, MeshBuilder } from "./meshes/meshes.js";
+export {
+    CreateBox,
+    CreateSphere,
+    CreateGround,
+    CreatePlane,
+    CreateCylinder,
+    CreateTorus,
+    CreateDisc,
+    CreateLines,
+    CreateLineSystem,
+    CreateTiledBox,
+    CreateTiledPlane,
+} from "./meshes/meshes.js";
 export { CSG, CSG2, InitializeCSG2Async } from "./meshes/csg.js";
 export { MeshoptCompression } from "./meshes/compression.js";
 export { MorphTarget, MorphTargetManager } from "./morph/morph.js";
@@ -88,8 +100,9 @@ export {
     UploadImageToTexture2DArrayLayer,
     LoadImageToTexture2DArrayLayerAsync,
     CreateTexture2DArrayFromImageUrlsAsync,
+    CreateTexture2DArrayFromKTX2Async,
 } from "./textures/raw-texture-2d-array.js";
-export type { IUploadImageToTexture2DArrayLayerOptions, ICreateTexture2DArrayFromImageUrlsOptions } from "./textures/raw-texture-2d-array.js";
+export type { IUploadImageToTexture2DArrayLayerOptions, ICreateTexture2DArrayFromImageUrlsOptions, ICreateTexture2DArrayFromKTX2Options } from "./textures/raw-texture-2d-array.js";
 
 // ─── Loading ─────────────────────────────────────────────────────────
 export { SceneLoader, AssetContainer, ImportMeshAsync, AppendSceneAsync, LoadAssetContainerAsync } from "./loading/scene-loader.js";
@@ -231,12 +244,10 @@ export {
     BackgroundMaterial,
     RectAreaLight,
     ClusteredLightContainer,
-    ParticleSystem,
     GPUParticleSystem,
     SolidParticleSystem,
     HighlightLayer,
     GlowLayer,
-    LinesMesh,
     GreasedLineMesh,
     EdgesRenderer,
     OutlineRenderer,
@@ -291,7 +302,6 @@ export {
     FxaaPostProcess,
     SSAO2RenderingPipeline,
     ParticleHelper,
-    ParticleSystemSet,
     PointsCloudSystem,
     PhysicsAggregate,
     PhysicsBody,
@@ -312,3 +322,7 @@ export {
 } from "./unsupported/unsupported-extended.js";
 
 export { HavokPlugin, PhysicsEngine, PhysicsShapeType, PhysicsMotionType, PhysicsPrestepType, PhysicsConstraintType } from "./physics/physics.js";
+
+// ─── Node Particle Editor (NPE) ──────────────────────────────────────
+export { NodeParticleSystemSet, ParticleSystemSet } from "./particles/node-particle-system-set.js";
+export { ParticleSystem } from "./particles/particle-system.js";

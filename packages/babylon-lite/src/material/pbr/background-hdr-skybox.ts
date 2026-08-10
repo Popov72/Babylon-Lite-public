@@ -51,7 +51,7 @@ export function buildHdrSkyboxRenderable(
     const mat = createCubemapSkyboxMaterial("skybox-hdr", SCENE_UBO_WGSL + skyboxVertSrc, skyboxHdrFragSrc);
     const ubo = createSkyHdrMeshUBO(engine, rootPosition, primaryColor, [cc.r, cc.g, cc.b], scene.imageProcessing.exposure, scene.imageProcessing.contrast);
 
-    const bindGroup = mat.createBindGroup(engine, ubo, envTextures._specularCubeView!, envTextures._cubeSampler);
+    const bindGroup = mat.createBindGroup(engine, ubo, envTextures._specularCubeView, envTextures._cubeSampler);
 
     const r: Renderable = {
         order: 0,
@@ -70,6 +70,7 @@ export function buildHdrSkyboxRenderable(
             };
         },
     };
+    r._rebuild = () => buildHdrSkyboxRenderable(scene, envTextures, skyHalfSize, rootPosition, primaryColor);
     return r;
 }
 

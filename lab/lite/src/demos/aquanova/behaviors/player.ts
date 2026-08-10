@@ -123,7 +123,7 @@ export class PlayerBehavior implements Behavior<"player"> {
             this.flyVelocity.x = this.flyVelocity.y = this.flyVelocity.z = 0;
         } else {
             const eyeHeight = this.currentEyeHeight();
-            const capsuleHeight = this.context.character.getCapsuleHeight();
+            const capsuleHeight = this.capsuleHeight();
             this.context.character.setPosition({
                 x: this.freePosition.x,
                 y: Math.max(this.freePosition.y - eyeHeight, capsuleHeight / 2),
@@ -237,32 +237,37 @@ export class PlayerBehavior implements Behavior<"player"> {
     }
 
     private updateCrouch(deltaSeconds: number): void {
-        const currentHeight = this.context.character.getCapsuleHeight();
+        const currentHeight = this.capsuleHeight();
         const targetHeight = this.crouchTarget ? CROUCH_CAPSULE_HEIGHT : this.context.capsuleHeight;
         const transitionSpeed = (this.context.capsuleHeight - CROUCH_CAPSULE_HEIGHT) / CROUCH_TRANSITION_SECONDS;
         const heightDelta = Math.min(Math.abs(targetHeight - currentHeight), transitionSpeed * deltaSeconds);
         if (heightDelta === 0) return;
         const nextHeight = currentHeight + Math.sign(targetHeight - currentHeight) * heightDelta;
-        if (!this.context.character.trySetCapsuleHeight(nextHeight)) return;
+        if (nextHeight > currentHeight && !this.context.canStand()) return;
+        this.context.character.setShapeOptions({ ...this.context.character.shapeOptions, capsuleHeight: nextHeight });
         this.updateCrouchDataset();
     }
 
     private isFullyStanding(): boolean {
-        return this.context.character.getCapsuleHeight() >= this.context.capsuleHeight - 1e-4;
+        return this.capsuleHeight() >= this.context.capsuleHeight - 1e-4;
     }
 
     private crouchAmount(): number {
         const heightRange = this.context.capsuleHeight - CROUCH_CAPSULE_HEIGHT;
-        return Math.max(0, Math.min(1, (this.context.capsuleHeight - this.context.character.getCapsuleHeight()) / heightRange));
+        return Math.max(0, Math.min(1, (this.context.capsuleHeight - this.capsuleHeight()) / heightRange));
     }
 
     private currentEyeHeight(): number {
-        return this.context.eyeHeight * (this.context.character.getCapsuleHeight() / this.context.capsuleHeight);
+        return this.context.eyeHeight * (this.capsuleHeight() / this.context.capsuleHeight);
+    }
+
+    private capsuleHeight(): number {
+        return this.context.character.shapeOptions.capsuleHeight ?? this.context.capsuleHeight;
     }
 
     private updateCrouchDataset(): void {
         this.context.canvas.dataset.crouched = String(this.isCrouched);
-        this.context.canvas.dataset.capsuleHeight = this.context.character.getCapsuleHeight().toFixed(2);
+        this.context.canvas.dataset.capsuleHeight = this.capsuleHeight().toFixed(2);
         this.context.canvas.dataset.crouchAmount = this.crouchAmount().toFixed(3);
     }
 

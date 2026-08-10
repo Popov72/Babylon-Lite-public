@@ -12,7 +12,7 @@ async function main(): Promise<void> {
 
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
-    scene.clearColor = { r: 0.2, g: 0.2, b: 0.3, a: 1.0 };
+    scene.clearColor = { r: 0.2, g: 0.2, b: 0.302, a: 1.0 };
 
     const root = await loadGltf(engine, MODEL_URL);
     addToScene(scene, root);

@@ -1498,16 +1498,40 @@ function setupPointer(scene) {
   let lastTapAt = 0;
   let lastTapPos = { x: 0, y: 0 };
 
+  const requestLookPointerLock = () => {
+    if (!canvas.requestPointerLock || document.pointerLockElement === canvas) return;
+    try {
+      const pending = canvas.requestPointerLock();
+      pending?.catch((error) => console.warn("Could not lock the camera pointer.", error));
+    } catch (error) {
+      console.warn("Could not lock the camera pointer.", error);
+    }
+  };
+
+  const releaseLookPointerLock = () => {
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+  };
+
   scene.onPointerObservable.add((pi, es) => {
     if (pi.type === PointerEventTypes.POINTERMOVE) {
+      if (rmbDown) {
+        const start = down.get(2);
+        if (start) {
+          start.travel += Math.hypot(pi.event.movementX || 0, pi.event.movementY || 0);
+          if (start.travel > 4) rmbGesture = true;
+        }
+      }
       emit("pointermove", pi.event);
       return;
     }
     if (pi.type === PointerEventTypes.POINTERDOWN) {
-      down.set(pi.event.button, { x: pi.event.clientX, y: pi.event.clientY, t: performance.now() });
+      down.set(pi.event.button, {
+        x: pi.event.clientX, y: pi.event.clientY, t: performance.now(), travel: 0,
+      });
       if (pi.event.button === 2) {
         rmbDown = true;
         rmbGesture = false;
+        requestLookPointerLock();
         emit("rmbdown", pi.event);
       }
       if (pi.event.button === 0) {
@@ -1522,10 +1546,15 @@ function setupPointer(scene) {
     if (pi.type !== PointerEventTypes.POINTERUP) return;
     const start = down.get(pi.event.button);
     down.delete(pi.event.button);
-    if (pi.event.button === 2) { rmbDown = false; emit("rmbup", pi.event); }
+    if (pi.event.button === 2) {
+      rmbDown = false;
+      releaseLookPointerLock();
+      emit("rmbup", pi.event);
+    }
     if (pi.event.button === 0) emit("pointerup", pi.event);
     if (!start) return;
-    const moved = Math.hypot(pi.event.clientX - start.x, pi.event.clientY - start.y);
+    const moved = Math.max(start.travel,
+      Math.hypot(pi.event.clientX - start.x, pi.event.clientY - start.y));
     if (moved > 4) return;                       // that was a drag, not a click
 
     if (pi.event.button === 2) {
@@ -1554,11 +1583,43 @@ function setupPointer(scene) {
     if (isDouble) emit("dblclick", pi.event);
   });
 
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement === canvas) {
+      // A quick click can release RMB before the asynchronous lock request
+      // completes. Do not leave that late lock active after the gesture.
+      if (!rmbDown) releaseLookPointerLock();
+      return;
+    }
+    if (!rmbDown) return;
+    // Escape can release pointer lock without a pointerup. Give Babylon and
+    // the editor the missing release so neither camera look nor hover sticks.
+    rmbGesture = true;
+    const start = down.get(2);
+    canvas.dispatchEvent(new PointerEvent("pointerup", {
+      button: 2,
+      buttons: 0,
+      clientX: start?.x || 0,
+      clientY: start?.y || 0,
+      bubbles: true,
+    }));
+  });
+
+  document.addEventListener("pointerlockerror", () => {
+    console.warn("The browser rejected camera pointer lock; edge-limited look remains available.");
+  });
+
   // a button released outside the canvas never reaches the observable
   window.addEventListener("pointerup", (e) => {
-    if (e.button === 2) rmbDown = false;
+    if (e.button !== 2 || !rmbDown) return;
+    rmbDown = false;
+    releaseLookPointerLock();
+    emit("rmbup", e);
   });
-  window.addEventListener("blur", () => { rmbDown = false; });
+  window.addEventListener("blur", () => {
+    if (rmbDown) emit("rmbup");
+    rmbDown = false;
+    releaseLookPointerLock();
+  });
 }
 
 // ------------------------------------------------------ camera navigation
