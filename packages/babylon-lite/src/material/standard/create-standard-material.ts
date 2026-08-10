@@ -29,7 +29,6 @@ export function createStandardMaterial(): StandardMaterialProps {
         opacityFromRGB: false,
         alphaCutOff: 0,
         reflectionTexture: null,
-        reflectionCubeTexture: null,
         reflectionLevel: 1,
         reflectionCoordMode: 1,
         uvScale: [1, 1],

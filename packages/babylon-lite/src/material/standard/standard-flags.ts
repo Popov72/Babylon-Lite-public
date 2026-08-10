@@ -21,7 +21,6 @@ export const OPACITY_FROM_RGB = 1 << 12;
 export const HAS_REFLECTION_TEXTURE = 1 << 13;
 export const DISABLE_LIGHTING = 1 << 14;
 export const MATERIAL_ALPHA_BLEND = 1 << 16;
-export const HAS_CUBE_REFLECTION = 1 << 17;
 export const NO_COLOR_OUTPUT = 1 << 18;
 export const HAS_DEPTH_EMISSIVE_TEXTURE = 1 << 19;
 export const ESM_SHADOW_OUTPUT = 1 << 20;
@@ -30,8 +29,6 @@ export const GEOMETRY_OUTPUT = 1 << 21;
 export const LIGHTMAP_SHADOWMAP = 1 << 15;
 /** Lightmap UVs are V-flipped (BJS Texture.uAng === π → uv'=(u, 1-v)). */
 export const LIGHTMAP_FLIP_V = 1 << 22;
-/** Cube reflection texture is a prefiltered environment requiring the Standard gamma path. */
-export const CUBE_REFLECTION_GAMMA = 1 << 23;
 /** RGBA vertex color drives alpha (Babylon `VERTEXALPHA`). Set only when the mesh
  *  carries vertex colour AND explicitly opts in via `mesh.hasVertexAlpha`. Gates the
  *  vertex-colour fragment's `alpha *= vColor.a` + vertex-alpha alpha-test; without it

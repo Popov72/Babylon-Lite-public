@@ -1,4 +1,4 @@
-// Scene 169 — Local cubemap reflections — Babylon.js reference.
+// Scene 169 — reserved for proper box-projected local cubemap reflections.
 
 import { CubeTexture } from "@babylonjs/core/Materials/Textures/cubeTexture";
 import { PBRMaterial } from "@babylonjs/core/Materials/PBR/pbrMaterial";
@@ -35,8 +35,6 @@ const LOCAL_ENV_URL = "https://playground.babylonjs.com/textures/environment.env
     const standardMaterial = new StandardMaterial("standard", scene);
     standardMaterial.diffuseColor = new Color3(0.18, 0.2, 0.24);
     standardMaterial.specularPower = 96;
-    standardMaterial.reflectionTexture = localEnvironment;
-    standardMaterial.reflectionTexture.level = 1;
     const standardBox = CreateBox("standardBox", { size: 2 }, scene);
     standardBox.position.set(-1.6, 1, 0);
     standardBox.material = standardMaterial;

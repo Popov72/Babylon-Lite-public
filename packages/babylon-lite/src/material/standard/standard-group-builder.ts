@@ -46,7 +46,6 @@ const _STD_MAT_EXTS: ReadonlyArray<readonly [keyof StandardMaterialProps, () => 
     ["lightmapTexture", () => import("./fragments/std-lightmap-fragment.js"), "stdLightmapExt"],
     ["opacityTexture", () => import("./fragments/std-opacity-fragment.js"), "stdOpacityExt"],
     ["reflectionTexture", () => import("./fragments/std-reflection-fragment.js"), "stdReflectionExt"],
-    ["reflectionCubeTexture", () => import("./fragments/std-cube-reflection-fragment.js"), "stdCubeReflectionExt"],
 ];
 
 /** Lazily-created singleton standard-material {@link MeshGroupBuilder}. Lazy-init

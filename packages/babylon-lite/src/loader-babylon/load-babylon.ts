@@ -289,20 +289,6 @@ export async function loadBabylon(engine: EngineContext, url: string, opts: Load
                 }
             }
 
-            if (md.reflectionTexture && opts.loadTextures !== false && md.reflectionTexture.isCube) {
-                if (md.reflectionTexture.level != null) {
-                    mat.reflectionLevel = md.reflectionTexture.level;
-                }
-                const cubeName = md.reflectionTexture.name;
-                texturePromises.push(
-                    import("../texture/cube-texture.js").then(({ loadCubeTexture }) =>
-                        loadCubeTexture(engine as EngineContext, baseUrl + cubeName).then((cube) => {
-                            mat.reflectionCubeTexture = cube;
-                        })
-                    )
-                );
-            }
-
             materialMap.set(md.id, mat);
         }
     }

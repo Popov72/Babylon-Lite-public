@@ -10,16 +10,13 @@ import type { Texture2D } from "../../texture/texture-2d.js";
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import type { Material, StencilState } from "../material.js";
 import type { MaterialPlugin } from "../plugin/material-plugin.js";
-import type { CubeTexture } from "../../texture/cube-texture.js";
 import {
     AMBIENT_USES_UV2,
-    CUBE_REFLECTION_GAMMA,
     DIFFUSE_USES_UV2,
     DISABLE_LIGHTING,
     DOUBLE_SIDED,
     HAS_AMBIENT_TEXTURE,
     HAS_BUMP_TEXTURE,
-    HAS_CUBE_REFLECTION,
     HAS_DEPTH_EMISSIVE_TEXTURE,
     HAS_DIFFUSE_TEXTURE,
     HAS_EMISSIVE_TEXTURE,
@@ -92,8 +89,6 @@ export interface StandardMaterialProps extends Material {
     alphaCutOff: number;
     /** Optional reflection texture (2D spherical map). Null = no reflection. */
     reflectionTexture: Texture2D | null;
-    /** Optional cube reflection texture. Null = no cube reflection. */
-    reflectionCubeTexture: CubeTexture | null;
     /** Reflection intensity. Default 1.0. */
     reflectionLevel: number;
     /** Reflection coordinate mode. 1=spherical, 2=planar. Default 1. */
@@ -162,9 +157,6 @@ export function _computeStandardMaterialFeatures(m: StandardMaterialProps): numb
     if (m.reflectionTexture) {
         f |= HAS_REFLECTION_TEXTURE;
     }
-    if (m.reflectionCubeTexture) {
-        f |= HAS_CUBE_REFLECTION;
-    }
     if (m.disableLighting) {
         f |= DISABLE_LIGHTING;
     }
@@ -172,11 +164,6 @@ export function _computeStandardMaterialFeatures(m: StandardMaterialProps): numb
         f |= MATERIAL_ALPHA_BLEND;
     }
     return f;
-}
-
-/** @internal Select Babylon's gamma path for a prefiltered Standard reflection environment. */
-export function _enableStandardPrefilteredReflection(m: StandardMaterialProps): void {
-    m._renderFeatures = { features: _computeStandardMaterialFeatures(m) | CUBE_REFLECTION_GAMMA };
 }
 
 /** @internal Key for Standard shader features, including mesh/pass features. */

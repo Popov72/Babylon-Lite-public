@@ -1,6 +1,5 @@
-// Scene 169 — Local cubemap reflections
-// One Standard and one PBR material use a per-material cubemap while the scene
-// keeps the same cubemap as its global fallback environment.
+// Scene 169 — reserved for proper box-projected local cubemap reflections.
+// The Standard box remains as a comparison surface until that feature is added.
 
 import {
     addToScene,
@@ -16,7 +15,6 @@ import {
     registerScene,
     startEngine,
 } from "babylon-lite";
-import { _enableStandardPrefilteredReflection } from "babylon-lite/material/standard/standard-material.js";
 
 const GLOBAL_ENV_URL = "https://assets.babylonjs.com/core/environments/environmentSpecular.env";
 const LOCAL_ENV_URL = "https://playground.babylonjs.com/textures/environment.env";
@@ -51,9 +49,6 @@ async function main(): Promise<void> {
     const standardMaterial = createStandardMaterial();
     standardMaterial.diffuseColor = [0.18, 0.2, 0.24];
     standardMaterial.specularPower = 96;
-    standardMaterial.reflectionLevel = 1;
-    standardMaterial.reflectionCubeTexture = localEnvironment;
-    _enableStandardPrefilteredReflection(standardMaterial);
     const standardBox = createBox(engine, 2);
     standardBox.position.set(-1.6, 1, 0);
     standardBox.material = standardMaterial;
