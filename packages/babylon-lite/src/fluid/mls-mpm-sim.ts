@@ -329,6 +329,83 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     sortedIdx[slot] = i;
 }`;
 
+// Sparse dispatch. Particle blocks with a non-zero histogram count are
+// compacted into activeBlockList, then expanded to the unique 3x3x3 halo of grid-node
+// blocks their P2G stencils can touch. The lists drive indirect P2G / clear / update
+// dispatches while the legacy path continues to process the full dense grid.
+const COMPACT_ACTIVE_BLOCKS_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> blockCount: array<u32>;
+@group(0) @binding(1) var<storage, read_write> activeBlockList: array<u32>;
+@group(0) @binding(2) var<storage, read_write> activeCount: array<atomic<u32>>;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&blockCount) || blockCount[i] == 0u) { return; }
+    activeBlockList[atomicAdd(&activeCount[0], 1u)] = i;
+}`;
+
+const FINALIZE_INDIRECT_WGSL = /* wgsl */ `
+const MAX_GROUPS: u32 = ${MAX_WORKGROUPS}u;
+@group(0) @binding(0) var<storage, read> count: array<u32>;
+@group(0) @binding(1) var<storage, read_write> args: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+    let n = count[0];
+    args[0] = min(n, MAX_GROUPS);
+    args[1] = select(0u, (n + MAX_GROUPS - 1u) / MAX_GROUPS, n > 0u);
+    args[2] = 1u;
+}`;
+
+const MARK_ACTIVE_NODE_BLOCKS_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${BLOCK_WGSL}
+@group(0) @binding(0) var<storage, read> activeBlockList: array<u32>;
+@group(0) @binding(1) var<storage, read> activeCount: array<u32>;
+@group(0) @binding(2) var<storage, read_write> nodeFlags: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> nodeBlockList: array<u32>;
+@group(0) @binding(4) var<storage, read_write> nodeCount: array<atomic<u32>>;
+@group(0) @binding(5) var<uniform> p: Params;
+@compute @workgroup_size(32)
+fn main(
+    @builtin(local_invocation_index) lid: u32,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) ng: vec3<u32>
+) {
+    let activeSlot = wid.x + wid.y * ng.x;
+    if (activeSlot >= activeCount[0] || lid >= 27u) { return; }
+    let b = vec3<i32>(blockCoordOf(activeBlockList[activeSlot], p));
+    let d = vec3<i32>(i32(lid / 9u), i32((lid / 3u) % 3u), i32(lid % 3u)) - vec3<i32>(1);
+    let nb = b + d;
+    let bd = vec3<i32>(blockDimOf(p));
+    if (any(nb < vec3<i32>(0)) || any(nb >= bd)) { return; }
+    let nbu = vec3<u32>(nb);
+    let idx = (nbu.x * u32(bd.y) + nbu.y) * u32(bd.z) + nbu.z;
+    if (atomicExchange(&nodeFlags[idx], 1u) == 0u) {
+        nodeBlockList[atomicAdd(&nodeCount[0], 1u)] = idx;
+    }
+}`;
+
+const CLEAR_ACTIVE_BLOCKS_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${BLOCK_WGSL}
+@group(0) @binding(0) var<storage, read_write> cells: array<vec4<u32>>;
+@group(0) @binding(1) var<storage, read> nodeBlockList: array<u32>;
+@group(0) @binding(2) var<storage, read> nodeCount: array<u32>;
+@group(0) @binding(3) var<uniform> p: Params;
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(
+    @builtin(local_invocation_index) lid: u32,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) ng: vec3<u32>
+) {
+    let slot = wid.x + wid.y * ng.x;
+    if (slot >= nodeCount[0]) { return; }
+    let b0 = vec3<i32>(blockCoordOf(nodeBlockList[slot], p)) * TILE_I;
+    let lc = vec3<i32>(i32(lid / (TILE_U * TILE_U)), i32((lid / TILE_U) % TILE_U), i32(lid % TILE_U));
+    let node = b0 + lc;
+    if (inGrid(node, p)) { cells[index1D(node, p)] = vec4<u32>(0u); }
+}`;
+
 // Tiled particle-to-grid transfer. One workgroup per grid block scatters its sorted run
 // of particles into a workgroup-shared apron tile, then flushes the tile to the global
 // grid with one atomicAdd per touched node. Because the grid is integer fixed-point, the
@@ -342,7 +419,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 // uniform (all threads or none) and happen before any barrier.
 //
 // Pass 1 — mass only (staged, 1 shared atomic + at most 1 global atomic per node).
-const P2G_MASS_TILED_WGSL = /* wgsl */ `
+function buildP2gMassTiledWgsl(activeBlocks: boolean): string {
+    const activeDecls = activeBlocks
+        ? `
+@group(0) @binding(6) var<storage, read> activeBlockList: array<u32>;
+@group(0) @binding(7) var<storage, read> activeCount: array<u32>;`
+        : "";
+    const blockLookup = activeBlocks
+        ? `
+    let activeSlot = wid.x + wid.y * ng.x;
+    if (activeSlot >= activeCount[0]) { return; }
+    let bIdx = activeBlockList[activeSlot];`
+        : `
+    let bIdx = wid.x + wid.y * ng.x;
+    if (bIdx >= numBlocksOf(p)) { return; }`;
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -354,11 +445,11 @@ struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: atomic<i3
 @group(0) @binding(3) var<storage, read> blockStart: array<u32>;
 @group(0) @binding(4) var<storage, read> blockCount: array<u32>;
 @group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
+${activeDecls}
 var<workgroup> tileMass: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
-    let bIdx = wid.x + wid.y * ng.x;
-    if (bIdx >= numBlocksOf(p)) { return; }
+${blockLookup}
     let cnt = blockCount[bIdx];
     if (cnt == 0u) { return; }
     let start = blockStart[bIdx];
@@ -393,11 +484,26 @@ fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: v
         }
     }
 }`;
+}
 
 // Pass 2 — gather the current node density from GLOBAL mass, compute the EOS/viscous
 // stress exactly as the old p2g-vel, then stage the APIC + stress momentum into a shared
 // velocity tile and flush (3 global atomics per touched node).
-const P2G_VEL_TILED_WGSL = /* wgsl */ `
+function buildP2gVelTiledWgsl(activeBlocks: boolean): string {
+    const activeDecls = activeBlocks
+        ? `
+@group(0) @binding(6) var<storage, read> activeBlockList: array<u32>;
+@group(0) @binding(7) var<storage, read> activeCount: array<u32>;`
+        : "";
+    const blockLookup = activeBlocks
+        ? `
+    let activeSlot = wid.x + wid.y * ng.x;
+    if (activeSlot >= activeCount[0]) { return; }
+    let bIdx = activeBlockList[activeSlot];`
+        : `
+    let bIdx = wid.x + wid.y * ng.x;
+    if (bIdx >= numBlocksOf(p)) { return; }`;
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -409,13 +515,13 @@ struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: i32, };
 @group(0) @binding(3) var<storage, read> blockStart: array<u32>;
 @group(0) @binding(4) var<storage, read> blockCount: array<u32>;
 @group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
+${activeDecls}
 var<workgroup> tileVx: array<atomic<i32>, ${TILE_NODES3}>;
 var<workgroup> tileVy: array<atomic<i32>, ${TILE_NODES3}>;
 var<workgroup> tileVz: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
-    let bIdx = wid.x + wid.y * ng.x;
-    if (bIdx >= numBlocksOf(p)) { return; }
+${blockLookup}
     let cnt = blockCount[bIdx];
     if (cnt == 0u) { return; }
     let start = blockStart[bIdx];
@@ -497,6 +603,7 @@ fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: v
         }
     }
 }`;
+}
 
 // The grid-velocity update. A CLOSED container (gridConfine !== false) confines the
 // fluid at the grid with a generic SDF separating wall: at nodes just outside the
@@ -507,7 +614,7 @@ fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: v
 // would miss its thin curved shell — and confines per-particle in G2P instead. Static
 // walls only; a moving boundary (paddle: |−∂sdf/∂t| large) is left to the per-particle
 // G2P moving-boundary resolve.
-function buildUpdateGridWgsl(scene: SceneSdfSpec): string {
+function buildUpdateGridWgsl(scene: SceneSdfSpec, activeBlocks: boolean): string {
     const closed = scene.gridConfine !== false;
     // Baked SDF grid (optional): only the CLOSED path injects the scene SDF here, so the
     // storage grid + sampler are injected only then (else the binding would be unused and
@@ -526,16 +633,47 @@ function buildUpdateGridWgsl(scene: SceneSdfSpec): string {
         }
     }`
         : "";
-    return /* wgsl */ `
-${COMMON_WGSL}
-${decls}
-@group(0) @binding(0) var<storage, read_write> cells: array<vec4<i32>>;
-@group(0) @binding(1) var<uniform> p: Params;
-
-@compute @workgroup_size(${WORKGROUP_SIZE})
+    const activeDecls = activeBlocks
+        ? `
+@group(0) @binding(4) var<storage, read> nodeBlockList: array<u32>;
+@group(0) @binding(5) var<storage, read> nodeCount: array<u32>;`
+        : "";
+    const invocation = activeBlocks
+        ? `
+fn main(
+    @builtin(local_invocation_index) lid: u32,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) ng: vec3<u32>
+) {
+    let slot = wid.x + wid.y * ng.x;
+    if (slot >= nodeCount[0]) { return; }
+    let b0 = vec3<i32>(blockCoordOf(nodeBlockList[slot], p)) * TILE_I;
+    let lc = vec3<i32>(i32(lid / (TILE_U * TILE_U)), i32((lid / TILE_U) % TILE_U), i32(lid % TILE_U));
+    let node = b0 + lc;
+    if (!inGrid(node, p)) { return; }
+    let i = index1D(node, p);
+    let x = node.x;
+    let y = node.y;
+    let z = node.z;`
+        : `
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= arrayLength(&cells)) { return; }
+    let dimZ = i32(p.dim.z);
+    let dimYZ = i32(p.dim.y) * dimZ;
+    let x = i32(i) / dimYZ;
+    let y = (i32(i) / dimZ) % i32(p.dim.y);
+    let z = i32(i) % dimZ;`;
+    return /* wgsl */ `
+${COMMON_WGSL}
+${activeBlocks ? BLOCK_WGSL : ""}
+${decls}
+@group(0) @binding(0) var<storage, read_write> cells: array<vec4<i32>>;
+@group(0) @binding(1) var<uniform> p: Params;
+${activeDecls}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+${invocation}
     let c = cells[i];
     if (c.w <= 0) { return; }
     let invMass = 1.0 / dec(c.w);
@@ -547,11 +685,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     // into-wall (outward) velocity, keeping the pressure-driven push-BACK, so fluid
     // pressed against the grid bounds decompresses instead of gluing into a stuck sheet.
     // (A plain v = 0 kills the push-back too, which is the flat-wall gluing artefact.)
-    let dimZ = i32(p.dim.z);
-    let dimYZ = i32(p.dim.y) * dimZ;
-    let x = i32(i) / dimYZ;
-    let y = (i32(i) / dimZ) % i32(p.dim.y);
-    let z = i32(i) % dimZ;
     if (x < 2) { v.x = max(v.x, 0.0); } else if (x > i32(p.dim.x) - 3) { v.x = min(v.x, 0.0); }
     if (y < 2) { v.y = max(v.y, 0.0); } else if (y > i32(p.dim.y) - 3) { v.y = min(v.y, 0.0); }
     if (z < 2) { v.z = max(v.z, 0.0); } else if (z > i32(p.dim.z) - 3) { v.z = min(v.z, 0.0); }
@@ -1034,6 +1167,11 @@ export interface MlsMpmOptions extends FluidSimBaseOptions {
     /** Collision restitution for the capsule wall + ground (0 = free-slip / no
      *  bounce, 1 = elastic mirror). Default 0.3. */
     restitution?: number;
+    /** Sparse execution mode. Compacts occupied particle blocks and
+     *  dispatches P2G plus grid clear/update only over their touched node-block halo.
+     *  The dense cell buffer is retained, so this reduces GPU time rather than memory.
+     *  Default false. */
+    activeBlocks?: boolean;
     /** Explicit per-particle seed positions as flat world-space xyz triples
      *  (`[x0,y0,z0, x1,y1,z1, …]`). When present, `seed()`/`reset()` places each
      *  particle `i (< count)` at `initialPositions[3i..3i+2]` with zero velocity and
@@ -1080,6 +1218,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const groundDamp = options.groundDamp ?? 0.9;
     const groundDampHeight = options.groundDampHeight ?? 1.2;
     const restitution = options.restitution ?? 0.3;
+    const activeBlocks = options.activeBlocks ?? false;
     // Optional explicit per-particle seed (flat world-space xyz). When set, seed()
     // reads position i from here instead of the random spawn draw (see the interface).
     const initialPositions = options.initialPositions ?? null;
@@ -1119,6 +1258,19 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const blockCursorBuffer = device.createBuffer({ label: "mpm-block-cursor", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const partialSumsBuffer = device.createBuffer({ label: "mpm-partial-sums", size: scanChunks * 4, usage: GPUBufferUsage.STORAGE });
     const sortedIdxBuffer = device.createBuffer({ label: "mpm-sorted-idx", size: count * 4, usage: GPUBufferUsage.STORAGE });
+    const activeBlockListBuffer = activeBlocks ? device.createBuffer({ label: "mpm-active-block-list", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE }) : null;
+    const activeBlockCountBuffer = activeBlocks ? device.createBuffer({ label: "mpm-active-block-count", size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) : null;
+    const activeBlockIndirectBuffer = activeBlocks
+        ? device.createBuffer({ label: "mpm-active-block-indirect", size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT })
+        : null;
+    const nodeBlockFlagsBuffer = activeBlocks
+        ? device.createBuffer({ label: "mpm-node-block-flags", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+        : null;
+    const nodeBlockListBuffer = activeBlocks ? device.createBuffer({ label: "mpm-node-block-list", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE }) : null;
+    const nodeBlockCountBuffer = activeBlocks ? device.createBuffer({ label: "mpm-node-block-count", size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) : null;
+    const nodeBlockIndirectBuffer = activeBlocks
+        ? device.createBuffer({ label: "mpm-node-block-indirect", size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT })
+        : null;
 
     const paramsData = new ArrayBuffer(PARAMS_BYTES);
     const pf = new Float32Array(paramsData);
@@ -1235,7 +1387,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     function pipeline(label: string, code: string): GPUComputePipeline {
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
-    const clearPipe = pipeline("mpm-clear", CLEAR_WGSL);
+    const clearPipe = pipeline("mpm-clear", activeBlocks ? CLEAR_ACTIVE_BLOCKS_WGSL : CLEAR_WGSL);
     // Block counting-sort + tiled P2G pipelines (replace the old global-atomic p2g-mass /
     // p2g-vel scatter with a shared-memory-staged transfer over sorted blocks).
     const histogramPipe = pipeline("mpm-histogram", HISTOGRAM_WGSL);
@@ -1243,14 +1395,17 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const scanPartialsPipe = pipeline("mpm-scan-partials", SCAN_PARTIALS_WGSL);
     const scanAddPipe = pipeline("mpm-scan-add", SCAN_ADD_WGSL);
     const scatterPipe = pipeline("mpm-scatter", SCATTER_WGSL);
-    const p2gMassTiledPipe = pipeline("mpm-p2g-mass-tiled", P2G_MASS_TILED_WGSL);
-    const p2gVelTiledPipe = pipeline("mpm-p2g-vel-tiled", P2G_VEL_TILED_WGSL);
+    const p2gMassTiledPipe = pipeline("mpm-p2g-mass-tiled", buildP2gMassTiledWgsl(activeBlocks));
+    const p2gVelTiledPipe = pipeline("mpm-p2g-vel-tiled", buildP2gVelTiledWgsl(activeBlocks));
+    const compactActiveBlocksPipe = activeBlocks ? pipeline("mpm-compact-active-blocks", COMPACT_ACTIVE_BLOCKS_WGSL) : null;
+    const finalizeIndirectPipe = activeBlocks ? pipeline("mpm-finalize-indirect", FINALIZE_INDIRECT_WGSL) : null;
+    const markActiveNodeBlocksPipe = activeBlocks ? pipeline("mpm-mark-active-node-blocks", MARK_ACTIVE_NODE_BLOCKS_WGSL) : null;
     // update-grid + g2p pipelines/bind-groups are built lazily in setSceneSdf (always
     // called before the first step); compiled variants are cached by source so
     // re-selecting a demo is instant.
     const updatePipeCache = new Map<string, GPUComputePipeline>();
     function getUpdatePipe(scene: SceneSdfSpec): GPUComputePipeline {
-        const src = buildUpdateGridWgsl(scene);
+        const src = buildUpdateGridWgsl(scene, activeBlocks);
         let pipe = updatePipeCache.get(src);
         if (!pipe) {
             pipe = pipeline("mpm-update", src);
@@ -1289,7 +1444,17 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         ],
     });
 
-    const clearBG = device.createBindGroup({ layout: clearPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: cellBuffer } }] });
+    const clearBG = device.createBindGroup({
+        layout: clearPipe.getBindGroupLayout(0),
+        entries: activeBlocks
+            ? [
+                  { binding: 0, resource: { buffer: cellBuffer } },
+                  { binding: 1, resource: { buffer: nodeBlockListBuffer! } },
+                  { binding: 2, resource: { buffer: nodeBlockCountBuffer! } },
+                  { binding: 3, resource: { buffer: paramsBuffer } },
+              ]
+            : [{ binding: 0, resource: { buffer: cellBuffer } }],
+    });
     const histogramBG = device.createBindGroup({
         layout: histogramPipe.getBindGroupLayout(0),
         entries: [
@@ -1327,28 +1492,66 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             { binding: 4, resource: { buffer: paramsBuffer } },
         ],
     });
+    const p2gEntries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: particleBuffer } },
+        { binding: 1, resource: { buffer: cellBuffer } },
+        { binding: 2, resource: { buffer: paramsBuffer } },
+        { binding: 3, resource: { buffer: blockStartBuffer } },
+        { binding: 4, resource: { buffer: blockCountBuffer } },
+        { binding: 5, resource: { buffer: sortedIdxBuffer } },
+    ];
+    if (activeBlocks) {
+        p2gEntries.push({ binding: 6, resource: { buffer: activeBlockListBuffer! } }, { binding: 7, resource: { buffer: activeBlockCountBuffer! } });
+    }
     const p2gMassTiledBG = device.createBindGroup({
         layout: p2gMassTiledPipe.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: cellBuffer } },
-            { binding: 2, resource: { buffer: paramsBuffer } },
-            { binding: 3, resource: { buffer: blockStartBuffer } },
-            { binding: 4, resource: { buffer: blockCountBuffer } },
-            { binding: 5, resource: { buffer: sortedIdxBuffer } },
-        ],
+        entries: p2gEntries,
     });
     const p2gVelTiledBG = device.createBindGroup({
         layout: p2gVelTiledPipe.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: cellBuffer } },
-            { binding: 2, resource: { buffer: paramsBuffer } },
-            { binding: 3, resource: { buffer: blockStartBuffer } },
-            { binding: 4, resource: { buffer: blockCountBuffer } },
-            { binding: 5, resource: { buffer: sortedIdxBuffer } },
-        ],
+        entries: p2gEntries,
     });
+    const compactActiveBlocksBG = activeBlocks
+        ? device.createBindGroup({
+              layout: compactActiveBlocksPipe!.getBindGroupLayout(0),
+              entries: [
+                  { binding: 0, resource: { buffer: blockCountBuffer } },
+                  { binding: 1, resource: { buffer: activeBlockListBuffer! } },
+                  { binding: 2, resource: { buffer: activeBlockCountBuffer! } },
+              ],
+          })
+        : null;
+    const finalizeActiveBlocksBG = activeBlocks
+        ? device.createBindGroup({
+              layout: finalizeIndirectPipe!.getBindGroupLayout(0),
+              entries: [
+                  { binding: 0, resource: { buffer: activeBlockCountBuffer! } },
+                  { binding: 1, resource: { buffer: activeBlockIndirectBuffer! } },
+              ],
+          })
+        : null;
+    const markActiveNodeBlocksBG = activeBlocks
+        ? device.createBindGroup({
+              layout: markActiveNodeBlocksPipe!.getBindGroupLayout(0),
+              entries: [
+                  { binding: 0, resource: { buffer: activeBlockListBuffer! } },
+                  { binding: 1, resource: { buffer: activeBlockCountBuffer! } },
+                  { binding: 2, resource: { buffer: nodeBlockFlagsBuffer! } },
+                  { binding: 3, resource: { buffer: nodeBlockListBuffer! } },
+                  { binding: 4, resource: { buffer: nodeBlockCountBuffer! } },
+                  { binding: 5, resource: { buffer: paramsBuffer } },
+              ],
+          })
+        : null;
+    const finalizeNodeBlocksBG = activeBlocks
+        ? device.createBindGroup({
+              layout: finalizeIndirectPipe!.getBindGroupLayout(0),
+              entries: [
+                  { binding: 0, resource: { buffer: nodeBlockCountBuffer! } },
+                  { binding: 1, resource: { buffer: nodeBlockIndirectBuffer! } },
+              ],
+          })
+        : null;
     function buildUpdateBG(pipe: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
         // Only a CLOSED container's update-grid pass reads the scene SDF (for its grid
         // separating wall); a per-particle container has no grid wall, so binding 2 is absent.
@@ -1362,6 +1565,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             if (scene.sdfGrid) {
                 entries.push({ binding: 3, resource: { buffer: scene.sdfGrid } });
             }
+        }
+        if (activeBlocks) {
+            entries.push({ binding: 4, resource: { buffer: nodeBlockListBuffer! } }, { binding: 5, resource: { buffer: nodeBlockCountBuffer! } });
         }
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
@@ -1443,6 +1649,14 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         } else {
             pass.dispatchWorkgroups(groups);
         }
+        pass.end();
+    }
+
+    function dispatchIndirect(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, args: GPUBuffer): void {
+        const pass = encoder.beginComputePass({ label, timestampWrites: profiler?.pass("Simulation") });
+        pass.setPipeline(pipe);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroupsIndirect(args, 0);
         pass.end();
     }
 
@@ -1562,6 +1776,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 emittersBuffer.size;
             // Block counting-sort buffers (always allocated).
             b += blockCountBuffer.size + blockStartBuffer.size + blockCursorBuffer.size + partialSumsBuffer.size + sortedIdxBuffer.size;
+            if (activeBlockListBuffer) {
+                b +=
+                    activeBlockListBuffer.size +
+                    activeBlockCountBuffer!.size +
+                    activeBlockIndirectBuffer!.size +
+                    nodeBlockFlagsBuffer!.size +
+                    nodeBlockListBuffer!.size +
+                    nodeBlockCountBuffer!.size +
+                    nodeBlockIndirectBuffer!.size;
+            }
             if (diffuseBuffer) {
                 b += diffuseBuffer.size;
             }
@@ -1621,21 +1845,48 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 if (forceSpec && forcePipe && forceBG) {
                     dispatch(encoder, "mpm-force", forcePipe, forceBG, particleGroups);
                 }
-                dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
+                if (activeBlocks) {
+                    // The node list is intentionally retained between substeps: it identifies
+                    // exactly which grid blocks the previous P2G populated, so this indirect
+                    // clear removes stale values before the list is rebuilt for the new state.
+                    dispatchIndirect(encoder, "mpm-clear-active", clearPipe, clearBG, nodeBlockIndirectBuffer!);
+                } else {
+                    dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
+                }
                 // Block counting sort of the live particles (histogram -> prefix sum ->
                 // scatter), then the shared-memory-tiled P2G. blockCount/blockCursor are
                 // zeroed here (clearBuffer) before the histogram/scatter accumulate into them.
                 encoder.clearBuffer(blockCountBuffer);
                 encoder.clearBuffer(blockCursorBuffer);
+                if (activeBlocks) {
+                    encoder.clearBuffer(activeBlockCountBuffer!);
+                    encoder.clearBuffer(nodeBlockCountBuffer!);
+                    encoder.clearBuffer(nodeBlockFlagsBuffer!);
+                }
                 dispatch(encoder, "mpm-histogram", histogramPipe, histogramBG, particleGroups);
+                if (activeBlocks) {
+                    dispatch(encoder, "mpm-compact-active-blocks", compactActiveBlocksPipe!, compactActiveBlocksBG!, blockGroups);
+                    dispatch(encoder, "mpm-finalize-active-blocks", finalizeIndirectPipe!, finalizeActiveBlocksBG!, 1);
+                    dispatchIndirect(encoder, "mpm-mark-active-node-blocks", markActiveNodeBlocksPipe!, markActiveNodeBlocksBG!, activeBlockIndirectBuffer!);
+                    dispatch(encoder, "mpm-finalize-node-blocks", finalizeIndirectPipe!, finalizeNodeBlocksBG!, 1);
+                }
                 dispatch(encoder, "mpm-scan-local", scanLocalPipe, scanLocalBG, scanChunks);
                 dispatch(encoder, "mpm-scan-partials", scanPartialsPipe, scanPartialsBG, 1);
                 dispatch(encoder, "mpm-scan-add", scanAddPipe, scanAddBG, blockGroups);
                 dispatch(encoder, "mpm-scatter", scatterPipe, scatterBG, particleGroups);
-                dispatch(encoder, "mpm-p2g-mass", p2gMassTiledPipe, p2gMassTiledBG, blockDispatch);
-                dispatch(encoder, "mpm-p2g-vel", p2gVelTiledPipe, p2gVelTiledBG, blockDispatch);
+                if (activeBlocks) {
+                    dispatchIndirect(encoder, "mpm-p2g-mass", p2gMassTiledPipe, p2gMassTiledBG, activeBlockIndirectBuffer!);
+                    dispatchIndirect(encoder, "mpm-p2g-vel", p2gVelTiledPipe, p2gVelTiledBG, activeBlockIndirectBuffer!);
+                } else {
+                    dispatch(encoder, "mpm-p2g-mass", p2gMassTiledPipe, p2gMassTiledBG, blockDispatch);
+                    dispatch(encoder, "mpm-p2g-vel", p2gVelTiledPipe, p2gVelTiledBG, blockDispatch);
+                }
                 if (updatePipe && updateBG) {
-                    dispatch(encoder, "mpm-update", updatePipe, updateBG, cellGroups);
+                    if (activeBlocks) {
+                        dispatchIndirect(encoder, "mpm-update", updatePipe, updateBG, nodeBlockIndirectBuffer!);
+                    } else {
+                        dispatch(encoder, "mpm-update", updatePipe, updateBG, cellGroups);
+                    }
                 }
                 if (g2pPipe && g2pBG) {
                     dispatch(encoder, "mpm-g2p", g2pPipe, g2pBG, particleGroups);
@@ -1771,6 +2022,13 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             blockCursorBuffer.destroy();
             partialSumsBuffer.destroy();
             sortedIdxBuffer.destroy();
+            activeBlockListBuffer?.destroy();
+            activeBlockCountBuffer?.destroy();
+            activeBlockIndirectBuffer?.destroy();
+            nodeBlockFlagsBuffer?.destroy();
+            nodeBlockListBuffer?.destroy();
+            nodeBlockCountBuffer?.destroy();
+            nodeBlockIndirectBuffer?.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
             foamParamsBuffer?.destroy();

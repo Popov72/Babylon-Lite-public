@@ -399,6 +399,7 @@ async function main(): Promise<void> {
             affineDamping: 0.9,
             groundDamp: 0.85,
             groundDampHeight: 1.5,
+            activeBlocks: mpmActiveBlocks,
         });
 
         // Backend 3 — Position-Based MPM (liquid-only PB-MPM phase 1).
@@ -430,6 +431,7 @@ async function main(): Promise<void> {
     let particleCount = DEFAULT_PARTICLE_COUNT;
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
     let pbmpmMaterial = 0;
+    let mpmActiveBlocks = false;
     let { pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
@@ -1300,6 +1302,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         schemas: DEFAULT_FLUID_SCHEMAS,
         methods: Object.keys(DEFAULT_FLUID_SCHEMAS),
         particleCounts: PARTICLE_COUNTS,
+        showActiveBlocks: true,
         physScaleMin: PHYS_MIN_SCALE,
         physScaleMax: PHYS_MAX_SCALE,
         initial: {
@@ -1330,6 +1333,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             renderMode: "surface",
             debug: "none",
             showContainer: true,
+            activeBlocks: false,
             foam: {
                 enabled: false,
                 kTa: 40,
@@ -1391,6 +1395,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
             onPhysScale: (s) => setPhysicsScale(s),
+            onActiveBlocks: (enabled) => {
+                if (enabled === mpmActiveBlocks) return;
+                mpmActiveBlocks = enabled;
+                rebuildSims(particleCount, physicsScale);
+            },
             onReset: () => {
                 activeSim.reset();
                 clearSceneHoles();
@@ -1618,6 +1627,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         refreshPbMpmMaterialUi();
         canvas.dataset.method = methodName;
+        canvas.dataset.activeBlocks = mpmActiveBlocks ? "true" : "false";
     }
     // Toggle between the sphere-impostor renderer and the screen-space surface.
     // Default is the fluid surface; the checkbox switches to spheres.
@@ -1773,6 +1783,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             narrowMu: RENDER_DEFAULTS.narrowMu,
             anisotropic: RENDER_DEFAULTS.anisotropic,
             anisoSurfScale: RENDER_DEFAULTS.anisoSurfScale,
+            activeBlocks: method === "MLS-MPM" ? false : undefined,
             foam: { ...FOAM_DEFAULTS },
             showContainer: true,
         };
@@ -1811,6 +1822,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             narrowMu: p.narrowMu ?? base.narrowMu,
             anisotropic: p.anisotropic ?? base.anisotropic,
             anisoSurfScale: p.anisoSurfScale ?? base.anisoSurfScale,
+            activeBlocks: p.activeBlocks ?? base.activeBlocks,
             foam: p.foam ? { ...base.foam!, ...p.foam } : base.foam,
             demoState: p.demoState ?? base.demoState,
             showContainer: p.showContainer ?? base.showContainer,
@@ -1858,6 +1870,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             narrowMu: v.narrowMu,
             anisotropic: v.anisotropic,
             anisoSurfScale: v.anisoSurfScale,
+            activeBlocks: method === "MLS-MPM" ? v.activeBlocks : undefined,
             foam: v.foam,
             demoState: activeDemo!.snapshotState?.() ?? {},
             showContainer: v.showContainer,
@@ -1930,6 +1943,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (st.anisoSurfScale !== undefined) {
             controls.setAnisotropySurfScale(st.anisoSurfScale);
         }
+        const nextActiveBlocks = methodName === "MLS-MPM" ? (st.activeBlocks ?? false) : mpmActiveBlocks;
+        controls.setActiveBlocks(nextActiveBlocks);
         // Foam block (optional). The component sets the enable state + config + UI here;
         // the authoritative push to the active sim happens via applyFoam() inside
         // applyMethod() below. Missing softness/density/subsurface (older presets) keep
@@ -1979,7 +1994,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             msaaChk.checked = st.msaa;
             setMsaa(st.msaa);
         }
-        if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale) {
+        const activeBlocksChanged = methodName === "MLS-MPM" && nextActiveBlocks !== mpmActiveBlocks;
+        mpmActiveBlocks = nextActiveBlocks;
+        if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale || activeBlocksChanged) {
             rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method (at the current domain scale)
         } else {
             applySceneSdf(); // refresh emitters/spawn for the loaded demo params

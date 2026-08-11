@@ -358,6 +358,7 @@ export interface FluidControlValues {
     narrowMu: number;
     anisotropic: boolean;
     anisoSurfScale: number;
+    activeBlocks: boolean;
     debug: string;
     showContainer: boolean;
     foam: FluidFoamValues;
@@ -390,6 +391,8 @@ export interface FluidControlsInitial {
     anisotropic: boolean;
     /** Anisotropic WPCA radius damping (0..1); defaults to 0.5 when omitted. */
     anisoSurfScale?: number;
+    /** MLS-MPM sparse active-block execution. Defaults off. */
+    activeBlocks?: boolean;
     renderMode: "surface" | "spheres";
     debug: string;
     showContainer: boolean;
@@ -422,6 +425,7 @@ export interface FluidControlsCallbacks {
     onDebug?(mode: FluidDebug): void;
     onPhysicsParam?(key: string, value: number): void;
     onPhysScale?(scale: number): void;
+    onActiveBlocks?(enabled: boolean): void;
     onReset?(): void;
     // Foam config (generation) — gated on "enabled" by the host.
     onFoamEnable?(enabled: boolean): void;
@@ -463,6 +467,8 @@ export interface FluidControlsOptions {
     hideDebug?: boolean;
     hideGpuTiming?: boolean;
     hidePhysics?: boolean;
+    /** Show the MLS-MPM active-block execution checkbox. */
+    showActiveBlocks?: boolean;
     /** When true, the "Physics simulation" section OMITS the "Physics particle size"
      *  row but KEEPS the per-method sliders + reset button. Use
      *  when the host owns its own particle-size control (so physScale would conflict).
@@ -534,6 +540,7 @@ export interface FluidControlsHandle {
     setDebug(mode: string): void;
     setPhysics(schema: Record<string, number>): void;
     setPhysScale(scale: number): void;
+    setActiveBlocks(enabled: boolean): void;
     setFoam(foam: FluidFoamValues): void;
 
     /** Snapshot every control value (for pair-state capture / export). */
@@ -1106,6 +1113,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     physRow.append(physHead, physInput);
 
     const sliderHost = document.createElement("div");
+    const activeBlocksRow = document.createElement("label");
+    activeBlocksRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+    const activeBlocksChk = document.createElement("input");
+    activeBlocksChk.type = "checkbox";
+    activeBlocksChk.checked = init.activeBlocks ?? false;
+    const activeBlocksText = labelWithInfo(
+        "Active grid blocks",
+        "MLS-MPM only. Dispatches particle-to-grid transfer and grid clear/update over occupied blocks and their node halo instead of the full dense grid. Changing it rebuilds the simulations."
+    );
+    activeBlocksRow.append(activeBlocksChk, activeBlocksText);
+    activeBlocksChk.onchange = () => on.onActiveBlocks?.(activeBlocksChk.checked);
+    const applyActiveBlocksVisibility = (): void => {
+        activeBlocksRow.style.display = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
+    };
+    applyActiveBlocksVisibility();
+
     // Per-method physics sliders can be filtered to only those relevant to the host's current
     // config (e.g. a PB-MPM material only uses a subset). null = show all. paramRows maps each
     // slider's param key → its DOM row so the filter is a cheap display toggle (no rebuild).
@@ -1619,7 +1642,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hidePhysics) {
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
-        const physItems = opts.hidePhysScale ? [sliderHost, resetBtn] : [physRow, sliderHost, resetBtn];
+        const physItems = opts.hidePhysScale ? [activeBlocksRow, sliderHost, resetBtn] : [physRow, activeBlocksRow, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
 
@@ -1735,6 +1758,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setMethod(method: string): void {
             currentMethod = method;
             methodSel.value = method;
+            applyActiveBlocksVisibility();
         },
         setParticleCount(count: number): void {
             particlesSel.value = String(count);
@@ -1826,6 +1850,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             physInput.value = String(scale);
             physVal.textContent = `${scale.toFixed(1)}\u00d7`;
         },
+        setActiveBlocks(enabled: boolean): void {
+            activeBlocksChk.checked = enabled;
+        },
         setFoam(foam: FluidFoamValues): void {
             // Enable state + carried tMin + debug texture (set the DOM; the host re-pushes
             // the config to the sim via its applyFoam() after the sim rebuild).
@@ -1885,6 +1912,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 narrowMu: nrMu,
                 anisotropic: anisoChk.checked,
                 anisoSurfScale: parseFloat(anisoDampInput.value),
+                activeBlocks: activeBlocksChk.checked,
                 debug: debugSel.value,
                 showContainer: containerChk.checked,
                 foam: {
@@ -1919,6 +1947,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         rebuildPhysics(method: string): void {
             buildSliders(method);
+            applyActiveBlocksVisibility();
         },
         setVisiblePhysicsParams(keys: string[] | null): void {
             visibleParamKeys = keys ? new Set(keys) : null;

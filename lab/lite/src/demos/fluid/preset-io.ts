@@ -22,6 +22,8 @@ export interface FluidExportJson {
     envIntensity?: number;
     /** 4× MSAA on the scene pass ("Anti-aliasing"), default false. Optional for the same reason. */
     msaa?: boolean;
+    /** MLS-MPM sparse active-block execution. Optional; defaults off. */
+    activeBlocks?: boolean;
     physicsParticleSize: number;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
@@ -111,6 +113,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         showContainer: ps.showContainer ?? true,
         ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
         ...(ps.msaa !== undefined ? { msaa: ps.msaa } : {}),
+        ...(ps.activeBlocks !== undefined ? { activeBlocks: ps.activeBlocks } : {}),
         physicsParticleSize: ps.physScale,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
@@ -218,5 +221,6 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         showContainer: j.showContainer,
         ...(j.envIntensity !== undefined ? { envIntensity: j.envIntensity } : {}),
         ...(j.msaa !== undefined ? { msaa: j.msaa } : {}),
+        ...(j.activeBlocks !== undefined ? { activeBlocks: j.activeBlocks } : {}),
     };
 }

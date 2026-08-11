@@ -87,6 +87,8 @@ export interface PairState {
     anisotropic?: boolean;
     /** Anisotropic WPCA radius damping (0..1 share of surfaceSizeScale). Default 0.5; per-pair. */
     anisoSurfScale?: number;
+    /** MLS-MPM active-block execution. Optional and defaults off. */
+    activeBlocks?: boolean;
     /** Foam (diffuse-particle) config for this pair — generation, pool and screen-space
      *  look. Present → foam is restored (enabled/disabled) with these knobs on switch. */
     foam?: {
