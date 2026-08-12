@@ -7,12 +7,16 @@ import type { EngineContext } from "../engine/engine.js";
 import type { DiffusePool, EmitterConfig, FluidProfiler, FluidSim, FluidSimBaseOptions, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "./sim-common.js";
 import {
     FOAM_BYTES,
+    FOAM_ACTIVE_FINISH_WGSL,
+    FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_COMMON_WGSL,
     EMITTERS_FLOATS,
     SPAWN_ACCEPT_TRIES,
     EMITTER_STRUCT_WGSL,
     EMITTER_SPAWN_WGSL,
     packEmitters,
+    foamActiveListOffset,
+    foamActiveStateBytes,
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
 } from "./sim-common.js";
@@ -451,7 +455,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     dbg[i] = length(vel);
 }`;
 
-const FOAM_EMIT_WGSL = /* wgsl */ `
+function buildFoamEmitWgsl(activeParticles: boolean): string {
+    const headDecl = activeParticles
+        ? "@group(0) @binding(6) var<storage, read_write> activeState: array<atomic<u32>>;"
+        : "@group(0) @binding(6) var<storage, read_write> head: array<atomic<u32>>;";
+    const activeDecl = activeParticles
+        ? `
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }
+fn activeFlagBase(cap: u32) -> u32 { return 64u + 2u * activeStride(cap); }`
+        : "";
+    const activate = activeParticles
+        ? `
+        if (atomicExchange(&activeState[activeFlagBase(cap) + idx], 1u) == 0u) {
+            let side = atomicLoad(&activeState[3]);
+            let dst = atomicAdd(&activeState[1u + side], 1u);
+            atomicStore(&activeState[activeListBase(side, cap) + dst], idx);
+        }`
+        : "";
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -461,7 +483,8 @@ ${FOAM_COMMON_WGSL}
 @group(0) @binding(3) var<uniform> p: Params;
 @group(0) @binding(4) var<uniform> foam: Foam;
 @group(0) @binding(5) var<storage, read_write> diffuse: array<Diffuse>;
-@group(0) @binding(6) var<storage, read_write> head: array<atomic<u32>>;
+${headDecl}
+${activeDecl}
 
 const K_STRAIN: f32 = 1.6;
 const WC_SCALE: f32 = 1.2;
@@ -548,13 +571,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let off = e1 * (rr * cos(th)) + e2 * (rr * sin(th));
         let xd = pos + off + vhat * (xh * dtv);
         let vd = off + vi;
-        let idx = atomicAdd(&head[0], 1u) % cap;
+        let idx = atomicAdd(&${activeParticles ? "activeState" : "head"}[0], 1u) % cap;
         diffuse[idx].p = vec4<f32>(xd, life);
         diffuse[idx].v = vec4<f32>(vd, 0.0);
+${activate}
     }
 }`;
+}
 
-const FOAM_UPDATE_WGSL = /* wgsl */ `
+function buildFoamUpdateWgsl(activeParticles: boolean): string {
+    const activeDecl = activeParticles
+        ? `
+@group(0) @binding(5) var<storage, read_write> activeState: array<atomic<u32>>;
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }
+fn activeFlagBase(cap: u32) -> u32 { return 64u + 2u * activeStride(cap); }`
+        : "";
+    const slotLookup = activeParticles
+        ? `
+    let cap = arrayLength(&diffuse);
+    let side = atomicLoad(&activeState[3]);
+    let slot = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
+    if (slot >= atomicLoad(&activeState[1u + side])) { return; }
+    let i = atomicLoad(&activeState[activeListBase(side, cap) + slot]);`
+        : `
+    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&diffuse)) { return; }`;
+    const deactivate = activeParticles ? "atomicStore(&activeState[activeFlagBase(cap) + i], 0u);" : "";
+    const keepActive = activeParticles
+        ? `
+    let nextSide = 1u - side;
+    let dst = atomicAdd(&activeState[1u + nextSide], 1u);
+    atomicStore(&activeState[activeListBase(nextSide, cap) + dst], i);`
+        : "";
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${WEIGHTS_WGSL}
 ${FOAM_COMMON_WGSL}
@@ -564,6 +614,7 @@ struct Cell { mx: i32, my: i32, mz: i32, mass: i32, };
 @group(0) @binding(2) var<uniform> p: Params;
 @group(0) @binding(3) var<uniform> foam: Foam;
 @group(0) @binding(4) var<storage, read_write> diffuse: array<Diffuse>;
+${activeDecl}
 
 const VOL_SPRAY: f32 = 0.35;
 const VOL_BUBBLE: f32 = 0.9;
@@ -573,12 +624,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Pool slots can exceed one dispatch dimension, in which case dispatch() spills into y
     // with an x extent of exactly MAX_WORKGROUPS groups — fold that back into a flat index.
     // gid.y is 0 whenever the dispatch fits in x, so this is a no-op for small pools.
-    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
-    if (i >= arrayLength(&diffuse)) { return; }
+${slotLookup}
     let p0 = diffuse[i].p;
-    if (p0.w <= 0.0) { return; }
+    if (p0.w <= 0.0) { ${deactivate} return; }
     let pp = p0.xyz;
-    if (any(pp < p.boundsMin.xyz) || any(pp > p.boundsMax.xyz)) { diffuse[i].p = vec4<f32>(pp, 0.0); return; }
+    if (any(pp < p.boundsMin.xyz) || any(pp > p.boundsMax.xyz)) {
+        diffuse[i].p = vec4<f32>(pp, 0.0);
+        ${deactivate}
+        return;
+    }
     var v = diffuse[i].v.xyz;
 
     let subDt = max(p.sim.x, 1.0e-6);
@@ -618,10 +672,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         np = pp + dt * vf;
         life = p0.w - dt;
     }
-    if (life <= 0.0) { diffuse[i].p = vec4<f32>(np, 0.0); return; }
+    if (life <= 0.0) {
+        diffuse[i].p = vec4<f32>(np, 0.0);
+        ${deactivate}
+        return;
+    }
     diffuse[i].p = vec4<f32>(np, life);
     diffuse[i].v = vec4<f32>(v, f32(kind));
+${keepActive}
 }`;
+}
 
 // Recirculating jet emitters (setEmitters): a pass run once per frame BEFORE the substeps that
 // relaunches recycled particles from a nozzle. PB-MPM carries motion as a per-substep DISPLACEMENT, so
@@ -1022,13 +1082,26 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     let foamSeed = 0;
     let foamCapacity = 0;
     let foamPoolGroups = 0;
+    let foamActiveParticles = false;
+    let foamActiveSide = 0;
     let diffuseBuffer: GPUBuffer | null = null;
     let diffuseHeadBuffer: GPUBuffer | null = null;
+    let foamActiveStateBuffer: GPUBuffer | null = null;
+    let foamActiveDispatchBuffer: GPUBuffer | null = null;
+    let foamDrawIndirectBuffer: GPUBuffer | null = null;
     let foamParamsBuffer: GPUBuffer | null = null;
     let foamEmitPipe: GPUComputePipeline | null = null;
+    let foamDenseEmitPipe: GPUComputePipeline | null = null;
+    let foamActiveEmitPipe: GPUComputePipeline | null = null;
     let foamUpdatePipe: GPUComputePipeline | null = null;
+    let foamDenseUpdatePipe: GPUComputePipeline | null = null;
+    let foamActiveUpdatePipe: GPUComputePipeline | null = null;
+    let foamActivePreparePipe: GPUComputePipeline | null = null;
+    let foamActiveFinishPipe: GPUComputePipeline | null = null;
     let foamEmitBG: GPUBindGroup | null = null;
     let foamUpdateBG: GPUBindGroup | null = null;
+    let foamActivePrepareBG: GPUBindGroup | null = null;
+    let foamActiveFinishBG: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
 
     function buildFoamBindGroups(): void {
@@ -1040,31 +1113,72 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                 { binding: 3, resource: { buffer: paramsBuffer } },
                 { binding: 4, resource: { buffer: foamParamsBuffer! } },
                 { binding: 5, resource: { buffer: diffuseBuffer! } },
-                { binding: 6, resource: { buffer: diffuseHeadBuffer! } },
+                { binding: 6, resource: { buffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer! } },
             ],
         });
+        const updateEntries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: cellBuffer } },
+            { binding: 1, resource: { buffer: volumeBuffer } },
+            { binding: 2, resource: { buffer: paramsBuffer } },
+            { binding: 3, resource: { buffer: foamParamsBuffer! } },
+            { binding: 4, resource: { buffer: diffuseBuffer! } },
+        ];
+        if (foamActiveParticles) {
+            updateEntries.push({ binding: 5, resource: { buffer: foamActiveStateBuffer! } });
+        }
         foamUpdateBG = device.createBindGroup({
             layout: foamUpdatePipe!.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: cellBuffer } },
-                { binding: 1, resource: { buffer: volumeBuffer } },
-                { binding: 2, resource: { buffer: paramsBuffer } },
-                { binding: 3, resource: { buffer: foamParamsBuffer! } },
-                { binding: 4, resource: { buffer: diffuseBuffer! } },
-            ],
+            entries: updateEntries,
         });
+        foamActivePrepareBG = foamActiveParticles
+            ? device.createBindGroup({
+                  layout: foamActivePreparePipe!.getBindGroupLayout(0),
+                  entries: [
+                      { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
+                      { binding: 1, resource: { buffer: foamActiveDispatchBuffer! } },
+                  ],
+              })
+            : null;
+        foamActiveFinishBG = foamActiveParticles
+            ? device.createBindGroup({
+                  layout: foamActiveFinishPipe!.getBindGroupLayout(0),
+                  entries: [
+                      { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
+                      { binding: 1, resource: { buffer: foamDrawIndirectBuffer! } },
+                  ],
+              })
+            : null;
     }
 
     function ensureFoam(cfg: FoamConfig): void {
         if (!foamEmitPipe) {
-            foamEmitPipe = pipeline("pbmpm-foam-emit", FOAM_EMIT_WGSL);
-            foamUpdatePipe = pipeline("pbmpm-foam-update", FOAM_UPDATE_WGSL);
+            foamDenseEmitPipe = pipeline("pbmpm-foam-emit", buildFoamEmitWgsl(false));
+            foamDenseUpdatePipe = pipeline("pbmpm-foam-update", buildFoamUpdateWgsl(false));
             foamParamsBuffer = device.createBuffer({ label: "pbmpm-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             diffuseHeadBuffer = device.createBuffer({ label: "pbmpm-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
+        const nextActiveParticles = cfg.activeParticles ?? false;
+        const activeModeChanged = nextActiveParticles !== foamActiveParticles;
+        if (nextActiveParticles && !foamActiveUpdatePipe) {
+            foamActiveEmitPipe = pipeline("pbmpm-foam-emit-active", buildFoamEmitWgsl(true));
+            foamActiveUpdatePipe = pipeline("pbmpm-foam-update-active", buildFoamUpdateWgsl(true));
+            foamActivePreparePipe = pipeline("pbmpm-foam-active-prepare", FOAM_ACTIVE_PREPARE_WGSL);
+            foamActiveFinishPipe = pipeline("pbmpm-foam-active-finish", FOAM_ACTIVE_FINISH_WGSL);
+        }
+        foamActiveParticles = nextActiveParticles;
+        foamEmitPipe = foamActiveParticles ? foamActiveEmitPipe! : foamDenseEmitPipe!;
+        foamUpdatePipe = foamActiveParticles ? foamActiveUpdatePipe! : foamDenseUpdatePipe!;
         let cap = Math.round(count * (cfg.poolScale ?? 3));
         cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? Infinity, FOAM_CAP_LIMIT));
-        if (cap !== foamCapacity || !diffuseBuffer) {
+        if (foamActiveParticles) {
+            cap = Math.min(cap, Math.max(1024, Math.floor((device.limits.maxStorageBufferBindingSize - 256) / 12)));
+            while (foamActiveStateBytes(cap) > device.limits.maxStorageBufferBindingSize) {
+                cap--;
+            }
+        }
+        const resizePool = cap !== foamCapacity || !diffuseBuffer;
+        const rebuildActiveResources = foamActiveParticles && (resizePool || !foamActiveStateBuffer || !foamActiveDispatchBuffer || !foamDrawIndirectBuffer);
+        if (resizePool) {
             diffuseBuffer?.destroy();
             diffuseBuffer = device.createBuffer({ label: "pbmpm-foam-pool", size: cap * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
             foamCapacity = cap;
@@ -1073,11 +1187,61 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             enc.clearBuffer(diffuseBuffer);
             enc.clearBuffer(diffuseHeadBuffer!);
             device.queue.submit([enc.finish()]);
-            diffusePool = { buffer: diffuseBuffer, headBuffer: diffuseHeadBuffer!, capacity: cap };
-            buildFoamBindGroups();
-        } else if (!foamEmitBG || !foamUpdateBG) {
-            buildFoamBindGroups();
         }
+        if (rebuildActiveResources) {
+            foamActiveStateBuffer?.destroy();
+            foamActiveDispatchBuffer?.destroy();
+            foamDrawIndirectBuffer?.destroy();
+            foamActiveStateBuffer = device.createBuffer({
+                label: "pbmpm-foam-active-state",
+                size: foamActiveStateBytes(cap),
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            foamActiveDispatchBuffer = device.createBuffer({
+                label: "pbmpm-foam-active-dispatch",
+                size: 12,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT,
+            });
+            foamDrawIndirectBuffer = device.createBuffer({
+                label: "pbmpm-foam-draw-indirect",
+                size: 16,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+            });
+            foamActiveSide = 0;
+        } else if (!foamActiveParticles && foamActiveStateBuffer) {
+            foamActiveStateBuffer.destroy();
+            foamActiveDispatchBuffer!.destroy();
+            foamDrawIndirectBuffer!.destroy();
+            foamActiveStateBuffer = null;
+            foamActiveDispatchBuffer = null;
+            foamDrawIndirectBuffer = null;
+        }
+        if (foamActiveParticles && (rebuildActiveResources || activeModeChanged)) {
+            const enc = device.createCommandEncoder({ label: "pbmpm-foam-active-reset" });
+            enc.clearBuffer(diffuseBuffer!);
+            enc.clearBuffer(diffuseHeadBuffer!);
+            enc.clearBuffer(foamActiveStateBuffer!);
+            device.queue.submit([enc.finish()]);
+            device.queue.writeBuffer(foamActiveStateBuffer!, 16, new Uint32Array([cap]));
+            foamActiveSide = 0;
+        } else if (!foamActiveParticles && activeModeChanged) {
+            const enc = device.createCommandEncoder({ label: "pbmpm-foam-dense-head-reset" });
+            enc.clearBuffer(diffuseHeadBuffer!);
+            device.queue.submit([enc.finish()]);
+        }
+        diffusePool = {
+            buffer: diffuseBuffer!,
+            headBuffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer!,
+            capacity: cap,
+            ...(foamActiveParticles
+                ? {
+                      activeIndices: foamActiveStateBuffer!,
+                      activeIndicesOffset: foamActiveListOffset(cap, foamActiveSide),
+                      drawIndirect: foamDrawIndirectBuffer!,
+                  }
+                : {}),
+        };
+        buildFoamBindGroups();
         foamF32[0] = 1;
         foamF32[1] = 12;
         foamF32[2] = 0.5;
@@ -1094,6 +1258,27 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
     }
 
+    function clearFoamPool(label: string): void {
+        if (!diffuseBuffer || !diffuseHeadBuffer) {
+            return;
+        }
+        const enc = device.createCommandEncoder({ label });
+        enc.clearBuffer(diffuseBuffer);
+        enc.clearBuffer(diffuseHeadBuffer);
+        if (foamActiveStateBuffer) {
+            enc.clearBuffer(foamActiveStateBuffer);
+            enc.clearBuffer(foamDrawIndirectBuffer!);
+        }
+        device.queue.submit([enc.finish()]);
+        if (foamActiveStateBuffer) {
+            device.queue.writeBuffer(foamActiveStateBuffer, 16, new Uint32Array([foamCapacity]));
+            foamActiveSide = 0;
+            if (diffusePool) {
+                diffusePool = { ...diffusePool, activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide) };
+            }
+        }
+    }
+
     function dispatch(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, groups: number): void {
         const pass = encoder.beginComputePass({ label, timestampWrites: simProfiler?.pass(label.includes("foam") ? "Foam gen" : "Simulation") });
         pass.setPipeline(pipe);
@@ -1103,6 +1288,14 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         } else {
             pass.dispatchWorkgroups(groups);
         }
+        pass.end();
+    }
+
+    function dispatchIndirect(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, args: GPUBuffer): void {
+        const pass = encoder.beginComputePass({ label, timestampWrites: simProfiler?.pass(label.includes("foam") ? "Foam gen" : "Simulation") });
+        pass.setPipeline(pipe);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroupsIndirect(args, 0);
         pass.end();
     }
 
@@ -1124,6 +1317,9 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             }
             if (diffuseHeadBuffer) {
                 b += diffuseHeadBuffer.size;
+            }
+            if (foamActiveStateBuffer) {
+                b += foamActiveStateBuffer.size + foamActiveDispatchBuffer!.size + foamDrawIndirectBuffer!.size;
             }
             if (foamParamsBuffer) {
                 b += foamParamsBuffer.size;
@@ -1170,7 +1366,22 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                 device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
                 encoder.pushDebugGroup("foam");
                 dispatch(encoder, "pbmpm-foam-emit", foamEmitPipe!, foamEmitBG!, particleGroups);
-                dispatch(encoder, "pbmpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamPoolGroups);
+                if (foamActiveParticles) {
+                    dispatch(encoder, "pbmpm-foam-active-prepare", foamActivePreparePipe!, foamActivePrepareBG!, 1);
+                    dispatchIndirect(encoder, "pbmpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamActiveDispatchBuffer!);
+                    dispatch(encoder, "pbmpm-foam-active-finish", foamActiveFinishPipe!, foamActiveFinishBG!, 1);
+                    foamActiveSide = 1 - foamActiveSide;
+                    diffusePool = {
+                        buffer: diffuseBuffer!,
+                        headBuffer: foamActiveStateBuffer!,
+                        capacity: foamCapacity,
+                        activeIndices: foamActiveStateBuffer!,
+                        activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide),
+                        drawIndirect: foamDrawIndirectBuffer!,
+                    };
+                } else {
+                    dispatch(encoder, "pbmpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamPoolGroups);
+                }
                 encoder.popDebugGroup();
             }
             dispatch(encoder, "pbmpm-copy", copyPipe, copyBG, particleGroups);
@@ -1178,6 +1389,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         },
         reset(): void {
             seed();
+            clearFoamPool("pbmpm-foam-reset");
         },
         setParam(key: string, value: number): void {
             switch (key) {
@@ -1266,12 +1478,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         setFoam(cfg: FoamConfig | null): void {
             if (!cfg) {
                 foamEnabled = false;
-                if (diffuseBuffer && diffuseHeadBuffer) {
-                    const enc = device.createCommandEncoder({ label: "pbmpm-foam-off-clear" });
-                    enc.clearBuffer(diffuseBuffer);
-                    enc.clearBuffer(diffuseHeadBuffer);
-                    device.queue.submit([enc.finish()]);
-                }
+                clearFoamPool("pbmpm-foam-off-clear");
                 return;
             }
             ensureFoam(cfg);
@@ -1294,6 +1501,9 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             emittersBuffer.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
+            foamActiveStateBuffer?.destroy();
+            foamActiveDispatchBuffer?.destroy();
+            foamDrawIndirectBuffer?.destroy();
             foamParamsBuffer?.destroy();
         },
     };

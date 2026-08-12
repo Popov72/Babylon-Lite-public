@@ -24,6 +24,12 @@ export interface FluidExportJson {
     msaa?: boolean;
     /** MLS-MPM sparse active-block execution. Optional; defaults off. */
     activeBlocks?: boolean;
+    /** MLS-MPM bounded sparse grid-page storage. Optional; defaults off. */
+    pagedGrid?: boolean;
+    /** Maximum live 4³-cell grid pages. */
+    pagedGridMaxPages?: number;
+    /** MLS-MPM histogram-integrated active-block discovery. Optional; defaults off. */
+    fusedBlockDiscovery?: boolean;
     physicsParticleSize: number;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
@@ -80,6 +86,7 @@ export interface FluidExportJson {
     };
     foam: {
         enableFoam: boolean;
+        activeParticles?: boolean;
         trappedAirRate: number;
         waveCrestRate: number;
         foamLifetime: number;
@@ -114,6 +121,9 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
         ...(ps.msaa !== undefined ? { msaa: ps.msaa } : {}),
         ...(ps.activeBlocks !== undefined ? { activeBlocks: ps.activeBlocks } : {}),
+        ...(ps.pagedGrid !== undefined ? { pagedGrid: ps.pagedGrid } : {}),
+        ...(ps.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: ps.pagedGridMaxPages } : {}),
+        ...(ps.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: ps.fusedBlockDiscovery } : {}),
         physicsParticleSize: ps.physScale,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
@@ -141,6 +151,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         },
         foam: {
             enableFoam: f?.enabled ?? false,
+            activeParticles: f?.activeParticles ?? false,
             trappedAirRate: f?.kTa ?? 0,
             waveCrestRate: f?.kWc ?? 0,
             foamLifetime: f?.tMax ?? 0,
@@ -196,6 +207,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         anisoSurfScale: r.anisoRadiusDamping ?? 0.5,
         foam: {
             enabled: fm.enableFoam,
+            activeParticles: fm.activeParticles ?? false,
             kTa: fm.trappedAirRate,
             kWc: fm.waveCrestRate,
             kb: fm.bubbleBuoyancy,
@@ -222,5 +234,8 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         ...(j.envIntensity !== undefined ? { envIntensity: j.envIntensity } : {}),
         ...(j.msaa !== undefined ? { msaa: j.msaa } : {}),
         ...(j.activeBlocks !== undefined ? { activeBlocks: j.activeBlocks } : {}),
+        ...(j.pagedGrid !== undefined ? { pagedGrid: j.pagedGrid } : {}),
+        ...(j.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: j.pagedGridMaxPages } : {}),
+        ...(j.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: j.fusedBlockDiscovery } : {}),
     };
 }

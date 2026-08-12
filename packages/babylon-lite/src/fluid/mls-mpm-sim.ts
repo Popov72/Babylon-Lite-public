@@ -42,8 +42,12 @@ import {
     SPAWN_ACCEPT_TRIES,
     EMITTER_STRUCT_WGSL,
     EMITTER_SPAWN_WGSL,
+    FOAM_ACTIVE_FINISH_WGSL,
+    FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_BYTES,
     FOAM_COMMON_WGSL,
+    foamActiveListOffset,
+    foamActiveStateBytes,
     packEmitters,
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
@@ -200,6 +204,15 @@ fn blockCoordOf(bIdx: u32, p: Params) -> vec3<u32> {
     return vec3<u32>(bIdx / (bd.y * bd.z), (bIdx / bd.z) % bd.y, bIdx % bd.z);
 }`;
 
+const PAGE_HELPERS_WGSL = /* wgsl */ `
+fn pageLocalIndex(node: vec3<i32>) -> u32 {
+    let local = vec3<u32>(node) % vec3<u32>(TILE_U);
+    return (local.x * TILE_U + local.y) * TILE_U + local.z;
+}
+fn pageCellIndex(node: vec3<i32>, p: Params) -> u32 {
+    return pageMap[blockIndexOfCell(node, p)] * ${TILE * TILE * TILE}u + pageLocalIndex(node);
+}`;
+
 // ── Per-substep block counting sort ──────────────────────────────────────────────
 // The tiled P2G runs one workgroup per grid BLOCK and needs that block's particles as a
 // contiguous run. A counting sort by block builds exactly that: histogram (blockCount),
@@ -210,13 +223,28 @@ fn blockCoordOf(bIdx: u32, p: Params) -> vec3<u32> {
 // regardless of order), only the memory access pattern of the scatter.
 //
 // S1 — histogram: each live particle bumps its block's count.
-const HISTOGRAM_WGSL = /* wgsl */ `
+function buildHistogramWgsl(fusedBlockDiscovery: boolean): string {
+    const fusedDecls = fusedBlockDiscovery
+        ? `
+@group(0) @binding(3) var<storage, read_write> activeBlockList: array<u32>;
+@group(0) @binding(4) var<storage, read_write> activeCount: array<atomic<u32>>;`
+        : "";
+    const increment = fusedBlockDiscovery
+        ? `
+    let b = blockIndexOfCell(c, p);
+    if (atomicAdd(&blockCount[b], 1u) == 0u) {
+        activeBlockList[atomicAdd(&activeCount[0], 1u)] = b;
+    }`
+        : `
+    atomicAdd(&blockCount[blockIndexOfCell(c, p)], 1u);`;
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${BLOCK_WGSL}
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> blockCount: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> p: Params;
+${fusedDecls}
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
@@ -224,8 +252,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     if (i >= p.counts.z) { return; } // warm-up: dormant particles are not sorted
     let c = cellOf(particles[i].position, p);
     if (!inGrid(c, p)) { return; } // out-of-grid base cell deposits nothing (as in the old P2G)
-    atomicAdd(&blockCount[blockIndexOfCell(c, p)], 1u);
+${increment}
 }`;
+}
 
 // S2a — per-chunk exclusive scan of blockCount into blockStart, plus each chunk's total
 // into partialSums. Hillis-Steele inclusive scan in shared memory, converted to exclusive.
@@ -385,13 +414,24 @@ fn main(
     }
 }`;
 
-const CLEAR_ACTIVE_BLOCKS_WGSL = /* wgsl */ `
+function buildClearActiveBlocksWgsl(pagedGrid: boolean): string {
+    const pageDecl = pagedGrid ? "\n@group(0) @binding(4) var<storage, read> pageMap: array<u32>;" : "";
+    const clear = pagedGrid
+        ? `
+    if (inGrid(node, p)) {
+        let page = pageMap[nodeBlockList[slot]];
+        if (page != 0u) { cells[page * ${TILE * TILE * TILE}u + pageLocalIndex(node)] = vec4<u32>(0u); }
+    }`
+        : "\n    if (inGrid(node, p)) { cells[index1D(node, p)] = vec4<u32>(0u); }";
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${BLOCK_WGSL}
 @group(0) @binding(0) var<storage, read_write> cells: array<vec4<u32>>;
 @group(0) @binding(1) var<storage, read> nodeBlockList: array<u32>;
 @group(0) @binding(2) var<storage, read> nodeCount: array<u32>;
 @group(0) @binding(3) var<uniform> p: Params;
+${pageDecl}
+${pagedGrid ? PAGE_HELPERS_WGSL : ""}
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(
     @builtin(local_invocation_index) lid: u32,
@@ -403,7 +443,29 @@ fn main(
     let b0 = vec3<i32>(blockCoordOf(nodeBlockList[slot], p)) * TILE_I;
     let lc = vec3<i32>(i32(lid / (TILE_U * TILE_U)), i32((lid / TILE_U) % TILE_U), i32(lid % TILE_U));
     let node = b0 + lc;
-    if (inGrid(node, p)) { cells[index1D(node, p)] = vec4<u32>(0u); }
+${clear}
+}`;
+}
+
+const ASSIGN_GRID_PAGES_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${BLOCK_WGSL}
+@group(0) @binding(0) var<storage, read> nodeBlockList: array<u32>;
+@group(0) @binding(1) var<storage, read> nodeCount: array<u32>;
+@group(0) @binding(2) var<storage, read_write> pageMap: array<u32>;
+@group(0) @binding(3) var<storage, read_write> pageState: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read> cells: array<vec4<u32>>;
+@compute @workgroup_size(1)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
+    let slot = wid.x + wid.y * ng.x;
+    if (slot >= nodeCount[0]) { return; }
+    let rawPage = atomicAdd(&pageState[1], 1u);
+    let maxPages = arrayLength(&cells) / ${TILE * TILE * TILE}u - 1u;
+    if (rawPage < maxPages) {
+        pageMap[nodeBlockList[slot]] = rawPage + 1u;
+    } else {
+        atomicStore(&pageState[2], 1u);
+    }
 }`;
 
 // Tiled particle-to-grid transfer. One workgroup per grid block scatters its sorted run
@@ -419,7 +481,7 @@ fn main(
 // uniform (all threads or none) and happen before any barrier.
 //
 // Pass 1 — mass only (staged, 1 shared atomic + at most 1 global atomic per node).
-function buildP2gMassTiledWgsl(activeBlocks: boolean): string {
+function buildP2gMassTiledWgsl(activeBlocks: boolean, pagedGrid: boolean): string {
     const activeDecls = activeBlocks
         ? `
 @group(0) @binding(6) var<storage, read> activeBlockList: array<u32>;
@@ -433,6 +495,16 @@ function buildP2gMassTiledWgsl(activeBlocks: boolean): string {
         : `
     let bIdx = wid.x + wid.y * ng.x;
     if (bIdx >= numBlocksOf(p)) { return; }`;
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(8) var<storage, read> pageMap: array<u32>;
+${PAGE_HELPERS_WGSL}`
+        : "";
+    const writeMass = pagedGrid
+        ? `
+            let page = pageMap[blockIndexOfCell(node, p)];
+            if (page != 0u) { atomicAdd(&cells[page * ${TILE * TILE * TILE}u + pageLocalIndex(node)].mass, m); }`
+        : " atomicAdd(&cells[index1D(node, p)].mass, m);";
     return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
@@ -446,10 +518,12 @@ struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: atomic<i3
 @group(0) @binding(4) var<storage, read> blockCount: array<u32>;
 @group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
 ${activeDecls}
+${pageDecls}
 var<workgroup> tileMass: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
 ${blockLookup}
+    ${pagedGrid ? "if (activeCount[2] != 0u) { return; }" : ""}
     let cnt = blockCount[bIdx];
     if (cnt == 0u) { return; }
     let start = blockStart[bIdx];
@@ -480,7 +554,8 @@ ${blockLookup}
             let ly = i32((si / TN_U) % TN_U);
             let lz = i32(si % TN_U);
             let node = B0 - vec3<i32>(1) + vec3<i32>(lx, ly, lz);
-            if (inGrid(node, p)) { atomicAdd(&cells[index1D(node, p)].mass, m); }
+            if (inGrid(node, p)) {${writeMass}
+            }
         }
     }
 }`;
@@ -489,7 +564,7 @@ ${blockLookup}
 // Pass 2 — gather the current node density from GLOBAL mass, compute the EOS/viscous
 // stress exactly as the old p2g-vel, then stage the APIC + stress momentum into a shared
 // velocity tile and flush (3 global atomics per touched node).
-function buildP2gVelTiledWgsl(activeBlocks: boolean): string {
+function buildP2gVelTiledWgsl(activeBlocks: boolean, pagedGrid: boolean): string {
     const activeDecls = activeBlocks
         ? `
 @group(0) @binding(6) var<storage, read> activeBlockList: array<u32>;
@@ -503,6 +578,26 @@ function buildP2gVelTiledWgsl(activeBlocks: boolean): string {
         : `
     let bIdx = wid.x + wid.y * ng.x;
     if (bIdx >= numBlocksOf(p)) { return; }`;
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(8) var<storage, read> pageMap: array<u32>;
+${PAGE_HELPERS_WGSL}`
+        : "";
+    const massIndex = pagedGrid ? "pageCellIndex(node, p)" : "u32(index1D(node, p))";
+    const writeVelocity = pagedGrid
+        ? `
+            let page = pageMap[blockIndexOfCell(node, p)];
+            if (page != 0u) {
+                let idx = page * ${TILE * TILE * TILE}u + pageLocalIndex(node);
+                atomicAdd(&cells[idx].vx, vx);
+                atomicAdd(&cells[idx].vy, vy);
+                atomicAdd(&cells[idx].vz, vz);
+            }`
+        : `
+            let idx = u32(index1D(node, p));
+            atomicAdd(&cells[idx].vx, vx);
+            atomicAdd(&cells[idx].vy, vy);
+            atomicAdd(&cells[idx].vz, vz);`;
     return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
@@ -516,12 +611,14 @@ struct Cell { vx: atomic<i32>, vy: atomic<i32>, vz: atomic<i32>, mass: i32, };
 @group(0) @binding(4) var<storage, read> blockCount: array<u32>;
 @group(0) @binding(5) var<storage, read> sortedIdx: array<u32>;
 ${activeDecls}
+${pageDecls}
 var<workgroup> tileVx: array<atomic<i32>, ${TILE_NODES3}>;
 var<workgroup> tileVy: array<atomic<i32>, ${TILE_NODES3}>;
 var<workgroup> tileVz: array<atomic<i32>, ${TILE_NODES3}>;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(local_invocation_index) tid: u32, @builtin(workgroup_id) wid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
 ${blockLookup}
+    ${pagedGrid ? "if (activeCount[2] != 0u) { return; }" : ""}
     let cnt = blockCount[bIdx];
     if (cnt == 0u) { return; }
     let start = blockStart[bIdx];
@@ -552,7 +649,7 @@ ${blockLookup}
             let weight = w[gx].x * w[gy].y * w[gz].z;
             let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
             if (!inGrid(node, p)) { continue; }
-            density += dec(cells[index1D(node, p)].mass) * weight;
+            density += dec(cells[${massIndex}].mass) * weight;
         }}}
 
         // Stress term (pressure + viscous). Isolated particle (zero density) deposits APIC
@@ -595,10 +692,7 @@ ${blockLookup}
             let lz = i32(si % TN_U);
             let node = B0 - vec3<i32>(1) + vec3<i32>(lx, ly, lz);
             if (inGrid(node, p)) {
-                let idx = index1D(node, p);
-                atomicAdd(&cells[idx].vx, vx);
-                atomicAdd(&cells[idx].vy, vy);
-                atomicAdd(&cells[idx].vz, vz);
+${writeVelocity}
             }
         }
     }
@@ -614,7 +708,7 @@ ${blockLookup}
 // would miss its thin curved shell — and confines per-particle in G2P instead. Static
 // walls only; a moving boundary (paddle: |−∂sdf/∂t| large) is left to the per-particle
 // G2P moving-boundary resolve.
-function buildUpdateGridWgsl(scene: SceneSdfSpec, activeBlocks: boolean): string {
+function buildUpdateGridWgsl(scene: SceneSdfSpec, activeBlocks: boolean, pagedGrid: boolean): string {
     const closed = scene.gridConfine !== false;
     // Baked SDF grid (optional): only the CLOSED path injects the scene SDF here, so the
     // storage grid + sampler are injected only then (else the binding would be unused and
@@ -638,6 +732,12 @@ function buildUpdateGridWgsl(scene: SceneSdfSpec, activeBlocks: boolean): string
 @group(0) @binding(4) var<storage, read> nodeBlockList: array<u32>;
 @group(0) @binding(5) var<storage, read> nodeCount: array<u32>;`
         : "";
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(6) var<storage, read> pageMap: array<u32>;
+@group(0) @binding(7) var<storage, read> pageState: array<u32>;
+${PAGE_HELPERS_WGSL}`
+        : "";
     const invocation = activeBlocks
         ? `
 fn main(
@@ -651,7 +751,7 @@ fn main(
     let lc = vec3<i32>(i32(lid / (TILE_U * TILE_U)), i32((lid / TILE_U) % TILE_U), i32(lid % TILE_U));
     let node = b0 + lc;
     if (!inGrid(node, p)) { return; }
-    let i = index1D(node, p);
+    let i = ${pagedGrid ? "i32(pageCellIndex(node, p))" : "index1D(node, p)"};
     let x = node.x;
     let y = node.y;
     let z = node.z;`
@@ -671,9 +771,11 @@ ${decls}
 @group(0) @binding(0) var<storage, read_write> cells: array<vec4<i32>>;
 @group(0) @binding(1) var<uniform> p: Params;
 ${activeDecls}
+${pageDecls}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 ${invocation}
+    ${pagedGrid ? "if (pageState[2] != 0u) { return; }" : ""}
     let c = cells[i];
     if (c.w <= 0) { return; }
     let invMass = 1.0 / dec(c.w);
@@ -723,11 +825,18 @@ function g2pConfineSdf(scene: SceneSdfSpec): string {
 // the G2P pass always uses the SDF confinement path. External forces run as their
 // OWN dedicated compute pass (mpm-force) before the p2g transfer, so G2P stays
 // force-free (a single pipeline cache-keyed on the scene only).
-function buildG2pWgsl(scene: SceneSdfSpec): string {
+function buildG2pWgsl(scene: SceneSdfSpec, pagedGrid: boolean): string {
     // Baked SDF grid (optional): binding 4 is free here (0=particles, 1=cells, 2=p,
     // 3=sceneSdfParams). Injected BEFORE scene.sdf so `sceneSdf` can call sampleSdfGrid.
     const gridInject = scene.sdfGrid ? `\n@group(0) @binding(4) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : "";
     const decls = `${scene.struct}\n@group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;${gridInject}\n${scene.sdf}\n${SCENE_NORMAL_WGSL}`;
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(5) var<storage, read> pageMap: array<u32>;
+@group(0) @binding(6) var<storage, read> pageState: array<u32>;
+${BLOCK_WGSL}
+${PAGE_HELPERS_WGSL}`
+        : "";
     const confine = g2pConfineSdf(scene);
     return /* wgsl */ `
 ${COMMON_WGSL}
@@ -737,12 +846,14 @@ ${WEIGHTS_WGSL}
 @group(0) @binding(1) var<storage, read> cells: array<vec4<i32>>;
 @group(0) @binding(2) var<uniform> p: Params;
 ${decls}
+${pageDecls}
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.counts.x) { return; }
     if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
+    ${pagedGrid ? "if (pageState[2] != 0u) { return; }" : ""}
     let pos = particles[i].position;
     let base = cellOf(pos, p);
     let w = weightsOf(pos, p);
@@ -758,7 +869,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (!inGrid(node, p)) { continue; }
         let nodeCenter = p.origin.xyz + (vec3<f32>(node) + 0.5) * dx;
         let cellDist = nodeCenter - pos;
-        let idx = index1D(node, p);
+        let idx = ${pagedGrid ? "i32(pageCellIndex(node, p))" : "index1D(node, p)"};
         let cv = cells[idx];   // single 16-byte load (vx, vy, vz, mass)
         let wv = vec3<f32>(dec(cv.x), dec(cv.y), dec(cv.z)) * weight;
         vel += wv;
@@ -931,7 +1042,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //   • Classification is by grid density ρ (fraction of restDensity) instead of a
 //     neighbour count: low ρ → spray, high ρ → bubble, mid → foam.
 // K_STRAIN / WC_SCALE and the RHO_* fractions below are the tuned live constants.
-const FOAM_EMIT_WGSL = /* wgsl */ `
+function buildFoamEmitWgsl(activeParticles: boolean, pagedGrid: boolean): string {
+    const headDecl = activeParticles
+        ? "@group(0) @binding(5) var<storage, read_write> activeState: array<atomic<u32>>;"
+        : "@group(0) @binding(5) var<storage, read_write> head: array<atomic<u32>>;";
+    const activeDecl = activeParticles
+        ? `
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }
+fn activeFlagBase(cap: u32) -> u32 { return 64u + 2u * activeStride(cap); }`
+        : "";
+    const activate = activeParticles
+        ? `
+        if (atomicExchange(&activeState[activeFlagBase(cap) + idx], 1u) == 0u) {
+            let side = atomicLoad(&activeState[3]);
+            let dst = atomicAdd(&activeState[1u + side], 1u);
+            atomicStore(&activeState[activeListBase(side, cap) + dst], idx);
+        }`
+        : "";
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(6) var<storage, read> pageMap: array<u32>;
+@group(0) @binding(7) var<storage, read> pageState: array<u32>;
+${BLOCK_WGSL}
+${PAGE_HELPERS_WGSL}`
+        : "";
+    const cellIndex = pagedGrid ? "pageCellIndex(node, p)" : "u32(index1D(node, p))";
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
@@ -942,7 +1079,9 @@ struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
 @group(0) @binding(2) var<uniform> p: Params;
 @group(0) @binding(3) var<uniform> foam: Foam;
 @group(0) @binding(4) var<storage, read_write> diffuse: array<Diffuse>;
-@group(0) @binding(5) var<storage, read_write> head: array<atomic<u32>>;
+${headDecl}
+${activeDecl}
+${pageDecls}
 
 // Scales ‖strain-rate‖ (1/s) into the trapped-air potential; tuned so the paddle wake
 // reaches the τ_ta band while the calm interior stays below it.
@@ -959,6 +1098,7 @@ fn frob(m: mat3x3<f32>) -> f32 { return sqrt(dot(m[0], m[0]) + dot(m[1], m[1]) +
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.counts.x) { return; }
+    ${pagedGrid ? "if (pageState[2] != 0u) { return; }" : ""}
     let pos = particles[i].position;
     let vi = particles[i].v;
     let speed = length(vi);
@@ -982,7 +1122,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let weight = w[gx].x * w[gy].y * w[gz].z;
         let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
         if (!inGrid(node, p)) { continue; }
-        let m = dec(cells[index1D(node, p)].mass);
+        let m = dec(cells[${cellIndex}].mass);
         let cellDist = (p.origin.xyz + (vec3<f32>(node) + 0.5) * dx) - pos;
         rho += m * weight;
         gradRho += (m * weight) * cellDist;
@@ -1038,18 +1178,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let off = e1 * (rr * cos(th)) + e2 * (rr * sin(th));
         let xd = pos + off + vhat * (xh * dtv);
         let vd = off + vi;
-        let idx = atomicAdd(&head[0], 1u) % cap;
+        let idx = atomicAdd(&${activeParticles ? "activeState" : "head"}[0], 1u) % cap;
         diffuse[idx].p = vec4<f32>(xd, life);
         diffuse[idx].v = vec4<f32>(vd, 0.0);
+${activate}
     }
 }`;
+}
 
 // Pass 2 — classify + advect + dissolve over the whole diffuse pool. The local fluid
 // velocity ṽ_f is the grid velocity gathered at the diffuse position (trivial in MLS:
 // a weighted 3×3×3 gather of the post-update cell velocity), and the local density ρ is
 // the grid mass gather. ρ (as a fraction of restDensity) classifies each live particle
 // — low ρ → spray, high ρ → bubble, else foam — then each class advects like PBF.
-const FOAM_UPDATE_WGSL = /* wgsl */ `
+function buildFoamUpdateWgsl(activeParticles: boolean, pagedGrid: boolean): string {
+    const activeDecl = activeParticles
+        ? `
+@group(0) @binding(4) var<storage, read_write> activeState: array<atomic<u32>>;
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }
+fn activeFlagBase(cap: u32) -> u32 { return 64u + 2u * activeStride(cap); }`
+        : "";
+    const slotLookup = activeParticles
+        ? `
+    let cap = arrayLength(&diffuse);
+    let side = atomicLoad(&activeState[3]);
+    let slot = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
+    if (slot >= atomicLoad(&activeState[1u + side])) { return; }
+    let i = atomicLoad(&activeState[activeListBase(side, cap) + slot]);`
+        : `
+    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&diffuse)) { return; }`;
+    const deactivate = activeParticles ? "atomicStore(&activeState[activeFlagBase(cap) + i], 0u);" : "";
+    const keepActive = activeParticles
+        ? `
+    let nextSide = 1u - side;
+    let dst = atomicAdd(&activeState[1u + nextSide], 1u);
+    atomicStore(&activeState[activeListBase(nextSide, cap) + dst], i);`
+        : "";
+    const pageDecls = pagedGrid
+        ? `
+@group(0) @binding(6) var<storage, read> pageMap: array<u32>;
+@group(0) @binding(7) var<storage, read> pageState: array<u32>;
+${BLOCK_WGSL}
+${PAGE_HELPERS_WGSL}`
+        : "";
+    const cellIndex = pagedGrid ? "pageCellIndex(node, p)" : "u32(index1D(node, p))";
+    return /* wgsl */ `
 ${COMMON_WGSL}
 ${WEIGHTS_WGSL}
 ${FOAM_COMMON_WGSL}
@@ -1058,6 +1233,8 @@ struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
 @group(0) @binding(1) var<uniform> p: Params;
 @group(0) @binding(2) var<uniform> foam: Foam;
 @group(0) @binding(3) var<storage, read_write> diffuse: array<Diffuse>;
+${activeDecl}
+${pageDecls}
 
 // Classification thresholds as a fraction of restDensity (the interior packs at ~restD).
 const RHO_SPRAY: f32 = 0.35;  // ρ below this → spray (near-empty, flying droplet)
@@ -1068,15 +1245,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Pool slots can exceed one dispatch dimension, in which case dispatch() spills into y
     // with an x extent of exactly MAX_WORKGROUPS groups — fold that back into a flat index.
     // gid.y is 0 whenever the dispatch fits in x, so this is a no-op for small pools.
-    let i = gid.x + gid.y * ${MAX_WORKGROUPS * WORKGROUP_SIZE}u;
-    if (i >= arrayLength(&diffuse)) { return; }
+${slotLookup}
     let p0 = diffuse[i].p;
-    if (p0.w <= 0.0) { return; }
+    if (p0.w <= 0.0) { ${deactivate} return; }
+    ${pagedGrid ? `if (pageState[2] != 0u) { ${keepActive} return; }` : ""}
     let pp = p0.xyz;
     let dx = p.origin.w;
     let lo = p.origin.xyz;
     let hi = p.origin.xyz + p.dim.xyz * dx;
-    if (any(pp < lo) || any(pp > hi)) { diffuse[i].p = vec4<f32>(pp, 0.0); return; }
+    if (any(pp < lo) || any(pp > hi)) {
+        diffuse[i].p = vec4<f32>(pp, 0.0);
+        ${deactivate}
+        return;
+    }
     var v = diffuse[i].v.xyz;
 
     // Gather the post-update grid at the diffuse position → local fluid velocity ṽ_f
@@ -1091,7 +1272,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let weight = w[gx].x * w[gy].y * w[gz].z;
         let node = base + vec3<i32>(gx - 1, gy - 1, gz - 1);
         if (!inGrid(node, p)) { continue; }
-        let idx = index1D(node, p);
+        let idx = ${cellIndex};
         vf += vec3<f32>(dec(cells[idx].vx), dec(cells[idx].vy), dec(cells[idx].vz)) * weight;
         rho += dec(cells[idx].mass) * weight;
     }}}
@@ -1119,10 +1300,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         np = pp + dt * vf;
         life = p0.w - dt;
     }
-    if (life <= 0.0) { diffuse[i].p = vec4<f32>(np, 0.0); return; }
+    if (life <= 0.0) {
+        diffuse[i].p = vec4<f32>(np, 0.0);
+        ${deactivate}
+        return;
+    }
     diffuse[i].p = vec4<f32>(np, life);
     diffuse[i].v = vec4<f32>(v, f32(kind));
+${keepActive}
 }`;
+}
 
 export interface MlsMpmOptions extends FluidSimBaseOptions {
     /** Simulation box min corner — the MLS grid domain AABB. Default [-20, 0, -20]. */
@@ -1172,6 +1359,19 @@ export interface MlsMpmOptions extends FluidSimBaseOptions {
      *  The dense cell buffer is retained, so this reduces GPU time rather than memory.
      *  Default false. */
     activeBlocks?: boolean;
+    /** Append a particle block to the active list on its histogram count's 0→1
+     *  transition, eliminating the separate block-compaction pass. Requires
+     *  `activeBlocks`; ignored otherwise. Default false. */
+    fusedBlockDiscovery?: boolean;
+    /** Store grid nodes in a bounded pool of 4³-cell pages instead of the dense
+     *  domain-sized grid. Implies `activeBlocks`. Default false. */
+    pagedGrid?: boolean;
+    /** Maximum number of live grid pages. Required when `pagedGrid` is enabled.
+     *  If the active node-block halo exceeds this cap, the solver freezes before
+     *  integrating particles and reports the required page count. */
+    pagedGridMaxPages?: number;
+    /** Called asynchronously after a paged-grid overflow is read back. */
+    onPagedGridOverflow?: (requiredPages: number, capacity: number) => void;
     /** Explicit per-particle seed positions as flat world-space xyz triples
      *  (`[x0,y0,z0, x1,y1,z1, …]`). When present, `seed()`/`reset()` places each
      *  particle `i (< count)` at `initialPositions[3i..3i+2]` with zero velocity and
@@ -1218,7 +1418,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const groundDamp = options.groundDamp ?? 0.9;
     const groundDampHeight = options.groundDampHeight ?? 1.2;
     const restitution = options.restitution ?? 0.3;
-    const activeBlocks = options.activeBlocks ?? false;
+    const pagedGrid = options.pagedGrid ?? false;
+    const activeBlocks = pagedGrid || (options.activeBlocks ?? false);
+    const fusedBlockDiscovery = activeBlocks && (options.fusedBlockDiscovery ?? false);
     // Optional explicit per-particle seed (flat world-space xyz). When set, seed()
     // reads position i from here instead of the random spawn draw (see the interface).
     const initialPositions = options.initialPositions ?? null;
@@ -1233,6 +1435,14 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     // Block grid for the tiled P2G counting sort: blockDim = ceil(gridDim / TILE).
     const blockDim: [number, number, number] = [Math.ceil(gridDim[0] / TILE), Math.ceil(gridDim[1] / TILE), Math.ceil(gridDim[2] / TILE)];
     const numBlocks = blockDim[0] * blockDim[1] * blockDim[2];
+    if (pagedGrid && (!Number.isFinite(options.pagedGridMaxPages) || (options.pagedGridMaxPages ?? 0) <= 0)) {
+        throw new Error("[MLS-MPM] pagedGrid requires a positive pagedGridMaxPages capacity.");
+    }
+    const pagedGridMaxPages = pagedGrid ? Math.min(numBlocks, Math.floor(options.pagedGridMaxPages!)) : 0;
+    const maxPagedGridPages = Math.floor(device.limits.maxStorageBufferBindingSize / (TILE * TILE * TILE * 16)) - 1;
+    if (pagedGrid && pagedGridMaxPages > maxPagedGridPages) {
+        throw new Error(`[MLS-MPM] pagedGridMaxPages ${pagedGridMaxPages} exceeds this device's ${maxPagedGridPages}-page storage-buffer limit.`);
+    }
     const scanChunks = Math.ceil(numBlocks / SCAN_WG); // per-chunk totals for the multi-level scan
 
     // Rest density (particles per cell): from the spawn packing if not given.
@@ -1242,7 +1452,11 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     // ── Buffers ──────────────────────────────────────────────────────
     const PARTICLE_STRIDE = 80;
     const particleBuffer = device.createBuffer({ label: "mpm-particles", size: count * PARTICLE_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    const cellBuffer = device.createBuffer({ label: "mpm-cells", size: numCells * 16, usage: GPUBufferUsage.STORAGE });
+    const cellBuffer = device.createBuffer({
+        label: pagedGrid ? "mpm-paged-cells" : "mpm-cells",
+        size: pagedGrid ? (pagedGridMaxPages + 1) * TILE * TILE * TILE * 16 : numCells * 16,
+        usage: GPUBufferUsage.STORAGE | (pagedGrid ? GPUBufferUsage.COPY_DST : 0),
+    });
     const positionBuffer = device.createBuffer({ label: "mpm-render-pos", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     const velocityBuffer = device.createBuffer({ label: "mpm-render-vel", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const debugBuffer = device.createBuffer({ label: "mpm-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -1259,7 +1473,13 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const partialSumsBuffer = device.createBuffer({ label: "mpm-partial-sums", size: scanChunks * 4, usage: GPUBufferUsage.STORAGE });
     const sortedIdxBuffer = device.createBuffer({ label: "mpm-sorted-idx", size: count * 4, usage: GPUBufferUsage.STORAGE });
     const activeBlockListBuffer = activeBlocks ? device.createBuffer({ label: "mpm-active-block-list", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE }) : null;
-    const activeBlockCountBuffer = activeBlocks ? device.createBuffer({ label: "mpm-active-block-count", size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) : null;
+    const activeBlockCountBuffer = activeBlocks
+        ? device.createBuffer({
+              label: "mpm-active-block-state",
+              size: pagedGrid ? 12 : 4,
+              usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | (pagedGrid ? GPUBufferUsage.COPY_SRC : 0),
+          })
+        : null;
     const activeBlockIndirectBuffer = activeBlocks
         ? device.createBuffer({ label: "mpm-active-block-indirect", size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT })
         : null;
@@ -1271,6 +1491,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const nodeBlockIndirectBuffer = activeBlocks
         ? device.createBuffer({ label: "mpm-node-block-indirect", size: 12, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT })
         : null;
+    const pageMapBuffer = pagedGrid ? device.createBuffer({ label: "mpm-page-map", size: numBlocks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }) : null;
+    const pageStatusStagingBuffers = pagedGrid
+        ? [0, 1].map((i) =>
+              device.createBuffer({
+                  label: `mpm-page-status-readback-${i}`,
+                  size: 8,
+                  usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+              })
+          )
+        : [];
 
     const paramsData = new ArrayBuffer(PARAMS_BYTES);
     const pf = new Float32Array(paramsData);
@@ -1387,25 +1617,26 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     function pipeline(label: string, code: string): GPUComputePipeline {
         return device.createComputePipeline({ label, layout: "auto", compute: { module: device.createShaderModule({ label, code }), entryPoint: "main" } });
     }
-    const clearPipe = pipeline("mpm-clear", activeBlocks ? CLEAR_ACTIVE_BLOCKS_WGSL : CLEAR_WGSL);
+    const clearPipe = pipeline("mpm-clear", activeBlocks ? buildClearActiveBlocksWgsl(pagedGrid) : CLEAR_WGSL);
     // Block counting-sort + tiled P2G pipelines (replace the old global-atomic p2g-mass /
     // p2g-vel scatter with a shared-memory-staged transfer over sorted blocks).
-    const histogramPipe = pipeline("mpm-histogram", HISTOGRAM_WGSL);
+    const histogramPipe = pipeline("mpm-histogram", buildHistogramWgsl(fusedBlockDiscovery));
     const scanLocalPipe = pipeline("mpm-scan-local", SCAN_LOCAL_WGSL);
     const scanPartialsPipe = pipeline("mpm-scan-partials", SCAN_PARTIALS_WGSL);
     const scanAddPipe = pipeline("mpm-scan-add", SCAN_ADD_WGSL);
     const scatterPipe = pipeline("mpm-scatter", SCATTER_WGSL);
-    const p2gMassTiledPipe = pipeline("mpm-p2g-mass-tiled", buildP2gMassTiledWgsl(activeBlocks));
-    const p2gVelTiledPipe = pipeline("mpm-p2g-vel-tiled", buildP2gVelTiledWgsl(activeBlocks));
-    const compactActiveBlocksPipe = activeBlocks ? pipeline("mpm-compact-active-blocks", COMPACT_ACTIVE_BLOCKS_WGSL) : null;
+    const p2gMassTiledPipe = pipeline("mpm-p2g-mass-tiled", buildP2gMassTiledWgsl(activeBlocks, pagedGrid));
+    const p2gVelTiledPipe = pipeline("mpm-p2g-vel-tiled", buildP2gVelTiledWgsl(activeBlocks, pagedGrid));
+    const compactActiveBlocksPipe = activeBlocks && !fusedBlockDiscovery ? pipeline("mpm-compact-active-blocks", COMPACT_ACTIVE_BLOCKS_WGSL) : null;
     const finalizeIndirectPipe = activeBlocks ? pipeline("mpm-finalize-indirect", FINALIZE_INDIRECT_WGSL) : null;
     const markActiveNodeBlocksPipe = activeBlocks ? pipeline("mpm-mark-active-node-blocks", MARK_ACTIVE_NODE_BLOCKS_WGSL) : null;
+    const assignGridPagesPipe = pagedGrid ? pipeline("mpm-assign-grid-pages", ASSIGN_GRID_PAGES_WGSL) : null;
     // update-grid + g2p pipelines/bind-groups are built lazily in setSceneSdf (always
     // called before the first step); compiled variants are cached by source so
     // re-selecting a demo is instant.
     const updatePipeCache = new Map<string, GPUComputePipeline>();
     function getUpdatePipe(scene: SceneSdfSpec): GPUComputePipeline {
-        const src = buildUpdateGridWgsl(scene, activeBlocks);
+        const src = buildUpdateGridWgsl(scene, activeBlocks, pagedGrid);
         let pipe = updatePipeCache.get(src);
         if (!pipe) {
             pipe = pipeline("mpm-update", src);
@@ -1420,7 +1651,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     // runs as its own dedicated pass, so G2P is keyed on the scene alone.
     const g2pPipeCache = new Map<string, GPUComputePipeline>();
     function getG2pPipe(scene: SceneSdfSpec): GPUComputePipeline {
-        const src = buildG2pWgsl(scene);
+        const src = buildG2pWgsl(scene, pagedGrid);
         let pipe = g2pPipeCache.get(src);
         if (!pipe) {
             pipe = pipeline("mpm-g2p", src);
@@ -1436,6 +1667,41 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     emitData[4] = count; // head2.x = particle count
     let emitEnabled = false;
     let emitSeed = 0;
+    let pagedGridOverflowed = false;
+    let pageStatusGeneration = 0;
+    let disposed = false;
+    const pageStatusStates: Array<"idle" | "copied" | "mapping"> = pageStatusStagingBuffers.map(() => "idle");
+    function pollPagedGridStatus(): void {
+        if (!pagedGrid) {
+            return;
+        }
+        for (let i = 0; i < pageStatusStates.length; i++) {
+            if (pageStatusStates[i] !== "copied") {
+                continue;
+            }
+            pageStatusStates[i] = "mapping";
+            const generation = pageStatusGeneration;
+            const staging = pageStatusStagingBuffers[i]!;
+            staging
+                .mapAsync(GPUMapMode.READ)
+                .then(() => {
+                    const status = new Uint32Array(staging.getMappedRange());
+                    const requiredPages = status[0]!;
+                    const overflow = status[1]!;
+                    staging.unmap();
+                    pageStatusStates[i] = "idle";
+                    if (!disposed && generation === pageStatusGeneration && overflow !== 0 && !pagedGridOverflowed) {
+                        pagedGridOverflowed = true;
+                        options.onPagedGridOverflow?.(requiredPages, pagedGridMaxPages);
+                    }
+                })
+                .catch(() => {
+                    if (!disposed) {
+                        pageStatusStates[i] = "idle";
+                    }
+                });
+        }
+    }
     const emitBG = device.createBindGroup({
         layout: emitPipe.getBindGroupLayout(0),
         entries: [
@@ -1452,16 +1718,21 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                   { binding: 1, resource: { buffer: nodeBlockListBuffer! } },
                   { binding: 2, resource: { buffer: nodeBlockCountBuffer! } },
                   { binding: 3, resource: { buffer: paramsBuffer } },
+                  ...(pagedGrid ? [{ binding: 4, resource: { buffer: pageMapBuffer! } }] : []),
               ]
             : [{ binding: 0, resource: { buffer: cellBuffer } }],
     });
+    const histogramEntries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: particleBuffer } },
+        { binding: 1, resource: { buffer: blockCountBuffer } },
+        { binding: 2, resource: { buffer: paramsBuffer } },
+    ];
+    if (fusedBlockDiscovery) {
+        histogramEntries.push({ binding: 3, resource: { buffer: activeBlockListBuffer! } }, { binding: 4, resource: { buffer: activeBlockCountBuffer! } });
+    }
     const histogramBG = device.createBindGroup({
         layout: histogramPipe.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: blockCountBuffer } },
-            { binding: 2, resource: { buffer: paramsBuffer } },
-        ],
+        entries: histogramEntries,
     });
     const scanLocalBG = device.createBindGroup({
         layout: scanLocalPipe.getBindGroupLayout(0),
@@ -1503,6 +1774,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     if (activeBlocks) {
         p2gEntries.push({ binding: 6, resource: { buffer: activeBlockListBuffer! } }, { binding: 7, resource: { buffer: activeBlockCountBuffer! } });
     }
+    if (pagedGrid) {
+        p2gEntries.push({ binding: 8, resource: { buffer: pageMapBuffer! } });
+    }
     const p2gMassTiledBG = device.createBindGroup({
         layout: p2gMassTiledPipe.getBindGroupLayout(0),
         entries: p2gEntries,
@@ -1511,16 +1785,17 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         layout: p2gVelTiledPipe.getBindGroupLayout(0),
         entries: p2gEntries,
     });
-    const compactActiveBlocksBG = activeBlocks
-        ? device.createBindGroup({
-              layout: compactActiveBlocksPipe!.getBindGroupLayout(0),
-              entries: [
-                  { binding: 0, resource: { buffer: blockCountBuffer } },
-                  { binding: 1, resource: { buffer: activeBlockListBuffer! } },
-                  { binding: 2, resource: { buffer: activeBlockCountBuffer! } },
-              ],
-          })
-        : null;
+    const compactActiveBlocksBG =
+        activeBlocks && !fusedBlockDiscovery
+            ? device.createBindGroup({
+                  layout: compactActiveBlocksPipe!.getBindGroupLayout(0),
+                  entries: [
+                      { binding: 0, resource: { buffer: blockCountBuffer } },
+                      { binding: 1, resource: { buffer: activeBlockListBuffer! } },
+                      { binding: 2, resource: { buffer: activeBlockCountBuffer! } },
+                  ],
+              })
+            : null;
     const finalizeActiveBlocksBG = activeBlocks
         ? device.createBindGroup({
               layout: finalizeIndirectPipe!.getBindGroupLayout(0),
@@ -1552,6 +1827,18 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
               ],
           })
         : null;
+    const assignGridPagesBG = pagedGrid
+        ? device.createBindGroup({
+              layout: assignGridPagesPipe!.getBindGroupLayout(0),
+              entries: [
+                  { binding: 0, resource: { buffer: nodeBlockListBuffer! } },
+                  { binding: 1, resource: { buffer: nodeBlockCountBuffer! } },
+                  { binding: 2, resource: { buffer: pageMapBuffer! } },
+                  { binding: 3, resource: { buffer: activeBlockCountBuffer! } },
+                  { binding: 4, resource: { buffer: cellBuffer } },
+              ],
+          })
+        : null;
     function buildUpdateBG(pipe: GPUComputePipeline, scene: SceneSdfSpec): GPUBindGroup {
         // Only a CLOSED container's update-grid pass reads the scene SDF (for its grid
         // separating wall); a per-particle container has no grid wall, so binding 2 is absent.
@@ -1569,6 +1856,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         if (activeBlocks) {
             entries.push({ binding: 4, resource: { buffer: nodeBlockListBuffer! } }, { binding: 5, resource: { buffer: nodeBlockCountBuffer! } });
         }
+        if (pagedGrid) {
+            entries.push({ binding: 6, resource: { buffer: pageMapBuffer! } }, { binding: 7, resource: { buffer: activeBlockCountBuffer! } });
+        }
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
     let updateBG: GPUBindGroup | null = null;
@@ -1582,6 +1872,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         // Baked SDF grid: matches the @binding(4) storage decl injected by buildG2pWgsl.
         if (scene.sdfGrid) {
             entries.push({ binding: 4, resource: { buffer: scene.sdfGrid } });
+        }
+        if (pagedGrid) {
+            entries.push({ binding: 5, resource: { buffer: pageMapBuffer! } }, { binding: 6, resource: { buffer: activeBlockCountBuffer! } });
         }
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
@@ -1653,7 +1946,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     }
 
     function dispatchIndirect(encoder: GPUCommandEncoder, label: string, pipe: GPUComputePipeline, bg: GPUBindGroup, args: GPUBuffer): void {
-        const pass = encoder.beginComputePass({ label, timestampWrites: profiler?.pass("Simulation") });
+        const pass = encoder.beginComputePass({ label, timestampWrites: profiler?.pass(label.includes("foam") ? "Foam gen" : "Simulation") });
         pass.setPipeline(pipe);
         pass.setBindGroup(0, bg);
         pass.dispatchWorkgroupsIndirect(args, 0);
@@ -1679,13 +1972,26 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     let foamSeed = 0;
     let foamCapacity = 0;
     let foamPoolGroups = 0;
+    let foamActiveParticles = false;
+    let foamActiveSide = 0;
     let diffuseBuffer: GPUBuffer | null = null;
     let diffuseHeadBuffer: GPUBuffer | null = null;
+    let foamActiveStateBuffer: GPUBuffer | null = null;
+    let foamActiveDispatchBuffer: GPUBuffer | null = null;
+    let foamDrawIndirectBuffer: GPUBuffer | null = null;
     let foamParamsBuffer: GPUBuffer | null = null;
     let foamEmitPipe: GPUComputePipeline | null = null;
+    let foamDenseEmitPipe: GPUComputePipeline | null = null;
+    let foamActiveEmitPipe: GPUComputePipeline | null = null;
     let foamUpdatePipe: GPUComputePipeline | null = null;
+    let foamDenseUpdatePipe: GPUComputePipeline | null = null;
+    let foamActiveUpdatePipe: GPUComputePipeline | null = null;
+    let foamActivePreparePipe: GPUComputePipeline | null = null;
+    let foamActiveFinishPipe: GPUComputePipeline | null = null;
     let foamEmitBG: GPUBindGroup | null = null;
     let foamUpdateBG: GPUBindGroup | null = null;
+    let foamActivePrepareBG: GPUBindGroup | null = null;
+    let foamActiveFinishBG: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
 
     function buildFoamBindGroups(): void {
@@ -1697,30 +2003,80 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 { binding: 2, resource: { buffer: paramsBuffer } },
                 { binding: 3, resource: { buffer: foamParamsBuffer! } },
                 { binding: 4, resource: { buffer: diffuseBuffer! } },
-                { binding: 5, resource: { buffer: diffuseHeadBuffer! } },
+                { binding: 5, resource: { buffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer! } },
+                ...(pagedGrid
+                    ? [
+                          { binding: 6, resource: { buffer: pageMapBuffer! } },
+                          { binding: 7, resource: { buffer: activeBlockCountBuffer! } },
+                      ]
+                    : []),
             ],
         });
+        const updateEntries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: cellBuffer } },
+            { binding: 1, resource: { buffer: paramsBuffer } },
+            { binding: 2, resource: { buffer: foamParamsBuffer! } },
+            { binding: 3, resource: { buffer: diffuseBuffer! } },
+        ];
+        if (foamActiveParticles) {
+            updateEntries.push({ binding: 4, resource: { buffer: foamActiveStateBuffer! } });
+        }
+        if (pagedGrid) {
+            updateEntries.push({ binding: 6, resource: { buffer: pageMapBuffer! } }, { binding: 7, resource: { buffer: activeBlockCountBuffer! } });
+        }
         foamUpdateBG = device.createBindGroup({
             layout: foamUpdatePipe!.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: cellBuffer } },
-                { binding: 1, resource: { buffer: paramsBuffer } },
-                { binding: 2, resource: { buffer: foamParamsBuffer! } },
-                { binding: 3, resource: { buffer: diffuseBuffer! } },
-            ],
+            entries: updateEntries,
         });
+        foamActivePrepareBG = foamActiveParticles
+            ? device.createBindGroup({
+                  layout: foamActivePreparePipe!.getBindGroupLayout(0),
+                  entries: [
+                      { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
+                      { binding: 1, resource: { buffer: foamActiveDispatchBuffer! } },
+                  ],
+              })
+            : null;
+        foamActiveFinishBG = foamActiveParticles
+            ? device.createBindGroup({
+                  layout: foamActiveFinishPipe!.getBindGroupLayout(0),
+                  entries: [
+                      { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
+                      { binding: 1, resource: { buffer: foamDrawIndirectBuffer! } },
+                  ],
+              })
+            : null;
     }
 
     function ensureFoam(cfg: FoamConfig): void {
         if (!foamEmitPipe) {
-            foamEmitPipe = pipeline("mpm-foam-emit", FOAM_EMIT_WGSL);
-            foamUpdatePipe = pipeline("mpm-foam-update", FOAM_UPDATE_WGSL);
+            foamDenseEmitPipe = pipeline("mpm-foam-emit", buildFoamEmitWgsl(false, pagedGrid));
+            foamDenseUpdatePipe = pipeline("mpm-foam-update", buildFoamUpdateWgsl(false, pagedGrid));
             foamParamsBuffer = device.createBuffer({ label: "mpm-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             diffuseHeadBuffer = device.createBuffer({ label: "mpm-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
+        const nextActiveParticles = cfg.activeParticles ?? false;
+        const activeModeChanged = nextActiveParticles !== foamActiveParticles;
+        if (nextActiveParticles && !foamActiveUpdatePipe) {
+            foamActiveEmitPipe = pipeline("mpm-foam-emit-active", buildFoamEmitWgsl(true, pagedGrid));
+            foamActiveUpdatePipe = pipeline("mpm-foam-update-active", buildFoamUpdateWgsl(true, pagedGrid));
+            foamActivePreparePipe = pipeline("mpm-foam-active-prepare", FOAM_ACTIVE_PREPARE_WGSL);
+            foamActiveFinishPipe = pipeline("mpm-foam-active-finish", FOAM_ACTIVE_FINISH_WGSL);
+        }
+        foamActiveParticles = nextActiveParticles;
+        foamEmitPipe = foamActiveParticles ? foamActiveEmitPipe! : foamDenseEmitPipe!;
+        foamUpdatePipe = foamActiveParticles ? foamActiveUpdatePipe! : foamDenseUpdatePipe!;
         let cap = Math.round(count * (cfg.poolScale ?? 3));
         cap = Math.max(1024, Math.min(cap, cfg.poolCapMax ?? Infinity, FOAM_CAP_LIMIT));
-        if (cap !== foamCapacity || !diffuseBuffer) {
+        if (foamActiveParticles) {
+            cap = Math.min(cap, Math.max(1024, Math.floor((device.limits.maxStorageBufferBindingSize - 256) / 12)));
+            while (foamActiveStateBytes(cap) > device.limits.maxStorageBufferBindingSize) {
+                cap--;
+            }
+        }
+        const resizePool = cap !== foamCapacity || !diffuseBuffer;
+        const rebuildActiveResources = foamActiveParticles && (resizePool || !foamActiveStateBuffer || !foamActiveDispatchBuffer || !foamDrawIndirectBuffer);
+        if (resizePool) {
             diffuseBuffer?.destroy();
             diffuseBuffer = device.createBuffer({ label: "mpm-foam-pool", size: cap * 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
             foamCapacity = cap;
@@ -1730,9 +2086,61 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             enc.clearBuffer(diffuseBuffer);
             enc.clearBuffer(diffuseHeadBuffer!);
             device.queue.submit([enc.finish()]);
-            diffusePool = { buffer: diffuseBuffer, headBuffer: diffuseHeadBuffer!, capacity: cap };
-            buildFoamBindGroups();
         }
+        if (rebuildActiveResources) {
+            foamActiveStateBuffer?.destroy();
+            foamActiveDispatchBuffer?.destroy();
+            foamDrawIndirectBuffer?.destroy();
+            foamActiveStateBuffer = device.createBuffer({
+                label: "mpm-foam-active-state",
+                size: foamActiveStateBytes(cap),
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            foamActiveDispatchBuffer = device.createBuffer({
+                label: "mpm-foam-active-dispatch",
+                size: 12,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT,
+            });
+            foamDrawIndirectBuffer = device.createBuffer({
+                label: "mpm-foam-draw-indirect",
+                size: 16,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+            });
+            foamActiveSide = 0;
+        } else if (!foamActiveParticles && foamActiveStateBuffer) {
+            foamActiveStateBuffer.destroy();
+            foamActiveDispatchBuffer!.destroy();
+            foamDrawIndirectBuffer!.destroy();
+            foamActiveStateBuffer = null;
+            foamActiveDispatchBuffer = null;
+            foamDrawIndirectBuffer = null;
+        }
+        if (foamActiveParticles && (rebuildActiveResources || activeModeChanged)) {
+            const enc = device.createCommandEncoder({ label: "mpm-foam-active-reset" });
+            enc.clearBuffer(diffuseBuffer!);
+            enc.clearBuffer(diffuseHeadBuffer!);
+            enc.clearBuffer(foamActiveStateBuffer!);
+            device.queue.submit([enc.finish()]);
+            device.queue.writeBuffer(foamActiveStateBuffer!, 16, new Uint32Array([cap]));
+            foamActiveSide = 0;
+        } else if (!foamActiveParticles && activeModeChanged) {
+            const enc = device.createCommandEncoder({ label: "mpm-foam-dense-head-reset" });
+            enc.clearBuffer(diffuseHeadBuffer!);
+            device.queue.submit([enc.finish()]);
+        }
+        diffusePool = {
+            buffer: diffuseBuffer!,
+            headBuffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer!,
+            capacity: cap,
+            ...(foamActiveParticles
+                ? {
+                      activeIndices: foamActiveStateBuffer!,
+                      activeIndicesOffset: foamActiveListOffset(cap, foamActiveSide),
+                      drawIndirect: foamDrawIndirectBuffer!,
+                  }
+                : {}),
+        };
+        buildFoamBindGroups();
         // Foam-specific knobs (dt / gravity / restDensity / dx / bounds come from Params).
         foamF32[0] = 5; // tauTaMin
         foamF32[1] = 20; // tauTaMax
@@ -1749,6 +2157,27 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         foamF32[13] = cfg.tMax ?? 2.0;
         // foamU32[14] (frameSeed) is written per frame in step().
         device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
+    }
+
+    function clearFoamPool(label: string): void {
+        if (!diffuseBuffer || !diffuseHeadBuffer) {
+            return;
+        }
+        const enc = device.createCommandEncoder({ label });
+        enc.clearBuffer(diffuseBuffer);
+        enc.clearBuffer(diffuseHeadBuffer);
+        if (foamActiveStateBuffer) {
+            enc.clearBuffer(foamActiveStateBuffer);
+            enc.clearBuffer(foamDrawIndirectBuffer!);
+        }
+        device.queue.submit([enc.finish()]);
+        if (foamActiveStateBuffer) {
+            device.queue.writeBuffer(foamActiveStateBuffer, 16, new Uint32Array([foamCapacity]));
+            foamActiveSide = 0;
+            if (diffusePool) {
+                diffusePool = { ...diffusePool, activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide) };
+            }
+        }
     }
 
     return {
@@ -1786,11 +2215,20 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                     nodeBlockCountBuffer!.size +
                     nodeBlockIndirectBuffer!.size;
             }
+            if (pageMapBuffer) {
+                b += pageMapBuffer.size;
+                for (const buffer of pageStatusStagingBuffers) {
+                    b += buffer.size;
+                }
+            }
             if (diffuseBuffer) {
                 b += diffuseBuffer.size;
             }
             if (diffuseHeadBuffer) {
                 b += diffuseHeadBuffer.size;
+            }
+            if (foamActiveStateBuffer) {
+                b += foamActiveStateBuffer.size + foamActiveDispatchBuffer!.size + foamDrawIndirectBuffer!.size;
             }
             if (foamParamsBuffer) {
                 b += foamParamsBuffer.size;
@@ -1798,6 +2236,10 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             return b;
         },
         step(encoder: GPUCommandEncoder, dt: number): void {
+            pollPagedGridStatus();
+            if (pagedGridOverflowed) {
+                return;
+            }
             // Split the (real-time) frame dt into `substeps` MLS-MPM steps, so the
             // substeps slider trades stability vs cost without changing playback
             // speed.
@@ -1850,6 +2292,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                     // exactly which grid blocks the previous P2G populated, so this indirect
                     // clear removes stale values before the list is rebuilt for the new state.
                     dispatchIndirect(encoder, "mpm-clear-active", clearPipe, clearBG, nodeBlockIndirectBuffer!);
+                    if (pagedGrid) {
+                        encoder.clearBuffer(pageMapBuffer!);
+                    }
                 } else {
                     dispatch(encoder, "mpm-clear", clearPipe, clearBG, cellGroups);
                 }
@@ -1865,10 +2310,15 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 }
                 dispatch(encoder, "mpm-histogram", histogramPipe, histogramBG, particleGroups);
                 if (activeBlocks) {
-                    dispatch(encoder, "mpm-compact-active-blocks", compactActiveBlocksPipe!, compactActiveBlocksBG!, blockGroups);
+                    if (!fusedBlockDiscovery) {
+                        dispatch(encoder, "mpm-compact-active-blocks", compactActiveBlocksPipe!, compactActiveBlocksBG!, blockGroups);
+                    }
                     dispatch(encoder, "mpm-finalize-active-blocks", finalizeIndirectPipe!, finalizeActiveBlocksBG!, 1);
                     dispatchIndirect(encoder, "mpm-mark-active-node-blocks", markActiveNodeBlocksPipe!, markActiveNodeBlocksBG!, activeBlockIndirectBuffer!);
                     dispatch(encoder, "mpm-finalize-node-blocks", finalizeIndirectPipe!, finalizeNodeBlocksBG!, 1);
+                    if (pagedGrid) {
+                        dispatchIndirect(encoder, "mpm-assign-grid-pages", assignGridPagesPipe!, assignGridPagesBG!, nodeBlockIndirectBuffer!);
+                    }
                 }
                 dispatch(encoder, "mpm-scan-local", scanLocalPipe, scanLocalBG, scanChunks);
                 dispatch(encoder, "mpm-scan-partials", scanPartialsPipe, scanPartialsBG, 1);
@@ -1901,10 +2351,32 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
                 encoder.pushDebugGroup("foam");
                 dispatch(encoder, "mpm-foam-emit", foamEmitPipe!, foamEmitBG!, particleGroups);
-                dispatch(encoder, "mpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamPoolGroups);
+                if (foamActiveParticles) {
+                    dispatch(encoder, "mpm-foam-active-prepare", foamActivePreparePipe!, foamActivePrepareBG!, 1);
+                    dispatchIndirect(encoder, "mpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamActiveDispatchBuffer!);
+                    dispatch(encoder, "mpm-foam-active-finish", foamActiveFinishPipe!, foamActiveFinishBG!, 1);
+                    foamActiveSide = 1 - foamActiveSide;
+                    diffusePool = {
+                        buffer: diffuseBuffer!,
+                        headBuffer: foamActiveStateBuffer!,
+                        capacity: foamCapacity,
+                        activeIndices: foamActiveStateBuffer!,
+                        activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide),
+                        drawIndirect: foamDrawIndirectBuffer!,
+                    };
+                } else {
+                    dispatch(encoder, "mpm-foam-update", foamUpdatePipe!, foamUpdateBG, foamPoolGroups);
+                }
                 encoder.popDebugGroup();
             }
             dispatch(encoder, "mpm-copy", copyPipe, copyBG, particleGroups);
+            if (pagedGrid) {
+                const stagingIndex = pageStatusStates.indexOf("idle");
+                if (stagingIndex !== -1) {
+                    encoder.copyBufferToBuffer(activeBlockCountBuffer!, 4, pageStatusStagingBuffers[stagingIndex]!, 0, 8);
+                    pageStatusStates[stagingIndex] = "copied";
+                }
+            }
             encoder.popDebugGroup();
         },
         get diffuse(): DiffusePool | undefined {
@@ -1912,6 +2384,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         },
         reset(): void {
             seed();
+            clearFoamPool("mpm-foam-reset");
+            if (pagedGrid) {
+                pagedGridOverflowed = false;
+                pageStatusGeneration++;
+                const enc = device.createCommandEncoder({ label: "mpm-paged-grid-reset" });
+                enc.clearBuffer(cellBuffer);
+                enc.clearBuffer(pageMapBuffer!);
+                enc.clearBuffer(activeBlockCountBuffer!);
+                device.queue.submit([enc.finish()]);
+            }
         },
         setParam(key: string, value: number): void {
             switch (key) {
@@ -1995,12 +2477,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             if (!cfg) {
                 foamEnabled = false;
                 // Empty the pool so a later re-enable starts clean (no frozen ghosts).
-                if (diffuseBuffer && diffuseHeadBuffer) {
-                    const enc = device.createCommandEncoder({ label: "mpm-foam-off-clear" });
-                    enc.clearBuffer(diffuseBuffer);
-                    enc.clearBuffer(diffuseHeadBuffer);
-                    device.queue.submit([enc.finish()]);
-                }
+                clearFoamPool("mpm-foam-off-clear");
                 return;
             }
             ensureFoam(cfg);
@@ -2010,6 +2487,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             profiler = p;
         },
         dispose(): void {
+            disposed = true;
             particleBuffer.destroy();
             cellBuffer.destroy();
             positionBuffer.destroy();
@@ -2029,8 +2507,15 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             nodeBlockListBuffer?.destroy();
             nodeBlockCountBuffer?.destroy();
             nodeBlockIndirectBuffer?.destroy();
+            pageMapBuffer?.destroy();
+            for (const buffer of pageStatusStagingBuffers) {
+                buffer.destroy();
+            }
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
+            foamActiveStateBuffer?.destroy();
+            foamActiveDispatchBuffer?.destroy();
+            foamDrawIndirectBuffer?.destroy();
             foamParamsBuffer?.destroy();
         },
     };

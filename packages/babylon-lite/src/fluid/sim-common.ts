@@ -100,12 +100,23 @@ export interface DiffusePool {
     readonly headBuffer: GPUBuffer;
     /** Number of slots in the ring buffer. */
     readonly capacity: number;
+    /** Compact list of live diffuse-particle slot indices. Present when active-particle
+     *  processing is enabled. */
+    readonly activeIndices?: GPUBuffer;
+    /** Byte offset of the current compact list inside `activeIndices`. */
+    readonly activeIndicesOffset?: number;
+    /** Indirect draw arguments `[6, liveCount, 0, 0]` for the foam renderer. Present
+     *  together with `activeIndices`. */
+    readonly drawIndirect?: GPUBuffer;
 }
 
 /** Diffuse-particle (foam) tuning knobs. All optional, with paper defaults. Drives the
  *  Ihmsen 2012 generation potentials (kTa/kWc) plus the shared pool/advection knobs; the
  *  classification, advection and rendering are all method-agnostic. */
 export interface FoamConfig {
+    /** Track live diffuse-particle slots persistently so update and render passes
+     *  visit only active particles. Default false. */
+    activeParticles?: boolean;
     /** Trapped-air generation rate (max samples per second per fluid particle). Default 40. */
     kTa?: number;
     /** Wave-crest generation rate (max samples per second per fluid particle). Default 40. */
@@ -156,6 +167,52 @@ fn phi(x: f32, lo: f32, hi: f32) -> f32 { return clamp((min(x, hi) - min(x, lo))
 fn fHashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
 fn fRnd(x: u32) -> f32 { return f32(fHashU(x)) / 4294967296.0; }
 `;
+
+export const FOAM_ACTIVE_HEADER_U32 = 64;
+
+export function foamActiveListStride(capacity: number): number {
+    return Math.ceil(capacity / 64) * 64;
+}
+
+export function foamActiveListOffset(capacity: number, side: number): number {
+    return (FOAM_ACTIVE_HEADER_U32 + side * foamActiveListStride(capacity)) * 4;
+}
+
+export function foamActiveStateBytes(capacity: number): number {
+    return (FOAM_ACTIVE_HEADER_U32 + foamActiveListStride(capacity) * 2 + capacity) * 4;
+}
+
+/** Builds update-dispatch arguments from the current persistent live list. */
+export const FOAM_ACTIVE_PREPARE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> state: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> computeArgs: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+    let side = atomicLoad(&state[3]);
+    let count = atomicLoad(&state[1u + side]);
+    let groups = (count + 63u) / 64u;
+    computeArgs[0] = min(groups, 65535u);
+    computeArgs[1] = (groups + 65534u) / 65535u;
+    computeArgs[2] = 1u;
+}`;
+
+/** Publishes the survivor list for rendering and the next frame, then clears the
+ *  consumed list count so it can be reused as the following output list. */
+export const FOAM_ACTIVE_FINISH_WGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage, read_write> state: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> drawArgs: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+    let oldSide = atomicLoad(&state[3]);
+    let newSide = 1u - oldSide;
+    let count = atomicLoad(&state[1u + newSide]);
+    drawArgs[0] = 6u;
+    drawArgs[1] = count;
+    drawArgs[2] = 0u;
+    drawArgs[3] = 0u;
+    atomicStore(&state[3], newSide);
+    atomicStore(&state[1u + oldSide], 0u);
+}`;
 
 /** Fields common to BOTH backends. Method-specific tuning lives in the per-solver
  *  `PbfOptions` / `MlsMpmOptions`, which each extend this. */

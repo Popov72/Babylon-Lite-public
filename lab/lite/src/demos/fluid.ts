@@ -400,6 +400,15 @@ async function main(): Promise<void> {
             groundDamp: 0.85,
             groundDampHeight: 1.5,
             activeBlocks: mpmActiveBlocks,
+            pagedGrid: mpmPagedGrid,
+            pagedGridMaxPages: mpmPagedGridMaxPages,
+            fusedBlockDiscovery: mpmFusedBlockDiscovery,
+            onPagedGridOverflow: (requiredPages, capacity) => {
+                const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
+                controls.setPagedGridStatus(message, true);
+                canvas.dataset.pagedGridOverflow = "true";
+                console.error(`[MLS-MPM] ${message}`);
+            },
         });
 
         // Backend 3 — Position-Based MPM (liquid-only PB-MPM phase 1).
@@ -432,6 +441,10 @@ async function main(): Promise<void> {
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
     let pbmpmMaterial = 0;
     let mpmActiveBlocks = false;
+    let mpmPagedGrid = false;
+    const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
+    let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, Math.max(1000, Math.round((DEFAULT_PARTICLE_COUNT * 27 * 1.5) / 64000) * 1000));
+    let mpmFusedBlockDiscovery = false;
     let { pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let methodName = "PBF";
@@ -729,7 +742,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
     function pushFoam(): void {
         const f = controls.getValues().foam;
-        const cfg: FoamConfig = { kTa: f.kTa, kWc: f.kWc, kb: f.kb, kd: f.kd, tMin: f.tMin, tMax: f.tMax, poolScale: f.poolScale };
+        const cfg: FoamConfig = {
+            activeParticles: f.activeParticles,
+            kTa: f.kTa,
+            kWc: f.kWc,
+            kb: f.kb,
+            kd: f.kd,
+            tMin: f.tMin,
+            tMax: f.tMax,
+            poolScale: f.poolScale,
+        };
         activeSim.setFoam?.(f.enabled ? cfg : null);
         foamTask.setEnabled(foamRenderVisible());
     }
@@ -1334,8 +1356,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             debug: "none",
             showContainer: true,
             activeBlocks: false,
+            pagedGrid: false,
+            pagedGridMaxPages: mpmPagedGridMaxPages,
+            fusedBlockDiscovery: false,
             foam: {
                 enabled: false,
+                activeParticles: false,
                 kTa: 40,
                 kWc: 40,
                 kb: 0.8,
@@ -1400,11 +1426,35 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 mpmActiveBlocks = enabled;
                 rebuildSims(particleCount, physicsScale);
             },
+            onPagedGrid: (enabled) => {
+                if (enabled === mpmPagedGrid) return;
+                mpmPagedGrid = enabled;
+                controls.setPagedGridStatus("");
+                canvas.dataset.pagedGridOverflow = "false";
+                rebuildSims(particleCount, physicsScale);
+            },
+            onPagedGridMaxPages: (pages) => {
+                const clampedPages = Math.min(pages, maxPagedGridPages);
+                controls.setPagedGridMaxPages(clampedPages);
+                if (clampedPages === mpmPagedGridMaxPages) return;
+                mpmPagedGridMaxPages = clampedPages;
+                controls.setPagedGridStatus("");
+                canvas.dataset.pagedGridOverflow = "false";
+                if (mpmPagedGrid) {
+                    rebuildSims(particleCount, physicsScale);
+                }
+            },
+            onFusedBlockDiscovery: (enabled) => {
+                if (enabled === mpmFusedBlockDiscovery) return;
+                mpmFusedBlockDiscovery = enabled;
+                rebuildSims(particleCount, physicsScale);
+            },
             onReset: () => {
                 activeSim.reset();
                 clearSceneHoles();
             },
             onFoamEnable: () => pushFoam(),
+            onFoamActiveParticles: () => pushFoam(),
             onFoamKta: () => {
                 if (controls.getValues().foam.enabled) {
                     pushFoam();
@@ -1451,7 +1501,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!]));
+    controls.demoSlot.append(
+        ...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!])
+    );
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -1628,6 +1680,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         refreshPbMpmMaterialUi();
         canvas.dataset.method = methodName;
         canvas.dataset.activeBlocks = mpmActiveBlocks ? "true" : "false";
+        canvas.dataset.pagedGrid = mpmPagedGrid ? "true" : "false";
+        canvas.dataset.fusedBlockDiscovery = mpmFusedBlockDiscovery ? "true" : "false";
     }
     // Toggle between the sphere-impostor renderer and the screen-space surface.
     // Default is the fluid surface; the checkbox switches to spheres.
@@ -1784,6 +1838,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             anisotropic: RENDER_DEFAULTS.anisotropic,
             anisoSurfScale: RENDER_DEFAULTS.anisoSurfScale,
             activeBlocks: method === "MLS-MPM" ? false : undefined,
+            pagedGrid: method === "MLS-MPM" ? false : undefined,
+            pagedGridMaxPages: method === "MLS-MPM" ? Math.max(1000, Math.round((RENDER_DEFAULTS.count * 27 * 1.5) / 64000) * 1000) : undefined,
+            fusedBlockDiscovery: method === "MLS-MPM" ? false : undefined,
             foam: { ...FOAM_DEFAULTS },
             showContainer: true,
         };
@@ -1823,6 +1880,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             anisotropic: p.anisotropic ?? base.anisotropic,
             anisoSurfScale: p.anisoSurfScale ?? base.anisoSurfScale,
             activeBlocks: p.activeBlocks ?? base.activeBlocks,
+            pagedGrid: p.pagedGrid ?? base.pagedGrid,
+            pagedGridMaxPages: p.pagedGridMaxPages ?? base.pagedGridMaxPages,
+            fusedBlockDiscovery: p.fusedBlockDiscovery ?? base.fusedBlockDiscovery,
             foam: p.foam ? { ...base.foam!, ...p.foam } : base.foam,
             demoState: p.demoState ?? base.demoState,
             showContainer: p.showContainer ?? base.showContainer,
@@ -1871,6 +1931,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             anisotropic: v.anisotropic,
             anisoSurfScale: v.anisoSurfScale,
             activeBlocks: method === "MLS-MPM" ? v.activeBlocks : undefined,
+            pagedGrid: method === "MLS-MPM" ? v.pagedGrid : undefined,
+            pagedGridMaxPages: method === "MLS-MPM" ? v.pagedGridMaxPages : undefined,
+            fusedBlockDiscovery: method === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
             foam: v.foam,
             demoState: activeDemo!.snapshotState?.() ?? {},
             showContainer: v.showContainer,
@@ -1943,8 +2006,18 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (st.anisoSurfScale !== undefined) {
             controls.setAnisotropySurfScale(st.anisoSurfScale);
         }
-        const nextActiveBlocks = methodName === "MLS-MPM" ? (st.activeBlocks ?? false) : mpmActiveBlocks;
+        const nextPagedGrid = methodName === "MLS-MPM" ? (st.pagedGrid ?? false) : mpmPagedGrid;
+        const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
+        const nextPagedGridMaxPages = Math.min(
+            maxPagedGridPages,
+            methodName === "MLS-MPM" ? (st.pagedGridMaxPages ?? Math.max(1000, Math.round((st.count * 27 * 1.5) / 64000) * 1000)) : mpmPagedGridMaxPages
+        );
+        const nextFusedBlockDiscovery = methodName === "MLS-MPM" ? (st.fusedBlockDiscovery ?? false) : mpmFusedBlockDiscovery;
         controls.setActiveBlocks(nextActiveBlocks);
+        controls.setPagedGrid(nextPagedGrid);
+        controls.setPagedGridMaxPages(nextPagedGridMaxPages);
+        controls.setPagedGridStatus("");
+        controls.setFusedBlockDiscovery(nextFusedBlockDiscovery);
         // Foam block (optional). The component sets the enable state + config + UI here;
         // the authoritative push to the active sim happens via applyFoam() inside
         // applyMethod() below. Missing softness/density/subsurface (older presets) keep
@@ -1954,6 +2027,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             const cur = controls.getValues().foam;
             controls.setFoam({
                 enabled: f.enabled,
+                activeParticles: f.activeParticles ?? false,
                 kTa: f.kTa,
                 kWc: f.kWc,
                 kb: f.kb,
@@ -1994,8 +2068,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             msaaChk.checked = st.msaa;
             setMsaa(st.msaa);
         }
-        const activeBlocksChanged = methodName === "MLS-MPM" && nextActiveBlocks !== mpmActiveBlocks;
+        const activeBlocksChanged =
+            methodName === "MLS-MPM" &&
+            (nextActiveBlocks !== mpmActiveBlocks ||
+                nextPagedGrid !== mpmPagedGrid ||
+                nextPagedGridMaxPages !== mpmPagedGridMaxPages ||
+                nextFusedBlockDiscovery !== mpmFusedBlockDiscovery);
         mpmActiveBlocks = nextActiveBlocks;
+        mpmPagedGrid = nextPagedGrid;
+        mpmPagedGridMaxPages = nextPagedGridMaxPages;
+        mpmFusedBlockDiscovery = nextFusedBlockDiscovery;
         if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale || activeBlocksChanged) {
             rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method (at the current domain scale)
         } else {

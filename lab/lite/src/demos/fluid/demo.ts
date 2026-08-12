@@ -89,10 +89,17 @@ export interface PairState {
     anisoSurfScale?: number;
     /** MLS-MPM active-block execution. Optional and defaults off. */
     activeBlocks?: boolean;
+    /** Sparse bounded grid-page storage. */
+    pagedGrid?: boolean;
+    /** Maximum live 4³-cell grid pages. */
+    pagedGridMaxPages?: number;
+    /** Append active particle blocks directly during histogram construction. */
+    fusedBlockDiscovery?: boolean;
     /** Foam (diffuse-particle) config for this pair — generation, pool and screen-space
      *  look. Present → foam is restored (enabled/disabled) with these knobs on switch. */
     foam?: {
         enabled: boolean;
+        activeParticles?: boolean;
         kTa: number;
         kWc: number;
         kb: number;

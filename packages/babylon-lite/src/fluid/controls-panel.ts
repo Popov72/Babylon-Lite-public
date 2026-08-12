@@ -311,6 +311,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
 /** Full foam (diffuse-particle) look/config snapshot. */
 export interface FluidFoamValues {
     enabled: boolean;
+    activeParticles?: boolean;
     kTa: number;
     kWc: number;
     kb: number;
@@ -359,6 +360,9 @@ export interface FluidControlValues {
     anisotropic: boolean;
     anisoSurfScale: number;
     activeBlocks: boolean;
+    pagedGrid: boolean;
+    pagedGridMaxPages: number;
+    fusedBlockDiscovery: boolean;
     debug: string;
     showContainer: boolean;
     foam: FluidFoamValues;
@@ -393,6 +397,12 @@ export interface FluidControlsInitial {
     anisoSurfScale?: number;
     /** MLS-MPM sparse active-block execution. Defaults off. */
     activeBlocks?: boolean;
+    /** Bounded sparse page pool for the MLS-MPM grid. Defaults off. */
+    pagedGrid?: boolean;
+    /** Maximum live 4³-cell pages in paged-grid mode. */
+    pagedGridMaxPages?: number;
+    /** Append active blocks directly from the particle histogram. Defaults off. */
+    fusedBlockDiscovery?: boolean;
     renderMode: "surface" | "spheres";
     debug: string;
     showContainer: boolean;
@@ -426,9 +436,13 @@ export interface FluidControlsCallbacks {
     onPhysicsParam?(key: string, value: number): void;
     onPhysScale?(scale: number): void;
     onActiveBlocks?(enabled: boolean): void;
+    onPagedGrid?(enabled: boolean): void;
+    onPagedGridMaxPages?(pages: number): void;
+    onFusedBlockDiscovery?(enabled: boolean): void;
     onReset?(): void;
     // Foam config (generation) — gated on "enabled" by the host.
     onFoamEnable?(enabled: boolean): void;
+    onFoamActiveParticles?(enabled: boolean): void;
     onFoamKta?(v: number): void;
     onFoamKwc?(v: number): void;
     onFoamLifetime?(v: number): void;
@@ -541,6 +555,10 @@ export interface FluidControlsHandle {
     setPhysics(schema: Record<string, number>): void;
     setPhysScale(scale: number): void;
     setActiveBlocks(enabled: boolean): void;
+    setPagedGrid(enabled: boolean): void;
+    setPagedGridMaxPages(pages: number): void;
+    setPagedGridStatus(message: string, error?: boolean): void;
+    setFusedBlockDiscovery(enabled: boolean): void;
     setFoam(foam: FluidFoamValues): void;
 
     /** Snapshot every control value (for pair-state capture / export). */
@@ -1123,10 +1141,79 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         "MLS-MPM only. Dispatches particle-to-grid transfer and grid clear/update over occupied blocks and their node halo instead of the full dense grid. Changing it rebuilds the simulations."
     );
     activeBlocksRow.append(activeBlocksChk, activeBlocksText);
-    activeBlocksChk.onchange = () => on.onActiveBlocks?.(activeBlocksChk.checked);
-    const applyActiveBlocksVisibility = (): void => {
-        activeBlocksRow.style.display = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
+    const makeActiveBlockOption = (label: string, info: string, checked: boolean, changed: (enabled: boolean) => void): [HTMLLabelElement, HTMLInputElement] => {
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0 8px 18px;cursor:pointer;";
+        const chk = document.createElement("input");
+        chk.type = "checkbox";
+        chk.checked = checked;
+        row.append(chk, labelWithInfo(label, info));
+        chk.onchange = () => changed(chk.checked);
+        return [row, chk];
     };
+    const [fusedBlockDiscoveryRow, fusedBlockDiscoveryChk] = makeActiveBlockOption(
+        "Fused block discovery",
+        "MLS-MPM active-block mode only. Appends a block when its histogram count changes from zero to one, removing the separate full block-list compaction pass.",
+        init.fusedBlockDiscovery ?? false,
+        (enabled) => on.onFusedBlockDiscovery?.(enabled)
+    );
+    const [pagedGridRow, pagedGridChk] = makeActiveBlockOption(
+        "Paged grid",
+        "MLS-MPM active-block mode only. Stores grid nodes in a bounded sparse page pool instead of allocating every cell in the full domain. The simulation freezes and reports an error if the page capacity is exceeded.",
+        init.pagedGrid ?? false,
+        (enabled) => {
+            applyActiveBlockDependencies();
+            on.onPagedGrid?.(enabled);
+        }
+    );
+    const pagedGridCapacityRow = document.createElement("label");
+    pagedGridCapacityRow.style.cssText = "display:block;margin:8px 0 8px 36px;";
+    const pagedGridCapacityHead = document.createElement("div");
+    pagedGridCapacityHead.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
+    const pagedGridCapacityLabel = labelWithInfo(
+        "Page capacity",
+        "Maximum number of live 4×4×4 grid pages. Higher values use more memory; exceeding the cap freezes the solver instead of integrating against a partial grid."
+    );
+    const pagedGridCapacityValue = document.createElement("span");
+    pagedGridCapacityHead.append(pagedGridCapacityLabel, pagedGridCapacityValue);
+    const pagedGridCapacityInput = document.createElement("input");
+    pagedGridCapacityInput.type = "range";
+    pagedGridCapacityInput.min = "1";
+    pagedGridCapacityInput.max = "2000";
+    pagedGridCapacityInput.step = "1";
+    pagedGridCapacityInput.value = String(Math.max(1, Math.round((init.pagedGridMaxPages ?? 40000) / 1000)));
+    pagedGridCapacityInput.style.cssText = "width:100%;";
+    const updatePagedGridCapacityValue = (): void => {
+        pagedGridCapacityValue.textContent = `${pagedGridCapacityInput.value}k`;
+    };
+    updatePagedGridCapacityValue();
+    pagedGridCapacityInput.oninput = updatePagedGridCapacityValue;
+    pagedGridCapacityInput.onchange = () => on.onPagedGridMaxPages?.(parseInt(pagedGridCapacityInput.value, 10) * 1000);
+    pagedGridCapacityRow.append(pagedGridCapacityHead, pagedGridCapacityInput);
+    const pagedGridStatus = document.createElement("div");
+    pagedGridStatus.style.cssText = "display:none;margin:4px 0 8px 36px;font-size:11px;color:#9fb3c8;";
+    const applyActiveBlockDependencies = (): void => {
+        fusedBlockDiscoveryChk.disabled = !activeBlocksChk.checked;
+        pagedGridChk.disabled = !activeBlocksChk.checked;
+        activeBlocksChk.disabled = pagedGridChk.checked;
+        pagedGridCapacityInput.disabled = !pagedGridChk.checked;
+        fusedBlockDiscoveryRow.style.opacity = activeBlocksChk.checked ? "1" : "0.5";
+        pagedGridRow.style.opacity = activeBlocksChk.checked ? "1" : "0.5";
+        pagedGridCapacityRow.style.opacity = pagedGridChk.checked ? "1" : "0.5";
+    };
+    activeBlocksChk.onchange = () => {
+        applyActiveBlockDependencies();
+        on.onActiveBlocks?.(activeBlocksChk.checked);
+    };
+    const applyActiveBlocksVisibility = (): void => {
+        const display = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
+        activeBlocksRow.style.display = display;
+        fusedBlockDiscoveryRow.style.display = display;
+        pagedGridRow.style.display = display;
+        pagedGridCapacityRow.style.display = display;
+        pagedGridStatus.style.display = display !== "none" && pagedGridStatus.textContent ? "block" : "none";
+    };
+    applyActiveBlockDependencies();
     applyActiveBlocksVisibility();
 
     // Per-method physics sliders can be filtered to only those relevant to the host's current
@@ -1210,8 +1297,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     foamEnableRow.append(foamEnableChk, foamEnableText);
     foamEnableChk.onchange = () => {
         foamEnabled = foamEnableChk.checked;
+        foamActiveParticlesChk.disabled = !foamEnabled;
+        foamActiveParticlesRow.style.opacity = foamEnabled ? "1" : "0.5";
         on.onFoamEnable?.(foamEnabled);
     };
+    const foamActiveParticlesRow = document.createElement("label");
+    foamActiveParticlesRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:0 0 8px 18px;cursor:pointer;";
+    const foamActiveParticlesChk = document.createElement("input");
+    foamActiveParticlesChk.type = "checkbox";
+    foamActiveParticlesChk.checked = init.foam.activeParticles ?? false;
+    foamActiveParticlesChk.disabled = !foamEnabled;
+    foamActiveParticlesRow.style.opacity = foamEnabled ? "1" : "0.5";
+    foamActiveParticlesRow.append(
+        foamActiveParticlesChk,
+        labelWithInfo("Active foam particles", "Compacts live diffuse-particle slots each frame so the expensive foam update and splat draw skip unused pool entries.")
+    );
+    foamActiveParticlesChk.onchange = () => on.onFoamActiveParticles?.(foamActiveParticlesChk.checked);
     const foamKtaRow = makeRenderSlider(
         "Trapped-air rate",
         0,
@@ -1439,6 +1540,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
     const foamControls: HTMLElement[] = [
         foamEnableRow,
+        foamActiveParticlesRow,
         foamKtaRow,
         foamKwcRow,
         foamLifeRow,
@@ -1642,7 +1744,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hidePhysics) {
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
-        const physItems = opts.hidePhysScale ? [activeBlocksRow, sliderHost, resetBtn] : [physRow, activeBlocksRow, sliderHost, resetBtn];
+        const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
+        const physItems = opts.hidePhysScale ? [...activeBlockRows, sliderHost, resetBtn] : [physRow, ...activeBlockRows, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
 
@@ -1852,12 +1955,32 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         setActiveBlocks(enabled: boolean): void {
             activeBlocksChk.checked = enabled;
+            applyActiveBlockDependencies();
+        },
+        setPagedGrid(enabled: boolean): void {
+            pagedGridChk.checked = enabled;
+            applyActiveBlockDependencies();
+        },
+        setPagedGridMaxPages(pages: number): void {
+            pagedGridCapacityInput.value = String(Math.max(1, Math.min(2000, Math.round(pages / 1000))));
+            updatePagedGridCapacityValue();
+        },
+        setPagedGridStatus(message: string, error = false): void {
+            pagedGridStatus.textContent = message;
+            pagedGridStatus.style.color = error ? "#ff8a80" : "#9fb3c8";
+            pagedGridStatus.style.display = message && opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "block" : "none";
+        },
+        setFusedBlockDiscovery(enabled: boolean): void {
+            fusedBlockDiscoveryChk.checked = enabled;
         },
         setFoam(foam: FluidFoamValues): void {
             // Enable state + carried tMin + debug texture (set the DOM; the host re-pushes
             // the config to the sim via its applyFoam() after the sim rebuild).
             foamEnabled = foam.enabled;
             foamEnableChk.checked = foam.enabled;
+            foamActiveParticlesChk.checked = foam.activeParticles ?? false;
+            foamActiveParticlesChk.disabled = !foam.enabled;
+            foamActiveParticlesRow.style.opacity = foam.enabled ? "1" : "0.5";
             foamTMin = foam.tMin;
             foamDebugTexSel.value = foam.debugTexture;
             on.onFoamDebugTexture?.(foam.debugTexture as FoamDebugTexture);
@@ -1913,10 +2036,14 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 anisotropic: anisoChk.checked,
                 anisoSurfScale: parseFloat(anisoDampInput.value),
                 activeBlocks: activeBlocksChk.checked,
+                pagedGrid: pagedGridChk.checked,
+                pagedGridMaxPages: parseInt(pagedGridCapacityInput.value, 10) * 1000,
+                fusedBlockDiscovery: fusedBlockDiscoveryChk.checked,
                 debug: debugSel.value,
                 showContainer: containerChk.checked,
                 foam: {
                     enabled: foamEnabled,
+                    activeParticles: foamActiveParticlesChk.checked,
                     kTa: foamCfg.kTa,
                     kWc: foamCfg.kWc,
                     kb: foamCfg.kb,

@@ -58,7 +58,10 @@ export interface FoamRenderOptions {
 // Splat: each live particle → a round radially-weighted coverage disc, additively
 // accumulated into RGBA16F (R foam / G submerged bubble / B spray), depth-
 // classified against the fluid-surface eye-Z and occluded by the scene depth.
-const SPLAT_WGSL = /* wgsl */ `
+function buildSplatWgsl(activeParticles: boolean): string {
+    const activeDecl = activeParticles ? "\n@group(0) @binding(5) var<storage, read> activeIndices: array<u32>;" : "";
+    const diffuseIndex = activeParticles ? "activeIndices[ii]" : "ii";
+    return /* wgsl */ `
 // Smallest accumulation-buffer radius, in pixels, a splat is allowed to project to.
 const MIN_SPLAT_PX: f32 = 1.5;
 struct Splat {
@@ -76,6 +79,7 @@ struct Diffuse { p: vec4<f32>, v: vec4<f32> };
 @group(0) @binding(2) var surfDepth: texture_2d<f32>;
 @group(0) @binding(3) var surfSamp: sampler;
 @group(0) @binding(4) var sceneDepth: texture_depth_2d;
+${activeDecl}
 
 struct VOut {
     @builtin(position) clip: vec4<f32>,
@@ -90,7 +94,7 @@ struct VOut {
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0));
     var o: VOut;
-    let d = diffuse[ii];
+    let d = diffuse[${diffuseIndex}];
     if (d.p.w <= 0.0) {
         o.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
         o.uv = vec2<f32>(0.0);
@@ -167,6 +171,7 @@ struct VOut {
     }
     return outc;
 }`;
+}
 
 const FULLSCREEN_VS = /* wgsl */ `
 @vertex fn vs(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -396,6 +401,7 @@ export function createFoamRenderTask(
     const noWaterView = noWaterTex.createView();
 
     let splatPipe: GPURenderPipeline | null = null;
+    let activeSplatPipe: GPURenderPipeline | null = null;
     let blurPipe: GPURenderPipeline | null = null;
     let compPipe: GPURenderPipeline | null = null;
 
@@ -432,12 +438,20 @@ export function createFoamRenderTask(
         if (splatPipe) {
             return;
         }
-        const splatMod = device.createShaderModule({ label: "fluid-foam-splat", code: SPLAT_WGSL });
+        const splatMod = device.createShaderModule({ label: "fluid-foam-splat", code: buildSplatWgsl(false) });
         splatPipe = device.createRenderPipeline({
             label: "fluid-foam-splat",
             layout: "auto",
             vertex: { module: splatMod, entryPoint: "vs" },
             fragment: { module: splatMod, entryPoint: "fs", targets: [{ format: FOAM_ACCUM_FORMAT, blend: ADD_BLEND }] },
+            primitive: { topology: "triangle-list", cullMode: "none" },
+        });
+        const activeSplatMod = device.createShaderModule({ label: "fluid-foam-splat-active", code: buildSplatWgsl(true) });
+        activeSplatPipe = device.createRenderPipeline({
+            label: "fluid-foam-splat-active",
+            layout: "auto",
+            vertex: { module: activeSplatMod, entryPoint: "vs" },
+            fragment: { module: activeSplatMod, entryPoint: "fs", targets: [{ format: FOAM_ACCUM_FORMAT, blend: ADD_BLEND }] },
             primitive: { topology: "triangle-list", cullMode: "none" },
         });
         const blurMod = device.createShaderModule({ label: "fluid-foam-blur", code: FOAM_BLUR_WGSL });
@@ -549,7 +563,7 @@ export function createFoamRenderTask(
 
     function executeScreen(colorView: GPUTextureView): number {
         const pool = currentSim.diffuse!;
-        if (!splatPipe || !blurPipe || !compPipe) {
+        if (!splatPipe || !activeSplatPipe || !blurPipe || !compPipe) {
             return 0;
         }
         const sceneDepthView = depthRT._depthView;
@@ -562,25 +576,38 @@ export function createFoamRenderTask(
 
         // 1. Splat → accumulation (additive, depth-classified + occluded).
         {
+            const activeParticles = !!pool.activeIndices && !!pool.drawIndirect;
+            const activePipe = activeParticles ? activeSplatPipe : splatPipe;
+            const entries: GPUBindGroupEntry[] = [
+                { binding: 0, resource: { buffer: splatBuf } },
+                { binding: 1, resource: { buffer: pool.buffer } },
+                { binding: 2, resource: surfView },
+                { binding: 3, resource: nearestSampler },
+                { binding: 4, resource: sceneDepthView },
+            ];
+            if (activeParticles) {
+                entries.push({
+                    binding: 5,
+                    resource: { buffer: pool.activeIndices!, offset: pool.activeIndicesOffset ?? 0, size: pool.capacity * 4 },
+                });
+            }
             const bg = device.createBindGroup({
                 label: "fluid-foam-splat",
-                layout: splatPipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: splatBuf } },
-                    { binding: 1, resource: { buffer: pool.buffer } },
-                    { binding: 2, resource: surfView },
-                    { binding: 3, resource: nearestSampler },
-                    { binding: 4, resource: sceneDepthView },
-                ],
+                layout: activePipe.getBindGroupLayout(0),
+                entries,
             });
             const pass = engine._currentEncoder.beginRenderPass({
                 label: "fluid-foam-splat",
                 colorAttachments: [{ view: accumView!, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
                 timestampWrites: profiler?.pass("Foam render"),
             });
-            pass.setPipeline(splatPipe);
+            pass.setPipeline(activePipe);
             pass.setBindGroup(0, bg);
-            pass.draw(6, pool.capacity);
+            if (activeParticles) {
+                pass.drawIndirect(pool.drawIndirect!, 0);
+            } else {
+                pass.draw(6, pool.capacity);
+            }
             pass.end();
         }
 
