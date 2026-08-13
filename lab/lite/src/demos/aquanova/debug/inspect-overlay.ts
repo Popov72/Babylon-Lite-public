@@ -3,7 +3,8 @@
 // Useful with the mouse released (not pointer-locked): hovering a surface GPU-picks the mesh under
 // the cursor, highlights the whole owning NODE with a translucent box sized to its world AABB, and
 // reports that node's name — the name the Babylon sandbox shows and the key `ship_manifest.json`'s
-// `entities` are written against — plus its glTF mesh name and the room the camera is in.
+// `entities` are written against — plus its glTF mesh name and every room touched by the player
+// capsule.
 //
 // The panel also carries the capsule/foot heights and a downward raycast naming whatever supports the
 // player, because those are the numbers that say whether the character controller has actually
@@ -21,6 +22,7 @@ import {
     type PhysicsWorld,
     type SceneContext,
 } from "babylon-lite";
+import { meshGroupBounds } from "../mesh-bounds.js";
 
 export interface InspectOverlayOptions {
     engine: EngineContext;
@@ -32,7 +34,7 @@ export interface InspectOverlayOptions {
     /** Player capsule, for the foot height and the support raycast. */
     character: { getPosition(): { x: number; y: number; z: number } };
     getCapsuleHeight: () => number;
-    roomAt: () => string;
+    roomsAt: () => readonly string[];
     /** The demo's shared GPU picker, created lazily — the weapon needs one anyway, and two pickers
      *  would mean two sets of GPU targets for no benefit. */
     getPicker: () => ReturnType<typeof createGpuPicker>;
@@ -41,6 +43,10 @@ export interface InspectOverlayOptions {
     /** Every primitive of the mesh's owning node — a multi-primitive node is ONE object to the player
      *  (it liquefies as a unit), so the highlight unions their AABBs. */
     nodePrimitivesOf: (m: Mesh) => readonly Mesh[] | undefined;
+    /** Manifest chunk for a static node, or every intersected chunk for a dynamic node. */
+    chunkIdsOf: (m: Mesh) => readonly string[];
+    /** Whether portal visibility updates the owning node's chunk membership every frame. */
+    isDynamic: (m: Mesh) => boolean;
     /** Whether free-fly is on, annotated in the panel. */
     isNoclip: () => boolean;
 }
@@ -56,12 +62,14 @@ export interface InspectOverlay {
 }
 
 export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverlay {
-    const { engine, scene, canvas, world, cam, character, getCapsuleHeight, roomAt, getPicker, nodeNameOf, nodePrimitivesOf, isNoclip } = opts;
+    const { engine, scene, canvas, world, cam, character, getCapsuleHeight, roomsAt, getPicker, nodeNameOf, nodePrimitivesOf, chunkIdsOf, isDynamic, isNoclip } = opts;
 
     let inspect = false;
     let inspectPicking = false; // one in-flight GPU readback at a time
     let hoverNode = "";
     let hoverMesh = "";
+    let hoverChunks: readonly string[] = [];
+    let hoverDynamic = false;
 
     // Reusable highlight box: unlit cyan, alpha-blended so the mesh shows through. Parked far away
     // when hidden; pickable=false so it never picks itself. Added before registerScene so its
@@ -86,13 +94,16 @@ export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverla
     document.body.appendChild(panel);
 
     const refreshPanel = (): void => {
-        const what = hoverNode ? `${hoverNode}\nMesh: ${hoverMesh}` : "—  (hover a surface)";
+        const what = hoverNode
+            ? `${hoverNode}\nMesh: ${hoverMesh}\nChunks: ${hoverChunks.length > 0 ? hoverChunks.join(", ") : "none"}\nMobility: ${hoverDynamic ? "dynamic" : "static"}`
+            : "—  (hover a surface)";
         const cp = character.getPosition();
         const footY = cp.y - getCapsuleHeight() / 2;
         const hit = physicsRaycast(world, { x: cp.x, y: footY + 0.05, z: cp.z }, { x: cp.x, y: footY - 3, z: cp.z });
         const ground = hit.hasHit ? `${hit.body?.node?.name ?? "?"} @ y ${hit.hitPoint.y.toFixed(3)}` : "nothing within 3 m";
         const cam3 = `${cam.position.x.toFixed(2)}, ${cam.position.y.toFixed(2)}, ${cam.position.z.toFixed(2)}`;
-        panel.textContent = `INSPECT (I)   Room: ${roomAt()}\nEye: ${cam3}   capsule y ${cp.y.toFixed(3)}   foot y ${footY.toFixed(3)}${isNoclip() ? "   [FREE-FLY]" : ""}\nStanding on: ${ground}\nNode: ${what}`;
+        const rooms = roomsAt();
+        panel.textContent = `INSPECT (I)   Rooms: ${rooms.length > 0 ? rooms.join(", ") : "—"}\nEye: ${cam3}   capsule y ${cp.y.toFixed(3)}   foot y ${footY.toFixed(3)}${isNoclip() ? "   [FREE-FLY]" : ""}\nStanding on: ${ground}\nNode: ${what}`;
     };
 
     const inspectAt = async (x: number, y: number): Promise<void> => {
@@ -109,26 +120,20 @@ export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverla
                 // "Cube.009"), so it is shown second for reference only.
                 hoverNode = nodeNameOf(mesh) || mesh.name || "(unnamed)";
                 hoverMesh = mesh.name || "(unnamed)";
-                let mn: number[] | null = null;
-                let mx: number[] | null = null;
-                for (const prim of nodePrimitivesOf(mesh) ?? [mesh]) {
-                    const a = prim.boundMin;
-                    const b = prim.boundMax;
-                    if (!a || !b) {
-                        continue;
-                    }
-                    mn = mn ? [Math.min(mn[0]!, a[0]!), Math.min(mn[1]!, a[1]!), Math.min(mn[2]!, a[2]!)] : [a[0]!, a[1]!, a[2]!];
-                    mx = mx ? [Math.max(mx[0]!, b[0]!), Math.max(mx[1]!, b[1]!), Math.max(mx[2]!, b[2]!)] : [b[0]!, b[1]!, b[2]!];
-                }
-                if (mn && mx) {
-                    hlBox.position.set((mn[0]! + mx[0]!) / 2, (mn[1]! + mx[1]!) / 2, (mn[2]! + mx[2]!) / 2);
-                    hlBox.scaling.set(Math.max(mx[0]! - mn[0]!, 0.02) * 1.03, Math.max(mx[1]! - mn[1]!, 0.02) * 1.03, Math.max(mx[2]! - mn[2]!, 0.02) * 1.03);
+                hoverChunks = chunkIdsOf(mesh);
+                hoverDynamic = isDynamic(mesh);
+                const bounds = meshGroupBounds(nodePrimitivesOf(mesh) ?? [mesh]);
+                if (bounds) {
+                    hlBox.position.set(bounds.centre[0], bounds.centre[1], bounds.centre[2]);
+                    hlBox.scaling.set(Math.max(bounds.half[0] * 2, 0.02) * 1.03, Math.max(bounds.half[1] * 2, 0.02) * 1.03, Math.max(bounds.half[2] * 2, 0.02) * 1.03);
                 } else {
                     hideHl();
                 }
             } else {
                 hoverNode = "";
                 hoverMesh = "";
+                hoverChunks = [];
+                hoverDynamic = false;
                 hideHl();
             }
             refreshPanel();
@@ -154,6 +159,8 @@ export function createInspectOverlay(opts: InspectOverlayOptions): InspectOverla
                 panel.style.display = "none";
                 hoverNode = "";
                 hoverMesh = "";
+                hoverChunks = [];
+                hoverDynamic = false;
                 hideHl();
             }
         },

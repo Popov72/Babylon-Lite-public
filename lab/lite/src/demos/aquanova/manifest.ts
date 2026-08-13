@@ -23,6 +23,14 @@ export interface ShipChunk {
     aabb: Aabb;
 }
 
+export interface ShipEnvironmentProbe {
+    id: string;
+    boxPosition: Vec3;
+    boxSize: Vec3;
+    capturePosition: Vec3;
+    resolution: number;
+}
+
 /**
  * Resolve an XZ position to the most specific containing chunk.
  *
@@ -62,6 +70,18 @@ export interface ShipLight {
     runtime?: ShipRuntimeLight;
 }
 
+export interface ShipPortal {
+    id: string;
+    chunkA: string;
+    chunkB: string;
+    door?: string;
+    centre: Vec3;
+    normal?: Vec3;
+    corners?: Vec3[];
+    /** False closes the visibility link without changing collision or door geometry. */
+    enabled?: boolean;
+}
+
 // `behaviors` is a library of named behaviour definitions; `entities` assigns them to MESH NAMES,
 // optionally overriding parameters per entity. Mesh names are shared across rooms, so an entity
 // applies to every mesh carrying that name. Assignments remain separate so several strongly typed
@@ -72,14 +92,16 @@ export interface ShipManifest {
     behaviors?: BehaviorLibrary; // behaviour name → definition
     entities?: Entities; // mesh name → assigned behaviours
     chunks: ShipChunk[];
-    portals: { centre: Vec3; normal?: Vec3; corners?: Vec3[] }[];
+    /** Spatial reflection volumes, independent from rendering chunks. */
+    environmentProbes?: ShipEnvironmentProbe[];
+    portals: ShipPortal[];
     environment?: ShipEnvironment;
     spawns?: { player?: Vec3; weapon?: Vec3; startChunk?: string };
     /** Every placed kit module. Together with `moduleCollision` this is the ship's collision data. */
     instances?: ShipInstance[];
     /** Kit module path → its collision primitive(s), in module-local space. One shape or several. */
     moduleCollision?: Record<string, ShipCollisionShape | ShipCollisionShape[]>;
-    /** Runtime parameters keyed by the matching `LIGHT_<id>` transform node in the baked glTF. */
+    /** Runtime parameters keyed by the matching `LIGHT_<id>` transform node in the exported glTF. */
     lights?: ShipLight[];
 }
 

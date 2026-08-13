@@ -30,8 +30,8 @@ repository); the demo loads that single file directly.
 
 The image-based lighting environment `bank_vault_2k.hdr` is the **"bank_vault"**
 HDRI from **Poly Haven** (https://polyhaven.com/a/bank_vault), also **CC0 1.0**.
-The demo uses it purely as an IBL source (ambient + specular); the ship carries no
-punctual lights — its ceiling fixtures are emissive geometry.
+It is retained only by the ship editor for the non-baked authoring view. Baked
+preview and the Aquanova runtime use the generated bounded local probes instead.
 
 The skybox cube faces in `skybox/` (`sky_px.png` … `sky_nz.png`) were generated
 with **Space 3D** by **wwwtyro** (https://tools.wwwtyro.net/space-3d/), a
@@ -41,8 +41,7 @@ public-domain dedication. The generated output may be used for any purpose,
 commercial or not, with no attribution required.
 
 - **What this is used for:** backdrop only — what you see through the ship's
-  openings. It is *not* an IBL source; the lighting still comes from
-  `bank_vault_2k.hdr` above.
+  openings. It is _not_ an IBL source.
 - **Why it is not committed:** purely size, as with the ship and the HDR. It is
   freely redistributable, but at ~4.5 MB it would only pay off if a fresh clone
   could run the demo — and it cannot, because `ship.glb` is gitignored too.
@@ -51,7 +50,9 @@ commercial or not, with no attribution required.
 
 ## Non-free / restricted assets
 
-_None yet._
+The first-person Liquefactor weapon models under `weapons/` were supplied for
+this project. No separate redistribution license has been documented for them,
+so treat those files as project-only assets rather than reusable CC0 content.
 
 Any asset added here that is **not** CC0 (or otherwise freely redistributable)
 MUST be listed in this section with its source and license terms, so downstream

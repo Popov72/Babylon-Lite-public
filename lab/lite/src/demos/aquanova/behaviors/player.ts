@@ -1,4 +1,4 @@
-import { CharacterSupportedState, pickAsync } from "babylon-lite";
+import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import type { Behavior, BehaviorContext, PlayerBehaviorConfig } from "./types.js";
 
@@ -29,14 +29,16 @@ export class PlayerBehavior implements Behavior<"player"> {
     private pitch = 0;
     private yawTarget: number;
     private pitchTarget = 0;
+    private targetDistance = 1;
     private verticalVelocity = 0;
     private jumpBufferSeconds = 0;
     private crouchToggleQueued = false;
     private crouchTarget = false;
     private noclip = false;
     private frozen = false;
-    private fusionTriggerHeld = false;
-    private fusionTriggerSequence = 0;
+    private weaponTriggerHeld = false;
+    private weaponTriggerSequence = 0;
+    private weaponAimPickPending = false;
     private crosshair: HTMLDivElement | null = null;
     private readonly characterStrength: number;
 
@@ -58,7 +60,12 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.context.canvas.dataset.characterStrength = String(this.characterStrength);
         this.updateCrouchDataset();
         this.createCrosshair();
-        this.disposers.push(this.context.events.on("physicsStep", ({ deltaSeconds }) => this.update(deltaSeconds)));
+        this.disposers.push(
+            this.context.events.on("physicsStep", ({ deltaSeconds }) => {
+                this.update(deltaSeconds);
+                this.refreshHeldWeaponAim();
+            })
+        );
         this.listen(this.context.canvas, "click", this.onClick);
         this.listen(this.context.canvas, "pointerdown", this.onPointerDown);
         this.listen(this.context.canvas, "pointercancel", this.onPointerCancel);
@@ -92,6 +99,35 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.yaw = this.yawTarget = yaw;
     }
 
+    public setCameraPosition(position: { x: number; y: number; z: number }): void {
+        if (this.noclip) {
+            this.freePosition.x = position.x;
+            this.freePosition.y = position.y;
+            this.freePosition.z = position.z;
+        } else {
+            this.context.character.setPosition({
+                x: position.x,
+                y: position.y - this.currentEyeHeight(),
+                z: position.z,
+            });
+        }
+        this.context.camera.position.set(position.x, position.y, position.z);
+    }
+
+    public setCameraTarget(target: { x: number; y: number; z: number }): void {
+        const position = this.context.camera.position;
+        const dx = target.x - position.x;
+        const dy = target.y - position.y;
+        const dz = target.z - position.z;
+        const horizontal = Math.hypot(dx, dz);
+        if (horizontal > 1e-6 || Math.abs(dy) > 1e-6) {
+            this.yaw = this.yawTarget = Math.atan2(dx, dz);
+            this.pitch = this.pitchTarget = Math.max(-1.45, Math.min(1.45, Math.atan2(dy, horizontal)));
+            this.targetDistance = Math.hypot(horizontal, dy);
+        }
+        this.context.camera.target.set(target.x, target.y, target.z);
+    }
+
     public look(dx: number, dy: number): void {
         this.yaw = this.yawTarget = this.yawTarget + dx * LOOK_SENSITIVITY;
         this.pitch = this.pitchTarget = Math.max(-1.45, Math.min(1.45, this.pitchTarget - dy * LOOK_SENSITIVITY));
@@ -100,9 +136,7 @@ export class PlayerBehavior implements Behavior<"player"> {
     public press(code: string): void {
         if (this.keys.has(code)) return;
         this.keys.add(code);
-        if (code === "KeyV") {
-            this.toggleNoclip();
-        } else if (code === "KeyC" && !this.noclip) {
+        if (code === "KeyC" && !this.noclip) {
             this.crouchToggleQueued = true;
         } else if (code === "Space" && !this.noclip) {
             this.jumpBufferSeconds = JUMP_BUFFER_SECONDS;
@@ -142,31 +176,57 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.frozen = true;
     }
 
-    public async fire(requireHeldTrigger = false, triggerSequence = this.fusionTriggerSequence, resumeToken?: number): Promise<void> {
-        const canvas = this.context.canvas;
-        const info = await pickAsync(this.context.getPicker(), canvas.clientWidth / 2, canvas.clientHeight / 2);
+    public async fire(requireHeldTrigger = false, triggerSequence = ++this.weaponTriggerSequence): Promise<void> {
+        if (!requireHeldTrigger) this.context.events.emit("weaponTriggerPressed", { held: false });
+        const [pickX, pickY] = this.crosshairPickCoordinates();
+        const info = await pickAsync(this.context.getPicker(), pickX, pickY);
         const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;
-        if (requireHeldTrigger && (!this.fusionTriggerHeld || triggerSequence !== this.fusionTriggerSequence)) {
-            if (resumeToken !== undefined) this.context.resolveFusionResume(resumeToken, null);
-            return;
-        }
-        canvas.dataset.target = mesh ? `${this.context.nodeNameOf(mesh)}|${this.context.isLiquefiable(mesh) ? "liq" : "no"}` : "none";
-        if (resumeToken !== undefined) {
-            const result = this.context.resolveFusionResume(resumeToken, mesh);
-            if (result === "start-new" && mesh) {
-                this.context.events.emit("hitWithWeapon", {
+        if (triggerSequence !== this.weaponTriggerSequence || (requireHeldTrigger && !this.weaponTriggerHeld)) return;
+        this.updateTargetDataset(mesh);
+        this.context.events.emit("weaponAimUpdated", {
+            mesh,
+            point: info.hit ? info.pickedPoint : null,
+            distance: info.hit ? info.distance : null,
+        });
+    }
+
+    private crosshairPickCoordinates(): readonly [number, number] {
+        const canvas = this.context.canvas;
+        const canvasRect = canvas.getBoundingClientRect();
+        const crosshairRect = this.crosshair?.getBoundingClientRect();
+        if (!crosshairRect) return [canvas.clientWidth * 0.5, canvas.clientHeight * 0.5];
+        return [
+            ((crosshairRect.left + crosshairRect.width * 0.5 - canvasRect.left) / Math.max(1, canvasRect.width)) * canvas.clientWidth,
+            ((crosshairRect.top + crosshairRect.height * 0.5 - canvasRect.top) / Math.max(1, canvasRect.height)) * canvas.clientHeight,
+        ];
+    }
+
+    private updateTargetDataset(mesh: Mesh | null): void {
+        this.context.canvas.dataset.target = mesh ? `${this.context.nodeNameOf(mesh)}|${this.context.isLiquefiable(mesh) ? "liq" : "no"}` : "none";
+    }
+
+    private refreshHeldWeaponAim(): void {
+        if (!this.weaponTriggerHeld || this.weaponAimPickPending) return;
+        const triggerSequence = this.weaponTriggerSequence;
+        const [pickX, pickY] = this.crosshairPickCoordinates();
+        this.weaponAimPickPending = true;
+        void pickAsync(this.context.getPicker(), pickX, pickY)
+            .then((info) => {
+                if (!this.weaponTriggerHeld || triggerSequence !== this.weaponTriggerSequence) return;
+                const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;
+                this.updateTargetDataset(mesh);
+                this.context.events.emit("weaponAimUpdated", {
                     mesh,
-                    point: info.pickedPoint,
+                    point: info.hit ? info.pickedPoint : null,
+                    distance: info.hit ? info.distance : null,
                 });
-            }
-            return;
-        }
-        if (mesh) {
-            this.context.events.emit("hitWithWeapon", {
-                mesh,
-                point: info.pickedPoint,
+            })
+            .catch((err: unknown) => {
+                console.warn("[aquanova] held weapon aim pick failed", err);
+            })
+            .finally(() => {
+                this.weaponAimPickPending = false;
             });
-        }
     }
 
     private update(deltaSeconds: number): void {
@@ -192,7 +252,11 @@ export class PlayerBehavior implements Behavior<"player"> {
             this.freePosition.y += this.flyVelocity.y * deltaSeconds;
             this.freePosition.z += this.flyVelocity.z * deltaSeconds;
             this.context.camera.position.set(this.freePosition.x, this.freePosition.y, this.freePosition.z);
-            this.context.camera.target.set(this.freePosition.x + sin * cosPitch, this.freePosition.y + sinPitch, this.freePosition.z + cos * cosPitch);
+            this.context.camera.target.set(
+                this.freePosition.x + sin * cosPitch * this.targetDistance,
+                this.freePosition.y + sinPitch * this.targetDistance,
+                this.freePosition.z + cos * cosPitch * this.targetDistance
+            );
             this.updatePositionDataset(this.freePosition);
             return;
         }
@@ -233,7 +297,11 @@ export class PlayerBehavior implements Behavior<"player"> {
         if (this.frozen) return;
         const eyeHeight = this.currentEyeHeight();
         this.context.camera.position.set(position.x, position.y + eyeHeight, position.z);
-        this.context.camera.target.set(position.x + sin * cosPitch, position.y + eyeHeight + sinPitch, position.z + cos * cosPitch);
+        this.context.camera.target.set(
+            position.x + sin * cosPitch * this.targetDistance,
+            position.y + eyeHeight + sinPitch * this.targetDistance,
+            position.z + cos * cosPitch * this.targetDistance
+        );
     }
 
     private updateCrouch(deltaSeconds: number): void {
@@ -290,7 +358,7 @@ export class PlayerBehavior implements Behavior<"player"> {
     }
 
     private readonly onClick = (): void => {
-        if (this.context.isInspecting()) return;
+        if (this.context.isInspecting() || isGizmoInteracting(this.context.canvas)) return;
         if (document.pointerLockElement !== this.context.canvas) {
             void Promise.resolve(this.context.canvas.requestPointerLock()).catch(() => {});
         }
@@ -298,31 +366,28 @@ export class PlayerBehavior implements Behavior<"player"> {
 
     private readonly onPointerDown = (event: PointerEvent): void => {
         if (event.button !== 0) return;
-        if (document.pointerLockElement !== this.context.canvas || this.context.isInspecting() || this.noclip) return;
-        this.fusionTriggerHeld = true;
-        const sequence = ++this.fusionTriggerSequence;
-        const resumeToken = this.context.requestFusionResume();
-        if (resumeToken !== null) {
-            if (resumeToken > 0) void this.fire(true, sequence, resumeToken);
-            return;
-        }
+        if (document.pointerLockElement !== this.context.canvas || this.context.isInspecting() || isGizmoInteracting(this.context.canvas) || this.noclip) return;
+        if (this.weaponTriggerHeld) return;
+        this.weaponTriggerHeld = true;
+        const sequence = ++this.weaponTriggerSequence;
+        this.context.events.emit("weaponTriggerPressed", { held: true });
         void this.fire(true, sequence);
     };
 
     private readonly onPointerUp = (event: PointerEvent): void => {
-        if (event.button === 0) this.releaseFusionTrigger();
+        if (event.button === 0) this.releaseWeaponTrigger();
     };
 
     private readonly onPointerCancel = (): void => {
-        this.releaseFusionTrigger();
+        this.releaseWeaponTrigger();
     };
 
     private readonly onWindowBlur = (): void => {
-        this.releaseFusionTrigger();
+        this.releaseWeaponTrigger();
     };
 
     private readonly onPointerLockChange = (): void => {
-        if (document.pointerLockElement !== this.context.canvas) this.releaseFusionTrigger();
+        if (document.pointerLockElement !== this.context.canvas) this.releaseWeaponTrigger();
     };
 
     private readonly onPointerMove = (event: PointerEvent): void => {
@@ -342,11 +407,11 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.keys.delete(event.code);
     };
 
-    private releaseFusionTrigger(): void {
-        if (!this.fusionTriggerHeld) return;
-        this.fusionTriggerHeld = false;
-        this.fusionTriggerSequence++;
-        this.context.reverseFusion();
+    private releaseWeaponTrigger(): void {
+        if (!this.weaponTriggerHeld) return;
+        this.weaponTriggerHeld = false;
+        this.weaponTriggerSequence++;
+        this.context.events.emit("weaponTriggerReleased", {});
     }
 
     private listen<K extends keyof HTMLElementEventMap>(target: HTMLElement, name: K, listener: (this: HTMLElement, event: HTMLElementEventMap[K]) => unknown): void;

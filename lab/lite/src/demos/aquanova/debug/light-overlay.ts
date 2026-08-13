@@ -1,7 +1,7 @@
 // The `L` debug overlay: runtime lights authored for the player's current chunk.
 //
 // It visualizes the effective records consumed by `lights.ts`, not merely the JSON source:
-// transforms come from the baked glTF's LIGHT_* nodes and runtime parameters can be overridden by
+// transforms come from the exported glTF's LIGHT_* nodes and runtime parameters can be overridden by
 // ship_manifest.json. Coverage is deliberately wireframe so it does not obscure the scene:
 // point-light ranges are three great-circle rings, and spot lights are a base ring plus radial ribs.
 

@@ -10,7 +10,7 @@ import type { Material, StencilState } from "../material.js";
 import type { MaterialPlugin } from "../plugin/material-plugin.js";
 import type { EnvironmentTextures } from "../../loader-env/load-env.js";
 import { createSolidTexture2D } from "../../texture/solid-texture.js";
-import { _installPbrFallbackResolver, _installPbrLocalEnvironmentResolver } from "./pbr-pipeline.js";
+import { _installPbrFallbackResolver } from "./pbr-pipeline.js";
 import {
     _getPbrExts,
     PBR2_HAS_BASE_COLOR_FACTOR,
@@ -84,7 +84,8 @@ export interface PbrMaterialProps extends Material {
     alphaCutOff?: number;
     /** Scale factor for environment/IBL contribution. Default 1.0. */
     environmentIntensity?: number;
-    /** Optional local prefiltered environment cubemap used for specular IBL on this material. */
+    /** Optional local prefiltered environment cubemap used for specular IBL on this material.
+     *  Await enablePbrLocalCubemap() before registerScene to use its bounding box. */
     localEnvironment?: EnvironmentTextures | null;
     /** Scale factor for direct light contribution. Default 1.0. */
     directIntensity?: number;
@@ -457,7 +458,6 @@ export function createPbrMaterial(props?: Partial<PbrMaterialProps>): PbrMateria
     // roughnessFactor — the glTF defaults). Reachable only via createPbrMaterial, so
     // loader-only PBR scenes (e.g. BoomBox) tree-shake it entirely.
     _installPbrFallbackResolver((engine) => (engine._pbrFallbackTex ??= createSolidTexture2D(engine, 1, 1, 1)));
-    _installPbrLocalEnvironmentResolver((material) => material.localEnvironment);
     return {
         ...props,
         _buildGroup: getPbrGroupBuilder(),

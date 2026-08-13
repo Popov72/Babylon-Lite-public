@@ -1,23 +1,15 @@
 // Runtime lights for the Aquanova ship.
 //
-// The ship's STATIC geometry is lit by the Blender bake (see `lightmaps.ts`) and cannot respond to
-// anything at runtime — its materials are `unlit`, so a light aimed at a wall changes nothing. The
-// lights built here exist for the complement: every mesh the bake deliberately left out, which
-// `isBakeExcluded` identifies by its missing atlas UVs. Today that is the props that move
-// (`dynamic`) and the ones that melt (`liquefiable`, plus everything they are `linked` to) — a mesh
-// that will not stay as it was authored cannot have its lighting painted into a wall. Reading it off
-// the geometry rather than off the behaviour list keeps this in step with `bake_lightmaps.py` on its
-// own: the doors are `liquefiable` but not `dynamic`, and a behaviour-scoped set left them with no
-// lightmap and no lamp at all.
+// Every enabled ship mesh receives the authored runtime lights. Clustered lights cover the whole
+// ship, while regular lights are scoped to the chunk where they were authored.
 //
 // ── Where the records come from ───────────────────────────────────────────────────────────────
 // The editor authors one record per lamp and the exporter writes it BOTH into `ship_manifest.json`
-// and onto a `LIGHT_<id>` node in the glb, as `extras = { id, kind: "light", owner, chunk, bake,
+// and onto a `LIGHT_<id>` node in the glb, as `extras = { id, kind: "light", owner, chunk,
 // runtime }`. The glb node supplies the transform because it is parented under the placement that
 // owns the lamp: its world matrix already carries the placement transform AND the loader's
 // glTF→Lite mirror. The manifest record with the same id overrides runtime parameters, so lighting
-// can be tuned without rebuilding the glTF. (The `bake` half is Blender's business — watts,
-// area-lamp size, spread — and still requires rebaking the atlas.)
+// can be tuned without rebuilding the glTF.
 //
 // ── The emission axis is local −Y ─────────────────────────────────────────────────────────────
 // Not −Z. The editor chose −Y so that the +90° X rotation glTF picks up on the way into Blender
@@ -38,7 +30,7 @@
 //     mesh filter Lite has.
 //
 // ── Chunk membership is resolved once ─────────────────────────────────────────────────────────
-// A runtime-lit prop is assigned the chunk it was authored in and keeps it. Re-assigning as a prop is
+// A ship mesh is assigned the chunk it was authored in and keeps it. Re-assigning as a prop is
 // carried through a doorway is deferred by design — it needs the light UBO's mesh selection to be
 // rebuilt at runtime, and nothing in the demo moves a prop between chunks yet.
 
@@ -75,8 +67,8 @@ export interface RuntimeLightStats {
     clusteredPoint: number;
     clusteredSpot: number;
     scoped: number;
-    /** Records whose `runtime.type` is `none` — authored for the bake only. */
-    bakeOnly: number;
+    /** Records whose `runtime.type` is `none`. */
+    disabled: number;
     /** Non-clustered lights dropped because the shared UBO has no room for them. */
     overflow: number;
     /** The effective runtime records, including manifest overrides, used by the debug overlay. */
@@ -154,12 +146,9 @@ function collectLightNodes(root: SceneNode): Array<{ node: SceneNode; extras: Li
  *
  * @param scene - Scene the ship was added to.
  * @param shipRoot - Loaded ship root, walked for the exporter's `LIGHT_*` nodes.
- * @param litMeshes - The meshes the bake left out (`isBakeExcluded`), which is exactly what these
- * lamps exist for — everything else carries a lightmap and is excluded from the authored runtime
- * lights. Their materials are isolated from shared static/liquefiable materials so clustered lights
- * cannot leak onto other geometry.
+ * @param litMeshes - Ship meshes that receive runtime diffuse and specular lighting.
  * @param chunkOfMesh - Which chunk each mesh sits in, for the non-clustered scoping.
- * @param authoredLights - Manifest runtime values. Transforms still come from the baked glTF nodes.
+ * @param authoredLights - Manifest runtime values. Transforms still come from the exported glTF nodes.
  */
 export function buildRuntimeLights(
     scene: SceneContext,
@@ -173,7 +162,7 @@ export function buildRuntimeLights(
         clusteredPoint: 0,
         clusteredSpot: 0,
         scoped: 0,
-        bakeOnly: 0,
+        disabled: 0,
         overflow: 0,
         lights: [],
         toggleNearest(position) {
@@ -210,8 +199,8 @@ export function buildRuntimeLights(
     const litSet = new Set(litMeshes);
 
     // glTF kit instances share material objects. Clustered lighting is material-gated, so clone the
-    // explicitly dynamic props before the scene-global container stamps materials; otherwise a
-    // static or merely liquefiable mesh sharing the same source material would receive the lamps.
+    // ship materials before the scene-global container stamps them; otherwise an unrelated scene
+    // mesh sharing the same source material would receive the lamps.
     const dynamicMaterialClones = new Map<object, object>();
     for (const mesh of litSet) {
         const source = mesh.material;
@@ -227,8 +216,8 @@ export function buildRuntimeLights(
     }
 
     // `includedOnlyMeshIds` matches on `mesh.id`, which the glTF loader does not set (it is a
-    // Babylon `.babylon`-loader concept). Give the props a stable id here so the filter has
-    // something to match, and index them by chunk in the same pass.
+    // Babylon `.babylon`-loader concept). Give the affected ship meshes a stable id here so the
+    // filter has something to match, and index them by chunk in the same pass.
     const idsByChunk = new Map<string, Set<string>>();
     let n = 0;
     for (const mesh of litSet) {
@@ -236,7 +225,7 @@ export function buildRuntimeLights(
         if (!chunk) {
             continue;
         }
-        mesh.id ??= `dyn${n++}`;
+        mesh.id ??= `ship${n++}`;
         const set = idsByChunk.get(chunk);
         if (set) set.add(mesh.id);
         else idsByChunk.set(chunk, new Set([mesh.id]));
@@ -258,7 +247,7 @@ export function buildRuntimeLights(
 
     for (const { node, extras, runtime: r } of records) {
         if (!r || r.type === "none") {
-            stats.bakeOnly++;
+            stats.disabled++;
             continue;
         }
         const w = node.worldMatrix;
@@ -346,7 +335,7 @@ export function buildRuntimeLights(
     if (container.pointLights.length || container.spotLights.length) {
         addClusteredLightContainer(scene, container);
         // `addClusteredLightContainer` initially stamps every material already in the scene. Remove
-        // that state everywhere except the isolated explicit-dynamic clones.
+        // that state everywhere except the isolated runtime-lit ship clones.
         for (const mesh of scene.meshes) {
             if (litSet.has(mesh) || !mesh.material) continue;
             const material = mesh.material as { _clusteredLightState?: unknown; _renderFeatures?: unknown };

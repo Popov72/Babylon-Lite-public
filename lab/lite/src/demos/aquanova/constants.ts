@@ -6,14 +6,10 @@
 
 export const SHIP_URL = "/aquanova/ship_baked.glb";
 export const MANIFEST_URL = "/aquanova/ship_manifest.json";
-/** Per-chunk baked-lightmap index written by `scripts/sync-baked-ship.ts`: which KTX2 atlas belongs
- *  to which chunk, and the scale the bake divided out to fit 8 bits. */
-export const LIGHTMAPS_URL = "/aquanova/lightmaps.json";
-/** Image-based lighting: the ship is lit by this HDRI (Poly Haven "bank_vault" 2k, CC0) plus its own
- *  emissive ceiling fixtures — the glTF export carries no punctual lights. */
-export const ENV_URL = "/aquanova/bank_vault_2k.hdr";
+/** Generated spatial box-projected specular environment probes. */
+export const LOCAL_ENVIRONMENTS_URL = "/aquanova/local-environments.json";
 /** Skybox cube faces, as `${SKYBOX_URL}_px${SKYBOX_EXT}` … `_nz`. Purely a backdrop seen through the
- *  ship's openings — the IBL that actually lights the ship still comes from ENV_URL. */
+ *  ship's openings. It never contributes lighting. */
 export const SKYBOX_URL = "/aquanova/skybox/sky";
 export const SKYBOX_EXT = ".png";
 /** Edge length of the skybox cube. Constrained at both ends: the box is static at the origin (it

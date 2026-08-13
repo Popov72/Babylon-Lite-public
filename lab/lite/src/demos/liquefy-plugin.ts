@@ -26,6 +26,56 @@ export interface LiquefyState {
     noiseFreq?: number;
 }
 
+function fract(value: number): number {
+    return value - Math.floor(value);
+}
+
+function hash13(x: number, y: number, z: number): number {
+    let qx = fract(x * 0.1031);
+    let qy = fract(y * 0.103);
+    let qz = fract(z * 0.0973);
+    const d = qx * (qy + 33.33) + qy * (qz + 33.33) + qz * (qx + 33.33);
+    qx += d;
+    qy += d;
+    qz += d;
+    return fract((qx + qy) * qz);
+}
+
+function noise(x: number, y: number, z: number): number {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const iz = Math.floor(z);
+    const fx = fract(x);
+    const fy = fract(y);
+    const fz = fract(z);
+    const wx = fx * fx * (3 - 2 * fx);
+    const wy = fy * fy * (3 - 2 * fy);
+    const wz = fz * fz * (3 - 2 * fz);
+    const n000 = hash13(ix, iy, iz);
+    const n100 = hash13(ix + 1, iy, iz);
+    const n010 = hash13(ix, iy + 1, iz);
+    const n110 = hash13(ix + 1, iy + 1, iz);
+    const n001 = hash13(ix, iy, iz + 1);
+    const n101 = hash13(ix + 1, iy, iz + 1);
+    const n011 = hash13(ix, iy + 1, iz + 1);
+    const n111 = hash13(ix + 1, iy + 1, iz + 1);
+    const nx00 = n000 + (n100 - n000) * wx;
+    const nx10 = n010 + (n110 - n010) * wx;
+    const nx01 = n001 + (n101 - n001) * wx;
+    const nx11 = n011 + (n111 - n011) * wx;
+    const nxy0 = nx00 + (nx10 - nx00) * wy;
+    const nxy1 = nx01 + (nx11 - nx01) * wy;
+    return nxy0 + (nxy1 - nxy0) * wz;
+}
+
+/** Match the shader's noisy world-space distance so solid clipping and water reveal are complementary. */
+export function liquefyFrontDistance(x: number, y: number, z: number, hit: readonly [number, number, number], noiseAmp = 0.35, noiseFreq = 1.2): number {
+    const n0 = noise(x * noiseFreq, y * noiseFreq, z * noiseFreq);
+    const n1 = noise(x * noiseFreq * 2.03 + 11.7, y * noiseFreq * 2.03 + 3.1, z * noiseFreq * 2.03 + 7.9);
+    const perturbation = (n0 * 0.65 + n1 * 0.35 - 0.5) * 2 * noiseAmp;
+    return Math.hypot(x - hit[0], y - hit[1], z - hit[2]) + perturbation;
+}
+
 /** Create a liquefy clip plugin bound to a mutable state getter.
  *  @param host - "pbr" (default) or "std"; selects the world-pos varying + uniform-accessor names.
  *    On Standard materials the plugin is `dynamic` so its self-managed UBO is re-uploaded per frame. */

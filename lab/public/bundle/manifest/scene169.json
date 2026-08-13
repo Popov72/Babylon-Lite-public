@@ -1,16 +1,17 @@
 {
-  "rawKB": 78.7,
-  "rawBytes": 80638,
-  "gzipKB": 33,
+  "rawKB": 82.1,
+  "rawBytes": 84104,
+  "gzipKB": 34.4,
   "ignoredRawKB": 0,
   "runtimeChunks": [
-    "scene169-ibl-fragment-D9e9c66T.js",
-    "scene169-pbr-renderable-DZpnv2D1.js",
-    "scene169-rgbd-decode-D43WOUpt.js",
+    "scene169-ibl-fragment-XQxjiFWt.js",
+    "scene169-local-cubemap-fragment-CX2uFmSb.js",
+    "scene169-pbr-renderable-BbbCCxwx.js",
+    "scene169-rgbd-decode-Dzi88BtF.js",
     "scene169-scene-uniforms-FTYH6Ct0.js",
     "scene169-shader-composer-DaKyaECf.js",
-    "scene169-singlelight-hemispheric-wgsl-BUr1RVlU.js",
-    "scene169-standard-renderable-2SwUzsAs.js",
+    "scene169-singlelight-hemispheric-wgsl-bfWgf5tj.js",
+    "scene169-standard-renderable-niHiY9zm.js",
     "scene169.js"
   ]
 }

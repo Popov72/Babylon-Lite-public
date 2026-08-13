@@ -48,9 +48,14 @@ export function _installPbrFallbackResolver(resolve: (engine: EngineContext) => 
 }
 
 let _pbrLocalEnvironmentResolver: ((material: PbrMaterialProps) => EnvironmentTextures | null | undefined) | null = null;
-/** @internal Install the material-local environment resolver (called by `createPbrMaterial`). */
+/** @internal Install the material-local environment resolver with the local-cubemap opt-in. */
 export function _installPbrLocalEnvironmentResolver(resolve: (material: PbrMaterialProps) => EnvironmentTextures | null | undefined): void {
     _pbrLocalEnvironmentResolver = resolve;
+}
+
+/** @internal Resolve a material-local environment before the scene fallback. */
+export function _resolvePbrEnvironment(material: PbrMaterialProps, fallback: EnvironmentTextures | null | undefined): EnvironmentTextures | null | undefined {
+    return _pbrLocalEnvironmentResolver?.(material) ?? fallback;
 }
 
 interface _PbrShaderBindings {
@@ -245,7 +250,7 @@ export function createPbrMeshBindGroup(
         _meshFeatures: meshFeatures,
         _material: material,
         _mesh: meshCtx,
-        _env: _pbrLocalEnvironmentResolver?.(material) ?? env,
+        _env: _resolvePbrEnvironment(material, env),
         _refractionTexture: refractionTexture,
     };
 

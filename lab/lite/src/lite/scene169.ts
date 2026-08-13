@@ -11,6 +11,7 @@ import {
     createSceneContext,
     createSolidTexture2D,
     createStandardMaterial,
+    enablePbrLocalCubemap,
     loadEnvironment,
     registerScene,
     startEngine,
@@ -37,6 +38,9 @@ async function main(): Promise<void> {
         skipGround: true,
         brdfUrl: "/brdf-lut.png",
     });
+    await enablePbrLocalCubemap();
+    localEnvironment.boundingBoxPosition = [1.6, 1, 0];
+    localEnvironment.boundingBoxSize = [4, 3, 4];
     await loadEnvironment(scene, GLOBAL_ENV_URL, {
         skipSkybox: true,
         skipGround: true,

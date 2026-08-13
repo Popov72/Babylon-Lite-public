@@ -17,7 +17,7 @@ import type { Renderable, MeshGroupBuildResult } from "../../render/renderable.j
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import { acquireTexture, releaseTexture, clearSamplerCache } from "../../resource/gpu-pool.js";
 import { createUniformBuffer } from "../../resource/gpu-buffers.js";
-import { getOrCreatePbrBindings, getOrCreatePbrPipeline, createPbrMeshBindGroup, clearPbrPipelineCache } from "./pbr-pipeline.js";
+import { getOrCreatePbrBindings, getOrCreatePbrPipeline, createPbrMeshBindGroup, clearPbrPipelineCache, _resolvePbrEnvironment } from "./pbr-pipeline.js";
 import {
     _registerPbrExt,
     _getPbrExts,
@@ -65,7 +65,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
     const device = engine._device;
     // Per-size scratch buffers for material UBO re-writes (zero allocation per frame).
     const materialScratch = new Map<number, Float32Array>();
-    const hasEnv = !!envTextures;
+    const hasEnv = !!envTextures || meshes.some((mesh) => !!_resolvePbrEnvironment(mesh.material as PbrMaterialProps, null));
     const shadowLights: { lightIndex: number; shadowType: "esm" | "pcf" | "csm"; gen: ShadowGenerator }[] = [];
     for (let i = 0; i < scene.lights.length; i++) {
         const sg = scene.lights[i]!.shadowGenerator;
@@ -323,7 +323,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         _createThinInstanceFragment,
     });
 
-    const sceneFeatures = (hasEnv ? PBR_HAS_ENV : 0) | (hasTonemap ? PBR_HAS_TONEMAP : 0) | (scene.fog ? PBR_HAS_FOG : 0);
+    const baseSceneFeatures = (hasTonemap ? PBR_HAS_TONEMAP : 0) | (scene.fog ? PBR_HAS_FOG : 0);
     // Shadow bind group cache — within one scene build, all receiving meshes share the
     // same shadowLights array, so a BG keyed by shadowBGL alone is correct.
     const shadowBGCache = new Map<GPUBindGroupLayout, GPUBindGroup>();
@@ -342,6 +342,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         const lightCount = lr > 0 ? 1 : -lr;
         const features = renderFeatures.features;
         const features2 = renderFeatures.features2 ?? 0;
+        const pluginIndex = mat._pi ?? 0;
         const shadowOutput = (features2 & (PBR2_NO_COLOR_OUTPUT | PBR2_ESM_SHADOW_OUTPUT)) !== 0;
         const receiveShadows = !shadowOutput && mesh.receiveShadows && hasSomeShadows;
         const lightMode: PbrLightMode = lightCount === 0 ? 0 : lightCount === 1 && !receiveShadows ? 1 : 2;
@@ -361,8 +362,9 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         const vbLayout = mesh._gpu._vbLayout;
         const vbKey = mesh._gpu._vbKey ?? "";
         const uv2Mask = (mat as { _uv2Mask?: number })._uv2Mask ?? 0;
+        const sceneFeatures = baseSceneFeatures | (_resolvePbrEnvironment(mat, envTextures) ? PBR_HAS_ENV : 0);
 
-        const composed = composePbr(features, features2, meshFeatures, sceneFeatures, lightMode, singleLightType, esmShadowDepthCode, vbLayout, vbKey, uv2Mask);
+        const composed = composePbr(features, features2, meshFeatures, sceneFeatures, lightMode, singleLightType, esmShadowDepthCode, vbLayout, vbKey, uv2Mask, pluginIndex);
         // Non-triangle topology rides on the composed variant (see ComposedShader._prim). The
         // composition key folds in meshFeatures, whose topology bits this mirrors, so this is only
         // ever written with the same value for a given variant.
@@ -374,7 +376,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
             meshFeatures,
             sceneFeatures,
             composed,
-            `${lightMode}:${singleLightType}${vbKey}:${uv2Mask}:${toneMappingKey}`,
+            `${lightMode}${singleLightType}${vbKey}:${uv2Mask}:${toneMappingKey}${pluginIndex}`,
             mat.stencil ?? null
         );
 
@@ -579,7 +581,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
     // already dynamic-imports this module.
     (scene as SceneContext & { _pbrGeomContext?: _PbrGeometryContext })._pbrGeomContext = {
         _composePbr: composePbr,
-        _sceneFeatures: sceneFeatures,
+        _sceneFeatures: baseSceneFeatures,
         _envTextures: envTextures ?? null,
         _shadowLights: shadowLights,
         _syncThinInstanceBuffers: _syncThinInstanceBuffers,

@@ -271,6 +271,9 @@ export { enableMirroredMeshes } from "./mesh/enable-mirrored-meshes.js";
 export { createPbrMaterial } from "./material/pbr/pbr-material.js";
 export { enablePbrLightmap, setPbrLightmap } from "./material/pbr/enable-pbr-lightmap.js";
 export type { PbrLightmapOptions } from "./material/pbr/enable-pbr-lightmap.js";
+export { enablePbrDiffuseLightmap, setPbrDiffuseLightmap } from "./material/pbr/enable-pbr-diffuse-lightmap.js";
+export type { PbrDiffuseLightmapOptions } from "./material/pbr/enable-pbr-diffuse-lightmap.js";
+export { enablePbrLocalCubemap } from "./material/pbr/enable-pbr-local-cubemap.js";
 export {
     createShaderMaterial,
     setShaderUniform,

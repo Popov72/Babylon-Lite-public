@@ -14,6 +14,15 @@ import { getRenderTaskGpuTimings, setRenderTaskGpuTimingEnabled, type EngineCont
 
 export interface PerfOverlayOptions {
     engine: EngineContext;
+    /** Current portal-culling workload, sampled from the frame that is about to render. */
+    portalWorkload?: () => { currentChunk: string; chunks: number; exteriorChunks: number; meshes: number; totalMeshes: number };
+    /** Exterior-only chunk IDs, shown to make sky-frustum decisions directly inspectable. */
+    exteriorChunks?: () => readonly string[];
+    /** Camera view used to reproduce a portal-culling frame. */
+    viewpoint?: () => {
+        position: { x: number; y: number; z: number };
+        target: { x: number; y: number; z: number };
+    };
     /** Current fluid workload displayed independently of GPU timestamp availability. */
     fluidWorkload?: () => { simulations: number; particles: number };
     /**
@@ -58,7 +67,7 @@ const PANEL_CH = 52;
  * @returns The overlay handle; call `onFrame` every frame and `toggle` from the key handler.
  */
 export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
-    const { engine, fluidWorkload, fluidStages, onToggle } = opts;
+    const { engine, portalWorkload, exteriorChunks, viewpoint, fluidWorkload, fluidStages, onToggle } = opts;
     let on = false;
     let winFrames = 0;
     let winElapsed = 0;
@@ -135,15 +144,25 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
      */
     const refresh = (): void => {
         const head = fps > 0 ? `FPS ${fps.toFixed(1)}   cpu ${cpuMs.toFixed(2)} ms/frame` : "FPS —";
+        const portals = portalWorkload?.() ?? { currentChunk: "—", chunks: 0, exteriorChunks: 0, meshes: 0, totalMeshes: 0 };
+        const chunkHead = `Current chunk ${portals.currentChunk}`;
+        const portalHead = `Chunks ${portals.chunks} drawn   Meshes ${portals.meshes} / ${portals.totalMeshes}`;
+        const exteriorHead = `Exterior chunks ${portals.exteriorChunks} drawn`;
+        const exteriorIds = exteriorChunks?.() ?? [];
+        const exteriorIdHead = exteriorIds.map((id) => `  ${id}`).join("\n");
+        const view = viewpoint?.();
+        const fmtVec = (value: { x: number; y: number; z: number }): string => `${value.x.toFixed(3)}, ${value.y.toFixed(3)}, ${value.z.toFixed(3)}`;
+        const viewpointHead = view ? `Position ${fmtVec(view.position)}\nTarget   ${fmtVec(view.target)}` : "";
+        const sceneHead = [chunkHead, portalHead, exteriorHead, exteriorIdHead, viewpointHead].filter(Boolean).join("\n");
         const workload = fluidWorkload?.() ?? { simulations: 0, particles: 0 };
         const fluidHead = `Fluid ${workload.simulations} sim(s)   ${workload.particles.toLocaleString("en-US")} particles`;
         if (lastStatus === "unsupported") {
-            panel.textContent = `PERF (P)\n${head}\n${fluidHead}\nGPU: timestamp-query unsupported on this device`;
+            panel.textContent = `PERF (P)\n${head}\n${sceneHead}\n${fluidHead}\nGPU: timestamp-query unsupported on this device`;
             return;
         }
         if (taskSamples === 0) {
             // "pending" is normal for the first frames: the readback lands a frame or two behind.
-            panel.textContent = `PERF (P)\n${head}\n${fluidHead}\nGPU: ${lastStatus || "pending"}`;
+            panel.textContent = `PERF (P)\n${head}\n${sceneHead}\n${fluidHead}\nGPU: ${lastStatus || "pending"}`;
             return;
         }
         const taskSum = taskSumAcc / taskSamples;
@@ -191,7 +210,7 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
             header = `GPU ${accounted.toFixed(3)} ms  (sum of parts, no envelope)`;
         }
         const foot = outsideGraph > 0 ? "\n  * encoded outside the frame graph" : "";
-        panel.textContent = `PERF (P)\n${head}\n${fluidHead}\n${header}\n${lines.join("\n")}${foot}`;
+        panel.textContent = `PERF (P)\n${head}\n${sceneHead}\n${fluidHead}\n${header}\n${lines.join("\n")}${foot}`;
     };
 
     return {

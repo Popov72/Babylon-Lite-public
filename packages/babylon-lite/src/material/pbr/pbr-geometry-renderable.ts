@@ -36,8 +36,8 @@ import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import type { PbrMaterialProps } from "./pbr-material.js";
 import { collectPbrBoundTextures } from "./pbr-material.js";
 import { _computePbrMaterialFeatures } from "./pbr-material.js";
-import { PBR_HAS_ALPHA_BLEND, PBR_HAS_DOUBLE_SIDED, PBR_HAS_NORMAL_MAP, PBR2_HAS_UV2 } from "./pbr-flags.js";
-import { createPbrMeshBindGroup } from "./pbr-pipeline.js";
+import { PBR_HAS_ALPHA_BLEND, PBR_HAS_DOUBLE_SIDED, PBR_HAS_ENV, PBR_HAS_NORMAL_MAP, PBR2_HAS_UV2 } from "./pbr-flags.js";
+import { createPbrMeshBindGroup, _resolvePbrEnvironment } from "./pbr-pipeline.js";
 import type { _PbrGeometryContext } from "./pbr-renderable.js";
 import { _writeMaterialData } from "./pbr-renderable.js";
 import type { PbrGeometryMaterialView } from "./pbr-geometry-view.js";
@@ -81,8 +81,8 @@ interface PbrGeometryViewResources {
     _alphaBlend: boolean;
 }
 
-function _variantKey(meshFeatures: number, lightMode: number, singleLightType: string): string {
-    return `${meshFeatures}:${lightMode}:${singleLightType}`;
+function _variantKey(meshFeatures: number, sceneFeatures: number, lightMode: number, singleLightType: string): string {
+    return `${meshFeatures}:${sceneFeatures}:${lightMode}:${singleLightType}`;
 }
 
 /** Build a {@link Renderable} for one mesh drawn through a PBR geometry view. */
@@ -142,8 +142,9 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
     // the Standard path must not pay to read them.
     const meshFeatures = _computeMeshFeatures(mesh, receiveShadows) | ((mesh as Mesh & { _primitiveFeatures?: number })._primitiveFeatures ?? 0);
 
-    const variantKey = _variantKey(meshFeatures, lightMode, singleLightType);
-    const res = _ensureViewResources(view, engine, ctx, meshFeatures, lightMode, singleLightType, variantKey);
+    const sceneFeatures = ctx._sceneFeatures | (_resolvePbrEnvironment(source, ctx._envTextures) ? PBR_HAS_ENV : 0);
+    const variantKey = _variantKey(meshFeatures, sceneFeatures, lightMode, singleLightType);
+    const res = _ensureViewResources(view, engine, ctx, meshFeatures, sceneFeatures, lightMode, singleLightType, variantKey);
     // The geometry pass composes its OWN variant, so it needs the mesh's exotic primitive state
     // stamped on separately (see ComposedShader._prim). `variantKey` folds in meshFeatures, whose
     // topology bits this mirrors, so a cached variant only ever sees one value here.
@@ -347,6 +348,7 @@ function _ensureViewResources(
     engine: EngineContext,
     ctx: _PbrGeometryContext,
     meshFeatures: number,
+    sceneFeatures: number,
     lightMode: 0 | 1 | 2,
     singleLightType: string,
     variantKey: string
@@ -365,8 +367,8 @@ function _ensureViewResources(
 
     const features = view._renderFeatures.features;
     const features2 = view._renderFeatures.features2 ?? 0;
-    const sceneFeatures = ctx._sceneFeatures;
     const source = view.source as PbrMaterialProps;
+    const pluginIndex = source._pi ?? 0;
     const vbLayout = (source as unknown as { _vbLayout?: import("../../mesh/mesh.js").MeshVbLayout })._vbLayout;
     const vbKey = "";
     const uv2Mask = (source as { _uv2Mask?: number })._uv2Mask ?? 0;
@@ -389,7 +391,8 @@ function _ensureViewResources(
             vbKey,
             view._geometryAttachments,
             view._emitColor,
-            uv2Mask
+            uv2Mask,
+            pluginIndex
         );
     } finally {
         _setActivePbrGeometryAttachments(prev);

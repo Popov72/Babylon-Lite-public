@@ -78,7 +78,8 @@ type PbrComposeFn = (
     _esmShadowDepthCode?: string,
     _vbStrides?: MeshVbLayout,
     _vbKey?: string,
-    _uv2Mask?: number
+    _uv2Mask?: number,
+    _pi?: number
 ) => ComposedShader;
 
 /** Create a memoized shader composer for a given scene's resolved PBR deps. */
@@ -113,9 +114,10 @@ export function createPbrComposer(deps: PbrComposerDeps): PbrComposeFn {
         _esmShadowDepthCode = "",
         vbStrides?: MeshVbLayout,
         vbKey = "",
-        uv2Mask = 0
+        uv2Mask = 0,
+        pluginIndex?: number
     ): ComposedShader {
-        const ckey = `${features}:${features2}:${meshFeatures}:${sceneFeatures}:${lightMode}:${singleLightType}${vbKey}:${uv2Mask}`;
+        const ckey = `${features}:${features2}:${meshFeatures}:${sceneFeatures}:${lightMode}${singleLightType}${vbKey}:${uv2Mask}:${pluginIndex}`;
         const cached = cache.get(ckey);
         if (cached) {
             return cached;
@@ -197,6 +199,7 @@ export function createPbrComposer(deps: PbrComposerDeps): PbrComposeFn {
         const fragCtx: _PbrFragCtx = {
             _features: features,
             _features2: features2,
+            _pi: pluginIndex,
             _meshFeatures: meshFeatures,
             _uv2Mask: _hasUv2 ? uv2Mask : 0,
             _hasIbl: _hasIbl,
@@ -206,13 +209,15 @@ export function createPbrComposer(deps: PbrComposerDeps): PbrComposeFn {
             _iblSkyboxCalc: has(PBR_HAS_SKYBOX) ? _iblSkyboxCalc : "",
         };
         // Registration order defines iteration order; callers register in composer-matching order.
-        let pc: ((composed: ComposedShader) => ComposedShader) | undefined;
+        const postCompose: Array<(composed: ComposedShader) => ComposedShader> = [];
         for (const regExt of _getPbrExts().values()) {
             if (regExt.frag) {
                 const fr = regExt.frag(fragCtx);
                 if (fr) {
                     frags.push(fr);
-                    pc ||= fr._pc;
+                    if (fr._pc) {
+                        postCompose.push(fr._pc);
+                    }
                 }
             }
         }
@@ -225,7 +230,9 @@ export function createPbrComposer(deps: PbrComposerDeps): PbrComposeFn {
         }
 
         let composed = composeShader(template, frags);
-        pc && (composed = pc(composed));
+        for (const patch of postCompose) {
+            composed = patch(composed);
+        }
         cache.set(ckey, composed);
         return composed;
     };

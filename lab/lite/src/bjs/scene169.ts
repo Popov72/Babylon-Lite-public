@@ -30,6 +30,8 @@ const LOCAL_ENV_URL = "https://playground.babylonjs.com/textures/environment.env
 
     const environment = CubeTexture.CreateFromPrefilteredData(GLOBAL_ENV_URL, scene);
     const localEnvironment = CubeTexture.CreateFromPrefilteredData(LOCAL_ENV_URL, scene);
+    localEnvironment.boundingBoxPosition = new Vector3(1.6, 1, 0);
+    localEnvironment.boundingBoxSize = new Vector3(4, 3, 4);
     scene.environmentTexture = environment;
 
     const standardMaterial = new StandardMaterial("standard", scene);
@@ -53,6 +55,7 @@ const LOCAL_ENV_URL = "https://playground.babylonjs.com/textures/environment.env
     scene.onAfterRenderObservable.add(() => {
         canvas.dataset.drawCalls = String(eng._drawCalls?.current ?? 0);
     });
+    await scene.whenReadyAsync();
     engine.runRenderLoop(() => scene.render());
     window.addEventListener("resize", () => engine.resize());
     await new Promise<void>((resolve) => scene.onAfterRenderObservable.addOnce(() => resolve()));

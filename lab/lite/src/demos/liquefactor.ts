@@ -146,9 +146,6 @@ const MAX_TOTAL = 600000; // combined render-buffer capacity (particles across a
 
 // Studio HDR environment — drives the fluid-surface reflections + the skybox background.
 const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
-// The interior HDRI used by the Aquanova demo — offered in the env picker so the water look can be
-// auditioned under the exact same lighting (to diagnose colour differences between the two demos).
-const BANK_VAULT_ENV_URL = "/aquanova/bank_vault_2k.hdr";
 const SUN_DIR: [number, number, number] = [-0.4, -0.82, -0.45];
 
 // Textured glTF foes — each is loaded, auto-fit to a common size, sat on the ground, and (when the
@@ -332,8 +329,10 @@ async function main(): Promise<void> {
     window.addEventListener("blur", () => camKeys.clear());
     const updateCamera = (deltaMs: number): void => {
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
-        const cy = Math.cos(camYaw), sy = Math.sin(camYaw);
-        const cp = Math.cos(camPitch), sp = Math.sin(camPitch);
+        const cy = Math.cos(camYaw),
+            sy = Math.sin(camYaw);
+        const cp = Math.cos(camPitch),
+            sp = Math.sin(camPitch);
         const fwdZ = (camKeys.has("KeyW") ? 1 : 0) - (camKeys.has("KeyS") ? 1 : 0);
         const strafe = (camKeys.has("KeyD") ? 1 : 0) - (camKeys.has("KeyA") ? 1 : 0);
         const rise = (camKeys.has("Space") ? 1 : 0) - (camKeys.has("KeyC") ? 1 : 0);
@@ -585,9 +584,7 @@ async function main(): Promise<void> {
             1.5,
             (c.aabb.min[2]! + c.aabb.max[2]!) / 2,
         ];
-        const iblStrength = shipManifest?.environment?.dynamicStrength
-            ?? shipManifest?.environment?.strength
-            ?? DEFAULT_SHIP_IBL_STRENGTH;
+        const iblStrength = shipManifest?.environment?.dynamicStrength ?? shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
         // A chunk is a room the ship editor laid out, and an EMPTY one (no meshes placed yet) is
         // exported with `aabb: null` — it has no spatial extent to describe. Every use here is
         // geometric (framing a room, hit-testing a point against one, building its collision shell),
@@ -597,9 +594,12 @@ async function main(): Promise<void> {
         // The component check matches Aquanova's own loader (aquanova/manifest.ts), which reads the
         // same file: a truthy-but-malformed AABB would not crash, it would quietly yield `undefined`
         // corner components and propagate NaN into the room test and the collision box extents.
-        const hasBounds = (c: { aabb: { min: number[]; max: number[] } | null }): c is { aabb: { min: number[]; max: number[] } } => c.aabb?.min?.length === 3 && c.aabb?.max?.length === 3;
+        const hasBounds = (c: { aabb: { min: number[]; max: number[] } | null }): c is { aabb: { min: number[]; max: number[] } } =>
+            c.aabb?.min?.length === 3 && c.aabb?.max?.length === 3;
         const chunks = (shipManifest?.chunks ?? []).filter(hasBounds);
-        const liqNames = new Set(Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name))));
+        const liqNames = new Set(
+            Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name)))
+        );
         let focus: [number, number, number] = chunks[0] ? chunkFocus(chunks[0]) : [0, 1.5, 0];
         let asset;
         try {
@@ -681,9 +681,7 @@ async function main(): Promise<void> {
         // Placement markers are not scenery: Aquanova hides them and spawns on them, so do the same
         // here rather than letting the player shoot an invisible floor strip.
         const markerNames = new Set(
-            [PLAYER_START_BEHAVIOR, WEAPON_START_BEHAVIOR]
-                .map((bh) => findEntityWithBehavior(shipManifest?.entities, bh)?.name)
-                .filter((v): v is string => !!v)
+            [PLAYER_START_BEHAVIOR, WEAPON_START_BEHAVIOR].map((bh) => findEntityWithBehavior(shipManifest?.entities, bh)?.name).filter((v): v is string => !!v)
         );
         for (const { mesh, parent, owner } of found) {
             if (markerNames.has(owner.name)) {
@@ -705,7 +703,11 @@ async function main(): Promise<void> {
             const materials = new Set<Material>();
             if (mesh.material && isPbrMaterial(mesh.material) && !mesh.material.plugins?.some((p) => p.name === "liquefy")) {
                 const src = mesh.material as unknown as { plugins?: { name: string }[] };
-                mesh.material = { ...(mesh.material as object), _uboVersion: 0, plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")] } as unknown as Material;
+                mesh.material = {
+                    ...(mesh.material as object),
+                    _uboVersion: 0,
+                    plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")],
+                } as unknown as Material;
             }
             if (mesh.material) materials.add(mesh.material);
             registerFoeInstance({ key: `${owner.name}#${n}`, x: 0, inPlace: true }, root, [mesh], materials, liquefyState, null);
@@ -1040,13 +1042,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         };
     };
 
-
     // Foe overlay: after the single water render presents into scRT, draw ALL dissolving foes
     // on top (each clips inside its own front). Depth-aliases the scene-minus-foes depth.
     const foeDepth = createRenderTarget({ lbl: "liq-foe-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: engine });
     foeDepth._eager = true;
     foeDepth._ownsDepthTexture = false;
-    const foeTask = createRenderTask({ name: "liq-foe", rt: engine.scRT, depth: foeDepth, clr: false, _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase === "dissolving" }, engine, scene);
+    const foeTask = createRenderTask(
+        { name: "liq-foe", rt: engine.scRT, depth: foeDepth, clr: false, _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase === "dissolving" },
+        engine,
+        scene
+    );
     const foeRecord = foeTask.record.bind(foeTask);
     foeTask.record = (): void => {
         foeDepth._depthTexture = depthRT._depthTexture;
@@ -1126,10 +1131,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                   })
             : Promise.resolve();
 
-    // Audition backdrops for the fluid-surface reflections + skybox. `bank_vault` is the Aquanova
-    // demo's HDRI, so the water look can be compared under identical lighting. Switching envs updates
-    // the diffuse IBL + the fluid surface reflections live; foe SPECULAR reflections stay on the
-    // startup (studio) cube (the PBR builder bakes the specular cube per material at registerScene).
+    // Audition backdrops for the fluid-surface reflections + skybox. Switching environments updates
+    // diffuse IBL + fluid reflections live; foe specular reflections stay on the startup cube.
     interface EnvSlot {
         env: EnvironmentTextures;
         /** Null in ship mode, which uses the solid fallback skybox `loadHdrEnvironment` builds
@@ -1138,20 +1141,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         exposure: number;
         contrast: number;
     }
-    const ENV_CHOICES = [
-        { key: "studio", label: "Studio (default)", url: ENV_STUDIO_URL, hdr: false, exposure: 1.0, contrast: 1.1 },
-        { key: "bank_vault", label: "Bank vault (Aquanova)", url: BANK_VAULT_ENV_URL, hdr: true, exposure: 2.0, contrast: 1.1 },
-    ] as const;
+    const ENV_CHOICES = [{ key: "studio", label: "Studio (default)", url: ENV_STUDIO_URL, hdr: false, exposure: 1.0, contrast: 1.1 }] as const;
     const envSlots = new Map<string, EnvSlot | null>();
     let activeSky: Renderable | null = null;
-    // Ship mode STARTS on the Aquanova HDRI, not just switchable to it: the PBR builder bakes each
-    // material's specular cube at registerScene, so a later switch would leave the whole ship
-    // reflecting the studio env — noticeably brighter and cooler than Aquanova.
-    let currentEnvKey = FOE_SET === "ship" ? "bank_vault" : "studio";
-    // Ship mode reproduces Aquanova's grading — the tone mapping and exposure recorded in
-    // ship_manifest.json's `environment` block — instead of the per-env gallery grading, so the two
-    // demos can be compared at matching brightness. Applied wherever a slot's exposure/contrast
-    // would otherwise be used.
+    let currentEnvKey = "studio";
+    // Ship mode retains its manifest grading instead of the environment-gallery grading.
     const SHIP_CONTRAST = 1.05;
     const gradedExposure = (v: number): number => (FOE_SET === "ship" ? resolveExposure(shipManifest?.environment?.exposure) : v);
     const gradedContrast = (v: number): number => (FOE_SET === "ship" ? SHIP_CONTRAST : v);
@@ -1247,10 +1241,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let currentMaterial = 0;
 
     const LIQ_SCHEMAS: Record<string, PhysSchemaEntry[]> = Object.fromEntries(
-        Object.entries(DEFAULT_FLUID_SCHEMAS).map(([m, entries]) => [
-            m,
-            entries.map((e) => (m === "PBF" && e.key === "viscosity" ? { ...e, value: 0.35 } : { ...e })),
-        ])
+        Object.entries(DEFAULT_FLUID_SCHEMAS).map(([m, entries]) => [m, entries.map((e) => (m === "PBF" && e.key === "viscosity" ? { ...e, value: 0.35 } : { ...e }))])
     );
     const SCHEMA_DEFAULTS: Record<string, Record<string, number>> = {};
     const physValues: Record<string, Record<string, number>> = {};
@@ -1264,7 +1255,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── Per-instance sim construction (grid centred on the sampled foe, at ground) ──
-    function buildInstanceSim(inst: Instance, positions: Float32Array, count: number, radius: number, wMin: readonly [number, number, number], wMax: readonly [number, number, number]): void {
+    function buildInstanceSim(
+        inst: Instance,
+        positions: Float32Array,
+        count: number,
+        radius: number,
+        wMin: readonly [number, number, number],
+        wMax: readonly [number, number, number]
+    ): void {
         const dx = Math.max(radius * 2.4, 0.18);
         const phys = physValues[currentMethod]!;
         const cx = (wMin[0] + wMax[0]) / 2;
@@ -1355,7 +1353,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     type SampleGeom = { positions: Float32Array; indices: Uint32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; ox: number; oy: number; oz: number };
-    type SampledFill = { positions: Float32Array; count: number; radius: number; boundsMin: [number, number, number]; boundsMax: [number, number, number]; uvs?: Float32Array | null; texIndices?: Uint32Array | null; shell?: boolean };
+    type SampledFill = {
+        positions: Float32Array;
+        count: number;
+        radius: number;
+        boundsMin: [number, number, number];
+        boundsMax: [number, number, number];
+        uvs?: Float32Array | null;
+        texIndices?: Uint32Array | null;
+        shell?: boolean;
+    };
     const LIQUEFY_EDGE = 0.6;
     const NO_TEX = 0xffffffff; // per-vertex/particle texIndex sentinel: no texture → baseColor fill
 
@@ -1437,7 +1444,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     function computeMaxR(hit: readonly [number, number, number], bMin: readonly [number, number, number], bMax: readonly [number, number, number]): number {
         let maxD = 0;
-        for (const cx of [bMin[0], bMax[0]]) for (const cy of [bMin[1], bMax[1]]) for (const cz of [bMin[2], bMax[2]]) maxD = Math.max(maxD, Math.hypot(cx - hit[0], cy - hit[1], cz - hit[2]));
+        for (const cx of [bMin[0], bMax[0]])
+            for (const cy of [bMin[1], bMax[1]]) for (const cz of [bMin[2], bMax[2]]) maxD = Math.max(maxD, Math.hypot(cx - hit[0], cy - hit[1], cz - hit[2]));
         return maxD + LIQUEFY_EDGE + 0.5;
     }
 
@@ -1559,7 +1567,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // A small pool of sampling workers so several foes can convert to particles IN PARALLEL: a
     // second shot while one conversion is in flight goes to a free worker instead of queueing behind
     // it. `pendingSamples` (keyed by id) routes each reply to the right foe regardless of worker.
-    type WorkerMsg = { id: number; positions: Float32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; count: number; radius: number; shell: boolean; boundsMin: [number, number, number]; boundsMax: [number, number, number] };
+    type WorkerMsg = {
+        id: number;
+        positions: Float32Array;
+        uvs: Float32Array | null;
+        texIndices: Uint32Array | null;
+        count: number;
+        radius: number;
+        shell: boolean;
+        boundsMin: [number, number, number];
+        boundsMax: [number, number, number];
+    };
     interface PoolWorker {
         worker: Worker;
         pending: number;
@@ -1634,12 +1652,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (geom.uvs) transfer.push(geom.uvs.buffer);
             if (geom.texIndices) transfer.push(geom.texIndices.buffer);
             pw.pending++;
-            pw.worker.postMessage({ id, positions: geom.positions, indices: geom.indices, uvs: geom.uvs, texIndices: geom.texIndices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: FILL_SPACING, ox: geom.ox, oy: geom.oy, oz: geom.oz }, transfer);
+            pw.worker.postMessage(
+                {
+                    id,
+                    positions: geom.positions,
+                    indices: geom.indices,
+                    uvs: geom.uvs,
+                    texIndices: geom.texIndices,
+                    radius: radiusValue,
+                    mode: modeValue,
+                    surfaceOnly: inst.surfaceOnly,
+                    strategy: fillStrategy,
+                    spacing: FILL_SPACING,
+                    ox: geom.ox,
+                    oy: geom.oy,
+                    oz: geom.oz,
+                },
+                transfer
+            );
         } else {
             // No worker available — sample synchronously on the main thread (blocks). No per-particle
             // UVs are computed here, so colours fall back to the instance baseColor.
             pendingSamples.delete(id);
-            const result = fillMeshParticles({ positions: geom.positions, indices: geom.indices, radius: radiusValue, mode: modeValue, surfaceOnly: inst.surfaceOnly, strategy: fillStrategy, spacing: FILL_SPACING });
+            const result = fillMeshParticles({
+                positions: geom.positions,
+                indices: geom.indices,
+                radius: radiusValue,
+                mode: modeValue,
+                surfaceOnly: inst.surfaceOnly,
+                strategy: fillStrategy,
+                spacing: FILL_SPACING,
+            });
             if (result.count > 0) {
                 applySample(inst, id, h, { ...bakeFill(geom.ox, geom.oy, geom.oz, result), uvs: null, texIndices: null });
             } else {
@@ -1762,7 +1805,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     title.textContent = "Liquefactor";
     title.style.cssText = "font-weight:700;font-size:0.95rem;margin-bottom:2px;";
     const subtitle = document.createElement("div");
-    subtitle.textContent = FOE_SET === "ship" ? "WASD/Space/C to fly · RMB-drag to look · click a node → its own fluid sim" : "WASD/Space/C to fly · RMB-drag to look · click a foe → its own fluid sim";
+    subtitle.textContent =
+        FOE_SET === "ship"
+            ? "WASD/Space/C to fly · RMB-drag to look · click a node → its own fluid sim"
+            : "WASD/Space/C to fly · RMB-drag to look · click a foe → its own fluid sim";
     subtitle.style.cssText = "color:#8fa4bc;margin-bottom:10px;";
 
     function labelledRow(text: string, control: HTMLElement): HTMLDivElement {
@@ -2022,7 +2068,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const gridLabelWrap = document.createElement("div");
     gridLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
     gridLabelWrap.append(document.createTextNode("Grid size (x, y, z) m"));
-    gridLabelWrap.title = "Simulation domain, full extent in world units. Centred on the prop in X/Z, resting on the ground in Y. Y is a minimum — it is raised when needed to clear the prop. 0 on an axis = automatic (from the prop's footprint). Takes effect on the next liquefaction.";
+    gridLabelWrap.title =
+        "Simulation domain, full extent in world units. Centred on the prop in X/Z, resting on the ground in Y. Y is a minimum — it is raised when needed to clear the prop. 0 on an axis = automatic (from the prop's footprint). Takes effect on the next liquefaction.";
     const gridHint = document.createElement("span");
     gridHint.style.cssText = "color:#9fb4cc;float:right;";
     const showGridHint = (): void => {
@@ -2337,7 +2384,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ioRow.style.cssText = "display:flex;gap:6px;margin-top:6px;";
     ioRow.append(exportBtn, importBtn, importInput);
 
-    controls.demoSlot.append(title, subtitle, foeRow, labelledRow("Sampling mode", modeSelect), envRow, materialRow, radiusRow, fillRow, impulseRow, impulseDirRow, impulseRadiusRow, gridRow, meshColorRow, restartBtn, ioRow, status, partCount);
+    controls.demoSlot.append(
+        title,
+        subtitle,
+        foeRow,
+        labelledRow("Sampling mode", modeSelect),
+        envRow,
+        materialRow,
+        radiusRow,
+        fillRow,
+        impulseRow,
+        impulseDirRow,
+        impulseRadiusRow,
+        gridRow,
+        meshColorRow,
+        restartBtn,
+        ioRow,
+        status,
+        partCount
+    );
     document.body.append(controls.root);
     if (controls.gpu) {
         // The demo's own panel is top-left, so pin the GPU pane top-right to avoid overlap.
@@ -2373,7 +2438,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 rest: d.rest,
                 pos: [d.disp.position.x, d.disp.position.y, d.disp.position.z] as [number, number, number],
                 rot: [d.disp.rotationQuaternion.x, d.disp.rotationQuaternion.y, d.disp.rotationQuaternion.z, d.disp.rotationQuaternion.w] as [number, number, number, number],
-                vel: physWorld ? (() => { const v = getPhysicsBodyLinearVelocity(physWorld, d.body); return [v.x, v.y, v.z] as [number, number, number]; })() : null,
+                vel: physWorld
+                    ? (() => {
+                          const v = getPhysicsBodyLinearVelocity(physWorld, d.body);
+                          return [v.x, v.y, v.z] as [number, number, number];
+                      })()
+                    : null,
             })),
         camTo: (px: number, py: number, pz: number, tx: number, ty: number, tz: number) => {
             cam.position.set(px, py, pz);
@@ -2400,14 +2470,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             sun: sun.intensity,
             env: currentEnvKey,
         }),
-        setFillStrategy: (s: MeshFillStrategy) => {            fillStrategy = s;
+        setFillStrategy: (s: MeshFillStrategy) => {
+            fillStrategy = s;
             fillSelect.value = s;
         },
         fillOf: (key: string): boolean | null => {
             const inst = instances.find((i) => i.key === key);
             return inst && inst.count > 0 ? inst.shell : null;
         },
-        setImpulse: (v: number) => {            impulseIntensity = v;
+        setImpulse: (v: number) => {
+            impulseIntensity = v;
             impulseInput.value = String(v);
             impulseVal.textContent = `${v.toFixed(2)}×`;
         },

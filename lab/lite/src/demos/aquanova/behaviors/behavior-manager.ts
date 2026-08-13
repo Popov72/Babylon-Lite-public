@@ -5,7 +5,7 @@ import { LiquefiableBehavior } from "./liquefiable.js";
 import { PlayerBehavior } from "./player.js";
 import { isLiquefiableBehaviorConfig } from "./types.js";
 import type { Behavior, BehaviorAssignment, BehaviorContext, BehaviorLibrary, Entities, LiquefiableBehaviorConfig } from "./types.js";
-import { WeaponBehavior } from "./weapon.js";
+import { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
 
 export interface BehaviorManagerOptions {
     readonly library: BehaviorLibrary | undefined;
@@ -90,18 +90,28 @@ export class BehaviorManager {
         }
     }
 
-    public start(context: Omit<BehaviorContext, "events">): void {
+    public async start(context: Omit<BehaviorContext, "events">): Promise<void> {
         if (this.started) throw new Error("[aquanova] behaviors are already started");
         this.started = true;
         const behaviorContext: BehaviorContext = { ...context, events: this.events };
-        for (const entityName of Object.keys(this.entities ?? {})) {
-            const meshes = this.meshesByEntityName.get(entityName) ?? [];
-            for (const assignment of this.assignmentsOf(entityName)) {
-                const targets = assignment.name === "player" || assignment.name === "weapon" ? meshes.slice(0, 1) : meshes;
-                for (const mesh of targets) this.instances.push(createBehavior(assignment, mesh, behaviorContext));
+        try {
+            const weapon = this.findEntityWithBehavior("weaponLiquefactor");
+            if (weapon?.meshes.length) await WeaponLiquefactorBehavior.init(weapon.assignment);
+            for (const entityName of Object.keys(this.entities ?? {})) {
+                const meshes = this.meshesByEntityName.get(entityName) ?? [];
+                for (const assignment of this.assignmentsOf(entityName)) {
+                    const targets = assignment.name === "player" || assignment.name === "weaponLiquefactor" ? meshes.slice(0, 1) : meshes;
+                    for (const mesh of targets) this.instances.push(createBehavior(assignment, mesh, behaviorContext));
+                }
             }
+            for (const behavior of this.instances) behavior.start();
+        } catch (error) {
+            for (let index = this.instances.length - 1; index >= 0; index--) this.instances[index]!.dispose();
+            this.instances.length = 0;
+            WeaponLiquefactorBehavior.dispose();
+            this.started = false;
+            throw error;
         }
-        for (const behavior of this.instances) behavior.start();
     }
 
     public bindSystemEvents(scene: SceneContext, world: PhysicsWorld): void {
@@ -150,6 +160,7 @@ export class BehaviorManager {
     public dispose(): void {
         for (let index = this.instances.length - 1; index >= 0; index--) this.instances[index]!.dispose();
         this.instances.length = 0;
+        WeaponLiquefactorBehavior.dispose();
         this.events.dispose();
         this.started = false;
     }
@@ -199,8 +210,8 @@ function createBehavior(assignment: BehaviorAssignment, mesh: Mesh, context: Beh
             return new DynamicBehavior(mesh, assignment);
         case "player":
             return new PlayerBehavior(mesh, assignment, context);
-        case "weapon":
-            return new WeaponBehavior(mesh, assignment);
+        case "weaponLiquefactor":
+            return new WeaponLiquefactorBehavior(mesh, assignment, context);
     }
     if (isLiquefiableBehaviorConfig(assignment)) return new LiquefiableBehavior(assignment.name, mesh, assignment, context);
     throw new Error(`[aquanova] behavior "${assignment.name}" has no runtime implementation`);

@@ -46,6 +46,27 @@ export interface AxialCollisionShape extends ShapeCommon {
 }
 export type ShipCollisionShape = BoxCollisionShape | SphereCollisionShape | AxialCollisionShape;
 
+const KIT_MODULE_PREFIX = "Modular SciFi MegaKit/";
+
+/**
+ * Resolve collision authored under either the full catalogue id or the GLB's kit-relative module id.
+ * The editor manifest currently writes `Modular SciFi MegaKit/Platforms/...`, while baked GLB node
+ * extras write `Platforms/...`; treating those as different modules silently removes all collision.
+ */
+export function collisionShapesForModule(
+    moduleCollision: Readonly<Record<string, ShipCollisionShape | readonly ShipCollisionShape[]>> | undefined,
+    module: string
+): ShipCollisionShape | readonly ShipCollisionShape[] | undefined {
+    if (!moduleCollision) return undefined;
+    const exact = moduleCollision[module];
+    if (exact) return exact;
+    const normalized = module.replaceAll("\\", "/").replace(/^\.?\//, "");
+    const normalizedExact = moduleCollision[normalized];
+    if (normalizedExact) return normalizedExact;
+    const relative = normalized.startsWith(KIT_MODULE_PREFIX) ? normalized.slice(KIT_MODULE_PREFIX.length) : normalized;
+    return moduleCollision[relative] ?? moduleCollision[`${KIT_MODULE_PREFIX}${relative}`];
+}
+
 /** One placed kit module. `node` is the glTF node name, which is what entity behaviours key off. */
 export interface ShipInstance {
     id: string;

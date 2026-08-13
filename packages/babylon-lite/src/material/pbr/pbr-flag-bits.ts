@@ -18,6 +18,7 @@ export const PBR_HAS_USE_ALPHA_ONLY_MR = 1 << 12;
 // PBR_HAS_LIGHTMAP / PBR_LIGHTMAP_UV2 / PBR_LIGHTMAP_SHADOWMAP / PBR_LIGHTMAP_GAMMA /
 // PBR_LIGHTMAP_FLIP_V. Declared inside that lazy module per GUIDANCE §4c′; reserved here
 // so nothing reuses them.
+// 1<<24 is diffuse-lightmap-local (fragments/diffuse-lightmap-fragment.ts).
 export const PBR_HAS_OCCLUSION = 1 << 15;
 export const PBR_HAS_SPECULAR_AA = 1 << 17;
 export const PBR_HAS_CLEARCOAT = 1 << 20;
@@ -57,7 +58,7 @@ export const PBR2_ESM_SHADOW_OUTPUT = 1 << 16;
 // 1<<17 .. 1<<19 are iridescence-local (also 1<<17 / 1<<18 clustered-lighting-local,
 // see light/clustered.ts — clustered lighting and iridescence are mutually exclusive);
 // 1<<20 is refraction-local; 1<<21 is geometry-output-local.
-// ─── Extension-local features2 bits (1<<22 .. 1<<28) ────────────────
+// ─── Extension-local features2 bits (1<<22 .. 1<<30) ────────────────
 // RESERVED here but DEFINED inside their lazy fragment modules so the constants
 // are never retained in the entry/shared chunk for scenes that don't load those
 // fragments (literally zero bundle movement). Do not reuse these bits.
@@ -68,4 +69,5 @@ export const PBR2_ESM_SHADOW_OUTPUT = 1 << 16;
 //   1<<26  PBR2_REFL_UV_TX                      (reflectance-fragment.ts)
 //   1<<27  PBR2_HAS_ANISO_TEX                    (anisotropy-fragment.ts)
 //   1<<28  PBR2_OCCL_UV_SPLIT                   (uv-transform-fragment.ts + pbr-template-ext.ts)
+//   1<<29  PBR2_HAS_LOCAL_CUBEMAP                (local-cubemap-fragment.ts)
 //   1<<30  PBR2_HAS_SHADOW_ONLY                 (shadow-only-fragment.ts)

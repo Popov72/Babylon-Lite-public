@@ -18,7 +18,7 @@ import type { SceneContext } from "../scene/scene.js";
 import { acquireGPUTexture, releaseGPUTexture } from "../resource/gpu-pool.js";
 import { assembleEnvironmentTextures } from "../loader-env/env-helpers.js";
 import { parseRGBE, computeSHFromEquirect } from "./hdr-parser.js";
-import { equirectToCubemapGPU, prefilterCubemapGPU, generateBrdfLut } from "./hdr-ibl-pipeline.js";
+import { equirectToCubemapGPU, prefilterCubemapGPU, generateBrdfLut, HDR_LOD_GENERATION_SCALE } from "./hdr-ibl-pipeline.js";
 import { mipLevelCount } from "../texture/mip-count.js";
 import { registerEnvSceneUniforms } from "../scene/scene-ubo-extras.js";
 
@@ -80,7 +80,7 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
     const brdfLut = generateBrdfLut(engine);
 
     // 6. Assemble
-    const textures = assembleEnvironmentTextures(specularCube, brdfLut, irradianceSH, 1.0, engine);
+    const textures = assembleEnvironmentTextures(specularCube, brdfLut, irradianceSH, HDR_LOD_GENERATION_SCALE, engine);
 
     scene._envTextures = textures;
     registerEnvSceneUniforms(scene);

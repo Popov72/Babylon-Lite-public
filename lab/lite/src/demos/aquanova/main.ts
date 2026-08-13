@@ -7,7 +7,7 @@
 // (see lab/public/aquanova/ASSET-LICENSES.md and SciFiShip/README.md).
 //
 // What this slice does:
-//   • loads ship.glb and lights it with an HDR environment (IBL);
+//   • loads ship.glb and lights it with authored runtime lights + bounded local environment probes;
 //   • builds one static trimesh collider from the whole ship so the player collides with every
 //     wall, floor and prop — no hand-authored boxes;
 //   • spawns a Havok first-person character-controller capsule at the manifest player spawn, the
@@ -24,6 +24,9 @@ import {
     addTaskAfter,
     addTaskBefore,
     addToScene,
+    attachPositionGizmoToNode,
+    attachRotationGizmoToNode,
+    attachScaleGizmoToNode,
     createDepthResolveTask,
     createEngine,
     createFreeCamera,
@@ -33,8 +36,11 @@ import {
     createPhysicsBody,
     createPhysicsCharacterController,
     createPhysicsShape,
+    createPositionGizmo,
     createRenderTarget,
     createRenderTask,
+    createRotationGizmo,
+    createScaleGizmo,
     createSceneContext,
     createSmaaPostProcessTask,
     createTaaPostProcessTask,
@@ -53,8 +59,8 @@ import {
     getViewProjectionMatrix,
     isPbrMaterial,
     loadGltf,
-    loadHdrEnvironment,
     loadSkybox,
+    markMaterialUboDirty,
     PhysicsMotionType,
     PhysicsShapeType,
     physicsRaycast,
@@ -67,25 +73,28 @@ import {
     setParent,
     setPhysicsBodyShape,
     setPhysicsTimestepMs,
+    setPositionGizmoLocalCoordinates,
+    setRotationGizmoLocalCoordinates,
+    setScaleGizmoLocalCoordinates,
     startEngine,
 } from "babylon-lite";
-import type { Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
+import type { EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
 import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { createLiquefyPlugin } from "../liquefy-plugin.js";
+import { createLiquefyPlugin, liquefyFrontDistance } from "../liquefy-plugin.js";
 import { buildLitParticleColors } from "../particle-lit-colors.js";
 import type { LitColorScene } from "../particle-lit-colors.js";
 import { DEFAULT_SHIP_IBL_STRENGTH, resolveExposure, resolveToneMapping } from "../ship-manifest.js";
 import type { LiquefyState } from "../liquefy-plugin.js";
 import { gridFloorY, gridTopY } from "../fluid/grid-bounds.js";
-import { CEIL_Y, ENV_URL, FLOOR_Y, SHIP_URL, SKYBOX_EXT, SKYBOX_SIZE, SKYBOX_URL, toLite, type Vec3 } from "./constants.js";
-import { applyBakedLightmaps, fetchLightmapIndex, isBakeExcluded } from "./lightmaps.js";
+import { CEIL_Y, FLOOR_Y, SHIP_URL, SKYBOX_EXT, SKYBOX_SIZE, SKYBOX_URL, toLite, type Vec3 } from "./constants.js";
+import { applyLocalEnvironmentProbes } from "./local-environments.js";
 import { buildRuntimeLights } from "./lights.js";
 import { buildManifestColliders, createWorldCollisionShape } from "./colliders.js";
-import { worldShapesForMatrix, type WorldCollisionShape } from "./collision-shapes.js";
+import { collisionShapesForModule, worldShapesForMatrix, type WorldCollisionShape } from "./collision-shapes.js";
 import {
     localizePrimitive,
     packPrimitive,
@@ -104,19 +113,20 @@ import { createPerfOverlay } from "./debug/perf-overlay.js";
 import { createFluidProfiler, type FluidProfilerImpl } from "../fluid/gpu-profiler.js";
 import { createColliderOverlay } from "./debug/collider-overlay.js";
 import { createLightOverlay } from "./debug/light-overlay.js";
+import { createPortalOverlay } from "./debug/portal-overlay.js";
 import { LAB_DEBUG } from "./debug-flag.js";
-import { GRAPHICS_SETTING_DEFS, loadGraphicsSettings, saveGraphicsSettings } from "./settings.js";
+import { LIQUEFACTOR_MODELS, loadGraphicsSettings, saveGraphicsSettings, type LiquefactorModel } from "./settings.js";
 import { meshGroupBounds, type MeshGroupBounds } from "./mesh-bounds.js";
+import { createPortalVisibility } from "./portal-visibility.js";
+import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
 import { canonicalSettingName, fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
 import { BehaviorManager, PlayerBehavior, type LiquefiableBehaviorConfig, type MeshBehaviorAvailability } from "./behaviors/index.js";
+import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
+import { createLiquefactorViewmodel } from "./liquefactor-viewmodel.js";
+import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
 
 export async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-    /** Reflect a toggle's state in the HUD hint, e.g. "M: MSAA (on)". No-op if the span is absent. */
-    const setHudFlag = (id: string, on: boolean): void => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = on ? "on" : "off";
-    };
     /**
      * SSAA: render the whole frame at `scale`× the display resolution and let the compositor
      * downscale it.
@@ -137,8 +147,6 @@ export async function main(): Promise<void> {
         canvas.style.height = pct;
         canvas.style.transformOrigin = "0 0";
         canvas.style.transform = scale === 1 ? "" : `scale(${1 / scale})`;
-        const el = document.getElementById("ssaaState");
-        if (el) el.textContent = `${scale}×`;
         canvas.dataset.ssaa = String(scale);
     };
     // Player-tunable graphics (defaults ← localStorage ← ?msaa= query override). Resolved before the
@@ -189,20 +197,140 @@ export async function main(): Promise<void> {
         })
     );
 
-    // ── Load the ship + image-based lighting ──────────────────────────────────────────────
-    // Lighting is fully image-based (the export carries no punctual lights): the bank_vault HDRI
-    // supplies ambient + specular, and the trim/fixtures are HDR-emissive geometry (M_Light etc.,
-    // via KHR_materials_emissive_strength). entities[0] is the __root__ (RH→LH mirror baked in)
-    // with all geometry beneath it. Note: Lite applies IBL per-surface with no occlusion, so the
-    // HDRI lights even these sealed compartments (Blender needs baked GI for the equivalent look).
+    // ── Load the ship ──────────────────────────────────────────────────────────────────────
+    // Authored runtime lamps provide direct lighting. Bounded local probes loaded below provide
+    // diffuse SH and specular radiance; there is deliberately no scene-global environment.
     const ship = await loadGltf(engine, SHIP_URL);
     const shipRoot = ship.entities[0] as SceneNode;
     addToScene(scene, shipRoot);
 
-    // Build the HDR IBL (prefiltered specular cubemap + SH irradiance + BRDF LUT) from the .hdr.
-    // 512-pixel cube faces rather than the 256 default: the prefiltered specular cube is what the
-    // ship's metal reflects, and at 256 those reflections are visibly softer.
-    const env = await loadHdrEnvironment(scene, ENV_URL, { faceSize: 512, skipSkybox: true, skipGround: true });
+    // First-person weapon overlay. A utility layer gives it a fresh depth buffer and renders it
+    // after the world/fluid/post-process chain, while sharing the gameplay camera. All three detail
+    // levels are preloaded so the control-panel selector switches immediately without a runtime
+    // pipeline rebuild or a visible gap.
+    const weaponLayer = createUtilityLayer(engine, scene, { addDefaultLight: false });
+    Object.assign(weaponLayer.scene.imageProcessing, scene.imageProcessing);
+    const weaponViewmodel = await createLiquefactorViewmodel(engine, cam);
+    weaponViewmodel.select(graphics.liquefactorModel);
+    canvas.dataset.liquefactorModel = graphics.liquefactorModel;
+    addToScene(weaponLayer.scene, weaponViewmodel.root);
+    const weaponGizmoLayer = createUtilityLayer(engine, scene);
+    addToScene(weaponGizmoLayer.scene, weaponViewmodel.localGuideRoot);
+    const weaponLaser = createWeaponParticleLaser(engine, weaponGizmoLayer.scene);
+    let weaponAimRay: WeaponLaserAim | null = null;
+    let weaponCrosshair: HTMLElement | null = null;
+    const updateWeaponCrosshair = (): void => {
+        weaponCrosshair ??= document.getElementById("aq-crosshair");
+        if (!weaponCrosshair) return;
+        const lineMatrix = weaponViewmodel.localGuideYaw.worldMatrix;
+        const pointX = lineMatrix[8]! * 2 + lineMatrix[12]!;
+        const pointY = lineMatrix[9]! * 2 + lineMatrix[13]!;
+        const pointZ = lineMatrix[10]! * 2 + lineMatrix[14]!;
+        const cameraMatrix = cam.worldMatrix;
+        const cameraX = cameraMatrix[12]!;
+        const cameraY = cameraMatrix[13]!;
+        const cameraZ = cameraMatrix[14]!;
+        const rayX = pointX - cameraX;
+        const rayY = pointY - cameraY;
+        const rayZ = pointZ - cameraZ;
+        const rayLength = Math.hypot(rayX, rayY, rayZ);
+        weaponAimRay =
+            rayLength > 1e-8
+                ? {
+                      origin: [cameraX, cameraY, cameraZ],
+                      direction: [rayX / rayLength, rayY / rayLength, rayZ / rayLength],
+                  }
+                : null;
+        const viewProjection = getViewProjectionMatrix(cam, engine.canvas.width / Math.max(1, engine.canvas.height));
+        const clipX = viewProjection[0]! * pointX + viewProjection[4]! * pointY + viewProjection[8]! * pointZ + viewProjection[12]!;
+        const clipY = viewProjection[1]! * pointX + viewProjection[5]! * pointY + viewProjection[9]! * pointZ + viewProjection[13]!;
+        const clipW = viewProjection[3]! * pointX + viewProjection[7]! * pointY + viewProjection[11]! * pointZ + viewProjection[15]!;
+        if (clipW <= 0) {
+            weaponAimRay = null;
+            weaponCrosshair.style.display = "none";
+            return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const ndcX = clipX / clipW;
+        const ndcY = clipY / clipW;
+        weaponCrosshair.style.display = "block";
+        weaponCrosshair.style.left = `${rect.left + (ndcX * 0.5 + 0.5) * rect.width}px`;
+        weaponCrosshair.style.top = `${rect.top + (0.5 - ndcY * 0.5) * rect.height}px`;
+    };
+    const weaponLiquefactor = {
+        setTargetDistance: (distance: number | null, restart = false): void => {
+            weaponLaser.setTargetDistance(distance, restart);
+        },
+        stop: (): void => {
+            weaponLaser.stop();
+        },
+        update: (deltaMs: number): boolean => {
+            weaponViewmodel.update(cam, engine.canvas.width / Math.max(1, engine.canvas.height));
+            updateWeaponCrosshair();
+            return weaponLaser.update(deltaMs, weaponAimRay, weaponViewmodel.localGuideOrigin.worldMatrix);
+        },
+    };
+    const weaponPositionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
+    const weaponRotationGizmo = createRotationGizmo(engine, weaponGizmoLayer);
+    const weaponScaleGizmo = createScaleGizmo(engine, weaponGizmoLayer);
+    const weaponLocalGuidePositionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
+    setPositionGizmoLocalCoordinates(weaponPositionGizmo, true);
+    setRotationGizmoLocalCoordinates(weaponRotationGizmo, true);
+    setScaleGizmoLocalCoordinates(weaponScaleGizmo, true);
+    setPositionGizmoLocalCoordinates(weaponLocalGuidePositionGizmo, true);
+    let weaponPositionGizmoOn = false;
+    let weaponRotationGizmoOn = false;
+    let weaponScaleGizmoOn = false;
+    let weaponLocalGuideGizmoOn = false;
+    let weaponToolsVisible = false;
+    const setWeaponGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
+        for (const gizmo of gizmos) {
+            for (const mesh of gizmo._visibleMeshes) setMeshVisible(mesh, visible);
+        }
+    };
+    const syncWeaponTools = (): void => {
+        const positionVisible = weaponToolsVisible && weaponPositionGizmoOn;
+        const rotationVisible = weaponToolsVisible && weaponRotationGizmoOn;
+        const scaleVisible = weaponToolsVisible && weaponScaleGizmoOn;
+        const localGuideGizmoVisible = weaponToolsVisible && weaponLocalGuideGizmoOn;
+        attachPositionGizmoToNode(weaponPositionGizmo, positionVisible ? weaponViewmodel.adjustment : null);
+        attachRotationGizmoToNode(weaponRotationGizmo, rotationVisible ? weaponViewmodel.adjustment : null);
+        attachScaleGizmoToNode(weaponScaleGizmo, scaleVisible ? weaponViewmodel.adjustment : null);
+        attachPositionGizmoToNode(weaponLocalGuidePositionGizmo, localGuideGizmoVisible ? weaponViewmodel.localGuideOrigin : null);
+        setWeaponGizmoMeshesVisible(positionVisible, [
+            weaponPositionGizmo.xGizmo,
+            weaponPositionGizmo.yGizmo,
+            weaponPositionGizmo.zGizmo,
+            ...(weaponPositionGizmo.xPlaneGizmo ? [weaponPositionGizmo.xPlaneGizmo] : []),
+            ...(weaponPositionGizmo.yPlaneGizmo ? [weaponPositionGizmo.yPlaneGizmo] : []),
+            ...(weaponPositionGizmo.zPlaneGizmo ? [weaponPositionGizmo.zPlaneGizmo] : []),
+        ]);
+        setWeaponGizmoMeshesVisible(rotationVisible, [weaponRotationGizmo.xGizmo, weaponRotationGizmo.yGizmo, weaponRotationGizmo.zGizmo]);
+        setWeaponGizmoMeshesVisible(scaleVisible, [weaponScaleGizmo.xGizmo, weaponScaleGizmo.yGizmo, weaponScaleGizmo.zGizmo, weaponScaleGizmo.uniformScaleGizmo]);
+        setWeaponGizmoMeshesVisible(localGuideGizmoVisible, [
+            weaponLocalGuidePositionGizmo.xGizmo,
+            weaponLocalGuidePositionGizmo.yGizmo,
+            weaponLocalGuidePositionGizmo.zGizmo,
+            ...(weaponLocalGuidePositionGizmo.xPlaneGizmo ? [weaponLocalGuidePositionGizmo.xPlaneGizmo] : []),
+            ...(weaponLocalGuidePositionGizmo.yPlaneGizmo ? [weaponLocalGuidePositionGizmo.yPlaneGizmo] : []),
+            ...(weaponLocalGuidePositionGizmo.zPlaneGizmo ? [weaponLocalGuidePositionGizmo.zPlaneGizmo] : []),
+        ]);
+    };
+    const weaponTransformValues = (): WeaponTransformValues => {
+        const adjustment = weaponViewmodel.adjustment;
+        const localGuideOrigin = weaponViewmodel.localGuideOrigin;
+        const localGuideYaw = weaponViewmodel.localGuideYaw;
+        const degrees = 180 / Math.PI;
+        return {
+            position: [adjustment.position.x, adjustment.position.y, adjustment.position.z],
+            rotationDegrees: [adjustment.rotation.x * degrees, adjustment.rotation.y * degrees, adjustment.rotation.z * degrees],
+            scale: [adjustment.scaling.x, adjustment.scaling.y, adjustment.scaling.z],
+            localGuidePosition: [localGuideOrigin.position.x, localGuideOrigin.position.y, localGuideOrigin.position.z],
+            localGuideRotationDegrees: [localGuideYaw.rotation.x * degrees, localGuideYaw.rotation.y * degrees, localGuideYaw.rotation.z * degrees],
+        };
+    };
+    canvas.dataset.liquefactorParent = weaponViewmodel.root.parent === cam ? "camera" : "other";
+    syncWeaponTools();
 
     // Backdrop seen through the ship's openings. Kept separate from the IBL above: the HDRI is what
     // lights the metal, this is only what you see. Non-fatal — the cube faces are gitignored like
@@ -213,15 +341,14 @@ export async function main(): Promise<void> {
         console.warn("[aquanova] skybox not loaded (missing cube faces?)", err);
     }
 
-    // Honour the manifest's IBL strength: environmentIntensity scales only the IBL contribution
-    // (diffuse SH + specular) per material, leaving the emissive fixtures at full brightness.
-    const iblStrength = manifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
+    // Honour the manifest's local-IBL strength per material, leaving emissive fixtures unchanged.
+    let environmentIntensity = manifest?.environment?.dynamicStrength ?? manifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
     const seenMats = new Set<object>();
     const applyIblStrength = (node: SceneNode): void => {
         const mat = (node as { material?: { environmentIntensity?: number } }).material;
         if (mat && !seenMats.has(mat)) {
             seenMats.add(mat);
-            mat.environmentIntensity = iblStrength;
+            mat.environmentIntensity = environmentIntensity;
         }
         for (const child of node.children) applyIblStrength(child as SceneNode);
     };
@@ -298,29 +425,60 @@ export async function main(): Promise<void> {
     };
     collectMeshes(shipRoot, shipRoot, undefined);
     for (const group of primitivesByOwner.values()) for (const m of group) nodePrimitives.set(m, group);
-    const shipPbrMaterials = (): PbrMaterialProps[] => {
+    const worldBoundsOf = (mesh: Mesh): MeshGroupBounds | null => meshGroupBounds(nodePrimitives.get(mesh) ?? [mesh]);
+    const pbrMaterials = (): PbrMaterialProps[] => {
         const materials = new Set<PbrMaterialProps>();
-        for (const mesh of allShipMeshes) {
+        for (const mesh of [...allShipMeshes, ...weaponViewmodel.meshes]) {
             if (mesh.material && isPbrMaterial(mesh.material)) materials.add(mesh.material);
         }
         return [...materials];
     };
-    const setShipSpecularAA = (on: boolean): void => {
-        for (const material of shipPbrMaterials()) {
+    const fullyMetallicRoughnessOriginal = Symbol("fullyMetallicRoughnessOriginal");
+    type RoughnessTaggedMaterial = PbrMaterialProps & {
+        [fullyMetallicRoughnessOriginal]?: number | undefined;
+    };
+    const fullyMetallicRoughnessBackups = new Map<PbrMaterialProps, number | undefined>();
+    let forceFullyMetallicRoughnessZero = false;
+    const syncFullyMetallicRoughnessOverride = (): void => {
+        if (!forceFullyMetallicRoughnessZero) return;
+        for (const material of pbrMaterials()) {
+            if ((material.metallicFactor ?? 1) !== 1 || fullyMetallicRoughnessBackups.has(material)) continue;
+            const tagged = material as RoughnessTaggedMaterial;
+            const original = fullyMetallicRoughnessOriginal in tagged ? tagged[fullyMetallicRoughnessOriginal] : material.roughnessFactor;
+            fullyMetallicRoughnessBackups.set(material, original);
+            tagged[fullyMetallicRoughnessOriginal] = original;
+            material.roughnessFactor = 0;
+            markMaterialUboDirty(material);
+        }
+    };
+    const setFullyMetallicRoughnessZero = (enabled: boolean): void => {
+        if (forceFullyMetallicRoughnessZero === enabled) return;
+        forceFullyMetallicRoughnessZero = enabled;
+        if (enabled) {
+            syncFullyMetallicRoughnessOverride();
+            return;
+        }
+        for (const [material, roughness] of fullyMetallicRoughnessBackups) {
+            material.roughnessFactor = roughness;
+            delete (material as RoughnessTaggedMaterial)[fullyMetallicRoughnessOriginal];
+            markMaterialUboDirty(material);
+        }
+        fullyMetallicRoughnessBackups.clear();
+    };
+    const setPbrSpecularAA = (on: boolean): void => {
+        for (const material of pbrMaterials()) {
             material.enableSpecularAA = on;
             material._renderFeatures = undefined;
         }
     };
-    setShipSpecularAA(graphics.specularAA);
+    setPbrSpecularAA(graphics.specularAA);
     canvas.dataset.specularAa = String(graphics.specularAA);
-    setHudFlag("specularAaState", graphics.specularAA);
     const behaviorManager = new BehaviorManager({
         library: manifest?.behaviors,
         entities: manifest?.entities,
         meshesByEntityName: meshesByNodeName,
         entityNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
     });
-
     // Portal meshes ("Portal_*") are doorway markers the exporter emits for culling / door pairing —
     // NOT real geometry. They render as a visible pane spanning the doorway (seen from the corridor)
     // AND sit coplanar with the door leaves, so the weapon pick can hit the portal instead of the door
@@ -357,18 +515,14 @@ export async function main(): Promise<void> {
             return null;
         }
         // World AABB — already Lite space, since it comes from the loaded ship (mirror applied).
-        let min: number[] | null = null;
-        let max: number[] | null = null;
         for (const m of meshes) {
             markerMeshes.add(m);
             setMeshVisible(m, false);
             (m as { pickable?: boolean }).pickable = false;
-            const a = m.boundMin;
-            const b = m.boundMax;
-            if (!a || !b) continue;
-            min = min ? [Math.min(min[0]!, a[0]!), Math.min(min[1]!, a[1]!), Math.min(min[2]!, a[2]!)] : [a[0]!, a[1]!, a[2]!];
-            max = max ? [Math.max(max[0]!, b[0]!), Math.max(max[1]!, b[1]!), Math.max(max[2]!, b[2]!)] : [b[0]!, b[1]!, b[2]!];
         }
+        const bounds = meshGroupBounds(meshes);
+        const min = bounds ? bounds.centre.map((value, axis) => value - bounds.half[axis]!) : null;
+        const max = bounds ? bounds.centre.map((value, axis) => value + bounds.half[axis]!) : null;
         return { entity: found.entityName, min, max, direction: found.assignment.direction };
     };
     const playerMarker = resolveMarker("player");
@@ -427,10 +581,14 @@ export async function main(): Promise<void> {
     // carries the glTF→scene mirror, so node.worldMatrix · shape is correct with no conversion.
     const placementById = new Map<string, { node: string; shapes: WorldCollisionShape[] }>();
     for (const [id, pn] of placementNodes) {
-        const shapes = manifest?.moduleCollision?.[pn.module];
+        const shapes = collisionShapesForModule(manifest?.moduleCollision, pn.module);
         if (!shapes) continue;
         placementById.set(id, { node: pn.node.name, shapes: worldShapesForMatrix(pn.node.worldMatrix, shapes) });
     }
+    if (placementNodes.size > 0 && Object.keys(manifest?.moduleCollision ?? {}).length > 0 && placementById.size === 0) {
+        throw new Error("[aquanova] no GLB placement module ids match manifest.moduleCollision");
+    }
+    canvas.dataset.collisionPlacements = String(placementById.size);
     /** Flattened view for the debug overlay and QA, tagged with the instance that produced each. */
     const manifestPlacements: Array<{ id: string; node: string; shape: WorldCollisionShape }> = [];
     for (const [id, { node, shapes }] of placementById) for (const shape of shapes) manifestPlacements.push({ id, node, shape });
@@ -455,51 +613,34 @@ export async function main(): Promise<void> {
     canvas.dataset.dynamicCount = String(behaviorManager.dynamicMeshes.size);
     canvas.dataset.liquefiableCount = String(behaviorManager.liquefiableMeshes.size);
 
-    // ── Baked lighting ────────────────────────────────────────────────────────────────────────
-    // The ship is primarily lit by a Blender bake. Static geometry gets its chunk's KTX2 irradiance
-    // atlas as a multiplier over the normal PBR result (`lightmaps.ts`), so the environment still
-    // supplies metallic reflections. The authored runtime lamps cover the complement: every mesh
-    // the bake left out, which `isBakeExcluded` reads straight off the geometry. Scoping them by
-    // the `dynamic` behaviour instead used to leave the liquefiable-only doors with no lightmap AND
-    // no lamp, lit by the IBL alone.
-    //
-    // Both run BEFORE registerScene: `enablePbrLightmap` has to register its PBR extension, and the
-    // clustered-light container and light-UBO size have to be known, before the first pipeline is
-    // composed. Lights go FIRST because `addClusteredLightContainer` stamps every material already
-    // in the scene; running it first means the lightmap clones are made afterwards and can drop that
-    // stamp, keeping authored runtime lights off static geometry while retaining its environment
-    // lighting path.
-    // A missing lightmaps.json is non-fatal for the same reason the skybox is — the atlases are
-    // gitignored, so a fresh clone renders the ship IBL-lit rather than not at all.
-    const runtimeLitMeshes = new Set(allShipMeshes.filter((m) => !isDisabledMesh(m) && isBakeExcluded(m)));
+    // ── Ship lighting ──────────────────────────────────────────────────────────────────────────
+    // Every enabled ship mesh uses the authored runtime lamps. Build them before registerScene:
+    // clustered-light state and the regular-light UBO layout are pipeline inputs.
+    const runtimeLitMeshes = new Set(allShipMeshes.filter((mesh) => !isDisabledMesh(mesh)));
     canvas.dataset.runtimeLitCount = String(runtimeLitMeshes.size);
-    // Keep dynamic/unbaked materials independent from the room surfaces. A
-    // shared source material is copied before runtime-light stamping so a
-    // static mesh can retain the baked environment strength.
-    const dynamicIblStrength = manifest?.environment?.dynamicStrength ?? iblStrength;
-    const dynamicMaterialClones = new Map<PbrMaterialProps, PbrMaterialProps>();
-    for (const mesh of runtimeLitMeshes) {
-        const source = mesh.material;
-        if (!source || !isPbrMaterial(source)) continue;
-        let clone = dynamicMaterialClones.get(source);
-        if (!clone) {
-            clone = { ...source };
-            delete (clone as { _renderFeatures?: unknown })._renderFeatures;
-            delete (clone as { _clusteredLightState?: unknown })._clusteredLightState;
-            clone.environmentIntensity = dynamicIblStrength;
-            dynamicMaterialClones.set(source, clone);
-        }
-        mesh.material = clone;
+    for (const mesh of weaponViewmodel.meshes) {
+        if (mesh.material && isPbrMaterial(mesh.material)) mesh.material.environmentIntensity = environmentIntensity;
     }
     const lights = buildRuntimeLights(scene, shipRoot, runtimeLitMeshes, chunkOfMesh, manifest?.lights);
     canvas.dataset.clusteredLightCount = String(lights.clusteredPoint + lights.clusteredSpot);
     if (lights.overflow) console.warn(`[aquanova] ${lights.overflow} non-clustered light(s) dropped: the shared lights UBO is full`);
-    const lightmapIndex = await fetchLightmapIndex();
-    if (lightmapIndex) {
-        const lm = await applyBakedLightmaps(engine, lightmapIndex, allShipMeshes, chunkOfMesh);
-        canvas.dataset.lightmappedCount = String(lm.lit);
-        if (lm.missing.length) console.warn("[aquanova] baked chunks with no meshes loaded:", lm.missing.join(", "));
-        console.log(`[aquanova] lightmaps: ${lm.lit} meshes lit, ${lm.skipped} dynamic/unmapped, ${(lm.bytes / 1048576).toFixed(2)} MB`);
+    // Probes are resolved per ELEMENT, not per primitive: `primitivesByOwner` already groups every
+    // primitive of one placement under its glTF node, and a wall cannot have its trim lit by one room
+    // and its face by another. A group is static when none of its primitives can move.
+    const staticElements: Mesh[][] = [];
+    for (const group of primitivesByOwner.values()) {
+        const still = group.filter((mesh) => !behaviorManager.movableMeshes.has(mesh));
+        if (still.length) staticElements.push(still);
+    }
+    const localEnvironmentController = await applyLocalEnvironmentProbes(scene, [...allShipMeshes, ...weaponViewmodel.meshes], staticElements);
+    if (localEnvironmentController) {
+        canvas.dataset.localEnvironmentCount = String(localEnvironmentController.loaded);
+        if (localEnvironmentController.missing.length) {
+            console.warn("[aquanova] local environments not loaded:", localEnvironmentController.missing.join(", "));
+        }
+        console.log(
+            `[aquanova] local environments: ${localEnvironmentController.loaded} probes, ${localEnvironmentController.assigned} static meshes, ${(localEnvironmentController.bytes / 1048576).toFixed(2)} MB`
+        );
     }
 
     // Match the Blender view transform the ship was authored against, straight from the manifest:
@@ -507,13 +648,16 @@ export async function main(): Promise<void> {
     // white and losing its colour) and exposure, converted from Blender stops to a linear multiplier.
     // Set before registerScene so the first PBR build + the deferred skybox snapshot pick it up.
     const tone = resolveToneMapping(manifest?.environment?.toneMapping);
-    scene.imageProcessing.toneMappingEnabled = tone !== null;
-    if (tone) scene.imageProcessing.toneMapping = tone;
+    for (const targetScene of [scene, weaponLayer.scene]) {
+        targetScene.imageProcessing.toneMappingEnabled = tone !== null;
+        if (tone) targetScene.imageProcessing.toneMapping = tone;
+    }
 
-    /** Assigned just below; declared here because the key handler further down closes over it. */
+    /** Assigned just below; retained for the QA hook. */
     let cycleTone: () => void = () => {};
+    let setToneMappingIndex: (index: number) => Promise<void> = async () => {};
 
-    // ── Tone-mapping cycle (O) ───────────────────────────────────────────────────────────────────    // Every algorithm Babylon-Lite ships, plus "None" (no curve at all). The manifest still chooses
+    // Every algorithm Babylon-Lite ships, plus "None" (no curve at all). The manifest still chooses
     // the startup value — this is a look-dev comparison tool, so it deliberately does NOT persist:
     // reloading returns to what `environment.toneMapping` authored.
     //
@@ -532,27 +676,39 @@ export async function main(): Promise<void> {
     );
     let toneBusy = false;
     const showTone = (): void => {
-        const el = document.getElementById("toneState");
-        if (el) el.textContent = TONE_MAPPINGS[toneIndex]!.name;
         canvas.dataset.tonemap = TONE_MAPPINGS[toneIndex]!.name;
     };
     showTone();
-    cycleTone = (): void => {
+    setToneMappingIndex = async (index: number): Promise<void> => {
         if (toneBusy) return;
         toneBusy = true;
-        toneIndex = (toneIndex + 1) % TONE_MAPPINGS.length;
+        const previous = toneIndex;
+        toneIndex = ((index % TONE_MAPPINGS.length) + TONE_MAPPINGS.length) % TONE_MAPPINGS.length;
         const next = TONE_MAPPINGS[toneIndex]!;
         showTone();
-        void setSceneImageProcessing(scene, next.tm ? { toneMappingEnabled: true, toneMapping: next.tm } : { toneMappingEnabled: false })
-            .catch((err: unknown) => {
-                // eslint-disable-next-line no-console
-                console.warn("[aquanova] tone mapping switch failed", err);
-            })
-            .finally(() => {
-                toneBusy = false;
-            });
+        try {
+            await Promise.all(
+                [scene, weaponLayer.scene].map((targetScene) =>
+                    setSceneImageProcessing(targetScene, next.tm ? { toneMappingEnabled: true, toneMapping: next.tm } : { toneMappingEnabled: false })
+                )
+            );
+        } catch (err) {
+            toneIndex = previous;
+            showTone();
+            console.warn("[aquanova] tone mapping switch failed", err);
+        } finally {
+            toneBusy = false;
+        }
     };
-    scene.imageProcessing.exposure = resolveExposure(manifest?.environment?.exposure);
+    cycleTone = (): void => {
+        void setToneMappingIndex(toneIndex + 1);
+    };
+    let exposure = resolveExposure(manifest?.environment?.exposure);
+    // The editor keeps Babylon's neutral contrast; loadEnvironment otherwise leaves Lite at 1.2.
+    scene.imageProcessing.exposure = exposure;
+    scene.imageProcessing.contrast = 1;
+    weaponLayer.scene.imageProcessing.exposure = exposure;
+    weaponLayer.scene.imageProcessing.contrast = 1;
 
     // ── Havok physics: clean per-chunk box-shell colliders (see buildShipColliders) ───────
     const hknp = await HavokPhysics({ locateFile: () => "/HavokPhysics.wasm" });
@@ -678,6 +834,8 @@ export async function main(): Promise<void> {
         /** The manifest placement this prop came from, so its debug shape can be dropped on melt. */
         instanceId: string | undefined;
         disp: SceneNode;
+        environmentProbe: string | undefined;
+        environmentPosition: [number, number, number] | undefined;
         wriggling?: boolean; // true while THIS body is dissolving: its Havok body still collides/supports,
         // but the wriggle owns the display node — so skip the pose sync below.
     }
@@ -746,7 +904,30 @@ export async function main(): Promise<void> {
         // `position = pose ∘ (−displayScale · centre)` — the transform the floating-body system used
         // to apply, kept identical so a melting prop still lines up with its water.
         const dispOffset: [number, number, number] = [-MIRROR[0] * centre[0], -MIRROR[1] * centre[1], -MIRROR[2] * centre[2]];
-        const dyn: DynBody = { proxy, body, mesh: group[0]!, meshes: group, bounds, movable, instanceId, disp: r, dispOffset };
+        const environmentPosition: [number, number, number] = [...centre];
+        // Same rule as static geometry: the probe holding the largest share of the prop's box, not the
+        // one containing its centre. `half` is the rest pose's — a shoved crate keeps its size, and a
+        // rotation only skews the box slightly, which cannot change which room it is in.
+        const probeForProp = (at: readonly [number, number, number]): string | undefined =>
+            localEnvironmentController?.probeForBounds(
+                [at[0] - bounds.half[0], at[1] - bounds.half[1], at[2] - bounds.half[2]],
+                [at[0] + bounds.half[0], at[1] + bounds.half[1], at[2] + bounds.half[2]]
+            );
+        const environmentProbe = movable ? probeForProp(environmentPosition) : undefined;
+        if (movable) localEnvironmentController?.update(group, environmentProbe);
+        const dyn: DynBody = {
+            proxy,
+            body,
+            mesh: group[0]!,
+            meshes: group,
+            bounds,
+            movable,
+            instanceId,
+            disp: r,
+            dispOffset,
+            environmentProbe,
+            environmentPosition: movable ? environmentPosition : undefined,
+        };
         dynBodies.push(dyn);
         for (const m of group) {
             dynBodyByMesh.set(m, dyn);
@@ -761,6 +942,21 @@ export async function main(): Promise<void> {
             if (!d.body) continue; // decal: no rigid body to read a pose from
             if (d.wriggling) continue; // dissolving: the wriggle owns the display
             const p = d.proxy.position;
+            const previous = d.environmentPosition;
+            const moved = !previous || (p.x - previous[0]) ** 2 + (p.y - previous[1]) ** 2 + (p.z - previous[2]) ** 2 > 1e-6;
+            if (moved) {
+                const position: [number, number, number] = [p.x, p.y, p.z];
+                const h = d.bounds.half;
+                const environmentProbe = localEnvironmentController?.probeForBounds(
+                    [position[0] - h[0], position[1] - h[1], position[2] - h[2]],
+                    [position[0] + h[0], position[1] + h[1], position[2] + h[2]]
+                );
+                if (environmentProbe !== d.environmentProbe) {
+                    localEnvironmentController?.update(d.meshes, environmentProbe);
+                    d.environmentProbe = environmentProbe;
+                }
+                d.environmentPosition = position;
+            }
             const q = d.proxy.rotationQuaternion;
             const off = qRot(q, d.dispOffset);
             d.disp.position.set(p.x + off[0], p.y + off[1], p.z + off[2]);
@@ -873,8 +1069,77 @@ export async function main(): Promise<void> {
         const gz = cam.position.z;
         return chunkAt(manifest?.chunks ?? [], gx, gz)?.id ?? "—";
     };
+    let weaponEnvironmentProbe: string | undefined;
+    let weaponEnvironmentPosition: Vec3 | undefined;
+    let fluidEnvironment: EnvironmentTextures | undefined;
+    let applyFluidEnvironment: ((environment: EnvironmentTextures) => void) | undefined;
+    const syncWeaponEnvironment = (): void => {
+        const position = character.getPosition();
+        const current: Vec3 = [position.x, position.y, position.z];
+        if (
+            weaponEnvironmentPosition &&
+            (current[0] - weaponEnvironmentPosition[0]) ** 2 + (current[1] - weaponEnvironmentPosition[1]) ** 2 + (current[2] - weaponEnvironmentPosition[2]) ** 2 <= 1e-6
+        ) {
+            return;
+        }
+        const probeId = localEnvironmentController?.probeAt(current);
+        if (probeId !== weaponEnvironmentProbe) {
+            localEnvironmentController?.update(weaponViewmodel.meshes, probeId);
+            fluidEnvironment = localEnvironmentController?.environment(probeId);
+            if (fluidEnvironment) applyFluidEnvironment?.(fluidEnvironment);
+            weaponEnvironmentProbe = probeId;
+        }
+        weaponEnvironmentPosition = current;
+        const chunkId = chunkAt(manifest?.chunks ?? [], -position.x, position.z)?.id;
+        canvas.dataset.liquefactorChunk = chunkId ?? "—";
+        canvas.dataset.liquefactorProbe = probeId ?? "—";
+    };
+    syncWeaponEnvironment();
+    const gameplayHiddenMeshes = new Set<Mesh>();
+    const movableMeshes = new Set(dynBodies.filter((body) => body.movable).flatMap((body) => body.meshes));
+    const classifierMeshes = allShipMeshes.filter((mesh) => !isDisabledMesh(mesh));
+    const classifierBounds = meshGroupBounds(classifierMeshes);
+    const exteriorClassifyStart = performance.now();
+    const exteriorClassifier = classifierBounds
+        ? createExteriorMeshClassifier({
+              engine,
+              scene,
+              meshes: classifierMeshes,
+              bounds: classifierBounds,
+              chunks: manifest?.chunks ?? [],
+              portals: manifest?.portals ?? [],
+          })
+        : null;
+    let exteriorMeshes: ReadonlySet<Mesh> = new Set();
+    let exteriorReady = exteriorClassifier === null;
+    const portalVisibility = createPortalVisibility({
+        canvas,
+        camera: cam,
+        aspectRatio: () => engine.canvas.width / Math.max(1, engine.canvas.height),
+        roomAt,
+        viewerBounds: () => {
+            const position = character.getPosition();
+            const halfHeight = capsuleHeight() * 0.5;
+            return {
+                min: [position.x - CAP_R, position.y - halfHeight, position.z - CAP_R],
+                max: [position.x + CAP_R, position.y + halfHeight, position.z + CAP_R],
+            };
+        },
+        chunks: manifest?.chunks ?? [],
+        portals: manifest?.portals ?? [],
+        meshes: allShipMeshes,
+        chunkOfMesh,
+        isExcluded: isDisabledMesh,
+        dynamicMeshes: movableMeshes,
+        dynamicChunkOfMesh: (mesh) => {
+            const position = dynBodyByMesh.get(mesh)?.proxy.position;
+            return position ? chunkAt(manifest?.chunks ?? [], -position.x, position.z)?.id : undefined;
+        },
+        exteriorMeshes: () => exteriorMeshes,
+        canRestore: (mesh) => !gameplayHiddenMeshes.has(mesh),
+    });
 
-    // ── Debug overlays (I inspect, B colliders, L lights, F/Shift+F SDF) — see ./debug/ ─────────
+    // ── Debug overlays (I inspect, B colliders, L lights, F portal frusta) — see ./debug/ ─────────
     // Gated on LAB_DEBUG so a release bundle folds these to `null` and drops the modules entirely.
     let picker: ReturnType<typeof createGpuPicker> | null = null;
     const getPicker = (): ReturnType<typeof createGpuPicker> => (picker ??= createGpuPicker(scene));
@@ -888,10 +1153,12 @@ export async function main(): Promise<void> {
               cam,
               character,
               getCapsuleHeight: capsuleHeight,
-              roomAt,
+              roomsAt: () => portalVisibility.viewerChunks(),
               getPicker,
               nodeNameOf: (m: Mesh) => nodeNameOfMesh.get(m),
               nodePrimitivesOf: (m: Mesh) => nodePrimitives.get(m),
+              chunkIdsOf: (m: Mesh) => [...new Set((nodePrimitives.get(m) ?? [m]).flatMap((primitive) => portalVisibility.chunkIds(primitive)))].sort(),
+              isDynamic: (m: Mesh) => (nodePrimitives.get(m) ?? [m]).some((primitive) => movableMeshes.has(primitive)),
               isNoclip: () => playerBehavior?.isNoclip ?? false,
           });
     // Fluid GPU profiling. The sim is stepped directly onto the frame encoder (not as a frame-graph
@@ -908,6 +1175,9 @@ export async function main(): Promise<void> {
     let fluidProfilerOn = false;
     const perfOverlay = createPerfOverlay({
         engine,
+        portalWorkload: () => portalVisibility.stats(),
+        exteriorChunks: () => portalVisibility.exteriorChunks(),
+        viewpoint: () => ({ position: cam.position, target: cam.target }),
         fluidWorkload: () => ({
             simulations: activeSims.length,
             particles: activeSims.reduce((total, active) => total + active.sim.count, 0),
@@ -934,15 +1204,25 @@ export async function main(): Promise<void> {
               dynBodies: () => dynBodies.map((d) => ({ name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name, position: d.proxy.position, half: d.bounds.half })),
               roomAt,
           });
-    const lightUtility = !LAB_DEBUG ? null : createUtilityLayer(engine, scene, { addDefaultLight: false });
+    const debugUtility = !LAB_DEBUG ? null : createUtilityLayer(engine, scene, { addDefaultLight: false });
     const lightOverlay = !LAB_DEBUG
         ? null
         : createLightOverlay({
               engine,
-              scene: lightUtility!.scene,
+              scene: debugUtility!.scene,
               canvas,
               lights: lights.lights,
               roomAt,
+          });
+    const portalOverlay = !LAB_DEBUG
+        ? null
+        : createPortalOverlay({
+              engine,
+              scene: debugUtility!.scene,
+              canvas,
+              camera: cam,
+              maxFrusta: manifest?.portals.length ?? 0,
+              traversals: () => portalVisibility.traversals(),
           });
     const inspectOn = (): boolean => inspectOverlay?.isOn() ?? false;
 
@@ -950,27 +1230,24 @@ export async function main(): Promise<void> {
     // accepting a typed `hitWithWeapon` event addressed to their mesh.
     let liquefyMesh: (mesh: Mesh, hitPoint?: readonly [number, number, number] | null, config?: LiquefiableBehaviorConfig) => void = () => {};
     let requestFusionResume: () => number | null = () => null;
-    let resolveFusionResume: (token: number, mesh: Mesh | null) => "resumed" | "start-new" | "continue" = () => "continue";
+    let resolveFusionResume: (token: number, mesh: Mesh | null) => "resumed" | "start-new" | "await-target" | "continue" = () => "continue";
+    let resolveFusionTarget: (mesh: Mesh | null, point: readonly [number, number, number] | null) => Mesh | null = (mesh) => mesh;
+    let fusionTargetLost: (mesh: Mesh | null) => boolean = () => false;
     let reverseFusion: () => boolean = () => false;
-    // G key — swap the fluid's collision between the full ship SDF and a bare ground plane (the
-    // Liquefactor demo's collision), so the two can be compared with only that variable changed.
-    // Assigned by the same block, which owns both SDF specs.
+    // Swap fluid collision between the full ship and a bare ground plane for comparison.
     let toggleGroundOnly: () => void = () => {};
-    // M key — toggle 4× MSAA on the scene pass. Assigned by the render-path block below (which owns
-    // the MSAA target and its tasks); declared here because the key handler is registered first.
     let toggleMsaa: () => void = () => {};
     let toggleSmaa: () => void = () => {};
     let toggleTaa: () => void = () => {};
     let toggleSpecularAA: () => void = () => {};
+    let setSpecularAAEnabled: (on: boolean) => Promise<void> = async () => {};
     const toggleNearestLight = (): void => {
         const position = character.getPosition();
         const result = lights.toggleNearest([position.x, position.y, position.z]);
         canvas.dataset.nearestLight = result?.id ?? "none";
         canvas.dataset.nearestLightEnabled = result ? String(result.enabled) : "";
-        const state = document.getElementById("nearestLightState");
-        if (state) state.textContent = result ? `${result.id} ${result.enabled ? "on" : "off"}` : "none";
     };
-    let cycleSsaa: () => void = () => {};
+    let setSsaa: (scale: number) => void = () => {};
     /** Re-applies the fluid profiler to the surface task and every live sim. Assigned once they exist. */
     let attachFluidProfiler: () => void = () => {};
     let retargetTaa: (task: RenderTask) => void = () => {};
@@ -979,8 +1256,15 @@ export async function main(): Promise<void> {
     let setMsaaEnabled: (on: boolean) => void = () => {};
     let setSmaaEnabled: (on: boolean) => void = () => {};
     let setTaaEnabled: (on: boolean) => void = () => {};
+    let controlPanel: AquanovaControlPanel | null = null;
+    const setLiquefactorModel = (model: LiquefactorModel): void => {
+        weaponViewmodel.select(model);
+        graphics.liquefactorModel = model;
+        saveGraphicsSettings(graphics);
+        canvas.dataset.liquefactorModel = model;
+    };
 
-    behaviorManager.start({
+    await behaviorManager.start({
         canvas,
         camera: cam,
         character,
@@ -992,8 +1276,11 @@ export async function main(): Promise<void> {
         isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
         isInspecting: inspectOn,
         inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
+        weaponLiquefactor,
         requestFusionResume: () => requestFusionResume(),
         resolveFusionResume: (token, mesh) => resolveFusionResume(token, mesh),
+        resolveFusionTarget: (mesh, point) => resolveFusionTarget(mesh, point),
+        fusionTargetLost: (mesh) => fusionTargetLost(mesh),
         reverseFusion: () => {
             reverseFusion();
         },
@@ -1005,24 +1292,12 @@ export async function main(): Promise<void> {
         console.warn("[aquanova] manifest has no player behavior; first-person controls are disabled");
     }
 
-    window.addEventListener("keydown", (e) => {
-        if (e.code === "KeyI" && !e.repeat) inspectOverlay?.toggle(); // I → toggle inspect overlay
-        if (e.code === "KeyB" && !e.repeat) colliderOverlay?.cycle(); // B → toggle collision-box overlay
-        if (e.code === "KeyL" && !e.repeat) lightOverlay?.toggle(); // L → runtime lights for current chunk
-        if (e.code === "KeyG" && !e.repeat) toggleGroundOnly(); // G → fluid collides with ground only
-        if (e.code === "KeyM" && !e.repeat) toggleMsaa(); // M → toggle 4x MSAA (anti-aliasing)
-        if (e.code === "KeyN" && !e.repeat) toggleSmaa(); // N → toggle SMAA post-process
-        if (e.code === "KeyT" && !e.repeat) toggleTaa(); // T → toggle TAA (only accumulates while still)
-        if (e.code === "KeyK" && !e.repeat) toggleSpecularAA(); // K → toggle PBR specular AA
-        if (e.code === "KeyH" && !e.repeat) toggleNearestLight(); // H → toggle nearest positional light
-        if (e.code === "KeyR" && !e.repeat) cycleSsaa(); // R → cycle SSAA render scale
-        if (e.code === "KeyP" && !e.repeat) perfOverlay.toggle(); // P → FPS + per-task GPU timing
-        if (e.code === "KeyO" && !e.repeat) cycleTone(); // O → cycle tone mapping
-    });
-
     // Test hook (QA): read the player position + nudge look/movement programmatically.
     (window as unknown as { __aquanova?: unknown }).__aquanova = {
         getPos: (): { x: number; y: number; z: number } => playerBehavior?.getPosition() ?? character.getPosition(),
+        setPos: (x: number, y: number, z: number): void => {
+            character.setPosition({ x, y, z });
+        },
         // Both SNAP (target and current together) rather than easing like the mouse does: a test that
         // aims and then immediately fires must not have the shot land wherever the smoothing had got to.
         setYaw: (y: number): void => {
@@ -1041,7 +1316,7 @@ export async function main(): Promise<void> {
         capsuleHeight,
         toggleNoclip: (): void => playerBehavior?.toggleNoclip(),
         behaviors: (): Array<{ name: string; mesh: string }> => behaviorManager.describeInstances(),
-        /** Graphics settings (for the future config page + QA). `setMsaa` is idempotent. */
+        /** Graphics settings for the control panel and QA. `setMsaa` is idempotent. */
         graphics: (): Record<string, unknown> => ({ ...graphics, msaaActive: msaaOn, smaaActive: smaaOn, taaActive: taaOn }),
         setMsaa: (on: boolean): void => {
             if (on !== msaaOn) toggleMsaa();
@@ -1055,19 +1330,26 @@ export async function main(): Promise<void> {
         setSpecularAA: (on: boolean): void => {
             if (on !== graphics.specularAA) toggleSpecularAA();
         },
-        pbrMaterials: (): Array<{ name: string; roughnessFactor: number; specularAA: boolean }> =>
-            shipPbrMaterials().map((material) => ({
+        setFullyMetallicRoughnessZero,
+        setWeaponLaserDistance: (distance: number | null): void => {
+            weaponLaser.setTargetDistance(distance, distance !== null);
+        },
+        pbrMaterials: (): Array<{ name: string; metallicFactor: number; roughnessFactor: number; specularAA: boolean }> =>
+            pbrMaterials().map((material) => ({
                 name: material.name ?? "",
+                metallicFactor: material.metallicFactor ?? 1,
                 roughnessFactor: material.roughnessFactor ?? 1,
                 specularAA: material.enableSpecularAA === true,
             })),
+        liquefactorModel: (): LiquefactorModel => weaponViewmodel.model,
+        setLiquefactorModel,
         /** SSAA render scale (1 = off). Applied immediately; the engine picks up the size next frame. */
         setSsaa: (scale: number): void => {
             graphics.ssaa = scale;
             saveGraphicsSettings(graphics);
             applySsaa(scale);
         },
-        /** SMAA edge threshold — lower catches more edges. Live, for tuning and the config page. */
+        /** SMAA edge threshold — lower catches more edges. Live, for tuning and the control panel. */
         setSmaaThreshold: (t: number): void => {
             smaaTask.threshold = t;
             smaaTask.updateUniforms();
@@ -1100,7 +1382,7 @@ export async function main(): Promise<void> {
         toggleInspect: (): void => inspectOverlay?.toggle(),
         /** FPS + per-task GPU timing overlay (P). */
         togglePerf: (): void => perfOverlay.toggle(),
-        /** Cycle tone mapping (O). Recompiles PBR pipelines, so it settles a frame or two later. */
+        /** Cycle tone mapping. Recompiles PBR pipelines, so it settles a frame or two later. */
         cycleTone: (): void => cycleTone(),
         /** Active tone-mapping algorithm name. */
         toneMapping: (): string => canvas.dataset.tonemap ?? "?",
@@ -1163,6 +1445,25 @@ export async function main(): Promise<void> {
             return { total, inside };
         },
         roomAt: (): string => roomAt(),
+        portalStats: (): { currentChunk: string; chunks: number; exteriorChunks: number; meshes: number; totalMeshes: number } => portalVisibility.stats(),
+        portalExteriorChunks: (): readonly string[] => portalVisibility.exteriorChunks(),
+        portalStates: (): Array<{ id: string; door?: string; enabled: boolean }> => portalVisibility.portalStates(),
+        portalTraversals: (): Array<{ id: string; from: string; to: string; depth: number }> =>
+            portalVisibility.traversals().map(({ portalId, fromChunk, toChunk, depth }) => ({ id: portalId, from: fromChunk, to: toChunk, depth })),
+        portalOpaqueOrderStats: (): { bindings: number; uniqueMeshes: number; inOrder: boolean } => {
+            const ordered = sceneTask._opaqueBindings
+                .map((binding) => binding.renderable.mesh)
+                .filter((mesh): mesh is Mesh => mesh !== undefined && mesh.visible !== false && portalVisibility.meshOrder(mesh) !== undefined);
+            const order = ordered.map((mesh) => portalVisibility.meshOrder(mesh)!);
+            return {
+                bindings: ordered.length,
+                uniqueMeshes: new Set(ordered).size,
+                inOrder: order.every((value, index) => index === 0 || order[index - 1]! <= value),
+            };
+        },
+        setPortalEnabled: (id: string, enabled: boolean): boolean => portalVisibility.setPortalEnabled(id, enabled),
+        setDoorPortalEnabled: (door: string, enabled: boolean): number => portalVisibility.setDoorEnabled(door, enabled),
+        togglePortalFrusta: (): void => portalOverlay?.toggle(),
         camState: (): Record<string, number> => ({
             px: cam.position.x,
             py: cam.position.y,
@@ -1179,7 +1480,7 @@ export async function main(): Promise<void> {
             contrast: scene.imageProcessing.contrast,
             toneMapping: scene.imageProcessing.toneMapping,
             toneMappingEnabled: scene.imageProcessing.toneMappingEnabled,
-            ibl: (allShipMeshes.find((m) => m.material)?.material as unknown as { environmentIntensity?: number } | undefined)?.environmentIntensity,
+            ibl: environmentIntensity,
         }),
         fire: (): void => {
             void playerBehavior?.fire();
@@ -1194,20 +1495,22 @@ export async function main(): Promise<void> {
             if (result === "start-new" && target) {
                 liquefyMesh(target, null, behaviorManager.getLiquefiableConfig(target));
             }
-            return result !== "continue";
+            return result !== "continue" && result !== "await-target";
         },
         liqTargets: (): Array<{ name: string; c: number[] | null }> =>
             [...behaviorManager.liquefiableMeshes].map((m) => ({
                 name: nodeNameOfMesh.get(m) ?? m.name,
-                c: m.boundMin && m.boundMax ? [(m.boundMin[0] + m.boundMax[0]) / 2, (m.boundMin[1] + m.boundMax[1]) / 2, (m.boundMin[2] + m.boundMax[2]) / 2] : null,
+                c: worldBoundsOf(m)?.centre ?? null,
             })),
-        dynPos: (): Array<{ name: string; pos: number[]; half: number[]; movable: boolean; hasBody: boolean }> =>
+        dynPos: (): Array<{ name: string; pos: number[]; half: number[]; movable: boolean; hasBody: boolean; chunk: string; visible: boolean }> =>
             dynBodies.map((d) => ({
                 name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name,
                 pos: [d.proxy.position.x, d.proxy.position.y, d.proxy.position.z],
                 half: d.bounds.half,
                 movable: d.movable,
                 hasBody: d.body !== null,
+                chunk: chunkAt(manifest?.chunks ?? [], -d.proxy.position.x, d.proxy.position.z)?.id ?? "—",
+                visible: d.mesh.visible !== false,
             })),
         liquefyNamed: (name: string, hit?: [number, number, number]): string | null => {
             // When a hit point is given, pick the nearest match: several props legitimately share a
@@ -1217,8 +1520,7 @@ export async function main(): Promise<void> {
             for (const m of behaviorManager.liquefiableMeshes) {
                 if ((nodeNameOfMesh.get(m) ?? m.name) !== name) continue;
                 if (!hit) return (liquefyMesh(m, null), name);
-                const c: [number, number, number] =
-                    m.boundMin && m.boundMax ? [(m.boundMin[0] + m.boundMax[0]) / 2, (m.boundMin[1] + m.boundMax[1]) / 2, (m.boundMin[2] + m.boundMax[2]) / 2] : [0, 0, 0];
+                const c = worldBoundsOf(m)?.centre ?? [0, 0, 0];
                 const d = (c[0] - hit[0]) ** 2 + (c[1] - hit[1]) ** 2 + (c[2] - hit[2]) ** 2;
                 if (d < bestD) [bestD, best] = [d, m];
             }
@@ -1278,7 +1580,7 @@ export async function main(): Promise<void> {
             }
             return out;
         },
-        /** G-key state: true when the fluid collides with a bare ground plane instead of the ship. */
+        /** True when the fluid collides with a bare ground plane instead of the ship. */
         groundOnly: (): boolean => groundOnly,
         setGroundOnly: (on: boolean): void => {
             if (on !== groundOnly) toggleGroundOnly();
@@ -1310,6 +1612,24 @@ export async function main(): Promise<void> {
     const sceneColorRT = createRenderTarget({ lbl: "aq-scene-color", format: engine.format, dFormat: "depth24plus", samples: 1, size: engine });
     const sceneTask = createRenderTask({ name: "scene", rt: sceneColorRT, clr: true, clrColor: scene.clearColor }, engine, scene);
     addTask(scene, sceneTask);
+    const applyPortalDrawOrder = (task: RenderTask): void => {
+        const bindings = task._opaqueBindings;
+        if (bindings.length < 2) return;
+        const previous = bindings.slice();
+        bindings.sort((a, b) => {
+            const baseOrder = a.renderable.order - b.renderable.order;
+            if (baseOrder !== 0) return baseOrder;
+            const aMesh = a.renderable.mesh;
+            const bMesh = b.renderable.mesh;
+            const aOrder = aMesh ? portalVisibility.meshOrder(aMesh) : undefined;
+            const bOrder = bMesh ? portalVisibility.meshOrder(bMesh) : undefined;
+            if (aOrder === undefined) return bOrder === undefined ? 0 : 1;
+            return bOrder === undefined ? -1 : aOrder - bOrder;
+        });
+        if (bindings.some((binding, index) => binding !== previous[index])) {
+            task._ob.length = 0;
+        }
+    };
 
     // The fluid composite's output. It cannot go straight to the swapchain any more: SMAA has to
     // SAMPLE the finished image, and a swapchain texture is renderable but not sampleable. So the
@@ -1383,7 +1703,6 @@ export async function main(): Promise<void> {
         setMsaa(on);
         saveGraphicsSettings(graphics);
         canvas.dataset.msaa = String(on);
-        setHudFlag("msaaState", on);
     };
     toggleMsaa = (): void => {
         const next = !msaaOn;
@@ -1395,7 +1714,6 @@ export async function main(): Promise<void> {
     // rebuild a mid-session toggle does.
     setMsaa(graphics.msaa);
     canvas.dataset.msaa = String(graphics.msaa);
-    setHudFlag("msaaState", graphics.msaa);
 
     // Where the ship was last drawn, plus that draw's matrices — the source for per-particle LIT
     // colours (see particle-lit-colors.ts). The scene target is written every frame before the fluid
@@ -1464,12 +1782,15 @@ export async function main(): Promise<void> {
     surfaceTask.setSim(virtualSim as unknown as FluidSim);
     surfaceTask.setParticleAlpha(combinedAlpha);
     surfaceTask.setParticleColor(combinedColor);
-    // Scene wiring only — the sun direction the water is lit by, and the HDR cube it reflects. Without
-    // setEnvMap the surface samples garbage for reflections and renders opaque green. Every look
+    // Scene wiring only — the sun direction the water is lit by, and the current local probe it
+    // reflects. Every look
     // parameter (colour, absorption, blur, filter, impostor size…) comes from the active fluidSim
     // file's `render` block instead; see applyRenderSetting.
     surfaceTask.setDirLight([-0.4, -0.82, -0.45]);
-    surfaceTask.setEnvMap({ view: env._specularCubeView, sampler: env._cubeSampler });
+    applyFluidEnvironment = (environment) => {
+        surfaceTask.setEnvMap({ view: environment._specularCubeView, sampler: environment._cubeSampler });
+    };
+    if (fluidEnvironment) applyFluidEnvironment(fluidEnvironment);
     addTask(scene, surfaceTask);
 
     // ── Presenting: exactly one pass, chosen by which AA mode is active ─────────────────────────
@@ -1578,14 +1899,12 @@ export async function main(): Promise<void> {
 
     smaaOn = graphics.smaa;
     canvas.dataset.smaa = String(smaaOn);
-    setHudFlag("smaaState", smaaOn);
     setSmaaEnabled = (on: boolean): void => {
         if (on === smaaOn) return;
         smaaOn = on;
         graphics.smaa = on;
         saveGraphicsSettings(graphics);
         canvas.dataset.smaa = String(on);
-        setHudFlag("smaaState", on);
     };
     toggleSmaa = (): void => {
         const next = !smaaOn;
@@ -1594,14 +1913,12 @@ export async function main(): Promise<void> {
     };
     taaOn = graphics.taa;
     canvas.dataset.taa = String(taaOn);
-    setHudFlag("taaState", taaOn);
     setTaaEnabled = (on: boolean): void => {
         if (on === taaOn) return;
         taaOn = on;
         graphics.taa = on;
         saveGraphicsSettings(graphics);
         canvas.dataset.taa = String(on);
-        setHudFlag("taaState", on);
     };
     toggleTaa = (): void => {
         const next = !taaOn;
@@ -1615,35 +1932,35 @@ export async function main(): Promise<void> {
     };
     // SSAA is deliberately NOT exclusive with the others: it is a different axis (how many pixels
     // you render) and composes with any of them, which is exactly what makes it a useful baseline.
-    cycleSsaa = (): void => {
-        const opts = GRAPHICS_SETTING_DEFS.find((d) => d.key === "ssaa")?.options ?? [1];
-        const next = opts[(Math.max(0, opts.indexOf(graphics.ssaa)) + 1) % opts.length] ?? 1;
-        graphics.ssaa = next;
+    setSsaa = (scale: number): void => {
+        if (scale === graphics.ssaa) return;
+        graphics.ssaa = scale;
         saveGraphicsSettings(graphics);
-        applySsaa(next);
+        applySsaa(scale);
     };
     let specularAABusy = false;
-    toggleSpecularAA = (): void => {
-        if (specularAABusy) return;
+    setSpecularAAEnabled = async (on: boolean): Promise<void> => {
+        if (specularAABusy || on === graphics.specularAA) return;
         specularAABusy = true;
-        const next = !graphics.specularAA;
-        setShipSpecularAA(next);
-        graphics.specularAA = next;
+        const previous = graphics.specularAA;
+        setPbrSpecularAA(on);
+        graphics.specularAA = on;
         saveGraphicsSettings(graphics);
-        canvas.dataset.specularAa = String(next);
-        setHudFlag("specularAaState", next);
-        void rebuildScenePbrPipelines(scene)
-            .catch((err: unknown) => {
-                setShipSpecularAA(!next);
-                graphics.specularAA = !next;
-                saveGraphicsSettings(graphics);
-                canvas.dataset.specularAa = String(!next);
-                setHudFlag("specularAaState", !next);
-                console.warn("[aquanova] specular AA switch failed", err);
-            })
-            .finally(() => {
-                specularAABusy = false;
-            });
+        canvas.dataset.specularAa = String(on);
+        try {
+            await Promise.all([rebuildScenePbrPipelines(scene), rebuildScenePbrPipelines(weaponLayer.scene)]);
+        } catch (err) {
+            setPbrSpecularAA(previous);
+            graphics.specularAA = previous;
+            saveGraphicsSettings(graphics);
+            canvas.dataset.specularAa = String(previous);
+            console.warn("[aquanova] specular AA switch failed", err);
+        } finally {
+            specularAABusy = false;
+        }
+    };
+    toggleSpecularAA = (): void => {
+        void setSpecularAAEnabled(!graphics.specularAA);
     };
 
     // The setting that most recently drove the shared surface pass, for the QA hook below.
@@ -2036,7 +2353,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     // speed of 6 divided by 3): ship modules read as architecture rather than a single prop, so a faster
     // sweep pops instead of melting. Liquefactor loads this same ship.glb to audition liquefaction, so
     // the two must agree or what the audition shows is not what the game does.
-    const LIQUEFY_SPEED = 2;
+    const LIQUEFY_SPEED = 1;
     const DEFAULT_SAMPLE_RADIUS = 0.03; // volume-sampling spacing when a fluidSim setting omits demoParams.particleRadius
     const LIQUEFY_EDGE = 0.6; // fire-glow band width at the dissolving boundary
 
@@ -2053,7 +2370,12 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         if (!mat || !isPbrMaterial(mat)) continue;
         const st: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
         const src = mat as unknown as PluginMat;
-        const clone = { ...(mat as object), _uboVersion: 0, plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => st, "pbr")] } as unknown as Material;
+        const clone = {
+            ...(mat as object),
+            _renderFeatures: undefined,
+            _uboVersion: 0,
+            plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => st, "pbr")],
+        } as unknown as Material;
         m.material = clone;
         liquefyStates.set(m, st);
     }
@@ -2098,6 +2420,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         impulseActive: boolean;
         waterBase: Float32Array; // all members' sampled particle positions (xyzw)
         waterScratch: Float32Array;
+        waterFrontDistance: Float32Array; // noisy distance used by both the solid clip and water reveal
         useMeshColors: boolean;
         group: ShotGroup;
         /** This sim's collision primitives and the exact solver-grid AABB they were picked for. */
@@ -2127,6 +2450,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         hit: readonly [number, number, number] | null;
         setting: FluidSimSetting | undefined;
         settingName: string | undefined;
+        soundCategory: string;
         /** Instance ids this shot's water must NOT collide against (its own props). */
         excluded: ReadonlySet<string>;
         /** Unit direction from the player to the crosshair when the shot was fired. Used for a
@@ -2194,17 +2518,20 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         return token;
     };
 
-    resolveFusionResume = (token: number, mesh: Mesh | null): "resumed" | "start-new" | "continue" => {
+    resolveFusionResume = (token: number, mesh: Mesh | null): "resumed" | "start-new" | "await-target" | "continue" => {
         const group = controlledGroup;
         if (!group || group.resumePending !== token) return "continue";
+        if (!mesh || (!group.meshes.has(mesh) && !behaviorManager.isLiquefiable(mesh))) return "await-target";
         group.resumePending = null;
-        if (mesh && group.meshes.has(mesh)) {
+        if (group.meshes.has(mesh)) {
+            const resumedActiveLiquefaction = group.direction < 0 && group.sim?.phase === "dissolving";
             group.direction = 1;
             setSamplingGroupWriggle(group, true);
             finalizeShotIfReady(group);
+            if (resumedActiveLiquefaction) behaviorManager.events.emit("liquefactionStarted", {});
             return "resumed";
         }
-        if (mesh && behaviorManager.isLiquefiable(mesh)) {
+        if (behaviorManager.isLiquefiable(mesh)) {
             releaseControlledGroup(group);
             finalizeShotIfReady(group);
             return "start-new";
@@ -2216,12 +2543,52 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     reverseFusion = (): boolean => {
         const group = controlledGroup;
         if (!group) return false;
+        if (group.direction > 0) behaviorManager.events.emit("liquefactionReversed", {});
         group.direction = -1;
         group.resumePending = null;
         group.resumeGeneration++;
         setSamplingGroupWriggle(group, false);
         finalizeShotIfReady(group);
         return true;
+    };
+
+    const segmentIntersectsBounds = (origin: readonly [number, number, number], target: readonly [number, number, number], bounds: MeshGroupBounds): boolean => {
+        const direction = [target[0] - origin[0], target[1] - origin[1], target[2] - origin[2]] as const;
+        let near = 0;
+        let far = 1;
+        for (let axis = 0; axis < 3; axis++) {
+            const min = bounds.centre[axis]! - bounds.half[axis]! - 0.03;
+            const max = bounds.centre[axis]! + bounds.half[axis]! + 0.03;
+            const axisOrigin = origin[axis]!;
+            const axisDirection = direction[axis]!;
+            if (Math.abs(axisDirection) < 1e-8) {
+                if (axisOrigin < min || axisOrigin > max) return false;
+                continue;
+            }
+            let axisNear = (min - axisOrigin) / axisDirection;
+            let axisFar = (max - axisOrigin) / axisDirection;
+            if (axisNear > axisFar) [axisNear, axisFar] = [axisFar, axisNear];
+            near = Math.max(near, axisNear);
+            far = Math.min(far, axisFar);
+            if (near > far) return false;
+        }
+        return far >= 0 && near <= 1;
+    };
+
+    resolveFusionTarget = (mesh: Mesh | null, point: readonly [number, number, number] | null): Mesh | null => {
+        const group = controlledGroup;
+        if (!group || (mesh && group.meshes.has(mesh)) || !point) return mesh;
+        const origin = [cam.position.x, cam.position.y, cam.position.z] as const;
+        for (const member of group.meshes) {
+            const bounds = worldBoundsOf(member);
+            if (bounds && segmentIntersectsBounds(origin, point, bounds)) return group.primaryMesh;
+        }
+        return mesh;
+    };
+
+    fusionTargetLost = (mesh: Mesh | null): boolean => {
+        const group = controlledGroup;
+        return group !== null && group.direction > 0 && (mesh === null || !group.meshes.has(mesh));
     };
 
     const releaseControlledGroup = (group: ShotGroup): void => {
@@ -2485,6 +2852,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         // Per-member visual and color state. The Havok bodies remain until the shared fluid phase
         // begins, so linked props continue supporting one another throughout the dissolve.
         const members: DissolveMember[] = [];
+        const waterFrontDistance = new Float32Array(totalCount);
         const wantColor = !!setting?.useMeshColors;
         const ls = wantColor ? litScene() : null;
         particleOffset = 0;
@@ -2497,6 +2865,21 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 state.hit = hit;
                 state.frontR = 0;
                 state.enabled = true;
+                const noiseAmp = state.noiseAmp ?? 0.35;
+                const noiseFreq = state.noiseFreq ?? 1.2;
+                for (let i = 0; i < sample.count; i++) {
+                    const source = i * 3;
+                    waterFrontDistance[particleOffset + i] = liquefyFrontDistance(
+                        sample.positions[source]!,
+                        sample.positions[source + 1]!,
+                        sample.positions[source + 2]!,
+                        hit,
+                        noiseAmp,
+                        noiseFreq
+                    );
+                }
+            } else {
+                waterFrontDistance.fill(Infinity, particleOffset, particleOffset + sample.count);
             }
             if (material) bumpMat(material);
 
@@ -2538,6 +2921,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             impulseActive: intensity > 0,
             waterBase,
             waterScratch: new Float32Array(totalCount * 4),
+            waterFrontDistance,
             useMeshColors: wantColor,
             group,
             collision,
@@ -2545,6 +2929,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         };
         group.sim = active;
         activeSims.push(active);
+        behaviorManager.events.emit("liquefactionStarted", {});
     }
     liquefyMesh = (mesh: Mesh, hitPoint?: readonly [number, number, number] | null, sourceConfig?: LiquefiableBehaviorConfig): void => {
         if (controlledGroup) return;
@@ -2577,13 +2962,8 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             }
         }
 
-        const bMin = mesh.boundMin;
-        const bMax = mesh.boundMax;
-        const origin: readonly [number, number, number] | null = hitPoint
-            ? [hitPoint[0]!, hitPoint[1]!, hitPoint[2]!]
-            : bMin && bMax
-              ? [(bMin[0]! + bMax[0]!) / 2, (bMin[1]! + bMax[1]!) / 2, (bMin[2]! + bMax[2]!) / 2]
-              : null;
+        const bounds = worldBoundsOf(mesh);
+        const origin: readonly [number, number, number] | null = hitPoint ? [hitPoint[0]!, hitPoint[1]!, hitPoint[2]!] : (bounds?.centre ?? null);
         // Candidates come from the SHOT mesh's behaviour (its own `fluidSim` list when it has one,
         // otherwise the manifest's global list); the winner then applies to every member.
         const ownSettings = sourceConfig?.fluidSim ?? behaviorManager.getLiquefiableConfig(mesh)?.fluidSim;
@@ -2609,6 +2989,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             hit: origin,
             setting,
             settingName,
+            soundCategory: sourceConfig?.sound ?? behaviorManager.getLiquefiableConfig(mesh)?.sound ?? "quickSplash",
             excluded: new Set(),
             shotDir: shotDirection(origin),
         };
@@ -2683,7 +3064,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 member.state.frontR = member.maxR;
             }
             if (member.material) bumpMat(member.material);
+            gameplayHiddenMeshes.add(member.mesh);
             setMeshVisible(member.mesh, false);
+            member.mesh.pickable = false;
             if (!member.dyn || removedBodies.has(member.dyn) || !dynBodies.includes(member.dyn)) continue;
             removedBodies.add(member.dyn);
             // Disable collision BEFORE the first fluid step. Any prop resting on this body drops into
@@ -2706,6 +3089,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         }
         a.phase = "fluid";
         a.fluidElapsed = 0;
+        behaviorManager.events.emit("liquefactionCompleted", { sound: a.group.soundCategory });
         releaseControlledGroup(a.group);
     }
 
@@ -2734,6 +3118,15 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             pendingFrameGraphRebuild = false;
             getFrameGraph(scene).build();
         }
+        if (controlPanel?.isVisible()) {
+            controlPanel.updateWeaponTransform(weaponTransformValues());
+            controlPanel.updateCameraTransform({
+                position: [cam.position.x, cam.position.y, cam.position.z],
+                target: [cam.target.x, cam.target.y, cam.target.z],
+            });
+        }
+        syncWeaponEnvironment();
+        syncFullyMetallicRoughnessOverride();
         // Open the fluid profiler's frame BEFORE anything is encoded: beginFrame resets the query
         // cursor, frameStart stamps the whole-frame envelope that "aq-timing-resolve" closes.
         if (fluidProfilerOn && fluidProfiler) {
@@ -2789,9 +3182,15 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             s.wriggleNode.position.set(s.wriggleBase[0] + ox, s.wriggleBase[1] + oy, s.wriggleBase[2] + oz);
         }
         canvas.dataset.sampling = String(samplingShots.size);
+        if (exteriorReady) {
+            portalVisibility.update();
+            applyPortalDrawOrder(sceneTask);
+            if (msaaSceneTask) applyPortalDrawOrder(msaaSceneTask as RenderTask);
+        }
         inspectOverlay?.onFrame();
         colliderOverlay?.onFrame(); // dynamic proxies move; the chunk changes as you walk
         lightOverlay?.onFrame();
+        portalOverlay?.onFrame();
         perfOverlay.onFrame(deltaMs); // FPS + GPU timing readout (P)
         // The room voxels cover EVERY baked room and are world-anchored, so neither walking around nor
         // crossing a chunk boundary changes them. Only the dynamic bodies actually move.
@@ -2825,7 +3224,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                     member.dissolved = a.group.direction > 0 && (!member.state || member.state.frontR >= member.maxR);
                 }
                 device.queue.writeBuffer(a.sim.positionBuffer, 0, ws);
-                if (a.group.direction < 0 && a.group.resumePending === null && a.members.every((member) => !member.state || member.state.frontR <= 0)) {
+                // Radius zero must restore the exact solid even while the held beam could resume.
+                // Keeping the noisy clipping plugin enabled at zero leaves small negative-noise pockets dissolved.
+                if (a.group.direction < 0 && a.members.every((member) => !member.state || member.state.frontR <= 0)) {
                     cancelDissolve(a);
                     activeSims.splice(k, 1);
                     continue;
@@ -2870,8 +3271,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 }
             }
         }
-        // Aggregate live particles into the shared surface buffer + per-particle alpha (fading ramps 1→0)
-        // + per-particle colour (mesh-colour blobs copy their texture colours; others get the water tint).
+        // Aggregate live particles into the shared surface buffer + per-particle alpha. During the
+        // dissolve, reveal only particles inside the same noisy front that clips the solid; afterwards
+        // the whole fluid is visible, and fading ramps it from 1→0.
         let off = 0;
         let anyColor = false;
         for (const a of activeSims) {
@@ -2890,8 +3292,21 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 } else {
                     device.queue.writeBuffer(combinedColor, off * 16, colorScratch, 0, n * 4); // plain water tint
                 }
-                const alpha = a.phase === "fading" ? Math.max(0, 1 - a.fadeElapsed / FADE_DUR) : 1;
-                alphaScratch.fill(alpha, off, off + n);
+                if (a.phase === "dissolving") {
+                    alphaScratch.fill(0, off, off + n);
+                    for (const member of a.members) {
+                        if (!member.state) continue;
+                        const start = member.particleOffset;
+                        const end = start + member.particleCount;
+                        const frontR = member.state.frontR;
+                        for (let i = start; i < end; i++) {
+                            alphaScratch[off + i] = a.waterFrontDistance[i]! < frontR ? 1 : 0;
+                        }
+                    }
+                } else {
+                    const alpha = a.phase === "fading" ? Math.max(0, 1 - a.fadeElapsed / FADE_DUR) : 1;
+                    alphaScratch.fill(alpha, off, off + n);
+                }
                 off += n;
             }
         }
@@ -2909,8 +3324,250 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
 
     enableMaterialPlugins(scene);
     await registerScene(scene);
-    if (lightUtility) await registerUtilityLayer(lightUtility);
+    await registerUtilityLayer(weaponLayer);
+    await registerUtilityLayer(weaponGizmoLayer);
+    if (debugUtility) await registerUtilityLayer(debugUtility);
     await startEngine(engine);
+
+    const setEnvironmentIntensity = (value: number): void => {
+        const materials = new Set<PbrMaterialProps>();
+        for (const mesh of [...runtimeLitMeshes, ...weaponViewmodel.meshes]) {
+            if (mesh.material && isPbrMaterial(mesh.material)) materials.add(mesh.material);
+        }
+        for (const material of materials) {
+            material.environmentIntensity = value;
+            markMaterialUboDirty(material);
+        }
+        environmentIntensity = value;
+    };
+    const debugToggles = [
+        {
+            label: "Performance overlay",
+            get: () => perfOverlay.isOn(),
+            set: (on: boolean): void => {
+                if (on !== perfOverlay.isOn()) perfOverlay.toggle();
+            },
+        },
+        {
+            label: "Free-fly",
+            get: () => playerBehavior?.isNoclip ?? false,
+            set: (on: boolean): void => {
+                if (on !== (playerBehavior?.isNoclip ?? false)) playerBehavior?.toggleNoclip();
+            },
+        },
+        {
+            label: "Ground-only fluid collision",
+            get: () => groundOnly,
+            set: (on: boolean): void => {
+                if (on !== groundOnly) toggleGroundOnly();
+            },
+        },
+        ...(inspectOverlay
+            ? [
+                  {
+                      label: "Inspect meshes",
+                      get: () => inspectOverlay.isOn(),
+                      set: (on: boolean): void => {
+                          if (on !== inspectOverlay.isOn()) inspectOverlay.toggle();
+                      },
+                  },
+              ]
+            : []),
+        ...(portalOverlay
+            ? [
+                  {
+                      label: "Portal frusta",
+                      get: () => canvas.dataset.portalFrusta !== undefined && canvas.dataset.portalFrusta !== "off",
+                      set: (on: boolean): void => {
+                          const enabled = canvas.dataset.portalFrusta !== undefined && canvas.dataset.portalFrusta !== "off";
+                          if (on !== enabled) portalOverlay.toggle();
+                      },
+                  },
+              ]
+            : []),
+        ...(lightOverlay
+            ? [
+                  {
+                      label: "Runtime lights",
+                      get: () => canvas.dataset.lightOverlay === "on",
+                      set: (on: boolean): void => {
+                          if (on !== (canvas.dataset.lightOverlay === "on")) lightOverlay.toggle();
+                      },
+                  },
+              ]
+            : []),
+        {
+            label: "Metallic roughness = 0",
+            get: () => forceFullyMetallicRoughnessZero,
+            set: setFullyMetallicRoughnessZero,
+        },
+    ];
+    const debugActions = [
+        {
+            label: "Toggle nearest light",
+            run: toggleNearestLight,
+            status: (): string => {
+                const id = canvas.dataset.nearestLight;
+                if (!id || id === "none") return "none";
+                return `${id} ${canvas.dataset.nearestLightEnabled === "true" ? "on" : "off"}`;
+            },
+        },
+        ...(colliderOverlay
+            ? [
+                  {
+                      label: "Cycle colliders",
+                      run: (): void => colliderOverlay.cycle(),
+                      status: (): string => canvas.dataset.colliderOverlay ?? "off",
+                  },
+              ]
+            : []),
+    ];
+    controlPanel = createAquanovaControlPanel({
+        canvas,
+        antiAliasing: {
+            msaa: {
+                label: "4x MSAA",
+                get: () => msaaOn,
+                set: (on) => {
+                    if (on !== msaaOn) toggleMsaa();
+                },
+            },
+            smaa: {
+                label: "SMAA",
+                get: () => smaaOn,
+                set: (on) => {
+                    if (on !== smaaOn) toggleSmaa();
+                },
+            },
+            taa: {
+                label: "TAA",
+                get: () => taaOn,
+                set: (on) => {
+                    if (on !== taaOn) toggleTaa();
+                },
+            },
+            specularAA: {
+                label: "Specular AA",
+                get: () => graphics.specularAA,
+                set: setSpecularAAEnabled,
+            },
+            ssaa: {
+                label: "2x SSAA",
+                get: () => graphics.ssaa === 2,
+                set: (on) => setSsaa(on ? 2 : 1),
+            },
+        },
+        weapon: {
+            model: {
+                get: () => Math.max(0, LIQUEFACTOR_MODELS.indexOf(weaponViewmodel.model)),
+                set: (index) => {
+                    const model = LIQUEFACTOR_MODELS[index] ?? "80k";
+                    setLiquefactorModel(model);
+                },
+                options: LIQUEFACTOR_MODELS,
+            },
+            positionGizmo: {
+                label: "Position gizmo",
+                get: () => weaponPositionGizmoOn,
+                set: (on) => {
+                    weaponPositionGizmoOn = on;
+                    syncWeaponTools();
+                },
+            },
+            rotationGizmo: {
+                label: "Rotation gizmo",
+                get: () => weaponRotationGizmoOn,
+                set: (on) => {
+                    weaponRotationGizmoOn = on;
+                    syncWeaponTools();
+                },
+            },
+            scaleGizmo: {
+                label: "Scale gizmo",
+                get: () => weaponScaleGizmoOn,
+                set: (on) => {
+                    weaponScaleGizmoOn = on;
+                    syncWeaponTools();
+                },
+            },
+            localGuideGizmo: {
+                label: "Aim origin gizmo",
+                get: () => weaponLocalGuideGizmoOn,
+                set: (on) => {
+                    weaponLocalGuideGizmoOn = on;
+                    syncWeaponTools();
+                },
+            },
+            localGuideYaw: {
+                get: () => (weaponViewmodel.localGuideYaw.rotation.y * 180) / Math.PI,
+                set: (degrees) => {
+                    weaponViewmodel.localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
+                },
+            },
+        },
+        environment: {
+            envIntensity: {
+                get: () => environmentIntensity,
+                set: setEnvironmentIntensity,
+            },
+            exposure: {
+                get: () => exposure,
+                set: (value) => {
+                    exposure = value;
+                    scene.imageProcessing.exposure = value;
+                    weaponLayer.scene.imageProcessing.exposure = value;
+                },
+            },
+            toneMapping: {
+                get: () => toneIndex,
+                set: setToneMappingIndex,
+                options: TONE_MAPPINGS.map((entry) => entry.name),
+            },
+        },
+        debug: {
+            cameraPosition: {
+                set: ([x, y, z]) => {
+                    if (playerBehavior) playerBehavior.setCameraPosition({ x, y, z });
+                    else cam.position.set(x, y, z);
+                },
+            },
+            cameraTarget: {
+                set: ([x, y, z]) => {
+                    if (playerBehavior) playerBehavior.setCameraTarget({ x, y, z });
+                    else cam.target.set(x, y, z);
+                },
+            },
+            toggles: debugToggles,
+            actions: debugActions,
+        },
+        onVisibilityChange: (visible) => {
+            weaponToolsVisible = visible;
+            syncWeaponTools();
+        },
+    });
+    controlPanel.updateWeaponTransform(weaponTransformValues());
+    controlPanel.updateCameraTransform({
+        position: [cam.position.x, cam.position.y, cam.position.z],
+        target: [cam.target.x, cam.target.y, cam.target.z],
+    });
+    window.addEventListener("keydown", (event) => {
+        if (event.repeat) return;
+        if (event.code === "KeyH") toggleNearestLight();
+        else if (event.code === "KeyP") perfOverlay.toggle();
+        else if (event.code === "KeyU") controlPanel?.toggle();
+        else return;
+        controlPanel?.refresh();
+    });
+
+    if (exteriorClassifier) {
+        exteriorMeshes = await exteriorClassifier.result;
+        exteriorReady = true;
+        canvas.dataset.exteriorMeshes = `${exteriorMeshes.size}/${classifierMeshes.length}`;
+        canvas.dataset.exteriorClassifyMs = (performance.now() - exteriorClassifyStart).toFixed(1);
+        portalVisibility.update();
+        applyPortalDrawOrder(sceneTask);
+        if (msaaSceneTask) applyPortalDrawOrder(msaaSceneTask as RenderTask);
+    }
     await warmUpFluidPipelines();
     canvas.dataset.ready = "true";
 }

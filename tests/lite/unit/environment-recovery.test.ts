@@ -12,6 +12,18 @@ vi.mock("../../../packages/babylon-lite/src/loader-env/rgbd-decode.js", () => ({
     decodeBrdfPng: vi.fn(() => makeTexture("brdf")),
 }));
 
+vi.mock("../../../packages/babylon-lite/src/loader-hdr/hdr-parser.js", () => ({
+    parseRGBE: vi.fn(() => ({ data: new Float32Array(3), width: 1, height: 1 })),
+    computeSHFromEquirect: vi.fn(() => new Float32Array(27)),
+}));
+
+vi.mock("../../../packages/babylon-lite/src/loader-hdr/hdr-ibl-pipeline.js", () => ({
+    HDR_LOD_GENERATION_SCALE: 0.8,
+    equirectToCubemapGPU: vi.fn(() => makeTexture("hdr-source")),
+    prefilterCubemapGPU: vi.fn(() => makeTexture("hdr-specular")),
+    generateBrdfLut: vi.fn(() => makeTexture("hdr-brdf")),
+}));
+
 /** The subset of the fake texture the ref-count assertions need. */
 type FakeTexture = { destroy: ReturnType<typeof vi.fn> };
 
@@ -140,6 +152,11 @@ describe("rebuildSceneEnvironment", () => {
         url: "/assets/studio.env",
         brdfUrl: "/assets/brdf.png",
     };
+    const hdrSource: EnvironmentRecoverySource = {
+        kind: "hdr",
+        url: "/assets/studio.hdr",
+        faceSize: 512,
+    };
 
     it("is a no-op for a scene that never loaded an environment", async () => {
         const scene = makeScene(undefined);
@@ -205,6 +222,20 @@ describe("rebuildSceneEnvironment", () => {
         // pre-scaled array rather than allocating a fresh one the scene UBO would have to re-read.
         expect(textures._sphericalHarmonics).toBe(originalHarmonics);
         expect(textures._specularCube).not.toBe(originalCube);
+    });
+
+    it("restores HDR environments with Babylon's 0.8 reflection LOD scale", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => new Response(new Uint8Array([1])))
+        );
+        const textures = makeEnvironmentTextures();
+        textures._lodGenerationScale = 1;
+        const scene = makeScene(textures, hdrSource);
+
+        await rebuildSceneEnvironment(makeEngine(), scene);
+
+        expect(textures._lodGenerationScale).toBe(0.8);
     });
 
     it("releases every generation of replacement textures, not just the most recent one", async () => {
