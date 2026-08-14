@@ -17,8 +17,8 @@ tool/layouts/
 # rewrites all three whether or not anything changed.
 tool/test/shot-*.png
 
-# The exported ship: a 31 MB .glb rebuilt from the manifest by "Export glb",
-# and the timestamped backups the server keeps on every write. Those backups
+# The exported ship: a 38 MB .glb rebuilt from the manifest by Save, and the
+# timestamped backups the server keeps on every write. Those backups
 # are ignored here but are NOT expendable on disk - they are the recovery path,
 # and they have already been the only thing that got work back. The live
 # manifest itself is NOT ignored (it is the ship), and neither is
@@ -27,7 +27,11 @@ export/*.glb
 export/ship_manifest.*-*.json
 export/ship_collision.*-*.json
 export/ship_autosave.*-*.json
-export/lightmaps/
+
+# The captured environment probes: .env cubemaps the editor renders on demand,
+# their stamps, and the index that records what was captured. Rebuilt by Capture
+# from the ship itself, so they are outputs rather than inputs.
+export/environments/
 
 # The current recovery copy, rewritten every couple of minutes while you work.
 # Never a deliberate save, so never part of the history.
@@ -40,6 +44,10 @@ export/ship_autosave.json
 # and point ENV_HDRI (tool/public/js/editor.js) at it.
 env/*.hdr
 
-# Deliberately NOT ignored, despite the size:
-#   kit/  35 MB of CC0 modules - see license.txt. Bundled so the editor runs
-#         anywhere without a separate download.
+# Deliberately NOT ignored: export/ship_manifest.json and
+# export/ship_collision.json. Those two ARE the ship.
+#
+# The kit is no longer here at all. The modules are read from BabylonAssets -
+# a local checkout of it, or https://assets.babylonjs.com, whichever
+# tool/config.json selects - because they are not all CC0 and are not ours to
+# redistribute. See license.txt.

@@ -1,5 +1,11 @@
 {
-  "kitDir": "../kit",
+  "kits": {
+    "source": "local",
+    "localDir": "../../../../../../../../BabylonAssets",
+    "onlineBase": "https://assets.babylonjs.com/",
+    "prefix": "kits",
+    "folders": ["Modular SciFi MegaKit", "Sci-Fi Essentials Kit"]
+  },
   "exportDir": "../export",
   "envDir": "../env",
   "skybox": "../../../../../../public/aquanova/skybox/sky_equirect.png",

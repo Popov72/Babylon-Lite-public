@@ -1,0 +1,23 @@
+{
+  "_note": "How a pack has to be read, when reading it as it ships would be wrong. Keyed by the kit folder name in BabylonAssets/kits. A kit that is not named here is loaded exactly as it comes, which is the case for every glTF kit.",
+  "kits": {
+    "Ultimate Nature Pack": {
+      "_why": "Quaternius' .fbx packs are exported with every face flat: all 1450 vertices of CommonTree_1 carry as many normals as they have corners, up to 159 degrees apart. Their own renders are smooth-shaded, and a faceted trunk next to a smooth-shaded ship reads as broken rather than as stylised.",
+      "smoothNormalsBelowDeg": 60
+    },
+    "Ultimate RPG Items Pack": {
+      "_why": "Same export, same fix. 60 degrees keeps a sword's bevels and its blade-to-guard corner hard - those edges are 75 degrees and over - while rounding the shaft and pommel facets, which sit at 45.",
+      "smoothNormalsBelowDeg": 60,
+      "materials": {
+        "_why": "Glass and the five liquids are the only materials in the pack that reach Babylon with no colour at all - 53 of them, against 214 that carry one. They are exactly the see-through ones: Blender's FBX exporter writes Phong properties from a Principled BSDF and has nothing to write for a transparent shader, so it wrote no property block, and Babylon fell back on its default 0.8 grey. That is why a filled potion looked identical to an empty one - the liquid, the glass and nothing at all were all the same colour.",
+        "_values": "The pack's own palette, taken from the opaque material of the matching hue and multiplied by the 0.8 DiffuseFactor the loader applies to those, so a red potion is the same red as a red gem. Yellow has no opaque twin; LightGold is the pack's nearest.",
+        "Liquid_Red":     { "tint": [0.640, 0.067, 0.045] },
+        "Liquid_Green":   { "tint": [0.130, 0.640, 0.165] },
+        "Liquid_Cyan":    { "tint": [0.123, 0.640, 0.454] },
+        "Liquid_Magenta": { "tint": [0.640, 0.055, 0.442] },
+        "Liquid_Yellow":  { "tint": [0.630, 0.542, 0.152] },
+        "Glass":          { "tint": [0.640, 0.680, 0.720], "alpha": 0.3 }
+      }
+    }
+  }
+}

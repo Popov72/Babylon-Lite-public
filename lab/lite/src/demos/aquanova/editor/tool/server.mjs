@@ -2,17 +2,18 @@
 //
 //   node server.mjs            -> http://localhost:5173
 //
-// It does four things:
+// It does five things:
 //   1. serves public/ (the app itself)
-//   2. mounts the Modular SciFi MegaKit glTF folder read-only at /kit/...
+//   2. serves the Quaternius kits, from a local BabylonAssets checkout or the CDN
 //   3. exposes the module catalogue and a thumbnail cache
 //   4. writes the layout manifest and the exported ship.glb to disk
+//   5. holds the environment probe cubemaps the editor captures, and the index
+//      that says which of them are still stale
 
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -22,7 +23,34 @@ const CONFIG = JSON.parse(fs.readFileSync(path.join(HERE, "config.json"), "utf8"
 // working directory, so the relative defaults keep pointing at this copy's own
 // folders wherever the editor is checked out or copied to. An absolute path
 // still wins, for anyone pointing the tool at a kit held somewhere else.
-const KIT_DIR = path.resolve(HERE, CONFIG.kitDir);
+//
+// ------------------------------------------------------------------- the kits
+//
+// The kits are NOT bundled with the editor any more. They live in the
+// BabylonAssets repository, whose root maps 1:1 onto https://assets.babylonjs.com,
+// and the editor reads them from one of two places:
+//
+//   "local"  - a checkout of BabylonAssets on this machine. Mounted read-only
+//              at /assets/, so the app is same-origin with its own assets and
+//              nobody has to start a second web server or think about CORS.
+//   "online" - https://assets.babylonjs.com directly. The catalogue still has
+//              to be built from a local listing, because a static CDN cannot be
+//              asked what files it holds - so `localDir` must be present even in
+//              online mode. What changes is only where the *module URLs* point.
+//
+// SHIP_KITS_SOURCE / SHIP_ASSETS_DIR override both, so a run can be flipped
+// without editing the config.
+const KITS = CONFIG.kits || {};
+const KITS_SOURCE = (process.env.SHIP_KITS_SOURCE || KITS.source || "local").toLowerCase();
+const ASSETS_DIR = path.resolve(HERE, process.env.SHIP_ASSETS_DIR || KITS.localDir || "../../../../../../../../BabylonAssets");
+// Trailing slash normalised once: every URL below is built by concatenation.
+const ONLINE_BASE = String(KITS.onlineBase || "https://assets.babylonjs.com/").replace(/\/*$/, "/");
+// Where the kits sit inside the assets tree. One string, so local and online
+// cannot drift apart.
+const KITS_PREFIX = String(KITS.prefix || "kits").replace(/^\/+|\/+$/g, "");
+const KITS_DIR = path.join(ASSETS_DIR, KITS_PREFIX);
+// Which kits to offer, in palette order. Empty means "every folder in kits/".
+const KIT_FOLDERS = Array.isArray(KITS.folders) ? KITS.folders : [];
 const EXPORT_DIR = path.resolve(HERE,
   // Overridable so the test suite can point at a scratch directory instead of
   // the real export folder - a test run must never touch a real ship.
@@ -51,14 +79,15 @@ const MIME = {
   ".gltf": "model/gltf+json",
   ".glb": "model/gltf-binary",
   ".bin": "application/octet-stream",
+  // No registered media type exists for FBX, and the loader reads it as an
+  // ArrayBuffer, so the honest answer is "bytes".
+  ".fbx": "application/octet-stream",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".hdr": "application/octet-stream",
   ".env": "application/octet-stream",
   ".svg": "image/svg+xml",
 };
-
-const CATEGORY_ORDER = ["Walls", "Platforms", "Columns", "Props", "Decals", "Aliens"];
 
 function send(res, code, body, type = "text/plain; charset=utf-8", extra = {}) {
   res.writeHead(code, { "Content-Type": type, "Cache-Control": "no-cache", ...extra });
@@ -114,32 +143,289 @@ function readBody(req, limit = 256 * 1024 * 1024) {
 
 // ---------------------------------------------------------------- catalogue
 
-async function buildCatalogue() {
-  const entries = await fsp.readdir(KIT_DIR, { withFileTypes: true });
-  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-  dirs.sort((a, b) => {
+// Category order across every kit. Anything unlisted sorts after, alphabetically.
+const CATEGORY_ORDER = ["Walls", "Platforms", "Columns", "Props", "Decals", "Aliens", "Enemies", "Guns"];
+
+/**
+ * Model files a kit may ship, best first.
+ *
+ * Babylon's loaders bundle registers a plugin for each, so a module loads the
+ * same way whatever it was authored in; the order only decides which copy to
+ * list when a pack ships the same models in more than one format.
+ */
+const MODEL_EXT = [".gltf", ".glb", ".fbx"];
+const extensionOf = (name) => MODEL_EXT.find((e) => name.toLowerCase().endsWith(e)) || null;
+
+/**
+ * Folder names that name a *file format*, not a category.
+ *
+ * Quaternius ships some packs as `<Kit>/glTF/…` or `<Kit>/FBX/…`, sometimes
+ * both at once. Such a folder says how the pack was exported, not what is in
+ * it, so reading it as a category gives a palette with one tab called "glTF" -
+ * and reading both would offer every model twice. The set is deliberately
+ * wider than the formats we can actually load: `Blend/` has to be recognised
+ * as packaging too, or a pack shipping it would look like a foldered kit and
+ * grow a "Blend" tab holding nothing.
+ *
+ * The kits in BabylonAssets are curated - a pack copied in gets its models
+ * dispatched into category folders and the wrapper dropped - so this is the
+ * path a pack takes on the day it is dropped in, before anyone has sorted it,
+ * rather than the path any kit stays on.
+ */
+const FORMAT_DIRS = new Set([
+  "gltf", "glb", "fbx", "obj", "dae", "usd", "usdz", "blend", "blender", "source",
+]);
+
+/**
+ * The category of a module in a kit that has no category folders.
+ *
+ * Every kit in the library ships its modules in Walls/, Platforms/, Props/…
+ * and the folder IS the category. A pack freshly dropped in has not been
+ * sorted yet, and several arrive with the grouping carried in the filename
+ * instead - `Enemy_Raptor`, `Gun_Shotgun`, `Prop_Crate` - so the prefix before
+ * the first underscore is read as the category and pluralised. A file with no
+ * underscore has nothing to group by and lands in "Other" rather than
+ * inventing a category per model.
+ *
+ * The prefix is only a category when it actually groups something, which is
+ * why this counts before it names. In some packs the same underscore marks a
+ * *variant* - `Potion1_Empty`, `Potion1_Filled`, `Sword_Golden` - and taking
+ * it at face value gave the RPG pack thirty tabs called "Potion1s", "Potion2s"…
+ * holding two models each. A pair of variants is not a category; below the
+ * threshold the model goes to "Other", which says what is true: the filenames
+ * of that pack carry no grouping, and if it needs one it has to be foldered.
+ */
+const MIN_DERIVED_CATEGORY = 3;
+const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".ktx2", ".dds", ".basis"]);
+const prefixOf = (name) => {
+  const cut = name.indexOf("_");
+  return cut > 0 ? name.slice(0, cut) : "";
+};
+
+/**
+ * Enough English to name a tab.
+ *
+ * Blind `+ "s"` is not enough once kits beyond the sci-fi ones are in: the
+ * Pirate pack's `Characters_*` came out as "Characterss", the Nature pack's
+ * `Bush_*` as "Bushs" and `Cactus_*` as "Cactuss". A prefix that is already
+ * plural is left alone, a sibilant takes "es", and a consonant + y becomes
+ * "ies" - which is also where "Enemies" now comes from, so there is no table
+ * of exceptions to keep in step with the kits.
+ */
+function pluralise(word) {
+  if (/(s|es)$/i.test(word)) return word;
+  if (/(sh|ch|x|z)$/i.test(word)) return `${word}es`;
+  if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
+  return `${word}s`;
+}
+
+function categoriseByName(names) {
+  const counts = new Map();
+  for (const n of names) {
+    const p = prefixOf(n);
+    if (p) counts.set(p, (counts.get(p) || 0) + 1);
+  }
+  const out = new Map();
+  for (const n of names) {
+    const p = prefixOf(n);
+    out.set(n, p && counts.get(p) >= MIN_DERIVED_CATEGORY ? pluralise(p) : "Other");
+  }
+  return out;
+}
+
+/** Categories in palette order: the known ones first, then the rest alphabetically. */
+function orderCategories(names) {
+  return [...names].sort((a, b) => {
     const ia = CATEGORY_ORDER.indexOf(a);
     const ib = CATEGORY_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
   });
+}
 
-  const categories = [];
-  for (const dir of dirs) {
-    const files = await fsp.readdir(path.join(KIT_DIR, dir));
-    const modules = files
-      .filter((f) => f.toLowerCase().endsWith(".gltf"))
-      .map((f) => {
-        const name = f.slice(0, -".gltf".length);
-        return { id: `${dir}/${name}`, name, category: dir, url: `/kit/${dir}/${f}` };
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
-    if (modules.length) categories.push({ name: dir, count: modules.length, modules });
+/** The kits to offer, in palette order: config order first, then any others. */
+async function kitFolders() {
+  let present;
+  try {
+    present = (await fsp.readdir(KITS_DIR, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
   }
+  const wanted = KIT_FOLDERS.filter((k) => present.includes(k));
+  const rest = present.filter((k) => !wanted.includes(k)).sort((a, b) => a.localeCompare(b));
+  // A kit dropped into kits/ shows up without a config edit; the config only
+  // decides what comes first.
+  return [...wanted, ...rest];
+}
+
+/**
+ * Where a kit file is served from, as a URL the browser can hand to the loader.
+ *
+ * The path is the same on both sides - it is the BabylonAssets layout either
+ * way - so only the origin differs. Encoded per segment, because kit folders
+ * have spaces in their names ("Modular SciFi MegaKit").
+ */
+function kitUrl(relative) {
+  const encoded = relative.split("/").map(encodeURIComponent).join("/");
+  return KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/${encoded}` : `/assets/${KITS_PREFIX}/${encoded}`;
+}
+
+/**
+ * Where an unsorted kit's models are, and the files there.
+ *
+ * The kit root wins whenever it holds models at all - a pack that ships flat.
+ * Otherwise the best format wrapper does, ranked by MODEL_EXT, so a pack
+ * shipping both `glTF/` and `FBX/` is read as glTF and each model is listed
+ * once. Everything else under the kit (Blend/, loose textures, the licence) is
+ * left alone.
+ */
+async function flatSource(root, entries) {
+  const here = entries.filter((e) => e.isFile() && extensionOf(e.name)).map((e) => e.name);
+  if (here.length) return { dir: "", files: here };
+
+  let best = null;
+  for (const e of entries) {
+    if (!e.isDirectory() || !FORMAT_DIRS.has(e.name.toLowerCase())) continue;
+    const files = (await fsp.readdir(path.join(root, e.name))).filter((f) => extensionOf(f));
+    if (!files.length) continue;
+    const rank = Math.min(...files.map((f) => MODEL_EXT.indexOf(extensionOf(f))));
+    if (!best || rank < best.rank) best = { dir: e.name, files, rank };
+  }
+  return best || { dir: "", files: [] };
+}
+
+/**
+ * One kit's modules, grouped into categories, and where its textures live.
+ *
+ * Three layouts are read:
+ *
+ *   Walls/, Platforms/, Props/…    the folder IS the category - every kit in
+ *                                  the library, and the one to aim for
+ *   Enemy_Raptor.gltf, …           flat, with the category in the name
+ *   glTF/…  or  FBX/…              a format wrapper
+ *
+ * The last two are how packs arrive from Quaternius, before anyone has sorted
+ * them; a pack is usable the moment it is dropped into `kits/`, and sorting it
+ * into folders is a separate step. The wrapper is read as the flat case: it is
+ * packaging, not meaning, so it is stepped through and the categories come
+ * from the filenames.
+ *
+ * A kit is scanned as flat only when it has no category folders. Sorting a
+ * pack into folders is therefore what fixes its module ids - and a kit that
+ * grows a folder later does not silently change every id it already
+ * published, because there was no folder to disagree with.
+ *
+ * `rootTextures` is the shipped-as-is quirk of a kit whose models sit in a
+ * subfolder: the model files name their textures with a bare filename, and
+ * those textures sit one level up, at the kit root. Sorting a pack keeps them
+ * there rather than copying the atlas set into every folder - a glTF URI
+ * cannot say "../", and the MegaKit's 27 MB of atlases would become 99 MB
+ * across its six folders - so the list travels to the client, which teaches
+ * the loader where to look. See `kit.js`.
+ */
+async function scanKit(kit) {
+  const root = path.join(KITS_DIR, kit);
+  const entries = await fsp.readdir(root, { withFileTypes: true });
+  const categoryDirs = entries
+    .filter((e) => e.isDirectory() && !FORMAT_DIRS.has(e.name.toLowerCase()))
+    .map((e) => e.name)
+    .sort((a, b) => a.localeCompare(b));
+  const byCategory = new Map();
+  const add = (category, name, relative) => {
+    const list = byCategory.get(category);
+    // The id is kit-qualified so two kits may hold a `Props/Crate` without one
+    // shadowing the other. It is what the manifest stores, so it is a permanent
+    // contract, not a display string.
+    const module = { id: `${kit}/${category}/${name}`, name, kit, category, url: kitUrl(relative) };
+    if (list) list.push(module);
+    else byCategory.set(category, [module]);
+  };
+
+  // The folders the models are actually served from - one per category, or the
+  // single format wrapper. Empty when they sit at the kit root.
+  let modelDirs = [];
+  if (categoryDirs.length) {
+    modelDirs = categoryDirs;
+    for (const dir of categoryDirs) {
+      for (const f of await fsp.readdir(path.join(root, dir))) {
+        const ext = extensionOf(f);
+        if (!ext) continue;
+        add(dir, f.slice(0, -ext.length), `${kit}/${dir}/${f}`);
+      }
+    }
+  } else {
+    const { dir, files } = await flatSource(root, entries);
+    if (dir) modelDirs = [dir];
+    const names = files.map((f) => f.slice(0, -extensionOf(f).length));
+    const category = categoriseByName(names);
+    for (const f of files) {
+      const name = f.slice(0, -extensionOf(f).length);
+      add(category.get(name), name, dir ? `${kit}/${dir}/${f}` : `${kit}/${f}`);
+    }
+  }
+
+  // Only a kit served out of subfolders needs the redirect: when the models sit
+  // at the kit root the textures already sit beside them.
+  const rootTextures = modelDirs.length
+    ? entries.filter((e) => e.isFile() && IMAGE_EXT.has(path.extname(e.name).toLowerCase())).map((e) => e.name)
+    : [];
+  return {
+    byCategory,
+    info: {
+      name: kit,
+      base: kitUrl(kit) + "/",
+      // Display categories, in palette order - the palette shows one kit at a
+      // time, so these are its tabs. `modelDirs` is the URL side of the same
+      // kit and is not interchangeable with them: under a format wrapper the
+      // tab says "Props" while the folder says "glTF".
+      categories: orderCategories(byCategory.keys()),
+      count: [...byCategory.values()].reduce((n, list) => n + list.length, 0),
+      modelDirs,
+      rootTextures,
+    },
+  };
+}
+
+async function buildCatalogue() {
+  const names = await kitFolders();
+  const categories = [];
+  const seen = new Map();
+  const kits = [];
+  for (const name of names) {
+    let scan;
+    try {
+      scan = await scanKit(name);
+    } catch (e) {
+      console.warn(`could not scan kit "${name}":`, e.message);
+      continue;
+    }
+    kits.push(scan.info);
+    for (const [category, modules] of scan.byCategory) {
+      // Kits share category names - several have Props - and the catalogue is
+      // the whole library, so the modules are merged under one entry rather
+      // than the name appearing twice. The palette shows one kit at a time and
+      // takes its tabs from that kit's own `categories`; this merged list is
+      // what `byId` is built from, so a manifest can name a module from any
+      // kit whatever the palette happens to be showing.
+      const entry = seen.get(category) || { name: category, count: 0, modules: [] };
+      if (!seen.has(category)) {
+        seen.set(category, entry);
+        categories.push(entry);
+      }
+      entry.modules.push(...modules);
+    }
+  }
+  for (const c of categories) {
+    c.modules.sort((a, b) => a.kit.localeCompare(b.kit) || a.name.localeCompare(b.name));
+    c.count = c.modules.length;
+  }
+  const order = orderCategories(categories.map((c) => c.name));
+  categories.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+
   // fluidSim is the global list a liquefied mesh may draw from; it travels with
   // the catalogue so the app needs no extra round trip on boot. Re-read per
   // request rather than taken from the boot-time CONFIG, so adding a sim to
   // config.json only needs a page refresh.
-  return { kitDir: KIT_DIR, categories, fluidSim: readFluidSim() };
+  return { kitsSource: KITS_SOURCE, kitsBase: KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/` : KITS_DIR, kits, categories, fluidSim: readFluidSim() };
 }
 
 function readFluidSim() {
@@ -177,146 +463,158 @@ async function dropOlderVersions(dir, key) {
   }));
 }
 
-// ------------------------------------------------------------------- baking
+// ------------------------------------------------- the environment probes
 //
-// A bake is minutes of Cycles, not milliseconds of file I/O, so it cannot be
-// the response to a request: the browser would time out long before Blender
-// finished. POST starts it and returns at once, GET reports on it. Only one
-// runs at a time - two Blenders writing the same lightmaps/ folder would race
-// each other, and the second one to finish would win at random.
+// A probe is a box the ship author draws around a room, plus the point inside
+// it the cubemap is captured from. The capture itself happens in the browser -
+// Babylon renders the six faces, prefilters them and serialises the .env - so
+// this end owns only the two things a browser cannot: the folder the files
+// live in, and the index that says what is in it.
+//
+// The index is not authored here and is not a second copy of the ship. It is a
+// record of what has been GENERATED: one entry per probe, carrying the volume
+// it projects onto, the point it was taken from, and the digest of the scene
+// state it was taken of. `sync-ship.ts` reads exactly this file, and the stamp
+// beside each .env is what lets it refuse a half-copied folder.
 
-const BLENDER_CANDIDATES = [
-  process.env.BLENDER,
-  CONFIG.blenderPath && path.resolve(HERE, CONFIG.blenderPath),
-  "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe",
-  "C:/Program Files/Blender Foundation/Blender 4.2/blender.exe",
-  "/usr/bin/blender",
-  "/Applications/Blender.app/Contents/MacOS/Blender",
-].filter(Boolean);
+const ENVIRONMENT_DIR = path.join(EXPORT_DIR, "environments");
+const LOCAL_ENV_INDEX = path.join(ENVIRONMENT_DIR, "local-environments.json");
 
-const BAKE_SCRIPT = path.join(HERE, "bake_lightmaps.py");
-const LIGHTMAP_DIR = path.join(EXPORT_DIR, "lightmaps");
-
-let bakeJob = null;
-
-function findBlender() {
-  return BLENDER_CANDIDATES.find((p) => fs.existsSync(p)) || null;
-}
-
-/** The equirect that lights the ship through its windows, if the project has one. */
-function findSkybox(asked) {
-  const wanted = asked || CONFIG.skybox;
-  if (!wanted) return null;
-  const full = path.resolve(HERE, wanted);
-  return fs.existsSync(full) ? full : null;
-}
-
-function bakeArgs(opts) {
-  const out = ["--glb", GLB, "--manifest", MANIFEST, "--out", LIGHTMAP_DIR];
-  const sky = findSkybox(opts.skybox);
-  if (sky) out.push("--skybox", sky);
-  if (Number.isFinite(opts.envStrength)) out.push("--env-strength", String(opts.envStrength));
-  if (Number.isFinite(opts.samples)) out.push("--samples", String(Math.round(opts.samples)));
-  if (Number.isFinite(opts.resolution)) out.push("--resolution", String(Math.round(opts.resolution)));
-  // Size and margin normally come from the manifest, per chunk - these are the
-  // "render me something now" override, and they apply to every chunk.
-  if (Number.isFinite(opts.width)) out.push("--width", String(Math.round(opts.width)));
-  if (Number.isFinite(opts.height)) out.push("--height", String(Math.round(opts.height)));
-  if (Number.isFinite(opts.margin)) out.push("--margin", String(Math.round(opts.margin)));
-  if (opts.device === "GPU" || opts.device === "CPU") out.push("--device", opts.device);
-  for (const c of opts.chunks || []) out.push("--chunk", String(c));
-  if (opts.force) out.push("--force");
-  if (opts.gui) out.push("--interactive");
-  if (opts.dryRun) out.push("--no-bake");
-  return out;
+/** The .env a probe id is written to. Ids are validated before they get here. */
+function environmentFileName(id) {
+  return `local_environment_${id}.env`;
 }
 
 /**
- * Open the ship in a Blender window, set up but not baked.
- *
- * Deliberately not a `bakeJob`: this one belongs to the user, not to the
- * editor. It has no end the server can wait for, its output is a window rather
- * than a report, and polling it for progress would be answering a question the
- * user is already looking at. So it is spawned detached and forgotten - the
- * only thing the editor ever hears back is the files the session writes.
+ * A probe id has to be safe as a file name and stable as a JSON key, so it is
+ * restricted rather than escaped: an id that cannot be written verbatim is
+ * refused, and the editor never offers one.
  */
-function startSession(opts) {
-  const blender = findBlender();
-  if (!blender) throw new Error("no Blender found - set BLENDER or config.blenderPath");
-  if (!fs.existsSync(GLB)) throw new Error("no ship.glb to open - export the ship first");
-
-  const args = bakeArgs({ ...opts, gui: true });
-  // Inherited stdio, not ignored: a session that dies during setup would
-  // otherwise fail in complete silence, and its traceback is the only thing
-  // that would say why. It lands in this server's own console.
-  const child = spawn(blender,
-    ["--factory-startup", "--python", BAKE_SCRIPT, "--", ...args],
-    { detached: true, stdio: "inherit" });
-  child.unref();
-  return { pid: child.pid, blender, args };
+function validProbeId(id) {
+  const ident = String(id || "").trim();
+  if (!ident || ident.length > 128) return null;
+  return /^[A-Za-z0-9._-]+$/.test(ident) ? ident : null;
 }
 
-/** What a live session left for the editor to pick back up, if anything. */
-function readLightPowers() {
-  const file = path.join(EXPORT_DIR, "light_powers.json");
-  if (!fs.existsSync(file)) return null;
+function readLocalEnvironmentIndex() {
   try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!data || typeof data.watts !== "object" || !data.watts) return null;
-    return { ...data, at: fs.statSync(file).mtimeMs };
-  } catch { return null; }
+    const data = JSON.parse(fs.readFileSync(LOCAL_ENV_INDEX, "utf8"));
+    if (!data || typeof data !== "object") return { probes: {}, chunks: {} };
+    const chunks = data.chunks && typeof data.chunks === "object" ? data.chunks : {};
+    const probes = data.probes && typeof data.probes === "object" ? data.probes : null;
+    // A folder written before explicit probes only has `chunks`, keyed by what
+    // was then each chunk's own probe id - which is exactly what a probe id
+    // looks like, so it doubles as the `probes` map.
+    return { probes: probes || chunks, chunks };
+  } catch {
+    return { probes: {}, chunks: {} };
+  }
 }
 
-function startBake(opts) {
-  const blender = findBlender();
-  if (!blender) throw new Error("no Blender found - set BLENDER or config.blenderPath");
-  if (!fs.existsSync(GLB)) throw new Error("no ship.glb to bake - export the ship first");
-
-  const args = bakeArgs(opts);
-  const child = spawn(blender,
-    ["-b", "--factory-startup", "--python", BAKE_SCRIPT, "--", ...args],
-    { windowsHide: true });
-
-  const job = {
-    startedAt: Date.now(), finishedAt: null, running: true, ok: null,
-    error: null, report: null, blender, args, log: [], child,
-  };
-  bakeJob = job;
-
-  const note = (buf) => {
-    for (const line of String(buf).split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      if (line.startsWith("BAKE_REPORT ")) {
-        try {
-          job.report = JSON.parse(line.slice("BAKE_REPORT ".length));
-        } catch { /* a truncated line is not worth failing the bake over */ }
-        continue;
-      }
-      // Cycles prints a progress line per tile; keeping the last few hundred is
-      // enough to see what it is doing without holding a whole render in RAM.
-      job.log.push(line);
-      if (job.log.length > 400) job.log.splice(0, job.log.length - 400);
-    }
-  };
-  child.stdout.on("data", note);
-  child.stderr.on("data", note);
-  child.on("error", (err) => { job.error = String(err.message || err); });
-  child.on("close", (code) => {
-    job.running = false;
-    job.finishedAt = Date.now();
-    job.ok = code === 0 && !!job.report;
-    if (!job.ok && !job.error) {
-      job.error = code === 0 ? "blender wrote no report" : `blender exited ${code}`;
-    }
-    job.child = null;
-  });
-  return job;
+// The same `probes` primary / `chunks` legacy-alias fallback the runtime and
+// sync-ship.ts use.
+function localEnvironmentEntry(index, id) {
+  return (index.probes && index.probes[id]) || (index.chunks && index.chunks[id]) || null;
 }
 
-function bakeStatus() {
-  if (!bakeJob) return { running: false, started: false };
-  const { child, log, ...rest } = bakeJob;
-  return { started: true, ...rest, log: log.slice(-40) };
+/**
+ * What is on disk, and which probes still owe a capture.
+ *
+ * `pending` is decided against the index alone - a probe whose .env is missing,
+ * or whose stamp does not match the digest recorded beside it. Whether the SHIP
+ * has moved since is a question only the editor can answer, because the digest
+ * describes a live scene rather than a file: the browser compares its own
+ * digest with `hash` and declares what it needs before it starts.
+ */
+function localEnvironmentStatus() {
+  const index = readLocalEnvironmentIndex();
+  const pending = [];
+  for (const [id, entry] of Object.entries(index.probes)) {
+    const env = safeJoin(ENVIRONMENT_DIR, String(entry?.env || ""));
+    const stamp = env ? `${env}.stamp` : null;
+    const current = stamp && fs.existsSync(stamp)
+      ? fs.readFileSync(stamp, "utf8").trim() : "";
+    if (!env || !fs.existsSync(env) || current !== entry?.hash) {
+      pending.push({
+        id,
+        env: entry?.env,
+        position: entry?.position,
+        boxPosition: entry?.boxPosition,
+        boxSize: entry?.boxSize,
+        resolution: entry?.resolution,
+        hash: entry?.hash,
+      });
+    }
+  }
+  return { probes: index.probes, chunks: index.chunks, pending };
+}
+
+async function writeLocalEnvironmentIndex(index) {
+  await fsp.mkdir(ENVIRONMENT_DIR, { recursive: true });
+  await fsp.writeFile(LOCAL_ENV_INDEX, `${JSON.stringify(index, null, 1)}\n`);
+}
+
+/**
+ * Declare the probes the ship currently has, and get back what still owes a
+ * capture.
+ *
+ * The editor sends its whole authored list on every generate, so this is also
+ * where a deleted probe leaves the index: an id that is not declared is
+ * dropped, along with the .env and stamp it left behind. Nothing else prunes
+ * them, and a stale entry would otherwise be published to the runtime for ever.
+ *
+ * A declaration never invents a capture. It records the digest the editor is
+ * about to capture AT, which is what makes the file on disk stale the moment
+ * the ship moves - the stamp still holds the digest of the render that
+ * happened, and the two only agree again once the probe is taken again.
+ *
+ * `force` deletes the stamps rather than special-casing the comparison, so
+ * there is still exactly one rule for what is pending: the stamp beside a file
+ * has to match the digest declared for it. A forced probe simply has no stamp
+ * to match, which is also true after a crash mid-capture - and it means an
+ * interrupted force leaves the remaining probes still pending rather than
+ * looking done.
+ */
+async function declareLocalEnvironments(declared, force = false) {
+  const index = readLocalEnvironmentIndex();
+  const probes = {};
+  const seen = new Set();
+  for (const probe of Array.isArray(declared) ? declared : []) {
+    const id = validProbeId(probe?.id);
+    if (!id) continue;
+    seen.add(id);
+    const previous = localEnvironmentEntry(index, id) || {};
+    const unchanged = previous.hash === probe.hash;
+    probes[id] = {
+      id,
+      env: environmentFileName(id),
+      position: probe.position,
+      boxPosition: probe.boxPosition,
+      boxSize: probe.boxSize,
+      resolution: probe.resolution,
+      hash: probe.hash,
+      // Carried over so an untouched probe stays byte-identical in the index
+      // and only a real recapture rewrites its row.
+      generatedAt: unchanged && !force ? previous.generatedAt ?? null : null,
+      bytes: unchanged && !force ? previous.bytes ?? null : null,
+    };
+  }
+  await fsp.mkdir(ENVIRONMENT_DIR, { recursive: true });
+  if (force) {
+    for (const entry of Object.values(probes)) {
+      const env = safeJoin(ENVIRONMENT_DIR, String(entry.env || ""));
+      if (env) await fsp.rm(`${env}.stamp`, { force: true }).catch(() => {});
+    }
+  }
+  for (const [id, entry] of Object.entries(index.probes)) {
+    if (seen.has(id)) continue;
+    const env = safeJoin(ENVIRONMENT_DIR, String(entry?.env || ""));
+    if (!env) continue;
+    await fsp.rm(env, { force: true }).catch(() => {});
+    await fsp.rm(`${env}.stamp`, { force: true }).catch(() => {});
+  }
+  await writeLocalEnvironmentIndex({ probes });
+  return localEnvironmentStatus();
 }
 
 // ------------------------------------------------------------------ routes
@@ -334,17 +632,17 @@ async function handle(req, res) {
     return sendJson(res, 200, await buildCatalogue());
   }
 
-  if (p.startsWith("/kit/")) {
-    const rel = p.slice("/kit/".length);
-    const file = safeJoin(KIT_DIR, rel);
+  // BabylonAssets, mounted read-only at the same paths the CDN uses, so a module
+  // URL differs between local and online only in its origin. Serving it here
+  // rather than from a second web server keeps the app same-origin with its own
+  // assets: no CORS, no extra process to remember to start.
+  //
+  // Present in online mode too. The catalogue is still built by listing the
+  // local folder - a static CDN cannot be asked what it holds - and the
+  // thumbnailer and any hand-written URL keep working while the CDN catches up.
+  if (p.startsWith("/assets/")) {
+    const file = safeJoin(ASSETS_DIR, p.slice("/assets/".length));
     if (!file) return send(res, 403, "forbidden");
-    // The kit's .gltf files reference their textures by bare filename
-    // ("T_Trim_02_ORM.png") but the PNGs live once at the glTF root rather than
-    // beside each module, so fall back to the root before giving up.
-    if (!fs.existsSync(file)) {
-      const atRoot = safeJoin(KIT_DIR, path.basename(rel));
-      if (atRoot && fs.existsSync(atRoot)) return serveFile(res, atRoot);
-    }
     return serveFile(res, file);
   }
 
@@ -426,7 +724,6 @@ async function handle(req, res) {
       const file = name ? safeJoin(LAYOUT_DIR, name + ".json") : MANIFEST;
       if (!file) return send(res, 403, "forbidden");
       await fsp.mkdir(path.dirname(file), { recursive: true });
-      await backupIfForeign(file);
       const previous = await rotatePrevious(file);
       await fsp.writeFile(file, body);
       return sendJson(res, 200, {
@@ -512,55 +809,67 @@ async function handle(req, res) {
   if (p === "/api/export" && req.method === "POST") {
     const body = await readBody(req);
     await fsp.mkdir(EXPORT_DIR, { recursive: true });
-    await backupGlbIfForeign();
     await fsp.writeFile(GLB, body);
     return sendJson(res, 200, { ok: true, path: GLB, bytes: body.length });
   }
 
-  if (p === "/api/bake") {
-    if (req.method === "GET") {
-      return sendJson(res, 200, { ...bakeStatus(), available: !!findBlender() });
-    }
-    if (req.method === "POST") {
-      if (bakeJob?.running) return sendJson(res, 409, { ok: false, error: "a bake is running" });
-      let opts = {};
-      try {
-        const body = await readBody(req, 64 * 1024);
-        if (body.length) opts = JSON.parse(body.toString("utf8"));
-      } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
-      try {
-        if (opts.gui) {
-          const started = startSession(opts);
-          return sendJson(res, 202, { ok: true, gui: true, ...started });
-        }
-        const job = startBake(opts);
-        return sendJson(res, 202, { ok: true, startedAt: job.startedAt, args: job.args });
-      } catch (err) {
-        return sendJson(res, 503, { ok: false, error: String(err.message || err) });
-      }
-    }
-    if (req.method === "DELETE") {
-      if (!bakeJob?.running) return sendJson(res, 200, { ok: true, running: false });
-      bakeJob.error = "cancelled";
-      bakeJob.child?.kill();
-      return sendJson(res, 200, { ok: true, cancelled: true });
-    }
-    return send(res, 405, "method not allowed");
+  if (p === "/api/local-environments" && req.method === "GET") {
+    return sendJson(res, 200, localEnvironmentStatus());
   }
 
-  if (p === "/api/light-powers" && req.method === "GET") {
-    const powers = readLightPowers();
-    return sendJson(res, 200, powers || { watts: null });
+  if (p === "/api/local-environments" && req.method === "POST") {
+    let declared = [];
+    let force = false;
+    try {
+      const body = await readBody(req, 4 * 1024 * 1024);
+      const parsed = JSON.parse(body.toString("utf8"));
+      declared = parsed?.probes;
+      force = !!parsed?.force;
+    } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
+    if (!Array.isArray(declared)) {
+      return sendJson(res, 400, { ok: false, error: "probes must be an array" });
+    }
+    return sendJson(res, 200, await declareLocalEnvironments(declared, force));
   }
 
-  if (p.startsWith("/lightmaps/")) {
-    const file = safeJoin(LIGHTMAP_DIR, p.slice("/lightmaps/".length));
+  if (p.startsWith("/api/local-environment/") && req.method === "PUT") {
+    const id = decodeURIComponent(p.slice("/api/local-environment/".length));
+    const index = readLocalEnvironmentIndex();
+    const entry = localEnvironmentEntry(index, id);
+    if (!entry) return sendJson(res, 404, { ok: false, error: "unknown probe" });
+    const hash = url.searchParams.get("hash") || "";
+    if (!hash || hash !== entry.hash) {
+      return sendJson(res, 409, { ok: false, error: "probe changed during capture" });
+    }
+    const file = safeJoin(ENVIRONMENT_DIR, String(entry.env || ""));
+    if (!file || path.extname(file).toLowerCase() !== ".env") {
+      return sendJson(res, 400, { ok: false, error: "invalid environment filename" });
+    }
+    const body = await readBody(req, 128 * 1024 * 1024);
+    // Re-read: an authoring edit during the upload invalidates these bytes.
+    const fresh = readLocalEnvironmentIndex();
+    if (localEnvironmentEntry(fresh, id)?.hash !== hash) {
+      return sendJson(res, 409, { ok: false, error: "probe changed during capture" });
+    }
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await fsp.writeFile(file, body);
+    await fsp.writeFile(`${file}.stamp`, hash);
+    // The row is only complete once the bytes are down: `generatedAt`/`bytes`
+    // are what a reader looks at to tell a declared probe from a captured one.
+    if (fresh.probes[id]) {
+      fresh.probes[id] = { ...fresh.probes[id], bytes: body.length, generatedAt: new Date().toISOString() };
+      await writeLocalEnvironmentIndex({ probes: fresh.probes });
+    }
+    return sendJson(res, 200, { ok: true, bytes: body.length, file: path.basename(file) });
+  }
+
+  if (p.startsWith("/environments/")) {
+    const file = safeJoin(ENVIRONMENT_DIR, p.slice("/environments/".length));
     if (!file) return send(res, 403, "forbidden");
     return serveFile(res, file);
   }
 
-  // Read-only, and only ever read by the baked preview: the editor writes here
-  // through /api/export, never through a URL.
+  // Read-only: the editor writes here through /api/export, never through a URL.
   if (p.startsWith("/export/") && req.method === "GET") {
     const file = safeJoin(EXPORT_DIR, p.slice("/export/".length));
     if (!file) return send(res, 403, "forbidden");
@@ -572,19 +881,6 @@ async function handle(req, res) {
   const file = safeJoin(PUBLIC_DIR, rel);
   if (!file) return send(res, 403, "forbidden");
   return serveFile(res, file);
-}
-
-// The Blender pipeline already wrote an export/ship_manifest.json. It has no
-// `instances` array, so it cannot be reloaded by the editor - preserve it
-// once rather than silently destroying a known-good artefact.
-async function backupIfForeign(file) {
-  try {
-    const existing = JSON.parse(await fsp.readFile(file, "utf8"));
-    if (existing.instances) return;
-    const bak = file.replace(/\.json$/, ".blender.bak.json");
-    if (!fs.existsSync(bak)) await fsp.copyFile(file, bak);
-    console.log("preserved pre-existing manifest ->", bak);
-  } catch { /* absent or unparseable, nothing to preserve */ }
 }
 
 /**
@@ -607,15 +903,6 @@ async function rotatePrevious(file) {
   return dest;
 }
 
-// Same idea for the geometry: the first ship.glb we are asked to overwrite was
-// not written by us, so keep a copy before clobbering it.
-async function backupGlbIfForeign() {
-  const bak = GLB.replace(/\.glb$/, ".blender.bak.glb");
-  if (!fs.existsSync(GLB) || fs.existsSync(bak)) return;
-  await fsp.copyFile(GLB, bak);
-  console.log("preserved pre-existing ship.glb ->", bak);
-}
-
 const server = http.createServer((req, res) => {
   handle(req, res).catch((err) => {
     console.error(req.method, req.url, err);
@@ -625,7 +912,10 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`ship layout tool   http://localhost:${PORT}`);
-  console.log(`kit                ${KIT_DIR}`);
+  console.log(`kits (${KITS_SOURCE})${" ".repeat(Math.max(1, 12 - KITS_SOURCE.length))}${KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/` : KITS_DIR}`);
   console.log(`export             ${EXPORT_DIR}`);
-  if (!fs.existsSync(KIT_DIR)) console.warn("WARNING: kitDir does not exist");
+  if (!fs.existsSync(KITS_DIR)) {
+    console.warn(`WARNING: ${KITS_DIR} does not exist - set kits.localDir in config.json or SHIP_ASSETS_DIR.`);
+    console.warn("         A local BabylonAssets checkout is needed to LIST the kits even in online mode.");
+  }
 });

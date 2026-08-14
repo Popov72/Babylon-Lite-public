@@ -35,9 +35,9 @@ console.log("palette     :", await page.evaluate(
 
 const placed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(0, 0, 0));
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(4, 0, 0));
-  await ed.placeAt("Platforms/Door_Frame_A", new BABYLON.Vector3(8, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(0, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(4, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Platforms/Door_Frame_A", new BABYLON.Vector3(8, 0, 0));
   return {
     placements: ed.state.placements.size,
     meshes: window.__scene.meshes.length,
@@ -52,7 +52,7 @@ const dedupe = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const before = { m: window.__scene.materials.length, t: window.__scene.textures.length };
   for (let i = 0; i < 6; i++) {
-    await ed.placeAt("Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(i * 4, 0, 8));
+    await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(i * 4, 0, 8));
   }
   return { before, after: { m: window.__scene.materials.length, t: window.__scene.textures.length } };
 });
@@ -75,8 +75,8 @@ const glass = await page.evaluate(async () => {
   const kit = await import("/js/kit.js");
   const V = BABYLON.Vector3;
   const seen = {};
-  for (const [tag, id] of [["blend", "Walls/TopWindow_Corner_Curve_Inner"],
-    ["opaque", "Walls/WallWindow_Straight"]]) {
+  for (const [tag, id] of [["blend", "Modular SciFi MegaKit/Walls/TopWindow_Corner_Curve_Inner"],
+    ["opaque", "Modular SciFi MegaKit/Walls/WallWindow_Straight"]]) {
     const e = await ed.placeAt(id, new V(tag === "blend" ? 40 : 48, 0, 40));
     for (const m of e.node.getChildMeshes()) {
       const src = m.sourceMesh || m;
@@ -191,7 +191,7 @@ const rotation = await page.evaluate(async () => {
   const m = await import("/js/manifest.js");
   const first = await m.saveLayout();
   const before = JSON.stringify(m.buildManifest().instances);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight",
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
     new BABYLON.Vector3(40, 0, 40), { silent: true });
   await new Promise((r) => setTimeout(r, 1100));      // distinct second
   const second = await m.saveLayout();

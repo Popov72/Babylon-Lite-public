@@ -1,14 +1,38 @@
-Assets bundled with this editor
-===============================
+Assets used by this editor
+==========================
 
-The `kit/` folder is the glTF export of the **Modular SciFi MegaKit** by
-Quaternius, bundled here so the editor runs on any machine without a separate
-download or a purchase. `env/bank_vault_2k.hdr` is the image-based lighting the
-viewport uses.
+The editor itself bundles no models. It reads the Quaternius sci-fi kits from
+the **BabylonAssets** repository — either a local checkout of it or
+`https://assets.babylonjs.com`, whichever `tool/config.json` selects. Each kit
+folder there carries its own `license.txt`; read that one, not this file, before
+using any of those models.
 
-The kit is released under **CC0 1.0 Universal (Public Domain Dedication)**,
-which is what makes bundling and redistributing it here possible. In short: you
-may copy, modify, distribute and use it, including commercially, without asking
+    https://assets.babylonjs.com/kits/
+
+The only asset that lives here is `env/bank_vault_2k.hdr`, the image-based
+lighting the viewport uses in unbaked mode.
+
+
+-------------------------------------------------------------------------------
+Do not take the kits out of BabylonAssets
+-------------------------------------------------------------------------------
+
+Those folders are a working copy for this project, and they mix models from
+Quaternius' **$10/month PRO subscription** in with the free ones, unmarked. If
+you want these kits for something of your own, get them from the author:
+
+    https://quaternius.com/
+
+That is a request about where you obtain the files, not a restriction on top of
+the CC0 dedication.
+
+
+-------------------------------------------------------------------------------
+The kits
+-------------------------------------------------------------------------------
+
+Released under **CC0 1.0 Universal (Public Domain Dedication)**: you may copy,
+modify, distribute and use them, including commercially, without asking
 permission and without attribution.
 
     https://creativecommons.org/publicdomain/zero/1.0/
@@ -17,47 +41,14 @@ Attribution is not required, but is deserved:
 
     Models by @Quaternius — https://www.patreon.com/quaternius
 
-The pack's own licence file is reproduced verbatim below.
+Only the `glTF/` variant of each pack is kept — the editor loads glTF, and the
+Blender, FBX, OBJ, Godot and engine-project variants would add hundreds of
+megabytes it never reads.
 
 
 -------------------------------------------------------------------------------
-Modular SciFi MegaKit — License_Source.txt, as shipped
+env/
 -------------------------------------------------------------------------------
-
-Thanks for buying the Source version of the Modular SciFi MegaKit!
-All textures can be found inside the Blends folder.
-
-The SOURCE version of the Modular SciFi MegaKit, contains 
-all of the models and project files in Unity(URP), Unreal Engine and Godot projects
-with the custom shaders already setup.
-
-Versions used for the SOURCE version projects (anything above these work)
- Godot_v4.3 | Unity (URP) 2022.3.4 | Unreal Engine 4.27.2
--------------------------------------------------------
-License:
-CC0 1.0 Universal (CC0 1.0) 
-Public Domain Dedication
-https://creativecommons.org/publicdomain/zero/1.0/
-
-------------------------------------------------------
-Models by @Quaternius
-Consider supporting me on Patreon!
-
-https://www.patreon.com/quaternius
-
--------------------------------------------------------
-Join the Discord Server:
-https://discord.gg/vJqnRUYRfT
-
-
--------------------------------------------------------------------------------
-Note on what is bundled
--------------------------------------------------------------------------------
-
-Only the `glTF/` variant of the pack is included — the editor loads glTF, and
-the Blender, FBX, OBJ, Godot and engine-project variants would add hundreds of
-megabytes it never reads. The full pack, including the .blend sources and the
-textures, is available from the author.
 
 The HDRI in `env/` is **not** distributed with the editor and is not covered by
 the dedication above. The one sitting there locally is a placeholder with no

@@ -20,9 +20,9 @@ const URL = `http://localhost:${PORT}/`;
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "scifiship-test-"));
 
 // e2e checks that a manifest and .glb the tool did not write are preserved on
-// first save, so seed a pair that look like the Blender pipeline's output.
+// first save, so seed a pair that look like something else's output.
 await fsp.writeFile(path.join(scratch, "ship_manifest.json"),
-  JSON.stringify({ generator: "blender", units: "metres", chunks: [] }, null, 2));
+  JSON.stringify({ generator: "other", units: "metres", chunks: [] }, null, 2));
 await fsp.writeFile(path.join(scratch, "ship.glb"), Buffer.alloc(2048, 7));
 
 const env = { ...process.env, SHIP_EXPORT_DIR: scratch, SHIP_PORT: String(PORT) };
@@ -58,7 +58,7 @@ let failures = 0;
 try {
   await waitForServer();
   console.log(`\nscratch export dir: ${scratch}\n`);
-  for (const script of ["smoke.mjs", "interact.mjs", "e2e.mjs", "bake.mjs"]) {
+  for (const script of ["smoke.mjs", "interact.mjs", "e2e.mjs"]) {
     console.log(`\n=== ${script} ${"=".repeat(60 - script.length)}`);
     const code = await run(script);
     if (code !== 0) failures++;

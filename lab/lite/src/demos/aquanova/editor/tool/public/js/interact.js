@@ -7,12 +7,15 @@
 // *current element*: Shift+wheel turns it, Ctrl+wheel resizes it, Alt+F flips it.
 
 import { getProto } from "./kit.js";
+import { renderListFor } from "./runtime.js";
+import { setLightPart } from "./lights.js";
 import {
   state, emit, on, pushUndo, placeAt, select, toggleSelect, entryOf,
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
-  constrainMove, axisBasis, cameraDropPoint, isGizmoMesh, ownerIdOf,
+  constrainMove, axisBasis, cameraDropPoint, isGizmoMesh, ownerIdOf, setShowLayer,
+  isRuntimeStandIn,
 } from "./editor.js";
 
 const {
@@ -69,6 +72,9 @@ export function initInteract() {
     refreshHover();
   });
   on("placements", () => { hoverId = null; refreshOutlines(); });
+  // A lamp switched off and on again is a new gizmo mesh, and the old one was
+  // what carried the outline. Every path that rebuilds one emits this.
+  on("lights", refreshOutlines);
   // The camera moves without emitting anything, and an outline drawn for where
   // the camera *was* is the whole problem, so this rides the render loop.
   state.scene?.onBeforeRenderObservable.add(resizeOutlines);
@@ -307,6 +313,20 @@ function floorDragAxisForGhost() {
 }
 
 /**
+ * Bring collision on screen, because a primitive is about to be authored.
+ *
+ * The view starts on "geometry", which hides every collider - so arming a
+ * shape there dropped one that vanished the instant it landed, unselectable
+ * for good. `setShowLayer` already refuses to leave a *selected* collider
+ * behind a layer that hides it; this is the same rule for one being made.
+ * Both layers are shown rather than collision alone: you place a hull against
+ * the geometry it wraps.
+ */
+function showCollisionForGhost() {
+  if (state.showLayer === "geometry") setShowLayer("both");
+}
+
+/**
  * Arm the ghost with a collision primitive. Same contract as armGhost: nothing
  * exists until you click, and the ghost stays armed afterwards so a run of
  * boxes along a wall is just repeated clicks.
@@ -315,6 +335,7 @@ export async function armColliderGhost(kind, opts = {}) {
   cancelGhost();
   if (!kind) { emit("current"); return null; }
   floorDragAxisForGhost();
+  showCollisionForGhost();
   const token = ++ghostToken;
   const built = await buildGhost([{ collider: kind }], opts);
   if (token !== ghostToken) { disposeGhost(built); return null; }
@@ -1113,10 +1134,15 @@ function edgeMeshes(entry) {
   // A light's gizmo hangs off the placement it rides, so outlining a wall must
   // not also light up the lamp inside it - but selecting the lamp still does.
   const own = entry.node.getChildMeshes()
-    .filter((m) => !isGizmoMesh(m) || m.metadata.lightRoot === entry.node);
-  // In baked mode the element's own meshes are off and its exported copy is
-  // what is on screen. An outline has to trace what you can see.
-  return [...own, ...hooks.standInMeshes(entry.id)];
+    .filter((m) => !isRuntimeStandIn(m))
+    .filter((m) => !isGizmoMesh(m) || m.metadata.lightRoot === entry.node
+      || m.metadata.environmentProbeRoot === entry.node);
+  // The runtime view draws a stand-in in each authored instance's place and
+  // hides the instance itself, and an invisible mesh is never an active one -
+  // so it is never dispatched, and its edges renderer is never reached. Outline
+  // whatever is actually on screen: picking already resolves the other way, from
+  // the stand-in back to the element that owns it.
+  return renderListFor(own);
 }
 
 function applyEdges(mesh, color) {
@@ -1345,13 +1371,15 @@ async function onDoubleClick(ev) {
 /**
  * Wheel bindings:
  *   right button + wheel  adjust the fly speed
- *   Shift + wheel         resize the current element
+ *   a lamp selection      the light controls - see wheelLights
+ *   Shift + wheel         turn the current element
+ *   Ctrl + wheel          resize the current element
  *   anything else         dolly the camera (and stop the browser page-zooming)
  *
- * The wheel no longer rotates. It collided with the one thing the wheel is
- * expected to do in a 3D view - zoom - and every rotation it could do is on
- * `Q`/`E` anyway, which act on the hovered element without needing a selection
- * first.
+ * The wheel no longer rotates on its own. It collided with the one thing the
+ * wheel is expected to do in a 3D view - zoom - and every rotation it could do
+ * is on `Q`/`E` anyway, which act on the hovered element without needing a
+ * selection first.
  */
 function onWheel(ev) {
   const dir = ev.deltaY < 0 ? 1 : -1;
@@ -1368,6 +1396,11 @@ function onWheel(ev) {
     emit("status", `fly speed ${nudgeMoveSpeed(dir)} m/s`);
     return;
   }
+
+  // An armed ghost outranks the selection everywhere else, so it does here too:
+  // the wheel is placing a module, not tuning the lamps left selected behind it.
+  const lamps = ghost ? [] : lightTargets();
+  if (lamps.length) { wheelLights(lamps, dir, ev); return; }
 
   // Shift turns, Ctrl resizes. The two edits a wheel can do, on the two
   // modifiers, so the bare wheel is always the camera - and the letter keys are
@@ -1435,8 +1468,11 @@ export function rotateCurrent(dir, aboutPivot = false) {
     return;
   }
 
-  const targets = wheelTargets();
-  if (!targets.length) return;
+  const targets = wheelTargets().filter((entry) => entry.canRotate !== false);
+  if (!targets.length) {
+    emit("status", "environment probe boxes are axis-aligned and cannot rotate");
+    return;
+  }
   if (beginWheelEdit()) pushUndo();
 
   if (aboutPivot) {
@@ -1505,6 +1541,139 @@ export function scaleCurrent(dir) {
   emit("current");
 }
 
+// ------------------------------------------------------------------ lamps
+//
+// A lamp is aimed and tuned rather than built, and the three numbers that
+// matter - intensity, range, cone - are dialled in by looking at the room, not
+// by typing. So while the selection is lamps and nothing else, the wheel drives
+// the light panel instead of the transform tools:
+//
+//   wheel           intensity
+//   Ctrl  + wheel   range
+//   Alt   + wheel   cone angle, on a spot light
+//   Shift + wheel   turn 0.5 deg about the current rotation axis
+//
+// The bare wheel giving up the camera dolly is the deliberate part. Aiming a
+// lamp is a loop of nudge, look at the room, nudge again, and putting the one
+// number you touch most behind a modifier turns that loop into a chord. The
+// dolly is one Esc away - a selection is what arms all of this - and the right
+// button drives the camera outright either way.
+//
+// The turn is **local, always**, whatever the World/Local setting says, because
+// a lamp is aimed rather than arranged: it emits along its own -Y, so "tilt it
+// a couple of degrees" can only mean about its own axes, and a world axis would
+// swing the beam somewhere nobody asked for on any lamp already tilted. It is
+// **0.5 deg, always**, for the same reason: the Rot snap exists to lay walls out
+// on a grid, and 90 deg steps of a spot light are not aiming.
+
+/**
+ * One notch.
+ *
+ * Range and cone are the light panel's own number-field steps, so a notch is
+ * one press of the arrow beside the field. Intensity is not, because the number
+ * does not mean the same thing from lamp to lamp: a spot is aimed at a surface
+ * metres away and needs whole units before the room looks any different, while
+ * a point light fills a small room from the inside, where 0.1 was already a
+ * jump. The step follows the kind of lamp rather than making one gesture right
+ * and the other useless.
+ */
+const LIGHT_STEP = {
+  intensity: (r) => (r.type === "spot" ? 1 : r.type === "point" ? 0.05 : 0.1),
+  range: () => 0.5,
+  angle: () => 5,
+};
+
+/** Lamp turns are fine and fixed: aiming, not laying out. */
+const LIGHT_TURN_DEG = 0.5;
+/** Which settings a lamp actually has, mirroring the light panel's rules. */
+const LIGHT_APPLIES = {
+  intensity: (r) => r.type !== "none",
+  range: (r) => r.type !== "none" && r.type !== "directional",
+  angle: (r) => r.type === "spot",
+};
+/** Said when the whole selection is the wrong kind of lamp for the gesture. */
+const LIGHT_INAPPLICABLE = {
+  intensity: "no intensity to change: the lamp is switched off",
+  range: "no range to change: the lamp is switched off, or directional",
+  angle: "no cone to change: only a spot light has one",
+};
+/** Every step is clamped where normalizeLight would clamp it anyway. */
+const LIGHT_CLAMP = {
+  intensity: (v) => Math.max(0, v),
+  range: (v) => Math.max(1e-3, v),
+  angle: (v) => Math.min(179, Math.max(1, v)),
+};
+
+/** The selection when it is lamps and nothing else - what the wheel drives. */
+function lightTargets() {
+  const targets = wheelTargets();
+  return targets.length && targets.every((e) => e.type === "light") ? targets : [];
+}
+
+/**
+ * The wheel over a lamp selection.
+ *
+ * Read in this order so a chord always lands somewhere predictable rather than
+ * falling through to the camera: Shift is a turn whatever else is held, then
+ * Ctrl, then Alt, and a bare wheel is the intensity.
+ */
+function wheelLights(targets, dir, ev) {
+  if (ev.shiftKey) turnLights(targets, dir);
+  else if (ev.ctrlKey || ev.metaKey) tuneLights(targets, "range", dir);
+  else if (ev.altKey) tuneLights(targets, "angle", dir);
+  else tuneLights(targets, "intensity", dir);
+}
+
+/** What the status line calls the set being edited. */
+function lampLabel(targets) {
+  return targets.length === 1 ? targets[0].id : `${targets.length} lamps`;
+}
+
+function turnLights(targets, dir) {
+  const axis = "xyz".indexOf(state.rotAxis);
+  if (axis < 0) return;
+  const rad = LIGHT_TURN_DEG * dir * Math.PI / 180;
+  if (beginWheelEdit()) pushUndo();
+  for (const e of targets) {
+    // Right-multiplied, which composes the step in the node's OWN frame. A lamp
+    // is a child of the element it rides, so the world-axis step spinNode takes
+    // would be read through the owner's rotation and aim the beam elsewhere.
+    e.node.rotationQuaternion = (e.node.rotationQuaternion || Quaternion.Identity())
+      .multiply(Quaternion.RotationAxis(AXIS_UNITS[axis], rad));
+  }
+  emit("transform");
+  emit("current");
+  const name = state.rotAxis.toUpperCase();
+  emit("status", targets.length === 1
+    ? `${targets[0].id} local ${name} ${eulerOf(targets[0].node)[axis].toFixed(1)}°`
+    : `${lampLabel(targets)} turned ${LIGHT_TURN_DEG}° about local ${name}`);
+}
+
+function tuneLights(targets, key, dir) {
+  const usable = targets.filter((e) => LIGHT_APPLIES[key](e.runtime));
+  if (!usable.length) { emit("status", LIGHT_INAPPLICABLE[key]); return; }
+  if (beginWheelEdit()) pushUndo();
+  // The step is per lamp, since intensity's depends on the kind of lamp and a
+  // selection is free to mix them. The set is what the status line reads to
+  // decide whether it can name one number for the whole batch.
+  const steps = new Set();
+  let last = 0;
+  for (const e of usable) {
+    const step = LIGHT_STEP[key](e.runtime) * dir;
+    steps.add(step);
+    // Rounded, or a run of 0.05 steps leaves 0.7000000000000001 on the record
+    // and in the manifest.
+    last = Math.round(LIGHT_CLAMP[key](e.runtime[key] + step) * 1e4) / 1e4;
+    setLightPart(e.id, "runtime", { [key]: last });
+  }
+  const only = steps.size === 1 ? [...steps][0] : null;
+  emit("status", usable.length === 1
+    ? `${usable[0].id} ${key} ${last}`
+    : `${lampLabel(usable)}: ${key} ${only === null
+        ? (dir > 0 ? "up" : "down")
+        : `${only > 0 ? "+" : ""}${Math.round(only * 1e4) / 1e4}`}`);
+}
+
 // ------------------------------------------------------------------ modes
 
 /**
@@ -1552,4 +1721,3 @@ export function cycleScaleAxis(dir = 1) {
   state.scaleAxis = SCALE_AXES[(i + dir + SCALE_AXES.length) % SCALE_AXES.length];
   emit("modes");
 }
-

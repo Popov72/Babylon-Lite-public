@@ -1,22 +1,76 @@
-// Module palette: category tabs, search, lazy thumbnails, brush arming.
+// Module palette: kit picker, category tabs, search, lazy thumbnails, brush arming.
 
 import { getCatalogue } from "./kit.js";
-import { request as requestThumb, requestTurntable, TURN_FRAMES } from "./thumbs.js";
+import { request as requestThumb, cachedUrl, requestTurntable, TURN_FRAMES } from "./thumbs.js";
 import { state, emit, hooks } from "./editor.js";
 import { armGhost, cancelGhost } from "./interact.js";
 
 const listEl = document.getElementById("palette-list");
+const kitEl = document.getElementById("palette-kit");
 const tabsEl = document.getElementById("palette-tabs");
 const searchEl = document.getElementById("palette-search");
 const brushEl = document.getElementById("brush-label");
 
+// Which kit the palette is showing. Always exactly one: the library spans five
+// unrelated packs, and merging their categories gives a strip of 27 tabs where
+// Walls, Rocks and Potions sit side by side, which groups nothing. The choice
+// is a view preference, not ship data - a manifest may name a module from any
+// kit whatever the palette happens to be showing - so it is remembered in
+// localStorage beside the palette width rather than written to the ship.
+const KIT_STORE = "paletteKit";
+let activeKit = null;
 let activeCategory = "All";
 let observer = null;
 
 export function initPalette() {
-  const cat = getCatalogue();
+  const kits = (getCatalogue().kits || []).map((k) => k.name);
+  const saved = localStorage.getItem(KIT_STORE);
+  activeKit = kits.includes(saved) ? saved : (kits[0] || null);
 
-  const cats = ["All", ...cat.categories.map((c) => c.name)];
+  kitEl.innerHTML = "";
+  for (const name of kits) {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = name;
+    kitEl.appendChild(o);
+  }
+  kitEl.value = activeKit || "";
+  kitEl.addEventListener("change", () => {
+    activeKit = kitEl.value;
+    localStorage.setItem(KIT_STORE, activeKit);
+    buildTabs();
+    render();
+  });
+
+  buildTabs();
+  searchEl.addEventListener("input", render);
+
+  observer = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      observer.unobserve(e.target);
+      fillThumb(e.target);
+    }
+  }, { root: listEl, rootMargin: "220px" });
+
+  render();
+}
+
+function kitInfo() {
+  return (getCatalogue().kits || []).find((k) => k.name === activeKit) || null;
+}
+
+/**
+ * The category tabs of the kit on show.
+ *
+ * Rebuilt per kit rather than filtered, because a category belongs to the kit
+ * it came from: "Rocks" means nothing in the MegaKit, and a stale selection
+ * would leave the palette empty with no clue why. A category that survives the
+ * switch - both sci-fi kits have Props - keeps its place.
+ */
+function buildTabs() {
+  const cats = ["All", ...(kitInfo()?.categories || [])];
+  if (!cats.includes(activeCategory)) activeCategory = "All";
   tabsEl.innerHTML = "";
   for (const name of cats) {
     const b = document.createElement("button");
@@ -30,19 +84,6 @@ export function initPalette() {
     });
     tabsEl.appendChild(b);
   }
-
-  searchEl.addEventListener("input", render);
-
-  observer = new IntersectionObserver((entries) => {
-    for (const e of entries) {
-      if (!e.isIntersecting) continue;
-      const img = e.target;
-      observer.unobserve(img);
-      requestThumb(JSON.parse(img.dataset.mod), img);
-    }
-  }, { root: listEl, rootMargin: "220px" });
-
-  render();
 }
 
 function visibleModules() {
@@ -52,11 +93,32 @@ function visibleModules() {
   for (const c of cat.categories) {
     if (activeCategory !== "All" && c.name !== activeCategory) continue;
     for (const m of c.modules) {
+      // The catalogue's categories span the whole library - Props holds both
+      // sci-fi kits' props - so the kit is filtered here rather than in the
+      // tabs.
+      if (activeKit && m.kit !== activeKit) continue;
       if (q && !m.name.toLowerCase().includes(q)) continue;
       out.push(m);
     }
   }
   return out;
+}
+
+/**
+ * Fill a tile's thumbnail, saying so while it is being made.
+ *
+ * A module that has never been previewed has to be loaded and rendered before
+ * there is a picture at all, and switching to a fresh kit queues a hundred and
+ * fifty of them. The tile used to sit blank for the whole wait, which reads as
+ * a broken image rather than as work in progress.
+ */
+function fillThumb(img) {
+  const mod = JSON.parse(img.dataset.mod);
+  const tile = img.closest(".item");
+  // A cached thumbnail is set synchronously, so only a render that has to
+  // happen now is worth announcing - otherwise every tile flashes the message.
+  if (!cachedUrl(mod.id)) tile?.classList.add("thumb-pending");
+  requestThumb(mod, img).finally(() => tile?.classList.remove("thumb-pending"));
 }
 
 function render() {
@@ -93,7 +155,7 @@ function render() {
   }
   listEl.appendChild(frag);
   document.getElementById("status-text").textContent =
-    `${mods.length} modules shown of ${getCatalogue().byId.size}`;
+    `${mods.length} modules shown of ${kitInfo()?.count ?? getCatalogue().byId.size}`;
 }
 
 /**

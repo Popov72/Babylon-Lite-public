@@ -18,7 +18,7 @@
 import {
   state, emit, pushUndo, hooks, applyVisibility, select,
   placeAt, removePlacement, worldBounds, shipPlacements, resetStageHistory,
-  serializeView, applyView,
+  serializeView, applyView, isRuntimeStandIn,
 } from "./editor.js";
 
 const {
@@ -102,7 +102,8 @@ function materials(scene) {
 
 function nextColliderId() {
   let n = 1;
-  while (state.colliders.has(`C${String(n).padStart(4, "0")}`)) n++;
+  while (state.colliders.has(`C${String(n).padStart(4, "0")}`)
+    || state.environmentProbes.has(`C${String(n).padStart(4, "0")}`)) n++;
   return `C${String(n).padStart(4, "0")}`;
 }
 
@@ -1106,6 +1107,9 @@ function localTriangles(node) {
   const inv = node.getWorldMatrix().clone().invert();
   const tris = [];
   for (const m of node.getChildMeshes()) {
+    // A Runtime-view stand-in is a copy of a mesh already in this list, so
+    // fitting a hull to it would weigh that geometry twice.
+    if (isRuntimeStandIn(m)) continue;
     const pos = m.getVerticesData && m.getVerticesData("position");
     const idx = m.getIndices && m.getIndices();
     if (!pos || !idx) continue;

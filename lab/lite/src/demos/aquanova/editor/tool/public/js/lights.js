@@ -6,59 +6,38 @@
 // per-module defaults possible at all - "the panel's lamp sits 5 cm under its
 // face" is true of every copy of the panel, wherever it ends up.
 //
-// Each light carries two halves that describe the SAME lamp to two different
-// consumers:
+// A light is one record: the Babylon-Lite light the game creates. There is no
+// second, pre-computed half - the lamps are the ship's whole direct lighting -
+// so what is authored here is exactly what is rendered, in the editor's Runtime
+// view and in the game alike.
 //
-//   bake    - a Blender Cycles area light, rebuilt by the bake script from the
-//             glTF extras. Shape, size, spread, colour and watts are Blender's
-//             own units, so what is authored here is what Cycles gets. Power is
-//             TOTAL watts over the surface, so resizing changes the brightness.
-//   runtime - the Babylon-Lite light the game creates for what a lightmap
-//             cannot cover: dynamic props, the player, specular highlights.
-//
-// Either half may be "none". A flickering lamp is runtime-only - baking it
-// would freeze one frame of the flicker into the wall. A bounce fill that only
-// exists to lift a dark corner is bake-only, and costs the runtime nothing.
+// `type` may be "none", which switches a lamp off without deleting it: its
+// position, colour and settings survive, which is what makes trying a room with
+// one fewer light a two-click experiment rather than an edit you have to undo.
 //
 // EMISSION AXIS: a light emits along its own local -Y, so a default rotation of
-// [0,0,0] is a ceiling panel shining at the floor. glTF export rotates the ship
-// +90 degrees about X on the way into Blender, which lands that -Y on Blender's
-// -Z - the axis an Area light emits along. The two conventions meet with no
-// fix-up, which is why -Y was chosen over the more obvious -Z.
+// [0,0,0] is a ceiling panel shining at the floor. Down is the direction almost
+// every lamp in the kit points, and -Y is the only axis that needs no rotation
+// to get there - which is why it was chosen over the more obvious -Z.
 
 import { state, emit, pushUndo, hooks, eulerOf, setEuler } from "./editor.js";
 import { getKitLights } from "./kit.js";
 
 const { Vector3, Quaternion, Color3, TransformNode, MeshBuilder, StandardMaterial } = BABYLON;
 
-/** Blender's Area light shapes, plus "none" for a light the bake ignores. */
-export const LIGHT_SHAPES = ["none", "square", "rectangle", "disk", "ellipse"];
-
-/** The runtime light kinds, plus "none" for a light that only ever bakes. */
+/** The light kinds, plus "none" for a lamp that is switched off. */
 export const LIGHT_TYPES = ["none", "point", "spot", "directional"];
-
-/** Shapes whose second dimension is authored; the others are square/circular. */
-const TWO_SIZED = ["rectangle", "ellipse"];
 
 /**
  * A ceiling panel, because that is what almost every light in the kit is.
  *
- * 40 W over a 50 cm square reads as a bright utility panel in Cycles, and the
- * runtime half is a clustered point light: the ship has enough lamps that the
- * cluster is the only affordable way to run them, and a point light needs no
- * aiming to match an area light pointing straight down.
+ * Clustered, because the ship has far more lamps than a forward pass can hold
+ * in uniform slots; and a point light, because a ceiling panel shines straight
+ * down over a whole room and needs no aiming to do it.
  */
 export const DEFAULT_LIGHT = {
   offset: [0, 0, 0],
   rotation: [0, 0, 0],
-  bake: {
-    shape: "square",
-    sizeX: 0.5,
-    sizeY: 0.5,
-    spread: 180,
-    color: [1, 1, 1],
-    watts: 40,
-  },
   runtime: {
     type: "point",
     clustered: true,
@@ -72,7 +51,8 @@ export const DEFAULT_LIGHT = {
 
 function nextLightId() {
   let n = 1;
-  while (state.lights.has(`L${String(n).padStart(4, "0")}`)) n++;
+  while (state.lights.has(`L${String(n).padStart(4, "0")}`)
+    || state.environmentProbes.has(`L${String(n).padStart(4, "0")}`)) n++;
   return `L${String(n).padStart(4, "0")}`;
 }
 
@@ -95,26 +75,13 @@ function vec3Of(v, fallback) {
 /**
  * Settle the fields that cannot disagree, on the way in.
  *
- * Every one of these is a combination the engine or Blender has no meaning for,
- * so rather than trusting the inspector, a loaded manifest and the per-module
- * defaults to each get it right, they are resolved in one place - the same way
+ * Every one of these is a combination the engine has no meaning for, so rather
+ * than trusting the inspector, a loaded manifest and the per-module defaults to
+ * each get it right, they are resolved in one place - the same way
  * normalizeDoorSides() settles a skybox door's `sealed` flag.
  */
 export function normalizeLight(light) {
-  const b = light.bake;
   const r = light.runtime;
-
-  if (!LIGHT_SHAPES.includes(b.shape)) b.shape = DEFAULT_LIGHT.bake.shape;
-  b.sizeX = num(b.sizeX, DEFAULT_LIGHT.bake.sizeX, 1e-3, 100);
-  // Blender reads one size for a square or a disk, so a stored sizeY would be a
-  // value the inspector shows, the bake ignores, and the next shape change
-  // silently resurrects. Mirroring it keeps the record honest.
-  b.sizeY = TWO_SIZED.includes(b.shape)
-    ? num(b.sizeY, DEFAULT_LIGHT.bake.sizeY, 1e-3, 100)
-    : b.sizeX;
-  b.spread = num(b.spread, DEFAULT_LIGHT.bake.spread, 0, 180);
-  b.watts = num(b.watts, DEFAULT_LIGHT.bake.watts, 0, 1e6);
-  b.color = colorOf(b.color, DEFAULT_LIGHT.bake.color);
 
   if (!LIGHT_TYPES.includes(r.type)) r.type = DEFAULT_LIGHT.runtime.type;
   r.intensity = num(r.intensity, DEFAULT_LIGHT.runtime.intensity, 0, 1e4);
@@ -149,7 +116,6 @@ function makeLight(id, owner, opts = {}) {
     // What the inspector keys off to know it is not looking at a placement -
     // the same field a marker and a collision primitive carry.
     type: "light",
-    bake: { ...DEFAULT_LIGHT.bake, ...(opts.bake || {}) },
     runtime: { ...DEFAULT_LIGHT.runtime, ...(opts.runtime || {}) },
   });
 }
@@ -219,7 +185,6 @@ export function copyLightsTo(fromPlacementId, toPlacementId) {
     addLight(toPlacementId, {
       offset: lightOffset(l),
       rotation: lightRotation(l),
-      bake: { ...l.bake, color: [...l.bake.color] },
       runtime: { ...l.runtime, color: [...l.runtime.color] },
       silent: true,
     });
@@ -235,7 +200,6 @@ export function duplicateLight(id) {
   return addLight(light.owner, {
     offset,
     rotation: lightRotation(light),
-    bake: { ...light.bake, color: [...light.bake.color] },
     runtime: { ...light.runtime, color: [...light.runtime.color] },
     silent: true,
   });
@@ -315,19 +279,23 @@ export function setLightTransform(id, patch) {
 }
 
 /**
- * Edit one half of a light.
+ * Edit a light's settings.
  *
- * Both halves go back through normalizeLight, not just the one that changed:
- * switching the runtime type to "point" has to clear `castsShadows`, and
- * switching the shape to "square" has to fold sizeY back onto sizeX.
+ * The patch goes back through normalizeLight rather than being assigned and
+ * trusted: switching the type to "point" has to clear `castsShadows`, and
+ * clustering one has to clear it too.
  */
 export function setLightPart(id, part, patch) {
   const light = state.lights.get(id);
-  if (!light || (part !== "bake" && part !== "runtime")) return null;
+  if (!light || part !== "runtime") return null;
+  const wasLive = light.runtime.type !== "none";
   Object.assign(light[part], patch);
   normalizeLight(light);
-  // The gizmo IS the bake shape, drawn - so it has to be rebuilt, not nudged.
-  rebuildGizmo(light);
+  // The gizmo carries the on/off colour, so switching a lamp off - or back on -
+  // has to rebuild it rather than nudge it. Nothing else on the record reaches
+  // the gizmo, and rebuilding regardless would dispose the mesh on every wheel
+  // notch, taking the selection outline attached to it along.
+  if ((light.runtime.type !== "none") !== wasLive) rebuildGizmo(light);
   emit("lights");
   return light;
 }
@@ -338,7 +306,6 @@ export function serializeLights() {
     owner: l.owner,
     offset: lightOffset(l),
     rotation: lightRotation(l),
-    bake: { ...l.bake, color: round(l.bake.color) },
     runtime: { ...l.runtime, color: round(l.runtime.color) },
   }));
 }
@@ -360,15 +327,13 @@ function round(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
 /**
  * The lights that reach ship.glb, each with the `extras` its node will carry.
  *
- * Two consumers read this from the file and neither can see the editor: the
- * Blender bake script rebuilds a Cycles Area light from `bake`, and the runtime
- * builds a Babylon light from `runtime`. So the whole record goes out, not a
- * summary of it - a light that has to be re-derived on the far side is a light
- * that will drift.
+ * The runtime reads these from the file and cannot see the editor, so the whole
+ * record goes out, not a summary of it - a light that has to be re-derived on
+ * the far side is a light that will drift.
  *
- * `kind` is what tells the two apart from a placement's extras, which carry a
- * `module` instead. `chunk` rides along so the bake can work one chunk at a
- * time without walking back up the hierarchy.
+ * `kind` is what tells a light apart from a placement's extras, which carry a
+ * `module` instead. `chunk` rides along so the runtime can light one room at
+ * a time without walking back up the hierarchy.
  *
  * The staging bench never reaches the ship, so neither do its lights - and a
  * light whose owner has been deleted is skipped rather than exported pointing
@@ -387,7 +352,6 @@ export function lightsForExport() {
         kind: "light",
         owner: l.owner,
         chunk: owner.chunk,
-        bake: { ...l.bake, color: round(l.bake.color) },
         runtime: { ...l.runtime, color: round(l.runtime.color) },
       },
     });
@@ -398,14 +362,13 @@ export function lightsForExport() {
 // ----------------------------------------------------------------- gizmo
 //
 // A light has no mesh of its own, so without this it would be invisible and
-// unpickable - authored only through ids typed into a console. The gizmo is
-// the bake shape drawn at its real size, plus a stub along the emission axis,
-// which makes "is this panel pointing at the floor or into the ceiling?" a
-// thing you can see rather than a rotation you have to read.
+// unpickable - authored only through ids typed into a console. The gizmo is a
+// small plate at the lamp's position plus a stub along the emission axis, which
+// makes "is this panel pointing at the floor or into the ceiling?" a thing you
+// can see rather than a rotation you have to read.
 //
 // It is furniture, not art: `metadata.gizmo` keeps it out of the .glb, out of
 // the bounds a placement reports, and out of the veil clones - see isGizmoMesh.
-
 /** How far the emission stub reaches, in metres. */
 const STUB = 0.6;
 
@@ -420,8 +383,8 @@ function materials(scene) {
     lit.alpha = 0.35;
     lit.backFaceCulling = false;
     lit.disableLighting = true;
-    // A lamp the bake ignores is still a real light at runtime, and telling the
-    // two apart at a glance is the whole reason either half may be "none".
+    // A lamp switched off is still an authored lamp you have to be able to find
+    // and click, and telling it apart at a glance is why "none" is a type.
     const off = lit.clone("GIZMO_light_off");
     off.emissiveColor = new Color3(0.45, 0.55, 0.7);
     gizmoMats = { lit, off };
@@ -441,33 +404,24 @@ function rebuildGizmo(light) {
   const scene = state.scene;
   if (!scene) return;
   const { lit, off } = materials(scene);
-  const b = light.bake;
-  const baking = b.shape !== "none";
-  // A bake-only shape still needs something to click on, so a light the bake
-  // ignores falls back to a fixed 25 cm plate rather than vanishing.
-  const sx = baking ? b.sizeX : 0.25;
-  const sy = baking ? b.sizeY : 0.25;
+  const on = light.runtime.type !== "none";
 
-  const round2 = b.shape === "disk" || b.shape === "ellipse";
-  const face = round2
-    ? MeshBuilder.CreateDisc(`${light.id}_gizmo`,
-      { radius: 0.5, tessellation: 24, sideOrientation: 2 }, scene)
-    : MeshBuilder.CreatePlane(`${light.id}_gizmo`,
-      { size: 1, sideOrientation: 2 }, scene);
-  // Both are built in the XY plane facing +Z; a quarter turn about X sends that
-  // +Z onto -Y, which is the axis the light emits along.
+  // A fixed 25 cm plate: the lamp has no authored size, and a gizmo that grew
+  // with range or intensity would read as geometry rather than as a handle.
+  const face = MeshBuilder.CreatePlane(`${light.id}_gizmo`,
+    { size: 0.25, sideOrientation: 2 }, scene);
+  // Built in the XY plane facing +Z; a quarter turn about X sends that +Z onto
+  // -Y, which is the axis the light emits along.
   face.rotation.x = Math.PI / 2;
-  face.scaling.set(sx, sy, 1);
   face.parent = light.node;
-  face.material = baking ? lit : off;
+  face.material = on ? lit : off;
   face.isPickable = true;
   face.metadata = { lightRoot: light.node, gizmo: true };
   light.gizmo = face;
-
   const stub = MeshBuilder.CreateLines(`${light.id}_stub`, {
     points: [Vector3.Zero(), new Vector3(0, -STUB, 0)],
   }, scene);
-  stub.color = (baking ? lit : off).emissiveColor;
+  stub.color = (on ? lit : off).emissiveColor;
   stub.parent = light.node;
   stub.isPickable = false;
   stub.metadata = { lightRoot: light.node, gizmo: true };

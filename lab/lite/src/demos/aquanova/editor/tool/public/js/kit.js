@@ -1,7 +1,7 @@
-// Loading of MegaKit modules, with materials and textures shared across the
-// whole catalogue and geometry re-used through hardware instances.
+// Loading of kit modules, with materials and textures shared across the whole
+// catalogue and geometry re-used through hardware instances.
 //
-// Every module .gltf in the kit references the same ~20 root-level textures and
+// Every module .gltf in a kit references the same ~20 root-level textures and
 // names its materials identically (MI_Trim_01, MI_Trim_02, M_Light, ...), so
 // loading 300 modules naively would create 300 copies of the same atlas. The
 // registry below keeps the first material seen under a given name and throws
@@ -16,30 +16,411 @@ export const materialRegistry = new Map();
 let catalogue = null;
 let kitMaterials = null;
 let kitLights = null;
+let kitReading = {};
 const protoCache = new Map();
 const protoPending = new Map();
 
+/**
+ * Fetch JSON, or fail with something that names the fault.
+ *
+ * `fetch(url).then((r) => r.json())` reports an HTTP error as a *parse* error:
+ * a 500 whose body reads "ENOENT: no such file or directory, scandir …"
+ * surfaces as `SyntaxError: Unexpected token 'E'`, which names neither the URL
+ * nor the reason. The server already answers with the reason in plain text, so
+ * carry it rather than throw it away. Same rule as `manifest.js` applies to
+ * every write it makes.
+ */
+async function getJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`GET ${url} → ${r.status} ${body.trim().slice(0, 300)}`.trimEnd());
+  }
+  return r.json();
+}
+
 export async function loadCatalogue() {
   if (!catalogue) {
-    const [cat, mats, lights] = await Promise.all([
-      fetch("/api/modules").then((r) => r.json()),
-      fetch("/data/kit_materials.json").then((r) => r.json()),
-      fetch("/data/kit_lights.json").then((r) => r.json()),
+    const [cat, mats, lights, kits] = await Promise.all([
+      getJson("/api/modules"),
+      getJson("/data/kit_materials.json"),
+      getJson("/data/kit_lights.json"),
+      getJson("/data/kits.json"),
     ]);
+    assertCatalogueShape(cat);
     catalogue = cat;
     kitMaterials = mats;
     kitLights = lights;
+    kitReading = kits.kits || {};
     catalogue.byId = new Map();
     for (const c of catalogue.categories) {
       for (const m of c.modules) catalogue.byId.set(m.id, m);
     }
+    installTextureRedirect(catalogue.kits);
   }
   return catalogue;
+}
+
+/**
+ * Refuse a catalogue this page cannot read, and say why.
+ *
+ * The editor server is long-lived - it is started once and left running for
+ * days - but it serves `public/` off disk, so editing a file in `public/` is
+ * live while editing `server.mjs` is not. The page is then newer than the
+ * process answering it, and the catalogue is the contract between the two.
+ *
+ * That skew has to be loud, because its symptom is not. When `modelDirs` was
+ * added to the catalogue, a server started before it kept answering without
+ * the field; `installTextureRedirect` found nothing to build a rule from,
+ * built none, and every kit quietly lost its texture redirect. What that looks
+ * like is a screenful of 404s for `Props/T_Props_Batch1_Normal.png` and
+ * untextured modules - which reads as a broken kit, not as a stale process,
+ * and sends you looking in entirely the wrong place.
+ *
+ * So the fields this page needs are checked once, at load, and a catalogue
+ * missing any of them stops the editor with the cure in the message rather
+ * than letting it run half-wired.
+ */
+export function assertCatalogueShape(cat) {
+  const stale = (name) => new Error(
+    `the module catalogue has no "${name}" - the editor server is running older code than this page. `
+    + "Restart it (Ctrl+C in its terminal, then `node server.mjs`).",
+  );
+  if (!Array.isArray(cat?.categories)) throw stale("categories");
+  if (!Array.isArray(cat.kits)) throw stale("kits");
+  for (const kit of cat.kits) {
+    // Empty is a fine answer for both - a kit whose models sit at its root has
+    // no model folders and needs no redirect - so it is the field being absent
+    // that says the server is old, not the field being empty.
+    if (!Array.isArray(kit.modelDirs)) throw stale(`kits[${JSON.stringify(kit.name)}].modelDirs`);
+    if (!Array.isArray(kit.rootTextures)) throw stale(`kits[${JSON.stringify(kit.name)}].rootTextures`);
+  }
+}
+
+/**
+ * Teach the glTF loader where a kit keeps its textures.
+ *
+ * Every kit serves its modules out of subfolders - Walls/, Platforms/, Props/…
+ * - but each one names its textures with a bare filename, `T_Trim_01_ORM.png`,
+ * and those textures sit one level up, at the kit root. The loader resolves a
+ * bare URI next to the .gltf, so it asks for `Walls/T_Trim_01_ORM.png`, which
+ * is not there.
+ *
+ * The obvious repair - rewriting the URI to `../T_Trim_01_ORM.png` - is not
+ * available: glTF forbids a URI from leaving the file's own directory, and
+ * Babylon enforces it (`_ValidateUri` rejects any ".."), so such a file fails
+ * to load outright. Copying the 27 MB atlas set into each of the six folders
+ * would work, and would put 99 MB on the CDN to say the same thing six times.
+ *
+ * So the textures are left exactly where Quaternius puts them - which keeps
+ * refreshing a kit a straight copy - and the *loader* is told the convention.
+ * Only the textures the server actually found at the kit root are redirected,
+ * and only from that kit's own model folders, so nothing else can be caught by
+ * it: the .bin beside each .gltf keeps resolving normally.
+ */
+function installTextureRedirect(kits) {
+  const rules = [];
+  for (const kit of kits) {
+    if (!kit.rootTextures?.length || !kit.modelDirs?.length) continue;
+    rules.push({
+      // The catalogue's URLs are encoded ("Modular%20SciFi%20MegaKit"), and so
+      // is the URL the loader hands us, so both sides match as-is. These are
+      // the folders on the URL, not the palette's category names: under a
+      // format wrapper the two are different words for the same kit.
+      dirs: new Set(kit.modelDirs.map((d) => `${kit.base}${encodeURIComponent(d)}/`)),
+      base: kit.base,
+      textures: new Set(kit.rootTextures.map(encodeURIComponent)),
+    });
+  }
+  if (!rules.length) return;
+
+  const redirect = (url) => {
+    const cut = url.lastIndexOf("/") + 1;
+    if (cut <= 0) return url;
+    const dir = url.slice(0, cut);
+    const file = url.slice(cut);
+    for (const rule of rules) {
+      if (rule.dirs.has(dir) && rule.textures.has(file)) return rule.base + file;
+    }
+    return url;
+  };
+
+  SceneLoader.OnPluginActivatedObservable.add((loader) => {
+    if (loader.name !== "gltf") return;
+    loader.preprocessUrlAsync = (url) => Promise.resolve(redirect(url));
+  });
 }
 
 export function getCatalogue() { return catalogue; }
 export function getModule(id) { return catalogue?.byId.get(id) || null; }
 export function getKitMaterials() { return kitMaterials; }
+
+/**
+ * How many metres one unit of an FBX file is.
+ *
+ * Babylon's FBX loader reads the scene in the file's own units and leaves them
+ * there: it parses `GlobalSettings.UnitScaleFactor` but never applies it, and
+ * exposes it nowhere. The Quaternius packs are exported from Blender in
+ * centimetres, so a tree arrives 248 units tall and placing one drops a
+ * 248-metre tree next to a 3-metre corridor. Everything else in this editor -
+ * the grid, the snap steps, the glTF kits - is metres, so the file has to be
+ * brought into metres before anything measures it.
+ *
+ * The factor is the number of centimetres in one unit, so metres = unit / 100.
+ * It is read from the file rather than assumed, because "FBX is centimetres"
+ * is only the default: a pack exported in metres says 100 here and is already
+ * the right size, and scaling that one by 1/100 would be the same bug with the
+ * sign flipped.
+ *
+ * Binary FBX stores it as a property record - the name as a length-prefixed
+ * string, then "double", "Number", "", then a 'D' tag and the value - so the
+ * name is matched with its length prefix (0x53, 15) rather than as loose text:
+ * `OriginalUnitScaleFactor` sits directly after it and ends with the same
+ * fifteen characters. ASCII FBX, which Quaternius does not ship but Blender
+ * can write, keeps the same fields as plain text.
+ */
+const FBX_UNIT_NAME = "UnitScaleFactor";
+export function fbxMetresPerUnit(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const magic = String.fromCharCode(...bytes.subarray(0, 18));
+  let unit = null;
+
+  if (magic === "Kaydara FBX Binary") {
+    const token = [0x53, FBX_UNIT_NAME.length, 0, 0, 0,
+      ...[...FBX_UNIT_NAME].map((c) => c.charCodeAt(0))];
+    for (let i = 0; i + token.length < bytes.length && unit === null; i++) {
+      if (bytes[i] !== 0x53 || bytes[i + 1] !== FBX_UNIT_NAME.length) continue;
+      if (token.some((b, k) => bytes[i + k] !== b)) continue;
+      // The three strings between the name and the value hold no capital D, so
+      // the next one is the value's type tag.
+      const end = Math.min(bytes.length - 8, i + token.length + 64);
+      for (let d = i + token.length; d < end; d++) {
+        if (bytes[d] !== 0x44) continue;
+        unit = new DataView(bytes.buffer, bytes.byteOffset + d + 1, 8).getFloat64(0, true);
+        break;
+      }
+    }
+  } else {
+    const text = new TextDecoder("latin1").decode(bytes.subarray(0, 65536));
+    const m = text.match(/"UnitScaleFactor"\s*,\s*"double"\s*,\s*"Number"\s*,\s*""\s*,\s*([-\d.eE+]+)/);
+    if (m) unit = Number(m[1]);
+  }
+
+  // The FBX default, and the only sane answer when the file does not say.
+  if (!Number.isFinite(unit) || unit <= 0) unit = 1;
+  return unit / 100;
+}
+
+/**
+ * Re-smooth the normals of a mesh a pack exported flat.
+ *
+ * Quaternius' .fbx packs carry one normal per face corner and no two of them
+ * agree: every vertex of CommonTree_1 is split, up to 159 degrees. That is the
+ * file, not the loader - the same numbers come straight out of the FBX's own
+ * `LayerElementNormal` - so the smoothing has to be ours.
+ *
+ * This is Blender's auto-smooth, and it is edge-based for a reason. Averaging
+ * every normal that meets at a point would round off the corners of a crate,
+ * and clustering by angle to the first normal seen would leave an eight-sided
+ * trunk faceted, since its far side is 180 degrees from where the cluster
+ * started. Instead an *edge* is smooth when the two faces sharing it are less
+ * than `maxAngleDeg` apart, corners are joined across smooth edges, and each
+ * group takes the average of its faces. Smoothness chains, so all eight sides
+ * of that trunk end up in one group and shade as a cylinder, while the cap
+ * stays a cap.
+ *
+ * Only the normal buffer is rewritten. Vertex count, indices, UVs and skinning
+ * are all left exactly as they were, so nothing downstream - instancing, the
+ * glb export - can tell the difference beyond the shading.
+ */
+export function smoothMeshNormals(mesh, maxAngleDeg) {
+  const positions = mesh.getVerticesData("position");
+  const normals = mesh.getVerticesData("normal");
+  const indices = mesh.getIndices();
+  if (!positions || !normals || !indices || indices.length < 3) return false;
+
+  const cos = Math.cos((maxAngleDeg * Math.PI) / 180);
+  const faces = indices.length / 3;
+  const faceNormal = new Float32Array(faces * 3);
+  const faceWeight = new Float32Array(faces);
+
+  const at = (i, k) => positions[i * 3 + k];
+  for (let f = 0; f < faces; f++) {
+    const a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+    const ux = at(b, 0) - at(a, 0), uy = at(b, 1) - at(a, 1), uz = at(b, 2) - at(a, 2);
+    const vx = at(c, 0) - at(a, 0), vy = at(c, 1) - at(a, 1), vz = at(c, 2) - at(a, 2);
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len > 0) {
+      faceNormal[f * 3] = nx / len;
+      faceNormal[f * 3 + 1] = ny / len;
+      faceNormal[f * 3 + 2] = nz / len;
+    }
+    // Twice the triangle's area: a sliver then counts for as little as it
+    // looks, so a fan of thin triangles cannot drag a normal round with it.
+    faceWeight[f] = len;
+  }
+
+  // Vertices are welded by position only. A pack that splits a vertex to carry
+  // a second UV still means one surface there, and the seam should not show as
+  // a shading crease.
+  const q = (i) => `${Math.round(at(i, 0) * 1e4)},${Math.round(at(i, 1) * 1e4)},${Math.round(at(i, 2) * 1e4)}`;
+  const cornerKey = new Array(positions.length / 3);
+  for (let v = 0; v < cornerKey.length; v++) cornerKey[v] = q(v);
+
+  const parent = new Int32Array(indices.length);
+  for (let i = 0; i < parent.length; i++) parent[i] = i;
+  const root = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const join = (a, b) => { const ra = root(a), rb = root(b); if (ra !== rb) parent[ra] = rb; };
+
+  // corner slot -> the vertex it points at, and which face it belongs to
+  const edges = new Map();
+  for (let f = 0; f < faces; f++) {
+    for (let e = 0; e < 3; e++) {
+      const v0 = indices[f * 3 + e], v1 = indices[f * 3 + ((e + 1) % 3)];
+      const k0 = cornerKey[v0], k1 = cornerKey[v1];
+      if (k0 === k1) continue;
+      const key = k0 < k1 ? `${k0}|${k1}` : `${k1}|${k0}`;
+      const other = edges.get(key);
+      if (other === undefined) { edges.set(key, { f, e }); continue; }
+      const g = other.f;
+      const dot = faceNormal[f * 3] * faceNormal[g * 3]
+        + faceNormal[f * 3 + 1] * faceNormal[g * 3 + 1]
+        + faceNormal[f * 3 + 2] * faceNormal[g * 3 + 2];
+      if (dot < cos) continue;                       // a crease: leave it split
+      // Join the two corners at each end of the shared edge, matched by
+      // position - the two faces need not index the same vertex there.
+      for (const key0 of [k0, k1]) {
+        let ca = -1, cb = -1;
+        for (let i = 0; i < 3; i++) {
+          if (cornerKey[indices[f * 3 + i]] === key0) ca = f * 3 + i;
+          if (cornerKey[indices[g * 3 + i]] === key0) cb = g * 3 + i;
+        }
+        if (ca >= 0 && cb >= 0) join(ca, cb);
+      }
+    }
+  }
+
+  const sum = new Map();
+  for (let c = 0; c < indices.length; c++) {
+    const r = root(c), f = (c / 3) | 0;
+    const acc = sum.get(r) || [0, 0, 0];
+    acc[0] += faceNormal[f * 3] * faceWeight[f];
+    acc[1] += faceNormal[f * 3 + 1] * faceWeight[f];
+    acc[2] += faceNormal[f * 3 + 2] * faceWeight[f];
+    sum.set(r, acc);
+  }
+
+  const out = new Float32Array(normals);   // a vertex no triangle uses keeps what it had
+  let changed = false;
+  for (let c = 0; c < indices.length; c++) {
+    const v = indices[c], acc = sum.get(root(c));
+    const len = Math.hypot(acc[0], acc[1], acc[2]);
+    const f = (c / 3) | 0;
+    const nx = len > 0 ? acc[0] / len : faceNormal[f * 3];
+    const ny = len > 0 ? acc[1] / len : faceNormal[f * 3 + 1];
+    const nz = len > 0 ? acc[2] / len : faceNormal[f * 3 + 2];
+    // A vertex shared by two groups cannot hold two normals; the pack splits
+    // every corner, so this only ever writes the same answer twice.
+    out[v * 3] = nx; out[v * 3 + 1] = ny; out[v * 3 + 2] = nz;
+    if (Math.abs(nx - normals[v * 3]) > 1e-4 || Math.abs(ny - normals[v * 3 + 1]) > 1e-4
+      || Math.abs(nz - normals[v * 3 + 2]) > 1e-4) changed = true;
+  }
+  if (!changed) return false;
+  mesh.setVerticesData("normal", out, false);
+  return true;
+}
+
+/** The reading rules for a kit, from kits.json. */
+export function getKitReading(kitName) { return kitReading?.[kitName] || null; }
+
+/**
+ * Put back the material values a pack's own export dropped.
+ *
+ * The RPG pack's `Glass` and its five `Liquid_*` materials are the only ones
+ * in it that arrive with no colour at all - 53 of them against 214 that carry
+ * one - and they are exactly the see-through ones. Blender's FBX exporter
+ * writes Phong properties out of a Principled BSDF and has nothing to write
+ * for a transparent shader, so it wrote no property block for them at all and
+ * Babylon fell back on its default 0.8 grey. A filled potion was then the same
+ * uniform grey as an empty one: the liquid, the glass and the air between them
+ * all rendered alike, which reads as "the bottle is empty".
+ *
+ * Authored per kit rather than by bare material name, because a name is not an
+ * identity across kits - `Glass` and `M_Glass` and `MI_Trim_01` all mean
+ * different things in different packs.
+ *
+ * Applied here, on the way out of the loader, so the ship and the thumbnail
+ * scene get the same values and - this is the part that matters - the material
+ * is already in its final state when either of them takes its dedupe key,
+ * which includes the transparency.
+ */
+function applyKitMaterialOverrides(container, kitName) {
+  const rules = getKitReading(kitName)?.materials;
+  if (!rules) return;
+
+  const all = new Set();
+  for (const mat of container.materials) {
+    all.add(mat);
+    for (const sub of mat.subMaterials || []) if (sub) all.add(sub);
+  }
+  for (const mat of all) {
+    const rule = rules[mat.name];
+    if (!rule || typeof rule !== "object") continue;
+    if (rule.tint) {
+      const c = new Color3(rule.tint[0], rule.tint[1], rule.tint[2]);
+      // A pack can come in as either kind of material - the FBX loader builds
+      // Phong, the glTF loader PBR - and the value means the same in both.
+      if ("albedoColor" in mat) mat.albedoColor = c;
+      if ("diffuseColor" in mat) mat.diffuseColor = c;
+    }
+    if (typeof rule.alpha === "number") {
+      mat.alpha = rule.alpha;
+      mat.transparencyMode = rule.alpha < 1
+        ? Material.MATERIAL_ALPHABLEND : Material.MATERIAL_OPAQUE;
+    }
+    if (typeof rule.roughness === "number" && "roughness" in mat) mat.roughness = rule.roughness;
+  }
+}
+
+/**
+ * A module's asset container, loaded in metres and shaded the way the pack is
+ * meant to look.
+ *
+ * Shared by the ship and the thumbnail scene so the two can never disagree
+ * about how big a module is, or how it is shaded - which they would the moment
+ * one of them grew a correction the other did not have.
+ */
+export async function loadModuleContainer(mod, scene) {
+  const cut = mod.url.lastIndexOf("/") + 1;
+  const dir = mod.url.slice(0, cut);
+  const file = mod.url.slice(cut);
+  let container;
+
+  if (!/\.fbx$/i.test(file)) {
+    container = await SceneLoader.LoadAssetContainerAsync(dir, file, scene);
+  } else {
+    // Fetched here rather than by the loader so the unit can be read off the
+    // same bytes: handing the buffer straight on keeps it to one download, and
+    // the root url is still given, so a textured pack resolves its maps as
+    // usual.
+    const buffer = await (await fetch(mod.url)).arrayBuffer();
+    const metres = fbxMetresPerUnit(buffer);
+    container = await SceneLoader.LoadAssetContainerAsync(dir, new File([buffer], file), scene);
+    if (metres !== 1) {
+      for (const root of container.rootNodes) root.scaling.scaleInPlace(metres);
+    }
+  }
+
+  const smooth = getKitReading(mod.kit)?.smoothNormalsBelowDeg;
+  if (smooth) {
+    for (const mesh of container.meshes) {
+      if (mesh.getTotalVertices() > 0) smoothMeshNormals(mesh, smooth);
+    }
+  }
+  applyKitMaterialOverrides(container, mod.kit);
+  return container;
+}
 
 /**
  * The lights a module comes with, as authored partials.
@@ -105,22 +486,52 @@ export function applyKitTransparency(mat) {
 /**
  * What makes two materials the same material.
  *
- * Not the name on its own. The kit names materials identically across modules
- * *and* authors some of them two different ways: `M_Glass` is `BLEND` with an
- * alpha of 0 in two files and `OPAQUE` in twelve, and `M_Decal_White` is
- * `MASK` in thirty-one and `OPAQUE` in twenty-six. Keyed by name alone,
- * whichever module loaded first decided how glass looked everywhere - and the
- * palette keeps its own cache, filled in a different order, so a window could
- * be see-through on its tile and solid in the ship at the same time.
+ * Not the name on its own. The kits name materials identically across modules
+ * *and* give the same name to genuinely different materials:
  *
- * Transparency is the only thing they differ in, and it is the one thing you
- * cannot share, so it goes in the key. Everything else about a material is the
- * texture set, which is what the sharing is for.
+ *  - the MegaKit authors some of them two ways: `M_Glass` is `BLEND` with an
+ *    alpha of 0 in two files and `OPAQUE` in twelve, `M_Decal_White` is `MASK`
+ *    in thirty-one and `OPAQUE` in twenty-six;
+ *  - every Pirate model calls its material `Atlas` and embeds *its own* 32x32
+ *    slice of the palette, so the barrel's atlas is white from row 7 down
+ *    while a character reads its skin from row 9;
+ *  - `MI_Trim_01`, `MI_Trim_02`, `MI_Trim_03`, `MI_Trim_03_Dark` and `M_Black`
+ *    exist in both the MegaKit and the Essentials Kit over different atlases,
+ *    and the Essentials Kit alone maps `MI_Trim_02` to two of them.
+ *
+ * Keyed by name alone, whichever module loaded first decided what everything
+ * with that name looked like everywhere - and the palette keeps its own cache,
+ * filled in a different order, so a module could be right on its tile and
+ * wrong in the ship at the same time. The Pirate characters came out grey
+ * except for the prop in their hand, which is the one part of them that reads
+ * from a row the barrel's atlas also fills in.
+ *
+ * So the key is the name, the transparency - the one thing you cannot share -
+ * and the textures, which is what the sharing is *for*. Sharing then happens
+ * exactly when it is free: the MegaKit's modules all name the same files at
+ * the kit root and still collapse to one material, while a kit that embeds a
+ * texture per model gets one material per model, which for a 32x32 palette
+ * costs nothing.
  */
 export function materialKey(mat) {
   const mode = mat.transparencyMode === null || mat.transparencyMode === undefined
     ? "opaque" : mat.transparencyMode;
-  return `${mat.name}|${mode}|${mat.alpha}`;
+  return `${mat.name}|${mode}|${mat.alpha}|${textureIdentity(mat)}`;
+}
+
+/**
+ * The textures a material reads, as something two materials can be compared on.
+ *
+ * `Texture.url` is the honest answer for both kinds of kit: a file the loader
+ * fetched is its resolved URL - already through the kit-root redirect, so two
+ * modules naming the same atlas agree - and an image embedded in a .gltf is
+ * given `data:<the .gltf's url>#image0`, which names the file it came out of
+ * and the index within it. Slot order is fixed by the material class, so the
+ * same set of maps always spells the same key.
+ */
+function textureIdentity(mat) {
+  const textures = mat.getActiveTextures?.() ?? [];
+  return textures.map((t) => t.url || t.name || "?").join(" ");
 }
 
 // Swap every material on `meshes` for the shared instance of the same name.
@@ -154,9 +565,7 @@ export async function getProto(moduleId) {
   if (!mod) throw new Error(`unknown module: ${moduleId}`);
 
   const job = (async () => {
-    const dir = mod.url.slice(0, mod.url.lastIndexOf("/") + 1);
-    const file = mod.url.slice(mod.url.lastIndexOf("/") + 1);
-    const container = await SceneLoader.LoadAssetContainerAsync(dir, file, window.__scene);
+    const container = await loadModuleContainer(mod, window.__scene);
 
     const meshes = container.meshes.filter((m) => m.getTotalVertices() > 0);
     dedupeMaterials(meshes);

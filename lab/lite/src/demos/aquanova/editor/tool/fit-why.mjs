@@ -6,10 +6,10 @@ const data = JSON.parse(fs.readFileSync(
   process.env.FIT_IN || "D:/alexis/TombRaider/Popov72/fitter/corners.json", "utf8"));
 
 const NAMES = (process.env.FIT_ONLY || [
-  "Walls/ShortWall_WhitePlate2_Corner_Inner",
-  "Walls/TopAstra_Corner_Round_Inner",
-  "Walls/TopCables_Corner_Round_Outer",
-  "Walls/TopCables_Corner_Round_Inner",
+  "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner",
+  "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner",
+  "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer",
+  "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner",
 ].join(",")).split(",");
 
 const axisAligned = (b) => b.basis.every((r, i) =>

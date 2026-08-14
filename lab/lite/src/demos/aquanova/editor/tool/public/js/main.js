@@ -15,7 +15,7 @@ import {
 } from "./colliders.js";
 // Side-effect import for the hooks; the named ones drive the inspector.
 import {
-  LIGHT_SHAPES, LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart,
+  LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart,
 } from "./lights.js";
 import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
@@ -29,27 +29,35 @@ import {
   nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
   shipPlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
-  renameChunk, removeChunk, chunkUsers, chunkBakeOf, resolveChunkBake,
-  setChunkBake, setBakeDefaults,
+  renameChunk, removeChunk, chunkUsers,
+  environmentProbeIds, environmentProbeOf, nextEnvironmentProbeId,
+  setEnvironmentProbe, removeEnvironmentProbe, syncEnvironmentProbeTransform,
+  validEnvironmentProbeId, environmentProbeIdAvailable,
   renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
-  setVeilAlpha, SKYBOX_CHUNK, setBakeLighting,
+  setVeilAlpha, SKYBOX_CHUNK,
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
-  bakeOverrideOf, setBakeOverrides, autoBakeExcluded, bakeExcluded,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
-  noteKey, releaseAllKeys, setUnlit, setExposure, EXPOSURE_DEFAULT,
+  noteKey, releaseAllKeys, setUnlit, EXPOSURE_DEFAULT,
   setConfig, resetConfig, CONFIG_DEFAULTS,
-  setWalk, EYE_HEIGHT, setEnvIntensity, ENV_INTENSITY_DEFAULT,
-  setDynamicEnvIntensity, DYNAMIC_ENV_INTENSITY_DEFAULT, setSelectMode,
-  activeLightSet, setShowLayer, SHOW_LAYERS,
-  setToneMapping, resolveToneMapping, setBakedSpecularAA, setBakedRoughnessFactor,
+  setWalk, EYE_HEIGHT, ENV_INTENSITY_DEFAULT, setSelectMode,
+  setLightSetting, viewMode, viewModeFlags, VIEW_MODES,
+  TONE_MAPPING_DEFAULT, RUNTIME_SPECULAR_AA_DEFAULT, RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
+  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT,
+  setShowLayer, SHOW_LAYERS,
+  resolveToneMapping, setRuntimeSpecularAA, setRuntimeRoughnessFactor,
 } from "./editor.js";
-import { setBakedPreview, bakedPreview, bakedDrift } from "./baked.js";
+import {
+  setRuntimePreview, runtimePreview,
+  localEnvironmentProbeOf, showEnvironmentProbe, refreshEnvironmentProbeAssets,
+} from "./runtime.js";
+import { generateLocalEnvironments } from "./local-environments.js";
 
 const $ = (id) => document.getElementById(id);
+const alphabetical = (values) => [...values].sort((a, b) => a.localeCompare(b));
 const statusText = $("status-text");
 const statusCounts = $("status-counts");
 
@@ -95,6 +103,7 @@ function refreshInspector() {
   const isDoor = e.type === "door";
   const isMarker = !!e.type;
   const isLight = e.type === "light";
+  const isProbe = e.type === "environment-probe";
 
   syncing = true;
   // Always the element whose values fill the rest of the panel, even in a
@@ -117,10 +126,11 @@ function refreshInspector() {
   $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider;
   if (!isMarker && !isModuleCollider) $("insp-chunk").value = e.chunk;
   // A light's node hangs off the element it rides, so its "position" is really
-  // an offset within that element - and it has no scale to speak of: how big it
-  // is, is the bake shape's size, which the Light panel owns.
+  // an offset within that element - and a lamp has no size of its own: an engine
+  // light is a point, a direction and a falloff.
   $("insp-h-pos").textContent = isLight ? "Offset (local)" : "Position";
   $("scale-fields").hidden = isLight;
+  $("rotation-fields").hidden = isProbe;
   const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
   posIn.forEach((el, i) => setField(el, round(p.asArray()[i])));
   rotIn.forEach((el, i) => setField(el, round(r[i])));
@@ -134,6 +144,7 @@ function refreshInspector() {
     fillChunkSelect($("door-b"), e.chunkB, { skybox: true });
     setField($("door-trig"), e.triggerRadius);
     setField($("door-slide"), e.slideDistance);
+    $("door-enabled").checked = e.enabled !== false;
     // A window onto space is sealed and cannot be anything else, so the box
     // shows the truth but stops being an argument.
     const toSpace = e.chunkB === SKYBOX_CHUNK;
@@ -147,7 +158,6 @@ function refreshInspector() {
 
   refreshDimensions();
   refreshBehavior();
-  refreshBakeOverride();
   refreshLight(isLight ? e : null);
   syncing = false;
 }
@@ -167,11 +177,7 @@ function rgbOf(hex) {
 }
 
 /**
- * The light panel: one form for Blender's area lamp, one for the engine's.
- *
- * The two halves describe the same fixture but answer to different renderers,
- * so they are shown apart rather than merged into a single set of "light"
- * fields that would silently mean something different on each side.
+ * The light panel.
  *
  * Rows that cannot apply are disabled rather than hidden, with #lgt-hint saying
  * why: a disabled Cone row still tells you a spot light is the thing that has
@@ -192,13 +198,7 @@ function refreshLight(light) {
   ownerSelect.value = light.owner;
   ownerSelect.title = light.owner;
 
-  const b = light.bake, rt = light.runtime;
-  setField($("lgt-shape"), b.shape);
-  setField($("lgt-size-x"), b.sizeX);
-  setField($("lgt-size-y"), b.sizeY);
-  setField($("lgt-spread"), b.spread);
-  setField($("lgt-watts"), b.watts);
-  $("lgt-bake-color").value = hexOf(b.color);
+  const rt = light.runtime;
   setField($("lgt-type"), rt.type);
   setField($("lgt-intensity"), rt.intensity);
   setField($("lgt-range"), rt.range);
@@ -207,24 +207,35 @@ function refreshLight(light) {
   $("lgt-clustered").checked = !!rt.clustered;
   $("lgt-shadows").checked = !!rt.castsShadows;
 
-  const baked = b.shape !== "none";
-  const oneSize = b.shape === "square" || b.shape === "disk";
   const live = rt.type !== "none";
-  for (const id of ["lgt-size-x", "lgt-spread", "lgt-watts", "lgt-bake-color"]) $(id).disabled = !baked;
-  $("lgt-size-y").disabled = !baked || oneSize;
-  for (const id of ["lgt-intensity", "lgt-range", "lgt-run-color"]) $(id).disabled = !live;
+  for (const id of ["lgt-intensity", "lgt-run-color"]) $(id).disabled = !live;
+  // Range is a real setting on every positioned lamp, and only because the
+  // preview materials no longer use the PBR *physical* falloff. Physical is a
+  // plain inverse square with no cut-off, so it ignored Range outright - and on
+  // a clustered lamp it was worse than ignoring it, because the cluster still
+  // sizes and culls the light proxy by Range, leaving the light to stop dead in
+  // a straight line where the proxy ended. The preview now asks for the glTF
+  // falloff (see materialFor in runtime.js), which windows the light down to
+  // nothing at Range, so the field means here what it means in the game.
+  //
+  // A directional light is the one exception: it has no position, so no
+  // distance, so nothing for Range to attenuate.
+  $("lgt-range").disabled = !live || rt.type === "directional";
   $("lgt-clustered").disabled = !(rt.type === "point" || rt.type === "spot");
   $("lgt-angle").disabled = rt.type !== "spot";
   $("lgt-shadows").disabled = rt.clustered
     || !(rt.type === "spot" || rt.type === "directional");
 
   const why = [];
-  if (!baked) why.push("Left out of the bake, so it lights nothing that stands still.");
-  else if (oneSize) why.push("A square or a disk has one size, so Size Z follows Size X.");
-  if (!live) why.push("Bake-only: nothing is created at runtime.");
+  if (!live) why.push("Switched off: no light is created at runtime.");
   else if (rt.type === "directional") why.push("A directional light has no position to bin, so it cannot be clustered.");
   else if (rt.clustered) why.push("A clustered light carries no shadow map. Uncluster it to cast.");
   else if (rt.type === "point") why.push("A point light cannot cast: there is no cube shadow map.");
+  if (live && rt.type === "directional") {
+    why.push("A directional light has no distance falloff, so Range does nothing.");
+  } else if (live && !rt.clustered) {
+    why.push("An unclustered lamp is cut off at Range in the game too, but along a straight ramp rather than this preview's curve.");
+  }
   $("lgt-hint").textContent = why.join(" ");
 }
 
@@ -234,8 +245,10 @@ function editLight(part, patch) {
   const light = entryOf(state.selection[0]);
   if (light?.type !== "light") return;
   if (!inspectorPushed) { pushUndo(); inspectorPushed = true; }
+  // No refresh here: setLightPart emits "lights", which the panel follows - and
+  // this streams on every keystroke and every tick of the colour picker, so
+  // refreshing twice a stroke is a rebuilt owner list for nothing.
   setLightPart(light.id, part, patch);
-  refreshInspector();
 }
 
 /**
@@ -275,58 +288,6 @@ function refreshBehavior() {
   $("bhv-hint").textContent = !name
     ? "Name the element first — behaviours attach to the node name."
     : library.length ? "" : "No behaviours defined yet.";
-}
-
-/**
- * The Force baking row.
- *
- * Keyed on each element's *node* name, which is its Name when it has one and
- * its id when it does not - the same fallback the exporter uses, so every
- * element can carry an override without being named first. That is the one
- * place this differs from the behaviour panel above, which needs a real name
- * because a behaviour is meant to govern every element sharing it.
- *
- * Unlike that panel this one survives a multi-selection, because forcing a
- * room's worth of light strips out of the atlas is the reason it exists.
- *
- * The hint spells out what the setting resolves to, because the interesting
- * half of the answer is invisible otherwise: "Automatic" is right almost
- * always, and what makes it right is the behaviour list - which may be on
- * another element entirely, when this one is only `linked` into a melt.
- */
-function refreshBakeOverride() {
-  const nodes = selectedBakeNodes();
-  $("bake-fields").hidden = !nodes.length;
-  if (!nodes.length) return;
-
-  const modes = [...new Set(nodes.map(bakeOverrideOf))];
-  const sel = $("insp-bake");
-  // A mixed selection gets a blank slot rather than one member's value shown as
-  // if it were everyone's; picking any real option still applies to them all.
-  sel.querySelector('option[value=""]')?.remove();
-  if (modes.length > 1) sel.insertAdjacentHTML("afterbegin", '<option value="">(mixed)</option>');
-  setField(sel, modes.length > 1 ? "" : modes[0]);
-
-  if (modes.length > 1) {
-    const n = nodes.filter((node) => bakeExcluded(node)).length;
-    $("bake-hint").textContent = `${nodes.length} elements — ${n} not baked, ${nodes.length - n} baked.`;
-    return;
-  }
-  const node = nodes[0];
-  const auto = autoBakeExcluded(node);
-  const excluded = bakeExcluded(node);
-  const because = auto ? "the runtime moves or melts it" : "nothing moves or melts it";
-  $("bake-hint").textContent = modes[0] === "auto"
-    ? `${excluded ? "Not baked" : "Baked"} — ${because}.`
-    : `${excluded ? "Not baked" : "Baked"} — forced. Automatic would ${auto ? "not bake" : "bake"} it.`;
-}
-
-/** The node names of every real ship element in the selection - markers have no mesh to bake. */
-function selectedBakeNodes() {
-  return state.selection
-    .map(entryOf)
-    .filter((e) => e && !e.type)
-    .map(nodeNameOf);
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g,
@@ -584,7 +545,7 @@ function refreshDimensions() {
  */
 function fillChunkSelect(sel, value, { skybox = false } = {}) {
   sel.innerHTML = "";
-  const entries = [["", "(auto)"], ...state.chunks.map((c) => [c, c])];
+  const entries = [["", "(auto)"], ...alphabetical(state.chunks).map((c) => [c, c])];
   if (skybox) entries.push([SKYBOX_CHUNK, "Skybox (outer space)"]);
   for (const [v, label] of entries) {
     const o = document.createElement("option");
@@ -624,11 +585,17 @@ function applyInspector(source) {
   const p = e.node.position, s = e.node.scaling, r = eulerOf(e.node);
   e.node.position.set(
     num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
-  setEuler(e.node, [num(rotIn[0], r[0]), num(rotIn[1], r[1]), num(rotIn[2], r[2])]);
+  if (e.type !== "environment-probe") {
+    setEuler(e.node, [num(rotIn[0], r[0]), num(rotIn[1], r[1]), num(rotIn[2], r[2])]);
+  }
   // Doors scale too: their exported width/height fold the node scale in, and
   // portalOf() already reads the world matrix, so the portal follows.
-  e.node.scaling.set(
-    num(sclIn[0], s.x), num(sclIn[1], s.y), num(sclIn[2], s.z));
+  const scale = [
+    num(sclIn[0], s.x), num(sclIn[1], s.y), num(sclIn[2], s.z),
+  ];
+  e.node.scaling.set(...(e.type === "environment-probe"
+    ? scale.map((value) => Math.max(0.01, Math.abs(value)))
+    : scale));
   // A collider's kind decides what scales are representable at all.
   if (e.type === "collider" && reconcileCollider(e)) syncScaleFields(e);
   select([e.id]);                       // keeps the outline in step
@@ -668,9 +635,8 @@ $("insp-chunk").addEventListener("change", (ev) => assignSelectionToChunk(ev.tar
 
 // ------------------------------------------------------------------ lights
 
-for (const [id, list] of [["lgt-shape", LIGHT_SHAPES], ["lgt-type", LIGHT_TYPES]]) {
-  $(id).innerHTML = list.map((v) => `<option value="${v}">${v}</option>`).join("");
-}
+$("lgt-type").innerHTML = LIGHT_TYPES
+  .map((v) => `<option value="${v}">${v}</option>`).join("");
 
 $("lgt-owner").addEventListener("change", (ev) => {
   if (syncing) return;
@@ -680,11 +646,11 @@ $("lgt-owner").addEventListener("change", (ev) => {
   pushUndo();
   const owner = setLightOwner(light.id, ev.target.value);
   if (!owner) {
+    // Nothing changed, so nothing emitted: put the select back by hand.
     refreshInspector();
     setStatus("that placement cannot own a light");
     return;
   }
-  refreshInspector();
   setStatus(`${light.id} now rides ${owner.owner}`);
 });
 
@@ -692,8 +658,6 @@ $("lgt-owner").addEventListener("change", (ev) => {
 // the arm-on-focus undo; a select or a checkbox is a single decision and pushes
 // on its own.
 const LIGHT_NUM = {
-  "lgt-size-x": ["bake", "sizeX"], "lgt-size-y": ["bake", "sizeY"],
-  "lgt-spread": ["bake", "spread"], "lgt-watts": ["bake", "watts"],
   "lgt-intensity": ["runtime", "intensity"], "lgt-range": ["runtime", "range"],
   "lgt-angle": ["runtime", "angle"],
 };
@@ -706,7 +670,7 @@ for (const [id, [part, key]] of Object.entries(LIGHT_NUM)) {
   });
 }
 for (const [id, part, key] of [
-  ["lgt-shape", "bake", "shape"], ["lgt-type", "runtime", "type"],
+  ["lgt-type", "runtime", "type"],
 ]) {
   $(id).addEventListener("change", (ev) => {
     inspectorPushed = false;
@@ -721,7 +685,7 @@ for (const [id, part, key] of [
     editLight(part, { [key]: ev.target.checked });
   });
 }
-for (const [id, part] of [["lgt-bake-color", "bake"], ["lgt-run-color", "runtime"]]) {
+for (const [id, part] of [["lgt-run-color", "runtime"]]) {
   // A colour picker streams while the user drags around the wheel, so it gets
   // the same one-undo-per-visit treatment as a number field.
   $(id).addEventListener("focus", () => { inspectorPushed = false; });
@@ -831,6 +795,14 @@ for (const [id, key] of [["door-a", "chunkA"], ["door-b", "chunkB"]]) {
     validate();
   });
 }
+$("door-enabled").addEventListener("change", () => {
+  const e = entryOf(state.selection[0]);
+  if (!e || e.type !== "door" || syncing) return;
+  pushUndo();
+  e.enabled = $("door-enabled").checked;
+  setStatus(`${e.id} portal ${e.enabled ? "enabled" : "disabled"}`);
+  validate();
+});
 $("door-sealed").addEventListener("change", () => {
   const e = entryOf(state.selection[0]);
   if (!e || e.type !== "door" || syncing) return;
@@ -856,10 +828,11 @@ $("btn-door-leaves").addEventListener("click", () => {
 // ----------------------------------------------------------------- chunks
 
 function refreshChunks() {
+  const chunks = alphabetical(state.chunks);
   for (const sel of [$("chunk-select"), $("insp-chunk")]) {
     const prev = sel.value;
     sel.innerHTML = "";
-    for (const c of state.chunks) {
+    for (const c of chunks) {
       const o = document.createElement("option");
       o.value = o.textContent = c;
       sel.appendChild(o);
@@ -871,7 +844,7 @@ function refreshChunks() {
 }
 
 function refreshStats() {
-  const counts = new Map(state.chunks.map((c) => [c, 0]));
+  const counts = new Map(alphabetical(state.chunks).map((c) => [c, 0]));
   for (const p of shipPlacements()) {
     counts.set(p.chunk, (counts.get(p.chunk) || 0) + 1);
   }
@@ -882,7 +855,7 @@ function refreshStats() {
   const veiled = veilCounts();
   const pct = Math.round(state.veilAlpha * 100);
   statusCounts.textContent =
-    `${shipPlacements().length} objects · ${state.chunks.length} chunks · ${doors} doors · ${state.selection.length} selected`
+    `${shipPlacements().length} objects · ${state.chunks.length} chunks · ${state.environmentProbes.size} probes · ${doors} doors · ${state.selection.length} selected`
     + (veiled.ghost ? ` · ${veiled.ghost} at ${pct}%` : "")
     + (veiled.hidden ? ` · ${veiled.hidden} hidden` : "");
 }
@@ -894,25 +867,63 @@ $("chunk-select").addEventListener("change", (ev) => {
 });
 $("btn-chunk-assign").addEventListener("click", () => assignSelectionToChunk(state.activeChunk));
 
-// ----------------------------------------------------------- chunks dialog
+// ----------------------------------------------------------- chunks window
 //
-// A chunk carries more than a name now - it carries what Blender renders its
-// lightmap at - and a toolbar with a "+" and a "Rename" had nowhere to put
-// four numbers. So the whole of a chunk's identity lives in one pane, and the
-// toolbar keeps only the two things you reach for while building: which chunk
-// is active, and Assign.
+// A window rather than a toolbar button, because renaming a room, seeing what
+// is in it and deleting an empty one are three halves of one job. The toolbar
+// keeps only the two things you reach for while building: which chunk is
+// active, and Assign.
 
 /** Which chunk the pane is editing. Not `state.activeChunk`: browsing the
- *  list to retune a far room should not move where new placements land. */
+ *  list to look at a far room should not move where new placements land. */
 let chunkSelected = null;
 
-/** The four dials, paired with the fields that show them. */
-const BAKE_FIELDS = [["samples", "samples"], ["width", "width"],
-  ["height", "height"], ["margin", "margin"]];
+function placeChunkWindow(left, top) {
+  const win = $("chunk-modal");
+  const rect = win.getBoundingClientRect();
+  const edge = 8;
+  const maxLeft = Math.max(edge, window.innerWidth - rect.width - edge);
+  const maxTop = Math.max(edge, window.innerHeight - rect.height - edge);
+  win.style.left = `${Math.min(Math.max(edge, left), maxLeft)}px`;
+  win.style.top = `${Math.min(Math.max(edge, top), maxTop)}px`;
+}
+
+function keepChunkWindowOnScreen() {
+  const win = $("chunk-modal");
+  if (win.hidden) return;
+  const rect = win.getBoundingClientRect();
+  placeChunkWindow(rect.left, rect.top);
+}
+
+{
+  const win = $("chunk-modal");
+  const handle = $("chunk-window-handle");
+  let drag = null;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    const rect = win.getBoundingClientRect();
+    drag = { pointerId: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    placeChunkWindow(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  const finishDrag = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+    drag = null;
+  };
+  handle.addEventListener("pointerup", finishDrag);
+  handle.addEventListener("pointercancel", finishDrag);
+  window.addEventListener("resize", keepChunkWindowOnScreen);
+}
 
 function openChunks() {
   $("chunk-modal").hidden = false;
   refreshChunkPane(chunkSelected || state.activeChunk);
+  requestAnimationFrame(keepChunkWindowOnScreen);
 }
 
 function closeChunks() {
@@ -920,36 +931,20 @@ function closeChunks() {
 }
 
 function refreshChunkPane(pick) {
-  chunkSelected = pick && state.chunks.includes(pick) ? pick : state.chunks[0];
-  const own = chunkBakeOf(chunkSelected);
-  const resolved = resolveChunkBake(chunkSelected);
-
-  $("chunk-list").innerHTML = state.chunks.map((c) => {
-    // A dot on the rooms that have been given settings of their own, so the
-    // ones still following the defaults are visible at a glance - otherwise
-    // the only way to find them is to click every entry.
-    const tuned = Object.keys(chunkBakeOf(c)).length ? " •" : "";
-    return `<option value="${esc(c)}"${c === chunkSelected ? " selected" : ""}>${esc(c)}${tuned}</option>`;
+  const chunks = alphabetical(state.chunks);
+  chunkSelected = pick && state.chunks.includes(pick) ? pick : chunks[0];
+  $("chunk-list").innerHTML = chunks.map((c) => {
+    const held = chunkUsers(c);
+    // The count is the affordance: an empty room is either the one you are
+    // about to fill or one you forgot to delete, and there is no other way to
+    // tell them apart without clicking every entry.
+    return `<option value="${esc(c)}"${c === chunkSelected ? " selected" : ""}>${esc(c)} (${held.placements.length})</option>`;
   }).join("");
   $("chunk-name").value = chunkSelected || "";
-  for (const [key, field] of BAKE_FIELDS) {
-    const input = $(`chunk-${field}`);
-    input.value = own[key] === undefined ? "" : String(own[key]);
-    // The placeholder IS the affordance: an empty field is not "unset", it is
-    // "whatever the ship says", and the placeholder shows what that currently
-    // works out to.
-    input.placeholder = String(state.bakeDefaults[key]);
-  }
-  for (const [key, field] of BAKE_FIELDS) $(`bake-${field}`).value = String(state.bakeDefaults[key]);
-
   const users = chunkSelected ? chunkUsers(chunkSelected) : { placements: [], doors: [] };
-  const texels = resolved.width * resolved.height;
-  $("chunk-resolved").textContent = chunkSelected
-    ? `bakes at ${resolved.width}×${resolved.height} (${(texels / 1e6).toFixed(2)} Mtexel)`
-      + ` · ${resolved.samples} samples · ${resolved.margin} px margin`
-      + ` · holds ${users.placements.length} object(s), ${users.doors.length} door(s)`
-    : "";
-  $("chunk-error").textContent = "";
+  $("chunk-holds").textContent = chunkSelected
+    ? `holds ${users.placements.length} object(s), ${users.doors.length} door(s)`
+    : "";  $("chunk-error").textContent = "";
   $("btn-chunk-delete").disabled = state.chunks.length < 2;
 }
 
@@ -967,42 +962,23 @@ $("btn-chunk-new").addEventListener("click", () => {
   setStatus(`added chunk ${name}`);
 });
 
-// One button for both halves of the form on purpose: renaming re-keys the
-// settings, so applying them in either order separately would either write
-// them onto the old name or lose them.
 $("btn-chunk-apply").addEventListener("click", () => {
   if (!chunkSelected) return;
   const was = chunkSelected;
   const wanted = $("chunk-name").value.trim();
-  // Read the form BEFORE renaming. `renameChunk` emits `chunks`, which
-  // refreshes this very pane and rewrites every input from what is stored -
-  // so anything typed but not yet applied would be read back as blank, and a
-  // rename would silently wipe the numbers entered alongside it.
-  //
-  // A blank field clears the override rather than writing a zero: the chunk
-  // goes back to following the ship's default, and keeps following it.
-  const patch = {};
-  for (const [key, field] of BAKE_FIELDS) {
-    const raw = $(`chunk-${field}`).value.trim();
-    patch[key] = raw === "" ? null : Number(raw);
+  if (!wanted || wanted === was) {
+    setStatus(`${was}: nothing to apply`);
+    return;
   }
-  let now = was;
-  if (wanted && wanted !== was) {
-    if (!renameChunk(was, wanted)) {
-      $("chunk-error").textContent =
-        `Cannot rename to "${wanted}" — it is empty or already used.`;
-      return;
-    }
-    now = wanted;
+  if (!renameChunk(was, wanted)) {
+    $("chunk-error").textContent =
+      `Cannot rename to "${wanted}" — it is empty or already used.`;
+    return;
   }
-  const changed = setChunkBake(now, patch);
-  refreshChunkPane(now);
+  refreshChunkPane(wanted);
   refreshChunks();
-  setStatus(now !== was
-    ? `renamed ${was} → ${now}${changed ? " and retuned its bake" : ""}`
-    : (changed ? `${now}: bake settings updated` : `${now}: nothing to apply`));
+  setStatus(`renamed ${was} → ${wanted}`);
 });
-
 $("btn-chunk-delete").addEventListener("click", () => {
   if (!chunkSelected) return;
   const gone = chunkSelected;
@@ -1030,12 +1006,264 @@ $("btn-chunk-delete").addEventListener("click", () => {
   }
 });
 
-for (const [key, field] of BAKE_FIELDS) {
-  $(`bake-${field}`).addEventListener("change", (e) => {
-    setBakeDefaults({ [key]: e.target.value });
-    refreshChunkPane(chunkSelected);
+// ------------------------------------------------ environment probe window
+
+let probeSelected = null;
+let probeRefreshRequest = 0;
+const PROBE_BOX_FIELDS = ["x", "y", "z"].map((axis) => `probe-box-${axis}`);
+const PROBE_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-size-${axis}`);
+const PROBE_CAMERA_FIELDS = ["x", "y", "z"].map((axis) => `probe-camera-${axis}`);
+const PROBE_VALUE_FIELDS = [
+  ...PROBE_BOX_FIELDS, ...PROBE_SIZE_FIELDS, ...PROBE_CAMERA_FIELDS,
+];
+
+function placeProbeWindow(left, top) {
+  const win = $("probe-modal");
+  const rect = win.getBoundingClientRect();
+  const edge = 8;
+  const maxLeft = Math.max(edge, window.innerWidth - rect.width - edge);
+  const maxTop = Math.max(edge, window.innerHeight - rect.height - edge);
+  win.style.left = `${Math.min(Math.max(edge, left), maxLeft)}px`;
+  win.style.top = `${Math.min(Math.max(edge, top), maxTop)}px`;
+}
+
+function keepProbeWindowOnScreen() {
+  const win = $("probe-modal");
+  if (win.hidden) return;
+  const rect = win.getBoundingClientRect();
+  placeProbeWindow(rect.left, rect.top);
+}
+
+{
+  const win = $("probe-modal");
+  const handle = $("probe-window-handle");
+  let drag = null;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    const rect = win.getBoundingClientRect();
+    drag = { pointerId: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    placeProbeWindow(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  const finishDrag = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+    drag = null;
+  };
+  handle.addEventListener("pointerup", finishDrag);
+  handle.addEventListener("pointercancel", finishDrag);
+  window.addEventListener("resize", keepProbeWindowOnScreen);
+}
+
+function defaultProbeVolume() {
+  let min = null;
+  let max = null;
+  for (const placement of shipPlacements()) {
+    if (placement.chunk !== state.activeChunk) continue;
+    const bounds = worldBounds(placement.node);
+    if (!bounds) continue;
+    min = min ? BABYLON.Vector3.Minimize(min, bounds.min) : bounds.min.clone();
+    max = max ? BABYLON.Vector3.Maximize(max, bounds.max) : bounds.max.clone();
+  }
+  const centre = min && max
+    ? min.add(max).scale(0.5)
+    : (state.camera?.globalPosition || state.camera?.position
+      || new BABYLON.Vector3(0, 2.5, 0)).clone();
+  const size = min && max ? max.subtract(min) : new BABYLON.Vector3(8, 5, 8);
+  return {
+    boxPosition: centre.asArray(),
+    boxSize: size.asArray().map((n) => Math.max(0.01, n)),
+    capturePosition: centre.asArray(),
+    resolution: 512,
+  };
+}
+
+function probeDraft() {
+  const raw = PROBE_VALUE_FIELDS.map((id) => $(id).value.trim());
+  const resolution = Number($("probe-resolution").value);
+  if (raw.some((value) => value === "")) return null;
+  const values = raw.map(Number);
+  const boxPosition = values.slice(0, 3);
+  const boxSize = values.slice(3, 6);
+  const capturePosition = values.slice(6, 9);
+  if (!values.every(Number.isFinite) || !boxSize.every((n) => n > 0)
+    || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return null;
+  return {
+    id: validEnvironmentProbeId($("probe-id").value),
+    boxPosition,
+    boxSize,
+    capturePosition,
+    resolution: Math.round(resolution),
+  };
+}
+
+async function refreshProbeWindow(pick = probeSelected) {
+  const request = ++probeRefreshRequest;
+  const ids = alphabetical(environmentProbeIds());
+  probeSelected = pick && ids.includes(pick) ? pick : (ids[0] || null);
+  $("probe-list").innerHTML = ids.map((id) => {
+    const probe = environmentProbeOf(id);
+    return `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
+      + `${esc(id)} · ${probe.resolution}px</option>`;
+  }).join("");
+  const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
+  $("probe-id").value = probe?.id || "";
+  const values = probe
+    ? [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition] : [];
+  PROBE_VALUE_FIELDS.forEach((id, index) => { $(id).value = values[index] ?? ""; });
+  $("probe-resolution").value = probe?.resolution ?? "";
+  $("btn-probe-delete").disabled = !probe;
+  $("btn-probe-apply").disabled = !probe;
+  // Capture takes the selected probe, so it goes with Delete and Apply rather
+  // than with Capture all, which never needs one.
+  $("btn-capture-one").disabled = !probe;
+  $("probe-error").textContent = "";
+  if (!probe) {
+    $("probe-resolved").textContent = "No probe volumes. Press New to create one.";
+    $("probe-show").checked = false;
+    $("probe-env").checked = false;
+    await showEnvironmentProbe(null, false, null, false);
+    return;
+  }
+  const info = await localEnvironmentProbeOf(probe.id);
+  if (request !== probeRefreshRequest || probe.id !== probeSelected) return;
+  $("probe-resolved").textContent =
+    `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`
+    + ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}`
+    + ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
+  if ($("probe-show").checked) {
+    await showEnvironmentProbe(
+      probe.id, true, probe, $("probe-env").checked);
+  }
+}
+
+async function showAndSelectProbe(id) {
+  if (!id) return;
+  $("probe-show").checked = true;
+  await refreshProbeWindow(id);
+  select([id]);
+}
+
+function openProbes() {
+  $("probe-modal").hidden = false;
+  const id = probeSelected || environmentProbeIds()[0];
+  // With nothing to select there is still a pane to put in order: the empty
+  // state is what says to press New, and the buttons that act on a selection
+  // have to open inert rather than pointing at a probe that is not there.
+  if (id) void showAndSelectProbe(id); else void refreshProbeWindow(null);
+  requestAnimationFrame(keepProbeWindowOnScreen);
+}
+
+function closeProbes() {
+  $("probe-modal").hidden = true;
+  $("probe-show").checked = false;
+  $("probe-env").checked = false;
+  if (state.selection.some((id) => state.environmentProbes.has(id))) {
+    select(state.selection.filter((id) => !state.environmentProbes.has(id)));
+  }
+  void showEnvironmentProbe(null, false, null, false);
+}
+
+$("btn-probes").addEventListener("click", openProbes);
+$("btn-probe-close").addEventListener("click", closeProbes);
+$("probe-list").addEventListener("change", (e) => {
+  probeSelected = e.target.value;
+  void showAndSelectProbe(probeSelected);
+});
+
+for (const id of [...PROBE_VALUE_FIELDS, "probe-resolution"]) {
+  $(id).addEventListener("input", () => {
+    if (!$("probe-show").checked || !probeSelected) return;
+    const draft = probeDraft();
+    if (draft) {
+      void showEnvironmentProbe(
+        probeSelected, true, draft, $("probe-env").checked);
+    }
   });
 }
+
+$("probe-show").addEventListener("change", (e) => {
+  if (!e.target.checked) $("probe-env").checked = false;
+  if (!e.target.checked) {
+    if (state.selection.includes(probeSelected)) {
+      select(state.selection.filter((id) => id !== probeSelected));
+    }
+    void showEnvironmentProbe(null, false, null, false);
+    return;
+  }
+  void showEnvironmentProbe(
+    probeSelected, true, probeDraft(), $("probe-env").checked).then(() => {
+    if (probeSelected) select([probeSelected]);
+  });
+});
+
+$("probe-env").addEventListener("change", (e) => {
+  if (e.target.checked) $("probe-show").checked = true;
+  void showEnvironmentProbe(
+    probeSelected, $("probe-show").checked, probeDraft(), e.target.checked);
+});
+
+$("btn-probe-new").addEventListener("click", () => {
+  const id = nextEnvironmentProbeId();
+  setEnvironmentProbe(id, defaultProbeVolume());
+  probeSelected = id;
+  void showAndSelectProbe(id);
+  setStatus(`created environment probe ${id}`);
+});
+
+$("btn-probe-apply").addEventListener("click", () => {
+  if (!probeSelected) return;
+  const draft = probeDraft();
+  const nextId = validEnvironmentProbeId($("probe-id").value);
+  if (!nextId) {
+    $("probe-error").textContent =
+      "ID must be 1–128 letters, digits, dots, underscores, or hyphens.";
+    return;
+  }
+  if (!environmentProbeIdAvailable(nextId, probeSelected)) {
+    $("probe-error").textContent = `ID "${nextId}" is already used by another editor entry.`;
+    return;
+  }
+  if (!draft) {
+    $("probe-error").textContent =
+      "Enter numeric box/camera positions, positive box sizes, and a texture size from 16 to 4096.";
+    return;
+  }
+  const previousId = probeSelected;
+  probeSelected = nextId;
+  const changed = setEnvironmentProbe(nextId, draft, previousId);
+  $("probe-error").textContent = "";
+  void showAndSelectProbe(probeSelected);
+  setStatus(changed
+    ? `${previousId === probeSelected ? probeSelected : `${previousId} → ${probeSelected}`}: environment probe updated`
+    : `${probeSelected}: environment probe unchanged`);
+});
+
+$("btn-probe-delete").addEventListener("click", () => {
+  if (!probeSelected) return;
+  const gone = probeSelected;
+  if (!removeEnvironmentProbe(gone)) return;
+  probeSelected = null;
+  void refreshProbeWindow();
+  setStatus(`deleted environment probe ${gone}`);
+});
+
+on("environment-probes", () => {
+  refreshStats();
+  if (!$("probe-modal").hidden) void refreshProbeWindow(probeSelected);
+});
+
+on("selection", () => {
+  const selectedProbe = state.selection.find((id) => state.environmentProbes.has(id));
+  if (!selectedProbe || $("probe-modal").hidden || selectedProbe === probeSelected) return;
+  probeSelected = selectedProbe;
+  $("probe-show").checked = true;
+  void refreshProbeWindow(selectedProbe);
+});
 
 $("insp-name").addEventListener("change", (e) => {
   if (syncing || !state.selection.length) return;
@@ -1044,12 +1272,6 @@ $("insp-name").addEventListener("change", (e) => {
 // Behaviours are keyed by name, so leaving the field is the moment to go and
 // look: type a name another element already uses and its flags appear here.
 $("insp-name").addEventListener("blur", () => refreshBehavior());
-
-$("insp-bake").addEventListener("change", (e) => {
-  if (syncing || !e.target.value) return;
-  setBakeOverrides(selectedBakeNodes(), e.target.value);
-  refreshBakeOverride();
-});
 
 // ---------------------------------------------------------------- toolbar
 
@@ -1108,12 +1330,135 @@ for (const el of document.querySelectorAll("#toolbar select, #toolbar input")) {
   el.addEventListener("change", () => el.blur());
 }
 
+/**
+ * Palette tile size.
+ *
+ * Saved with the ship (manifest `editorPrefs`) *and* mirrored to localStorage:
+ * the manifest wins when it carries a value, and the local copy is what a ship
+ * written before the block came in falls back to. Same arrangement as the
+ * editor's Env/Exposure, and for the same reason - reopening a ship should look
+ * the way you left it, on any machine.
+ */
 function setBigPalette(on) {
+  state.bigPalette = !!on;
   document.body.classList.toggle("big-palette", on);
   $("big-palette").checked = on;
   localStorage.setItem("bigPalette", on ? "1" : "0");
+  applyPanelWidth(PANELS[0]);
   state.engine?.resize();
 }
+
+/**
+ * Follow the editor's view preferences when a load or a reset moves them.
+ *
+ * applyEditorPrefs() only touches state - what a preference *means* on screen
+ * is the UI's business - so this is where the manifest's values become a body
+ * class and a slider position.
+ */
+function refreshEditorPrefs() {
+  $("veil-alpha").value = String(state.veilAlpha);
+  showVeilAlpha(state.veilAlpha);
+  localStorage.setItem("veilAlpha", String(state.veilAlpha));
+  setBigPalette(state.bigPalette);
+  refreshStats();                     // the status bar quotes the ghost percentage
+}
+on("prefs", refreshEditorPrefs);
+
+// ------------------------------------------------------- resizable panels
+//
+// Both side panels are dragged by the strip between them and the viewport.
+// Widths are kept in localStorage only, unlike the settings on the Settings
+// pane: a drag is not a setting anyone opened a pane to make, and there are two
+// remembered widths per panel (see `key` below) rather than one value to author.
+
+const PANELS = [
+  {
+    id: "resize-palette", panel: "palette", prop: "--palette-w",
+    min: 180, edge: "right",
+    // The palette grid keeps its column count, so its width *is* the tile size
+    // and the two icon sizes want genuinely different widths. One remembered
+    // number would mean dragging it once permanently defeated Big icons.
+    key: () => (document.body.classList.contains("big-palette")
+      ? "paletteWidth.big" : "paletteWidth"),
+    fallback: () => (document.body.classList.contains("big-palette") ? 520 : 260),
+  },
+  {
+    id: "resize-inspector", panel: "inspector", prop: "--inspector-w",
+    min: 180, edge: "left",
+    key: () => "inspectorWidth",
+    fallback: () => 232,
+  },
+];
+
+/** The width this panel should have now, from storage or from its default. */
+function panelWidth(p) {
+  const saved = parseFloat(localStorage.getItem(p.key()));
+  return Number.isFinite(saved) ? clampPanel(p, saved) : p.fallback();
+}
+
+/** Wide enough to be usable, and never so wide the viewport disappears. */
+function clampPanel(p, w) {
+  const room = Math.max(p.min, Math.round(window.innerWidth * 0.45));
+  return Math.round(Math.min(Math.max(w, p.min), room));
+}
+
+function applyPanelWidth(p, w = panelWidth(p)) {
+  // On body, not :root — `body.big-palette` sets --palette-w too, and a rule on
+  // the nearer ancestor would win over one set further up.
+  document.body.style.setProperty(p.prop, `${w}px`);
+}
+
+for (const p of PANELS) {
+  applyPanelWidth(p);
+  const grip = $(p.id);
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = $(p.panel).getBoundingClientRect().width;
+    // Capture, so a drag that outruns the 5 px strip - which every drag does -
+    // keeps being reported here instead of stopping dead over the canvas.
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("dragging");
+    document.body.classList.add("resizing");
+    const move = (ev) => {
+      const dx = p.edge === "right" ? ev.clientX - startX : startX - ev.clientX;
+      applyPanelWidth(p, clampPanel(p, startW + dx));
+      state.engine?.resize();
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      grip.releasePointerCapture(e.pointerId);
+      grip.classList.remove("dragging");
+      document.body.classList.remove("resizing");
+      localStorage.setItem(p.key(), String($(p.panel).getBoundingClientRect().width));
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  });
+  grip.addEventListener("dblclick", () => {
+    localStorage.removeItem(p.key());
+    applyPanelWidth(p);
+    state.engine?.resize();
+  });
+  // Keyboard, because a 5 px target is not one everybody can hit.
+  grip.addEventListener("keydown", (e) => {
+    const step = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const w = clampPanel(p, $(p.panel).getBoundingClientRect().width
+      + (p.edge === "right" ? step : -step));
+    applyPanelWidth(p, w);
+    localStorage.setItem(p.key(), String(w));
+    state.engine?.resize();
+  });
+}
+
+// A narrower window can leave a stored width covering most of it.
+addEventListener("resize", () => { for (const p of PANELS) applyPanelWidth(p); });
 
 /**
  * Remember which palette panes are folded.
@@ -1171,77 +1516,72 @@ function pushLightUndoOnce() {
   pushUndo();
   lightPushed = true;
 }
-for (const id of ["env-intensity", "dynamic-env-intensity", "exposure"]) {
-  const el = $(id);
+
+/** Arm the once-per-gesture guard on a range input, however it is being moved. */
+function armSliderUndo(el) {
   el.addEventListener("pointerdown", () => { lightPushed = false; });
   el.addEventListener("keydown", () => { lightPushed = false; });
   // A wheel over a focused range also moves it, and fires neither of the above.
   el.addEventListener("wheel", () => { lightPushed = false; }, { passive: true });
 }
 
-$("env-intensity").addEventListener("input", (e) => {
-  const v = parseFloat(e.target.value);
-  pushLightUndoOnce();
-  setEnvIntensity(v);
-  $("env-intensity-val").textContent = v.toFixed(1);
-  localStorage.setItem("envIntensity", String(v));
-});
+/**
+ * The two lighting rigs, control by control.
+ *
+ * `which` names the set in state.lightSets. Both are saved with the ship, in
+ * `environment` and `editorEnvironment`, but only the runtime's is read by the
+ * game - which is the whole point of showing them apart: one says how you like
+ * to look at the ship, the other is part of the ship. `store` is the machine's
+ * fallback copy, kept for the editor rig so a manifest without one still opens
+ * at the brightness you last built in.
+ */
+const LIGHT_CONTROLS = [
+  { id: "editor-env", which: "editor", key: "strength", digits: 1, store: "editorEnv" },
+  { id: "editor-exposure", which: "editor", key: "exposure", digits: 2, store: "editorExposure" },
+  { id: "runtime-env", which: "runtime", key: "strength", digits: 1 },
+  { id: "runtime-exposure", which: "runtime", key: "exposure", digits: 2 },
+];
 
-$("dynamic-env-intensity").addEventListener("input", (e) => {
-  const v = parseFloat(e.target.value);
-  pushLightUndoOnce();
-  setDynamicEnvIntensity(v);
-  $("dynamic-env-intensity-val").textContent = v.toFixed(1);
-});
-
-$("exposure").addEventListener("input", (e) => {
-  const v = parseFloat(e.target.value);
-  pushLightUndoOnce();
-  setExposure(v);
-  showExposure(v);
-  localStorage.setItem("exposure", String(v));
-});
-
-for (const id of ["bake-light-power", "bake-sky"]) {
-  const el = $(id);
-  el.addEventListener("pointerdown", () => { lightPushed = false; });
-  el.addEventListener("keydown", () => { lightPushed = false; });
-  el.addEventListener("wheel", () => { lightPushed = false; }, { passive: true });
+for (const c of LIGHT_CONTROLS) {
+  const el = $(c.id);
+  armSliderUndo(el);
+  el.addEventListener("input", (e) => {
+    const v = parseFloat(e.target.value);
+    // Only the ship's own rig is an edit to the ship. Undoing a change to how
+    // *you* light the editor would spend the undo stack on nothing.
+    if (c.which === "runtime") pushLightUndoOnce();
+    setLightSetting(c.which, c.key, v);
+    $(`${c.id}-val`).textContent = v.toFixed(c.digits);
+    if (c.store) localStorage.setItem(c.store, String(v));
+  });
 }
 
-$("bake-light-power").addEventListener("input", (e) => {
-  const v = parseFloat(e.target.value);
-  pushLightUndoOnce();
-  setBakeLighting("power", v);
-  $("bake-light-power-val").textContent = v.toFixed(1);
-});
-
-$("bake-sky").addEventListener("input", (e) => {
-  const v = parseFloat(e.target.value);
-  pushLightUndoOnce();
-  setBakeLighting("sky", v);
-  $("bake-sky-val").textContent = v.toFixed(1);
-});
-
 /**
- * The view transform, which belongs to the ship rather than to this browser.
+ * The view transforms.
  *
- * Unlike the exposure slider beside it there is no localStorage copy: the demos
- * read `environment.toneMapping` out of the manifest, so a value kept only
- * locally would be one the runtime never sees. Undoable for the same reason
- * the exposure is - it is an edit to the ship.
+ * The runtime's is undoable, and its only copy is the manifest: the demos read
+ * `environment.toneMapping` from there, so a value kept on this machine would
+ * be one the runtime never sees. The editor's is saved too, in
+ * `editorEnvironment`, but keeps a localStorage fallback and stays off the undo
+ * stack - it is not an edit to the ship.
  */
-$("tone-mapping").addEventListener("change", (e) => {
+$("editor-tone").addEventListener("change", (e) => {
+  setLightSetting("editor", "toneMapping", e.target.value);
+  localStorage.setItem("editorTone", e.target.value);
+});
+
+$("runtime-tone").addEventListener("change", (e) => {
   pushUndo();
-  setToneMapping(e.target.value);
+  setLightSetting("runtime", "toneMapping", e.target.value);
 });
 
 /**
  * How see-through Shift+H makes things.
  *
- * Kept in localStorage rather than the manifest, like the exposure: it says
- * nothing about the ship and everything about how this person likes to look at
- * it, and writing a view preference into the ship's data would be wrong.
+ * Saved with the ship (manifest `editorPrefs`) and mirrored to localStorage,
+ * like the editor's Env/Exposure above it. Not undoable, for the same reason
+ * they are not: it says how you are looking at the ship, not what the ship is,
+ * and spending an undo entry on it would take back a change no edit made.
  */
 $("veil-alpha").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
@@ -1256,45 +1596,38 @@ function showVeilAlpha(v) {
 }
 
 /**
- * Both readings of the exposure at once.
+ * Follow the lighting when a load, an undo, or a change of view mode moves it.
  *
- * Just the linear multiplier now: it is what the slider sets, what the manifest
- * stores and what the demos apply, so there is only one number to know.
- */
-function showExposure(v) {
-  $("exposure-val").textContent = v.toFixed(2);
-}
-
-/**
- * Follow the lighting when a load, or the light-mode switch, changes it.
- *
- * The sliders are normally the source of truth and persist to localStorage, but
- * a manifest's environment block outranks them: exposure and IBL strength are
- * properties of the ship, not of this browser. Only the *active* pair is
- * remembered locally - the other one lives in the manifest.
+ * Both rigs are shown at once and always read out of state, so the pane never
+ * has to guess which one is live. Only the editor's is mirrored to
+ * localStorage: the runtime's belongs to the manifest, and copying it here is
+ * what used to let a session spent in the Runtime view quietly overwrite the
+ * brightness the editor came up in.
  */
 function refreshLighting() {
-  $("env-intensity").value = String(state.envIntensity);
-  $("env-intensity-val").textContent = state.envIntensity.toFixed(1);
-  localStorage.setItem("envIntensity", String(state.envIntensity));
-  $("dynamic-env-intensity").value = String(state.dynamicEnvIntensity);
-  $("dynamic-env-intensity-val").textContent = state.dynamicEnvIntensity.toFixed(1);
-  $("dynamic-env-intensity").disabled = !state.baked;
-  $("exposure").value = String(state.exposure);
-  showExposure(state.exposure);
-  localStorage.setItem("exposure", String(state.exposure));
-  // No localStorage: the manifest is the only home for this one.
-  const tone = $("tone-mapping");
-  tone.value = state.toneMapping;
-  if (!tone.value) {
-    // The manifest may name the transform loosely ("aces", "KHR_PBR_NEUTRAL").
-    // The scene resolves those fine, but the combo box only holds the four
-    // canonical spellings, so match on what they resolve to rather than
-    // leaving the control blank and lying about the state.
-    const want = resolveToneMapping(state.toneMapping);
-    tone.value = [...tone.options]
-      .find((o) => resolveToneMapping(o.value) === want)?.value ?? "Khronos PBR Neutral";
+  for (const c of LIGHT_CONTROLS) {
+    const v = state.lightSets[c.which][c.key];
+    $(c.id).value = String(v);
+    $(`${c.id}-val`).textContent = v.toFixed(c.digits);
+    if (c.store) localStorage.setItem(c.store, String(v));
   }
+  showToneMapping($("editor-tone"), state.lightSets.editor.toneMapping);
+  showToneMapping($("runtime-tone"), state.lightSets.runtime.toneMapping);
+  localStorage.setItem("editorTone", $("editor-tone").value);
+  $("view-mode").value = viewMode();
+}
+
+/** Put a tone-mapping combo on `name`, however loosely the manifest spelled it. */
+function showToneMapping(el, name) {
+  el.value = name;
+  if (el.value) return;
+  // The manifest may name the transform loosely ("aces", "KHR_PBR_NEUTRAL").
+  // The scene resolves those fine, but the combo box only holds the four
+  // canonical spellings, so match on what they resolve to rather than
+  // leaving the control blank and lying about the state.
+  const want = resolveToneMapping(name);
+  el.value = [...el.options]
+    .find((o) => resolveToneMapping(o.value) === want)?.value ?? "Khronos PBR Neutral";
 }
 
 $("show-grid").addEventListener("change", (e) => setGridVisible(e.target.checked));
@@ -1315,44 +1648,59 @@ function setIsolate(on) {
   applyVisibility();
 }
 
-$("unlit").addEventListener("change", (e) => {
-  setUnlit(e.target.checked);
-  localStorage.setItem("unlit", e.target.checked ? "1" : "0");
-  setStatus(e.target.checked
-    ? "unlit — raw albedo, no lighting"
-    : "lit — hemi + key/fill + IBL");
-});
-
-/** The last bake, on screen: ship_baked.glb with its lightmaps, in place of
- * the ship the editor is holding, plus the authored runtime lamps rebuilt over
- * the dynamic props. See baked.js for why it cannot be shown on the authored
- * meshes instead. This is also what silences the editor's authoring rig - the
- * two used to be separate toggles and only ever made sense together. */
-$("baked").addEventListener("change", async (e) => {
-  const box = e.target;
+/**
+ * Put the viewport in one of the three named modes.
+ *
+ * Switching in deliberately does NOT capture anything. It used to: entering the
+ * Runtime view brought every stale probe up to date first, which meant that
+ * looking at the ship the way the game lights it could cost a minute of
+ * rendering nobody asked for, at the one moment you wanted a quick look. The
+ * capture is a deliberate act now, and it lives with the boxes it belongs to,
+ * in the Probes window. What you see on the way in is whatever .env files are
+ * on disk, which is exactly what the game would load right now.
+ *
+ * On failure the combo is put back on the mode actually in force rather than
+ * on the one asked for, so it never claims to be showing something it is not.
+ */
+async function applyViewMode(mode) {
+  const sel = $("view-mode");
+  const flags = viewModeFlags(mode);
   try {
-    box.disabled = true;
-    setStatus(box.checked ? "loading the baked ship…" : "unloading the bake…");
-    await setBakedPreview(box.checked);
-    // The mode drops the authoring rig and swaps in its own Env/Exposure pair,
-    // so the sliders must follow.
-    refreshLighting();
-    const p = bakedPreview();
-    setStatus(box.checked
-      ? `baked — ${p.lit} mesh(es) lit by ${p.textures.length} lightmap(s), `
-        + `${p.skipped} dynamic prop(s) by ${p.lights.length} runtime lamp(s)`
-        + `, ${p.standIns.size} element(s) editable through the bake`
-      : "authored ship — the editor's own geometry and lights are back");
+    sel.disabled = true;
+    setUnlit(flags.unlit);
+    if (flags.runtime !== state.runtime) {
+      setStatus(flags.runtime ? "lighting the ship the way the game does…" : "back to the editor's rig");
+      await setRuntimePreview(flags.runtime);
+    }
+    setStatus(viewModeStatus(mode));
   } catch (err) {
     console.error(err);
-    box.checked = false;
-    setStatus("baked preview: " + err.message);
+    await setRuntimePreview(false).catch(() => {});
+    setStatus("view mode: " + err.message);
   } finally {
-    box.disabled = false;
+    sel.disabled = false;
+    refreshLighting();
+    localStorage.setItem("viewMode", viewMode());
     refreshHud();
   }
-});
+}
 
+/** Drop the preview and build it again, so it picks up freshly written .env files. */
+async function reloadRuntimePreview() {
+  await setRuntimePreview(false);
+  await setRuntimePreview(true);
+}
+
+/** What just happened, counted off the preview where there is one. */
+function viewModeStatus(mode) {
+  if (mode === "editor") return "editor — the ship you are building, under the editor's own rig";
+  if (mode === "editor-unlit") return "editor unlit — raw albedo, no lighting";
+  const p = runtimePreview();
+  return `runtime — ${p.meshes.length} mesh(es) lit by ${p.lights.length} lamp(s), `
+    + `${p.inProbe} in a probe box and ${p.outsideProbe} outside one`;
+}
+
+$("view-mode").addEventListener("change", (e) => applyViewMode(e.target.value));
 $("walk").addEventListener("change", (e) => {
   setWalk(e.target.checked);
   setStatus(e.target.checked
@@ -1490,7 +1838,6 @@ export async function autoSaveNow() {
 
 $("btn-save").addEventListener("click", doSave);
 $("btn-load").addEventListener("click", doLoad);
-$("btn-export").addEventListener("click", doExport);
 
 /**
  * The same guard for closing or reloading the tab.
@@ -1510,7 +1857,19 @@ addEventListener("beforeunload", (e) => {
   e.returnValue = "";
 });
 
+/**
+ * Write the ship: the manifest, and the glb beside it.
+ *
+ * One button, because the two files are one thing: the runtime loads the glb
+ * for geometry and the manifest for everything else, so a manifest saved
+ * without its glb is a ship whose description and geometry disagree.
+ *
+ * The glb is reported separately and never takes the manifest down with it:
+ * losing the export is a nuisance, and being told the layout was not saved
+ * when it was would be worse.
+ */
 async function doSave() {
+  let saved;
   try {
     setStatus("saving…");
     // The staging area is a working copy: read it back before writing, or
@@ -1521,10 +1880,18 @@ async function doSave() {
     const coll = r.collisionError
       ? ` — collision file NOT written: ${r.collisionError}`
       : (r.collision ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "");
-    setStatus(r.previous
+    saved = r.previous
       ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}`
-      : `saved ${r.bytes} bytes → ${r.path}${coll}`);
-  } catch (e) { setStatus("save failed: " + e.message); }
+      : `saved ${r.bytes} bytes → ${r.path}${coll}`;
+  } catch (e) { setStatus("save failed: " + e.message); return; }
+  try {
+    setStatus(`${saved} — exporting glb…`);
+    const r = await exportGlb();
+    setStatus(`${saved}, ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}`);
+  } catch (e) {
+    console.error(e);
+    setStatus(`${saved} — glb NOT written: ${e.message}`);
+  }
 }
 
 async function doLoad() {
@@ -1546,198 +1913,136 @@ async function doLoad() {
   } catch (e) { setStatus("load failed: " + e.message); }
 }
 
-async function doExport() {
-  try {
-    setStatus("exporting glb…");
-    const r = await exportGlb();
-    setStatus(`exported ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}`);
-  } catch (e) {
-    console.error(e);
-    setStatus("export failed: " + e.message);
-  }
-}
-
-// ------------------------------------------------------------------- baking
+// -------------------------------------------------- the environment probes
 //
-// The bake is minutes of Cycles in a Blender the server shells out to, so the
-// button cannot wait on it: it exports the ship, asks the server to start, and
-// then polls. Exporting first is not a convenience - Blender reads `ship.glb`
-// and `ship_manifest.json` off disk, so baking without it would quietly bake
-// the ship as it was the last time it was written.
-
-let bakePoll = null;
-
-function stopBakePoll() {
-  if (bakePoll) { clearInterval(bakePoll); bakePoll = null; }
-}
-
-function bakeSummary(s) {
-  if (s.error) return `bake failed: ${s.error}`;
-  const baked = s.report?.baked || [];
-  const reused = (s.report?.reused || []).length;
-  const secs = Math.round(((s.finishedAt || Date.now()) - s.startedAt) / 1000);
-  // Reused maps are the common case once a ship is lit, so saying so is the
-  // difference between "that was suspiciously quick" and "nothing changed".
-  const kept = reused ? `, ${reused} unchanged` : "";
-  return `baked ${baked.length - reused} lightmap(s)${kept} in ${secs}s`
-    + ` → ${s.report?.out || "lightmaps/"}`;
-}
-
-async function pollBake() {
-  const s = await (await fetch("/api/bake")).json();
-  if (s.running) {
-    const secs = Math.round((Date.now() - s.startedAt) / 1000);
-    // The last line Blender printed is the only progress Cycles offers, and it
-    // is more use than a spinner: it names the chunk and the sample count.
-    setStatus(`baking… ${secs}s — ${s.log?.[s.log.length - 1] || "starting Blender"}`);
-    return;
-  }
-  stopBakePoll();
-  $("btn-bake").disabled = false;
-  setStatus(bakeSummary(s));
-  // A preview left up across a bake would still be showing the previous render.
-  if (state.baked && !s.error) {
-    await setBakedPreview(false);
-    await setBakedPreview(true).catch(() => { $("baked").checked = false; });
-  }
-}
-
-async function doBake(force = false) {
-  const btn = $("btn-bake");
-  try {
-    btn.disabled = true;
-    setStatus("exporting glb for the bake…");
-    await saveLayout();
-    await exportGlb();
-    setStatus("starting Blender…");
-    const r = await fetch("/api/bake", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ force }),
-    });
-    const started = await r.json();
-    if (!r.ok) throw new Error(started.error || `server said ${r.status}`);
-    stopBakePoll();
-    bakePoll = setInterval(() => pollBake().catch(() => {}), 2000);
-  } catch (e) {
-    console.error(e);
-    btn.disabled = false;
-    setStatus("bake failed: " + e.message);
-  }
-}
-
-// Shift-click re-bakes everything, for when the hash says nothing changed but
-// the images on disk are suspect.
-$("btn-bake").addEventListener("click", (e) => doBake(e.shiftKey));
+// A capture renders the live scene six times per probe, so it has to happen in
+// this window - there is nothing on disk to hand to a background process. The
+// server is told the whole authored probe list and answers with the ones whose
+// room has actually changed, so the usual click costs one request.
 
 /**
- * Open the ship in a Blender window instead of baking it here.
+ * Take the probes and say what came of it.
  *
- * Nothing is polled afterwards: the session belongs to the user, its progress
- * is on their screen, and it ends when they close the window. What comes back
- * comes back as files - the lightmaps it writes, which the Baked view reloads,
- * and the light powers, which "Get powers" pulls in.
+ * `only` names a single probe and is what the Probes window's **Capture**
+ * sends; without it the whole ship is checked and the stale rooms are taken,
+ * which is **Capture all**. Both buttons go inert for the duration: the capture
+ * owns the scene, and a second one started on top of it would be photographing
+ * a viewport the first has already taken over.
  */
-async function doSession() {
-  const btn = $("btn-session");
+async function doProbes({ force = false, only = null } = {}) {
+  const buttons = [$("btn-capture-all"), $("btn-capture-one")];
   try {
-    btn.disabled = true;
-    setStatus("exporting glb for Blender…");
-    await saveLayout();
-    await exportGlb();
-    const r = await fetch("/api/bake", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ gui: true }),
-    });
-    const started = await r.json();
-    if (!r.ok) throw new Error(started.error || `server said ${r.status}`);
-    setStatus("Blender is opening on the Aquanova sidebar tab. Takes a moment.");
+    for (const b of buttons) b.disabled = true;
+    setStatus(only ? `capturing ${only}…` : "checking environment probes…");
+    const result = await generateLocalEnvironments((done, total, probe) => {
+      if (probe) setStatus(`capturing environment probe ${probe} (${done + 1}/${total})…`);
+    }, { force, only });
+    const size = `${(result.bytes / 1048576).toFixed(1)} MB`;
+    setStatus(only
+      ? `captured ${only}, ${size} → export/environments/`
+      : (result.converted
+        ? `captured ${result.converted} probe(s), ${size} → export/environments/`
+        : "every environment probe is already up to date"));
+    // The preview is wearing the cubemaps from before the capture.
+    if (result.converted && state.runtime) await reloadRuntimePreview();
   } catch (e) {
     console.error(e);
-    setStatus("could not open Blender: " + e.message);
+    setStatus("probe capture failed: " + e.message);
   } finally {
-    btn.disabled = false;
+    // The selected-probe button follows the list, not the lock: with no probe
+    // to point at there is nothing for it to capture.
+    for (const b of buttons) b.disabled = false;
+    $("btn-capture-one").disabled = !probeSelected;
   }
 }
 
-$("btn-session").addEventListener("click", () => doSession());
+// Shift-click re-captures everything, for when a probe has to be re-taken after
+// a change the digest cannot see - a texture edited on disk, say.
+$("btn-capture-all").addEventListener("click", (e) => doProbes({ force: e.shiftKey }));
+// The selected probe is always re-taken: asking for one by name is an
+// instruction, not a question about whether it has gone stale.
+$("btn-capture-one").addEventListener("click", () => {
+  if (probeSelected) void doProbes({ only: probeSelected });
+});
+
+/** For tests: capture the probes and wait for it. */
+export async function captureProbes(force = false, only = null) {
+  return await generateLocalEnvironments(() => {}, { force, only });
+}
+// --------------------------------------------------------------- keyboard
 
 /**
- * Take the watts a Blender session settled on and write them onto the lights.
+ * Keys that belong to the browser, not to the editor.
  *
- * Only the bake half moves: the session has no opinion about what the runtime
- * draws, and silently rewriting the clustered lights from a Cycles slider is
- * not something anybody asked for.
+ * The function keys are the reload, the dev tools and the rest of the chrome's
+ * own row, and F5 above all is how you get out of a tool that has wedged. The
+ * busy guard below is exactly the state you want it in - so it is the one place
+ * that must never be allowed to swallow them.
  */
-export async function syncLightPowers() {
-  try {
-    const data = await (await fetch("/api/light-powers")).json();
-    const watts = data?.watts;
-    if (!watts || !Object.keys(watts).length) {
-      setStatus("no light powers from Blender yet — use “Send powers to the editor” there");
-      return;
-    }
-    let changed = 0, missing = 0;
-    pushUndo();
-    const powerChanged = Number.isFinite(data.multiplier)
-      && setBakeLighting("power", data.multiplier);
-    const skyChanged = Number.isFinite(data.env)
-      && setBakeLighting("sky", data.env);
-    for (const [id, w] of Object.entries(watts)) {
-      const light = state.lights.get(id);
-      if (!light) { missing++; continue; }
-      if (Math.abs(light.bake.watts - w) < 1e-4) continue;
-      setLightPart(id, "bake", { watts: w });
-      changed++;
-    }
-    refreshInspector();
-    setStatus(`${changed} light(s) repowered from Blender`
-      + (missing ? `, ${missing} no longer here` : "")
-      + (powerChanged || skyChanged ? ", bake lighting updated" : "")
-      + (changed || powerChanged || skyChanged ? " — Save to keep it" : ""));
-  } catch (e) {
-    console.error(e);
-    setStatus("could not read the light powers: " + e.message);
-  }
+function isBrowserKey(e) {
+  return /^F\d{1,2}$/.test(e.key);
 }
 
-$("btn-powers").addEventListener("click", () => syncLightPowers());
+/**
+ * Which controls capture the keyboard, and which keys they actually use.
+ *
+ * A focused control owning the keyboard is what typing *is*, so the shortcuts
+ * stand aside for one. But a Position or Intensity field is `type="number"`,
+ * and a number field cannot spell a letter: the browser drops it on the floor.
+ * So pressing R after typing a value did nothing at all, and nothing visible
+ * said why - press it again, still nothing, until something was clicked. That
+ * is the whole of "sometimes R takes several presses".
+ *
+ * A control keeps every key it can use. A control that cannot use a letter -
+ * number, range, colour, checkbox - hands that letter back to the editor, which
+ * costs the field nothing: it was discarding it. `e` is the exception, because
+ * a number field reads it as an exponent, and no shortcut is spelled with it.
+ *
+ * A `select` is not in that set either: a letter jumps it to the matching
+ * option, which is a real use.
+ */
+const BLIND_INPUTS = new Set(["number", "range", "color", "checkbox", "radio"]);
 
-/** For tests: run a bake and wait for it, rather than polling in the UI. */
-export async function bakeNow(opts = {}) {
-  const r = await fetch("/api/bake", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts),
-  });
-  const started = await r.json();
-  if (!r.ok) return { ok: false, error: started.error };
-  for (;;) {
-    const s = await (await fetch("/api/bake")).json();
-    if (!s.running) return s;
-    await new Promise((done) => setTimeout(done, 500));
-  }
+function isFormControl(t) {
+  return !!t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA");
 }
 
-// --------------------------------------------------------------- keyboard
+function fieldKeepsKey(t, e) {
+  if (t.tagName !== "INPUT") return true;
+  if (!BLIND_INPUTS.has((t.type || "text").toLowerCase())) return true;
+  const letter = e.key.length === 1 && /[a-z]/i.test(e.key) && !/^e$/i.test(e.key);
+  return !letter || e.ctrlKey || e.metaKey;
+}
+
 window.addEventListener("keydown", async (e) => {
   // Every shortcut is an edit or a mode change, and the scene is mid-rebuild.
-  if (isBusy()) { e.preventDefault(); return; }
-  // The behaviour library and the chunks pane are modal: nothing behind them
-  // should be editable, and a stray X or Del while a button in one holds focus
-  // would act on the ship.
+  // Dropped, not claimed: preventDefault here used to take F5 with it, which
+  // turned any stall under the lock into a page that could not even be
+  // reloaded.
+  if (isBusy()) {
+    if (!isBrowserKey(e)) e.preventDefault();
+    return;
+  }
+  // The behaviour library is modal: nothing behind it should be editable, and
+  // a stray X or Del while a button in it holds focus would act on the ship.
   if (!$("bhv-modal").hidden) {
     if (e.key === "Escape") { e.preventDefault(); closeLibrary(); }
     return;
   }
-  if (!$("chunk-modal").hidden) {
-    if (e.key === "Escape") { e.preventDefault(); closeChunks(); }
-    return;
-  }
   const t = e.target;
-  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) {
-    if (e.key === "Escape") t.blur();
+  if (isFormControl(t)) {
+    // Escape abandons a field and Enter says "done with it" - both hand the
+    // keyboard back, so the next shortcut lands on the ship instead of being
+    // typed into a control nobody is looking at any more. A textarea keeps
+    // Enter: there it is a new line.
+    if (e.key === "Escape" || (e.key === "Enter" && t.tagName !== "TEXTAREA")) {
+      t.blur();
+      return;
+    }
+    if (fieldKeepsKey(t, e)) return;
+  }
+  if (t && !$("chunk-modal").hidden && $("chunk-modal").contains(t)) {
+    if (e.key === "Escape") { e.preventDefault(); closeChunks(); }
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
@@ -2235,18 +2540,13 @@ function validate() {
   }
   if (!doors.length && state.chunks.length > 1) out.push(["warn", "no doors placed yet"]);
 
-  // The baked view is a preview of the bake that produced it, and editing
-  // through it is allowed - so anything moved, added or deleted since is being
-  // drawn with light computed for a ship that no longer exists. Saying so is
-  // what keeps it the honest view; bakedDrift() is all zeros when the preview
-  // is off, so this costs nothing the rest of the time.
-  const drift = bakedDrift();
-  const stale = [];
-  if (drift.moved) stale.push(`${drift.moved} moved`);
-  if (drift.missing) stale.push(`${drift.missing} not in it`);
-  if (drift.gone) stale.push(`${drift.gone} deleted`);
-  if (stale.length) out.push(["warn", `bake is behind: ${stale.join(", ")}`]);
-
+  // A room with no probe reflects nothing at all in the game, which on a kit
+  // this metallic reads as black panels rather than as a missing feature.
+  const covered = new Set();
+  for (const probe of state.environmentProbes.values()) covered.add(probe.id);
+  if (!covered.size && shipPlacements().length) {
+    out.push(["warn", "no environment probes — nothing in the ship will reflect anything"]);
+  }
   const el = $("validation");
   el.innerHTML = out.length
     ? out.map(([k, m]) => `<div class="${k}">${m}</div>`).join("")
@@ -2256,22 +2556,35 @@ function validate() {
 // ------------------------------------------------------------------- boot
 
 on("selection", () => { refreshInspector(); refreshStats(); });
+// The wheel tunes a lamp without going through the panel, so the panel has to
+// follow the record rather than only ever writing to it.
+on("lights", () => { refreshInspector(); refreshStats(); });
 on("placements", () => { refreshChunks(); refreshStats(); validate(); });
 on("chunks", () => {
   refreshChunks();
+  refreshSettings();
   // An undo can add, remove, rename or retune a chunk while the pane is open.
   if (!$("chunk-modal").hidden) refreshChunkPane(chunkSelected);
 });
 on("markers", () => { refreshStats(); validate(); });
-on("transform", () => { refreshInspector(); validate(); });
+on("transform", () => {
+  for (const id of state.selection) {
+    if (!state.environmentProbes.has(id)) continue;
+    const entry = entryOf(id);
+    if (!entry) continue;
+    const size = entry.node.scaling.asArray().map((value) => Math.max(0.01, Math.abs(value)));
+    entry.node.scaling.set(...size);
+    syncEnvironmentProbeTransform(id, entry.node.position.asArray(), size);
+  }
+  refreshInspector();
+  validate();
+});
 on("grid", refreshHud);
-on("modes", refreshHud);
+on("modes", () => { refreshHud(); refreshLighting(); });
 on("current", refreshHud);
 on("environment", refreshLighting);
-on("bakeLighting", refreshSettings);
 on("behaviors", () => {
   refreshBehavior();
-  refreshBakeOverride();
   if (!$("bhv-modal").hidden) refreshLibrary(libSelected);
 });
 on("busy", refreshBusy);
@@ -2285,12 +2598,18 @@ on("busy", refreshBusy);
  * takes them out of hit-testing *and* out of the focus order in one attribute.
  * The keydown handler bails as well, since window-level shortcuts never had a
  * target inside the inert subtree to begin with.
+ *
+ * The floating tool windows are in that list too, and the Probes window is why:
+ * it is where a capture is started from, so it is guaranteed to be open while
+ * the longest lock the editor takes is held, with a New and a Delete button on
+ * it that would otherwise still take the keyboard.
  */
 function refreshBusy() {
   const busy = isBusy();
   $("busy").hidden = !busy;
   $("busy-msg").textContent = busyLabel() || "working…";
-  for (const id of ["toolbar", "palette", "viewport", "inspector"]) {
+  for (const id of ["toolbar", "palette", "viewport", "inspector",
+    "probe-modal", "chunk-modal", "bhv-modal"]) {
     const el = $(id);
     if (el) el.inert = busy;
   }
@@ -2460,14 +2779,6 @@ on("focus", () => focusSelection());
 // on the undo stack and in the saved layout like any other edit.
 
 function refreshSettings() {
-  const power = $("bake-light-power");
-  if (document.activeElement !== power) power.value = state.bakeLighting.power;
-  $("bake-light-power-val").textContent = state.bakeLighting.power.toFixed(1);
-  const sky = $("bake-sky");
-  if (document.activeElement !== sky) sky.value = state.bakeLighting.sky;
-  $("bake-sky-val").textContent = Number.isInteger(state.bakeLighting.sky)
-    ? String(state.bakeLighting.sky)
-    : state.bakeLighting.sky.toFixed(1);
   const shell = $("cfg-shell");
   if (document.activeElement !== shell) shell.value = state.config.shellThickness;
   const auto = $("cfg-autosave");
@@ -2477,10 +2788,10 @@ function refreshSettings() {
   const thick = $("cfg-hull-thick");
   if (document.activeElement !== thick) thick.value = state.config.hullThickness;
   $("cfg-hull-offset").value = state.config.hullOffset;
-  $("baked-specular-aa").checked = state.bakedSpecularAA;
-  const roughness = $("baked-roughness");
-  if (document.activeElement !== roughness) roughness.value = state.bakedRoughnessFactor;
-  $("baked-roughness-val").textContent = `${state.bakedRoughnessFactor.toFixed(2)}×`;
+  $("runtime-specular-aa").checked = state.runtimeSpecularAA;
+  const roughness = $("runtime-roughness");
+  if (document.activeElement !== roughness) roughness.value = state.runtimeRoughnessFactor;
+  $("runtime-roughness-val").textContent = `${state.runtimeRoughnessFactor.toFixed(2)}×`;
 }
 
 $("cfg-hull-tol").addEventListener("change", () => {
@@ -2511,15 +2822,25 @@ $("cfg-hull-offset").addEventListener("change", () => {
   refreshSettings();
 });
 
-$("baked-specular-aa").addEventListener("change", (e) => {
-  setBakedSpecularAA(e.target.checked);
-  setStatus(e.target.checked ? "baked-preview specular AA on" : "baked-preview specular AA off");
+/**
+ * The two material dials in the Runtime section.
+ *
+ * Authored ship values like the rig above them - saved in `environment` and
+ * read by the game - so both are undoable, the checkbox per click and the
+ * slider once per drag.
+ */
+$("runtime-specular-aa").addEventListener("change", (e) => {
+  pushUndo();
+  setRuntimeSpecularAA(e.target.checked);
+  setStatus(e.target.checked ? "specular AA on" : "specular AA off");
 });
 
-$("baked-roughness").addEventListener("input", (e) => {
+armSliderUndo($("runtime-roughness"));
+$("runtime-roughness").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
-  setBakedRoughnessFactor(v);
-  $("baked-roughness-val").textContent = `${state.bakedRoughnessFactor.toFixed(2)}×`;
+  pushLightUndoOnce();
+  setRuntimeRoughnessFactor(v);
+  $("runtime-roughness-val").textContent = `${state.runtimeRoughnessFactor.toFixed(2)}×`;
 });
 
 on("reflection", refreshSettings);
@@ -2540,9 +2861,49 @@ $("cfg-autosave").addEventListener("change", () => {
   refreshSettings();
 });
 
+/**
+ * Every row on the pane back to the value the editor ships with.
+ *
+ * All of them, not just the collision constants: since the whole pane is saved
+ * with the ship, a button labelled "Reset to defaults" that quietly skipped the
+ * lighting and the ghost alpha would be lying about what it did.
+ *
+ * The ship-side rows go under one undo entry, taken before anything moves and
+ * only when something will actually move, so the button never leaves a no-op on
+ * the stack. resetConfig() keeps pushing its own per key, as a single edit to
+ * one of those rows does.
+ */
+const RIG_DEFAULTS = {
+  strength: ENV_INTENSITY_DEFAULT,
+  exposure: EXPOSURE_DEFAULT,
+  toneMapping: TONE_MAPPING_DEFAULT,
+};
+
 $("btn-cfg-reset").addEventListener("click", () => {
   let changed = false;
+  const rigsStale = ["editor", "runtime"].some((which) =>
+    Object.entries(RIG_DEFAULTS).some(([key, v]) => state.lightSets[which][key] !== v));
+  const dialsStale = state.runtimeSpecularAA !== RUNTIME_SPECULAR_AA_DEFAULT
+    || state.runtimeRoughnessFactor !== RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
+  if (rigsStale || dialsStale) {
+    pushUndo();
+    for (const which of ["editor", "runtime"]) {
+      for (const [key, v] of Object.entries(RIG_DEFAULTS)) setLightSetting(which, key, v);
+    }
+    setRuntimeSpecularAA(RUNTIME_SPECULAR_AA_DEFAULT);
+    setRuntimeRoughnessFactor(RUNTIME_ROUGHNESS_FACTOR_DEFAULT);
+    changed = true;
+  }
+  // The editor's own view preferences stay off the stack, the same rule their
+  // rows follow when you move them by hand.
+  if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT) {
+    setVeilAlpha(VEIL_ALPHA_DEFAULT);
+    state.bigPalette = BIG_PALETTE_DEFAULT;
+    changed = true;
+  }
+  refreshEditorPrefs();
   for (const key of Object.keys(CONFIG_DEFAULTS)) changed = resetConfig(key) || changed;
+  refreshLighting();
   refreshSettings();
   setStatus(changed ? "settings back to defaults" : "settings were already default");
 });
@@ -2553,37 +2914,66 @@ on("placements", refreshSettings);      // a load or an undo can change them
 // The overlay is up in the markup already, so there is never a frame in which
 // a half-built editor looks ready to use. whileBusy() takes it from here.
 (function boot() {
-  return whileBusy("loading…", bootstrap);
+  return whileBusy("loading…", bootstrap).catch(showBootFailure);
 })();
+
+/**
+ * Say why the editor did not start, on screen.
+ *
+ * Boot is all-or-nothing: fail it and there is no scene, no palette and no
+ * inspector, just an empty viewport. whileBusy() takes its overlay down on the
+ * way out regardless, so put one back up carrying the reason — otherwise the
+ * only account of it is an unhandled rejection in a console nobody has open.
+ */
+function showBootFailure(err) {
+  console.error(err);
+  setStatus(`could not start: ${err?.message || err}`);
+  const busy = $("busy");
+  if (!busy) return;
+  busy.hidden = false;
+  busy.classList.add("failed");
+  $("busy-msg").textContent = `The editor could not start.\n\n${err?.message || err}`;
+  for (const id of ["toolbar", "palette", "viewport", "inspector"]) {
+    const el = $(id);
+    if (el) el.inert = true;
+  }
+}
 
 async function bootstrap() {
   setStatus("loading catalogue…");
   refreshSettings();
   refreshModuleBanner();
   rearmAutoSave();
+  // This machine's fallbacks, for a ship whose manifest carries no editorPrefs
+  // or editorEnvironment block. Anything the manifest does carry overwrites
+  // them when it lands, so these only ever show on an old or a brand-new ship.
   setBigPalette(localStorage.getItem("bigPalette") !== "0");
   localStorage.removeItem("taa");
-  if (localStorage.getItem("unlit") === "1") {
-    $("unlit").checked = true;
-  }
+  // The old rig keys held whichever set happened to be live when they were
+  // written, so they are dropped rather than read: half of them are runtime
+  // values.
+  localStorage.removeItem("envIntensity");
+  localStorage.removeItem("exposure");
+  localStorage.removeItem("unlit");
   {
-    const saved = parseFloat(localStorage.getItem("envIntensity"));
-    const v = Number.isFinite(saved) ? saved : ENV_INTENSITY_DEFAULT;
-    $("env-intensity").value = String(v);
-    $("env-intensity-val").textContent = v.toFixed(1);
-    state.envIntensity = v;
-    activeLightSet().strength = v;
+    const env = parseFloat(localStorage.getItem("editorEnv"));
+    const exp = parseFloat(localStorage.getItem("editorExposure"));
+    const tone = localStorage.getItem("editorTone");
+    const set = state.lightSets.editor;
+    set.strength = Number.isFinite(env) ? env : ENV_INTENSITY_DEFAULT;
+    set.exposure = Number.isFinite(exp) ? exp : EXPOSURE_DEFAULT;
+    if (tone) set.toneMapping = tone;
+    // The editor set is the live one until a runtime view is picked, so the
+    // mirrors state reads from have to start on it.
+    state.envIntensity = set.strength;
+    state.exposure = set.exposure;
+    state.toneMapping = set.toneMapping;
   }
-  state.dynamicEnvIntensity = activeLightSet().dynamicStrength ?? DYNAMIC_ENV_INTENSITY_DEFAULT;
-  activeLightSet().dynamicStrength = state.dynamicEnvIntensity;
-  {
-    const saved = parseFloat(localStorage.getItem("exposure"));
-    const v = Number.isFinite(saved) ? saved : EXPOSURE_DEFAULT;
-    $("exposure").value = String(v);
-    showExposure(v);
-    state.exposure = v;
-    activeLightSet().exposure = v;
-  }
+  // Only the editor modes are restored. The Runtime view re-dresses every mesh
+  // in the ship - a clone per material per probe, a stand-in per instance - and
+  // opening the tool straight into that is not what opening it should do.
+  const mode = localStorage.getItem("viewMode");
+  if (!viewModeFlags(mode).runtime && VIEW_MODES[mode]) $("view-mode").value = mode;
   {
     const saved = parseFloat(localStorage.getItem("veilAlpha"));
     const v = Number.isFinite(saved) ? saved : state.veilAlpha;
@@ -2598,7 +2988,9 @@ async function bootstrap() {
   // RMB+WASD no longer does anything special either
   localStorage.removeItem("rmbSteer");
   await loadCatalogue();
-  state.kitDir = getCatalogue().kitDir;
+  state.kits = (getCatalogue().kits || []).map((k) => k.name);
+  state.kitsSource = getCatalogue().kitsSource || null;
+  state.kitsBase = getCatalogue().kitsBase || null;
   state.fluidSim = getCatalogue().fluidSim || [];
 
   await initScene($("render-canvas"));
@@ -2610,7 +3002,7 @@ async function bootstrap() {
     if (a && $("toolbar").contains(a)) a.blur();
   });
   initInteract();
-  if ($("unlit").checked) setUnlit(true);
+  if ($("view-mode").value === "editor-unlit") setUnlit(true);
   await initThumbs();
   initPalette();
   refreshChunks();

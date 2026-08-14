@@ -4,11 +4,11 @@
 // produced when its tile scrolls into view, and the result is pushed to the
 // server's disk cache so later sessions load it straight from /api/thumb.
 
-import { materialKey, applyKitTransparency } from "./kit.js";
+import { materialKey, applyKitTransparency, loadModuleContainer } from "./kit.js";
 
 const {
   Engine, Scene, ArcRotateCamera, HemisphericLight, DirectionalLight,
-  Vector3, Color3, Color4, SceneLoader,
+  Vector3, Color3, Color4,
 } = BABYLON;
 
 const SIZE = 192;
@@ -185,13 +185,25 @@ export function requestTurntable(mod) {
   return job;
 }
 
+/**
+ * Put a module's thumbnail on `imgEl`, rendering it if this is the first ask.
+ *
+ * Resolves when the tile has its picture - or when the render gave up, so a
+ * caller showing "generating…" can always take the message down again. Several
+ * tiles may be waiting on the same module: they share the one render.
+ */
 export function request(mod, imgEl) {
   const url = cachedUrl(mod.id);
-  if (url) { imgEl.src = url; return; }
-  if (inflight.has(mod.id)) { inflight.get(mod.id).push(imgEl); return; }
-  inflight.set(mod.id, [imgEl]);
+  if (url) { imgEl.src = url; return Promise.resolve(url); }
+  const job = inflight.get(mod.id);
+  if (job) { job.els.push(imgEl); return job.done; }
+
+  let settle;
+  const done = new Promise((resolve) => { settle = resolve; });
+  inflight.set(mod.id, { els: [imgEl], done, settle });
   queue.push(mod);
   pump();
+  return done;
 }
 
 async function pump() {
@@ -199,9 +211,11 @@ async function pump() {
   running = true;
   while (queue.length) {
     const mod = queue.shift();
+    const job = inflight.get(mod.id);
+    let dataUrl = null;
     try {
-      const dataUrl = await renderThumb(mod);
-      for (const el of inflight.get(mod.id) || []) el.src = dataUrl;
+      dataUrl = await renderThumb(mod);
+      for (const el of job?.els || []) el.src = dataUrl;
       cached.add(keyOf(mod.id));
       fetch(`/api/thumb/${keyOf(mod.id)}`, {
         method: "PUT",
@@ -212,6 +226,9 @@ async function pump() {
       console.warn("thumbnail failed", mod.id, e);
     }
     inflight.delete(mod.id);
+    // Settled either way, and never rejected: a tile waiting on a render that
+    // failed must still stop saying the picture is on its way.
+    job?.settle(dataUrl);
   }
   running = false;
 }
@@ -291,9 +308,7 @@ async function loadFrameAndRun(mod, fn) {
   // nothing else is using the scene.
   for (const m of [...scene.meshes]) m.dispose(false, false);
 
-  const dir = mod.url.slice(0, mod.url.lastIndexOf("/") + 1);
-  const file = mod.url.slice(mod.url.lastIndexOf("/") + 1);
-  const container = await SceneLoader.LoadAssetContainerAsync(dir, file, scene);
+  const container = await loadModuleContainer(mod, scene);
 
   const meshes = container.meshes.filter((m) => m.getTotalVertices() > 0);
   shareMaterials(meshes);

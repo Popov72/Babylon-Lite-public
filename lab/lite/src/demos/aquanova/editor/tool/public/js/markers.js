@@ -14,7 +14,8 @@ export const DEFAULT_DOOR = { width: 3.02, height: 4.05, triggerRadius: 3.5, sli
 // first free slot rather than counting the markers.
 function nextDoorId() {
   let n = 0;
-  while (state.markers.has(`Door_D${String(n).padStart(2, "0")}`)) n++;
+  while (state.markers.has(`Door_D${String(n).padStart(2, "0")}`)
+    || state.environmentProbes.has(`Door_D${String(n).padStart(2, "0")}`)) n++;
   return `Door_D${String(n).padStart(2, "0")}`;
 }
 
@@ -66,6 +67,9 @@ export function addDoor(position, opts = {}) {
     chunkB: opts.chunkB ?? "",
     triggerRadius: opts.triggerRadius ?? DEFAULT_DOOR.triggerRadius,
     slideDistance: opts.slideDistance ?? DEFAULT_DOOR.slideDistance,
+    // Disabled means the portal is omitted from visibility traversal. Door
+    // geometry and collision remain unchanged.
+    enabled: opts.enabled !== false,
     // A portal you can see through but not walk through - a window onto space.
     // The renderer still draws the far chunk; collision generation keeps the
     // opening solid. Default false, so every manifest written before this reads
@@ -172,6 +176,7 @@ export function serializeMarkers() {
     width: m.width, height: m.height,
     chunkA: m.chunkA, chunkB: m.chunkB,
     triggerRadius: m.triggerRadius, slideDistance: m.slideDistance,
+    enabled: m.enabled !== false,
     sealed: !!m.sealed,
     leaves: [...m.leaves],
   }));
@@ -205,6 +210,7 @@ export function portalOf(door) {
     chunkA: door.chunkA,
     chunkB: door.chunkB,
     door: door.id,
+    enabled: door.enabled !== false,
     centre: round(centre.asArray()),
     normal: round(normal.asArray()),
     corners: corners.map((c) => round(c.asArray())),

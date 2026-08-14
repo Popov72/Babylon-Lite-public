@@ -1,12 +1,14 @@
 {
   "generator": "SciFiShip layout tool",
-  "schema": 2,
-  "savedAt": "2026-08-10T11:34:56.369Z",
+  "schema": 3,
+  "savedAt": "2026-08-14T15:09:38.941Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
     "gltf": [
       "chunks[].aabb",
+      "environmentProbes[].boxPosition",
+      "environmentProbes[].capturePosition",
       "collision",
       "moduleCollision",
       "portals",
@@ -29,18 +31,18 @@
       "up",
       "grid",
       "config",
-      "kitDir",
+      "kits",
       "activeChunk",
       "fluidSim",
       "behaviors",
       "entities",
       "environment",
       "editorEnvironment",
-      "bakeLighting",
+      "editorPrefs",
       "adjacency",
       "space",
-      "bakeDefaults",
-      "chunks[].bake"
+      "environmentProbes[].boxSize",
+      "environmentProbes[].resolution"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
@@ -60,7 +62,17 @@
     "hullThickness": 0.35,
     "hullOffset": "centered"
   },
-  "kitDir": "D:\\alexis\\TombRaider\\Popov72\\Babylon-Lite\\lab\\lite\\src\\demos\\aquanova\\editor\\kit",
+  "kits": {
+    "source": "local",
+    "base": "D:\\alexis\\TombRaider\\Popov72\\BabylonAssets\\kits",
+    "folders": [
+      "Modular SciFi MegaKit",
+      "Sci-Fi Essentials Kit",
+      "Pirate Kit",
+      "Ultimate Nature Pack",
+      "Ultimate RPG Items Pack"
+    ]
+  },
   "chunks": [
     {
       "id": "CH00_Storage",
@@ -78,12 +90,7 @@
         ]
       },
       "instanceCount": 37,
-      "meshCount": 72,
-      "bake": {
-        "samples": 128,
-        "width": 512,
-        "height": 512
-      }
+      "meshCount": 72
     },
     {
       "id": "CH01_StorageC",
@@ -92,22 +99,16 @@
         "min": [
           -4.0017,
           -0.0065,
-          -4
+          -0.774
         ],
         "max": [
-          12,
+          4.0017,
           5.0046,
           4.774
         ]
       },
-      "instanceCount": 24,
-      "meshCount": 53,
-      "bake": {
-        "samples": 128,
-        "width": 512,
-        "height": 512,
-        "margin": 8
-      }
+      "instanceCount": 18,
+      "meshCount": 46
     },
     {
       "id": "CH02_StorageCTL",
@@ -124,13 +125,8 @@
           4.774
         ]
       },
-      "instanceCount": 18,
-      "meshCount": 47,
-      "bake": {
-        "samples": 256,
-        "width": 256,
-        "height": 256
-      }
+      "instanceCount": 26,
+      "meshCount": 62
     },
     {
       "id": "CH03_StorageC2",
@@ -144,31 +140,113 @@
         "max": [
           16.2534,
           5.006,
-          -3.9983
+          -3.3814
         ]
       },
-      "instanceCount": 36,
-      "meshCount": 82,
-      "bake": {
-        "width": 512,
-        "height": 512
-      }
+      "instanceCount": 43,
+      "meshCount": 110
+    },
+    {
+      "id": "Test",
+      "node": "CHUNK_Test",
+      "aabb": {
+        "min": [
+          -26.5,
+          -0.119,
+          -2.4353
+        ],
+        "max": [
+          -19.5363,
+          9.979,
+          10.4219
+        ]
+      },
+      "instanceCount": 10,
+      "meshCount": 21
     }
   ],
-  "bakeDefaults": {
-    "samples": 128,
-    "width": 1024,
-    "height": 1024,
-    "margin": 4
-  },
-  "bakeLighting": {
-    "power": 1.1,
-    "sky": 0
-  },
+  "environmentProbes": [
+    {
+      "id": "CH01_Corridor1",
+      "boxPosition": [
+        2.1080118962737684,
+        2.5,
+        2
+      ],
+      "boxSize": [
+        11.6,
+        5,
+        4.5
+      ],
+      "capturePosition": [
+        2.1080118962737684,
+        2.5,
+        2
+      ],
+      "resolution": 1024
+    },
+    {
+      "id": "CH01_Corridor2",
+      "boxPosition": [
+        10.313207630119352,
+        2.499047666788101,
+        -8.170461957037828
+      ],
+      "boxSize": [
+        4.7035,
+        5.011,
+        24.648
+      ],
+      "capturePosition": [
+        10.313207630119352,
+        2.499047666788101,
+        -8.170461957037828
+      ],
+      "resolution": 1024
+    },
+    {
+      "id": "CH00_Storage",
+      "boxPosition": [
+        -7.95142,
+        2.5,
+        0.03219
+      ],
+      "boxSize": [
+        8.0972,
+        5,
+        8.0644
+      ],
+      "capturePosition": [
+        -7.95142,
+        2.5,
+        0.03219
+      ],
+      "resolution": 512
+    },
+    {
+      "id": "CH01_CorridorEnd",
+      "boxPosition": [
+        14.079641277139773,
+        2.297625784585776,
+        -18.05311936597713
+      ],
+      "boxSize": [
+        4.1035,
+        5.011,
+        4.648
+      ],
+      "capturePosition": [
+        14.079641277139773,
+        2.297625784585776,
+        -18.05311936597713
+      ],
+      "resolution": 512
+    }
+  ],
   "instances": [
     {
       "id": "P0011",
-      "module": "Platforms/Door_Frame_Square",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square",
       "chunk": "CH00_Storage",
       "name": "storageDoor_frame",
       "position": [
@@ -190,7 +268,7 @@
     },
     {
       "id": "P0014",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -211,7 +289,7 @@
     },
     {
       "id": "P0015",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -232,7 +310,7 @@
     },
     {
       "id": "P0040",
-      "module": "Walls/WallAstra_Straight_Broken",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -253,7 +331,7 @@
     },
     {
       "id": "P0041",
-      "module": "Walls/WallAstra_Straight_Window",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -274,7 +352,7 @@
     },
     {
       "id": "P0043",
-      "module": "Walls/WallAstra_Corner_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer",
       "chunk": "CH03_StorageC2",
       "position": [
         -16,
@@ -295,7 +373,7 @@
     },
     {
       "id": "P0045",
-      "module": "Walls/WallAstra_Corner_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner",
       "chunk": "CH02_StorageCTL",
       "position": [
         -8,
@@ -316,7 +394,7 @@
     },
     {
       "id": "P0046",
-      "module": "Walls/WallAstra_Straight_Broken",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken",
       "chunk": "CH02_StorageCTL",
       "position": [
         -6,
@@ -337,7 +415,7 @@
     },
     {
       "id": "P0060",
-      "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner",
       "chunk": "CH02_StorageCTL",
       "position": [
         -8,
@@ -358,7 +436,7 @@
     },
     {
       "id": "P0061",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -379,7 +457,7 @@
     },
     {
       "id": "P0062",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -400,7 +478,7 @@
     },
     {
       "id": "P0064",
-      "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer",
       "chunk": "CH03_StorageC2",
       "position": [
         -16,
@@ -421,7 +499,7 @@
     },
     {
       "id": "P0067",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -442,7 +520,7 @@
     },
     {
       "id": "P0068",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -463,7 +541,7 @@
     },
     {
       "id": "P0069",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -484,7 +562,7 @@
     },
     {
       "id": "P0070",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -505,7 +583,7 @@
     },
     {
       "id": "P0071",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -526,7 +604,7 @@
     },
     {
       "id": "P0072",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -547,7 +625,7 @@
     },
     {
       "id": "P0075",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -568,7 +646,7 @@
     },
     {
       "id": "P0076",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -589,7 +667,7 @@
     },
     {
       "id": "P0077",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -610,7 +688,7 @@
     },
     {
       "id": "P0079",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10,
@@ -631,7 +709,7 @@
     },
     {
       "id": "P0080",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10,
@@ -652,7 +730,7 @@
     },
     {
       "id": "P0081",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -673,7 +751,7 @@
     },
     {
       "id": "P0099",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -694,7 +772,7 @@
     },
     {
       "id": "P0101",
-      "module": "Props/Prop_Cable_3",
+      "module": "Modular SciFi MegaKit/Props/Prop_Cable_3",
       "chunk": "CH03_StorageC2",
       "position": [
         -11,
@@ -715,7 +793,7 @@
     },
     {
       "id": "P0108",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -736,7 +814,7 @@
     },
     {
       "id": "P0109",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -757,7 +835,7 @@
     },
     {
       "id": "P0110",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -778,7 +856,7 @@
     },
     {
       "id": "P0111",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -799,7 +877,7 @@
     },
     {
       "id": "P0123",
-      "module": "Platforms/Platform_Metal_Curve",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal_Curve",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10,
@@ -820,9 +898,8 @@
     },
     {
       "id": "P0129",
-      "module": "Walls/WallAstra_Corner_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer",
       "chunk": "CH02_StorageCTL",
-      "name": "ssssssss",
       "position": [
         -4,
         0,
@@ -838,11 +915,11 @@
         1,
         1
       ],
-      "node": "ssssssss"
+      "node": "P0129"
     },
     {
       "id": "P0130",
-      "module": "Walls/TopPadded_Incline_Curve_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer",
       "chunk": "CH02_StorageCTL",
       "position": [
         -4,
@@ -863,7 +940,7 @@
     },
     {
       "id": "P0131",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10,
@@ -884,7 +961,7 @@
     },
     {
       "id": "P0133",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH02_StorageCTL",
       "position": [
         -6,
@@ -905,7 +982,7 @@
     },
     {
       "id": "P0134",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH02_StorageCTL",
       "position": [
         -6,
@@ -926,7 +1003,7 @@
     },
     {
       "id": "P0135",
-      "module": "Walls/WallAstra_Straight_Window",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -947,7 +1024,7 @@
     },
     {
       "id": "P0136",
-      "module": "Walls/WallAstra_Straight_Divided",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -968,7 +1045,7 @@
     },
     {
       "id": "P0137",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -989,7 +1066,7 @@
     },
     {
       "id": "P0138",
-      "module": "Walls/WallAstra_Straight_Divided",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1010,7 +1087,7 @@
     },
     {
       "id": "P0139",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1031,7 +1108,7 @@
     },
     {
       "id": "P0140",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1052,7 +1129,7 @@
     },
     {
       "id": "P0141",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1073,7 +1150,7 @@
     },
     {
       "id": "P0142",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1094,7 +1171,7 @@
     },
     {
       "id": "P0143",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1115,7 +1192,7 @@
     },
     {
       "id": "P0144",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1136,8 +1213,8 @@
     },
     {
       "id": "P0145",
-      "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0.01,
@@ -1157,8 +1234,8 @@
     },
     {
       "id": "P0146",
-      "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -10,
         0.01,
@@ -1178,8 +1255,8 @@
     },
     {
       "id": "P0150",
-      "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         0.01,
@@ -1199,7 +1276,7 @@
     },
     {
       "id": "P0151",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1220,7 +1297,7 @@
     },
     {
       "id": "P0152",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1241,8 +1318,8 @@
     },
     {
       "id": "P0153",
-      "module": "Walls/BottomSimple_Corner_Square_Outer_1",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Corner_Square_Outer_1",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -4,
         0.01,
@@ -1262,8 +1339,8 @@
     },
     {
       "id": "P0155",
-      "module": "Walls/BottomSimple_Corner_Round_Inner",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Corner_Round_Inner",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -8,
         0.01,
@@ -1283,8 +1360,8 @@
     },
     {
       "id": "P0156",
-      "module": "Walls/BottomSimple_Straight",
-      "chunk": "CH01_StorageC",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
+      "chunk": "CH02_StorageCTL",
       "position": [
         -6,
         0.01,
@@ -1304,7 +1381,7 @@
     },
     {
       "id": "P0157",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1325,7 +1402,7 @@
     },
     {
       "id": "P0158",
-      "module": "Walls/BottomSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/BottomSimple_Straight",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1346,7 +1423,7 @@
     },
     {
       "id": "P0168",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1367,7 +1444,7 @@
     },
     {
       "id": "P0169",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1388,7 +1465,7 @@
     },
     {
       "id": "P0170",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1409,7 +1486,7 @@
     },
     {
       "id": "P0171",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1430,7 +1507,7 @@
     },
     {
       "id": "P0172",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1451,7 +1528,7 @@
     },
     {
       "id": "P0173",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1472,7 +1549,7 @@
     },
     {
       "id": "P0174",
-      "module": "Walls/TopSimple_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopSimple_Straight",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1493,9 +1570,9 @@
     },
     {
       "id": "P0177",
-      "module": "Props/Prop_ItemHolder",
+      "module": "Modular SciFi MegaKit/Props/Prop_ItemHolder",
       "chunk": "CH00_Storage",
-      "name": "weaponHolder",
+      "name": "weaponLiquefactorHolder",
       "position": [
         6,
         0,
@@ -1511,11 +1588,11 @@
         1,
         1
       ],
-      "node": "weaponHolder"
+      "node": "weaponLiquefactorHolder"
     },
     {
       "id": "P0178",
-      "module": "Props/Prop_Pipe_Capped",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1536,8 +1613,9 @@
     },
     {
       "id": "P0179",
-      "module": "Props/Prop_Pipe_Capped",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped",
       "chunk": "CH00_Storage",
+      "name": "StoragePipe0",
       "position": [
         10,
         4.75,
@@ -1553,11 +1631,11 @@
         1,
         1
       ],
-      "node": "P0179"
+      "node": "StoragePipe0"
     },
     {
       "id": "P0180",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -1578,7 +1656,7 @@
     },
     {
       "id": "P0181",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -1599,7 +1677,7 @@
     },
     {
       "id": "P0182",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -1620,7 +1698,7 @@
     },
     {
       "id": "P0183",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10,
@@ -1641,7 +1719,7 @@
     },
     {
       "id": "P0184",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH02_StorageCTL",
       "position": [
         -6,
@@ -1662,7 +1740,7 @@
     },
     {
       "id": "P0185",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH01_StorageC",
       "position": [
         -2,
@@ -1683,7 +1761,7 @@
     },
     {
       "id": "P0186",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH01_StorageC",
       "position": [
         2,
@@ -1704,7 +1782,7 @@
     },
     {
       "id": "P0189",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1725,7 +1803,7 @@
     },
     {
       "id": "P0191",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1746,7 +1824,7 @@
     },
     {
       "id": "P0192",
-      "module": "Props/Prop_Crate4",
+      "module": "Modular SciFi MegaKit/Props/Prop_Crate4",
       "chunk": "CH00_Storage",
       "name": "crate4",
       "position": [
@@ -1768,7 +1846,7 @@
     },
     {
       "id": "P0193",
-      "module": "Props/Prop_Crate2",
+      "module": "Modular SciFi MegaKit/Props/Prop_Crate2",
       "chunk": "CH00_Storage",
       "name": "crate2",
       "position": [
@@ -1790,7 +1868,7 @@
     },
     {
       "id": "P0194",
-      "module": "Props/Prop_Crate4",
+      "module": "Modular SciFi MegaKit/Props/Prop_Crate4",
       "chunk": "CH00_Storage",
       "name": "crate4",
       "position": [
@@ -1812,7 +1890,7 @@
     },
     {
       "id": "P0195",
-      "module": "Decals/Decal_Caution",
+      "module": "Modular SciFi MegaKit/Decals/Decal_Caution",
       "chunk": "CH00_Storage",
       "name": "storageDoor_caution",
       "position": [
@@ -1834,7 +1912,7 @@
     },
     {
       "id": "P0197",
-      "module": "Decals/Decal_0",
+      "module": "Modular SciFi MegaKit/Decals/Decal_0",
       "chunk": "CH00_Storage",
       "name": "player",
       "position": [
@@ -1856,7 +1934,7 @@
     },
     {
       "id": "P0198",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1877,7 +1955,7 @@
     },
     {
       "id": "P0199",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -1898,7 +1976,7 @@
     },
     {
       "id": "P0200",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1919,7 +1997,7 @@
     },
     {
       "id": "P0201",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH00_Storage",
       "position": [
         10,
@@ -1940,7 +2018,7 @@
     },
     {
       "id": "P0203",
-      "module": "Walls/WallAstra_Corner_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner",
       "chunk": "CH03_StorageC2",
       "position": [
         -12,
@@ -1961,7 +2039,7 @@
     },
     {
       "id": "P0204",
-      "module": "Walls/WallAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -14,
@@ -1982,7 +2060,7 @@
     },
     {
       "id": "P0205",
-      "module": "Walls/TopPadded_Incline_Curve_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner",
       "chunk": "CH03_StorageC2",
       "position": [
         -12,
@@ -2003,7 +2081,7 @@
     },
     {
       "id": "P0206",
-      "module": "Walls/TopPadded_Incline_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
         -14,
@@ -2024,7 +2102,7 @@
     },
     {
       "id": "P0207",
-      "module": "Platforms/Platform_Metal2",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal2",
       "chunk": "CH03_StorageC2",
       "position": [
         -14,
@@ -2045,7 +2123,7 @@
     },
     {
       "id": "P0208",
-      "module": "Platforms/Platform_Metal_Curve",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Metal_Curve",
       "chunk": "CH03_StorageC2",
       "position": [
         -10,
@@ -2066,7 +2144,7 @@
     },
     {
       "id": "P0209",
-      "module": "Platforms/Door_Frame_Square_Blocked",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked",
       "chunk": "CH03_StorageC2",
       "position": [
         -16,
@@ -2087,7 +2165,7 @@
     },
     {
       "id": "P0210",
-      "module": "Platforms/Platform_DarkPlates",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH03_StorageC2",
       "position": [
         -14,
@@ -2108,13 +2186,13 @@
     },
     {
       "id": "P0213",
-      "module": "Props/Prop_Pod",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pod",
       "chunk": "CH03_StorageC2",
       "name": "capsule",
       "position": [
         -10,
         0,
-        -6
+        -16.008
       ],
       "rotation": [
         0,
@@ -2130,7 +2208,7 @@
     },
     {
       "id": "P0231",
-      "module": "Walls/WallWideBand_Corner_Square_Inner",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner",
       "chunk": "CH00_Storage",
       "position": [
         8,
@@ -2151,7 +2229,7 @@
     },
     {
       "id": "P0234",
-      "module": "Walls/WallWideBand_Corner_Square_Inner",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner",
       "chunk": "CH00_Storage",
       "position": [
         8,
@@ -2172,7 +2250,7 @@
     },
     {
       "id": "P0241",
-      "module": "Walls/WallWideBand_Straight",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight",
       "chunk": "CH00_Storage",
       "position": [
         6,
@@ -2193,7 +2271,7 @@
     },
     {
       "id": "P0306",
-      "module": "Props/Prop_Barrel_Small",
+      "module": "Modular SciFi MegaKit/Props/Prop_Barrel_Small",
       "chunk": "CH02_StorageCTL",
       "name": "Barrel2",
       "position": [
@@ -2215,7 +2293,7 @@
     },
     {
       "id": "P0307",
-      "module": "Props/Prop_Barrel_Small",
+      "module": "Modular SciFi MegaKit/Props/Prop_Barrel_Small",
       "chunk": "CH02_StorageCTL",
       "name": "Barrel1",
       "position": [
@@ -2237,7 +2315,7 @@
     },
     {
       "id": "P0308",
-      "module": "Props/Prop_Light_Wide",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Wide",
       "chunk": "CH00_Storage",
       "position": [
         7.937,
@@ -2258,7 +2336,7 @@
     },
     {
       "id": "P0312",
-      "module": "Props/Prop_Light_Wide",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Wide",
       "chunk": "CH00_Storage",
       "position": [
         7.937,
@@ -2279,7 +2357,7 @@
     },
     {
       "id": "P0314",
-      "module": "Aliens/Alien_Oculichrysalis",
+      "module": "Modular SciFi MegaKit/Aliens/Alien_Oculichrysalis",
       "chunk": "CH03_StorageC2",
       "name": "alien1StorageCorridor",
       "position": [
@@ -2301,7 +2379,7 @@
     },
     {
       "id": "P0315",
-      "module": "Props/Prop_Light_Floor",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH00_Storage",
       "position": [
         4.3,
@@ -2322,7 +2400,7 @@
     },
     {
       "id": "P0316",
-      "module": "Platforms/Door_Metal",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Metal",
       "chunk": "CH00_Storage",
       "name": "storageDoorLF",
       "position": [
@@ -2344,7 +2422,7 @@
     },
     {
       "id": "P0318",
-      "module": "Platforms/Door_Metal",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Metal",
       "chunk": "CH00_Storage",
       "name": "storageDoorLFB",
       "position": [
@@ -2366,7 +2444,7 @@
     },
     {
       "id": "P0319",
-      "module": "Platforms/Door_Metal",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Metal",
       "chunk": "CH00_Storage",
       "name": "storageDoorRB",
       "position": [
@@ -2388,7 +2466,7 @@
     },
     {
       "id": "P0320",
-      "module": "Platforms/Door_Metal",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Metal",
       "chunk": "CH00_Storage",
       "name": "storageDoorRF",
       "position": [
@@ -2410,7 +2488,7 @@
     },
     {
       "id": "P0321",
-      "module": "Platforms/Platform_DarkPlates_Curves",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates_Curves",
       "chunk": "CH02_StorageCTL",
       "position": [
         -9.5,
@@ -2431,7 +2509,7 @@
     },
     {
       "id": "P0322",
-      "module": "Platforms/Platform_DarkPlates_Curves",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates_Curves",
       "chunk": "CH03_StorageC2",
       "position": [
         -10.5,
@@ -2452,7 +2530,7 @@
     },
     {
       "id": "P0323",
-      "module": "Props/Prop_Light_Floor",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH01_StorageC",
       "position": [
         -2.012,
@@ -2473,7 +2551,7 @@
     },
     {
       "id": "P0324",
-      "module": "Props/Prop_Light_Wide",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Wide",
       "chunk": "CH00_Storage",
       "position": [
         7.943,
@@ -2494,7 +2572,7 @@
     },
     {
       "id": "P0325",
-      "module": "Props/Prop_Light_Wide",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Wide",
       "chunk": "CH00_Storage",
       "position": [
         7.943,
@@ -2515,7 +2593,7 @@
     },
     {
       "id": "P0329",
-      "module": "Walls/WallWideBand_Corner_Square_Inner",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner",
       "chunk": "CH00_Storage",
       "position": [
         8,
@@ -2536,7 +2614,7 @@
     },
     {
       "id": "P0330",
-      "module": "Props/Prop_Light_Floor",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH01_StorageC",
       "position": [
         -3.085,
@@ -2557,7 +2635,7 @@
     },
     {
       "id": "P0331",
-      "module": "Props/Prop_Light_Floor",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH02_StorageCTL",
       "position": [
         -10.921,
@@ -2578,7 +2656,7 @@
     },
     {
       "id": "P0332",
-      "module": "Props/Prop_Light_Floor",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH02_StorageCTL",
       "position": [
         -12.168,
@@ -2596,6 +2674,405 @@
         1
       ],
       "node": "P0332"
+    },
+    {
+      "id": "P0333",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH02_StorageCTL",
+      "position": [
+        -4.892,
+        2.821,
+        4.176
+      ],
+      "rotation": [
+        -43,
+        180,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0333"
+    },
+    {
+      "id": "P0334",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH02_StorageCTL",
+      "position": [
+        -4.93,
+        2.821,
+        -0.169
+      ],
+      "rotation": [
+        -43,
+        0,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0334"
+    },
+    {
+      "id": "P0335",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -12.173,
+        2.821,
+        -6.004
+      ],
+      "rotation": [
+        -43,
+        90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0335"
+    },
+    {
+      "id": "P0336",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -12.03,
+        2.958,
+        -12.02
+      ],
+      "rotation": [
+        -43,
+        90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0336"
+    },
+    {
+      "id": "P0337",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -7.862,
+        2.856,
+        -4.048
+      ],
+      "rotation": [
+        -43,
+        -90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0337"
+    },
+    {
+      "id": "P0338",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -7.863,
+        2.856,
+        -8.013
+      ],
+      "rotation": [
+        -43,
+        -90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0338"
+    },
+    {
+      "id": "P0339",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -7.871,
+        2.856,
+        -12.004
+      ],
+      "rotation": [
+        -43,
+        -90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0339"
+    },
+    {
+      "id": "P0340",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -7.898,
+        2.856,
+        -15.906
+      ],
+      "rotation": [
+        -43,
+        -90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0340"
+    },
+    {
+      "id": "P0341",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -12.027,
+        2.958,
+        -8.904
+      ],
+      "rotation": [
+        -43,
+        90,
+        180
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0341"
+    },
+    {
+      "id": "P0342",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_A",
+      "chunk": "Test",
+      "position": [
+        20,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0342"
+    },
+    {
+      "id": "P0343",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
+      "chunk": "Test",
+      "position": [
+        20,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0343"
+    },
+    {
+      "id": "P0344",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
+      "chunk": "Test",
+      "position": [
+        20,
+        0,
+        -2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ],
+      "node": "P0344"
+    },
+    {
+      "id": "P0345",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
+      "chunk": "Test",
+      "position": [
+        26,
+        0,
+        3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0345"
+    },
+    {
+      "id": "P0347",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
+      "chunk": "Test",
+      "position": [
+        26,
+        0,
+        3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ],
+      "node": "P0347"
+    },
+    {
+      "id": "P0348",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square",
+      "chunk": "Test",
+      "position": [
+        26,
+        0,
+        3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0348"
+    },
+    {
+      "id": "P0349",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Side",
+      "chunk": "Test",
+      "position": [
+        26,
+        0,
+        -1
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0349"
+    },
+    {
+      "id": "P0351",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric",
+      "chunk": "Test",
+      "position": [
+        26,
+        0,
+        8
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0351"
+    },
+    {
+      "id": "P0352",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked",
+      "chunk": "Test",
+      "position": [
+        26,
+        4.979,
+        3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0352"
+    },
+    {
+      "id": "P0353",
+      "module": "Modular SciFi MegaKit/Decals/Decal_Logo",
+      "chunk": "Test",
+      "position": [
+        26.5,
+        4.729,
+        3
+      ],
+      "rotation": [
+        90,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0353"
     }
   ],
   "markers": [
@@ -2623,6 +3100,7 @@
       "chunkB": "CH01_StorageC",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
+      "enabled": false,
       "sealed": false,
       "leaves": [
         "P0009",
@@ -2653,6 +3131,7 @@
       "chunkB": "__SKYBOX__",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
+      "enabled": true,
       "sealed": true,
       "leaves": [
         "P0135"
@@ -2678,10 +3157,11 @@
       ],
       "width": 4.000000953674316,
       "height": 3.000000256487027,
-      "chunkA": "CH01_StorageC",
+      "chunkA": "CH03_StorageC2",
       "chunkB": "__SKYBOX__",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
+      "enabled": true,
       "sealed": true,
       "leaves": [
         "P0041"
@@ -2711,6 +3191,7 @@
       "chunkB": "CH02_StorageCTL",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
+      "enabled": true,
       "sealed": false,
       "leaves": [
         "P0011"
@@ -2740,6 +3221,7 @@
       "chunkB": "CH03_StorageC2",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
+      "enabled": true,
       "sealed": false,
       "leaves": [
         "P0209"
@@ -2757,22 +3239,10 @@
         0.0183
       ],
       "rotation": [
-        78,
-        0,
-        0
+        63.1585,
+        -4.1616,
+        -3.827
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.6,
-        "sizeY": 0.2,
-        "spread": 70,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 40
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -2782,7 +3252,7 @@
           1
         ],
         "intensity": 80,
-        "range": 4.6,
+        "range": 10,
         "angle": 70,
         "castsShadows": false
       }
@@ -2791,7 +3261,7 @@
       "id": "L0002",
       "owner": "P0308",
       "offset": [
-        0.5624,
+        0.9796,
         -0.138,
         0
       ],
@@ -2800,18 +3270,6 @@
         0,
         0
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 120
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -2820,9 +3278,9 @@
           1,
           1
         ],
-        "intensity": 150,
+        "intensity": 250,
         "range": 6,
-        "angle": 120,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -2830,37 +3288,25 @@
       "id": "L0003",
       "owner": "P0136",
       "offset": [
-        1.568,
-        0.04,
+        1.5621,
+        0.078,
         0.002
       ],
       "rotation": [
-        0,
-        0,
-        -93.5
+        0.0022,
+        -0.0086,
+        -88.4997
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.015,
-        "sizeY": 0.06,
-        "spread": 180,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "none",
-        "clustered": false,
+        "type": "point",
+        "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 1,
-        "range": 8,
+        "intensity": 0.1,
+        "range": 0.5,
         "angle": 90,
         "castsShadows": false
       }
@@ -2870,26 +3316,14 @@
       "owner": "P0323",
       "offset": [
         0,
-        0.2436,
-        0.1207
+        0.1677,
+        -0.0306
       ],
       "rotation": [
-        61.4024,
-        -180,
+        13.4024,
+        180,
         -180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 180,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 120
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -2898,9 +3332,9 @@
           1,
           1
         ],
-        "intensity": 130,
-        "range": 8,
-        "angle": 90,
+        "intensity": 100,
+        "range": 5,
+        "angle": 100,
         "castsShadows": false
       }
     },
@@ -2908,7 +3342,7 @@
       "id": "L0005",
       "owner": "P0312",
       "offset": [
-        0.538,
+        1.0258,
         -0.138,
         -0.004
       ],
@@ -2917,96 +3351,6 @@
         0,
         0
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 120
-      },
-      "runtime": {
-        "type": "none",
-        "clustered": false,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "intensity": 1,
-        "range": 8,
-        "angle": 90,
-        "castsShadows": false
-      }
-    },
-    {
-      "id": "L0006",
-      "owner": "P0324",
-      "offset": [
-        0.58,
-        -0.138,
-        0
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 120
-      },
-      "runtime": {
-        "type": "none",
-        "clustered": false,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "intensity": 1,
-        "range": 8,
-        "angle": 90,
-        "castsShadows": false
-      }
-    },
-    {
-      "id": "L0007",
-      "owner": "P0325",
-      "offset": [
-        0.5229,
-        -0.138,
-        0
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 120
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3015,9 +3359,63 @@
           1,
           1
         ],
-        "intensity": 150,
-        "range": 6,
-        "angle": 120,
+        "intensity": 250,
+        "range": 8,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0006",
+      "owner": "P0324",
+      "offset": [
+        1.0128,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 250,
+        "range": 8,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0007",
+      "owner": "P0325",
+      "offset": [
+        0.9577,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 250,
+        "range": 8,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -3034,18 +3432,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 80
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3073,18 +3459,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 80
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3095,7 +3469,7 @@
         ],
         "intensity": 130,
         "range": 8,
-        "angle": 90,
+        "angle": 101,
         "castsShadows": false
       }
     },
@@ -3112,18 +3486,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 80
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3137,13 +3499,256 @@
         "angle": 90,
         "castsShadows": false
       }
+    },
+    {
+      "id": "L0011",
+      "owner": "P0333",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 5,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0012",
+      "owner": "P0334",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "point",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 0.6,
+        "range": 5,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0013",
+      "owner": "P0335",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 5,
+        "angle": 100,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0014",
+      "owner": "P0336",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "point",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 0.6,
+        "range": 5,
+        "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0015",
+      "owner": "P0337",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 80,
+        "range": 5,
+        "angle": 110,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0016",
+      "owner": "P0338",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 80,
+        "range": 5,
+        "angle": 120,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0017",
+      "owner": "P0339",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 80,
+        "range": 5,
+        "angle": 120,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0018",
+      "owner": "P0340",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 5,
+        "angle": 120,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0019",
+      "owner": "P0341",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        18.4,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 5,
+        "angle": 90,
+        "castsShadows": false
+      }
     }
   ],
   "collision": {},
   "moduleCollision": {
-    "Platforms/Platform_Metal2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal2": [
       {
-        "id": "Platforms/Platform_Metal2:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Metal2:0",
         "kind": "box",
         "centre": [
           0,
@@ -3163,9 +3768,9 @@
         ]
       }
     ],
-    "Platforms/Platform_DarkPlates": [
+    "Modular SciFi MegaKit/Platforms/Platform_DarkPlates": [
       {
-        "id": "Platforms/Platform_DarkPlates:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates:0",
         "kind": "box",
         "centre": [
           0,
@@ -3185,9 +3790,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner": [
       {
-        "id": "Walls/WallWideBand_Corner_Square_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner:0",
         "kind": "box",
         "centre": [
           -4.5,
@@ -3207,7 +3812,7 @@
         ]
       },
       {
-        "id": "Walls/WallWideBand_Corner_Square_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner:1",
         "kind": "box",
         "centre": [
           -2,
@@ -3227,9 +3832,9 @@
         ]
       }
     ],
-    "Walls/TopSimple_Straight": [
+    "Modular SciFi MegaKit/Walls/TopSimple_Straight": [
       {
-        "id": "Walls/TopSimple_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/TopSimple_Straight:0",
         "kind": "box",
         "centre": [
           -2.25,
@@ -3249,9 +3854,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight": [
       {
-        "id": "Walls/WallWideBand_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Straight:0",
         "kind": "box",
         "centre": [
           -2.5,
@@ -3271,9 +3876,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal_Curve": [
       {
-        "id": "Platforms/Platform_Metal_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Metal_Curve:0",
         "kind": "box",
         "centre": [
           0,
@@ -3293,9 +3898,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal2_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal2_Curve": [
       {
-        "id": "Platforms/Platform_Metal2_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Metal2_Curve:0",
         "kind": "box",
         "centre": [
           0,
@@ -3315,9 +3920,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal": [
       {
-        "id": "Platforms/Platform_Metal:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Metal:0",
         "kind": "box",
         "centre": [
           0.1,
@@ -3337,9 +3942,9 @@
         ]
       }
     ],
-    "Platforms/Platform_3Plates": [
+    "Modular SciFi MegaKit/Platforms/Platform_3Plates": [
       {
-        "id": "Platforms/Platform_3Plates:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_3Plates:0",
         "kind": "box",
         "centre": [
           0,
@@ -3359,9 +3964,9 @@
         ]
       }
     ],
-    "Platforms/Platform_CenterPlate": [
+    "Modular SciFi MegaKit/Platforms/Platform_CenterPlate": [
       {
-        "id": "Platforms/Platform_CenterPlate:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_CenterPlate:0",
         "kind": "box",
         "centre": [
           0,
@@ -3381,9 +3986,9 @@
         ]
       }
     ],
-    "Platforms/Platform_CenterPlate_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_CenterPlate_Curve": [
       {
-        "id": "Platforms/Platform_CenterPlate_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_CenterPlate_Curve:0",
         "kind": "box",
         "centre": [
           0,
@@ -3403,9 +4008,9 @@
         ]
       }
     ],
-    "Platforms/Platform_DarkPlates_Curves": [
+    "Modular SciFi MegaKit/Platforms/Platform_DarkPlates_Curves": [
       {
-        "id": "Platforms/Platform_DarkPlates_Curves:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates_Curves:0",
         "kind": "box",
         "centre": [
           0,
@@ -3425,9 +4030,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Padded": [
+    "Modular SciFi MegaKit/Platforms/Platform_Padded": [
       {
-        "id": "Platforms/Platform_Padded:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Padded:0",
         "kind": "box",
         "centre": [
           0,
@@ -3447,9 +4052,9 @@
         ]
       }
     ],
-    "Platforms/Platform_RedAccent": [
+    "Modular SciFi MegaKit/Platforms/Platform_RedAccent": [
       {
-        "id": "Platforms/Platform_RedAccent:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_RedAccent:0",
         "kind": "box",
         "centre": [
           0,
@@ -3469,9 +4074,9 @@
         ]
       }
     ],
-    "Platforms/Platform_RedAccent_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_RedAccent_Curve": [
       {
-        "id": "Platforms/Platform_RedAccent_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_RedAccent_Curve:0",
         "kind": "box",
         "centre": [
           0,
@@ -3491,9 +4096,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Round2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Round2": [
       {
-        "id": "Platforms/Platform_Round2:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Round2:0",
         "kind": "box",
         "centre": [
           0,
@@ -3513,9 +4118,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple": [
       {
-        "id": "Platforms/Platform_Simple:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Simple:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3535,9 +4140,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple_Curve": [
       {
-        "id": "Platforms/Platform_Simple_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Simple_Curve:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3557,9 +4162,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple2": [
       {
-        "id": "Platforms/Platform_Simple2:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Simple2:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3579,9 +4184,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple2_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple2_Curve": [
       {
-        "id": "Platforms/Platform_Simple2_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Simple2_Curve:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3601,9 +4206,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Squares": [
+    "Modular SciFi MegaKit/Platforms/Platform_Squares": [
       {
-        "id": "Platforms/Platform_Squares:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Squares:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3623,9 +4228,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Squares_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Squares_Curve": [
       {
-        "id": "Platforms/Platform_Squares_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Squares_Curve:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3645,9 +4250,9 @@
         ]
       }
     ],
-    "Platforms/Platform_WidePlates": [
+    "Modular SciFi MegaKit/Platforms/Platform_WidePlates": [
       {
-        "id": "Platforms/Platform_WidePlates:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_WidePlates:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3667,9 +4272,9 @@
         ]
       }
     ],
-    "Platforms/Platform_WidePlates_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_WidePlates_Curve": [
       {
-        "id": "Platforms/Platform_WidePlates_Curve:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_WidePlates_Curve:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3689,9 +4294,9 @@
         ]
       }
     ],
-    "Platforms/Platform_X": [
+    "Modular SciFi MegaKit/Platforms/Platform_X": [
       {
-        "id": "Platforms/Platform_X:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_X:0",
         "kind": "box",
         "centre": [
           -0.0184,
@@ -3711,9 +4316,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Round1": [
+    "Modular SciFi MegaKit/Platforms/Platform_Round1": [
       {
-        "id": "Platforms/Platform_Round1:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Round1:0",
         "kind": "box",
         "centre": [
           0,
@@ -3733,9 +4338,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Window_Thin": [
+    "Modular SciFi MegaKit/Platforms/Platform_Window_Thin": [
       {
-        "id": "Platforms/Platform_Window_Thin:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Window_Thin:0",
         "kind": "box",
         "centre": [
           0,
@@ -3755,9 +4360,9 @@
         ]
       }
     ],
-    "Platforms/Platform_Window_Wide": [
+    "Modular SciFi MegaKit/Platforms/Platform_Window_Wide": [
       {
-        "id": "Platforms/Platform_Window_Wide:0",
+        "id": "Modular SciFi MegaKit/Platforms/Platform_Window_Wide:0",
         "kind": "box",
         "centre": [
           0.0003,
@@ -3777,9 +4382,9 @@
         ]
       }
     ],
-    "Platforms/Door_DarkMetal": [
+    "Modular SciFi MegaKit/Platforms/Door_DarkMetal": [
       {
-        "id": "Platforms/Door_DarkMetal:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_DarkMetal:0",
         "kind": "box",
         "centre": [
           -1.05,
@@ -3799,9 +4404,9 @@
         ]
       }
     ],
-    "Platforms/Door_Metal": [
+    "Modular SciFi MegaKit/Platforms/Door_Metal": [
       {
-        "id": "Platforms/Door_Metal:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Metal:0",
         "kind": "box",
         "centre": [
           -1.055,
@@ -3821,9 +4426,9 @@
         ]
       }
     ],
-    "Platforms/Door_Simple": [
+    "Modular SciFi MegaKit/Platforms/Door_Simple": [
       {
-        "id": "Platforms/Door_Simple:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Simple:0",
         "kind": "box",
         "centre": [
           -1.055,
@@ -3843,9 +4448,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square": [
       {
-        "id": "Platforms/Door_Frame_Square:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square:0",
         "kind": "box",
         "centre": [
           -1.931,
@@ -3865,7 +4470,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square:1",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square:1",
         "kind": "box",
         "centre": [
           1.929,
@@ -3885,7 +4490,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square:2",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square:2",
         "kind": "box",
         "centre": [
           -0.001,
@@ -3905,9 +4510,9 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Straight": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight": [
       {
-        "id": "Walls/TopPadded_Incline_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight:0",
         "kind": "box",
         "centre": [
           -1.515,
@@ -3927,9 +4532,9 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Curve_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner": [
       {
-        "id": "Walls/TopPadded_Incline_Curve_Round_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner:0",
         "kind": "box",
         "centre": [
           -3.0595,
@@ -3949,7 +4554,7 @@
         ]
       },
       {
-        "id": "Walls/TopPadded_Incline_Curve_Round_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner:1",
         "kind": "box",
         "centre": [
           -1.3183,
@@ -3969,9 +4574,9 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Curve_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer": [
       {
-        "id": "Walls/TopPadded_Incline_Curve_Square_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer:0",
         "kind": "box",
         "centre": [
           -2.1387,
@@ -3991,7 +4596,7 @@
         ]
       },
       {
-        "id": "Walls/TopPadded_Incline_Curve_Square_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer:1",
         "kind": "box",
         "centre": [
           -4.4015,
@@ -4011,7 +4616,7 @@
         ]
       },
       {
-        "id": "Walls/TopPadded_Incline_Curve_Square_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer:2",
         "kind": "box",
         "centre": [
           -4.3201,
@@ -4031,9 +4636,9 @@
         ]
       }
     ],
-    "Props/Prop_Pod": [
+    "Modular SciFi MegaKit/Props/Prop_Pod": [
       {
-        "id": "Props/Prop_Pod:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Pod:0",
         "kind": "cylinder",
         "centre": [
           -0.007,
@@ -4054,9 +4659,9 @@
         ]
       }
     ],
-    "Props/Prop_ItemHolder": [
+    "Modular SciFi MegaKit/Props/Prop_ItemHolder": [
       {
-        "id": "Props/Prop_ItemHolder:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_ItemHolder:0",
         "kind": "sphere",
         "centre": [
           -0.0224,
@@ -4066,9 +4671,9 @@
         "radius": 0.5
       }
     ],
-    "Props/Prop_Barrel_Small": [
+    "Modular SciFi MegaKit/Props/Prop_Barrel_Small": [
       {
-        "id": "Props/Prop_Barrel_Small:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Barrel_Small:0",
         "kind": "capsule",
         "centre": [
           0,
@@ -4089,9 +4694,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner": [
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:0",
         "kind": "box",
         "centre": [
           -4.11,
@@ -4111,7 +4716,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:1",
         "kind": "box",
         "centre": [
           -3.4198,
@@ -4131,7 +4736,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:2",
         "kind": "box",
         "centre": [
           -2.4101,
@@ -4151,7 +4756,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:3",
         "kind": "box",
         "centre": [
           -0.7513,
@@ -4171,7 +4776,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:4",
         "kind": "box",
         "centre": [
           -3.843,
@@ -4191,7 +4796,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:5",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:5",
         "kind": "box",
         "centre": [
           -1.598,
@@ -4211,7 +4816,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:6",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:6",
         "kind": "box",
         "centre": [
           -4.294,
@@ -4231,7 +4836,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:7",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:7",
         "kind": "box",
         "centre": [
           -3.103,
@@ -4251,7 +4856,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Inner:8",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner:8",
         "kind": "box",
         "centre": [
           -0.868,
@@ -4271,9 +4876,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer": [
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:0",
         "kind": "box",
         "centre": [
           -3.7879,
@@ -4293,7 +4898,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:1",
         "kind": "box",
         "centre": [
           -3.5485,
@@ -4313,7 +4918,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:2",
         "kind": "box",
         "centre": [
           -3.098,
@@ -4333,7 +4938,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:3",
         "kind": "box",
         "centre": [
           -2.0521,
@@ -4353,7 +4958,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:4",
         "kind": "box",
         "centre": [
           -1.4557,
@@ -4373,7 +4978,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:5",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:5",
         "kind": "box",
         "centre": [
           -0.637,
@@ -4393,7 +4998,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:6",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:6",
         "kind": "box",
         "centre": [
           -3.532,
@@ -4413,7 +5018,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:7",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:7",
         "kind": "box",
         "centre": [
           -2.533,
@@ -4433,7 +5038,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Round_Outer:8",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer:8",
         "kind": "box",
         "centre": [
           -0.725,
@@ -4453,9 +5058,9 @@
         ]
       }
     ],
-    "Props/Prop_Crate2": [
+    "Modular SciFi MegaKit/Props/Prop_Crate2": [
       {
-        "id": "Props/Prop_Crate2:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Crate2:0",
         "kind": "box",
         "centre": [
           0,
@@ -4475,9 +5080,9 @@
         ]
       }
     ],
-    "Props/Prop_Crate1": [
+    "Modular SciFi MegaKit/Props/Prop_Crate1": [
       {
-        "id": "Props/Prop_Crate1:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Crate1:0",
         "kind": "box",
         "centre": [
           0,
@@ -4497,9 +5102,9 @@
         ]
       }
     ],
-    "Props/Prop_Crate4": [
+    "Modular SciFi MegaKit/Props/Prop_Crate4": [
       {
-        "id": "Props/Prop_Crate4:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Crate4:0",
         "kind": "box",
         "centre": [
           0,
@@ -4519,9 +5124,9 @@
         ]
       }
     ],
-    "Props/Prop_Crate3": [
+    "Modular SciFi MegaKit/Props/Prop_Crate3": [
       {
-        "id": "Props/Prop_Crate3:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Crate3:0",
         "kind": "box",
         "centre": [
           0,
@@ -4541,9 +5146,9 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Capped": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Capped": [
       {
-        "id": "Props/Prop_Pipe_Capped:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped:0",
         "kind": "cylinder",
         "centre": [
           0,
@@ -4564,9 +5169,9 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Medium_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Medium_Straight": [
       {
-        "id": "Props/Prop_Pipe_Medium_Straight:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Pipe_Medium_Straight:0",
         "kind": "cylinder",
         "centre": [
           -0.0001,
@@ -4587,9 +5192,9 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Small_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Small_Straight": [
       {
-        "id": "Props/Prop_Pipe_Small_Straight:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Pipe_Small_Straight:0",
         "kind": "cylinder",
         "centre": [
           0.0003,
@@ -4610,9 +5215,9 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Thick_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Thick_Straight": [
       {
-        "id": "Props/Prop_Pipe_Thick_Straight:0",
+        "id": "Modular SciFi MegaKit/Props/Prop_Pipe_Thick_Straight:0",
         "kind": "cylinder",
         "centre": [
           -0.0011,
@@ -4633,9 +5238,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer": [
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:0",
         "kind": "box",
         "centre": [
           -3.567,
@@ -4655,7 +5260,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:1",
         "kind": "box",
         "centre": [
           -1.7864,
@@ -4675,7 +5280,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:2",
         "kind": "box",
         "centre": [
           -2.0038,
@@ -4695,7 +5300,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:3",
         "kind": "box",
         "centre": [
           -3.9475,
@@ -4715,7 +5320,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:4",
         "kind": "box",
         "centre": [
           -1.9771,
@@ -4735,7 +5340,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:5",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:5",
         "kind": "box",
         "centre": [
           -3.7208,
@@ -4755,7 +5360,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:6",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:6",
         "kind": "cylinder",
         "centre": [
           -3.5981,
@@ -4776,7 +5381,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:7",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:7",
         "kind": "box",
         "centre": [
           -1.762,
@@ -4796,7 +5401,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:8",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:8",
         "kind": "box",
         "centre": [
           -3.608,
@@ -4816,7 +5421,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Outer:9",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer:9",
         "kind": "sphere",
         "centre": [
           -3.7263,
@@ -4826,9 +5431,9 @@
         "radius": 0.2833
       }
     ],
-    "Walls/WallAstra_Straight": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight": [
       {
-        "id": "Walls/WallAstra_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight:0",
         "kind": "box",
         "centre": [
           -2.294,
@@ -4848,7 +5453,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight:1",
         "kind": "box",
         "centre": [
           -2.016,
@@ -4868,7 +5473,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight:2",
         "kind": "box",
         "centre": [
           -2.387,
@@ -4888,9 +5493,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Broken": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken": [
       {
-        "id": "Walls/WallAstra_Straight_Broken:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken:0",
         "kind": "box",
         "centre": [
           -2.294,
@@ -4910,7 +5515,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Broken:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken:1",
         "kind": "box",
         "centre": [
           -1.929,
@@ -4930,7 +5535,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Broken:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken:2",
         "kind": "box",
         "centre": [
           -2.387,
@@ -4950,9 +5555,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Window": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window": [
       {
-        "id": "Walls/WallAstra_Straight_Window:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window:0",
         "kind": "box",
         "centre": [
           -2.294,
@@ -4972,7 +5577,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Window:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window:1",
         "kind": "box",
         "centre": [
           -2.239,
@@ -4992,9 +5597,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Divided": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided": [
       {
-        "id": "Walls/WallAstra_Straight_Divided:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided:0",
         "kind": "box",
         "centre": [
           -2.294,
@@ -5014,7 +5619,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Divided:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided:1",
         "kind": "box",
         "centre": [
           -2.016,
@@ -5034,7 +5639,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Divided:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided:2",
         "kind": "box",
         "centre": [
           -2.387,
@@ -5054,9 +5659,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Flat_Window": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat_Window": [
       {
-        "id": "Walls/WallAstra_Straight_Flat_Window:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat_Window:0",
         "kind": "box",
         "centre": [
           -2.0405,
@@ -5076,7 +5681,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Flat_Window:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat_Window:1",
         "kind": "box",
         "centre": [
           -2.2867,
@@ -5096,7 +5701,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Straight_Flat_Window:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat_Window:2",
         "kind": "box",
         "centre": [
           -2.2924,
@@ -5116,9 +5721,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner": [
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:0",
         "kind": "box",
         "centre": [
           -4.3613,
@@ -5138,7 +5743,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:1",
         "kind": "box",
         "centre": [
           -2.3912,
@@ -5158,7 +5763,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:2",
         "kind": "box",
         "centre": [
           -4.4419,
@@ -5178,7 +5783,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:3",
         "kind": "box",
         "centre": [
           -2.1144,
@@ -5198,7 +5803,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:4",
         "kind": "box",
         "centre": [
           -4.0114,
@@ -5218,7 +5823,7 @@
         ]
       },
       {
-        "id": "Walls/WallAstra_Corner_Square_Inner:5",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner:5",
         "kind": "box",
         "centre": [
           -1.9977,
@@ -5238,9 +5843,9 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Flat": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat": [
       {
-        "id": "Walls/WallAstra_Straight_Flat:0",
+        "id": "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat:0",
         "kind": "box",
         "centre": [
           -2.05,
@@ -5260,9 +5865,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight": [
       {
-        "id": "Walls/ShortWall_Band2_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight:0",
         "kind": "box",
         "centre": [
           -2.2415,
@@ -5282,9 +5887,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer": [
       {
-        "id": "Walls/ShortWall_Band2_Corner_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer:0",
         "kind": "box",
         "centre": [
           -2.8363,
@@ -5304,7 +5909,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer:1",
         "kind": "box",
         "centre": [
           -1.287,
@@ -5324,7 +5929,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer:2",
         "kind": "box",
         "centre": [
           -3.6569,
@@ -5344,7 +5949,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer:3",
         "kind": "box",
         "centre": [
           -0.1846,
@@ -5364,7 +5969,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer:4",
         "kind": "box",
         "centre": [
           -3.8132,
@@ -5384,9 +5989,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner": [
       {
-        "id": "Walls/ShortWall_Band2_Corner_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner:0",
         "kind": "box",
         "centre": [
           -2.7178,
@@ -5406,7 +6011,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner:1",
         "kind": "box",
         "centre": [
           -3.81,
@@ -5426,7 +6031,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner:2",
         "kind": "box",
         "centre": [
           -1.1875,
@@ -5446,7 +6051,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner:3",
         "kind": "box",
         "centre": [
           -4.1604,
@@ -5466,7 +6071,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Band2_Corner_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner:4",
         "kind": "box",
         "centre": [
           -0.2075,
@@ -5486,9 +6091,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Straight": [
       {
-        "id": "Walls/ShortWall_DarkMetal2_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Straight:0",
         "kind": "box",
         "centre": [
           -2.249,
@@ -5508,9 +6113,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer": [
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer:0",
         "kind": "box",
         "centre": [
           -2.8314,
@@ -5530,7 +6135,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer:1",
         "kind": "box",
         "centre": [
           -1.287,
@@ -5550,7 +6155,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer:2",
         "kind": "box",
         "centre": [
           -3.6569,
@@ -5570,7 +6175,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer:3",
         "kind": "box",
         "centre": [
           -0.1841,
@@ -5590,7 +6195,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer:4",
         "kind": "box",
         "centre": [
           -3.8132,
@@ -5610,9 +6215,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner": [
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner:0",
         "kind": "box",
         "centre": [
           -2.7177,
@@ -5632,7 +6237,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner:1",
         "kind": "box",
         "centre": [
           -3.81,
@@ -5652,7 +6257,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner:2",
         "kind": "box",
         "centre": [
           -1.1875,
@@ -5672,7 +6277,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner:3",
         "kind": "box",
         "centre": [
           -4.1604,
@@ -5692,7 +6297,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_DarkMetal2_Corner_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner:4",
         "kind": "box",
         "centre": [
           -0.2075,
@@ -5712,9 +6317,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Straight": [
       {
-        "id": "Walls/ShortWall_Metal2_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Straight:0",
         "kind": "box",
         "centre": [
           -2.249,
@@ -5734,9 +6339,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer": [
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer:0",
         "kind": "box",
         "centre": [
           -2.8314,
@@ -5756,7 +6361,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer:1",
         "kind": "box",
         "centre": [
           -1.287,
@@ -5776,7 +6381,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer:2",
         "kind": "box",
         "centre": [
           -3.6569,
@@ -5796,7 +6401,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer:3",
         "kind": "box",
         "centre": [
           -0.1841,
@@ -5816,7 +6421,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer:4",
         "kind": "box",
         "centre": [
           -3.8132,
@@ -5836,9 +6441,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner": [
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner:0",
         "kind": "box",
         "centre": [
           -2.7177,
@@ -5858,7 +6463,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner:1",
         "kind": "box",
         "centre": [
           -3.81,
@@ -5878,7 +6483,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner:2",
         "kind": "box",
         "centre": [
           -1.1875,
@@ -5898,7 +6503,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner:3",
         "kind": "box",
         "centre": [
           -4.1604,
@@ -5918,7 +6523,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_Metal2_Corner_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner:4",
         "kind": "box",
         "centre": [
           -0.2075,
@@ -5938,9 +6543,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Straight": [
       {
-        "id": "Walls/ShortWall_WhitePlate2_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Straight:0",
         "kind": "box",
         "centre": [
           -2.249,
@@ -5960,9 +6565,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer": [
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer:0",
         "kind": "box",
         "centre": [
           -3.5959,
@@ -5982,7 +6587,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer:1",
         "kind": "box",
         "centre": [
           -2.7052,
@@ -6002,7 +6607,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer:2",
         "kind": "box",
         "centre": [
           -0.5636,
@@ -6022,7 +6627,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer:3",
         "kind": "box",
         "centre": [
           -1.6284,
@@ -6042,7 +6647,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer:4",
         "kind": "box",
         "centre": [
           -3.8122,
@@ -6062,9 +6667,9 @@
         ]
       }
     ],
-    "Walls/TopAstra_Straight": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Straight": [
       {
-        "id": "Walls/TopAstra_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Straight:0",
         "kind": "box",
         "centre": [
           -2.1629,
@@ -6084,9 +6689,9 @@
         ]
       }
     ],
-    "Walls/TopAstra_Curve_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer": [
       {
-        "id": "Walls/TopAstra_Curve_Round_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer:0",
         "kind": "box",
         "centre": [
           -2.5803,
@@ -6106,7 +6711,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Curve_Round_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer:1",
         "kind": "box",
         "centre": [
           -0.821,
@@ -6126,7 +6731,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Curve_Round_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer:2",
         "kind": "box",
         "centre": [
           -3.7645,
@@ -6146,7 +6751,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Curve_Round_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer:3",
         "kind": "box",
         "centre": [
           -3.4173,
@@ -6166,7 +6771,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Curve_Round_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer:4",
         "kind": "box",
         "centre": [
           -1.7179,
@@ -6186,9 +6791,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner": [
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:0",
         "kind": "box",
         "centre": [
           -1.895,
@@ -6208,7 +6813,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:1",
         "kind": "box",
         "centre": [
           -3.5132,
@@ -6228,7 +6833,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:2",
         "kind": "box",
         "centre": [
           -2.001,
@@ -6248,7 +6853,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:3",
         "kind": "box",
         "centre": [
           -3.9913,
@@ -6268,7 +6873,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:4",
         "kind": "box",
         "centre": [
           -1.8996,
@@ -6288,7 +6893,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Inner:5",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner:5",
         "kind": "box",
         "centre": [
           -3.852,
@@ -6308,9 +6913,9 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner": [
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner:0",
         "kind": "box",
         "centre": [
           -1.3702,
@@ -6330,7 +6935,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner:1",
         "kind": "box",
         "centre": [
           -3.8146,
@@ -6350,7 +6955,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner:2",
         "kind": "box",
         "centre": [
           -2.8888,
@@ -6370,7 +6975,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner:3",
         "kind": "box",
         "centre": [
           -4.1594,
@@ -6390,7 +6995,7 @@
         ]
       },
       {
-        "id": "Walls/ShortWall_WhitePlate2_Corner_Inner:4",
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner:4",
         "kind": "box",
         "centre": [
           -0.2223,
@@ -6410,9 +7015,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Straight": [
+    "Modular SciFi MegaKit/Walls/TopCables_Straight": [
       {
-        "id": "Walls/TopCables_Straight:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight:0",
         "kind": "box",
         "centre": [
           -1.5132,
@@ -6432,7 +7037,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Straight:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight:1",
         "kind": "box",
         "centre": [
           -1.852,
@@ -6452,7 +7057,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Straight:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight:2",
         "kind": "box",
         "centre": [
           -1.9913,
@@ -6472,9 +7077,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Straight_Hanging": [
+    "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging": [
       {
-        "id": "Walls/TopCables_Straight_Hanging:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging:0",
         "kind": "box",
         "centre": [
           -1.5526,
@@ -6494,7 +7099,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Straight_Hanging:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging:1",
         "kind": "box",
         "centre": [
           -1.8914,
@@ -6514,7 +7119,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Straight_Hanging:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging:2",
         "kind": "box",
         "centre": [
           -2.0307,
@@ -6534,9 +7139,9 @@
         ]
       }
     ],
-    "Walls/TopAstra_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner": [
       {
-        "id": "Walls/TopAstra_Corner_Round_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner:0",
         "kind": "box",
         "centre": [
           -0.8464,
@@ -6556,7 +7161,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Corner_Round_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner:1",
         "kind": "box",
         "centre": [
           -2.3447,
@@ -6576,7 +7181,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Corner_Round_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner:2",
         "kind": "box",
         "centre": [
           -3.3729,
@@ -6596,7 +7201,7 @@
         ]
       },
       {
-        "id": "Walls/TopAstra_Corner_Round_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner:3",
         "kind": "box",
         "centre": [
           -3.9642,
@@ -6616,9 +7221,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer": [
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:0",
         "kind": "box",
         "centre": [
           -0.8857,
@@ -6638,7 +7243,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:1",
         "kind": "box",
         "centre": [
           -2.3564,
@@ -6658,7 +7263,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:2",
         "kind": "box",
         "centre": [
           -3.4708,
@@ -6678,7 +7283,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:3",
         "kind": "box",
         "centre": [
           -4.177,
@@ -6698,7 +7303,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:4",
         "kind": "cylinder",
         "centre": [
           -3.9559,
@@ -6719,7 +7324,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:5",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:5",
         "kind": "cylinder",
         "centre": [
           -3.3606,
@@ -6740,7 +7345,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:6",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:6",
         "kind": "cylinder",
         "centre": [
           -2.279,
@@ -6761,7 +7366,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:7",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:7",
         "kind": "cylinder",
         "centre": [
           -0.8087,
@@ -6782,7 +7387,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:8",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:8",
         "kind": "box",
         "centre": [
           -3.8655,
@@ -6802,7 +7407,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:9",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:9",
         "kind": "box",
         "centre": [
           -3.1892,
@@ -6822,7 +7427,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:10",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:10",
         "kind": "box",
         "centre": [
           -2.0542,
@@ -6842,7 +7447,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Outer:11",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer:11",
         "kind": "box",
         "centre": [
           -0.8686,
@@ -6862,9 +7467,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner": [
       {
-        "id": "Walls/TopCables_Corner_Round_Inner:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner:0",
         "kind": "box",
         "centre": [
           -0.787,
@@ -6884,7 +7489,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Inner:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner:1",
         "kind": "box",
         "centre": [
           -2.1127,
@@ -6904,7 +7509,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Inner:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner:2",
         "kind": "box",
         "centre": [
           -3.132,
@@ -6924,7 +7529,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Round_Inner:3",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner:3",
         "kind": "box",
         "centre": [
           -3.7533,
@@ -6944,9 +7549,9 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer": [
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:0",
         "kind": "box",
         "centre": [
           -4.4719,
@@ -6966,7 +7571,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:1",
         "kind": "box",
         "centre": [
           -3.9938,
@@ -6986,7 +7591,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:2",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:2",
         "kind": "box",
         "centre": [
           -4.1251,
@@ -7006,7 +7611,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:3",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:3",
         "kind": "box",
         "centre": [
           -2.1132,
@@ -7026,7 +7631,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:4",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:4",
         "kind": "box",
         "centre": [
           -2.0507,
@@ -7046,7 +7651,7 @@
         ]
       },
       {
-        "id": "Walls/TopCables_Corner_Square_Outer:5",
+        "id": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer:5",
         "kind": "box",
         "centre": [
           -2.1056,
@@ -7066,9 +7671,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer": [
       {
-        "id": "Walls/WallWideBand_Corner_Square_Outer:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer:0",
         "kind": "box",
         "centre": [
           -3.84,
@@ -7088,7 +7693,7 @@
         ]
       },
       {
-        "id": "Walls/WallWideBand_Corner_Square_Outer:1",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer:1",
         "kind": "box",
         "centre": [
           -2,
@@ -7108,9 +7713,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_TallBand": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_TallBand": [
       {
-        "id": "Walls/WallWideBand_Straight_TallBand:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_TallBand:0",
         "kind": "box",
         "centre": [
           -2.2415,
@@ -7130,9 +7735,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_Transition": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition": [
       {
-        "id": "Walls/WallWideBand_Straight_Transition:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition:0",
         "kind": "box",
         "centre": [
           -2.2415,
@@ -7152,9 +7757,9 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_Transition2": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition2": [
       {
-        "id": "Walls/WallWideBand_Straight_Transition2:0",
+        "id": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition2:0",
         "kind": "box",
         "centre": [
           -2.2415,
@@ -7174,9 +7779,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_A_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle": [
       {
-        "id": "Platforms/Door_Frame_A_Middle:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle:0",
         "kind": "box",
         "centre": [
           0,
@@ -7196,7 +7801,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_A_Middle:1",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle:1",
         "kind": "box",
         "centre": [
           0,
@@ -7216,9 +7821,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle": [
       {
-        "id": "Platforms/Door_Frame_Square_Middle:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle:0",
         "kind": "box",
         "centre": [
           0,
@@ -7238,7 +7843,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square_Middle:1",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle:1",
         "kind": "box",
         "centre": [
           0.0058,
@@ -7258,9 +7863,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_SquareTall_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle": [
       {
-        "id": "Platforms/Door_Frame_SquareTall_Middle:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle:0",
         "kind": "box",
         "centre": [
           0,
@@ -7280,7 +7885,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_SquareTall_Middle:1",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle:1",
         "kind": "box",
         "centre": [
           0,
@@ -7300,9 +7905,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Symmetric": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric": [
       {
-        "id": "Platforms/Door_Frame_Square_Symmetric:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric:0",
         "kind": "box",
         "centre": [
           1.9093,
@@ -7322,7 +7927,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square_Symmetric:1",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric:1",
         "kind": "box",
         "centre": [
           -1.9,
@@ -7342,7 +7947,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square_Symmetric:2",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric:2",
         "kind": "box",
         "centre": [
           -0.0068,
@@ -7362,7 +7967,7 @@
         ]
       },
       {
-        "id": "Platforms/Door_Frame_Square_Symmetric:3",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric:3",
         "kind": "box",
         "centre": [
           0.002,
@@ -7382,9 +7987,9 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Blocked": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked": [
       {
-        "id": "Platforms/Door_Frame_Square_Blocked:0",
+        "id": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked:0",
         "kind": "box",
         "centre": [
           0,
@@ -7406,7 +8011,7 @@
     ]
   },
   "moduleShapes": {
-    "Platforms/Platform_Metal2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal2": [
       {
         "kind": "box",
         "position": [
@@ -7426,7 +8031,7 @@
         ]
       }
     ],
-    "Platforms/Platform_DarkPlates": [
+    "Modular SciFi MegaKit/Platforms/Platform_DarkPlates": [
       {
         "kind": "box",
         "position": [
@@ -7446,7 +8051,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Inner": [
       {
         "kind": "box",
         "position": [
@@ -7484,7 +8089,7 @@
         ]
       }
     ],
-    "Walls/TopSimple_Straight": [
+    "Modular SciFi MegaKit/Walls/TopSimple_Straight": [
       {
         "kind": "box",
         "position": [
@@ -7504,7 +8109,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight": [
       {
         "kind": "box",
         "position": [
@@ -7524,7 +8129,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7544,7 +8149,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal2_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal2_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7564,7 +8169,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Metal": [
+    "Modular SciFi MegaKit/Platforms/Platform_Metal": [
       {
         "kind": "box",
         "position": [
@@ -7584,7 +8189,7 @@
         ]
       }
     ],
-    "Platforms/Platform_3Plates": [
+    "Modular SciFi MegaKit/Platforms/Platform_3Plates": [
       {
         "kind": "box",
         "position": [
@@ -7604,7 +8209,7 @@
         ]
       }
     ],
-    "Platforms/Platform_CenterPlate": [
+    "Modular SciFi MegaKit/Platforms/Platform_CenterPlate": [
       {
         "kind": "box",
         "position": [
@@ -7624,7 +8229,7 @@
         ]
       }
     ],
-    "Platforms/Platform_CenterPlate_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_CenterPlate_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7644,7 +8249,7 @@
         ]
       }
     ],
-    "Platforms/Platform_DarkPlates_Curves": [
+    "Modular SciFi MegaKit/Platforms/Platform_DarkPlates_Curves": [
       {
         "kind": "box",
         "position": [
@@ -7664,7 +8269,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Padded": [
+    "Modular SciFi MegaKit/Platforms/Platform_Padded": [
       {
         "kind": "box",
         "position": [
@@ -7684,7 +8289,7 @@
         ]
       }
     ],
-    "Platforms/Platform_RedAccent": [
+    "Modular SciFi MegaKit/Platforms/Platform_RedAccent": [
       {
         "kind": "box",
         "position": [
@@ -7704,7 +8309,7 @@
         ]
       }
     ],
-    "Platforms/Platform_RedAccent_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_RedAccent_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7724,7 +8329,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Round2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Round2": [
       {
         "kind": "box",
         "position": [
@@ -7744,7 +8349,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple": [
       {
         "kind": "box",
         "position": [
@@ -7764,7 +8369,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7784,7 +8389,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple2": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple2": [
       {
         "kind": "box",
         "position": [
@@ -7804,7 +8409,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Simple2_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Simple2_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7824,7 +8429,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Squares": [
+    "Modular SciFi MegaKit/Platforms/Platform_Squares": [
       {
         "kind": "box",
         "position": [
@@ -7844,7 +8449,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Squares_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_Squares_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7864,7 +8469,7 @@
         ]
       }
     ],
-    "Platforms/Platform_WidePlates": [
+    "Modular SciFi MegaKit/Platforms/Platform_WidePlates": [
       {
         "kind": "box",
         "position": [
@@ -7884,7 +8489,7 @@
         ]
       }
     ],
-    "Platforms/Platform_WidePlates_Curve": [
+    "Modular SciFi MegaKit/Platforms/Platform_WidePlates_Curve": [
       {
         "kind": "box",
         "position": [
@@ -7904,7 +8509,7 @@
         ]
       }
     ],
-    "Platforms/Platform_X": [
+    "Modular SciFi MegaKit/Platforms/Platform_X": [
       {
         "kind": "box",
         "position": [
@@ -7924,7 +8529,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Round1": [
+    "Modular SciFi MegaKit/Platforms/Platform_Round1": [
       {
         "kind": "box",
         "position": [
@@ -7944,7 +8549,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Window_Thin": [
+    "Modular SciFi MegaKit/Platforms/Platform_Window_Thin": [
       {
         "kind": "box",
         "position": [
@@ -7964,7 +8569,7 @@
         ]
       }
     ],
-    "Platforms/Platform_Window_Wide": [
+    "Modular SciFi MegaKit/Platforms/Platform_Window_Wide": [
       {
         "kind": "box",
         "position": [
@@ -7984,7 +8589,7 @@
         ]
       }
     ],
-    "Platforms/Door_DarkMetal": [
+    "Modular SciFi MegaKit/Platforms/Door_DarkMetal": [
       {
         "kind": "box",
         "position": [
@@ -8004,7 +8609,7 @@
         ]
       }
     ],
-    "Platforms/Door_Metal": [
+    "Modular SciFi MegaKit/Platforms/Door_Metal": [
       {
         "kind": "box",
         "position": [
@@ -8024,7 +8629,7 @@
         ]
       }
     ],
-    "Platforms/Door_Simple": [
+    "Modular SciFi MegaKit/Platforms/Door_Simple": [
       {
         "kind": "box",
         "position": [
@@ -8044,7 +8649,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square": [
       {
         "kind": "box",
         "position": [
@@ -8100,7 +8705,7 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Straight": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Straight": [
       {
         "kind": "box",
         "position": [
@@ -8120,7 +8725,7 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Curve_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner": [
       {
         "kind": "box",
         "position": [
@@ -8158,7 +8763,7 @@
         ]
       }
     ],
-    "Walls/TopPadded_Incline_Curve_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Square_Outer": [
       {
         "kind": "box",
         "position": [
@@ -8214,7 +8819,7 @@
         ]
       }
     ],
-    "Props/Prop_Pod": [
+    "Modular SciFi MegaKit/Props/Prop_Pod": [
       {
         "kind": "cylinder",
         "position": [
@@ -8234,7 +8839,7 @@
         ]
       }
     ],
-    "Props/Prop_ItemHolder": [
+    "Modular SciFi MegaKit/Props/Prop_ItemHolder": [
       {
         "kind": "sphere",
         "position": [
@@ -8254,7 +8859,7 @@
         ]
       }
     ],
-    "Props/Prop_Barrel_Small": [
+    "Modular SciFi MegaKit/Props/Prop_Barrel_Small": [
       {
         "kind": "capsule",
         "position": [
@@ -8274,7 +8879,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner": [
       {
         "kind": "box",
         "position": [
@@ -8438,7 +9043,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer": [
       {
         "kind": "box",
         "position": [
@@ -8602,7 +9207,7 @@
         ]
       }
     ],
-    "Props/Prop_Crate2": [
+    "Modular SciFi MegaKit/Props/Prop_Crate2": [
       {
         "kind": "box",
         "position": [
@@ -8622,7 +9227,7 @@
         ]
       }
     ],
-    "Props/Prop_Crate1": [
+    "Modular SciFi MegaKit/Props/Prop_Crate1": [
       {
         "kind": "box",
         "position": [
@@ -8642,7 +9247,7 @@
         ]
       }
     ],
-    "Props/Prop_Crate4": [
+    "Modular SciFi MegaKit/Props/Prop_Crate4": [
       {
         "kind": "box",
         "position": [
@@ -8662,7 +9267,7 @@
         ]
       }
     ],
-    "Props/Prop_Crate3": [
+    "Modular SciFi MegaKit/Props/Prop_Crate3": [
       {
         "kind": "box",
         "position": [
@@ -8682,7 +9287,7 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Capped": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Capped": [
       {
         "kind": "cylinder",
         "position": [
@@ -8702,7 +9307,7 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Medium_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Medium_Straight": [
       {
         "kind": "cylinder",
         "position": [
@@ -8722,7 +9327,7 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Small_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Small_Straight": [
       {
         "kind": "cylinder",
         "position": [
@@ -8742,7 +9347,7 @@
         ]
       }
     ],
-    "Props/Prop_Pipe_Thick_Straight": [
+    "Modular SciFi MegaKit/Props/Prop_Pipe_Thick_Straight": [
       {
         "kind": "cylinder",
         "position": [
@@ -8762,7 +9367,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Outer": [
       {
         "kind": "box",
         "position": [
@@ -8944,7 +9549,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight": [
       {
         "kind": "box",
         "position": [
@@ -9000,7 +9605,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Broken": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Broken": [
       {
         "kind": "box",
         "position": [
@@ -9056,7 +9661,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Window": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Window": [
       {
         "kind": "box",
         "position": [
@@ -9094,7 +9699,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Divided": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Divided": [
       {
         "kind": "box",
         "position": [
@@ -9150,7 +9755,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Flat_Window": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat_Window": [
       {
         "kind": "box",
         "position": [
@@ -9206,7 +9811,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Corner_Square_Inner": [
       {
         "kind": "box",
         "position": [
@@ -9316,7 +9921,7 @@
         ]
       }
     ],
-    "Walls/WallAstra_Straight_Flat": [
+    "Modular SciFi MegaKit/Walls/WallAstra_Straight_Flat": [
       {
         "kind": "box",
         "position": [
@@ -9336,7 +9941,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight": [
       {
         "kind": "box",
         "position": [
@@ -9356,7 +9961,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer": [
       {
         "kind": "box",
         "position": [
@@ -9448,7 +10053,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Band2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner": [
       {
         "kind": "box",
         "position": [
@@ -9540,7 +10145,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Straight": [
       {
         "kind": "box",
         "position": [
@@ -9560,7 +10165,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer": [
       {
         "kind": "box",
         "position": [
@@ -9652,7 +10257,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_DarkMetal2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner": [
       {
         "kind": "box",
         "position": [
@@ -9744,7 +10349,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Straight": [
       {
         "kind": "box",
         "position": [
@@ -9764,7 +10369,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer": [
       {
         "kind": "box",
         "position": [
@@ -9856,7 +10461,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_Metal2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner": [
       {
         "kind": "box",
         "position": [
@@ -9948,7 +10553,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Straight": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Straight": [
       {
         "kind": "box",
         "position": [
@@ -9968,7 +10573,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Corner_Outer": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Outer": [
       {
         "kind": "box",
         "position": [
@@ -10060,7 +10665,7 @@
         ]
       }
     ],
-    "Walls/TopAstra_Straight": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Straight": [
       {
         "kind": "box",
         "position": [
@@ -10080,7 +10685,7 @@
         ]
       }
     ],
-    "Walls/TopAstra_Curve_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer": [
       {
         "kind": "box",
         "position": [
@@ -10172,7 +10777,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Square_Inner": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner": [
       {
         "kind": "box",
         "position": [
@@ -10282,7 +10887,7 @@
         ]
       }
     ],
-    "Walls/ShortWall_WhitePlate2_Corner_Inner": [
+    "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner": [
       {
         "kind": "box",
         "position": [
@@ -10374,7 +10979,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Straight": [
+    "Modular SciFi MegaKit/Walls/TopCables_Straight": [
       {
         "kind": "box",
         "position": [
@@ -10430,7 +11035,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Straight_Hanging": [
+    "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging": [
       {
         "kind": "box",
         "position": [
@@ -10486,7 +11091,7 @@
         ]
       }
     ],
-    "Walls/TopAstra_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner": [
       {
         "kind": "box",
         "position": [
@@ -10560,7 +11165,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Round_Outer": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer": [
       {
         "kind": "box",
         "position": [
@@ -10778,7 +11383,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Round_Inner": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner": [
       {
         "kind": "box",
         "position": [
@@ -10852,7 +11457,7 @@
         ]
       }
     ],
-    "Walls/TopCables_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer": [
       {
         "kind": "box",
         "position": [
@@ -10962,7 +11567,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Corner_Square_Outer": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer": [
       {
         "kind": "box",
         "position": [
@@ -11000,7 +11605,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_TallBand": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_TallBand": [
       {
         "kind": "box",
         "position": [
@@ -11020,7 +11625,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_Transition": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition": [
       {
         "kind": "box",
         "position": [
@@ -11040,7 +11645,7 @@
         ]
       }
     ],
-    "Walls/WallWideBand_Straight_Transition2": [
+    "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition2": [
       {
         "kind": "box",
         "position": [
@@ -11060,7 +11665,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_A_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle": [
       {
         "kind": "box",
         "position": [
@@ -11098,7 +11703,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle": [
       {
         "kind": "box",
         "position": [
@@ -11136,7 +11741,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_SquareTall_Middle": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle": [
       {
         "kind": "box",
         "position": [
@@ -11174,7 +11779,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Symmetric": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric": [
       {
         "kind": "box",
         "position": [
@@ -11248,7 +11853,7 @@
         ]
       }
     ],
-    "Platforms/Door_Frame_Square_Blocked": [
+    "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked": [
       {
         "kind": "box",
         "position": [
@@ -11271,7 +11876,7 @@
   },
   "stageLayout": [
     {
-      "module": "Walls/ShortWall_Band2_Corner_Outer",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer",
       "position": [
         19,
         0,
@@ -11279,7 +11884,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_Band2_Straight",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
       "position": [
         14,
         0,
@@ -11287,7 +11892,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_Band2_Corner_Inner",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner",
       "position": [
         25,
         0,
@@ -11295,7 +11900,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_DarkMetal2_Corner_Inner",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner",
       "position": [
         25,
         0,
@@ -11303,7 +11908,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_DarkMetal2_Corner_Outer",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer",
       "position": [
         20,
         0,
@@ -11311,7 +11916,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_DarkMetal2_Straight",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Straight",
       "position": [
         14,
         0,
@@ -11319,7 +11924,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_Metal2_Corner_Inner",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner",
       "position": [
         24,
         0,
@@ -11327,7 +11932,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_Metal2_Corner_Outer",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer",
       "position": [
         19,
         0,
@@ -11335,7 +11940,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_Metal2_Straight",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Straight",
       "position": [
         15,
         0,
@@ -11343,7 +11948,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_WhitePlate2_Straight",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Straight",
       "position": [
         13,
         0,
@@ -11351,7 +11956,7 @@
       ]
     },
     {
-      "module": "Walls/TopAstra_Curve_Round_Outer",
+      "module": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer",
       "position": [
         17,
         0,
@@ -11359,7 +11964,7 @@
       ]
     },
     {
-      "module": "Walls/TopAstra_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopAstra_Straight",
       "position": [
         12,
         0,
@@ -11367,7 +11972,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Corner_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner",
       "position": [
         30,
         0,
@@ -11375,7 +11980,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Corner_Round_Outer",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer",
       "position": [
         23,
         0,
@@ -11383,7 +11988,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Corner_Square_Inner",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner",
       "position": [
         14,
         0,
@@ -11391,7 +11996,7 @@
       ]
     },
     {
-      "module": "Walls/ShortWall_WhitePlate2_Corner_Inner",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner",
       "position": [
         28,
         1.997,
@@ -11399,7 +12004,7 @@
       ]
     },
     {
-      "module": "Walls/TopAstra_Corner_Round_Inner",
+      "module": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner",
       "position": [
         28,
         1.997,
@@ -11407,7 +12012,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Straight",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Straight",
       "position": [
         14,
         1.997,
@@ -11415,7 +12020,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Straight_Hanging",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging",
       "position": [
         19,
         0,
@@ -11423,7 +12028,7 @@
       ]
     },
     {
-      "module": "Walls/TopCables_Corner_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer",
       "position": [
         8,
         -1.004,
@@ -11431,7 +12036,7 @@
       ]
     },
     {
-      "module": "Walls/WallWideBand_Corner_Square_Outer",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer",
       "position": [
         6,
         2.428,
@@ -11439,7 +12044,7 @@
       ]
     },
     {
-      "module": "Walls/WallWideBand_Straight_TallBand",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_TallBand",
       "position": [
         0,
         2.428,
@@ -11447,7 +12052,7 @@
       ]
     },
     {
-      "module": "Walls/WallWideBand_Straight_Transition",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition",
       "position": [
         -1,
         2.428,
@@ -11455,7 +12060,7 @@
       ]
     },
     {
-      "module": "Walls/WallWideBand_Straight_Transition2",
+      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition2",
       "position": [
         2,
         2.428,
@@ -11463,7 +12068,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_A_Middle",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle",
       "position": [
         9,
         -0.0032,
@@ -11471,7 +12076,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_Square_Middle",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle",
       "position": [
         5,
         0,
@@ -11479,7 +12084,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_SquareTall",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall",
       "position": [
         -10,
         0,
@@ -11487,7 +12092,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_SquareTall_Middle",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle",
       "position": [
         1,
         0,
@@ -11495,7 +12100,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_Square",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square",
       "position": [
         2,
         -0.164,
@@ -11503,7 +12108,7 @@
       ]
     },
     {
-      "module": "Platforms/Door_Frame_Square_Symmetric",
+      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric",
       "position": [
         -4,
         -0.164,
@@ -11511,7 +12116,7 @@
       ]
     }
   ],
-  "activeChunk": "CH01_StorageC",
+  "activeChunk": "CH03_StorageC2",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -11536,8 +12141,23 @@
       ],
       "liquefiable": true
     },
+    "probeExcluded": {
+      "reflectionProbe": "exclude"
+    },
     "player": {},
-    "weapon": {}
+    "weaponLiquefactor": {
+      "sounds": {
+        "quickSplash": [
+          "waterQuickSplash"
+        ],
+        "bigSplash": [
+          "waterBigSplash"
+        ],
+        "longSplash": [
+          "waterLongSplash"
+        ]
+      }
+    }
   },
   "entities": {
     "player": {
@@ -11549,9 +12169,11 @@
             0,
             0
           ]
+        },
+        {
+          "name": "probeExcluded"
         }
-      ],
-      "bake": "exclude"
+      ]
     },
     "storageDoorL": {
       "behaviors": [
@@ -11560,7 +12182,8 @@
           "linked": [
             "storageDoorR",
             "storageDoor_caution"
-          ]
+          ],
+          "sound": "longSplash"
         }
       ]
     },
@@ -11571,7 +12194,8 @@
           "linked": [
             "storageDoorL",
             "storageDoor_caution"
-          ]
+          ],
+          "sound": "longSplash"
         }
       ]
     },
@@ -11584,10 +12208,10 @@
             "storageDoorLFB",
             "storageDoorRB",
             "storageDoorRF"
-          ]
+          ],
+          "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "crate2": {
       "behaviors": [
@@ -11612,7 +12236,8 @@
     "capsule": {
       "behaviors": [
         {
-          "name": "stdLiquefaction"
+          "name": "stdLiquefaction",
+          "sound": "longSplash"
         },
         {
           "name": "dynamic"
@@ -11622,7 +12247,10 @@
     "Barrel2": {
       "behaviors": [
         {
-          "name": "stdLiquefaction"
+          "name": "stdLiquefaction",
+          "linked": [
+            "ssssssss"
+          ]
         },
         {
           "name": "dynamic"
@@ -11642,7 +12270,8 @@
     "alien1StorageCorridor": {
       "behaviors": [
         {
-          "name": "explosiveLiquefaction"
+          "name": "explosiveLiquefaction",
+          "sound": "bigSplash"
         },
         {
           "name": "dynamic"
@@ -11658,10 +12287,10 @@
             "storageDoorLFB",
             "storageDoorRB",
             "storageDoorRF"
-          ]
+          ],
+          "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorLFB": {
       "behaviors": [
@@ -11672,10 +12301,10 @@
             "storageDoorLF",
             "storageDoorRB",
             "storageDoorRF"
-          ]
+          ],
+          "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorRB": {
       "behaviors": [
@@ -11686,10 +12315,10 @@
             "storageDoorLF",
             "storageDoorLFB",
             "storageDoorRF"
-          ]
+          ],
+          "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorRF": {
       "behaviors": [
@@ -11700,10 +12329,10 @@
             "storageDoorLF",
             "storageDoorLFB",
             "storageDoorRB"
-          ]
+          ],
+          "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "test": {
       "behaviors": [
@@ -11711,35 +12340,54 @@
           "name": "explosiveLiquefaction"
         }
       ]
+    },
+    "weaponLiquefactorHolder": {
+      "behaviors": [
+        {
+          "name": "weaponLiquefactor"
+        }
+      ]
+    },
+    "StoragePipe0": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      -9.015,
-      2.221,
-      0.044
+      10.935,
+      2.199,
+      -0.791
     ],
     "rotation": [
-      0.209,
-      85.23,
+      0.118,
+      463.761,
       0
     ],
     "target": [
-      -12.885,
-      0.149,
-      -8.941
+      1.698,
+      1.02,
+      2.854
     ]
   },
   "environment": {
-    "strength": 1.1,
-    "dynamicStrength": 0.8,
+    "strength": 1,
     "toneMapping": "Khronos PBR Neutral",
-    "exposure": 1.05
+    "exposure": 1.05,
+    "specularAA": false,
+    "reflectionRoughness": 1
   },
   "editorEnvironment": {
     "strength": 1,
-    "dynamicStrength": 1.5,
-    "exposure": 0.55
+    "toneMapping": "Khronos PBR Neutral",
+    "exposure": 1
+  },
+  "editorPrefs": {
+    "veilAlpha": 0.5,
+    "bigPalette": true
   },
   "portals": [
     {
@@ -11747,6 +12395,7 @@
       "chunkA": "CH00_Storage",
       "chunkB": "CH01_StorageC",
       "door": "Door_D00",
+      "enabled": false,
       "centre": [
         -3.949,
         1.822,
@@ -11785,6 +12434,7 @@
       "chunkA": "CH01_StorageC",
       "chunkB": "__SKYBOX__",
       "door": "Door_D01",
+      "enabled": true,
       "centre": [
         1.9949,
         1.8195,
@@ -11820,9 +12470,10 @@
     },
     {
       "id": "Portal_Door_D02",
-      "chunkA": "CH01_StorageC",
+      "chunkA": "CH03_StorageC2",
       "chunkB": "__SKYBOX__",
       "door": "Door_D02",
+      "enabled": true,
       "centre": [
         12.278,
         1.8207,
@@ -11861,6 +12512,7 @@
       "chunkA": "CH01_StorageC",
       "chunkB": "CH02_StorageCTL",
       "door": "Door_D03",
+      "enabled": true,
       "centre": [
         4,
         2.4933,
@@ -11899,6 +12551,7 @@
       "chunkA": "CH02_StorageCTL",
       "chunkB": "CH03_StorageC2",
       "door": "Door_D04",
+      "enabled": true,
       "centre": [
         10,
         2.506,
@@ -11947,6 +12600,7 @@
       "width": 2.7374,
       "height": 3.644,
       "triggerRadius": 3.5,
+      "enabled": false,
       "sealed": false,
       "leaves": []
     },
@@ -11963,6 +12617,7 @@
       "width": 3.08,
       "height": 1.23,
       "triggerRadius": 3.5,
+      "enabled": true,
       "sealed": true,
       "leaves": [
         {
@@ -11974,7 +12629,7 @@
     {
       "id": "Door_D02",
       "node": "Door_D02",
-      "chunkA": "CH01_StorageC",
+      "chunkA": "CH03_StorageC2",
       "chunkB": "__SKYBOX__",
       "position": [
         12.1632,
@@ -11984,6 +12639,7 @@
       "width": 3.12,
       "height": 1.26,
       "triggerRadius": 3.5,
+      "enabled": true,
       "sealed": true,
       "leaves": [
         {
@@ -12005,6 +12661,7 @@
       "width": 4.8534,
       "height": 5.0134,
       "triggerRadius": 3.5,
+      "enabled": true,
       "sealed": false,
       "leaves": [
         {
@@ -12026,6 +12683,7 @@
       "width": 4.8534,
       "height": 5,
       "triggerRadius": 3.5,
+      "enabled": true,
       "sealed": false,
       "leaves": [
         {
@@ -12052,10 +12710,6 @@
         "portal": "Portal_Door_D01"
       },
       {
-        "to": "__SKYBOX__",
-        "portal": "Portal_Door_D02"
-      },
-      {
         "to": "CH02_StorageCTL",
         "portal": "Portal_Door_D03"
       }
@@ -12072,9 +12726,14 @@
     ],
     "CH03_StorageC2": [
       {
+        "to": "__SKYBOX__",
+        "portal": "Portal_Door_D02"
+      },
+      {
         "to": "CH02_StorageCTL",
         "portal": "Portal_Door_D04"
       }
-    ]
+    ],
+    "Test": []
   }
 }

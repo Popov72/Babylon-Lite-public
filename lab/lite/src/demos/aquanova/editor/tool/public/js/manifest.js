@@ -8,15 +8,16 @@ import {
   state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
   loadModuleCollision, serializeModuleCollision, emit, hooks,
   serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
-  serializeBakeLighting, applyEnvironment, whileBusy, withVeilSuspended,
-  isVeilClone, isGizmoMesh, SKYBOX_CHUNK,
-  chunkBakeOf,
+  serializeEditorPrefs, applyEditorPrefs,
+  applyEnvironment, whileBusy, withVeilSuspended,
+  isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
+  environmentProbeIds, environmentProbeOf,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
 const { TransformNode, Vector3, Quaternion, Matrix } = BABYLON;
 
-export const SCHEMA = 2;
+export const SCHEMA = 3;
 
 // A door marker only knows which two chunks it joins if the user said so;
 // otherwise infer it from the chunk volumes the doorway sits between. Distance
@@ -87,11 +88,6 @@ export function nodeNameOf(placement) {
  * what "this one stands alone" means - and entries pointing at a behaviour that
  * no longer exists are dropped, since the runtime would only ignore them.
  *
- * `bake` is the author's override of what the bake works out for itself, and it
- * rides here because it is keyed the same way - by node name - and read by the
- * same consumer. "auto" is written as an absent key for the same reason `linked`
- * is: it is the default, and storing it would put every element ever inspected
- * into the diff. An entry may hold a `bake` and no behaviours at all.
  */
 function serializeBehaviors() {
   return Object.fromEntries(
@@ -100,19 +96,17 @@ function serializeBehaviors() {
 
 function serializeEntities() {
   const out = {};
-  const nodes = [...new Set([...state.entities.keys(), ...state.bakeOverride.keys()])];
+  const nodes = [...state.entities.keys()];
   for (const node of nodes) {
     const kept = (state.entities.get(node) || [])
       .filter((b) => state.behaviors.has(b.name))
       .map((b) => ({
         name: b.name,
         ...(b.linked.length ? { linked: [...b.linked] } : {}),
+        ...(b.sound ? { sound: b.sound } : {}),
         ...(b.direction ? { direction: toGltf(b.direction) } : {}),
       }));
-    const bake = state.bakeOverride.get(node);
-    if (kept.length || bake) {
-      out[node] = { ...(kept.length ? { behaviors: kept } : {}), ...(bake ? { bake } : {}) };
-    }
+    if (kept.length) out[node] = { behaviors: kept };
   }
   return out;
 }
@@ -264,27 +258,30 @@ export function buildManifest() {  const layout = serialize();
     let min = null, max = null;
     let meshCount = 0;
     for (const m of members) {
-      meshCount += m.node.getChildMeshes().filter((x) => !isVeilClone(x)).length;
+      meshCount += m.node.getChildMeshes().filter((x) => !isVeilClone(x) && !isRuntimeStandIn(x)).length;
       const b = worldBounds(m.node);
       if (!b) continue;
       min = min ? Vector3.Minimize(min, b.min) : b.min.clone();
       max = max ? Vector3.Maximize(max, b.max) : b.max.clone();
     }
     if (min) boxes.push({ id, min, max });
-    const bake = chunkBakeOf(id);
     return {
       id,
       node: `CHUNK_${id}`,
       aabb: min ? boxToGltf(r(min.asArray()), r(max.asArray())) : null,
       instanceCount: members.length,
       meshCount,
-      // What Blender renders THIS room at, where it differs from the ship's
-      // `bakeDefaults` below. Sparse and omitted when empty, on purpose: a
-      // room that never asked for its own settings must keep following the
-      // defaults, so writing today's resolved numbers in would quietly freeze
-      // every room at whatever the defaults happened to be the day it was
-      // saved. bake_lightmaps.py resolves the pair the same way.
-      ...(Object.keys(bake).length ? { bake } : {}),
+    };
+  });
+
+  const environmentProbes = environmentProbeIds().map((id) => {
+    const probe = environmentProbeOf(id);
+    return {
+      id,
+      boxPosition: toGltf(probe.boxPosition),
+      boxSize: r(probe.boxSize),
+      capturePosition: toGltf(probe.capturePosition),
+      resolution: probe.resolution,
     };
   });
 
@@ -314,6 +311,7 @@ export function buildManifest() {  const layout = serialize();
       width: r([m.width * Math.abs(m.node.scaling.x)])[0],
       height: r([m.height * Math.abs(m.node.scaling.y)])[0],
       triggerRadius: m.triggerRadius,
+      enabled: m.enabled !== false,
       // The far side can be seen but not reached - a window onto space rather
       // than a doorway. Written on the door only for now; collision generation
       // will read it when that work happens. Default false, so every manifest
@@ -364,12 +362,14 @@ export function buildManifest() {  const layout = serialize();
     // of the prop, still looking perfectly plausible. Naming the fields here
     // lets a reader assert instead of remember.
     space: {
-      gltf: ["chunks[].aabb", "collision", "moduleCollision", "portals", "doors"],
+      gltf: ["chunks[].aabb", "environmentProbes[].boxPosition",
+        "environmentProbes[].capturePosition",
+        "collision", "moduleCollision", "portals", "doors"],
       editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
-      none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kitDir",
+      none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kits",
         "activeChunk", "fluidSim", "behaviors", "entities", "environment",
-        "editorEnvironment", "bakeLighting", "adjacency", "space", "bakeDefaults",
-        "chunks[].bake"],
+        "editorEnvironment", "editorPrefs", "adjacency", "space",
+        "environmentProbes[].boxSize", "environmentProbes[].resolution"],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",
@@ -390,13 +390,14 @@ export function buildManifest() {  const layout = serialize();
     // back looking identical and then fit differently the next time you
     // pressed Generate.
     config: layout.config,
-    kitDir: state.kitDir || null,
+    // Which kits the ship was laid out from, and where they were read. A module
+    // id is `<kit>/<category>/<name>`, so recording the kit list makes an id in
+    // `instances` resolvable by anyone who did not build the ship. `source` is
+    // provenance only - it says nothing about where a later session should read
+    // them from, which is that session's own config.
+    kits: state.kits?.length ? { source: state.kitsSource || null, base: state.kitsBase || null, folders: state.kits } : null,
     chunks,
-    // What the bake renders a room at when the room does not say otherwise.
-    // Read by bake_lightmaps.py, which resolves each chunk as
-    // `--flag (if given) > chunks[].bake > bakeDefaults > its own built-in`.
-    bakeDefaults: { ...state.bakeDefaults },
-    bakeLighting: serializeBakeLighting(),
+    environmentProbes,
     // "node" is what the element is called in ship.glb - its own name, or its
     // id when it has none - and is the only handle the runtime needs. "id" is
     // the editor's, and is what the tool reloads from.
@@ -412,8 +413,8 @@ export function buildManifest() {  const layout = serialize();
     colliders: layout.colliders,
     // Authored lights, each riding a placement. Editor space and local to the
     // owner, like `moduleShapes`: this is what the tool reloads from. What the
-    // BAKE reads is the exported TransformNode's own extras, not this - so the
-    // two never have to agree about handedness.
+    // RUNTIME reads is the exported TransformNode's own extras, not this - so
+    // the two never have to agree about handedness.
     lights: layout.lights,
     // A room's own one-off shapes, in glTF space, in the form Havok's
     // constructors take. Grouped by chunk because collision is streamed per
@@ -453,6 +454,8 @@ export function buildManifest() {  const layout = serialize();
     environment: serializeEnvironment(),
     // the editor's own Env/Exposure, which the demos must not read
     editorEnvironment: serializeEditorEnvironment(),
+    // and the editor's own view preferences, which they must not read either
+    editorPrefs: serializeEditorPrefs(),
     portals,
     doors,
     adjacency,
@@ -553,13 +556,14 @@ export async function loadLayout(name) {
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data.instances) return null;    // a Blender-era manifest, not reloadable
+    if (!data.instances) return null;    // a pre-schema-1 manifest, not reloadable
     await deserialize(data);
     // The shipped collision file wins over whatever this ship's manifest
     // carries, so a new ship built from the same kit starts fully fitted.
     await loadCollision();
     applyView(data.view);                // older manifests simply have none
     applyEnvironment(data.environment, data.editorEnvironment);
+    applyEditorPrefs(data.editorPrefs);   // older manifests simply have none
     // Start positions moved to behaviours, so an old block is dropped rather
     // than silently kept and re-saved. Said out loud, because losing where the
     // player starts without being told is exactly the kind of thing you notice
@@ -637,12 +641,10 @@ async function exportGlbInner() {
 
   // Lights ride out as bare nodes carrying their whole record.
   //
-  // There is nothing to draw: the bake script rebuilds each one as a Cycles
-  // Area light from `extras`, and the runtime builds a Babylon light from the
-  // same numbers - so what has to survive the trip is the transform and the two
-  // halves, not geometry. Being a child of the element it rides means the glTF
-  // hierarchy carries the offset for free, in exactly the space it was authored
-  // in.
+  // There is nothing to draw: the runtime builds a Babylon light from `extras`,
+  // so what has to survive the trip is the transform and the record, not
+  // geometry. Being a child of the element it rides means the glTF hierarchy
+  // carries the offset for free, in exactly the space it was authored in.
   //
   // The gizmo meshes hanging off the same node are left out of `exportable`, so
   // the node reaches the file with no children at all - which the exporter is
@@ -666,6 +668,23 @@ async function exportGlbInner() {
   }
   for (const l of lights) exportable.add(l.node);
 
+  // The ship is static geometry, and the exporter's skins are the one thing it
+  // reads off the whole scene rather than off `shouldExportNode`: it walks
+  // `scene.skeletons` and warns once per bone whose joint node is not being
+  // exported. Every kit skeleton in the scene qualifies - a module is loaded as
+  // a hidden prototype whose nodes are disabled and never exported, and a
+  // placement is an INSTANCE of that prototype, so the joints belong to the
+  // prototype and the joint transforms are shared by every copy.
+  //
+  // Which is also why exporting them would be wrong rather than merely noisy:
+  // glTF ignores a skinned node's own transform, so six instances of one
+  // character sharing one skin would all land on top of each other. They are
+  // exported as what they are on screen, static meshes in bind pose. Hiding the
+  // skeletons for the duration is what stops the exporter reporting, a hundred
+  // lines at a time, that it cannot do a thing nobody asked it to do.
+  const skeletons = state.scene.skeletons;
+  const hiddenSkeletons = skeletons.splice(0, skeletons.length);
+
   try {
     const glb = await withAuthoredMaterials(() =>
       BABYLON.GLTF2Export.GLBAsync(state.scene, "ship", {
@@ -681,6 +700,7 @@ async function exportGlbInner() {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   } finally {
+    skeletons.push(...hiddenSkeletons);
     for (const [node, parent] of restore) node.parent = parent;
     for (const [node, name] of renamed) node.name = name;
     // Put the metadata back exactly, undefined included: the editor's own
@@ -695,5 +715,5 @@ function r(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
 
 /** A placement's own primitives - its module's parts, and nothing else. */
 function artMeshes(node) {
-  return node.getChildMeshes().filter((m) => !isGizmoMesh(m));
+  return node.getChildMeshes().filter((m) => !isGizmoMesh(m) && !isRuntimeStandIn(m));
 }

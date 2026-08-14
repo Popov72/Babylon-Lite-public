@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Standalone layout tool for assembling the Quaternius Modular SciFi MegaKit into a chunked, portal-ready ship.",
+  "description": "Standalone layout tool for assembling the Quaternius sci-fi kits into a chunked, portal-ready ship.",
   "scripts": {
     "start": "node server.mjs",
     "test": "node test/run.mjs"

@@ -1,24 +1,25 @@
 # Ship layout tool
 
-A small standalone editor for assembling the **Quaternius Modular SciFi MegaKit**
-into a chunked, portal-ready ship. It does one job: pick a module, place it on a
-grid, move/rotate/scale it, and say which chunk it belongs to. No asset
-authoring, no lighting, no gameplay.
+A small standalone editor for assembling the **Quaternius sci-fi kits** into a
+chunked, portal-ready ship. It does one job: pick a module, place it on a grid,
+move/rotate/scale it, and say which chunk it belongs to. No asset authoring, no
+lighting, no gameplay.
 
 ```
 cd tool
 npm start          # -> http://localhost:5180
 ```
 
-Node 22+, no dependencies, nothing to download: the kit ships with the editor
-(`../kit`, 35 MB, CC0 — see `../license.txt`). Everything else comes from the
-Babylon.js CDN.
+Node 22+, no dependencies. The kits live in the **BabylonAssets** repository
+next to this one and are read either from that local checkout or from
+`https://assets.babylonjs.com` — see [Configuration](#configuration). Everything
+else comes from the Babylon.js CDN.
 
 ---
 
 ## Why this exists instead of an off-the-shelf tool
 
-Godot 4 + the *Simple Asset Placer* plugin, the kit's own Unity project and
+Godot 4 + the _Simple Asset Placer_ plugin, the kit's own Unity project and
 Crocotile 3D all handle "place modules on a grid" perfectly well. None of them
 emit the thing this project actually needs: a **chunk-tagged layout** with
 portal rectangles between compartments. Kenney's Asset Forge is the nicest UX of
@@ -37,25 +38,28 @@ as a module id plus a transform, so a layout reloads exactly:
 ```jsonc
 {
   "instances": [
-    { "id": "P0001", "module": "Walls/ShortWall_Band2_Straight", "node": "weapon locker",
+    { "id": "P0001", "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", "node": "weapon locker",
       "chunk": "CH00_Storage", "position": [0,0,0], "rotation": [0,90,0], "scale": [1,1,1] }
   ],
   "markers":  [ /* doors, see below */ ],
   "lights":   [ /* authored lights, riding a placement — see below */ ],
   "chunks":   [ { "id": "CH00_Storage", "node": "CHUNK_CH00_Storage", "aabb": {...} } ],
+  "environmentProbes": [
+    { "id": "ENV0001", "boxPosition": [-8,2.5,0], "boxSize": [16,5,8],
+      "capturePosition": [-8,2.5,0], "resolution": 512 }
+  ],
   "portals":  [ { "id", "chunkA", "chunkB", "door", "centre", "normal", "corners" } ],
   "doors":    [ { "id", "chunkA", "chunkB", "position", "triggerRadius", "sealed", "leaves" } ],
   // chunkB may be "__SKYBOX__": a window through the hull, with space behind it
   // rather than a room. Such a door is always sealed, and is not in "chunks".
   "adjacency": { "CH00_Storage": [ { "to": "CH01_CorridorA", "portal": "Portal_Door_D00" } ] },
   "view":     { "position": [...], "rotation": [...], "target": [...] },
-  "environment": { "strength", "dynamicStrength", "toneMapping", "exposure" },
-  "editorEnvironment": { "strength", "dynamicStrength", "exposure" },
+  "environment": { "strength", "toneMapping", "exposure", "specularAA", "reflectionRoughness" },
+  "editorEnvironment": { "strength", "toneMapping", "exposure" },
+  "editorPrefs": { "veilAlpha", "bigPalette" },
   "fluidSim": [ "viscosity-inplace", "liquid-slow.json" ],
   "behaviors": { "door_liquefiable": { "liquefiable": true } },
-  // "bake" is the Force baking override: "exclude" | "include", absent for the
-  // default "automatic". An entry may carry one with no behaviours at all.
-  "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ], "bake": "include" } }
+  "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ] } }
 }
 ```
 
@@ -74,7 +78,7 @@ the editor's own handle and what the tool reloads from.
 `instances[].node` records the resolved name for each element, so nothing has to
 re-derive it, and `doors[].leaves[].node` uses the same.
 
-glTF *meshes* stay unnamed, and that is not an oversight: the exporter shares
+glTF _meshes_ stay unnamed, and that is not an oversight: the exporter shares
 one glTF mesh between every instance of a module, so a mesh entry belongs to the
 module, not to any one element. The **node** is the only per-element name slot,
 and it is the name Babylon gives the node when the .glb is loaded back.
@@ -85,7 +89,7 @@ Because the name is deliberately not unique, it cannot be an identity. Each
 placement's glTF node therefore also carries an `extras` block:
 
 ```json
-{ "id": "P0192", "module": "Props/Prop_Crate4", "chunk": "CH00_Storage" }
+{ "id": "P0192", "module": "Modular SciFi MegaKit/Props/Prop_Crate4", "chunk": "CH00_Storage" }
 ```
 
 Written by putting `metadata.gltf.extras` on the node for the duration of the
@@ -97,11 +101,11 @@ the editor's own `metadata.placement` is untouched.
 Babylon.js through its `ExtrasAsMetadata` loader extension, and **Babylon-Lite**
 through `gltf-feature-extras.ts`, whose detector explicitly includes
 `json.nodes.some(n => n.extras !== undefined)` — so node extras are enough to
-pull the feature module in, and it assigns to the node *and* the mesh.
+pull the feature module in, and it assigns to the node _and_ the mesh.
 
 > **This is what makes a mesh removable.** Liquefying a prop takes its mesh out
 > of the scene, and its Havok body has to go with it — which needs the runtime
-> to know *which* body that is. Matching on the node name cannot do it: this
+> to know _which_ body that is. Matching on the node name cannot do it: this
 > ship has two placements called `crate4` (`P0192` and `P0194`, stacked at 11,3),
 > so the .glb has two nodes with that name and a name lookup is a coin toss. The
 > id is the manifest's own key and unique by construction.
@@ -130,7 +134,7 @@ Two halves, matching the manifest:
 The global `fluidSim` list is seeded from the tool's `config.json`, re-read on
 every catalogue request — so adding a sim needs a page refresh, not a server
 restart. **A loaded ship's own list wins over it**: `config.json` is what a
-*new* ship starts from, but a saved one carries the list it was authored
+_new_ ship starts from, but a saved one carries the list it was authored
 against, and letting the two drift apart would silently repoint its behaviours.
 An undo snapshot carries no list, so undoing never disturbs the one in force.
 
@@ -138,16 +142,16 @@ An undo snapshot carries no list, so undoing never disturbs the one in force.
 owns which flags exist; a tool that normalised the ones it happened to know
 about today would quietly drop the rest, and would need editing every time one
 was added. So the dialog is a name and a textarea, and the only thing checked is
-that the text parses to a JSON *object* — an array or a bare number there would
+that the text parses to a JSON _object_ — an array or a bare number there would
 be silently ignored by the runtime rather than rejected.
 
 **Edit behaviours…** in the inspector opens the library: pick from the list,
 edit, `New`, `Save`, `Delete`. Two operations keep the file consistent by
 themselves:
 
-* **Renaming** a definition rewrites every entity that referenced it. A rename
+- **Renaming** a definition rewrites every entity that referenced it. A rename
   that left them pointing at the old name would silently drop their behaviour.
-* **Deleting** one strips it from every entity that carried it, rather than
+- **Deleting** one strips it from every entity that carried it, rather than
   leaving entries the runtime would ignore.
 
 **Attaching** happens on the selected element, keyed by its **node name** — so
@@ -174,7 +178,7 @@ It is **optional on every applied behaviour**, so the three fields always
 appear. Gating them on the definition declaring a `direction` key was the first
 design and it was wrong: it made an optional parameter invisible until you knew
 to declare it, which is exactly the thing the person editing does not know. A
-definition that *does* name a `direction` still supplies the starting value, but
+definition that _does_ name a `direction` still supplies the starting value, but
 nothing is written until the entity says so.
 
 Stored **as typed, not normalised**: normalising on every commit fights you as
@@ -188,82 +192,12 @@ since it names no direction at all.
 > `name` means nothing to the runtime, so that is the only reading under which
 > it means anything, and dropping it would silently lose the edit.
 
-> A manifest written before `entities` existed keyed `behaviors` by *node* name,
+> A manifest written before `entities` existed keyed `behaviors` by _node_ name,
 > so each entry meant "this node has these flags". Loading one keeps the bodies
 > as definitions **and applies each to the node it was named after** — keeping
 > them without the application would silently un-liquefy the ship. Detected by
 > the `entities` key being absent rather than empty, since `serialize()` always
 > writes both.
-
-### Force baking
-
-Which meshes get a lightmap is worked out, not authored. The bake leaves out
-everything the runtime **moves** (`dynamic`) or **melts** (`liquefiable`, and
-every node they are `linked` to), because for those the mesh Cycles would light
-is not the mesh the game ends up drawing — a door leaf baked shut leaves its own
-shadow painted across the floor it slid off. Everything else is baked, and the
-game reads the verdict straight off the geometry: **no lightmap ⇒ lit by the
-runtime lamps instead**, one rule, no second list to keep in sync.
-
-The inspector's **Lighting ▸ Force baking** is the escape hatch for the cases
-where that rule is wrong, and there are two, in both directions:
-
-* **Exclusion — never bake.** A mesh the rule would bake but that must not be: a
-  holographic panel or a light strip whose emission the author means to drive at
-  runtime, where a baked-in glow fights it. The alternative was inventing a
-  `dynamic` behaviour for something that never moves.
-* **Inclusion — always bake.** A mesh the rule would drop but that must be
-  baked: a `liquefiable` fixture that never actually moves until it is
-  destroyed — a wall panel, a locker — where a lightmap is right for the whole
-  of the time the player is looking at it, and a runtime lamp is a poor
-  substitute for the bounce it sits in.
-
-**Automatic** is the third setting and the default. The hint under the combo
-says what it resolved to and why (`Not baked — the runtime moves or melts it`),
-because the interesting half of that answer is invisible otherwise: the
-behaviour that excludes a node may be on a *different* element entirely, when
-this one is only `linked` into someone else's melt. When the setting is forced,
-the hint also says what Automatic *would* have done, so the override can be
-recognised as redundant and dropped.
-
-Keyed by **node name**, like behaviours and for the same reason — the bake
-matches Blender objects back to the manifest by name, so an override keyed any
-other way could not be applied. Unnamed elements fall back to their id, which is
-what the exporter calls them, so every mesh can carry one **without being named
-first**. That is the one place this differs from the Behaviour panel above,
-which needs a real name because a behaviour is meant to govern every element
-sharing it. Renaming an element carries its override across.
-
-Unlike the Behaviour panel it **survives a multi-selection** — forcing a room's
-worth of light strips out of the atlas is the reason it exists — and the whole
-selection changes on **one undo step**. A mixed selection shows `(mixed)` and a
-count (`31 elements — 4 not baked, 27 baked`); picking any real option applies
-it to all of them.
-
-It rides in `entities` beside `behaviors`, because it is keyed the same way and
-read by the same consumer. `"auto"` is written as an **absent key**, so an
-element that was merely looked at never enters the diff, and an entry may hold a
-`bake` and no behaviours at all:
-
-```jsonc
-"entities": {
-  "storageDoorL":  { "behaviors": [ { "name": "door_liquefiable" } ], "bake": "include" },
-  "hologramPanel": { "bake": "exclude" }
-}
-```
-
-`bake_lightmaps.py` reads it in `unbaked_names()`, which returns the excluded set
-**and the forced-in names separately**. The two directions are not symmetric: an
-exclusion only has to join the set, but an inclusion must also beat an
-*ancestor's* exclusion, and `is_unbaked()` walks parents — so it short-circuits
-on the nearest instruction, whichever way it points. The resolved verdict is
-already part of each chunk's fingerprint, so changing an override rebakes the
-room it touched, and the rooms one portal away: the prop it dropped was
-bouncing light through the doorway, so that map is wrong now too.
-
-> Nothing in the game or in the editor's **Baked** preview had to change for
-> this. Both decide where a mesh gets its light by asking whether it *has* a
-> lightmap, so honouring the override in the bake propagates on its own.
 
 ### Lights
 
@@ -278,48 +212,35 @@ is true of every copy of the panel, wherever it ends up.
   {
     "id": "L0001", "owner": "P0192",
     "offset": [0, -0.05, 0], "rotation": [0, 0, 0],
-    "bake":    { "shape": "square", "sizeX": 0.5, "sizeY": 0.5,
-                 "spread": 180, "color": [1,1,1], "watts": 40 },
     "runtime": { "type": "point", "clustered": true, "color": [1,1,1],
                  "intensity": 1, "range": 8, "angle": 90, "castsShadows": false }
   }
 ]
 ```
 
-The two halves describe the **same lamp to two consumers that cannot see each
-other**. `bake` is a Blender Cycles Area light, rebuilt from the glTF `extras`
-by the bake script — shape, size, spread, colour and watts are Blender's own
-units, so what is authored here is what Cycles gets. Power is **total watts over
-the surface**, which is why resizing a light also changes its brightness.
-`runtime` is the Babylon-Lite light the game creates for everything a lightmap
-cannot cover: dynamic props, the player, specular highlights.
+`runtime` is the Babylon-Lite light the game creates, and it is the **whole** of
+the ship's direct lighting: there is no second, pre-computed half, so what is
+authored here is exactly what is rendered — in the editor's **Runtime** view and
+in the game alike.
 
-Either half may be **`"none"`**, and that is the point of having two. A
-flickering lamp is runtime-only — baking it would freeze one frame of the
-flicker into the wall. A bounce fill that exists only to lift a dark corner is
-bake-only, and costs the runtime nothing.
+`type` may be **`"none"`**, which switches a lamp off without deleting it. Its
+position, colour and settings survive, which is what makes trying a room with one
+fewer light a two-click experiment rather than an edit you have to undo.
 
 **A light emits along its own local −Y**, so the default rotation `[0,0,0]` is a
-ceiling panel shining at the floor. glTF export turns the ship +90° about X on
-the way into Blender, which lands that −Y on Blender's **−Z** — the axis an Area
-light emits along. The two conventions meet with no fix-up, which is why −Y was
-chosen over the more obvious −Z.
+ceiling panel shining at the floor. Down is where almost every lamp in the kit
+points, and −Y is the only axis that needs no rotation to get there — which is
+why it was chosen over the more obvious −Z.
 
-Four combinations are **settled on the way in** rather than trusted to the
+Three combinations are **settled on the way in** rather than trusted to the
 inspector, a loaded manifest and `kit_lights.json` each getting them right on
 their own — the same treatment `sealed` gets on a skybox door:
 
-| Rule | Why |
-|---|---|
-| a point light never casts a shadow | Babylon-Lite has no cube shadow generator |
-| a clustered light never casts a shadow | the cluster is a data texture with no shadow map |
+| Rule                                   | Why                                                 |
+| -------------------------------------- | --------------------------------------------------- |
+| a point light never casts a shadow     | Babylon-Lite has no cube shadow generator           |
+| a clustered light never casts a shadow | the cluster is a data texture with no shadow map    |
 | a directional light is never clustered | it has no position to bin and no falloff to cluster |
-| a square or a disk mirrors `sizeY` onto `sizeX` | Blender reads one size for those two shapes |
-
-The rectangle lies in the light's **local XZ plane**, since −Y is where the
-light goes: `sizeX` spans local X and `sizeY` spans local **Z**. After the +90°
-turn into Blender those land on Blender's own X and Y, which is what an Area
-light's `size` and `size_y` mean.
 
 A light is part of what an element **is**, so it is copied with `Ctrl+D` and
 deleted with its owner, exactly like that element's collision shapes. A light
@@ -334,22 +255,22 @@ remove. `kit_lights.json` keys a list of light partials by module id, and
 
 ```jsonc
 "modules": {
-  "Props/Prop_Light_Wide": [
+  "Modular SciFi MegaKit/Props/Prop_Light_Wide": [
     { "offset": [0.58, -0.1, 0], "rotation": [0, 0, 0],
-      "bake":    { "shape": "rectangle", "sizeX": 1.16, "sizeY": 0.2, "watts": 40 },
       "runtime": { "type": "point", "clustered": true, "range": 8 } }
   ]
 }
 ```
 
 The values were **measured off each module's `M_Light` primitive** — the
-emissive strip *is* the lamp, so the area light sits on its face and is sized to
-it. Anything left out falls back to `DEFAULT_LIGHT`, and the whole record goes
-through `normalizeLight()`, so the file cannot author an impossible light.
+emissive strip _is_ the lamp, so the lamp is seeded on its face and pointed the
+way it faces. Anything left out falls back to `DEFAULT_LIGHT`, and the whole
+record goes through `normalizeLight()`, so the file cannot author an impossible
+light.
 
 A **list**, because one strip is not always one lamp: `Prop_Light_Corner` is a
-quarter-circle arc and an area light is flat, so it is served by three chord
-segments turned to the tangent at their midpoints. `Prop_Light_Floor` is the one
+quarter-circle arc that one lamp cannot light evenly, so it is served by three
+spaced along it, turned to the tangent at their midpoints. `Prop_Light_Floor` is the one
 that does not point down — its face is tilted 18° off vertical, so it is rolled
 161.6° about X to throw the light up the wall rather than at the floor it is
 standing on.
@@ -370,23 +291,73 @@ the two paths that bring their own lights, `Ctrl+D` and loading, place with
 
 **Add light** in the inspector attaches one to the selected element; with a
 light already selected it attaches a second to the same owner, which is the
-obvious next click. Selecting it swaps the inspector into two forms, `Bake` and
-`Runtime`, matching the two halves of the record. Position is relabelled
-**Offset** — a light's node hangs off its owner, so those three numbers are read
-in that element's own space — and Scale and Size go away, because how big a
-light is *is* its bake size.
+obvious next click. Selecting it swaps the inspector into the light form.
+Position is relabelled **Offset** — a light's node hangs off its owner, so those
+three numbers are read in that element's own space — and Scale and Size go away,
+because a lamp has neither.
 
-Rows the engine or Blender has no meaning for are **disabled rather than
-hidden**, with a line underneath saying why: a greyed-out Cone row still tells
-you a spot light is the thing that has one. The rules are exactly
-`normalizeLight()`'s, so the panel can never author a light the model would
-quietly rewrite behind it.
+Rows the engine has no meaning for are **disabled rather than hidden**, with a
+line underneath saying why: a greyed-out Cone row still tells you a spot light is
+the thing that has one. The rules are exactly `normalizeLight()`'s, so the panel
+can never author a light the model would quietly rewrite behind it.
 
-In the viewport a light draws as an **amber plate the size and shape of the bake
-surface** — a disc for a disk or an ellipse, a rectangle otherwise — with a
-short line out of its face showing which way it emits. A light the bake ignores
-(`shape: "none"`) still needs something to click on, so it falls back to a fixed
-25 cm plate in a cold blue-grey. The plate is pickable and draggable like
+**Range works on every lamp that has a position**, and that is a recent thing
+worth spelling out, because for a while it did not. Babylon's PBR materials
+default to *physical* falloff — `1 / d²`, computed in
+`computeDistanceLightFalloff_Physical`, with no cut-off anywhere in it — so a
+light's `range` reached the shader and was never read. Worse, it was not merely
+ignored on a clustered lamp: `ClusteredLightContainer` still **sizes and culls
+each light proxy by `range`** (`clusteredLightContainer.pure.ts` writes it into
+the cluster data and uses it to pick the depth slices a light occupies), so a
+physical-falloff clustered lamp was still lit at full `1 / d²` strength right up
+to the edge of its proxy and then stopped dead. That straight-edged block is
+what Babylon's own [clustered lighting
+page](https://doc.babylonjs.com/features/featuresDeepDive/lights/clusteredLighting/#lights-with-a-falloff-other-than-falloff_default-are-not-supported)
+warns about, and its remedy is the one taken here.
+
+The page offers two: `usePhysicalLightFalloff = false`, which gives Babylon's
+linear *standard* ramp, and `useGLTFLightFalloff = true`, which gives the glTF
+window `saturate(1 − (d²/range²)²)² / d²`. The preview takes the second, in
+`materialFor()` in `runtime.js`, for one reason: it is the curve Babylon-Lite's
+clustered shader **hardcodes** (`clustered-light-wgsl.ts`), so a clustered lamp
+— which is nearly every lamp on this ship — now fades on screen exactly as it
+will in the game. Its cone matches too: Babylon's glTF cone falloff is shaped
+from the angle alone, the same `saturate((cos θ − cos ½α) / (1 − cos ½α))²`
+ramp the clustered shader uses, which is why the `exponent` argument the preview
+passes to `SpotLight` is `0` and means nothing.
+
+An **unclustered** lamp is the near miss, and the panel says so under the field.
+Babylon-Lite's analytic path (`multilight-wgsl.ts`, `singlelight-point-wgsl.ts`,
+`singlelight-spot-wgsl.ts`) has no glTF branch at all — its `lightFalloffMode`
+selects between physical `1 / d²` and the linear ramp `max(0, 1 − d/range)` and
+nothing else. The game therefore builds its ship materials with
+`usePhysicalLightFalloff: false` (in `lights.ts`, on the same material clones
+that carry the clustered state), which is the only range-respecting curve on
+offer there. So the two agree on *where* an unclustered lamp ends and disagree
+on its shape between here and there, and an unclustered spot has a harder rim in
+the game than in this preview — `pow(cos θ, exponent)` steps to zero at the cone
+edge whatever the exponent, so there is no value that would round it off. No
+lamp on the ship is unclustered today; the note under the field is there for the
+first one that is.
+
+A **directional** light is the one lamp Range is still disabled on. It has no
+position, so no distance, so nothing to fall off over.
+
+**None of those four numbers has to be typed.** While the selection is lights
+and nothing else, the wheel over the viewport tunes the lamp instead of driving
+the camera and the transform tools — intensity bare, range on `Ctrl`, a spot's
+cone on `Alt`, and `Shift` to turn it 0.5° about the current `R` axis in the
+lamp's own space. Range and cone move by one press of the matching arrow in the
+panel; intensity moves by a whole unit on a spot and by `0.05` on a point light,
+since the same number means very different things on the two. The panel follows
+along as it moves, and the whole gesture undoes in one step. It
+is the one place the bare wheel is not the camera dolly — see [Carrying versus
+dragging](#carrying-versus-dragging) for why that trade is worth making, and a
+line under the panel says so on screen.
+
+In the viewport a light draws as a fixed **25 cm plate** with a short line out of
+its face showing which way it emits — amber while the lamp is on, a cold
+blue-grey once `type` is `"none"`. The plate is pickable and draggable like
 anything else, and dragging it moves the light within its owner rather than
 through the world.
 
@@ -407,7 +378,6 @@ child of the element it rides, carrying its whole record in the glTF node's
   "translation": [0, 2.5, 0],
   "extras": { "id": "L0001", "kind": "light", "owner": "P0192",
               "chunk": "CH00_Storage",
-              "bake":    { "shape": "rectangle", "sizeX": 1.2, … },
               "runtime": { "type": "point", "clustered": true, … } } }
 ```
 
@@ -420,57 +390,79 @@ own space.
 
 `kind: "light"` is what tells these apart from a placement's extras, which carry
 a `module` instead — anything reading the file can pick out the lamps in one
-pass. `chunk` rides along so the bake can work one chunk at a time without
-walking back up the hierarchy. The whole record goes out rather than a summary
-of it: the bake script and the runtime each read a different half, and neither
-can see the editor, so anything they would have to re-derive is something that
-will eventually drift.
+pass. `chunk` rides along so a consumer can work one room at a time without
+walking back up the hierarchy. The whole record goes out rather than a summary of
+it: the runtime cannot see the editor, so anything it would have to re-derive is
+something that will eventually drift.
+
+The manifest carries the **same** records, by id, and the runtime lets it win:
+the glb node supplies the transform, because it is parented under the placement
+that owns the lamp and its world matrix already carries both that transform and
+the loader's glTF→Lite mirror. Lighting can therefore be re-tuned and saved
+without re-exporting 38 MB of geometry.
 
 ### Environment
 
 ```jsonc
 "environment": {                // what the DEMOS read
   "strength": 1.7,              // scene.environmentIntensity
-  "dynamicStrength": 1.2,       // IBL on meshes left out of the bake
   "toneMapping": "Khronos PBR Neutral",
-  "exposure": 0.55              // the linear multiplier, exactly as the slider shows it
+  "exposure": 0.55,             // the linear multiplier, exactly as the slider shows it
+  "specularAA": true,           // authored default for the player's graphics toggle
+  "reflectionRoughness": 1      // multiplier over every ship material's authored roughness
 },
 "editorEnvironment": {          // this tool only — the demos must not read it
   "strength": 1.5,
-  "dynamicStrength": 1.5,
+  "toneMapping": "Khronos PBR Neutral",
   "exposure": 0.55
 },
-"bakeLighting": {                // Blender static-lightmap controls
-  "power": 1.0,                // multiplier for authored lamp watts, 0..10
-  "sky": 1.0                   // strength of the bake environment, 0..300
+"editorPrefs": {                // this tool only, and not lighting at all
+  "veilAlpha": 0.5,             // how see-through Shift+H makes an element
+  "bigPalette": true            // double-width palette with double-size tiles
 }
 ```
 
-**Two pairs, because there are two pictures.** The editor's authoring rig adds
+**Two rigs, because there are two pictures.** The editor's authoring rig adds
 four analytic lights the game does not have, so one pair of Env/Exposure values
 cannot serve both: what reads well while building is nothing like what the game
-needs. **Baked** switches which pair the sliders edit, and each keeps its own
-values, so flipping between them never costs you a setting.
+needs. The two are separate controls, not one control that changes meaning —
+**Settings ▸ Editor** holds the authoring rig and **Settings ▸ Runtime** holds
+the ship's, so both are visible at once and neither can be edited by accident.
 
-`environment` is the pair tuned with **Baked on** — the picture the
+`environment` is the **Runtime** rig — the picture the
 demos render — and it is what `aquanova` and `liquefactor` read.
 `editorEnvironment` is the other one, filed separately because it describes this
 tool and not the ship.
 
-`dynamicStrength` is the separate IBL intensity for meshes without baked UV2
-lightmaps. In the editor it is exposed as **Dynamic Env** while **Baked** is
-enabled, so dynamic or liquefiable props can be toned down without changing
-the baked room surfaces.
+**`environment` also carries two material settings**, because they change the
+same picture and the game applies them the same way. `specularAA` is the
+authored default for PBR specular anti-aliasing; the game seeds its graphics
+setting from it, and a player who has picked their own value in the control
+panel keeps theirs — the manifest moves the default, it does not overrule
+anyone. `reflectionRoughness` multiplies every **ship** material's
+`roughnessFactor` on load, scaling the ORM texture's green channel rather than
+replacing it, so the kit's per-texel variation survives; above 1 it broadens
+metallic reflections, which is the cheapest cure for specular shimmer. The
+weapon viewmodel is deliberately left out: it is not in the editor's preview, so
+a dial tuned against corridor panels must not restyle the gun in your hands. The
+exported `.glb` keeps the authored roughness either way — the multiplier exists
+only here, which is what makes the preview and the game agree.
 
-`bakeLighting` is separate again: **Light power** and **Sky** in the editor
-control Blender's Cycles bake only. They do not change runtime lamp intensity or
-the editor's viewport environment. The Blender extension reads these values
-when it opens and refreshes them before each interactive bake.
+**`editorPrefs` is not lighting**, which is why it is a block of its own rather
+than more fields on `editorEnvironment`. It is saved with the ship all the same:
+reopening a ship with the palette half the size you left it, or ghosts at
+someone else's opacity, is the tool having forgotten how you were working on
+*this* ship. Both keep a `localStorage` copy as the fallback for a manifest that
+predates the block — the manifest wins whenever it carries a value.
+
+There is **one** `strength` per rig, not two. It used to be split — a second
+`dynamicStrength` for the meshes a lightmap could not cover — and with the
+lightmaps gone there is no longer a class of mesh that needs its own number.
 
 **`exposure` is the plain linear multiplier**, used identically at both ends:
 what the slider shows is what `scene.imageProcessingConfiguration.exposure` gets
 here and what `scene.imageProcessing.exposure` gets there. It used to be stored
-in Blender *stops* and raised to a power by the runtime, which made a
+in _stops_ and raised to a power by the runtime, which made a
 plausible-looking `0.3` mean `2^0.3 = 1.23` — more than twice what it appeared
 to say. Nobody could hold both readings in mind, so the conversion is gone from
 both sides.
@@ -500,40 +492,53 @@ Measured on the real ship, they are the whole story: **mean 165.7 with the rig,
 that will never ship. The `environment` numbers, by contrast, pass through
 untouched — the demos apply `strength` and `exposure` exactly as this does.
 
-So **Baked** silences the rig, leaving the HDRI, the lightmaps and the authored
-runtime lamps — which is exactly the set of lights the game has. That is the
-only honest preview, and the only sound way to set the `environment` pair, which
-*is* what the demos read. The authored intensities are remembered, so switching
-back restores them exactly, along with the editor's own `Env`/`Exposure`.
+So the **Runtime** view silences the rig and drops the global HDRI, leaving the
+authored lamps and each room's own environment probe — which is exactly the set
+of lights the game has. That is the only honest preview, and the only sound way
+to set the `environment` rig, which _is_ what the demos read. Both rigs are held
+at once, so switching views restores each exactly.
 
-This used to be a **Runtime light** checkbox of its own, next to **Baked**.
-Silencing the rig over the *authored* ship was only half a truth: with no
-lightmaps to stand in, it showed an HDRI-only picture the game never renders,
-and it was one more switch to forget. Baked mode is the single state where
-dropping the rig means something, so it now owns the switch.
+This used to be a **Runtime light** checkbox of its own. Silencing the rig was
+only ever meaningful together with putting the runtime's own lighting up in its
+place, and as a switch of its own it was one more thing to forget — so the view
+mode owns it.
 
 `export/ship.glb` is a **derived artefact** and is never read back — one file
 with every chunk as a named `CHUNK_<id>` parent node. Reloading from a .glb
-would be lossy, because a baked mesh no longer knows which kit module it came
-from; **Load** re-instantiates from the kit folder using the manifest alone.
+would be lossy, because an exported mesh no longer knows which kit module it
+came from; **Load** re-instantiates from the kit folder using the manifest
+alone.
+
+**Save writes both.** There used to be an `Export glb` button beside `Save`, and
+nothing good came of the pair: the manifest and the .glb describe the same ship,
+both demos read them together, and a saved manifest sitting beside a .glb from
+two edits ago is a ship that renders as neither of them. Since the
+glb is derived, there is no state in which you want one and not the other — so
+`Ctrl+S` writes the manifest first, then the glb, and a glb that fails to write
+never lets the run report the manifest as unsaved.
+
+> The price is honest: the real ship's glb is ~38 MB, so `Ctrl+S` now takes as
+> long as an export did. Making it conditional on the geometry having changed
+> would mean tracking that reliably, and the failure mode of getting it wrong is
+> exactly the stale pairing this removed.
 
 ### Handedness: the manifest speaks glTF, the editor does not
 
 The editor is a **left-handed** Babylon scene; glTF is **right-handed**, and the
 exporter mirrors X on the way out. Measured: an element the editor holds at
 `[7, 3, 5]` lands in the .glb at `[-7, 3, 5]`. The runtime's loader mirrors it
-back, so the geometry round-trips — but the *manifest* sits beside the .glb and
+back, so the geometry round-trips — but the _manifest_ sits beside the .glb and
 describes it, and the runtime reads it as glTF space, negating X in a dozen
 places: colliders, portal openings, room membership, the player's facing.
 
 So the split is by **who reads the field**:
 
-| written mirrored (glTF space) | left in editor space |
-|---|---|
-| `chunks[].aabb` — min/max swap with the flip | `instances[]` |
-| `portals[].centre` / `normal` / `corners` | `markers[]` |
-| `doors[].position` / `direction` | `colliders[]` |
-| `collision[chunk]` | `moduleShapes[]` |
+| written mirrored (glTF space)                    | left in editor space    |
+| ------------------------------------------------ | ----------------------- |
+| `chunks[].aabb` — min/max swap with the flip     | `instances[]`           |
+| `portals[].centre` / `normal` / `corners`        | `markers[]`             |
+| `doors[].position` / `direction`                 | `colliders[]`           |
+| `collision[chunk]`                               | `moduleShapes[]`        |
 | `moduleCollision[module]` — **local**, see below | `stageLayout[]`, `view` |
 
 The right-hand column is the tool's own reload data: it exists to rebuild the
@@ -555,14 +560,14 @@ declared, so a new block cannot ship without someone saying what space it is in.
 >   `instances[]`.** The node is in the same space as the collision blocks;
 >   `instances` is not. The node's `extras` carries `id`, `module` and `chunk`
 >   for exactly this.
-> - **`moduleCollision` is a *local* transform in glTF space.** Converting it
+> - **`moduleCollision` is a _local_ transform in glTF space.** Converting it
 >   back needs the **rotation as well as the centre** — `[-x,y,z]` for the
 >   point, `[-x,y,z,-w]` for the quaternion, because mirroring flips the
 >   handedness of the turn too. Centre-only conversion leaves a turned box
 >   mirrored, which looks correct on anything symmetrical.
 >
 > Mirroring `instances[]` as well would make the runtime-facing half uniform,
-> but it would not make the *file* uniform: `colliders`, `moduleShapes`,
+> but it would not make the _file_ uniform: `colliders`, `moduleShapes`,
 > `stageLayout` and `view` are authoring data and would still be editor space,
 > and `instances` is what the editor reloads from, so it would need un-mirroring
 > on load and a schema bump to keep old manifests readable. The line has to fall
@@ -577,18 +582,36 @@ one-way conversion there would mirror the facing on every undo.
 
 An element's **name** is what its parent node is called, with its primitives
 numbered off it; an unnamed one falls back to its id. See the data-model
-section above — the point is that *everything* the runtime resolves goes
+section above — the point is that _everything_ the runtime resolves goes
 through the node name.
 
 The renames last only for the duration of the export; inside the editor
 elements keep their `P0007` node names.
 
+**Scene skeletons are hidden for the duration too**, and for the same reason as
+the veil stand-ins: they would be written into a file that has no use for them.
+Several kits — the pirate characters above all — ship rigged meshes, so loading
+one puts a `Skeleton` in `scene.skeletons`, and Babylon's glTF serialiser walks
+that array directly rather than going through `shouldExportNode`. Every bone
+whose transform node is not in the export's node map then logs *"Exporting a
+bone without a linked transform node is currently unsupported"* — one line per
+bone, hundreds of them on a save — and the skin is dropped from the file
+regardless.
+
+Dropping it is the right outcome, which is why the fix is to stop trying rather
+than to make it work. glTF ignores a skinned node's own transform: every
+instance of a skinned module shares one skin, so a file that carried them would
+stack every copy of a character at the same place. The ship is exported as
+static geometry and the runtime rigs what it needs. `exportGlbInner` therefore
+`splice`s `scene.skeletons` empty before the write and pushes them back in its
+`finally` — safe because `Scene.render` builds its active skeleton list from
+`mesh.skeleton` during `_evaluateActiveMeshes`, not from that array, so the
+viewport behind the overlay keeps drawing normally.
+
 Every save moves the previous manifest aside as
 `ship_manifest.<YYYYMMDD-HHMMSS>.json` in the same folder. The manifest is the
 one thing in the project that cannot be regenerated, and the files are a few KB
-each, so the history is kept in full rather than rolled. The server also keeps a
-one-time `*.blender.bak.*` copy of any manifest or .glb it did not write itself,
-so switching over from the Blender pipeline is safe.
+each, so the history is kept in full rather than rolled.
 
 ### Loading locks the editor
 
@@ -601,11 +624,14 @@ rather than defended against case by case.
 
 Two layers, because either alone leaks:
 
-* **An overlay** covering the window, with the message and a spinner. It says
+- **An overlay** covering the window, with the message and a spinner. It says
   what is happening and it swallows every pointer event.
-* **`inert` on the four panels**, which takes them out of hit-testing *and* out
-  of the focus order in one attribute — an overlay alone would not stop a `Tab`
-  into a toolbar select, or a keyboard shortcut. The keydown handler bails too.
+- **`inert` on the four panels and on every floating tool window**, which takes
+  them out of hit-testing _and_ out of the focus order in one attribute — an
+  overlay alone would not stop a `Tab` into a toolbar select, or a keyboard
+  shortcut. The keydown handler bails too, but it lets the **browser's own**
+  keys through: `F5` and `Ctrl+F5` still reload, because a wedged editor is
+  exactly when you need them.
 
 The lock is a depth counter, not a flag, because loads nest: the boot autoload
 runs inside the boot itself, and the inner one finishing must not reopen the
@@ -622,7 +648,7 @@ move/rotate/scale modes**.
 
 Placing uses a **ghost** — the real textured module, drawn translucent —
 following the cursor snapped to the build plane; clicking drops it, and while it
-follows, the mouse cursor is hidden because the module *is* the cursor.
+follows, the mouse cursor is hidden because the module _is_ the cursor.
 
 Moving something already placed is a plain **drag**, which moves the real
 geometry rather than a ghost so that it works on a whole selection at once.
@@ -642,16 +668,16 @@ So is numpad `.`, which raises the build plane to the top of whatever you are
 pointing at — it reads an element rather than changing one, so it has none of
 the "the wrong thing moved" problem.
 
-**Every transform reads the same way.** The bare letter picks the *axis*, `Shift`
-walks that setting's *value* and `Ctrl` walks it back; the *edit* is a gesture,
+**Every transform reads the same way.** The bare letter picks the _axis_, `Shift`
+walks that setting's _value_ and `Ctrl` walks it back; the _edit_ is a gesture,
 not a letter.
 
-| | axis | value | value back | the edit itself |
-| --- | --- | --- | --- | --- |
-| move | `V` (and `Y` for the space) | `Shift+V` | `Ctrl+V` | drag, `M`, arrow keys |
-| turn | `R` | `Shift+R` | `Ctrl+R` | `Shift`+wheel (`Alt` too: about a shared pivot) |
-| scale | `F` | `Shift+F` | `Ctrl+F` | `Ctrl`+wheel |
-| mirror | *uses the scale axis* | — | — | `Alt+F` |
+|        | axis                        | value     | value back | the edit itself                                 |
+| ------ | --------------------------- | --------- | ---------- | ----------------------------------------------- |
+| move   | `V` (and `Y` for the space) | `Shift+V` | `Ctrl+V`   | drag, `M`, arrow keys                           |
+| turn   | `R`                         | `Shift+R` | `Ctrl+R`   | `Shift`+wheel (`Alt` too: about a shared pivot) |
+| scale  | `F`                         | `Shift+F` | `Ctrl+F`   | `Ctrl`+wheel                                    |
+| mirror | _uses the scale axis_       | —         | —          | `Alt+F`                                         |
 
 It was not always so: the letters used to carry the actions (`R` turned, `F`
 mirrored) with the settings behind the modifiers, which left `V` reading one way
@@ -659,39 +685,40 @@ and `R` and `F` another for no reason anyone could give. Moving the two edits
 onto the wheel — where the third already was — freed all three letters to mean
 the same thing.
 
-| | |
-|---|---|
-| Place | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot. |
-| Move | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
-| Frame | **double-click** an element |
-| Bring | **`B`** — moves whatever is in hand to a grid spot just in front of the camera, resting on the deck under your feet, and **takes the build plane with it**. Works on the armed ghost and on a placed selection alike |
-| Axes | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. Showing them **also puts moving and turning in that space**, since asking to see an axis is nearly always asking to work along it; `Y` overrides afterwards. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them (without touching the space), the other key re-aims them, and pressing either with nothing selected or hovered hides them |
-| Axis modes | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste |
-| Mirror | **`Alt` + `F`** — mirrors on the current Scale axis (`all` is treated as X) |
-| Turn as a group | **`Alt` + `Shift` + wheel** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid |
-| Resize | **`Ctrl` + wheel** — steps by the Scale snap on the current scale axis |
-| What gets edited | the ghost if one is being placed, otherwise **the selection**. `Del` is the exception and takes the hovered element first |
-| Rotation axis | `R` cycles Y → X → Z. Y first: it is the only one a modular kit usually needs. |
-| Scale axis | `F` cycles all → X → Y → Z |
-| Build plane | numpad `+` / `-` (or main-row `+` / `-`) by the Move step; numpad `.` jumps it to the top of the hovered element |
-| Select | **quick** left-click · `Ctrl`- or `Shift`-click adds to the selection · click empty space clears it · **drag from empty space to rubber-band**, or press **Rect select** to start the rectangle on top of a module. `Ctrl` or `Shift` while banding adds. To reach something behind a door portal, `Shift+H` the door — a ghosted element is click-through |
-| Chunks | the **Chunk** button toggles isolation — pressed (orange), every chunk but the one in the dropdown is hidden · `+` adds a chunk · **Rename** renames the active one everywhere it is used · `Assign` moves the selection into the active one |
-| Hide | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible |
-| Id | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show |
-| Name | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id |
-| Behaviour | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body) |
-| Force baking | inspector `Lighting` panel — **Automatic** (the default: no lightmap for anything the runtime moves or melts) · **Exclusion** forces a mesh out of the atlas so its lighting can be driven at runtime · **Inclusion** forces one back in. Works on a multi-selection, on one undo step, and on unnamed elements. The hint says what the setting resolved to and what Automatic would have done |
-| Eyedropper | `Alt`-click a placed element to arm its module |
-| Nudge | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen |
-| Steps | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard *step sizes*, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns |
-| Camera | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera |
-| Lighting | **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness · **Exposure** slider. Both are saved in the manifest and restored on Load, and each mode keeps its own pair · **Baked** drops the editor's own lights, leaving the HDRI, the lightmaps and the authored runtime lamps — the lights the game actually has |
-| Walk | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off |
-| Undo | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by *memory* rather than a fixed count (1000 steps on this ship, fewer as it grows), so *anything* that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the Env and Exposure sliders, every inspector field and every behaviour edit |
-| Edit | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact) |
-| Grid | `G` · **Unlit** shows raw albedo with no lighting · **Exposure** slider — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out |
-| Palette | hover a tile to spin the module through a full 360° turn |
-| Save | `Ctrl+S` — also stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab |
+|                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Place            | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Move             | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back. |
+| Frame            | **double-click** an element                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Bring            | **`B`** — moves whatever is in hand to a grid spot just in front of the camera, resting on the deck under your feet, and **takes the build plane with it**. Works on the armed ghost and on a placed selection alike                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Axes             | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. Showing them **also puts moving and turning in that space**, since asking to see an axis is nearly always asking to work along it; `Y` overrides afterwards. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour**. The same key again hides them (without touching the space), the other key re-aims them, and pressing either with nothing selected or hovered hides them                                                                    |
+| Axis modes       | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Mirror           | **`Alt` + `F`** — mirrors on the current Scale axis (`all` is treated as X)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Turn as a group  | **`Alt` + `Shift` + wheel** — the selection swings about a shared pivot, snapped to the move grid so it lands back on-grid                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Resize           | **`Ctrl` + wheel** — steps by the Scale snap on the current scale axis                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Aim a lamp       | while the selection is **lights and nothing else**, the wheel drives the light instead of the tools: bare wheel **intensity** (a whole unit on a spot, `0.05` on a point light, never below 0), `Ctrl` **range**, `Alt` **cone** (spot lights only), `Shift` **turns 0.5° about the current `R` axis, always in the lamp's own space** whatever `Y` says. Range and cone move by one press of the matching arrow in the panel, and the whole gesture is one undo step. `Esc` clears the selection and gives the bare wheel back to the camera                                                                                                                                                                                                        |
+| What gets edited | the ghost if one is being placed, otherwise **the selection**. `Del` is the exception and takes the hovered element first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Rotation axis    | `R` cycles Y → X → Z. Y first: it is the only one a modular kit usually needs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Scale axis       | `F` cycles all → X → Y → Z                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Build plane      | numpad `+` / `-` (or main-row `+` / `-`) by the Move step; numpad `.` jumps it to the top of the hovered element                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Select           | **quick** left-click · `Ctrl`- or `Shift`-click adds to the selection · click empty space clears it · **drag from empty space to rubber-band**, or press **Rect select** to start the rectangle on top of a module. `Ctrl` or `Shift` while banding adds. To reach something behind a door portal, `Shift+H` the door — a ghosted element is click-through                                                                                                                                                                                                                                                                                                                                  |
+| Chunks           | the **Chunk** button toggles isolation — pressed (orange), every chunk but the one in the dropdown is hidden · `+` adds a chunk · **Rename** renames the active one everywhere it is used · `Assign` moves the selection into the active one                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                         |
+| Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Behaviour        | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Steps            | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard _step sizes_, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns                                                                                                                                                                                                                                                                                                                                                   |
+| Camera           | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Lighting         | **Settings ▸ Editor** and **Settings ▸ Runtime** each carry their own **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness — plus **Exposure** and **Tone**. The runtime rig is saved in the manifest as `environment`, alongside **Specular AA** and **Reflection roughness**, and the game reads all five; the editor's follows it as `editorEnvironment`, which the game must not read, and is also seeded from `localStorage`                                                                                                                                                                                                                        |
+| View mode        | toolbar combo — **Editor** (the authoring rig) · **Editor unlit** (raw albedo, no lighting) · **Runtime** (the authoring rig off, the authored lamps rebuilt as real lights and each room reflecting its own environment probe — the lights the game actually has). See [The three view modes](#the-three-view-modes)                                                                                                                                                                                                                                                                                                                                                                       |
+| Walk             | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Undo             | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by _memory_ rather than a fixed count (1000 steps on this ship, fewer as it grows), so _anything_ that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the **Runtime** lighting sliders, every inspector field and every behaviour edit. The **Editor** lighting sliders are deliberately not on the stack — see [Lighting is an edit](#lighting-is-an-edit-the-editors-own-view-is-not)                                                                                                                                                                     |
+| Edit             | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact)                                                                                                                                                                                                                                                                               |
+| Grid             | `G` · **Editor unlit** shows raw albedo with no lighting · **Settings ▸ Editor ▸ Exposure** — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Palette          | hover a tile to spin the module through a full 360° turn · **drag the grip** between the palette and the viewport to resize it, double-click the grip to restore the default width                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Save             | `Ctrl+S` — writes `ship_manifest.json` **and** `ship.glb`, and stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 **Every toolbar control names its shortcut in its tooltip**, or says outright
 that it has none. The keys are the whole point of the tool — the combos are a
@@ -703,21 +730,21 @@ every button, select, slider and checkbox in the toolbar and fails if any lacks
 a tooltip, or if a tooltip mentions neither a key nor "no shortcut" — so a new
 control cannot ship undocumented.
 
-**A button flashes orange when you press it.** `Save`, `Load` and `Export glb`
-all do their work somewhere else — a file on disk, a line in the status bar — so
+**A button flashes orange when you press it.** `Save` and `Load`
+both do their work somewhere else — a file on disk, a line in the status bar — so
 the button itself gave no sign it had been hit, and a press that missed looked
 exactly like one that worked. One delegated listener on the document adds a
 class for 260 ms, so a button added later is covered without anyone remembering
 to, and no handler can forget. It runs on the **capture** phase, so a handler
 that stops propagation, or throws, still gets its flash.
 
-> **No transition on it**, and that is not an oversight. A fade *in* is exactly
+> **No transition on it**, and that is not an oversight. A fade _in_ is exactly
 > wrong for a flash: with one, the colour was still climbing out of the idle
 > grey when the timer took the class off again, and the button never actually
 > went orange — measured at 50 ms into a 180 ms fade, sitting at `rgb(98,68,54)`.
 > A press reads as instant, so it has to be instant.
 >
-> Toggle buttons opt out. They already latch solid orange and *stay* there,
+> Toggle buttons opt out. They already latch solid orange and _stay_ there,
 > which says the same thing for longer; flashing a slightly different orange
 > first only muddies it. The test measures the colour in the same task as the
 > click — a transition cannot hide behind that — and it does so on a **clone**
@@ -744,9 +771,9 @@ that for everything at once, and a third state would only make the useful two
 harder to reach.
 
 **A ghosted element is click-through.** Half alpha on its own would be no use
-for what hiding is *for*: every click would still land on the wall you can now
+for what hiding is _for_: every click would still land on the wall you can now
 see through. So `isPickable` goes off with the alpha, and the two states read as
-a progression — *see it but reach past it*, then *gone*. The **Ghost** slider in
+a progression — _see it but reach past it_, then _gone_. The **Ghost** slider in
 the toolbar sets how see-through that first state is.
 
 **The selection is kept**, unlike the plain-hide behaviour this replaced. It has
@@ -756,7 +783,7 @@ element cannot be clicked, the selection is the only handle left on it.
 Hiding **is** undoable, and rides the same snapshot as everything else — not
 because it is an edit to the ship, but because a restore begins with
 `clearAll()`, which empties the veil. Leaving it out of the snapshot did not
-make it immune to undo; it made it *half* undoable: every unrelated undo
+make it immune to undo; it made it _half_ undoable: every unrelated undo
 revealed everything, and no redo could put it back. Symmetric is the only honest
 option. It stays out of the manifest, so a reload starts with everything
 visible, and veiled elements still export — the file on disk is the ship, not
@@ -768,10 +795,10 @@ an accidental unhide costs a keystroke. The cheap direction gets the bare key.
 
 Two details that would otherwise bite:
 
-* **Half alpha cannot be per-instance the obvious way, and the shortcut is a
+- **Half alpha cannot be per-instance the obvious way, and the shortcut is a
   trap.** Placements are hardware instances sharing one source mesh — and one
-  *material* — per module. Babylon refuses per-instance `visibility` outright
-  (*"Setting visibility on an instanced mesh has no effect"*), and the next idea,
+  _material_ — per module. Babylon refuses per-instance `visibility` outright
+  (_"Setting visibility on an instanced mesh has no effect"_), and the next idea,
   forcing that shared material to `ALPHABLEND` with a per-instance colour
   buffer, **breaks the depth buffer**: it moves every mesh drawn with that
   material into the transparent pass, which does not write depth. The kit shares
@@ -780,23 +807,25 @@ Two details that would otherwise bite:
   only way to make one element translucent without changing what everything else
   is drawn with — so a ghosted element's meshes are swapped for clones carrying
   a cached translucent copy of the material (`ghostMaterialFor`, shared with the
-  placement ghost, sharing geometry *and* textures so the cost is a draw call,
+  placement ghost, sharing geometry _and_ textures so the cost is a draw call,
   not a 2–4 MB atlas).
-* **The stand-ins are children of the element**, so they follow every drag,
+- **The stand-ins are children of the element**, so they follow every drag,
   turn and scale for free. They must therefore be kept out of the export:
-  `exportGlb` wraps its *whole* body in `withVeilSuspended()`, not just the
+  `exportGlb` wraps its _whole_ body in `withVeilSuspended()`, not just the
   write, because the allowlist and the `_primitiveN` renaming are both built
   from `getChildMeshes()` — a stand-in still in the tree at that moment would
   take a primitive index and be written into the file.
-* **One function decides what is on screen.** Isolation and hiding both work by
+- **One function decides what is on screen.** Isolation and hiding both work by
   disabling nodes, so neither can own `setEnabled` alone — isolating a chunk
   would reveal everything you had hidden, and unhiding would reveal the chunks
   you had isolated away. `applyVisibility()` derives it from both, every time.
 
 **The `Ghost` slider** sets how see-through the 50% state actually is (5–95%).
 It repaints the cached veil materials live, so stand-ins already on screen
-follow it. Like the exposure it lives in `localStorage`, not the manifest: it
-says nothing about the ship and everything about how you like to look at it.
+follow it. Like the editor's exposure it is saved with the ship — in
+`editorPrefs`, apart from the ship's own data, because it says nothing about the
+ship and everything about how you like to look at it — with a `localStorage`
+copy as the fallback for a manifest that has no such block.
 
 The counts sit on the status bar (`… · 2 at 50% · 1 hidden`) whenever anything
 is veiled, quoting the slider's current value. A hide you have forgotten about
@@ -813,13 +842,13 @@ ghost carries a private height for exactly this, so a copy of something on an
 upper deck reappears up there rather than down at ground level, and the plane
 you were building on is left where you put it. Moving the plane was the earlier
 answer — one source of truth, visibly followed by the grid — but it meant a
-duplicate silently changed where *everything placed afterwards* would land.
+duplicate silently changed where _everything placed afterwards_ would land.
 **A multi-selection is carried too**: the ghost holds a
 list of items, each with its own offset, turn and mirroring, so `Ctrl+D` on
 twelve walls hands you twelve walls.
 
 **It also sets the drag axis back to `X/Z` first**, and says so. In `Y` mode the
-cursor drives the *build plane* rather than the ghost's own height, and it clears
+cursor drives the _build plane_ rather than the ghost's own height, and it clears
 `baseY` to take that over — which is the very height the copy was just given so
 it would appear beside its source. So the copy jumped to the plane instead:
 measured 9.5 m below its source, and from a camera down at deck level that is
@@ -843,7 +872,7 @@ changes itself quietly is worse than one you change by hand.
 >
 > An `M` carry is deliberately exempt: it moves what is already there, and
 > raising something is a perfectly good reason to be in `Y` mode. `Ctrl+D` on a
-> multi-selection goes through the *same* function, so it is told apart by
+> multi-selection goes through the _same_ function, so it is told apart by
 > `opts.copy` rather than by which key was pressed.
 
 ### Carrying versus dragging
@@ -851,13 +880,13 @@ changes itself quietly is worse than one you change by hand.
 There are two ways to move something, deliberately, and they differ in what
 your hand is doing:
 
-* **Drag** — press, move, release. The elements stay **solid** and follow
+- **Drag** — press, move, release. The elements stay **solid** and follow
   directly. The button is held throughout.
-* **Ctrl+D** — a copy of the current element comes up on the cursor. It keeps
+- **Ctrl+D** — a copy of the current element comes up on the cursor. It keeps
   the source's height **without moving the build plane**: moving the plane was
   the old behaviour, and it meant a duplicate silently changed where everything
   placed afterwards would land.
-* **Carry** (`M`) — the selection lifts onto the cursor as a **translucent**
+- **Carry** (`M`) — the selection lifts onto the cursor as a **translucent**
   ghost. No button held: move the mouse, turn with `R`, mirror with `F`, fly the
   camera, then click to drop. `Esc` puts everything back where it was.
 
@@ -871,7 +900,7 @@ it already was" and simply sits on the cursor, as before.
 
 Collapsing the two into one was tempting — the drag path duplicates rotation,
 scale, snapping and axis constraints that the ghost already has. What stopped it
-is the *release*: every 3D tool drops on mouse-up, and a press-drag-release that
+is the _release_: every 3D tool drops on mouse-up, and a press-drag-release that
 instead left a wall stuck to the cursor would fight a reflex nobody wants to
 retrain. So dragging keeps its contract, and carrying is the hands-free option
 next to it. The transparency is what tells them apart at a glance.
@@ -885,22 +914,58 @@ so a selection of nothing but doors simply does not lift, and the drag handles
 it as before.
 
 > **The drop composes, it never decomposes.** Each item's landing transform is
-> built as *group rotation × item rotation* and a component-wise scale product,
+> built as _group rotation × item rotation_ and a component-wise scale product,
 > not read back out of the world matrix. A mirrored element has a negative
 > determinant, and such a matrix has no unique rotation/scale split: measured,
 > `Matrix.decompose()` moved a `[-1,1,1]` scale onto **Y** with a compensating
 > turn. It looks identical on screen and is a different ship in the manifest.
 
 **The bare wheel belongs to the camera.** It dollies, full stop — that is what a
-wheel does in a 3D view, and every attempt to give it a *third* job fought that
+wheel does in a 3D view, and every attempt to give it a _third_ job fought that
 expectation. The two edits it does carry sit on its modifiers: `Shift` + wheel
 turns the current element and `Ctrl` + wheel resizes it. That is what freed the
-letters to carry those actions' *settings* instead, so `R` and `F` read the same
+letters to carry those actions' _settings_ instead, so `R` and `F` read the same
 way `V` always has. And **holding the right
 button turns the wheel into a fly-speed control** — the right button already
 means "I am driving the camera", so adjusting how fast reads naturally and
 cannot collide with editing. Steps are multiplicative, so the control feels the
 same at 3 m/s and 100 m/s, and the speed shows in the status line.
+
+**A lamp selection is the one exception**, and a deliberate one. A lamp is
+_aimed_ rather than built: the loop is nudge, look at what the room does, nudge
+again, twenty times over, and the number under the hand nearly every time is the
+intensity. So while the selection is lights and nothing else — mixed with
+anything, or with a ghost armed, and the ordinary bindings are back — the wheel
+tunes the lamp: bare is intensity, `Ctrl` is range, `Alt` is the cone of a spot
+light, and `Shift` turns it. Putting the most-used of the four behind a modifier
+would have turned that whole loop into a chord for nothing, and the dolly is one
+`Esc` away, still on the right button, and still there the moment the selection
+is anything else.
+
+> The turn is **local, always**, whatever `Y` says, and **0.5°, always**,
+> whatever the Rot snap says. Both follow from the same thing: a lamp emits
+> along its own axis. "Tilt it a couple of degrees" can only mean about that
+> axis — a world axis would swing the beam somewhere nobody asked for on any
+> lamp already angled — and the Rot snap exists to lay walls out on a grid,
+> where 90° steps are the point and are useless for aiming. The step is applied
+> on the **right** of the node's quaternion, which composes it in the node's own
+> frame; the shared `spinNode` used by `Shift` + wheel elsewhere multiplies a
+> _world_ axis on the left, which for a lamp parented to the element it rides
+> would be read through the owner's rotation.
+>
+> Range and cone step by the same amount as one press of the matching arrow in
+> the light panel (0.5 m, 5°), so the two controls stay in agreement. Intensity
+> cannot: the number is read in wildly different units by the two lamps that use
+> it. A spot is aimed at a surface metres away and needs whole units before the
+> room looks any different, while a point light fills a small room from the
+> inside, where the panel's own 0.1 was already a jump — so a notch is **1 on a
+> spot, 0.05 on a point light**, and each lamp in a mixed selection takes its
+> own. Every step is clamped where `normalizeLight` would clamp it anyway —
+> intensity at 0,
+> range just above it, the cone inside 1–179°. A gesture is one undo entry, the
+> same 400 ms rule the other wheel edits use. Aiming a lamp whose type has no
+> such setting says so in the status line rather than doing nothing: a
+> directional light has no range, and only a spot has a cone.
 
 > Why not `Ctrl` + `WASD` for a slow mode? `Ctrl`+`W` **closes the browser tab**
 > — it is reserved by Chrome and a page cannot cancel it — while `Ctrl`+`S` and
@@ -909,7 +974,7 @@ same at 3 m/s and 100 m/s, and the speed shows in the status line.
 >
 > The same trap decided the axis-mode keys. `Ctrl`+`T` would have been the tidy
 > pair for the move step, and it is **unusable**: `Ctrl`+`T`, `Ctrl`+`N`,
-> `Ctrl`+`W` and their `Shift` variants are handled by the browser *before* the
+> `Ctrl`+`W` and their `Shift` variants are handled by the browser _before_ the
 > page sees the key, so `preventDefault()` has no effect.
 >
 > `Ctrl`+`R` is **not** on that list, despite what much of the internet says.
@@ -919,7 +984,7 @@ same at 3 m/s and 100 m/s, and the speed shows in the status line.
 > claimed to a test and still fires for a real user. The only reliable check is
 > a finger on the key.
 
-A wheel gesture on the right button also has to mark that button as *used*, or
+A wheel gesture on the right button also has to mark that button as _used_, or
 releasing it would fire the cancel gesture (a right-click that never moved) and
 throw away the selection you were about to fly over to.
 
@@ -947,14 +1012,14 @@ jump.
 
 ### `Y` chooses whose axes those are
 
-`V` says *which* axis a move runs on; **`Y`, or the combo beside it, says whose**
+`V` says _which_ axis a move runs on; **`Y`, or the combo beside it, says whose**
 — the world's, or the element's own. A modular kit turns every second wall 90°,
 so "slide it along its length" is world Z on one and world X on the next; in
 local space it is `X only` on both.
 
 **It governs turning as well.** `R` used to turn about a world axis whatever the
 element was doing, so on a wall already yawed 90° "turn about X" tumbled it
-about the *room* rather than about its own length. In local space it turns about
+about the _room_ rather than about its own length. In local space it turns about
 the element's own axis — which is the one you mean when you say "tilt this panel
 back a bit". The state is called `axisSpace`, not `moveSpace`, for exactly this
 reason: a name that covered only half of what it governs is the kind that goes
@@ -981,7 +1046,7 @@ space is not a special case but the same code with an identity basis.
 > real bug, caught by a test that turned an element and nudged it in the same
 > breath.
 
-Whose element is always the one being *acted on*: the piece under the cursor for
+Whose element is always the one being _acted on_: the piece under the cursor for
 a drag, the anchor for an `M` carry, the first of the selection for an arrow
 nudge — which is the one `X` puts its gizmo on. With several selected they all
 move by the one delta measured in that element's frame, the way a set of objects
@@ -1009,13 +1074,13 @@ gizmo is where you are actually looking while you build.
 
 Two rows, and only two:
 
-| | |
-|---|---|
-| **Build plane** | the height new modules land on — `state.gridY` |
-| **Current** | what the next key will act on: the ghost `◆`, or the selection `■` |
+|                 |                                                                    |
+| --------------- | ------------------------------------------------------------------ |
+| **Build plane** | the height new modules land on — `state.gridY`                     |
+| **Current**     | what the next key will act on: the ghost `◆`, or the selection `■` |
 
 Everything else it used to carry — rotation axis, scale axis, fly speed, drag
-axis, lighting mode — is already on screen in the **toolbar**, whose combos *are*
+axis, lighting mode — is already on screen in the **toolbar**, whose combos _are_
 those readouts. Repeating them a few hundred pixels away taught nothing and cost
 a glance to decide which copy to trust.
 
@@ -1037,7 +1102,7 @@ three sources at once and has no control anywhere.
 
 Both are needed because the two things you do with an axis disagree about which
 space they live in. A **drag** moves along the world axes by default — `node.position`
-*is* world position, since placements have no parent in the editor — so a world
+_is_ world position, since placements have no parent in the editor — so a world
 gizmo is the honest answer for moving, unless the `World`/`Local` combo says
 otherwise. **Scaling is always local**, so on anything that has been turned
 (most of a ship built from a modular kit) a world gizmo cannot tell you which
@@ -1045,7 +1110,7 @@ way `X` will grow.
 
 **The flavour survives clicking another element.** The gizmo already followed a
 single pick — having asked to see it, you almost never want it left behind on
-the piece you have moved away from — but re-showing it took the *default*, so a
+the piece you have moved away from — but re-showing it took the _default_, so a
 local gizmo reverted to world on the next click and `Shift+X` had to be pressed
 again for every element. It now carries whichever flavour it was in; `X` and
 `Shift+X` still name one outright.
@@ -1067,7 +1132,7 @@ With several elements selected, the one **nearest the cursor** gets them.
 Screen distance, not world distance: "the one closer to the mouse" is a question
 about what you are looking at, and two elements equally close on screen can be
 far apart in the ship. Pressing the same key on the same element hides the
-gizmo; the *other* key re-aims it in the other space rather than hiding it. It
+gizmo; the _other_ key re-aims it in the other space rather than hiding it. It
 also moves when you press `X` on a different element, and when you
 **single-click** another one while it is up, since having asked to see the axes
 you almost never want them left behind on the piece you moved away from.
@@ -1079,16 +1144,16 @@ that clears it.
 **Showing them sets the space you work in.** `X` switches `World`/`Local` to
 `World` and `Shift+X` to `Local`, because asking to see an axis is nearly always
 asking to work along it — you press `Shift+X` to find which way the element's own
-X grows *because* the next thing you do is slide it that way. `Y` still overrides
+X grows _because_ the next thing you do is slide it that way. `Y` still overrides
 it afterwards, so the coupling costs a keypress in the rare case and saves one in
 the common case.
 
-> Only on the way *up*. Hiding a gizmo says nothing about which space you want,
+> Only on the way _up_. Hiding a gizmo says nothing about which space you want,
 > and a toggle that quietly changed the drag axis on the way out would be a
 > genuinely surprising way to lose a placement.
 
 **The armed ghost counts as an element.** You set a module's rotation and
-mirroring *before* dropping it, which is exactly when the axes are worth seeing
+mirroring _before_ dropping it, which is exactly when the axes are worth seeing
 — and it was the one case `X` did not cover. The ghost lives in `interact.js`,
 which imports `editor.js`, so it registers its node through `hooks` rather than
 being imported back and closing a cycle; the gizmo then follows it around the
@@ -1097,21 +1162,21 @@ cursor for free, and goes when the ghost is cancelled.
 It carries all three modal axis settings at once, so "what will the next key do
 to this element" is one glance rather than three readouts:
 
-| on the gizmo | means | set by |
-|---|---|---|
-| bright arrow, dim = locked | the axes a drag moves along | `V` |
-| curved arrow encircling it | the axis a turn goes about | `Shift+R` |
-| cube on the tip | the axis a scale acts on (all three for `all`) | `F` |
-| the chip at the origin | the move step, in metres, or `free` | `Shift+V` |
-| the chip inside the curved arrow | the turn angle, in degrees, signed | `Ctrl+R` |
-| a chip on each lit cube | the scale step | `Ctrl+F` |
+| on the gizmo                     | means                                          | set by    |
+| -------------------------------- | ---------------------------------------------- | --------- |
+| bright arrow, dim = locked       | the axes a drag moves along                    | `V`       |
+| curved arrow encircling it       | the axis a turn goes about                     | `Shift+R` |
+| cube on the tip                  | the axis a scale acts on (all three for `all`) | `F`       |
+| the chip at the origin           | the move step, in metres, or `free`            | `Shift+V` |
+| the chip inside the curved arrow | the turn angle, in degrees, signed             | `Ctrl+R`  |
+| a chip on each lit cube          | the scale step                                 | `Ctrl+F`  |
 
 Each modal setting has exactly one marker, and each marker means exactly one
 thing — `V` never touches the ring, `Shift+R` never touches the brightness. The
 curved arrow sweeps three quarters of a turn rather than closing into a full
 ring, so it reads as a direction of travel and not as a collar.
 
-**The turn angle is a magnitude.** It was briefly *signed* — `-90°` through
+**The turn angle is a magnitude.** It was briefly _signed_ — `-90°` through
 `-5°` sat alongside the positives — because a key only ever turned one way, so
 turning back meant four presses of 90 or switching the axis and reasoning about
 which sign that gave. The wheel carries the direction now: one way turns, the
@@ -1120,7 +1185,7 @@ draws lost the mirroring it had grown to keep up with it.
 
 **`free` is a fine step, not no step.** Both lists carry one — `0.5°` on `Rot`,
 `0.01` on `Scale` — for dialling in a value with the wheel. It is deliberately
-*not* zero: `Move` can be switched off because a drag is a continuous gesture
+_not_ zero: `Move` can be switched off because a drag is a continuous gesture
 that then goes unsnapped, but a wheel notch is discrete, so a step of zero would
 simply do nothing. That is exactly why a literal "off" was taken off these two
 lists earlier, and a test still fails if `0` reappears in either.
@@ -1142,10 +1207,10 @@ marquee is one: text has to be crisp at any distance, and these are readouts
 rather than parts of the ship. Each hides itself when its anchor projects behind
 the camera — which would otherwise park it on the opposite side of the screen
 from the thing it belongs to — **and when it falls outside the canvas**. The
-scale chips hang off the arrow *tips*, which swing out of view at close range,
+scale chips hang off the arrow _tips_, which swing out of view at close range,
 and `#viewport` does not clip: one was caught sitting on a palette tile.
 
-Putting each *value* on the marker that governs it is the point: the gizmo then
+Putting each _value_ on the marker that governs it is the point: the gizmo then
 answers **how far**, not just **which way**. All three settings decide what the
 next keystroke does, and all three were otherwise only legible in a toolbar combo
 at the far edge of the screen.
@@ -1156,29 +1221,29 @@ grow, and a value on only one of them would read as "just this one".
 
 Three implementation notes worth keeping:
 
-* **The curved arrow's node sits at the arc's centre**, with the geometry built
+- **The curved arrow's node sits at the arc's centre**, with the geometry built
   around the origin — not at the arm's root with the arc pushed out along `Z`.
   That is what makes `getAbsolutePosition()` the ring's own position, which the
   angle chip needs. Built the other way round, the chip landed on the gizmo
   origin and sat on top of the move-step chip (measured: 3 px apart, versus
   100 px now).
-* The gizmo's **position** is re-read from the element every frame rather than
+- The gizmo's **position** is re-read from the element every frame rather than
   parented to it. Parenting would inherit the element's scale — and a 3× element
   must not get 3× arrows — while re-deriving it each frame also covers drags,
   undo, the ghost following the cursor, and deletion with no event plumbing: if
   the element goes, the gizmo goes.
-* Every part is marked **`alwaysSelectAsActiveMesh`**, and — the point —
+- Every part is marked **`alwaysSelectAsActiveMesh`**, and — the point —
   **nothing sets `doNotSyncBoundingInfo`**. That flag was on every part as a
   micro-optimisation, and it is exactly the one that stops a bounding box
   following its mesh's world matrix. Since the gizmo moves by being
-  *re-positioned* rather than re-parented, the boxes stayed wherever it was
+  _re-positioned_ rather than re-parented, the boxes stayed wherever it was
   built: select an element 50 m out and the boxes trail 50 m behind the arrows
   (measured — the drift was exactly 50), and the frustum test then culls arms,
   arrowheads and turn arcs on their old position. It reads as the arrows being
   **clipped**, worse the closer you fly, and clicking away and back cures it
   because re-showing rebuilds the meshes. Fifteen tiny meshes are not worth
   culling at all, so they are never culled and their bounds are left honest.
-* Its materials are `StandardMaterial`, not PBR, precisely because
+- Its materials are `StandardMaterial`, not PBR, precisely because
   `applyViewportMode()` only touches materials that have an `unlit` property.
   A gizmo built from these can never pick up the editor's unlit mode or its
   emissive lift.
@@ -1194,10 +1259,10 @@ dropping the ghost back to the floor.
 > inherent to plane tracking, and the same reason a horizontal drag falls back
 > to a screen-space mapping at eye level.
 
-> **Why `V` and not `Q`.** Movement is matched on `e.code` (the *physical* key)
+> **Why `V` and not `Q`.** Movement is matched on `e.code` (the _physical_ key)
 > so `WASD` stays under the same fingers on any layout — on AZERTY that is
 > `ZQSD`, which is exactly what a French keyboard expects. The letter shortcuts
-> match on `e.key` (the *label*). Those two collide on precisely one key: the
+> match on `e.key` (the _label_). Those two collide on precisely one key: the
 > AZERTY key labelled `Q` sits where QWERTY has `A`, so it arrives as
 > `code: "KeyA"`, is claimed as strafe-left, and never reaches the shortcut
 > switch. `Q` is therefore unusable as a shortcut for AZERTY users. `V` occupies
@@ -1205,7 +1270,7 @@ dropping the ghost back to the floor.
 > "vertical". The test suite pins this down by firing both spellings.
 
 **The drag anchors on the point you clicked, not the element's origin.** Kit
-origins sit at the *base*, so a column or door frame grabbed near the top, from
+origins sit at the _base_, so a column or door frame grabbed near the top, from
 a camera near the floor, needed a horizontal reference plane that was **behind
 the camera** — `cursorOnPlane()` returns null for `t <= 0`, so there was no
 reference and the piece silently refused to move.
@@ -1220,11 +1285,11 @@ mappings**:
   delta, scaled to world units at the grabbed point's distance.
 
 The plane mapping **inverts** the moment that plane is above the camera: looking
-up at a column, higher on screen is *nearer*, so pushing the mouse forward pulls
+up at a column, higher on screen is _nearer_, so pushing the mouse forward pulls
 the piece towards you. It also runs to infinity as the ray approaches parallel.
 Neither is fixable by picking a different height — at eye level the horizontal
 plane is simply edge-on to the view. So `anchorDrag()` chooses: plane when the
-grabbed point is below the camera *and* the ray is more than ~15° off the plane,
+grabbed point is below the camera _and_ the ray is more than ~15° off the plane,
 screen otherwise. The choice is made **once**, at the start of the gesture, so
 it can never switch mid-drag and jump.
 
@@ -1240,14 +1305,14 @@ simply have no `view` and are left alone.
 **Selection and hover are mutually exclusive.** A selected element is never also
 reported as hovered, even with the cursor on it — one element, one state, or the
 outline colour and "what will this key act on?" end up disagreeing. The subtlety
-is that a *selection change* has to re-evaluate the hover in **both**
+is that a _selection change_ has to re-evaluate the hover in **both**
 directions: selecting the element under the cursor drops the hover, and
 deselecting has to bring it back straight away. Only clearing it leaves `Esc`
 followed by a keypress doing nothing until you jiggle the mouse.
 
 **Rectangle select** is a rubber band drawn with the left button. A drag that
 starts on **empty space** is always a rectangle — there is nothing else it could
-mean, since the left button no longer moves the camera. Starting *on a module*
+mean, since the left button no longer moves the camera. Starting _on a module_
 is the ambiguous case, and that is all the **Rect select** toggle is for:
 with it on, a drag bands instead of picking the module up.
 
@@ -1259,7 +1324,7 @@ the camera are dropped: they project to a mirrored point that would otherwise
 stretch the hull across the whole viewport.
 
 > **Neither approximation could stay.** It used to take the screen-space
-> *extent* of the corners — an axis-aligned rectangle — and test that. For a
+> _extent_ of the corners — an axis-aligned rectangle — and test that. For a
 > slab lying diagonally across the view that rectangle covers the viewport
 > corner to corner and is nearly all empty air, so a small band dropped in a gap
 > selected everything around it: one drawn in clear air beside a corner hull
@@ -1274,7 +1339,7 @@ stretch the hull across the whole viewport.
 > Overlap, not containment: a band that merely clips something still takes it.
 > On a bench full of hulls that do overlap on screen it means a tight band round
 > one box may still catch its neighbours — but a band is a coarse tool, and
-> having to *enclose* a long wall to catch it is the worse trade.
+> having to _enclose_ a long wall to catch it is the worse trade.
 
 **Markers band like anything else.** The player spawn and the doors are elements
 you select, drag and delete exactly like a wall, so a rectangle drawn round one
@@ -1314,7 +1379,7 @@ mouse move.
 control, so the menu its release raises is never wanted. Guarding the canvas was
 never enough: the measured order is `pointerdown@canvas`, `pointerup@canvas` —
 the canvas holds pointer capture, so it gets the release wherever the cursor is
-— and then `contextmenu` aimed at whatever is *actually* under the cursor, which
+— and then `contextmenu` aimed at whatever is _actually_ under the cursor, which
 capture does **not** redirect. A look that drifted onto the palette therefore
 ended on a thumbnail's "Save image as". Because the menu arrives after the
 release, a "right button still down" flag cannot catch it either.
@@ -1334,7 +1399,7 @@ The right button does double duty within that half: **dragged** it looks around,
 and **released on the spot** it cancels. Babylon's mouse input claims all three
 buttons for looking by default, so it is restricted to `[2]`.
 
-Crucially it is *not* a modifier. Turning (right-drag) and moving (`WASD`) are
+Crucially it is _not_ a modifier. Turning (right-drag) and moving (`WASD`) are
 disjoint bindings, so both run at the same time — turn the view with the mouse
 while walking with the keys, exactly as in a game. An earlier version made the
 right button turn `WASD` into look controls; that overlapped with right-drag
@@ -1379,7 +1444,7 @@ translate the camera in every direction.
 **Drop to plane** rests the selection on the build plane, wherever that
 currently is — so raise the plane and it becomes "rest this on the ceiling".
 
-An edit applies to *every* selected element, each turning about its own
+An edit applies to _every_ selected element, each turning about its own
 origin rather than a shared pivot, which is what a row of props usually wants.
 
 **Rotation composes quaternions; it does not accumulate Euler angles.** Reading
@@ -1391,11 +1456,11 @@ oscillating instead of coming back round. Y and Z happened to survive it, which
 is exactly why the bug hid for so long. `spinNode()` composes
 `Quaternion.RotationAxis(worldAxis, rad).multiply(current)` instead. **Order
 matters**: Babylon's `a.multiply(b)` applies `b` first, so the increment goes on
-the *left* to act in world space — the other order gives a local-axis turn.
+the _left_ to act in world space — the other order gives a local-axis turn.
 Euler is now produced only at the boundary, when a placement is written to the
 manifest.
 
-**`Rot` and `Scale` have no "off".** They are keyboard *step sizes*, and a step
+**`Rot` and `Scale` have no "off".** They are keyboard _step sizes_, and a step
 of nothing is meaningless — the old `off` option silently fell back to a hidden
 default (15° / 0.05) rather than doing anything. Only `Move` has a real "off",
 which means free positioning while dragging.
@@ -1403,18 +1468,27 @@ which means free positioning while dragging.
 **A restore is not itself an edit.** `deserialize()` sets a `restoring` flag and
 `pushUndo()` no-ops while it is set. Without that, a single stray `pushUndo()`
 anywhere in the restore path does two invisible kinds of damage: it **clears the
-redo stack**, and it pushes a *half-restored* snapshot onto the undo stack.
+redo stack**, and it pushes a _half-restored_ snapshot onto the undo stack.
 
-**The lighting is on the stack; the camera is not.** Both were off it at first,
-on the same reasoning — "not an edit to the ship". Only half of that held up.
-`Env` and `Exposure` are *authored* values: the manifest carries them and the
-runtime reads them, so a lighting change you cannot take back is a real edit
-lost. Where the camera happens to be standing is genuinely not.
+**The runtime lighting is on the stack; the camera and the editor's own view are
+not.** All of it was off the stack at first, on the same reasoning — "not an
+edit to the ship". Only part of that held up. The **Runtime** rig's `Env`,
+`Dynamic Env`, `Exposure` and `Tone` are _authored_ values: the manifest carries
+them and the runtime reads them, so a lighting change you cannot take back is a
+real edit lost. Where the camera happens to be standing is genuinely not, and
+neither is how bright you like the ship while you build it.
 
-Both light sets travel together, not just the one on screen. The **Runtime
-light** toggle only decides which pair the sliders edit, so restoring the
-visible pair alone would leave the hidden one behind, to surface later as a
-value nothing ever put back.
+<a id="lighting-is-an-edit-the-editors-own-view-is-not"></a>
+
+So the snapshot carries `lightSets.runtime` and nothing else. The **Editor**
+rig is a per-browser view preference, mirrored into `localStorage` rather than
+the ship: dragging its slider pushes no entry, so restoring it on undo would
+take back a change no entry ever recorded — you would move a wall, undo, and
+watch the room's brightness jump for no reason you could name.
+
+The runtime rig travels whether or not the viewport is rendering it. The view
+mode only decides which rig is on screen, so restoring the visible one alone
+would leave the other behind, to surface later as a value nothing ever put back.
 
 **One entry per slider gesture.** A range fires `input` continuously while it is
 dragged, so one sweep of `Env` would otherwise bury the stack in near-identical
@@ -1426,19 +1500,19 @@ without a focus event to hang it on, because a range keeps focus between drags.
 sits one button away from Save; nothing else in the tool destroys that much in a
 single click. **Closing or reloading the tab gets the same guard**, via
 `beforeunload` — the browser owns the wording there (custom text has been
-ignored since 2016), so all the tool chooses is *whether* to ask. Chrome also
+ignored since 2016), so all the tool chooses is _whether_ to ask. Chrome also
 requires the page to have been interacted with first, which is the behaviour we
 want anyway: a tab you only looked at closes silently.
 
 "Unsaved" is decided by comparing against a snapshot taken at the last save,
-load or boot — not by a dirty *flag*, so undoing back to the saved state
+load or boot — not by a dirty _flag_, so undoing back to the saved state
 correctly counts as clean again. `hidden` is stripped from that comparison: it
 never reaches the manifest, so it can never be saved, and leaving it in would
 make hiding one wall enough to prompt for the rest of the session.
 
 That is not hypothetical — restoring a spawn marker did exactly this, because
 `deserializeMarkers()` passed `silent: true` for doors but `setSpawn()` had no
-such option and always pushed. Since `deserialize()` runs on every undo *and*
+such option and always pushed. Since `deserialize()` runs on every undo _and_
 redo, the symptoms were: `Ctrl+Y` did nothing after an undo, and a second
 `Ctrl+Z` lost the player start — but only on layouts that actually had a spawn,
 which is why it survived the tests for so long. That path now takes `silent`
@@ -1475,7 +1549,7 @@ the uniform-scale mirroring already dodged for a leading `-`, generalised.
 
 **Negative scale mirrors an element** — useful for turning a left-hand cornerpiece into a right-hand one. `F` does it on the current Scale axis, applying to
 the ghost you are placing, the elements you are dragging, or the selection. The
-wheel then resizes the *magnitude* and leaves the sign alone. A mirrored node
+wheel then resizes the _magnitude_ and leaves the sign alone. A mirrored node
 has a negative transform determinant, which glTF explicitly allows: the winding
 order flips with it, and both Babylon and the exporter honour that.
 
@@ -1520,7 +1594,7 @@ within reach.
 > The same applies to a placed selection: leaving the plane behind means a
 > following `M` grab drops it back to the old height.
 
-It is deliberately not a *frame* — the camera does not move. Framing answers
+It is deliberately not a _frame_ — the camera does not move. Framing answers
 "where is it", which double-click already does; `B` answers "bring it here",
 which is what you want when the answer to "where is it" is 300 m away in a
 direction you were never going to fly.
@@ -1537,64 +1611,26 @@ mystery. Switching the dropdown while isolated follows the new chunk.
 ### The Chunks pane
 
 `+` and `Rename` used to sit in the toolbar as two `prompt()` boxes. They are
-now one **Chunks…** pane, because a chunk stopped being a name the moment it
-grew bake settings: a room's samples and lightmap size are per room, and there
-was nowhere to type them. The pane lists every chunk, marks the tuned ones with
-a `•`, and holds:
+now one **Chunks…** pane, because a chunk is not just a name: it is the unit the
+portal renderer streams, the thing placements carry and the thing door markers
+join, and a list you can see is the only way to keep those in step. The pane
+lists every chunk, says what each one holds, and offers:
 
-* **New** and **Apply** — add and rename. Renaming still rewrites every
-  reference, exactly as before, and carries the room's bake settings with it.
-* **Delete** — which **refuses while anything still refers to the chunk**, and
+- **New** and **Apply** — add and rename. Renaming rewrites every reference,
+  not just the list entry.
+- **Delete** — which **refuses while anything still refers to the chunk**, and
   says what. The alternatives were to drag the contents into some other room,
   which silently rewrites the ship's layout to service a button press, or to
   delete them with it, which turns one keystroke into unbounded loss. Emptying
   the room first is a deliberate act, and **Assign** already exists to do it.
   The last remaining chunk cannot go either: `activeChunk` is what new
   placements join, so there has to be one.
-* **Samples, Width × Height and Margin** — this room's bake, and
-* **Defaults** — the ship's, at the bottom of the same pane.
 
-**The per-room fields are overrides, and blank means "follow the default".**
-Not "use today's default": a field left blank keeps following `bakeDefaults`
-forever after, so raising the ship's sample count later still reaches every room
-that never asked for its own. That is also why the manifest stores them sparse —
-`chunks[].bake` holds only the fields a room actually claimed, and is omitted
-entirely when it claimed none. Writing the resolved numbers instead would freeze
-every room at whatever the defaults happened to be the day it was saved.
-
-`bake_lightmaps.py` resolves four sources, in order:
-
-```
---samples/--resolution/--width/--height/--margin   (every chunk, deliberate override)
-chunks[].bake                                      (this room, from the pane)
-bakeDefaults                                       (the ship, from the pane)
-128 / 1024x1024 / 4                                (a manifest older than any of this)
-```
-
-A command-line flag beats everything because that is what makes
-`--resolution 64` a usable "render me something to look at now" — and it is what
-the test suite bakes at. The Blender panel's numbers work the same way, with
-`-1` meaning "leave every room on what the pane asked for".
-
-**A non-square map is why width and height are separate fields.** A long
-corridor wastes half a square atlas on nothing. Blender's packer works in the
-0-1 square and knows nothing about the image it will be sampled from, so on a
-2048×512 map an island packed square is drawn four times wider than it is tall;
-the UVs are pre-squeezed by the aspect before packing to cancel exactly that.
-The cost is that **island rotation is switched off whenever width ≠ height** — a
-cardinal rotation swaps an island's U and V *after* the squeeze, which un-does
-the correction for that island alone and stretches it by the aspect squared.
-
-That cost is not small: the test fixture packs to about 60% of a square atlas
-and about 33% of a 4:1 one, because a rect packer leans on 90-degree swaps to
-fit an L-shaped wall panel against its neighbour, and there are a great many of
-those. Four times the pixels still buys a bit over twice the texels, so a
-non-square map is worth asking for when a room really is long and thin — but
-**a square map is the better default**, and that is what `bakeDefaults` ships.
-
-**Retuning one room re-bakes that room only.** The resolved numbers go into that
-chunk's own hash and not its neighbours': a neighbour's resolution cannot change
-how much light reaches this room.
+> Rooms used to carry per-room render settings here — an atlas size and a sample
+> count for the offline lightmap bake. Lighting is now captured live from
+> environment probes, which are **boxes of their own** rather than a property of
+> a chunk (see [Environment probes](#environment-probes--the-ship-reflects-its-own-rooms)), so a chunk is back to
+> being a name and a membership list.
 
 **Renaming a chunk rewrites every reference**, not just the list entry. A chunk
 id is not a label: placements carry it, door markers name the two chunks they
@@ -1610,20 +1646,24 @@ and is purely for finding things again.
 
 Doors carry the portal:
 
-* **Door** arms a marker you drop on the grid.
-* **Door from sel** is the usual route — select the door geometry you already
+- **Door** arms a marker you drop on the grid.
+- **Door from sel** is the usual route — select the door geometry you already
   placed and it creates a marker centred on it, sized to its opening, with those
   placements registered as the animated leaves.
-* Chunk A/B default to `(auto)`, which resolves to the two nearest chunk
+- Chunk A/B default to `(auto)`, which resolves to the two nearest chunk
   volumes at save time. Set them explicitly when that guess is wrong.
-* **Chunk B also offers `Skybox (outer space)`** — a window through the hull
+- **Chunk B also offers `Skybox (outer space)`** — a window through the hull
   rather than a doorway between rooms. See below.
-* **Sealed** marks a portal you can see through but not walk through — a window
+- **Enabled** controls the portal visibility link. Disabling it keeps the door
+  geometry and collision in place, but portal traversal no longer sees through
+  it. It is written to both `doors[].enabled` and `portals[].enabled`, and
+  defaults to `true` for older manifests.
+- **Sealed** marks a portal you can see through but not walk through — a window
   onto space rather than a doorway. The renderer still draws the far chunk;
   collision generation keeps the opening solid. It is written on the door
   record only (`doors[].sealed`), not on the portal, and defaults to `false` so
   every manifest written before it reads back as an ordinary doorway.
-* **Doors resize two ways.** The inspector's `W`/`H` fields set the authored
+- **Doors resize two ways.** The inspector's `W`/`H` fields set the authored
   opening; `Ctrl+wheel` and the inspector's `Scale` fields scale the node like
   any other element. Both were once blocked for markers — `scaleCurrent()`
   filtered them out and `applyInspector()` guarded the write — which just made
@@ -1638,7 +1678,7 @@ extra to keep in sync.
 **A door onto space is a reserved chunk id, not a fourth boolean.** Chunk B
 offers `Skybox (outer space)`, which writes `__SKYBOX__`. A window through the
 hull is still a portal — the renderer needs the opening and its shape — but
-there is no room behind it to draw. Expressing that as a *side* means
+there is no room behind it to draw. Expressing that as a _side_ means
 everything that already reasons about a door's two sides keeps working
 untouched: isolation still shows the door in the room it belongs to, validation
 still sees both sides resolved, `portalOf()` still produces a portal record. A
@@ -1647,9 +1687,9 @@ taught about it.
 
 The id buys that at the cost of two obligations, both enforced:
 
-* **It cannot collide with a real room.** `addChunk` and `renameChunk` both
+- **It cannot collide with a real room.** `addChunk` and `renameChunk` both
   refuse `__SKYBOX__`, so no chunk can ever be given that name by any route.
-* **"Opens onto space" and "not sealed" cannot both be true.** There is nothing
+- **"Opens onto space" and "not sealed" cannot both be true.** There is nothing
   out there to walk into. Picking Skybox ticks **Sealed** and disables the box;
   `normalizeDoorSides()` settles the pair wherever a door is made or loaded, and
   `buildManifest` restates it (`sealed: !!m.sealed || b === SKYBOX_CHUNK`) so a
@@ -1662,7 +1702,7 @@ know this opening leads outside, but nothing leads back. And the "no leaves
 assigned" warning is suppressed for these doors: a hole in the hull has nothing
 to slide, so the warning would be permanent noise.
 
-**Isolation shows a door in both the rooms it joins.** A door is not *in* a
+**Isolation shows a door in both the rooms it joins.** A door is not _in_ a
 chunk, so markers were exempt from isolation outright - which left a door
 hanging in the middle of a room it has nothing to do with. Sides left on
 `(auto)` are resolved by nearest chunk volume, the same rule the manifest uses,
@@ -1694,12 +1734,12 @@ written to the manifest grouped by chunk in **Havok's own parameters** — so th
 runtime hands each record straight to a shape constructor with no
 interpretation.
 
-| shape | what the manifest carries | why |
-| --- | --- | --- |
-| box | `centre`, `rotation` (quaternion), `halfExtents` | `PhysicsShapeBox` takes an explicit turn |
-| sphere | `centre`, `radius` | no orientation exists |
-| capsule | `pointA`, `pointB`, `radius` | `PhysicsShapeCapsule`'s turn is implicit in the segment; the segment is a diameter shorter than the height |
-| cylinder | `pointA`, `pointB`, `radius` | likewise, but the segment *is* the height |
+| shape    | what the manifest carries                        | why                                                                                                        |
+| -------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| box      | `centre`, `rotation` (quaternion), `halfExtents` | `PhysicsShapeBox` takes an explicit turn                                                                   |
+| sphere   | `centre`, `radius`                               | no orientation exists                                                                                      |
+| capsule  | `pointA`, `pointB`, `radius`                     | `PhysicsShapeCapsule`'s turn is implicit in the segment; the segment is a diameter shorter than the height |
+| cylinder | `pointA`, `pointB`, `radius`                     | likewise, but the segment _is_ the height                                                                  |
 
 **The scale is constrained per kind, on every write path.** Havok's sphere is a
 single radius and its capsule a radius plus two endpoints, so an ellipsoid has
@@ -1708,7 +1748,7 @@ ship you built would not be the ship you play. `constrainScale()` therefore runs
 on the inspector, the wheel, a carried duplicate and a loaded manifest alike —
 a sphere is forced round, a capsule and cylinder locked to one radius in X/Z,
 and only the box takes an arbitrary scale. A capsule additionally cannot be
-shorter than it is wide: at `h == d` its two caps meet and it *is* a sphere, and
+shorter than it is wide: at `h == d` its two caps meet and it _is_ a sphere, and
 Havok agrees — its capsule is a segment plus a radius, and there is no segment
 of negative length.
 
@@ -1716,7 +1756,7 @@ of negative length.
 
 A box, a sphere and a cylinder are each a single unit mesh under a scale. A
 capsule is not, and this is the one place the "unit shape sized by scaling" rule
-does not hold: a capsule's caps are hemispheres of the *tube's* radius, so
+does not hold: a capsule's caps are hemispheres of the _tube's_ radius, so
 stretching one unit mesh in Y stretches the caps with it into an ellipsoid.
 
 It was worse than that. The unit mesh was `CreateCapsule({height: 1, radius:
@@ -1728,7 +1768,7 @@ with a proper pill.
 
 The trick that keeps it to a single mesh: build the geometry at the right
 **ratio** — radius 0.5, total height `h/d` — and counter-scale the mesh's own Y
-by `d/h`. The two cancel, so the mesh ends up wearing a *uniform* world scale of
+by `d/h`. The two cancel, so the mesh ends up wearing a _uniform_ world scale of
 `d`: the caps come out as true hemispheres, the normals stay correct without an
 inverse-transpose, and the geometry only has to be rebuilt when the proportions
 change rather than every time the shape is resized.
@@ -1759,7 +1799,7 @@ the same hull on the bench was a proper pill. The preview builds a
 
 **A capsule's height is the whole pill, caps included** — the same reading as a
 box's side or a sphere's diameter, and what the editor draws and the inspector
-says. Havok's capsule is a segment *grown by the radius in every direction*, so
+says. Havok's capsule is a segment _grown by the radius in every direction_, so
 `shapeRecord()` writes a segment one diameter shorter than the height. A
 cylinder has flat ends and keeps its full height. Getting that wrong makes every
 capsule a diameter taller in play than it looks in the editor — invisible in the
@@ -1771,7 +1811,7 @@ thing it places.
 
 ### Primitives land corner first
 
-A kit module is modelled *from* its origin: a wall's geometry starts at the
+A kit module is modelled _from_ its origin: a wall's geometry starts at the
 origin and runs 4 m to the side, so dropping it with the origin on the build
 plane leaves it resting on the floor and filling whole grid cells. A collision
 primitive is a **unit shape centred on its origin**, because Havok wants a
@@ -1779,7 +1819,7 @@ centre and not a corner — so the identical drop buried half of it under the
 plane and put its faces through the middle of a cell.
 
 The ghost therefore shifts a lone primitive by its own half size, putting the
-*corner* where the origin was snapped to. The lift is derived from the live
+_corner_ where the origin was snapped to. The lift is derived from the live
 transforms rather than a constant, so it survives the wheel scaling the ghost
 and `R` turning it, and it uses the world-axis extents (`|m₀|+|m₄|+|m₈|` and so
 on) so a turned box reports the box that actually contains it.
@@ -1807,10 +1847,10 @@ Whatever you drop is claimed by the staged element it sits on and becomes that
 module's collision.
 
 > **The authored convention is a face, not a box round the mesh.** A hull's
-> *surface* is put flush with the visible surface the player meets, and the body
+> _surface_ is put flush with the visible surface the player meets, and the body
 > extends **away** from the play space. Floors show it most plainly: every
 > `Platforms/*` hull is `position.y = -0.25`, `scale.y = 0.5` — a half-metre
-> slab hanging entirely *below* the walking surface, so you stand exactly on the
+> slab hanging entirely _below_ the walking surface, so you stand exactly on the
 > plate. Walls do the same horizontally: `WallWideBand_Straight` has a 108 mm
 > panel and a **1 m** hull whose inner face is on the grid line and whose body
 > runs outward into the wall's thickness.
@@ -1823,7 +1863,7 @@ module's collision.
 > visible wall and the overhang is in the void behind it. A thick backstop is
 > also what stops a fast body tunnelling through a 7.5 mm panel.
 
-**On the ship** they create *room* colliders: world-space one-offs belonging to
+**On the ship** they create _room_ colliders: world-space one-offs belonging to
 a chunk, for things with no module behind them — an invisible barrier, a
 blocker over a gap. They are written to `collision[chunk]` as authored.
 
@@ -1846,7 +1886,7 @@ A room's primitives are world space and belong to that room. Collision on a
 placement of it inherits it — the only sane answer for props, whose bounding box
 is a poor fit and which are placed many times over.
 
-**Edit collision** opens a staging area. It is a *mode*, not a property of the
+**Edit collision** opens a staging area. It is a _mode_, not a property of the
 selection: it starts empty, and you stage whatever modules you want to work on.
 Clicking a palette tile arms a ghost you place yourself; clicking one already
 there focuses it rather than adding a second, because a second instance would
@@ -1855,7 +1895,7 @@ give the association rule below two equally good answers.
 Staged elements are real placements carrying `stage: true`. That is what makes
 every existing tool work on them unchanged — selection, `X`, `H`, `Del`,
 `Ctrl+D`, dragging, the marquee, the inspector, undo. They are filtered out at
-the two places that walk *every* placement (the manifest's instance list and the
+the two places that walk _every_ placement (the manifest's instance list and the
 .glb exporter, both via `shipPlacements()`), and their chunk id is never in
 `state.chunks`, so nothing else can reach them either.
 
@@ -1873,7 +1913,7 @@ quietly it is **counted in the banner**, which says how many will be lost.
 **Removing a staged element keeps what was fitted to it.** `Del` goes through
 `unstageModule()`, which reads the area back into the per-module record first —
 so staging that module again brings its shapes straight back. Shapes are stored
-*relative to the element*, so it does not matter where on the area it lands next
+_relative to the element_, so it does not matter where on the area it lands next
 time.
 
 **A module dropped on the bench is a one-shot.** On the ship a palette tile
@@ -1885,12 +1925,12 @@ clears with it, which is the visible difference between the two modes.
 
 > **Collision primitives still repeat.** A hull genuinely is a run of boxes
 > along a wall, so the box, sphere, capsule and cylinder ghosts stay armed. The
-> rule is about *modules*, not about the bench.
+> rule is about _modules_, not about the bench.
 
 **`Ctrl+D` there copies shapes, never the module** — for the same reason: a
 module may only be on the bench once. The rule lives in `grabSelection()` rather
 than only at the key, which used to filter a list it then did not pass on, so a
-module *selected alongside a shape* was copied anyway. `M` still picks a staged
+module _selected alongside a shape_ was copied anyway. `M` still picks a staged
 module up to move it; it is copying that makes no sense, not carrying.
 
 **Fit a box** acts on the selection: exactly one element, and not a collision
@@ -1904,11 +1944,11 @@ side of the art that extra thickness goes.
 own triangles instead of its bounding box, and lays out as many boxes as the
 shape asks for. Three candidates are fitted and the best-scoring one wins —
 
-| candidate | what it is | what it suits |
-| --- | --- | --- |
-| `box` | the whole module in one box | a crate, a floor plate, a door |
-| `slabs` | a slab per surface patch, laid on it and extending backwards | a wall with a lip |
-| `split` | cut in half and recurse until each piece is worth boxing | a corner, a door frame |
+| candidate | what it is                                                   | what it suits                  |
+| --------- | ------------------------------------------------------------ | ------------------------------ |
+| `box`     | the whole module in one box                                  | a crate, a floor plate, a door |
+| `slabs`   | a slab per surface patch, laid on it and extending backwards | a wall with a lip              |
+| `split`   | cut in half and recurse until each piece is worth boxing     | a corner, a door frame         |
 
 The score is **coverage × solidity, less a small penalty per box**, where
 solidity is the share of the hull's volume that sits near real surface.
@@ -1919,7 +1959,7 @@ single heuristic has to be right about which kind of module it is looking at.
 Three settings on the Settings pane govern it.
 
 **Hull tolerance** is how far the hull may stray from the art before that
-counts as wrong, in metres, and it is deliberately the *only* dial for how
+counts as wrong, in metres, and it is deliberately the _only_ dial for how
 finely a shape is approximated. It is the resolution the hull is judged at, so
 tightening it fails the coarse candidates and a finer one has to take over — a
 rounded platform is worth one box at 25 cm and eight at 4 cm, while a crate
@@ -1930,7 +1970,7 @@ A separate "how many boxes" setting would have to be kept in step with it, and
 the two would disagree. The choice is made in two questions, in order: is the
 hull good enough — does it contain the art, and is it within the tolerance of
 it nearly everywhere — and of the ones that are, which is the smallest? That
-ordering is what stops a tighter tolerance ever handing back a *bulkier* hull
+ordering is what stops a tighter tolerance ever handing back a _bulkier_ hull
 than the setting before it.
 
 > **Volume is the honest measure of a collision hull.** Every cubic metre of
@@ -1941,16 +1981,16 @@ than the setting before it.
 **Hull thickness** is the depth a hull is given along its thinnest axis. The
 kit's walls are millimetres thick and its floors are single planes with no
 depth at all; a collider that thin is something a fast-moving body goes
-straight through. It is a *minimum* — a crate is already thicker and is left
+straight through. It is a _minimum_ — a crate is already thicker and is left
 alone.
 
 **Hull offset** decides which side of the art that depth goes.
 
-| | what it does |
-| --- | --- |
-| `centered` | splits the depth either side of the art |
+|            | what it does                                                              |
+| ---------- | ------------------------------------------------------------------------- |
+| `centered` | splits the depth either side of the art                                   |
 | `negative` | tucks the hull behind the visible surface — the convention this ship uses |
-| `positive` | stands it in front |
+| `positive` | stands it in front                                                        |
 
 The axis is oriented to the surface normal, so it points out of the solid and
 the two names mean the same thing on every module rather than depending on how
@@ -1965,32 +2005,32 @@ give — that millimetre is not taken out of the other side.
 > the same answer whatever the box started as, and asking twice changes nothing.
 
 The `slabs` pass is the one that reads the kit's own convention: triangle
-normals point *out* of the solid, so laying a slab on a patch and extending it
+normals point _out_ of the solid, so laying a slab on a patch and extending it
 backwards puts the body away from the play space for free — without needing to
 know which side the room is on. Its depth is **capped**; using the patch's own
 extent instead let a curved patch, whose points wrap right round an arc, grow a
 slab that swallowed everything the arc enclosed (`WallAstra_Corner_Round_Outer`
-came out at 87 m³ against a hand-drawn 12). Its bin angle is *derived from the
-tolerance* rather than fixed: leaving it constant was what stopped a tighter
+came out at 87 m³ against a hand-drawn 12). Its bin angle is _derived from the
+tolerance_ rather than fixed: leaving it constant was what stopped a tighter
 tolerance from ever improving a rounded corner, because the slab pass kept
 winning with the same coarse three.
 
-The `split` pass cuts **axis-aligned** and offers *every depth* as a candidate.
+The `split` pass cuts **axis-aligned** and offers _every depth_ as a candidate.
 Both of those are deliberate. Cutting square to the world means the pieces nest
 inside their parent, so an extra level can only shrink the hull; and stopping on
 a threshold meant the threshold was sometimes met one cut too early, so handing
 the whole ladder to the score lets it pick.
 
-The *box drawn round* a piece may still be turned, though, and each level takes
+The _box drawn round_ a piece may still be turned, though, and each level takes
 whichever of the two is smaller **by total volume**. Turned boxes are far
 tighter on a curve — the whole reason a rounded corner wants a hull that follows
 it — but neighbouring pieces then overlap, and summed volume counts an overlap
 twice, so a turned set is charged for exactly what it wastes and only wins when
 it really is the smaller hull.
 
-> Choosing per *level* rather than per piece is what makes that safe. Choosing
+> Choosing per _level_ rather than per piece is what makes that safe. Choosing
 > per piece minimises each piece and lets the overlap between them run free,
-> which is how an earlier version made a hull *bulkier* the more finely it was
+> which is how an earlier version made a hull _bulkier_ the more finely it was
 > cut.
 
 This is what fixed the rounded corners with a lot of surface detail.
@@ -1998,15 +2038,15 @@ This is what fixed the rounded corners with a lot of surface detail.
 slab pass in tiny normal bins, so the split was the only candidate left — and
 while it was square-only that meant an axis-aligned box round an arc:
 
-| module | before | after |
-| --- | --- | --- |
-| `TopAstra_Corner_Round_Inner` | 16 square, 13.1 m³, 58% solid | **4 turned, 4.8 m³, 100%** |
-| `TopCables_Corner_Round_Outer` | 16 square, 10.4 m³, 63% solid | **4 turned, 7.3 m³, 100%** |
-| `TopCables_Corner_Round_Inner` | 16 square, 10.6 m³, 63% solid | **4 turned, 7.6 m³, 100%** |
-| `ShortWall_WhitePlate2_Corner_Inner` | 24 square, 10.8 m³ | **2 turned, 4.3 m³** |
+| module                               | before                        | after                      |
+| ------------------------------------ | ----------------------------- | -------------------------- |
+| `TopAstra_Corner_Round_Inner`        | 16 square, 13.1 m³, 58% solid | **4 turned, 4.8 m³, 100%** |
+| `TopCables_Corner_Round_Outer`       | 16 square, 10.4 m³, 63% solid | **4 turned, 7.3 m³, 100%** |
+| `TopCables_Corner_Round_Inner`       | 16 square, 10.6 m³, 63% solid | **4 turned, 7.6 m³, 100%** |
+| `ShortWall_WhitePlate2_Corner_Inner` | 24 square, 10.8 m³            | **2 turned, 4.3 m³**       |
 
 > **Solidity judges the shape, volume judges the price.** Solidity is measured
-> *before* the thickness is added. Measuring after it has a thin floor plate,
+> _before_ the thickness is added. Measuring after it has a thin floor plate,
 > padded to a walkable depth, fail its own test — most of that hull is
 > deliberately not near the art — and the fitter chops the plate up trying to
 > fix it.
@@ -2015,13 +2055,13 @@ while it was square-only that meant an axis-aligned box round an arc:
 > by ray parity, not by proximity to a triangle: a crate is a hollow mesh, so
 > every point in the middle of it is far from any surface, and judging on
 > proximity alone marks a hull that fills the crate as mostly empty air. The
-> crossings along each ray are *paired*, and an odd one left over is dropped —
+> crossings along each ray are _paired_, and an odd one left over is dropped —
 > the kit is full of open shapes, and plain parity would mark everything beyond
 > a single-plane floor as solid.
 
 > **It declines rather than guess.** A hull that covers ≥ 95%, sits ≥ 85% on
 > surface at the tolerance and needed ≤ 4 boxes is reported plainly; anything
-> else is fitted but flagged *"worth checking by eye"*. In practice that is the
+> else is fitted but flagged _"worth checking by eye"_. In practice that is the
 > curved corners, which are genuinely better drawn by hand. Saying so is more
 > use than a hull that looks plausible and leaks.
 
@@ -2029,10 +2069,10 @@ Measured against the 53 hand-authored hulls (`fit-boxes.mjs`, geometry dumped by
 `fit-dump.mjs`, sweep by `fit-sweep.mjs`) at the default 10 cm tolerance and
 35 cm thickness:
 
-| | coverage | boxes | volume | on surface |
-| --- | --- | --- | --- | --- |
-| fitted | **99.7%** | 3.8 | 7.5 m³ | **89.8%** |
-| hand-authored | 76.8% | 1.5 | 6.4 m³ | 68.3% |
+|               | coverage  | boxes | volume | on surface |
+| ------------- | --------- | ----- | ------ | ---------- |
+| fitted        | **99.7%** | 3.8   | 7.5 m³ | **89.8%**  |
+| hand-authored | 76.8%     | 1.5   | 6.4 m³ | 68.3%      |
 
 It matches or beats the authored hull on 60 of 61 placed modules, and is
 confident about 44 of them — those at 100% coverage and 97% solidity. Loosening
@@ -2049,7 +2089,7 @@ blocked door), and the `Platform_Round1` / `Platform_Round2` hulls cover only
 > Babylon's YXZ convention is easy to get subtly wrong; `fitHullToSelection`
 > composes the frame into a matrix and lets `decompose`/`toEulerAngles` do it.
 
-> The fitter lives in `public/js/hullfit.js`, imported by *both* the editor and
+> The fitter lives in `public/js/hullfit.js`, imported by _both_ the editor and
 > the offline harness, so the thresholds baked into it are the ones the harness
 > measured.
 
@@ -2080,7 +2120,7 @@ file as well, so a reload puts you back where you were working.
 > Both sides store the camera as the camera itself holds it — **position and
 > rotation**, through the same `serializeView` / `applyView` used by the layout
 > — not a position and a target. `getTarget()` on a `FreeCamera` reports the
-> last point something *explicitly* aimed it at, and free look never updates
+> last point something _explicitly_ aimed it at, and free look never updates
 > that. The first version captured that stale target and then aimed at it, so
 > the camera returned to the right place looking the wrong way, which reads as
 > "the view was not restored" — because it wasn't. The test missed it for the
@@ -2092,17 +2132,17 @@ file as well, so a reload puts you back where you were working.
 
 **A save made from the bench belongs to both sides.** There is one camera
 serving two rooms, and `view: serializeView()` read whichever room was on
-screen — so saving without closing the bench first wrote the *bench's*
+screen — so saving without closing the bench first wrote the _bench's_
 viewpoint into the ship's `view`, moving where the ship reopens to wherever the
 bench happened to be. Two records had the mirror-image fault at the same time:
-`stageView` and `stageLayout` are only written when the bench *closes*, so the
+`stageView` and `stageLayout` are only written when the bench _closes_, so the
 same save wrote last session's bench viewpoint and last session's roster —
 quietly losing everything staged since.
 
 > Three records, one mistake: **reading the live thing when the live thing is
 > the other side's.** `shipViewpoint()`, `stageViewpoint()` and
 > `stageLayoutNow()` each ask which side the live camera and scene currently
-> *are*, and hand back the stash for the other. The stash cannot be stale:
+> _are_, and hand back the stash for the other. The stash cannot be stale:
 > nothing can drive a camera that is not on screen, or move a stand-in that is
 > not in the scene.
 >
@@ -2125,14 +2165,14 @@ the scene's default grey until the ghost was given a material to clone, since
 `ghostMaterialFor()` returns nothing for nothing.
 
 **The bench has its own undo history.** Its contents are deliberately not in
-`serialize()` - they must never reach the ship - so a *ship* snapshot restores
+`serialize()` - they must never reach the ship - so a _ship_ snapshot restores
 as "no bench at all", which is precisely how `Ctrl+Z` used to wipe it. A
 separate stack also means undoing one box does not rebuild a hundred placements,
 and the ship's own history is left untouched while you work.
 
 **Moving or turning a stand-in carries its shapes with it**, and changes nothing
 about the hull: the hull is authored in the module's own frame, so shifting the
-stand-in is a *view* operation. Left to itself the element slid out from under
+stand-in is a _view_ operation. Left to itself the element slid out from under
 its shapes, which then belonged to nothing — or worse, to whichever neighbour
 they had drifted into — and deleting it afterwards could not find them either,
 so they were stranded on the bench.
@@ -2148,7 +2188,7 @@ ownership half way through.
 
 Saving writes `ship_collision.json` beside `ship_manifest.json`, and loading
 reads it back **in preference to whatever the ship carries**. That is the whole
-point of it living apart: the collision is a property of the *kit*, not of any
+point of it living apart: the collision is a property of the _kit_, not of any
 one ship, so once these hulls are fitted the file can be shipped and the next
 ship built from the same kit starts fully fitted.
 
@@ -2161,17 +2201,17 @@ safely written. The status line names the problem instead.
 The manifest carries three collision blocks, and they are **not** three copies
 of the same thing:
 
-* `collision[chunk]` — a room's **own** one-off shapes, world space, in Havok's
+- `collision[chunk]` — a room's **own** one-off shapes, world space, in Havok's
   parameters. Grouped by chunk because collision is streamed per room.
-* `moduleCollision[moduleId]` — what a kit module carries, in the module's own
+- `moduleCollision[moduleId]` — what a kit module carries, in the module's own
   local space, in Havok's parameters. **Written once per module**, for the
   runtime to instance onto every placement of it and to share one Havok shape
   between them.
-* `moduleShapes[moduleId]` — the same hulls in the **authoring** form: editor
+- `moduleShapes[moduleId]` — the same hulls in the **authoring** form: editor
   coordinates, position/rotation/scale. The source the tool reloads from, and
   what `moduleCollision` is derived from — exactly the way `colliders` relates
   to `collision`.
-* `colliders` — the editor's record of the *room's* shapes.
+- `colliders` — the editor's record of the _room's_ shapes.
 
 **A module's hull is deliberately not expanded per placement.** It used to be,
 and that block was both the largest of the three and the only one that grew with
@@ -2223,20 +2263,32 @@ manifest instances its shapes onto every placement of it, so there is nothing
 per-room to keep in step and nothing to re-run after an edit: change the hull
 once and every room that uses that module changes with it.
 
-
 ### What the viewport shows
 
 The **Ship + collision / Ship only / Collision only** switch in the toolbar
 composes with everything else rather than fighting it: it can only ever take
-things *off* screen, so chunk isolation and the `Shift+H` veil keep the last
+things _off_ screen, so chunk isolation and the `Shift+H` veil keep the last
 word. It runs through `applyVisibility()`, the one place that decides what is
 enabled, for exactly that reason. Hiding a layer drops any selection it hides,
-so the gizmo and the inspector never act on something nobody can see.
+so the gizmo and the inspector never act on something nobody can see. New
+editor sessions start in **Ship only**.
 
-The **Baked** checkbox is a fourth world of its own, alongside the ship, the
-collision staging area and the palette's ghost: it swaps the authored ship for
-`ship_baked.glb` and its Blender lightmaps. See
-[Seeing the bake](#seeing-the-bake--the-baked-view).
+**Runtime** is not a fourth world the way the collision staging area is: it
+lights the ship you are building rather than swapping it for something else, so
+elements stay pickable and an edit is re-lit on the next frame. See
+[The three view modes](#the-three-view-modes).
+
+**The view-mode combo is derived, never stored.** The viewport's state is two
+independent flags — `runtime` and `unlit` — and `VIEW_MODES` maps each named
+mode onto a pair of them. `viewModeFlags()` reads the table forwards to apply a
+mode; `viewMode()` reads it backwards to name the flags. A `state.viewMode`
+field beside them would be two truths about one thing, and the flags move on
+their own — `setRuntimePreview()` moves `runtime` at both edges of a load — so
+the stored name would be the one that drifted, and the combo would sit there
+claiming a mode the viewport was not in.
+
+These used to be checkboxes, which could spell states nothing rendered:
+"diffuse only" with no lighting up, say. Named modes cannot.
 
 ### The shell thickness
 
@@ -2247,7 +2299,7 @@ is **one metre**. A two-plate room therefore came out with metre-thick slabs top
 and bottom while its walls were 7.5 mm.
 
 A module with no depth on some axis is now given at least the **collision shell
-thickness**, and so is one that is merely *thinner* than it. The shell is a
+thickness**, and so is one that is merely _thinner_ than it. The shell is a
 **minimum**, not a filler for zero-depth axes: it began as the latter, which
 made it look broken — a barrel has real depth on all three axes, so nothing you
 typed ever changed anything. A minimum is both what the name implies and what is
@@ -2261,7 +2313,7 @@ of it.
 For a primitive the `Size` row shows **Havok's own parameters**, not a bounding
 box: a box gives its three sides, a sphere one radius, a capsule or cylinder a
 radius and a height. A world AABB would show a sphere as three identical sides
-and a *turned* capsule as something with no relation to the radius it is
+and a _turned_ capsule as something with no relation to the radius it is
 actually built from — and the whole point of constraining the scale is that
 those numbers are the truth.
 
@@ -2275,17 +2327,31 @@ layout**, go through the **undo stack** like any other edit, and are read back
 through `{ ...CONFIG_DEFAULTS, ...saved }` so a layout written before a setting
 existed returns that setting's default rather than `undefined`.
 
-The pane also holds the editor-only **Ghost** transparency slider and **Big
-icons** palette toggle. Those are view preferences, so they remain in
-`localStorage` and never enter the manifest or exported `.glb`.
+The pane also holds the two lighting sections, the **Ghost** transparency slider
+and the **Big icons** palette toggle. Every row on it is now **saved with the
+ship**, in one of three places: `environment` for the **Runtime** section, which
+is authored ship data the game reads; `editorEnvironment` for the **Editor**
+section, and `editorPrefs` for Ghost and Big icons, neither of which the demos
+may read. The editor-side rows keep a `localStorage` copy as the fallback for a
+ship whose manifest predates the block — a value in the manifest always wins.
+Nothing on this pane is a setting you have to make again next session.
 
-| setting | default | what it does |
-| --- | --- | --- |
-| Collision shell | `0.008` m | the *minimum* thickness any collision box is given on any axis |
-| Auto-save every | `2` min | how often a recovery copy is written; `0` turns it off |
-| Hull tolerance | `0.1` m | how far a fitted hull may stray from the art — the fidelity dial for **Fit a hull** |
-| Hull thickness | `0.35` m | the depth a fitted hull gets along its thinnest axis |
-| Hull offset | `centered` | which side of the art that depth goes: `centered`, `negative`, `positive` |
+**The lighting is split by whose picture it describes, not by mode.** The
+**Editor** section is how you happen to be looking at the ship in this browser;
+the **Runtime** section is what the demos will render. Both are on screen at
+once, because the previous arrangement — a single `Env`/`Exposure` pair on the
+toolbar whose meaning changed under you the moment a runtime view was up — gave no way
+to tell which of the two you had just tuned, and no way to see the other. It
+also wrote whichever rig was live into the editor's `localStorage` keys, so an
+afternoon of tuning the runtime look quietly redefined the editor's.
+
+| setting         | default    | what it does                                                                        |
+| --------------- | ---------- | ----------------------------------------------------------------------------------- |
+| Collision shell | `0.008` m  | the _minimum_ thickness any collision box is given on any axis                      |
+| Auto-save every | `2` min    | how often a recovery copy is written; `0` turns it off                              |
+| Hull tolerance  | `0.1` m    | how far a fitted hull may stray from the art — the fidelity dial for **Fit a hull** |
+| Hull thickness  | `0.35` m   | the depth a fitted hull gets along its thinnest axis                                |
+| Hull offset     | `centered` | which side of the art that depth goes: `centered`, `negative`, `positive`           |
 
 `CONFIG_RANGE` checks a numeric setting against `min`/`max` and a worded one
 against its `choices`. Hull offset is the only worded one so far, which is why
@@ -2299,13 +2365,36 @@ at the default brings those walls up to 8 mm rather than leaving them at 7.5 —
 set it to 0.0075 if you want them exactly as modelled, or higher (0.03 is a
 reasonable choice) if you would rather nothing thin enough to tunnel through.
 
+The rest of the pane is not `state.config` — those rows have their own state and
+their own place in the manifest:
+
+| setting              | section | default                | saved in            | what it does                                                                    |
+| -------------------- | ------- | ---------------------- | ------------------- | ------------------------------------------------------------------------------- |
+| Env                  | Editor  | `1.5`                  | `editorEnvironment` | IBL strength while authoring — where metals get nearly all their brightness      |
+| Exposure             | Editor  | `0.55`                 | `editorEnvironment` | linear exposure of the editor views                                              |
+| Tone                 | Editor  | `Khronos PBR Neutral`  | `editorEnvironment` | view transform of the editor views                                               |
+| Ghost                | Editor  | `0.5`                  | `editorPrefs`       | how see-through `Shift+H` makes an element                                       |
+| Big icons            | Editor  | on                     | `editorPrefs`       | double-width palette with double-size tiles                                      |
+| Env                  | Runtime | `1.5`                  | `environment`       | IBL strength in the game                                                         |
+| Exposure             | Runtime | `0.55`                 | `environment`       | linear exposure in the game                                                      |
+| Tone                 | Runtime | `Khronos PBR Neutral`  | `environment`       | view transform in the game                                                       |
+| Specular AA          | Runtime | on                     | `environment`       | authored default for the player's specular-AA toggle                             |
+| Reflection roughness | Runtime | `1`×                   | `environment`       | multiplier over every ship material's authored roughness, `0.5`–`2`              |
+
+The **Runtime** rows are edits to the ship, so they push undo entries — the
+sliders once per gesture, the checkbox once per click. The **Editor** rows do
+not: they are how you are looking at the ship, and taking one back would spend
+an entry on a change no edit made. **Reset to defaults** puts every row above
+back, the ship-side ones under a single undo entry and only when at least one of
+them has actually moved.
+
 ### Folding the panes
 
 **Collision** and **Settings** are `<details>`, so their headers fold them. A
 `<details>` rather than a hand-rolled toggle: the open state is then a real
 attribute the browser keeps, keyboard and screen readers get it for free, and
 Ctrl+F still reaches a folded pane's contents. Which panes you keep rolled up
-is in `localStorage`, not the layout — whether *you* fold Settings says nothing
+is in `localStorage`, not the layout — whether _you_ fold Settings says nothing
 about the ship, and putting it in the layout would make folding a pane count as
 unsaved work.
 
@@ -2321,15 +2410,37 @@ unsaved work.
 > content and with 277 tiles the list is so much the bigger that the panes still
 > lost a third of themselves while the list kept hundreds of spare pixels.
 
+### Resizing the palette and the inspector
+
+A 5 px grip sits either side of the viewport. Drag it to resize the panel,
+double-click it to restore the default, or focus it and use the arrow keys —
+the grips are real `tabindex` elements with `role="separator"`, so the
+keyboard reaches what the mouse can. The viewport takes the difference, being
+the only flexible column.
+
+Widths live in `localStorage` and are clamped to `180 px … 45%` of the window
+on every drag **and** on every window resize, so a layout dragged wide on a big
+monitor cannot come back on a laptop with no viewport left in the middle.
+
+> **Two widths are remembered for the palette**, `paletteWidth` and
+> `paletteWidth.big`. With one, dragging the palette once would have pinned it
+> and made **Big icons** — which needs a much wider column to be worth having —
+> do nothing ever after.
+>
+> **The width is set on `document.body`, not on `:root`.** `body.big-palette`
+> already declares `--palette-w` as a class rule on `body`; a variable set on
+> the html element is shadowed by that for every descendant, so the inline
+> style has to sit on the same element to win.
+
 ## Live checks
 
 The inspector re-runs these on every change (they replace `build_ship.py`'s
 batch validators):
 
-* overlapping chunk volumes — ambiguous portal membership
-* objects below `y = 0`, or off the current move-snap grid
-* doors whose two sides resolve to the same chunk, or that have no leaves
-* chunks no door reaches
+- overlapping chunk volumes — ambiguous portal membership
+- objects below `y = 0`, or off the current move-snap grid
+- doors whose two sides resolve to the same chunk, or that have no leaves
+- chunks no door reaches
 
 ---
 
@@ -2339,15 +2450,15 @@ batch validators):
 the same ~20 root-level textures and names its materials identically
 (`MI_Trim_01`, `MI_Trim_02`, `M_Light`…). Loading them naively would give you
 one copy of a 2–4 MB atlas per module. `kit.js` keeps the first material seen
-under each key and disposes the duplicates *with their textures*; `thumbs.js`
+under each key and disposes the duplicates _with their textures_; `thumbs.js`
 does the same on its own engine, using the same key function. Placing 300
 modules costs 8 materials and 9 textures.
 
-> **The key is the name *and* its transparency**, not the name alone. The kit
+> **The key is the name _and_ its transparency**, not the name alone. The kit
 > authors some of those shared names two different ways: `M_Glass` is `BLEND`
 > with an alpha of `0` in two files and `OPAQUE` in twelve, and `M_Decal_White`
 > is `MASK` in thirty-one and `OPAQUE` in twenty-six. Keyed by name alone,
-> whichever module happened to load first decided how glass looked *everywhere*
+> whichever module happened to load first decided how glass looked _everywhere_
 > — and since the palette keeps its own cache, filled in a different order, a
 > window could be see-through on its tile and solid in the ship at the same
 > time. That is how this was found.
@@ -2371,8 +2482,7 @@ the emissive values the export flattened; it now carries alpha the same way:
 
 The kit's own pale green `(120, 198, 152)` at the middle of that alpha range is
 technically faithful and reads as almost nothing: at 28% opacity the pane is
-three-quarters whatever is behind it, and the tint led red by ten values out of
-255. These are the values judged in the Sandbox against the real ship instead —
+three-quarters whatever is behind it, and the tint led red by ten values out of 255. These are the values judged in the Sandbox against the real ship instead —
 a deep green `(0, 109, 11)` at half alpha, which is a window you can see is
 glass.
 
@@ -2383,7 +2493,7 @@ stops catching a white highlight and the colour is left to be read on its own.
 > **There is no `KHR_materials_transmission` in the export, and there must not
 > be.** Babylon's serializer only emits it when `subSurface.isRefractionEnabled`
 > and the refraction intensity is non-zero; nothing here touches either, and
-> setting `indexOfRefraction` does *not* turn them on — measured: after
+> setting `indexOfRefraction` does _not_ turn them on — measured: after
 > `mat.indexOfRefraction = 1`, `isRefractionEnabled` is still `false` and the
 > material exports with `KHR_materials_ior` alone. `e2e.mjs` asserts the
 > absence.
@@ -2410,9 +2520,35 @@ it on the way out.
 > material again and share one copy, instead of being kept apart over a
 > difference that no longer exists.
 
+**Two materials are the same material when they read the same textures.** The
+dedupe key is `name | transparency | the textures the material reads` — the
+name alone is not an identity, because the packs reuse names over genuinely
+different materials:
+
+| Where | What the name hides |
+| --- | --- |
+| Pirate Kit | *every* model calls its material `Atlas` and **embeds its own 32×32 slice of the palette**. The props' slice is white from row 7 down; a character reads its skin and clothes from row 9. |
+| MegaKit vs Essentials Kit | `MI_Trim_01`, `MI_Trim_02`, `MI_Trim_03`, `MI_Trim_03_Dark` and `M_Black` exist in both, over different atlases — `T_Trim_01_BaseColor.png` in one, `T_Trim_01_BaseColor_Red.png` in the other. |
+| Essentials Kit alone | `MI_Trim_02` maps to two different atlases across its own files. |
+
+Keyed by name, whichever module loaded first decided what everything with that
+name looked like — and it showed: **the Pirate characters rendered grey except
+for the prop in their hand**, which is the one part of them reading from a row
+the props' atlas also fills in. The palette keeps a second cache of its own,
+filled in a different order, so a module could be right on its tile and wrong in
+the ship at the same time.
+
+`Texture.url` is the identity for both kinds of kit: a file the loader fetched
+is its resolved URL — already through the kit-root redirect, so two modules
+naming the same atlas agree — and an image embedded in a .gltf is given
+`data:<the .gltf's url>#image0`, which names the file it came out of. Sharing
+then happens exactly when it is free: the MegaKit's modules still collapse to
+one material each, while a kit that embeds a texture per model gets one material
+per model, which for a 32×32 palette costs nothing.
+
 **A cached thumbnail is versioned.** The stills and turntables live on the
 server's disk and outlive any reload, so a change to how a thumbnail is
-*rendered* would otherwise be invisible until someone deleted the folder by
+_rendered_ would otherwise be invisible until someone deleted the folder by
 hand — which, for a bug whose whole symptom was a tile disagreeing with the
 ship, is exactly the wrong failure mode. `THUMB_VERSION` is stamped into every
 cache key, and a `PUT` sweeps the superseded copies of that module, unversioned
@@ -2424,7 +2560,7 @@ placement id. Picking walks `mesh.metadata.placementRoot` back to that node.
 
 **Ghosts are textured clones.** Instances cannot carry their own material, so
 the ghost clones the prototype's meshes (`Mesh.clone()` shares geometry — zero
-new geometries) and gives each one a cached translucent copy of its *real*
+new geometries) and gives each one a cached translucent copy of its _real_
 material, so you can tell which face of a module you are looking at.
 `PBRMaterial.clone()` re-creates every texture, which would duplicate the kit's
 2–4 MB atlases per material, so the copies are disposed and the slots
@@ -2432,14 +2568,24 @@ re-pointed at the originals — the scene texture count does not move.
 
 **Outlines use per-instance edges rendering.** This is the only one of the three
 options that follows a single instance: `HighlightLayer.addMesh()` throws on an
-`InstancedMesh`, and `renderOutline` is read off the *source* mesh, so it would
+`InstancedMesh`, and `renderOutline` is read off the _source_ mesh, so it would
 outline every copy of that module at once (both verified). Edges rendering also
 reads the instance world matrix every frame, so nothing has to be re-synced
 after a rotate or scale. Hover is orange, selection is blue, and the two can
 never land on the same element.
 
+The edges go on whatever is actually **drawn**, which in the Runtime view is not
+the mesh that was picked. There the authored instance is `isVisible = false` and
+a stand-in draws in its place, and Babylon dispatches an edges renderer from
+`_processActiveMeshes` — an invisible mesh is never an active mesh, so an
+outline hung on it is built, updated and never drawn. `edgeMeshes()` therefore
+maps each authored mesh through `renderListFor()`, which hands back the stand-in
+in a runtime mode and the mesh itself in an editor one. Picking is unaffected
+either way: it walks `metadata.placementRoot`, and the authored instance is
+deliberately left enabled and pickable.
+
 > **`edgesWidth` is not a pixel width.** The line shader offsets the vertex in
-> *clip* space, before the perspective divide, and the renderer hands it
+> _clip_ space, before the perspective divide, and the renderer hands it
 > `edgesWidth / 50` — so what you see is
 > `edgesWidth * renderHeight / (100 * viewDepth)`, which doubles every time you
 > halve your distance. A fixed 5 read as a fine line across a room and as a
@@ -2448,7 +2594,7 @@ never land on the same element.
 >
 > Turning that around gives the width to ask for, so it is set from the view
 > depth of each outlined mesh on every frame — the camera moves without
-> emitting anything, so this rides the render loop. It is the *view* depth, not
+> emitting anything, so this rides the render loop. It is the _view_ depth, not
 > the distance: that is what the shader divides by, and the plain distance
 > would fatten the outline on anything off to the side of the screen. Measured:
 > 4 px at 12 m and 3 px at 2.5 m, against 5 → 16 px before.
@@ -2460,7 +2606,7 @@ away from the pointer. The ghost offsets by the module's local body centre
 before snapping, which bounds the error at half a cell (measured: 0.40 m
 compensated vs 3.60 m without).
 
-**The ghost tracks the cursor on a plane through the module's *body*.** Kit
+**The ghost tracks the cursor on a plane through the module's _body_.** Kit
 modules are not modelled around their origin: a wall sits 2 m to the side of it
 and `TopCables_Corner_*` a full 4 m above it. Compensating only in X/Z left tall
 modules floating far up-screen from the pointer — far enough that you ran out of
@@ -2475,22 +2621,38 @@ controls are blurred on change, and any pointer-down in the viewport releases
 focus back to the app. `+`/`-` on the main row work as aliases for the numpad
 pair.
 
+**A number field swallowed letters, which made `R` look like it needed several
+presses.** Standing aside for a focused control is right — that is what typing
+is — but `Position X` and `Intensity` are `type="number"`, and a number field
+cannot spell a letter: the browser drops it silently. So `R` after typing a
+value did nothing, again did nothing, and only came back once something was
+clicked. A control now keeps only the keys it can actually use: a `textarea`, a
+`select` (a letter jumps it to the matching option) and a text field keep
+everything, while a **blind** input — number, range, colour, checkbox, radio —
+hands a bare or `Shift`ed letter back to the editor, which costs it nothing
+because it was discarding it. `e` is left with the field, since a number reads
+it as an exponent and no shortcut is spelled with it; `Ctrl`/`Cmd` chords stay
+with the field too, so `Ctrl`+`Z` in a half-typed number is still the browser's
+own text undo. `Enter` now blurs a focused control — "done with this field" —
+which hands the keyboard back after a search as well, where the letters really
+were the field's; `Escape` already did.
+
 **Alt is claimed from the browser.** On Windows, Chromium hands `Alt` to the
 menu bar — which then swallows the following keystrokes, so WASD silently stops
-working after any `Alt` press. Both the keydown *and* the keyup are
+working after any `Alt` press. Both the keydown _and_ the keyup are
 `preventDefault()`ed (menu activation happens on release). Worth knowing when
 debugging: this does **not** reproduce under Playwright, whose injected key
 events bypass the browser's own accelerator handling entirely.
 
 **Dragging moves the real elements, not a ghost.** A ghost is per-module and
 single; a drag has to move a whole selection. The delta is measured on a
-horizontal plane at the *selection's own height* rather than the build plane, so
+horizontal plane at the _selection's own height_ rather than the build plane, so
 the motion tracks the cursor instead of being skewed by perspective — and the
 **delta** is snapped rather than each element, which keeps a group's internal
 spacing exactly as authored even when it was placed off-grid.
 
 **A drag has to out-rank the camera.** Left-drag normally looks around, so
-`setupPointer` registers its observer *before* `camera.attachControl` and sets
+`setupPointer` registers its observer _before_ `camera.attachControl` and sets
 `eventState.skipNextObservers` on a pointer-down that starts a drag. The camera
 input then never records a start position, so the whole gesture is swallowed —
 no need to detach and re-attach anything mid-drag.
@@ -2498,7 +2660,7 @@ no need to detach and re-attach anything mid-drag.
 **Double-click is detected by hand, not via `POINTERDOUBLETAP`.** Babylon's
 double-tap requires the single tap to wait out the timeout, and a placement tool
 cannot afford 300 ms of latency on every click. Instead the first click always
-acts immediately and a second one within 320 ms and 6 px *also* emits
+acts immediately and a second one within 320 ms and 6 px _also_ emits
 `dblclick`, which frames the element. While a module is armed the double-click
 handler bows out, which keeps rapid clicking in the same spot placing two
 modules.
@@ -2507,7 +2669,7 @@ modules.
 ray/plane intersection (`cursorOnGrid()`). An actual mesh would sit in front of
 the geometry the moment the plane is raised above it, making every element
 unselectable — and at `y = 0` it tied with floor tiles resting exactly on it.
-Consequence worth knowing: if the plane is above the camera *and* you are
+Consequence worth knowing: if the plane is above the camera _and_ you are
 looking down, there is legitimately no intersection and the ghost stops moving.
 
 **Everything is double-sided in the editor.** Kit modules are single-sided in
@@ -2515,7 +2677,7 @@ places, and a wall turned away from the camera simply vanishes — correct in
 game, useless while building. `scene.onNewMaterialAddedObservable` forces
 `backFaceCulling = false` on every material, backed by a re-sweep whenever the
 material count changes: the observable can fire from the base `Material`
-constructor, *before* a subclass has applied its own culling default. The
+constructor, _before_ a subclass has applied its own culling default. The
 authored value is remembered in a `WeakMap` and `withAuthoredCulling()` puts it
 back for the duration of the glTF export, so the runtime gets exactly what the
 kit shipped rather than the editor's convenience setting.
@@ -2526,7 +2688,7 @@ it slows to a crawl as you close in and cannot simply walk down a corridor.
 Movement is fed through `cameraDirection` / `cameraRotation` rather than by
 writing `position` directly, so camera inertia still smooths it — with a
 `(1 - inertia)` factor on each impulse so the steady-state speed is the one
-asked for regardless of the damping. The camera therefore *coasts* to a stop
+asked for regardless of the damping. The camera therefore _coasts_ to a stop
 instead of halting dead: measured 0.68 m of coast, then nothing.
 
 **Zoom is a dolly, not a radius.** A free camera has no pivot to collide with,
@@ -2553,11 +2715,11 @@ POST to `cache/thumbs/` so later sessions are instant. Shaders only compile
 while rendering, so the readiness wait has to call `scene.render()` on every
 tick — waiting without rendering spins forever and yields a blank tile.
 
-The framing is re-applied *after* `setTarget()`. `ArcRotateCamera.setTarget()`
+The framing is re-applied _after_ `setTarget()`. `ArcRotateCamera.setTarget()`
 re-derives alpha and beta from wherever the camera currently is, so a module
 modelled high above its origin (`TopCables_Corner_*` sits at y = 4) pushed beta
 past 90° and got rendered from underneath, while alpha drifted per module and no
-two tiles matched. Note that *negating* beta does not fix this — `cos` is even,
+two tiles matched. Note that _negating_ beta does not fix this — `cos` is even,
 so the camera keeps its height and only mirrors in azimuth. Delete
 `cache/thumbs/` (and `cache/turntable/`) to force a re-render after changing the
 framing or the lighting.
@@ -2566,7 +2728,7 @@ framing or the lighting.
 implicit grid rows collapse to zero height and every thumbnail is invisible even
 though the images loaded fine.
 
-**Selection needs a *quick* click.** A left press only selects if it both stayed
+**Selection needs a _quick_ click.** A left press only selects if it both stayed
 within 4 px and was released inside `CLICK_MS` (300 ms); anything held longer is
 a camera gesture and selects nothing. Both halves are needed, and the movement
 test alone was not enough:
@@ -2581,7 +2743,6 @@ That ordering matters: a deliberately slow drag must still select the thing it
 is moving, which is why the drag path selects on activation rather than relying
 on the click.
 
-
 **Viewport lighting is fixed and not authorable.** Most kit materials are fully
 metallic and render black without an IBL, so the ship's own HDRI is loaded for
 reflections and pushed well above its render value, with a hemi + key + fill rig
@@ -2590,7 +2751,7 @@ pipeline. `public/data/kit_materials.json` carries Quaternius' authoritative
 emissive values (from the Unity URP project) and damps them for the viewport.
 
 **There are two hemispheres, aimed at each other.** Babylon's
-`HemisphericLight.direction` points at its *sky*, so a single one pointing up
+`HemisphericLight.direction` points at its _sky_, so a single one pointing up
 gives every downward-facing surface nothing but its (dark) `groundColor` — and
 that is every ceiling panel, pipe run and platform underside in the kit. A
 second hemisphere pointing **down** lights those. Its own `groundColor` is black
@@ -2617,17 +2778,17 @@ took a while to find because it looks like a texture problem.
 `MI_Trim_03` — the material on `Platform_Simple*` and `Door_Simple` — is a pale
 **dielectric** (its ORM blue channel is 0 everywhere; it is not metallic at all,
 despite what the flat white render suggests). At exposure 1.0 it renders at
-about **240/255**: deep in the KHR PBR Neutral *highlight shoulder*, where the
+about **240/255**: deep in the KHR PBR Neutral _highlight shoulder_, where the
 tone curve is almost flat. Everything the artist painted — dirt mottling, panel
 seams, the bolt strips — gets compressed into the top ~6% of the output range
 and simply disappears. Measured contrast over such a panel:
 
 | exposure | mean | std-dev |
-|---|---|---|
-| 1.0 | 240 | 6.5 |
-| 0.7 | 234 | 10.7 |
-| 0.55 | 229 | 12.2 |
-| 0.45 | 208 | 13.1 |
+| -------- | ---- | ------- |
+| 1.0      | 240  | 6.5     |
+| 0.7      | 234  | 10.7    |
+| 0.55     | 229  | 12.2    |
+| 0.45     | 208  | 13.1    |
 
 The giveaway was that the **same module looked sharper while being dragged**
 than once it was placed. There is no material difference at all: forcing the
@@ -2636,9 +2797,10 @@ ghost's material opaque makes it render pixel-identical to a placed one
 acting as an exposure cut, blending the surface down the curve and out of the
 shoulder.
 
-So the default is `EXPOSURE_DEFAULT = 0.55`, with a toolbar slider because the
-trade is real: lower exposure buys detail on pale panels and costs brightness on
-genuinely dark props. The setting is remembered in `localStorage`.
+So the default is `EXPOSURE_DEFAULT = 0.55`, with a slider in **Settings ▸
+Editor** because the trade is real: lower exposure buys detail on pale panels
+and costs brightness on genuinely dark props. The editor's own value is
+remembered in `localStorage`, as `editorExposure`.
 
 The thumbnail scene had exactly the same problem, worse — it ran at exposure 1.4
 with `environmentIntensity` 2.4, which is why `Platform_Simple_*` and
@@ -2648,17 +2810,17 @@ with `environmentIntensity` 2.4, which is why `Platform_Simple_*` and
 idiom silently jumps to the default instead of clamping to the floor;
 `setExposure` uses `Number.isFinite`.
 
-### What is *not* wrong
+### What is _not_ wrong
 
 **No ORM colour-space fix is needed**, and the loader is not mis-tagging
 anything. It is easy to talk yourself into the opposite, because the flags read
 backwards:
 
-| texture | `gammaSpace` | `useSRGBBuffer` |
-|---|---|---|
-| Base Color | `false` | **`true`** |
-| ORM | `true` | `false` |
-| Normal | `true` | `false` |
+| texture    | `gammaSpace` | `useSRGBBuffer` |
+| ---------- | ------------ | --------------- |
+| Base Color | `false`      | **`true`**      |
+| ORM        | `true`       | `false`         |
+| Normal     | `true`       | `false`         |
 
 Base Color is decoded by the **GPU** through an sRGB internal format, so
 `gammaSpace` is correctly `false` — the shader must not decode it a second time.
@@ -2669,21 +2831,22 @@ into a bare Babylon scene with none of this tool's code: identical flags.
 ### Unlit mode
 
 **Unlit mode** (`PBRMaterial.unlit`) drops lighting entirely and shows raw
-albedo. It stays available as a toggle for reading a very dark prop, but it is
+albedo. It stays available as the **Editor unlit** view mode for reading a very
+dark prop, but it is
 **not** used for thumbnails any more — it throws away far too much (all shading,
 all form, every specular cue) and the flat-tile problem it was introduced to
 solve turned out to be the exposure bug above.
 
 Raw albedo leaves the darkest props very nearly black, so unlit mode adds a flat
-**emissive lift** of `UNLIT_LIFT = 0.16`. Emissive is *additive* and is honoured
+**emissive lift** of `UNLIT_LIFT = 0.16`. Emissive is _additive_ and is honoured
 in unlit mode — measured on a 0.08 albedo, the rendered pixel goes 81 → 199 with
 a 0.5 emissive — which is exactly what a near-black texture needs; scaling the
 albedo instead would leave black black. Two things make this fiddly:
 
 - Materials carrying an **`emissiveTexture`** are the light strips, and their
-  `emissiveColor` *multiplies* that texture. Overwriting it would break them
+  `emissiveColor` _multiplies_ that texture. Overwriting it would break them
   rather than lift anything, so `applyViewportMode()` skips them.
-- The kit's own emissive values are written by `applyKitValues()` *after* the
+- The kit's own emissive values are written by `applyKitValues()` _after_ the
   material is constructed, so the snapshot taken by
   `scene.onNewMaterialAddedObservable` is a stale black. `applyKitValues()`
   re-takes it with `noteAuthoredEmissive(mat, true)` once its values are in
@@ -2713,536 +2876,552 @@ first hover only — 12 renders is far too expensive to do up front for 277
 modules — and cached under `cache/turntable/` via `/api/turn/<key>`.
 
 The animation is stepped in JS rather than with a CSS `steps()` animation.
-Percentage `background-position` is measured against *(box − image)*, so with a
+Percentage `background-position` is measured against _(box − image)_, so with a
 12-frame sheet the step between frames is `1/11` of the range, not `1/12`;
 driving it explicitly avoids that off-by-one entirely.
 
 **All thumbnail-scene work is serialised through one promise chain.** Stills and
 turntables share a single scene and a single camera, but they are triggered
-independently — stills by scrolling, turntables by hovering — so they *will*
+independently — stills by scrolling, turntables by hovering — so they _will_
 overlap in normal use. A turntable holds its module in the scene across 12
 renders, and any still rendered in that window came out with **two different
 modules in the picture**. `exclusive()` queues every use of the scene, and
 `loadFrameAndRun()` additionally sweeps any leftover mesh before loading, so a
 missed disposal cannot photobomb the next tile either.
 
+**A tile whose picture does not exist yet says so.** The first visit to a kit
+has nothing in `cache/thumbs/`, so a screenful of tiles would otherwise sit
+blank for a few seconds and read as a broken palette or as modules that failed
+to load. When `request()` misses the cache the tile takes a `thumb-pending`
+class, whose `::before` covers the thumbnail square with **"Generating
+preview…"**, and drops it when the render lands — success or failure, so a
+module that cannot be loaded ends up an empty tile rather than a permanent
+promise. The message is deliberately on the tile rather than in a corner
+progress line: it is the *tile* that is waiting, and several are waiting
+independently.
+
 ---
 
-## Relationship to the Blender pipeline
+## Environment probes — the ship reflects its own rooms
 
-`build_ship.py` is superseded as the authoring path. What carried over is data,
-not code:
+Babylon-Lite has no global illumination, and this ship is a corridor crawler:
+almost every surface is a metal panel a metre or two from another metal panel.
+Lit by analytic lamps alone, those panels reflect nothing — or, worse, reflect a
+single ship-wide skybox, so a sealed storage room mirrors the stars.
 
-| From `build_ship.py` | Now |
-|---|---|
-| kit material values | `public/data/kit_materials.json` |
-| grid constants (4 m tile, door slide 1.51, trigger 3.5) | snap config + `DEFAULT_DOOR` |
-| `validate()` / `check_door_clearance()` | live checks in the inspector |
-| manifest schema | `manifest.js` |
-| EEVEE render / compositor / probes | still Blender's job, if you want stills |
+An **environment probe** is the answer. It is a small cubemap of one room,
+prefiltered for roughness, that every material in that room reflects. It is not
+a lightmap: it carries no baked diffuse, nothing is unwrapped, and no second UV
+set exists anywhere in the pipeline. It is a picture of a room, taken from
+inside it, used as that room's reflection and its diffuse irradiance.
 
-Blender is also the **lightmap baker** — see below. That is the one place it is
-not superseded at all: Babylon-Lite has no global illumination and no baker, and
-the ship is a corridor crawler lit almost entirely by bounce off close walls,
-which is exactly what a real-time direct-lighting pass cannot give.
+### What a probe is
 
-## Baking lightmaps — `bake_lightmaps.py`
-
-```
-blender -b --factory-startup --python bake_lightmaps.py -- --glb ../export/ship.glb
-```
-
-The other end of the `extras` contract: the editor writes lights as bare nodes,
-this reads them back and rebuilds each one as a **Cycles Area light**. Cycles
-and not EEVEE because EEVEE cannot bake — that is the whole reason Blender is
-still in the loop.
-
-| Flag | |
-|---|---|
-| `--glb` | the ship the editor exported (required) |
-| `--manifest` | `ship_manifest.json`, for the portals. Default: beside the glb |
-| `--out` | where the lightmap images go, default `<glb dir>/lightmaps` |
-| `--skybox` | equirectangular image lighting the ship through its windows |
-| `--env-strength` | skybox intensity, matching the runtime environment |
-| `--samples` `--resolution` `--margin` | Cycles samples, square atlas size, bake margin — **for every chunk**, overriding what the manifest asked for. Default: per chunk, from the Chunks pane |
-| `--width` `--height` | a non-square atlas, again for every chunk. Both beat `--resolution` |
-| `--chunk` | bake only this chunk; repeatable. A name that is not in the ship stops the run |
-| `--device` | `AUTO` (default) selects the best available Cycles GPU and falls back to CPU; `CPU` forces the processor; `GPU` requires a supported GPU |
-| `--keep-emission` | leave glowing lamp materials alone, and double-count them |
-| `--force` | re-bake every chunk, even the ones nothing changed in |
-| `--report` | write the per-stage summary as JSON |
-| `--interactive` | set the scene up, then hand Blender over with a bake panel |
-| `--no-bake` | set the scene up and stop, rendering nothing |
-| `--no-unwrap` | skip the UV2 atlases, for inspecting the scene as imported |
-| `--no-export` | bake the images but write no `ship_baked.glb` |
-| `--baked-glb` | where the baked ship goes, default `<glb dir>/ship_baked.glb` |
-
-Everything after the bare `--` is the script's; Blender eats the rest.
-
-**The axis contract holds with no fix-up, and that is by design.** A light emits
-along its own local −Y. The glTF importer turns Y-up into Z-up, which lands that
-−Y on Blender's **−Z** — the axis an Area light emits along — and lands `sizeX`
-and `sizeY` on Blender's own `size` and `size_y`. So the lamp is built as a
-**child of the imported empty with an identity local transform**: it inherits
-that empty's world matrix whole, and the conversion is never re-derived. Working
-it out here instead would mean re-implementing the importer's convention and
-then owning it forever.
-
-The bake is **diffuse, direct + indirect, with the colour pass off**. What is
-wanted is how much light reaches a surface, not what that surface looks like:
-leaving colour in multiplies the albedo into the map and then again at runtime,
-and every wall comes out twice as brown as it should be.
-
-A light with `shape: "none"` is **skipped**, which is what a flickering lamp
-wants — baking it would freeze one frame of the flicker into the wall. The
-runtime half of the record is none of Blender's business and is ignored.
-
-### The stars outside, and the windows they come through
-
-`--skybox` takes an **equirectangular** image and wires it straight into the
-world through an Environment Texture node. Equirectangular and not the cube map
-the runtime uses, because Blender's node has no cube input — which is what
-`scripts/skybox-cube-to-equirect.mjs` exists to produce. That script already
-writes the star field in Blender's own orientation, so there is deliberately
-**no mapping or rotation node here**; adding one would rotate the sky away from
-what the runtime shows. `--env-strength` matches the runtime's environment
-intensity.
-
-With no `--skybox` the world is left **black**, not Blender's default grey. A
-uniform grey world is an ambient term the runtime does not have, and it would
-wash the whole bake flat.
-
-Then every door whose far side is `__SKYBOX__` becomes a **Cycles portal**, read
-from `ship_manifest.json` — doors never reach the `.glb`, so the manifest is the
-only place the openings exist. A portal emits nothing. It marks a hole the world
-light comes through, so Cycles can aim its environment samples at the windows
-instead of firing them at the inside of the hull and throwing almost all of them
-away. In a sealed ship lit through a handful of small panes that is the
-difference between a clean bake and a blizzard.
-
-Doors between two rooms are **left out**: no world light comes through them, and
-a portal there would send samples at a wall.
-
-The rectangle is built from the portal's **corners**, not from its stored
-normal — a door that was rotated, scaled or mirrored still gets a portal that
-covers exactly the hole it left. Its −Z, which is the axis an Area light emits
-along, is turned to face **into the room**, using the chunk's `aabb` centre to
-pick the sign. Facing it the other way is not a smaller win but a loss: it would
-guide every sample out into space, and the room would bake noisier than with no
-portal at all.
-
-### The lamp that lights itself twice
-
-A kit lamp module carries the emissive material `M_Light`, and
-`kit_lights.json` seeds an **area light** onto the same strip. Both are correct
-on their own and wrong together: Cycles would count the strip once as a glowing
-surface and once as a lamp, and the wall opposite would bake at roughly double
-brightness. So before the bake every emissive material on a lamp that carries a
-light record is **zeroed**.
-
-It is zeroed on a **copy**, `<name>_NoEmit`. Kit materials are shared across
-every placement of a module — that is what `kit.js`'s registry is for — so
-dimming the original would put out every other lamp in the ship, including the
-ones that have no area light and are the only thing lighting their corner.
-
-The swaps are **undone** before `ship_baked.glb` is written. The lightmap
-replaced the *light the fixture cast*, not the look of the fixture: the strip
-still has to glow in the game. `--keep-emission` skips the whole pass, which is
-how the two bakes can be compared side by side.
-
-### One atlas per chunk, in a second UV set
-
-Every static mesh of a chunk is unwrapped into **one shared 0–1 square** with
-`smart_project` in multi-object edit mode, and bakes into **one image**. A chunk
-is exactly the unit the portal renderer already draws and culls by, so the
-runtime binds one lightmap per room rather than one per wall panel.
-
-Props the runtime redraws are left out, and the rule is the runtime's own read
-back from the manifest: `behaviors[name].dynamic === true` says which nodes it
-**moves** — a door leaf that slides open would otherwise leave its own shadow
-painted across the floor it used to cover — and `behaviors[name].liquefiable
-=== true` says which it **melts**, whose geometry is replaced by a fluid the
-moment it is hit and which is a rigid body the player can shove before that.
-Liquefaction spreads down the assignment's `linked` names, exactly as
-`BehaviorManager.resolveDissolvableEntityNames` spreads it, and those go too:
-the runtime puts every linked node in `dynamicMeshes`, so a node left in the
-bake would have had its shadow painted in and then be lit as if it had not.
-Note that `liquefiable` deliberately does *not* imply `dynamic` in the editor —
-that rule is about rigid bodies — so the bake has its own, wider one. Glass
-panes are taken out of the *shadow* pass but keep their own map, so a window
-lights the room instead of sealing it.
-
-> **The UV2 layer index is the trap.** The glTF exporter numbers `TEXCOORD_n` by
-> **UV layer order**, and the runtime samples `TEXCOORD_1`. Of the ship's mesh
-> data, most arrive with a single `UVMap` — but a few kit meshes arrive with
-> **no UV layer at all**, and on those the new `UV2` became layer 0 and exported
-> as `TEXCOORD_0`. The lightmap would then have been sampled as if it were the
-> kit's own texture atlas: not a missing map, a *wrong* one. A placeholder
-> `UVMap` is now created first when a mesh has none, and the atlas report
-> carries a `misplaced` list that the test suite asserts is empty.
-
-### HDR for truth, PNG for the browser
-
-The authoritative output is **Radiance HDR**. Bounced light in a lit corridor
-runs well past 1.0, and clamping it at the bake would bake in the clipping the
-runtime's tone mapping exists to do properly.
-
-A **PNG** is written beside it, because a web texture is 8-bit. The map is
-divided by its own peak on the way out — `view_settings.exposure = −log2(peak)`
-— and the peak is written into `lightmaps.json` as `level`, which the runtime
-multiplies back. Clamping instead would flatten every highlight to white, and a
-fixed exposure would clip a bright room and crush a dim one. The view transform
-is forced to **Standard**: Blender's default AgX is a film look, and baking a
-look into data the runtime then tone maps again is tone mapping twice.
-
-### What comes out
-
-`ship_baked.glb` — the same ship, plus the UV2 the lightmaps are in. A *second*
-file and not an edit of the first, because `ship.glb` is what the editor writes
-and the bake reads: overwriting it would make the input of the next bake the
-output of the last one, and any error would compound instead of being corrected.
-`export_extras=True` carries the light records and the placement ids back out
-intact, nested objects included.
-
-`lightmaps.json` — which map goes on which chunk:
-
-```json
-{ "glb": "ship_baked.glb", "uv": 1, "gamma": true,
-  "chunks": { "CH00_Storage": { "png": "lightmap_CH00_Storage.png",
-                                "hdr": "lightmap_CH00_Storage.hdr",
-                                "level": 2.7, "resolution": 1024, "height": 1024,
-                                "meshes": 32, "hash": "b2d7…" } } }
-```
-
-`resolution` is the width and `height` the height — the two differ on a room the
-Chunks pane gave a non-square map.
-Shaped to feed `setPbrLightmap(material, texture, { coordIndex: 1, level,
-gamma: true })` in `packages/babylon-lite/src/material/pbr/enable-pbr-lightmap.ts`
-directly. The index is **merged** with the previous one rather than replacing
-it, so a `--chunk` run that bakes one room does not delete the other rooms from
-the file the runtime reads; entries for chunks that no longer exist in the ship
-are dropped.
-
-### Only what changed gets re-baked
-
-A full ship is minutes of Cycles and most edits touch one room, so each chunk is
-hashed and a map whose hash still matches is **kept rather than rendered again**.
-The hash is written into `lightmaps.json` beside the map it describes.
-
-What goes into it:
-
-* the chunk's own placements — id, module, position, rotation, scale;
-* its lights, but **only the `bake` half** of each record. Reading the runtime
-  half would re-render the ship every time somebody nudged a flicker speed;
-* its portals, and which of its nodes the bake leaves out — a prop that starts
-  moving, or that starts melting, drops out of the bake;
-* **everything one portal away.** A corridor lights the storage room through an
-  open doorway, so a lamp moved on the far side changes this side's map too. One
-  hop is where it stops: light that has bounced through two doorways is below
-  the noise floor of the bake that would have to be redone to catch it;
-* the bake settings that change the picture — environment strength, the
-  skybox's name and size, `--keep-emission`, `--keep-metals`, denoising and the
-  indirect clamp;
-* **this room's own samples, size and margin** — and not its neighbours'. They
-  decide the noise floor, the texel density and the packing of this map and
-  nothing else, so retuning one room in the Chunks pane re-bakes that room
-  alone.
-
-The device is deliberately **out** of the cache hash: CPU and GPU render the
-same scene, and invalidating every map because a bake moved machine would defeat
-the point. `AUTO` prefers OptiX, then CUDA, HIP and oneAPI, and reports the
-selected backend in the bake report. It falls back to CPU when no supported GPU
-is available; explicit `GPU` requests fail instead of silently using the CPU.
-The hash comes from the **manifest**, not the `.glb` — the glb is regenerated on
-every export and its bytes need not be stable, whereas the manifest is the
-authored truth the glb is built from.
-
-`--force` renders anyway, for when the images on disk are suspect. The reuse
-also checks that the files are still there, so a `lightmaps.json` that outlived
-its images cannot let a bake report success while writing nothing.
-
-The live **Blender** session has one extra rule: its first bake may have to
-repack the UV2 atlases for the whole ship. When that happens, every chunk is
-queued, even if the dropdown names only one room. Later changes to a chunk's
-width, height or margin repack and queue only that chunk; UV2 belongs to the
-chunk's own mesh data, so unrelated rooms keep their coordinates and images.
-
-### Baking from the editor
-
-The **Bake** button exports the ship and then runs the script, so what is baked
-is always what is on screen rather than whatever `ship.glb` happened to hold.
-`POST /api/bake` starts a background job and returns `202` immediately; `GET`
-polls it — Cycles' per-tile progress lines are the only progress it offers, and
-the last one names the chunk and the sample count — and `DELETE` cancels. A
-second bake while one is running is refused with `409`, and a machine with no
-Blender answers `503` rather than pretending. Set `BLENDER=<path>` or
-`config.blenderPath` if the search does not find it.
-
-**Shift-click** the button to force a full re-bake.
-
-### Seeing the bake — the **Baked** view
-
-The **Baked** checkbox shows `ship_baked.glb` with its lightmaps on it, in place
-of the ship the editor is holding. It cannot be shown on the authored meshes
-instead, for two structural reasons:
-
-* those meshes have **one UV set**, the kit's own. The lightmap atlas is a
-  second set, and it only exists after Blender has unwrapped it — which happens
-  on the way into `ship_baked.glb` and nowhere else;
-* kit materials are **deduplicated across the whole catalogue**, so one
-  `MI_Trim_01` serves every room in the ship. A lightmap is per chunk, and there
-  is no way to hang two of them on one material.
-
-Which makes the preview an honest one: what is on screen is the file the runtime
-will load. Each chunk gets its own **copy** of every material it uses — Blender
-shares materials across chunks exactly as the kit does, so without the copy the
-last chunk processed would win and every other room would wear its lightmap. The
-map is bound with `coordinatesIndex = 1`, `level` put back from
-`lightmaps.json`, and `useLightmapAsShadowmap` **off**: the bake is diffuse
-direct + indirect with no colour in it, so it is not a shadow over the runtime's
-lighting, it *is* the lighting.
-
-Turning it on also drops the editor's own light rig, which would otherwise sit
-on top of the bake and hide exactly what is being inspected, and in its place it
-rebuilds the **authored runtime lamps** over the props the bake skipped. Those
-props are the ones carrying the `dynamic` behaviour: they are pulled out of the
-bake precisely because they move, so they come back with no lightmap and no UV2
-and would render as black silhouettes with nothing lighting them.
-
-> **The lamps are read from `state.lights`, not from the glb** — the opposite of
-> the meshes beside them, and the opposite of what this used to do. The glb's
-> `LIGHT_*` extras are the bake's record of the lamps, frozen at the moment it
-> rendered, so a preview built from them ignored the inspector: **Range**,
-> **Intensity**, colour and cone could all be edited with nothing happening on
-> screen. The argument for reading the file was consistency with the walls, and
-> it does not survive contact with what these lights *are*. A wall's lighting is
-> in the atlas, so the file is authoritative about it. A lamp's **runtime** half
-> is by definition the half no bake consumes — the engine applies it over the
-> atlas, every frame — so the file has no claim on it, and there was no re-bake
-> that would have shown an edit either. The **bake** half is still the file's to
-> state, because that is precisely what the file is: a record of a render that
-> already happened, with `bakedDrift()` to report when the ship has moved out
-> from under it.
->
-> This costs no conversion. The authored lamps are in the editor's frame and the
-> glb arrives under the loader's handedness flip, but `syncStandIns` puts every
-> baked node back onto its authored element — so the props these lamps light are
-> rendered in the editor's frame too, and the two agree by construction. The
-> e2e `standOffset` check is what holds them to it.
->
-> Edits are **poked into the existing light**, and only a change of *shape*
-> rebuilds. A slider emits on every tick, and disposing a light dirties every
-> material it touched, which is a shader recompile per frame for a number.
-> `lightSignature()` is the line between the two: type, `clustered` and the mesh
-> scope pick the constructor, the falloff curve and `includedOnlyMeshes`, none of
-> which can be changed after the fact — everything else is a scalar. Lamps also
-> follow their owner every frame, because a light is a child of the element it
-> rides and the stand-in beside it is already following the drag.
-
-The scoping rule is the runtime's — a clustered lamp lights the whole ship, a
-non-clustered one only the props of its own chunk — so what the preview shows is
-what `demos/aquanova/lights.ts` will build.
-
-**The `Env` slider affects both baked surfaces and dynamic props.** Baked
-materials keep their lightmap as a multiplicative diffuse contribution, but
-remain on the normal PBR path so the environment can provide reflections on
-metal ceilings, walls, crates, and consoles. Dynamic props continue to receive
-the environment normally, alongside the authored runtime lamps. This makes the
-baked preview a better approximation of the final game image without adding
-the editor's authoring rig on top of the bake.
-
-The container is loaded fresh on every switch and disposed on the way out, and a
-bake finishing while the preview is up reloads it: a preview that outlived the
-bake it came from would show the last render of a room that has since been
-rebuilt, which is worse than showing nothing.
-
-### Editing through the bake
-
-The ship stays editable while the preview is up: pick, drag, rotate, duplicate,
-delete and undo all work, and the baked geometry follows. There is no separate
-"look at it" mode to leave, because the whole point of looking at the bake is to
-find things to fix, and a view you have to leave before fixing them turns every
-fix into a round trip.
-
-What makes it possible is that Blender leaves the ship's structure intact.
-`bake_lightmaps.py` exports **one node per placement**, named with the element's
-name or, failing that, its id, parented to `CHUNK_<id>`. Every node comes back
-drawing **exactly the geometry it left as, in the same place** — which is what
-lets each baked node be paired with the element it came from and driven from
-that element's world matrix.
-
-> **The pairing is exact; the matrix is not.** glTF is right-handed and Babylon
-> is left-handed, and the loader reconciles them by negating local X in the data
-> and hanging a `scaling = (1, 1, -1)` off `__root__`. Those cancel *as a
-> rendered result*, but they do not cancel as a matrix: `__root__`'s world
-> matrix is `diag(-1, 1, 1)`, a **reflection**, and the baked vertices are still
-> in glTF's frame underneath it. So the baked node's world matrix is not the
-> element's — it is the element's with that reflection applied.
->
-> Driving the stand-in from the element's matrix alone therefore *drops* the
-> reflection. The node lands in the right place with its basis mirrored, so the
-> geometry renders flipped about its own origin with its winding inverted. It is
-> a quiet failure: every symmetric module looks perfect, and only the asymmetric
-> ones move, which reads on screen as "some walls are in the wrong place" rather
-> than as the ship turning inside out.
->
-> `conversionAbove()` reads that reflection back off whatever node the loader
-> parked it on — rather than hardcoding `diag(-1, 1, 1)`, so a loader that ever
-> converts differently keeps working — and `syncStandIns` re-applies it:
-> `local = flip * elementWorld * inverse(chunkWorld)`. The same matrix, inverted,
-> is what recovers the element's pose *as the bake saw it*, which is what
-> `atBake` stores. Reading `atBake` off the element instead would compare it
-> against itself, and an element dragged between the bake and the preview could
-> never be reported as drift.
-
-So each element gets a **stand-in**: the baked node that is drawn in its place.
-Its own meshes are disabled and the stand-in is made pickable and stamped with
-`metadata.standInFor`, which is what turns a click on baked geometry back into a
-selection of the element that owns it (`ownerIdOf`, alongside `entryOf`). The
-selection and hover outlines trace the stand-in's meshes rather than the
-element's, because an outline has to trace what is on screen, not what is
-behind it.
-
-Three details are load-bearing:
-
-* **the map is keyed by id, never by node reference.** Undo restores through
-  `deserialize` → `clearAll` → `removePlacement`, which disposes *every*
-  placement node and builds new ones — so any stored node reference survives
-  exactly one Ctrl+Z and then lies. Keying by id also rules out the tidier
-  design of reparenting each stand-in under its placement, which would have made
-  transforms, deletion and the veil free but would have been wiped by the first
-  undo;
-* **matching is by name and broken by position.** Elements sharing a name share
-  one behaviour entry, so names are not unique, and Blender cannot hold two
-  objects called `crate4` — it appends `.001`. The suffix is stripped and the
-  tie is broken by the *nearest unclaimed* candidate, with no distance
-  tolerance: an element moved since the bake should still find its stand-in and
-  be reported as moved, rather than be drawn twice;
-* **the sync forces the recompute.** While the bake stands in for an element,
-  the element's own meshes are disabled, so the scene never renders them and
-  never refreshes their world matrix — an unforced `computeWorldMatrix()` hands
-  back the position the element had when it was last *drawn*, and the stand-in
-  then follows a drag only when something else in the frame happens to force the
-  update. Forcing it makes `updateFlag` useless as a gate, so the work is gated
-  on the matrix having actually changed: sixteen float compares against a
-  decompose and two matrix multiplies.
-
-Because the ship can now drift away from the bake that is being drawn, the
-preview says so. **CHECKS** grows a `bake is behind` line counting what the file
-no longer describes: `moved` (dragged since the bake, so it is showing light
-computed somewhere else), `not in it` (placed since, so it draws its own unlit
-geometry — the honest answer, since there is no lighting for it yet) and
-`deleted`. All three mean the room wants baking again.
-
-The stand-in swap runs *after* the element's own visibility has been decided, so
-it is never a second opinion on isolation, the layer filter or the Shift+H veil
-— a ghosted element keeps its own translucent clones and its stand-in stands
-down. Deletion is caught in `removePlacement` rather than by a sweep, because
-that is the one moment a placement actually disappears.
-
-### Baking in a live Blender — the **Blender** button
-
-A headless bake is a few minutes during which nothing can be seen and nothing
-can be changed. That is the wrong loop for the question it is usually asked to
-answer, which is *"is this room lit right?"* — and that question has a much
-cheaper answer.
-
-The **Blender** button exports the ship and opens it in a real Blender window,
-set up exactly as the headless path would have set it up and stopped one step
-short of rendering. The window opens **standing in the first room, at head
-height**, with the 3D view's sidebar already out **on its Aquanova tab** —
-which takes a retry: a sidebar only learns its tab names by drawing its panels,
-so the category cannot be set until the window has drawn at least one frame. A
-timer keeps trying until it takes, and a session whose sidebar came up on the
-wrong tab still works, so a failure here is reported rather than fatal.
+Probes are authored in **Probes…** in the toolbar. Each one is:
 
 | | |
-|---|---|
-| **Chunk** | which room to look at and to bake, or all of them. This dropdown is the bake selector; selecting a collection or object in Blender's Scene Collection does not change it |
-| **Look inside** | hides every other chunk (Local View) and puts the eye 1.8 m over that room's floor, facing down its long axis |
-| **In the ship** | the same spot with the whole vessel back around you |
-| **Walk** | Blender's walk navigation: **WASD** moves, the mouse looks, **Q**/**E** drop and rise, the wheel changes speed, **Esc** leaves |
-| **Rendered** / **Solid** | viewport shading. Rendered is Cycles refining the *actual* lighting in a second or two — no lightmap involved |
-| **Light power** | scales every lamp off the watts the editor authored. `1.0` is what the editor has |
-| **Sky** | how hard the star field pushes through the windows |
-| **Samples**, **Resolution**, **Margin** | the same three the CLI takes, and with the same meaning: an override for **every** chunk this session bakes. **`-1` leaves each room on what the editor's Chunks pane asked for**, which is what they start at — a session that opened by forcing 1024 on a room the pane had set to 2048 would be quietly disagreeing with the editor. A map rendered at the panel's size carries the panel's numbers in its hash, so the next headless run notices and re-bakes it rather than keeping it |
-| **Bake** | re-reads the manifest's bake settings before rendering, with `Baking CH01_StorageCorridor (2/3) - 2 texture(s) remaining` in the panel and Blender's status bar, and **Esc** to cancel. A selected room is the only room queued unless UV2 was repacked for that room or the first bake initialized every room |
-| **Re-bake up-to-date rooms** | off by default: a room whose fingerprint has not moved already has the map this scene would render, so **All chunks** costs only the rooms the last change actually reached. Turn it on when the images on disk are suspect. The panel says how many rooms it spared |
-| **Export baked ship** | writes `ship_baked.glb` and the index. It is disabled while a bake is running |
-| **Send powers to the editor** | writes the lamps' current watts to `export/light_powers.json` |
+| --- | --- |
+| **box** | position and size of the volume the probe covers, in editor space |
+| **capture point** | where the six faces are rendered from — usually eye height, not the box centre |
+| **resolution** | face size; 256 by default, which is the kit's own texel density |
 
-So the loop becomes: pick a room, **Look inside**, turn Rendered on, drag
-**Light power** until it looks right, bake *that one chunk*, look again, and
-only then export. Every button runs the same function the headless path runs —
-the panel is a second front end on the pipeline, not a second implementation
-of it.
+An element belongs to a probe when its bounding box **intersects** that probe's
+box, and the element's own bounds are the **union of all its primitives** — a
+wall cannot have its trim band lit by the corridor and its face by the room.
+Where boxes overlap, the probe holding the larger share of the element wins, and
+an exact tie goes to the tighter box, so a cupboard nested inside a corridor's
+probe still wins its own geometry. The share is a per-axis fraction rather than
+an overlap volume, because ship trim is frequently a zero-thickness sliver whose
+volume is exactly zero against every probe.
 
-Head height is not a nicety. A ceiling panel looks even from above and blinding
-from under it, and a corridor that reads bright from outside the hull can still
-be a dark tunnel to walk down; 1.8 m over the floor is the only height that
-answers the question being asked. **Look inside** takes the room's lamps and
-portals with it — Local View shows the selection and nothing else, so isolating
-a room's *meshes* alone would leave it lit by lights that are no longer there.
-**Home** still frames the whole ship in one key.
+An element in no probe box at all reflects **nothing**, which is exactly what
+the runtime does with it.
 
-A few things are worth knowing about how it behaves:
+#### What a probe deliberately does not see
 
-* **Opening a session does not unwrap.** `smart_project` over a whole ship is
-  minutes, and the rendered viewport — the reason to open a window at all —
-  needs no UV2 whatsoever. The atlases are packed by the **first bake**, which
-  is why that one bake is slower than the ones after it and why the panel says
-  so. Changing **Resolution** or **Margin** repacks them, because the island
-  margin is a fraction of the resolution.
-* **Bake refreshes the manifest's bake controls.** Samples, atlas sizes,
-  margins and bake inclusion rules are re-read from `ship_manifest.json` before
-  the queue is built. Placement, light or portal edits are reported as a
-  warning and ignored until the Blender session is reopened, because those
-  values are already imported into the open scene.
-* **The bake is asynchronous, which is what makes Esc work.** Called straight
-  from a script, Blender's bake operator renders on the main thread: the window
-  stops redrawing and Esc does nothing. Invoked instead, it runs as a Blender
-  job with a progress bar — but it returns immediately, so saving the image has
-  to wait for the job to end. A modal timer watches the bake handlers, finishes
-  each chunk as it lands, writes `lightmaps.json`, and starts the next.
-* **The tweaks are folded into the chunk hash.** A light-power multiplier lives
-  nowhere in the manifest, so a room baked at 3× would otherwise keep the hash
-  of the 1× one and the next headless run would decide it was already current.
-  That is also what makes the panel's skip safe: dragging **Light power** moves
-  the fingerprint, so the very next **Bake** re-renders rather than deciding the
-  room is up to date. Nothing but a genuinely unchanged scene reads as fresh —
-  and the check tests the *files* as well as the hash, so an index that outlived
-  its images cannot make the panel skip a room it has nothing on disk for.
-* **Walk is bound to the letters W/A/S/D, not to their positions.** On an
-  AZERTY keyboard those four are scattered, and Blender ships no AZERTY preset.
-  Remap them in *Edit ▸ Preferences ▸ Keymap ▸ 3D View ▸ View3D Walk Modal Map*
-  if it gets in the way. The **Walk** button exists mostly because the shortcut
-  itself — <kbd>Shift</kbd>+<kbd>`</kbd> — is <kbd>Alt Gr</kbd>+<kbd>7</kbd>
-  there and not worth hunting for.
+A probe is a photograph of a room's **fixed** geometry, taken once and worn by
+every material in it for the life of the level. Anything that will not still be
+standing exactly there is left out of the render list, by behaviour:
 
-Exporting from a session is deliberately *not* the headless export: that one
-deletes every light on the way out (an Area light has no glTF equivalent, and
-the Cycles portals are lights too), which would leave a session that can never
-bake again. The session unlinks them for the duration and links them straight
-back instead.
+| behaviour | why it is left out |
+| --- | --- |
+| `reflectionProbe: "exclude"` | the authored opt-out, for something fixed that still must not be photographed |
+| `dynamic: true` | a rigid body — its authored pose is a starting position, not a fact about the room |
+| `liquefiable: true` | it is going to melt; what the probe would record is its shape before the game starts |
+| the weapon behaviour | a first-person viewmodel rides the camera, so it is never in the room at all |
 
-`POST /api/bake {"gui": true}` is what the button posts. Nothing is polled
-afterwards — the session belongs to you, its progress is on your screen, and it
-ends when you close the window. What comes back comes back as **files**: the
-lightmaps, which the **Baked** view reloads, and the powers, which **Get
-powers** pulls in.
+The weapon is matched by **name** (`weaponLiquefactor`) rather than by a flag,
+because that is the runtime's own contract — `behavior-manager.ts` switches on
+`assignment.name` — and a definition body invented here to mirror it would be a
+second source of truth that nothing enforces.
 
-### Getting the powers back — **Get powers**
+The filter lives in `meshesInProbeBox`, which is deliberately the **one** list
+both the render list and the digest are built from. Excluding a crate in the
+render alone would leave it in the digest, and nudging it would then mark every
+probe in its room stale for a capture that could not possibly look different.
 
-**Send powers to the editor** in Blender writes `export/light_powers.json`;
-**Get powers** in the editor reads it and writes those watts onto the matching
-lights, by id. Only the **bake** half moves — the session has no opinion about
-the clustered lights the runtime draws, and silently rewriting those from a
-Cycles slider is not something anybody asked for. It is one undo step, and it
-does not save: the change is yours to keep or drop.
+### Taking the capture
 
-A light that has since been deleted is counted and skipped rather than
-recreated. The editor is the authority on which lights exist; Blender is only
-ever the authority on how bright they should be.
+**Capture all**, in the **Probes…** window, renders every probe whose room has
+changed. It runs **in the editor, in the browser**, not in a build step —
+Babylon's GGX prefilter and `.env` serialiser are right there, so the file that
+comes out is produced by exactly the code the runtime parses it with, and a
+probe can be re-taken the moment a room is rebuilt without leaving the tool.
+
+**Capture**, beside it, takes the **selected probe alone** and leaves every
+other file in the folder as it is. Naming a probe is an instruction rather than
+a question about staleness, so that one is re-rendered whether or not its stamp
+still matches — it is what you reach for after nudging a lamp in one room, and
+it costs one room's six renders instead of the whole ship's.
+
+It is a **deliberate** act, and that is a change: entering the Runtime view used
+to bring every stale probe up to date on the way in. That made the one thing you
+reach for to take a quick look at the game's lighting cost a minute of rendering
+nobody asked for. What the Runtime view shows now is whatever `.env` files are
+on disk — which is exactly what the game would load if it started right now.
+
+Per probe, in `local-environments.js`:
+
+1. a square render target is created at the probe's resolution, with the room's
+   meshes as its render list — geometry beyond the box is another room's
+   business and would only be visible through a doorway, which is what the
+   portal renderer is for;
+2. the **six faces are rendered one at a time**, each from its own camera, and
+   read back — see below for why one cube target will not do;
+3. the six buffers are uploaded as a `RawCubeTexture`, and `HDRFiltering`
+   prefilters it for roughness at `FILTER_QUALITY = 1024`. Babylon's OFFLINE
+   quality (4096) is meant for a one-off conversion of a sky; a ship has a probe
+   per room and they are re-taken on every edit;
+4. `EnvironmentTextureTools.CreateEnvTextureAsync` serialises it, with
+   `disableIrradianceTexture` — the runtime reads diffuse irradiance from the
+   spherical harmonics the serialiser computes anyway, so the irradiance texture
+   would be a second copy of the same information at several times the size;
+5. `PUT /api/local-environment/<id>?hash=` writes it to
+   `export/environments/local_environment_<id>.env`, with the digest beside it.
+
+#### The capture is rendered explicitly
+
+`target.render()`, not `scene.render()`, and the difference is not cosmetic.
+**A scene frame does not draw a probe.** `scene.reflectionProbes` is a registry
+and nothing walks it; a probe's render target reaches `scene._renderTargets`
+only as a side effect of some material in the scene referencing its
+`cubeTexture`. A capture references it from nowhere — the whole point is to
+write it to a file — so a scene frame allocated the cube, rendered nothing into
+it, and serialised six faces of pure zero. Every `.env` in the folder was black,
+and every check around it passed: right size, right place, right digest beside
+it. A black 1024 probe is still 200 KB.
+
+#### Six separate renders, because clustered lighting is screen-space
+
+The obvious shape for this is one cube render target, or Babylon's
+`ReflectionProbe`, which is a wrapper around exactly that. Both draw six faces
+from one `initRender` — the pass is set up once and the faces are looped inside
+it. **That is the one thing this ship cannot do**, and it is why the first
+captures came out black except for the emissive panels.
+
+Aquanova lights the ship with *clustered* lamps, and clustered lighting is a
+screen-space algorithm. `ClusteredLightingSceneComponent` registers a tile-mask
+render target through the *active camera's* gather stage and tiles that camera's
+frustum — the tile size is derived from `engine.getRenderWidth()`. A probe's six
+90° frustums are neither the screen nor that camera, so every lookup a face
+shader makes lands in a mask belonging to a different view: no lamp is found,
+and only the emissive term survives. A cube target sets its lighting up once and
+then draws six different views through it, so five of the six faces are wrong by
+construction and the sixth only by accident.
+
+Turning clustering *off* for the capture is not an option either, and it is
+worth recording why so nobody tries it again. Un-clustered lamps are one uniform
+block each, on top of the scene, mesh and material blocks, and WebGL2 guarantees
+only `GL_MAX_VERTEX_UNIFORM_BUFFERS = 12` — about **nine analytic lights**. The
+ship has sixteen. The shaders do not merely run slowly, they fail to link, which
+makes `isReady()` false for ever and hangs the capture on its readiness wait.
+Culling lamps by range only got a probe down to twelve.
+
+So the capture drives one **2D** target six times, and each render is a real
+frame from the tile mask's point of view:
+
+```js
+const target = new BABYLON.RenderTargetTexture(name, size, scene, {
+  type, generateMipMaps: false, samplingMode: BILINEAR,
+  enableClusteredLights: true,          // tile the face, not the screen
+});
+target.activeCamera = camera;           // the face camera, per face
+...
+scene.incrementRenderId();              // not optional, see below
+target.render();
+```
+
+Three details make it exact rather than nearly right:
+
+| | |
+| --- | --- |
+| **`enableClusteredLights`** | the `ObjectRenderer` builds the tile mask for *its* camera, inside `onInitRenderingObservable` — before the framebuffer is bound, the only moment at which it is safe |
+| **`scene.incrementRenderId()`** | `_updateLightData()` early-returns while `_lightDataRenderId === scene.getRenderId()`, and a 2D render does not bump the id; without it, faces two to six reuse face one's lamp data |
+| **a frozen projection** | `getProjectionMatrix()` asks `engine.getAspectRatio()`, which reads the **canvas** at tiling time because the target is not bound yet — a 16:9 frustum against a square face. The camera is given `Matrix.PerspectiveFovLH(π/2, 1, …)` outright |
+
+The result was checked against the truth rather than assumed: the same view
+rendered through `scene.render()` and through this path agree to an RMS of
+`1e-5`.
+
+#### Which way is up
+
+Cube faces have a convention, and nothing in it is guessable. The capture states
+it, in `CUBE_FACES`, as six explicit `{ forward, up }` bases in `.env` face
+order — `+X, −X, +Y, −Y, +Z, −Z` — with the poles rolled so `+Y` looks down `−Z`
+and `−Y` looks down `+Z`. Babylon's own `ReflectionProbe` gets the poles
+inverted here, through a private `_invertYAxis` that has no setter; taking the
+cameras by hand is what removes that dependency.
+
+Two smaller traps sit under that:
+
+- `TargetCamera.setTarget` **cannot express straight up or down**. It recovers
+  pitch through `Math.atan` and forces roll to zero, which is degenerate on the
+  poles. `FaceCamera` overrides `_getViewMatrix()` with a `Matrix.LookAtLHToRef`
+  built from the face's own basis, and `_isSynchronizedViewMatrix()` to `false`
+  so the override is never cached away.
+- `readPixels` returns rows **bottom first** — it is a framebuffer read, and a
+  framebuffer's origin is its bottom left — while a cube face wants the camera's
+  up on row zero. The `RawCubeTexture` upload is therefore given `invertY =
+  true`.
+
+That second one is worth a warning, because it survived a first round of
+eyeballing. A vertical mirror leaves the centre of a face fixed, so every
+axis-aligned test direction matched perfectly and the poles landed in the right
+slots; only sampling at 45° off-axis exposed it, cleanly swapping each reading
+with its Y-mirror. Looking at the images did not help either — the corridor's
+orange truss is on the *ceiling*, and an upside-down corridor looks entirely
+plausible.
+
+It has one more tooth. A texel row flip is an **up/down** mirror only on the
+four side faces, whose vertical axis is the world's; on `+Y` and `−Y` it mirrors
+world **Z**. So a test that tilts more than 45° off the horizon lands on a pole
+face, where a broken build reads exactly the same as a correct one along that
+pair — the first version of the check in `e2e.mjs` sampled at 60° and passed a
+deliberately mirrored capture. The check now compares each horizontal bearing
+tilted 30° up against the same bearing 30° down, which keeps the sample on a
+side face, and it is proved by mutation: flip `invertY` back to `false` and the
+suite fails.
+
+#### Nothing that is still compiling is allowed through
+
+Babylon **skips** a mesh whose effect is not ready rather than queueing it, so a
+face rendered a moment too early has a permanent hole in it — and a hole in a
+cubemap is not a visible glitch, it is a slightly wrong reflection for ever.
+`waitForRenderList` polls `mesh.isReady(true)` for every mesh in the render list
+before each face, and throws rather than proceeding if they are not all ready
+inside two minutes. This is also why the render loop keeps running during a
+capture: Babylon only compiles shaders while it renders.
+
+The poll waits on a frame **or** a 250 ms timer, whichever comes first. That is
+not belt and braces: `requestAnimationFrame` does not fire in a background tab,
+and the deadline above is only reached by going round the loop — so on
+`requestAnimationFrame` alone, switching away from the editor mid-capture parked
+it there for as long as the tab stayed hidden, holding the busy lock with it.
+
+#### Nothing waits for ever
+
+Every long await in a capture is a promise Babylon settles from inside the
+render loop, and each one can wait on something that will never happen: a
+material whose shader fails to link never reports ready, a read-back on a lost
+context never returns, a server that stopped answering never replies. **None of
+them throw.**
+
+That matters far beyond the probe, because the capture holds the busy lock. A
+stall does not cost you a cubemap, it costs you the editor: the overlay stays
+up, every panel stays `inert`, and the only way out is a reload. So each step
+runs under a deadline — `withDeadline` for the ones that cannot be cancelled,
+an `AbortController` for the two that can — and a stall surfaces as an error
+naming the step, which `whileBusy` then unwinds in its `finally`:
+
+| step | how it is bounded |
+| --- | --- |
+| waiting for the render list | its own poll deadline, with the message saying how many meshes never came ready |
+| reading a face back | `withDeadline` |
+| `HDRFiltering.prefilter` | `withDeadline` |
+| `CreateEnvTextureAsync` | `withDeadline` |
+| declaring the probe list, uploading an `.env` | `AbortController` — these can genuinely be cancelled, and an abandoned upload should stop pushing a megabyte at nobody |
+| the scene becoming drawable again afterwards | `withDeadline`, logged rather than thrown |
+
+That last one was the one that actually bit. Restoring `applyByPostProcess` at
+the end of `withRuntimeCapture` changes a shader define on every material in the
+scene, and the `whenReadyAsync` that waits for the recompile is the **last**
+thing a capture does — so a single material that would not link showed up as the
+final probe hanging on "capturing environment probe … (4/4)" for ever, with the
+editor locked behind its own overlay. Two minutes is far longer than the slowest
+step measured on the real ship, so none of these can fire on merely slow work.
+
+#### Nothing of the editor gets into the file
+
+A cubemap is a record of **radiance**, not a picture. Four things are held off
+for the duration of a capture, and each one is a way the file could otherwise
+come out wrong:
+
+| | |
+| --- | --- |
+| **the lighting** | the runtime's, not the editor's four-light rig — the mode is entered if it is not already up |
+| **the ship's own reflections** | nulled, or a capture photographs the cubemaps the last one left and no two runs agree |
+| **exposure and tone mapping** | out of the materials, so the runtime is free to expose the result however it likes |
+| **the camera** | the capture's own, moved to each capture point |
+
+**Yes — the materials have no environment map at all while a face is rendered.**
+`withRuntimeCapture` sets `reflectionTexture = null` on every dressed material
+and puts each one back in its `finally`. That is a decision, not an omission,
+and it makes a probe a strictly **single-bounce** record: direct light from the
+authored lamps, plus whatever the emissive surfaces contribute, and nothing
+else. The alternative is a feedback loop. Leave the previous generation's
+cubemaps on, and capture two photographs the reflections in capture one, capture
+three photographs those, and the ship's rooms brighten a little on every pass
+with no fixed point to converge on and no way to tell a re-capture from a
+change. Nulling them makes the output a function of the ship alone, which is
+what lets the digest downstream mean anything at all.
+
+The cost is honest and small: a mirror-finish panel does not show the room
+reflecting itself back. In a corridor of brushed metal at roughness 0.4 that is
+not a difference anyone can point at, and the single bounce is what the runtime
+does anyway — it hangs one probe on a material, and that probe is this file.
+
+The target is created half-float, and `gammaSpace` is set to `false` on both it
+and the cube. `gammaSpace` marks the result as linear; the float format follows
+from it — a room lit by a bright lamp carries values well above 1, and an 8-bit
+target would clip them to white, which the `.env` serialiser then refuses
+outright. The clear colour is **black**, not the editor's backdrop: a hole in a
+spaceship shows space, not the tool's own grey.
+
+**Marking the target linear is not enough on its own to keep image processing
+out**, which is worth stating plainly because Babylon's own documentation reads
+as though it is. `ReflectionProbe` flips `applyByPostProcess` when the target is
+*bound* — by which point
+every material in the scene has already compiled with exposure and tone mapping
+baked into its shader, and the flag changes a shader define, not a uniform.
+Measured on the real ship: flipped at bind time, the six faces peak at exactly
+`1.0`, tone-mapped and clamped; raised before the shaders are asked for, they
+peak at `14.6`. So `withRuntimeCapture` raises it for the whole capture session,
+ahead of the readiness wait, and puts it back afterwards.
+
+The camera matters for the same class of reason. The editor's camera drives
+level-of-detail selection and culling, so leaving it in place would let *where
+the user happens to be parked* decide which meshes a room's cubemap recorded. A
+fresh `FreeCamera`, made active by `withRuntimeCapture` and moved to each
+capture point by `setCaptureViewpoint`, is what makes two runs from the same
+ship agree. It is not the camera the faces are rendered from — each face has its
+own — but it is the one the scene's own frames use while a capture is running.
+
+#### The editor is modal for the duration
+
+All four of those are scene-wide state, so a frame drawn in the middle of a
+capture is a picture of no state the editor is meant to have: the ship from the
+capture point, untone-mapped, with its reflections stripped.
+
+The render loop cannot simply be stopped, though: Babylon compiles shaders only
+while it renders, and every face waits on exactly that. So the capture takes the
+**busy lock** instead — the same overlay a load uses, which makes the toolbar,
+palette, viewport, inspector and every floating tool window `inert` and swallows
+the keyboard — and lets the viewport keep drawing whatever the capture's own
+state makes of it, behind the overlay. The overlay names the room being taken
+and counts through them, via `setBusyMessage`.
+
+The tool windows are in that list because the **Probes…** window is where a
+capture is started from, so it is guaranteed to be open for the longest lock the
+editor ever takes, with a New and a Delete button on it that would otherwise
+still answer the keyboard.
+
+What the lock does **not** swallow is the browser's own keys. `F5` and `Ctrl+F5`
+reach the browser whatever the editor is doing, because the state this guard
+describes — the tool wedged behind an overlay — is precisely the state in which
+you want to be able to reload the page. Claiming every key while busy meant that
+a capture that hung took the reload with it, and the only way back was to give
+focus to the URL bar and press Enter.
+
+`HDRFiltering.prefilter()` swaps the cube's internal texture and destroys the
+original, so the `RawCubeTexture` a capture builds is **single use** whatever
+happens next; it is disposed with the target and the face camera in the
+capture's `finally`.
+
+### What makes a probe stale
+
+Every capture declares the **whole** authored probe list to the server first,
+each with a digest, and gets back the ones that still owe a render. The digest
+covers everything the six renders can see and nothing else:
+
+- the probe's own box, capture point and resolution;
+- the name, **authored** material and world matrix of every mesh inside the box,
+  sorted — Babylon's mesh order follows creation, so an undo that rebuilds the
+  same ship in a different order would otherwise read as a change. "Inside the
+  box" is `meshesInProbeBox`, so the four excluded behaviours above are absent
+  from the digest as well as from the render;
+- every authored lamp: type, clustered flag, colour, intensity, range, angle,
+  position and emission axis, sorted.
+
+All lamps, not only the room's. A clustered lamp is scene-global by agreement,
+so the room next door genuinely can light this one, and deciding which lamps
+reach a box is exactly the question the renderer answers — guessing at it here
+would be a second, disagreeing implementation. The camera position is
+deliberately absent: the capture forces its own lamp scoping, so where you
+happen to be standing cannot change the result.
+
+The **authored** material, emphatically. The digest runs inside the Runtime
+view, where every mesh is drawn by a stand-in whose material is named after the
+probe it resolved to — and that probe only exists once a capture has been taken.
+Hashing what is on screen would make the first capture change the state the
+second is compared against, and every pass would find every probe stale for ever.
+
+The server compares each declared digest against the `.stamp` file beside the
+`.env` and reports the mismatches. Declaring is also what **prunes**: an id that
+is not declared has its `.env` and stamp deleted, and nothing else would ever
+remove a deleted probe's file from the publish.
+
+**Shift-click Capture all** forces every probe. It works by deleting the stamps
+rather than by special-casing the comparison, so there is still exactly one rule
+for what is pending — the stamp beside a file has to match the digest declared
+for it. A forced probe simply has no stamp, which is also true after a crash
+mid-capture, and it means an interrupted force leaves the remaining probes
+pending rather than looking done. Use it when something the digest cannot see
+has changed: a kit asset replaced on disk, or a fix to the capture itself.
+
+A single-probe **Capture** declares the whole authored list too — that is what
+prunes deleted probes and records the digests — but it declares it **unforced**,
+and then captures its one probe regardless of what came back as pending. Forcing
+the declaration would delete every stamp, which would leave the rooms it did not
+render looking stale for a capture nobody asked for.
+
+## The three view modes
+
+| mode | what it shows |
+| --- | --- |
+| **Editor** | the authoring rig: four lights, a global HDRI, and the Editor exposure/tone pair |
+| **Editor unlit** | raw albedo, for reading a very dark prop |
+| **Runtime** | the game's lighting: authored lamps only, each room reflecting its own probe |
+
+**Runtime** is not a second file. It dresses the **live authored ship**, which
+is what lets you pick, drag, rotate, duplicate, delete and undo while it is up —
+there is no "look at it" mode to leave, because the whole point of looking at
+the runtime lighting is to find things to fix, and a view you have to leave
+before fixing them turns every fix into a round trip.
+
+Entering it drops the editor's rig and its global HDRI. Both are things the game
+does not have, and both would sit on top of the authored lighting and hide
+exactly what is being inspected. **Env**, **Exposure** and **Tone** each have
+their own value for this mode, kept in **Settings ▸ Runtime** and separate from
+the **Editor** set beside them.
+
+### Why the ship is drawn twice, and by whom
+
+Every kit mesh in the ship is an **`InstancedMesh`**: a module is loaded once as
+a hidden prototype and every placement is a `createInstance` of it (see
+`kit.js`). Babylon's `InstancedMesh.material` is a getter onto the source mesh,
+and its **setter is a no-op that logs a warning** — an instance cannot carry a
+material of its own, because the whole point of instancing is that one draw call
+serves them all.
+
+So a probe cannot be hung on an instance. It has to be hung on a source mesh,
+and there has to be one source mesh per probe the module appears in. That is
+what `dressMeshes()` builds:
+
+- one **material clone** per (authored material, probe), carrying that probe's
+  cubemap as its `reflectionTexture`. Kit materials are deduplicated across the
+  whole catalogue, so one `MI_Trim_01` serves every room in the ship and there
+  is no way to hang two cubemaps on one material;
+- one **prototype clone** per (kit prototype, probe), wearing that material,
+  disabled and unpickable. `Mesh.clone` shares geometry — Babylon refcounts it —
+  so a prototype costs a draw-call bucket and no memory;
+- one **stand-in instance** per authored mesh, off the right prototype,
+  **parented to the authored instance at identity**. It therefore inherits the
+  authored world matrix, the authored enabled state, chunk isolation, hiding and
+  the veil, all for free and with no per-frame sync.
+
+The authored instance is then made **invisible, not disabled**: disabling it
+would take the stand-in hanging off it down too, and would take the element out
+of the editor's own picking predicate. The authored ship stays enabled, stays
+pickable and stays exactly where it was — only the pixels come from somewhere
+else.
+
+A stand-in is marked `metadata.runtimePreview`, and `isRuntimeStandIn()` is what
+everything walking an element's meshes filters on — the exporter's primitive
+list above all, exactly as `isVeilClone()` and `isGizmoMesh()` are filtered
+beside it. A stand-in that reached `artMeshes()` would take a primitive index
+and be written into the ship.
+
+A ship mesh that is **not** an instance is dressed the old way, by swapping its
+material. Nothing in the kit produces one today, but the two paths are one
+`sourceMesh` check apart and the alternative is a mesh that silently renders
+with the editor's HDRI.
+
+### Following the ship
+
+`syncElementEnvironments()` re-resolves every element's probe once per frame, off
+`onBeforeRender` rather than off an edit event: dragging a crate through a
+doorway has to move it onto the next room's cubemap the moment its bounds cross.
+The comparison is against the probe the element already has, so a still ship
+costs one bounds union per element and no churn at all. A changed probe means a
+changed **source mesh**, not just a changed material, so that element's
+stand-ins are thrown away and re-made off the right prototype — a handful of
+instances of already-loaded geometry, on the one frame it actually crosses.
+
+Adding, deleting or re-kitting an element brings in meshes the preview has never
+seen, so `redressPreview()` runs off the `placements` event and rebuilds the
+whole dressing. Rebuilding rather than patching is deliberate: the prototypes and
+clones are keyed by probe and source, so an unchanged ship rebuilds exactly the
+handful it already had, and a patch would have to reimplement every rule in
+`dressMeshes()` to decide what to keep.
+
+`undressMeshes()` is the exact inverse, and its order matters: the authored
+meshes are visible again and back on their own materials **before** anything the
+preview made is freed, so nothing is left pointing at a disposed material or
+standing invisible with nothing drawn in its place, even for a frame.
+
+> **`Material.clone` deep-copies every texture slot.** Babylon's `CopySource`
+> runs `sourceProperty.clone()` on each one, so every material clone owns a
+> private wrapper for the ship's base colour, normal and ORM maps that nobody
+> else can see. Left behind they leak a full set of the ship's textures on every
+> mode switch. `dressMeshes()` diffs `getActiveTextures()` against the source to
+> find them: a texture the clone *shares* rather than owns — `CopySource` passes
+> render targets straight through — is in both sets and is left alone. The e2e
+> counts `scene.textures` either side of a switch.
+
+### The lamps
+
+The preview builds the runtime's lamps from `state.lights`, the editor's **live**
+record, so an inspector edit is on screen on the next frame and nothing here
+reads a file. This is `demos/aquanova/lights.ts` rebuilt on Babylon.js, and the
+two are kept deliberately parallel — same −Y emission axis, same
+clustered-versus-scoped rule.
+
+The scoping rule is the runtime's: a **clustered** lamp lights the whole ship, a
+scoped one only the meshes of the chunk nearest the camera. Materials are
+compiled with `maxSimultaneousLights = MAX_PREVIEW_LIGHTS = 4`, and the
+clustered container counts as **one** slot however many lamps it holds — so four
+is one cluster plus three scoped lamps, which is what a room of this ship
+actually lights with. Babylon silently drops the rest, so this is a ceiling
+worth knowing about.
+
+Edits are **poked into the existing light**, and only a change of *shape*
+rebuilds it. A slider emits on every tick, and disposing a light dirties every
+material it touched, which is a shader recompile per frame for a number.
+`lightSignature()` is the line between the two: type, `clustered` and the mesh
+scope pick the constructor, which of the two lighting paths draws the lamp, and
+`includedOnlyMeshes` — none of which can be changed after the fact — and
+everything else is a scalar. A lamp is a
+child of the element it rides, so a drag carries it; a lamp left behind would
+light the place the fitting used to be.
+
+A lamp with `type: "none"` creates nothing, which is what a fitting that is
+purely decoration wants.
+
+## Publishing
+
+`lab/public/aquanova/scripts/sync-ship.ts` copies what the editor wrote into the
+demo:
+
+```
+pnpm tsx lab/public/aquanova/scripts/sync-ship.ts
+```
+
+It takes `export/ship.glb`, `export/ship_manifest.json`,
+`export/ship_collision.json` and the whole of `export/environments/`, and writes
+them under `lab/public/aquanova/`. The `.stamp` beside each `.env` is what lets
+it refuse a half-captured folder: a probe whose stamp does not match the digest
+in `local-environments.json` has not finished being taken, and publishing it
+would ship a cubemap of a room that no longer exists.
 
 ## Testing
 
@@ -3251,28 +3430,25 @@ npm test           # spins up a private server and runs every suite
 ```
 
 The runner starts its own server instance on port 5199 pointed at a **throwaway
-export directory**, runs the four suites against it, then deletes it. A test
+export directory**, runs the three suites against it, then deletes it. A test
 run therefore cannot touch a real ship — earlier the suites saved and exported
 straight into `export/`, which would have overwritten whatever you were working
 on. `SHIP_EXPORT_DIR` and `SHIP_PORT` override `config.json` if you want to
 point a server anywhere else. `SHIP_TEST_KEEP=1` leaves the throwaway directory
 behind instead of deleting it, which is the only way to look at the `.glb`, the
-manifest and the lightmaps a failing run actually produced.
+manifest and the captured `.env` cubemaps a failing run actually produced.
 
 Individual suites can still be run by hand, but they will not guess a server:
 
 ```
 TOOL_URL=http://localhost:5199/ node test/smoke.mjs      # catalogue, materials, markers, manifest, export
 TOOL_URL=http://localhost:5199/ node test/interact.mjs   # ghost, drag, hover, wheel, camera, keyboard
-TOOL_URL=http://localhost:5199/ node test/e2e.mjs        # clean-state build, save, artefact preservation
-SHIP_EXPORT_DIR=… node test/bake.mjs                     # the Blender half of the lightmap pipeline
+TOOL_URL=http://localhost:5199/ node test/e2e.mjs        # clean-state build, save, probe capture, Runtime view
 ```
 
-`bake.mjs` runs **real Blender** against the `ship.glb` `e2e.mjs` just exported,
-so it has to come after it. Blender is a tool the pipeline shells out to rather
-than a dependency of the editor, so a machine without it **skips** the suite
-instead of failing — set `BLENDER=<path>` to point at a copy the search does not
-know about.
+They have to run in that order when run by hand: `e2e.mjs` builds a ship, saves
+it and then captures its probes from what it just built, so it needs the export
+directory the two before it left behind.
 
 > **`TOOL_URL` has no default, and 5180 is refused outright.** It used to
 > default to 5180 — the port the editor runs on for real work — so running a
@@ -3315,15 +3491,15 @@ turns it off — the editor writes `ship_autosave.json` beside the ship, but
 
 Three deliberate choices:
 
-* **It is not the manifest.** A background write must never overwrite the ship
+- **It is not the manifest.** A background write must never overwrite the ship
   you last chose to save. Recovery is a copy you reach for, not a thing that
   happens to your work.
-* **Every one is kept.** Each write rotates the previous copy to a timestamped
+- **Every one is kept.** Each write rotates the previous copy to a timestamped
   name, so a long session leaves hundreds of small files. That is the point: the
-  value of an auto-save is having the state from *before* whatever went wrong,
+  value of an auto-save is having the state from _before_ whatever went wrong,
   and you cannot know in advance which one that is. They are a few kilobytes
   each, and deleting them is one command.
-* **It keeps its own baseline.** An auto-save does *not* clear "you have unsaved
+- **It keeps its own baseline.** An auto-save does _not_ clear "you have unsaved
   work", because the manifest still does not have those changes. Sharing one
   baseline would mean a background write quietly disarmed the guard that stops
   you closing the tab on an hour of work — the exact opposite of what an
@@ -3354,22 +3530,266 @@ Storage is cheap and these files are kilobytes. Recovering an afternoon is not.
 
 ```jsonc
 {
-  "kitDir":    "../kit",     // the bundled modules, mounted read-only at /kit
-  "exportDir": "../export",  // ship.glb + ship_manifest.json
-  "envDir":    "../env",     // HDRI, served at /env
-  "port": 5180
+    "kits": {
+        "source": "local", // "local" (BabylonAssets checkout) or "online" (the CDN)
+        "localDir": "../../../../../../../../BabylonAssets", // the checkout
+        "onlineBase": "https://assets.babylonjs.com/",
+        "prefix": "kits", // where the kits sit inside either one
+        "folders": ["Modular SciFi MegaKit", "Sci-Fi Essentials Kit"], // palette order
+    },
+    "exportDir": "../export", // ship.glb + ship_manifest.json
+    "envDir": "../env", // HDRI, served at /env
+    "port": 5180,
 }
 ```
 
 **Every path is resolved against `config.json` itself, not the working
 directory**, so the relative defaults keep pointing at this copy's own folders
 wherever the editor is cloned or moved to. An absolute path still wins, for
-anyone pointing the tool at a kit held somewhere else.
+anyone holding BabylonAssets somewhere else.
 
-The kit ships **inside** the editor (`kit/`, 35 MB, CC0 — see `license.txt`),
-so there is nothing to download or buy before the first run. It used to be an
-absolute path to wherever the pack happened to be unzipped, which meant the
-editor only ran on the machine that authored it.
+### Where the kits come from
+
+The kits are **not** bundled with the editor. They live in the BabylonAssets
+repository, whose root maps 1:1 onto `https://assets.babylonjs.com`, and
+`kits.source` picks which of the two the browser loads modules from:
+
+- **`local`** — the checkout named by `localDir`, mounted read-only at
+  `/assets/`. The app is then same-origin with its own assets: no second web
+  server to start, no CORS.
+- **`online`** — `https://assets.babylonjs.com/kits/...` directly.
+
+The two use the *same paths*; only the origin differs. `SHIP_KITS_SOURCE` and
+`SHIP_ASSETS_DIR` override both, so a run can be flipped without editing the
+config.
+
+`localDir` has to be present **even in online mode**, because the catalogue is
+built by listing the folder — a static CDN cannot be asked what files it holds —
+and because the thumbnailer renders from it.
+
+`folders` is palette order, not a whitelist: a kit dropped into `kits/` shows up
+without a config edit, after the ones listed here.
+
+### The palette shows one kit at a time
+
+Any number of kits can be installed, but the palette displays **exactly one**,
+chosen in the combo box above the search field. There is no "All kits" entry,
+and that is a decision rather than an omission: the category strips of unrelated
+packs do not merge into anything meaningful — `Walls, Platforms, Columns, Props,
+Decals, Aliens, Guns, Enemies, Rocks, PineTrees, Potions, Axes` names nothing you
+would look for, and "Props" would then mean sci-fi crates *and* pirate barrels in
+the same tab. Nothing is lost: picking a kit is one click, and search already
+spans the modules of the kit you are in.
+
+The tabs are therefore **that kit's own categories**, rebuilt when the kit
+changes. If the new kit has no tab matching the active one, the selection falls
+back to **All** instead of showing an empty list.
+
+The choice is kept in `localStorage` under `paletteKit` — it is a view
+preference, like the folded panes, not ship data, so it must not touch the
+manifest. A stored kit that is no longer installed is discarded on load and the
+first kit is used.
+
+### The three layouts, and the one to aim for
+
+- **Category subfolders** — `Walls/`, `Platforms/`, … The folder *is* the
+  category. **Every kit in BabylonAssets is arranged this way**, because it is
+  the only layout where the palette tabs, and therefore the module ids, are a
+  decision someone made rather than a by-product of how the models happened to
+  be named.
+- **A flat root** — the grouping is in the filename (`Gun_Pistol`,
+  `Enemy_Raptor`, whose prefixes become the `Guns` and `Enemies` categories).
+- **A format wrapper** — one folder named after the file format, `glTF/` or
+  `FBX/`. That is packaging, not a category: an `FBX` tab holding the entire
+  kit would say nothing. Those names are listed in `FORMAT_DIRS` and read as a
+  flat root one level down. The list is wider than what the editor can load —
+  `Blend/`, `OBJ/`, `Source/` — so a pack shipping several formats is read
+  once, through the best one it offers, rather than appearing to be foldered.
+
+The last two are how packs arrive from Quaternius, and the reason they are read
+at all is that **a pack should be usable the moment it is dropped into
+`kits/`** — before anyone has looked at it. It is not where a pack stays:
+copying a pack in means sorting it. The Pirate Kit came as `glTF/` and is now
+`Characters/ Enemies/ Environments/ Props/ UI/ Weapons/`; the Nature and RPG
+packs came as `FBX/` and are now a single `Nature/` and `Items/`, because
+neither has any grouping worth a tab strip; the Essentials Kit came flat and is
+now `Enemies/ Guns/ Props/`, which is exactly what its filenames were already
+saying, so not one module id changed.
+
+A derived category has to earn its tab: a filename prefix becomes one only when
+**at least three** modules share it (`MIN_DERIVED_CATEGORY`), otherwise the
+module lands in **Other**. In several packs the underscore marks a *variant*
+rather than a group — `Potion1_Empty`, `Potion1_Filled` — and taking every
+prefix at face value produced a strip of one-tile tabs named `Potion1`,
+`Potion2`, `Potion3`. Names are pluralised on the way in (`Axe` → `Axes`,
+`Bush` → `Bushes`, `Enemy` → `Enemies`, `Characters` left alone). None of this
+applies to a foldered kit: there the folder name is the tab name, verbatim,
+which is why the Pirate kit's tab reads `UI` and not `UIs`.
+
+A module id is **kit-qualified** —
+`Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight` — so two kits may each
+hold a `Props/Crate` without one shadowing the other. That id is what the
+manifest stores, so it is a permanent contract rather than a display string:
+sort a kit's folders *before* building with it, because moving a model between
+categories afterwards renames every instance of it in the ship. Sorting a flat
+kit into the folders its filenames already named is the one free case, and it
+is why the Essentials Kit could be foldered after the fact.
+
+### `.fbx` kits, and the unit they are modelled in
+
+Several Quaternius packs ship `.fbx` and no glTF. Babylon's loaders bundle
+registers an FBX plugin itself, so nothing had to be added to load them — but
+**it ignores the file's `UnitScaleFactor`**. The loader parses the value into
+its `GlobalSettings` and then never reads it again, and exposes it on nothing:
+container, scene and root metadata all come back `null`.
+
+That is not a rounding matter. FBX's `UnitScaleFactor` is *centimetres per
+unit*, and Quaternius exports at the Blender default of `1.0`, so a tree that
+should be 2.48 m tall arrives **248 units** across and swallows the ship.
+
+`fbxMetresPerUnit()` reads the value out of the bytes — the length-prefixed name
+token in a binary file (matched with its prefix so `OriginalUnitScaleFactor`
+cannot be picked up instead), a regex in an ASCII one — and defaults to `1`, the
+FBX default, when the file says nothing. `loadModuleContainer()` fetches the
+file once, hands the same buffer to the loader as a `File`, keeping `rootUrl`
+intact for relative textures, and scales the container's root nodes by
+`unit / 100`. Both the palette prototype and the thumbnailer go through it, so a
+tile and a placed module can never disagree about scale.
+
+### Packs exported flat, and `kits.json`
+
+Those same `.fbx` packs are exported with **every face flat**. It is not the
+loader: `CommonTree_1`'s own `LayerElementNormal` holds one normal per corner
+and no two at a vertex agree — all 1450 of its vertices are split, by up to
+159° — and the mesh Babylon builds matches the file exactly. Quaternius' own
+renders are smooth-shaded, and a faceted trunk beside a smooth-shaded ship reads
+as broken rather than as stylised.
+
+`smoothMeshNormals(mesh, maxAngleDeg)` puts it right, and it is **Blender's
+auto-smooth**, edge-based, for two reasons that both have a wrong answer:
+
+- averaging every normal that meets at a point would round off the corners of a
+  crate;
+- clustering by angle to the first normal seen would leave an eight-sided trunk
+  faceted, because its far side is 180° from where the cluster started.
+
+So an *edge* is smooth when the two faces sharing it are less than the threshold
+apart; corners are joined across smooth edges and each group takes its faces'
+area-weighted average. Smoothness chains, so all eight sides of the trunk end up
+in one group and shade as a cylinder while the cap stays a cap. Only the normal
+buffer is rewritten — vertex count, indices, UVs and skinning are untouched, so
+instancing and the UVs cannot tell the difference. Vertices
+are welded by position, so a seam split only to carry a second UV does not show
+as a shading crease.
+
+It is **opt-in per kit**, in `public/data/kits.json`:
+
+```json
+"Ultimate Nature Pack": { "smoothNormalsBelowDeg": 60 }
+```
+
+A kit not named there is loaded exactly as it ships, which is every glTF kit —
+smoothing the sci-fi kits would change every ship already built from them.
+60° is the threshold because these packs' facets sit at 45°, which has to
+smooth, while a sword's bevels and a rock's corners sit at 75° and over, which
+has to stay hard. `CommonTree_1` goes from 1450 split vertices to 92.
+
+> It runs inside `loadModuleContainer()`, beside the unit fix and for the same
+> reason: the ship and the thumbnail scene must never disagree about how a
+> module looks. Thumbnails cached before a threshold changes are stale — drop
+> the kit's files from `cache/thumbs` and `cache/turntable`, or bump
+> `THUMB_VERSION` if the change touches every kit.
+
+### The values an export dropped, per kit
+
+`kits.json` also carries **material values a pack lost on the way out of
+Blender**. In the RPG pack, `Glass` and the five `Liquid_*` materials are the
+only ones that reach Babylon with no colour at all — 53 of them, against 214
+that carry one — and they are exactly the see-through ones. Blender's FBX
+exporter writes Phong properties out of a Principled BSDF and has nothing to
+write for a transparent shader, so it wrote no property block, and Babylon fell
+back on its default 0.8 grey.
+
+The symptom was that **a filled potion looked identical to an empty one**: the
+liquid, the glass and the air between them were all the same grey, which reads
+as an empty bottle.
+
+```json
+"Liquid_Red": { "tint": [0.640, 0.067, 0.045] },
+"Glass":      { "tint": [0.640, 0.680, 0.720], "alpha": 0.3 }
+```
+
+The colours are the pack's own palette — the opaque material of the matching
+hue, times the `0.8` `DiffuseFactor` the loader applies to those — so a red
+potion is the same red as a red gem. The liquids stay opaque and the glass
+blends, which also gets the draw order right for free: the liquid goes out in
+the opaque pass, the bottle over it in the transparent one.
+
+Authored **per kit**, not by bare material name, for the reason the dedupe key
+learned the hard way: `Glass`, `M_Glass` and `MI_Trim_01` all mean different
+things in different packs. Applied on the way out of `loadModuleContainer()`,
+so the material is in its final state before either cache takes its key.
+
+### Where a foldered kit keeps its textures
+
+The MegaKit ships its modules in `Walls/`, `Platforms/`… but every one of them
+names its textures with a **bare filename** (`T_Trim_01_ORM.png`), and those
+textures sit one level up, at the **kit root**. So the loader, resolving the URI
+next to the .gltf, asks for `Walls/T_Trim_01_ORM.png`, which is not there.
+
+The obvious repair — rewriting the URI to `../T_Trim_01_ORM.png` — is not
+available. glTF forbids a URI from leaving its own directory and Babylon
+enforces it (`GLTFLoader._ValidateUri` rejects any `..`), so a file rewritten
+that way fails to load outright:
+
+```
+RuntimeError: Unable to load … /images/0/uri: '../T_Trim_01_Normal.png' is invalid
+```
+
+Copying the atlas set into each of the six folders would work, and would put
+99 MB on the CDN to say the same 27 MB six times.
+
+So the textures are left **exactly where Quaternius puts them** — which also
+keeps refreshing a kit a straight copy — and the *loader* is told the
+convention instead. `scanKit` lists the image files at the kit root and the
+catalogue carries them per kit; `kit.js` installs a `preprocessUrlAsync` on the
+glTF loader that moves a request for one of *those* filenames from *that* kit's
+model folders up to the kit root. Nothing else can be caught by it, so the
+`.bin` beside each .gltf keeps resolving normally, and a kit whose models sit
+at its root (textures already beside the .gltf) gets no rule at all.
+
+This is why sorting a flat kit into folders costs nothing at load time: the
+Essentials Kit's atlases stayed at the root when its models moved into
+`Enemies/ Guns/ Props/`, and the same rule that serves the MegaKit now serves
+it. The Pirate kit works the same way — six category folders,
+`Atlas_Pirate.png` alone at the root.
+
+The editor's own server used to paper over this by falling back to the kit root
+on a 404. That works for a folder it is serving and not at all for a CDN, which
+is the whole reason the rule now lives in the loader.
+
+#### If every kit suddenly 404s its textures, restart the server
+
+The server reads `public/` from disk on every request, so edits to the client
+JS are live — but `server.mjs` itself is only read at startup. A dev server left
+running for days therefore answers a **new page** with an **old catalogue**.
+
+That skew is invisible except here. The redirect is keyed on the per-kit
+`modelDirs` / `rootTextures` the catalogue carries, and a kit missing them is
+skipped rather than guessed at — so a catalogue built before those fields
+existed installs *zero* rules and every kit loses its atlases at once. The
+symptom (`GET …/Props/T_Props_Batch1_Normal.png 404`) reads as a broken kit, not
+as a stale process.
+
+`assertCatalogueShape()` in `kit.js` runs on every `loadCatalogue()` and turns
+that into a message naming the missing field and the cure. Both it and a
+turntable render of a foldered module — the path the failure was first seen on —
+are covered in the interact suite.
+
+> The kits are CC0, but the folders in BabylonAssets also contain models that
+> come with Quaternius' PRO subscription. **Get the kits from
+> [quaternius.com](https://quaternius.com/) rather than copying them out of
+> BabylonAssets** — see the `license.txt` in each kit folder.
 
 `SHIP_EXPORT_DIR` and `SHIP_PORT` override `exportDir` and `port` — that is how
 the test runner keeps itself away from real data.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ship Layout — Modular SciFi MegaKit</title>
+<title>Ship Layout — Quaternius Sci-Fi kits</title>
 <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -12,12 +12,8 @@
   <span class="brand">SHIP LAYOUT</span>
 
   <div class="group">
-    <button id="btn-save" title="Save the layout to export/ship_manifest.json — Ctrl+S">Save</button>
+    <button id="btn-save" title="Write export/ship_manifest.json and export/ship.glb — Ctrl+S">Save</button>
     <button id="btn-load" title="Reload the saved layout, discarding unsaved changes. No shortcut">Load</button>
-    <button id="btn-export" title="Write export/ship.glb and the manifest beside it. No shortcut">Export glb</button>
-    <button id="btn-bake" title="Bake lightmaps in Blender from the exported ship.glb. Minutes, not seconds. Shift-click re-bakes every chunk. No shortcut">Bake</button>
-    <button id="btn-session" title="Open the ship in a Blender window, set up and ready to bake, so the lighting can be judged and re-baked room by room. No shortcut">Blender</button>
-    <button id="btn-powers" title="Pull the light powers a Blender session sent back, and apply them to the lights here. No shortcut">Get powers</button>
   </div>
 
   <div class="group">
@@ -49,7 +45,7 @@
       <option value="45">45&deg;</option>
       <option value="90" selected>90&deg;</option>
     </select>
-    <select id="rot-axis" title="Rotation axis — Shift+wheel turns about it, Alt+Shift+wheel swings the whole selection about a shared pivot · R cycles">
+    <select id="rot-axis" title="Rotation axis — Shift+wheel turns about it, Alt+Shift+wheel swings the whole selection about a shared pivot · R cycles · a lamp turns about this axis too, but always 0.5° and always in its own space">
       <option value="y" selected>Y</option>
       <option value="x">X</option>
       <option value="z">Z</option>
@@ -73,7 +69,8 @@
     <button id="btn-isolate" class="toggle" aria-pressed="false"
             title="Show only the active chunk — every other chunk is hidden. No shortcut">Chunk</button>
     <select id="chunk-select" title="The chunk new placements join, and the one the Chunk button isolates. No shortcut"></select>
-    <button id="btn-chunks" title="Add, rename, delete chunks and set what the bake renders each one at. No shortcut">Chunks…</button>
+    <button id="btn-chunks" title="Add, rename, delete chunks and set which one new elements land in. No shortcut">Chunks…</button>
+    <button id="btn-probes" title="Create and edit local environment cubemap volumes. No shortcut">Probes…</button>
     <button id="btn-chunk-assign" title="Move the selection into the active chunk. No shortcut">Assign</button>
   </div>
 
@@ -84,50 +81,26 @@
   </div>
 
   <div class="group">
-    <label title="Strength of the image-based lighting. Metals get almost all their brightness from this, so raise it to read metal ceilings and undersides. No shortcut">Env</label>
-    <input type="range" id="env-intensity" min="0" max="4" step="0.1" value="1.5"
-           title="Strength of the image-based lighting. No shortcut">
-    <span id="env-intensity-val" class="readout">1.5</span>
-  </div>
-
-  <div class="group">
-    <label title="Strength of the image-based lighting on meshes left out of the bake, such as dynamic or liquefiable props. Only active in Baked preview. No shortcut">Dynamic Env</label>
-    <input type="range" id="dynamic-env-intensity" min="0" max="4" step="0.1" value="1.5" disabled
-           title="Strength of the image-based lighting on unbaked/dynamic meshes. Only active in Baked preview. No shortcut">
-    <span id="dynamic-env-intensity-val" class="readout">1.5</span>
-  </div>
-
-  <div class="group">
-    <label title="Lower exposure keeps pale panels off the tone-mapping shoulder, where surface detail flattens out. Saved in the manifest and read by the runtime. No shortcut">Exposure</label>
-    <input type="range" id="exposure" min="0.15" max="4" step="0.05" value="0.55"
-           title="Tone-mapping exposure, saved in the manifest. No shortcut">
-    <span id="exposure-val" class="readout">0.55</span>
-  </div>
-
-  <div class="group">
-    <label title="View transform applied after exposure. Saved in the manifest's environment block and read by the runtime, so both ends agree. No shortcut">Tone</label>
-    <select id="tone-mapping" title="Tone mapping curve, saved in the manifest. No shortcut">
-      <option value="Khronos PBR Neutral">Khronos PBR Neutral</option>
-      <option value="ACES">ACES</option>
-      <option value="Standard">Standard</option>
-      <option value="None">None (linear)</option>
-    </select>
-  </div>
-
-  <div class="group">
     <button id="btn-select-rect" class="toggle" aria-pressed="false"
             title="Drag the left button to rubber-band select. A drag starting on empty space always does this; the mode also lets you start the rectangle on top of a module instead of moving it. Ctrl or Shift adds to the selection. No shortcut">Rect&nbsp;select</button>
+  </div>
+
+  <div class="group">
+    <label title="How the viewport lights the ship. Editor modes use the tool's own four-light authoring rig; Runtime switches that rig off and lights the ship with the authored lamps and the environment probes, exactly as the game does. No shortcut">View</label>
+    <select id="view-mode" title="How the viewport lights the ship. No shortcut">
+      <option value="editor" title="The ship you are building, lit by the editor's authoring rig plus the Editor lighting settings. This is the mode to build in and it deliberately looks nothing like the game.">Editor</option>
+      <option value="editor-unlit" title="Raw albedo with no lighting at all. Much of the kit is fully metallic and so has no diffuse term — under a dim environment those modules collapse to a flat wash. This shows what the artist painted.">Editor unlit</option>
+      <option value="runtime" title="The ship lit the way the game lights it: the authoring rig off, the authored lamps rebuilt as real lights over every mesh, and each room reflecting its own environment probe. Elements stay pickable and draggable, and an edit is re-lit on the next frame.">Runtime</option>
+    </select>
   </div>
 
   <div class="group">
     <label title="Show the build-plane grid — G"><input type="checkbox" id="show-grid" checked> Grid</label>
     <select id="show-layer" title="What the viewport shows: the ship, the collision shapes, or both. It only ever hides — chunk isolation and Shift+H still apply on top. No shortcut">
       <option value="both">Ship + collision</option>
-      <option value="geometry">Ship only</option>
+      <option value="geometry" selected>Ship only</option>
       <option value="collision">Collision only</option>
     </select>
-    <label title="Show raw albedo with no lighting. No shortcut"><input type="checkbox" id="unlit"> Unlit</label>
-    <label title="Show the baked ship instead of the authored one: ship_baked.glb with the Blender lightmaps on it, which is what the runtime will load. Also drops the editor's authoring rig and rebuilds the authored runtime lamps over the dynamic props, so this is the only honest preview of the Env and Exposure sliders. Needs a bake first. No shortcut"><input type="checkbox" id="baked"> Baked</label>
     <label title="Walk at the player's eye height (1.8 m), following whatever floor is underfoot, instead of flying. No shortcut"><input type="checkbox" id="walk"> Walk</label>
   </div>
 </header>
@@ -135,6 +108,7 @@
 <main>
   <aside id="palette">
     <div class="palette-head">
+      <select id="palette-kit" title="Which kit the palette shows. One at a time: the categories of five unrelated packs merged into one strip name nothing. No shortcut"></select>
       <input type="search" id="palette-search" placeholder="Search modules…" autocomplete="off">
       <div id="palette-tabs" class="tabs"></div>
     </div>
@@ -152,51 +126,96 @@
     </details>
     <details id="settings-pane" open>
       <summary>Settings</summary>
-      <p class="muted">Ship-wide constants. Saved with the layout and undoable,
-        because changing one changes what the ship is.</p>
-      <label class="cfg-row" title="How see-through Shift+H makes an element. Editor-only: it never reaches the .glb.">
+      <p class="muted">Global authoring, lighting, probe and collision defaults.</p>
+      <section class="settings-section">
+      <h3>Editor</h3>
+      <p class="muted">The authoring view. None of this reaches the game — it is
+        how you see what you are building, not how the game will look. It is
+        still saved with the ship, so you come back to the view you left.</p>
+      <label class="cfg-row" title="Strength of the image-based lighting in the editor views. Metals get almost all their brightness from this, so raise it to read metal ceilings and undersides. Saved in the manifest's editorEnvironment block, which the game never reads.">
+        <span>Env</span>
+        <input type="range" id="editor-env" min="0" max="4" step="0.1" value="1.5"
+               title="Strength of the image-based lighting in the editor views. No shortcut">
+        <span id="editor-env-val" class="unit">1.5</span>
+      </label>
+      <label class="cfg-row" title="Tone-mapping exposure of the editor views. Lower exposure keeps pale panels off the tone-mapping shoulder, where surface detail flattens out. Saved in the manifest's editorEnvironment block, which the game never reads.">
+        <span>Exposure</span>
+        <input type="range" id="editor-exposure" min="0.15" max="4" step="0.05" value="0.55"
+               title="Tone-mapping exposure of the editor views. No shortcut">
+        <span id="editor-exposure-val" class="unit">0.55</span>
+      </label>
+      <label class="cfg-row" title="View transform applied after exposure in the editor views. Saved in the manifest's editorEnvironment block, which the game never reads.">
+        <span>Tone</span>
+        <select id="editor-tone" title="Tone mapping curve of the editor views. No shortcut">
+          <option value="Khronos PBR Neutral">Khronos PBR Neutral</option>
+          <option value="ACES">ACES</option>
+          <option value="Standard">Standard</option>
+          <option value="None">None (linear)</option>
+        </select>
+      </label>
+      <label class="cfg-row" title="How see-through Shift+H makes an element. Saved in the manifest's editorPrefs block; it never reaches the .glb or the game.">
         <span>Ghost</span>
         <input type="range" id="veil-alpha" min="0.05" max="0.95" step="0.05" value="0.5"
                title="How see-through Shift+H makes an element. No shortcut">
         <span id="veil-alpha-val" class="unit">50%</span>
       </label>
-      <label class="cfg-row" title="Double the palette width and tile size.">
+      <label class="cfg-row" title="Double the palette width and tile size. Saved in the manifest's editorPrefs block; it never reaches the .glb or the game.">
         <span>Big icons</span>
         <input type="checkbox" id="big-palette" checked
                title="Double the palette width and tile size. No shortcut">
         <span class="unit"></span>
       </label>
-      <label class="cfg-row" title="Multiplier for authored lamp watts in the Blender lightmap bake. Saved in the manifest.">
-        <span>Light power</span>
-        <input type="range" id="bake-light-power" min="0" max="10" step="0.1" value="1"
-               title="Multiplier for authored lamp watts in the Blender bake. No shortcut">
-        <span id="bake-light-power-val" class="unit">1.0</span>
-      </label>
-      <label class="cfg-row" title="Strength of the sky environment used by the Blender lightmap bake. Saved in the manifest.">
-        <span>Sky</span>
-        <input type="range" id="bake-sky" min="0" max="300" step="1" value="1"
-               title="Strength of the sky environment used by the Blender bake. No shortcut">
-        <span id="bake-sky-val" class="unit">1</span>
-      </label>
-      <label class="cfg-row" title="Enable Babylon.js specular anti-aliasing on the baked preview materials. Editor-only; it is not exported or saved in the manifest.">
-        <span>Specular AA</span>
-        <input type="checkbox" id="baked-specular-aa" checked>
-        <span class="unit"></span>
-      </label>
-      <label class="cfg-row" title="Multiply authored roughness in the baked preview. Values above 1 broaden metallic reflections and can reduce shimmering. Editor-only; it is not exported or saved in the manifest.">
-        <span>Reflection roughness</span>
-        <input type="range" id="baked-roughness" min="0.5" max="2" step="0.05" value="1">
-        <span id="baked-roughness-val" class="unit">1.00×</span>
-      </label>
-      <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
-        <span>Collision shell</span>
-        <input type="number" id="cfg-shell" min="0.001" max="1" step="0.001">
-        <span class="unit">m</span>
-      </label>
       <label class="cfg-row" title="How often the editor writes a recovery copy to ship_autosave.json, in minutes. It writes only when something has changed since the last save or auto-save, never over ship_manifest.json, and never clears the unsaved-work warning. 0 turns it off.">
         <span>Auto-save every</span>
         <input type="number" id="cfg-autosave" min="0" max="240" step="1">
         <span class="unit">min</span>
+      </label>
+      </section>
+      <section class="settings-section">
+      <h3>Runtime</h3>
+      <p class="muted">The ship's own lighting and material settings, saved in
+        the manifest and read by the game. Set them in the Runtime view — that is
+        the only place they show.</p>
+      <label class="cfg-row" title="Strength of the image-based lighting in the game. Metals get almost all their brightness from this. Saved in the manifest and read by the runtime.">
+        <span>Env</span>
+        <input type="range" id="runtime-env" min="0" max="4" step="0.1" value="1.5"
+               title="Strength of the image-based lighting in the game. No shortcut">
+        <span id="runtime-env-val" class="unit">1.5</span>
+      </label>
+
+      <label class="cfg-row" title="Tone-mapping exposure in the game. Lower exposure keeps pale panels off the tone-mapping shoulder, where surface detail flattens out. Saved in the manifest and read by the runtime.">
+        <span>Exposure</span>
+        <input type="range" id="runtime-exposure" min="0.15" max="4" step="0.05" value="0.55"
+               title="Tone-mapping exposure in the game. No shortcut">
+        <span id="runtime-exposure-val" class="unit">0.55</span>
+      </label>
+      <label class="cfg-row" title="View transform applied after exposure in the game. Saved in the manifest's environment block and read by the runtime, so both ends agree.">
+        <span>Tone</span>
+        <select id="runtime-tone" title="Tone mapping curve in the game, saved in the manifest. No shortcut">
+          <option value="Khronos PBR Neutral">Khronos PBR Neutral</option>
+          <option value="ACES">ACES</option>
+          <option value="Standard">Standard</option>
+          <option value="None">None (linear)</option>
+        </select>
+      </label>
+      <label class="cfg-row" title="PBR specular anti-aliasing: raises effective roughness where the normal changes fast on screen, which is what stops metal trim from shimmering. Saved in the manifest and read by the game as the authored default — a player who has set it themselves in the graphics panel keeps their choice.">
+        <span>Specular AA</span>
+        <input type="checkbox" id="runtime-specular-aa" checked
+               title="PBR specular anti-aliasing on the ship's materials. No shortcut">
+        <span class="unit"></span>
+      </label>
+      <label class="cfg-row" title="Multiply every ship material's authored roughness. Values above 1 broaden metallic reflections and reduce shimmering. Saved in the manifest and applied by the game to the ship, not to the weapon viewmodel — which is why the preview shows the same thing.">
+        <span>Reflection roughness</span>
+        <input type="range" id="runtime-roughness" min="0.5" max="2" step="0.05" value="1"
+               title="Multiplier over authored roughness on the ship's materials. No shortcut">
+        <span id="runtime-roughness-val" class="unit">1.00×</span>
+      </label>
+      </section>
+      <section class="settings-section">      <h3>Collision</h3>
+      <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
+        <span>Collision shell</span>
+        <input type="number" id="cfg-shell" min="0.001" max="1" step="0.001">
+        <span class="unit">m</span>
       </label>
       <label class="cfg-row" title="How far a fitted hull may stray from the art before that counts as wrong. This is the single dial for how finely Fit a hull approximates a shape: a rounded prop worth one box at 20 cm is worth several at 3 cm, while a flat one stays a single box whatever you set. Fine values take noticeably longer to fit.">
         <span>Hull tolerance</span>
@@ -216,6 +235,7 @@
           <option value="positive">positive</option>
         </select>
       </label>
+      </section>
       <button id="btn-cfg-reset" title="Put every setting on this pane back to the value the editor ships with. Undoable">Reset to defaults</button>
     </details>
     </div>
@@ -223,6 +243,9 @@
       <span id="brush-label">No module selected</span>
     </div>
   </aside>
+
+  <div class="resizer" id="resize-palette" role="separator" aria-orientation="vertical"
+       tabindex="0" title="Drag to resize the palette. Double-click to put it back"></div>
 
   <div id="viewport">
     <canvas id="render-canvas" touch-action="none"></canvas>
@@ -238,6 +261,9 @@
     </div>
     <div id="hint"></div>
   </div>
+
+  <div class="resizer" id="resize-inspector" role="separator" aria-orientation="vertical"
+       tabindex="0" title="Drag to resize the inspector. Double-click to put it back"></div>
 
   <aside id="inspector">
     <h2>Inspector</h2>
@@ -260,26 +286,15 @@
         <button id="btn-bhv-library">Edit behaviours…</button>
       </div>
 
-      <div id="bake-fields">
-        <h3>Lighting</h3>
-        <div class="row">
-          <label title="Whether these elements get a baked lightmap. Automatic reads the behaviours: anything the runtime moves (dynamic) or melts (liquefiable, and everything they are linked to) is left out of the atlas and lit by the runtime lamps instead. Override it when that rule is wrong — force a liquefiable fixture that never actually moves back into the bake, or force a mesh out of it so its lighting can be driven at runtime.">Force baking</label>
-          <select id="insp-bake">
-            <option value="auto">Automatic (from behaviours)</option>
-            <option value="exclude">Exclusion — never bake</option>
-            <option value="include">Inclusion — always bake</option>
-          </select>
-        </div>
-        <div id="bake-hint" class="muted"></div>
-      </div>
-
       <h3 id="insp-h-pos">Position</h3>
       <div class="vec">
         <input type="number" id="pos-x" step="0.25"><input type="number" id="pos-y" step="0.25"><input type="number" id="pos-z" step="0.25">
       </div>
-      <h3>Rotation (deg)</h3>
-      <div class="vec">
-        <input type="number" id="rot-x" step="15"><input type="number" id="rot-y" step="15"><input type="number" id="rot-z" step="15">
+      <div id="rotation-fields">
+        <h3>Rotation (deg)</h3>
+        <div class="vec">
+          <input type="number" id="rot-x" step="15"><input type="number" id="rot-y" step="15"><input type="number" id="rot-z" step="15">
+        </div>
       </div>
       <div id="scale-fields">
         <h3>Scale</h3>
@@ -308,6 +323,11 @@
         <div class="row"><label>Slide</label><input type="number" id="door-slide" step="0.05"></div>
         <div class="row"><label>Leaves</label><span id="door-leaves" class="readout"></span></div>
         <div class="row">
+          <label title="Disabled doors keep their geometry and collision, but their portal is removed from visibility traversal.">
+            <input type="checkbox" id="door-enabled"> Enabled
+          </label>
+        </div>
+        <div class="row">
           <label title="The far side can be seen but not reached — a window onto space rather than a doorway. The portal still renders through it; collision keeps the opening solid.">
             <input type="checkbox" id="door-sealed"> Sealed (see through, cannot pass)
           </label>
@@ -319,18 +339,10 @@
         <h3>Light</h3>
         <div class="row"><label title="The placement this light rides. The ID is the unique owner reference; the module name is shown for context. Changing it reattaches the light without moving it in the viewport.">Owner</label><select id="lgt-owner" class="mono"></select></div>
 
-        <h4 title="Rebuilt in Blender by the bake script, from the glTF extras. Shape, size, spread, colour and power are Blender's own units, so what you author here is what Cycles gets.">Bake — Cycles area light</h4>
-        <div class="row"><label title="Blender's area-light shapes. &quot;none&quot; leaves this lamp out of the bake entirely, which is what a flickering light wants — baking it would freeze one frame of the flicker into the wall.">Shape</label><select id="lgt-shape"></select></div>
-        <div class="row"><label title="Width of the emitting rectangle along the light's own X axis, in metres.">Size X</label><input type="number" id="lgt-size-x" step="0.05" min="0.001"><span class="unit">m</span></div>
-        <div class="row"><label title="Depth of the emitting rectangle along the light's own Z axis, in metres. A square or a disk has only one size, so this follows Size X.">Size Z</label><input type="number" id="lgt-size-y" step="0.05" min="0.001"><span class="unit">m</span></div>
-        <div class="row"><label title="How wide the emission fans out. 180° is a bare panel radiating over the whole hemisphere; narrowing it aims the light, the way a recessed housing would.">Spread</label><input type="number" id="lgt-spread" step="5" min="0" max="180"><span class="unit">°</span></div>
-        <div class="row"><label title="Total watts over the whole surface, which is how Blender measures an area light — so making a light bigger without changing this spreads the same power over more area and reads dimmer.">Power</label><input type="number" id="lgt-watts" step="5" min="0"><span class="unit">W</span></div>
-        <div class="row"><label>Colour</label><input type="color" id="lgt-bake-color"></div>
-
-        <h4 title="The light the game creates at runtime, for everything a baked lightmap cannot cover: dynamic props, the player, specular highlights.">Runtime — engine light</h4>
-        <div class="row"><label title="&quot;none&quot; makes this a bake-only lamp — a bounce fill that lifts a dark corner and costs the runtime nothing.">Type</label><select id="lgt-type"></select></div>
-        <div class="row"><label>Level</label><input type="number" id="lgt-intensity" step="0.1" min="0"></div>
-        <div class="row"><label title="How far the light reaches before it is cut off, in metres.">Range</label><input type="number" id="lgt-range" step="0.5" min="0.001"><span class="unit">m</span></div>
+        <h4 title="The light the game creates. Everything the ship is lit by is here — there is no pre-computed half.">Runtime — engine light</h4>
+        <div class="row"><label title="&quot;none&quot; switches the lamp off without deleting it, so its position and settings survive.">Type</label><select id="lgt-type"></select></div>
+        <div class="row"><label>Intensity</label><input type="number" id="lgt-intensity" step="0.1" min="0"></div>
+        <div class="row"><label title="How far the light reaches before it is cut off, in metres. A clustered lamp fades to nothing at Range on exactly the curve the game draws; an unclustered one ends at Range in the game too, but along a straight ramp rather than this curve. A directional light has no distance, so no Range.">Range</label><input type="number" id="lgt-range" step="0.5" min="0.001"><span class="unit">m</span></div>
         <div class="row"><label title="Full cone angle of a spot light.">Cone</label><input type="number" id="lgt-angle" step="5" min="1" max="179"><span class="unit">°</span></div>
         <div class="row"><label>Colour</label><input type="color" id="lgt-run-color"></div>
         <div class="row"><label title="Pack this light into the clustered light texture instead of giving it a uniform slot of its own. The ship has far more lamps than an uncluttered forward pass can hold, so this is normally on — but a clustered light carries no shadow map.">
@@ -339,6 +351,7 @@
         <div class="row"><label title="Give this light a shadow map. Only an unclustered spot or directional light can: there is no cube shadow generator, so a point light never casts.">
           <input type="checkbox" id="lgt-shadows"> Casts shadows
         </label></div>
+        <div id="lgt-wheel" class="muted">Wheel over the viewport with lamps selected: intensity · Ctrl range · Alt cone · Shift turns 0.5° about the lamp's own current axis.</div>
         <div id="lgt-hint" class="muted"></div>
       </div>
 
@@ -367,43 +380,75 @@
   <div class="card"><span class="spinner"></span><span id="busy-msg">loading…</span></div>
 </div>
 
-<div id="chunk-modal" hidden>
+<div id="chunk-modal" role="dialog" aria-modal="false" aria-labelledby="chunk-window-title" hidden>
   <div class="panel">
-    <h2>Chunks</h2>
+    <div id="chunk-window-handle" class="tool-window-titlebar">
+      <h2 id="chunk-window-title">Chunks</h2>
+      <button id="btn-chunk-close" type="button" title="Close chunks window" aria-label="Close chunks window">×</button>
+    </div>
     <p class="muted">A chunk is one room or corridor: the unit the portal
-      renderer draws and culls by, and the unit the bake renders one lightmap
-      for. The four numbers are what Blender renders that room at — leave one
-      blank to follow the ship's default.</p>
-    <div class="split">
+      renderer draws and culls by, and the unit a light's scope is measured in.
+      Elements carry the chunk they belong to; this is where the names live.</p>    <div class="tool-window-scroll"><div class="split">
       <select id="chunk-list" size="12"></select>
       <div class="editor">
         <div class="row"><label>Name</label><input type="text" id="chunk-name" placeholder="CH02_Engineering"></div>
-        <div class="row"><label title="Cycles samples per pixel. The noise floor of the map, and the only one of the four that costs render time rather than memory.">Samples</label>
-          <input type="number" id="chunk-samples" min="1" max="16384" step="1" placeholder="—"></div>
-        <div class="row"><label title="Atlas size in texels. A long corridor may be worth 2048 x 512: half the texels of 1024 x 1024 for the same density along the run. Non-square atlases are packed without island rotation, so they pack a little looser.">Size</label>
-          <input type="number" id="chunk-width" min="16" max="8192" step="1" placeholder="—">
-          <span class="muted">×</span>
-          <input type="number" id="chunk-height" min="16" max="8192" step="1" placeholder="—"></div>
-        <div class="row"><label title="The gap left between UV islands, in pixels, and how far each island is then dilated. Too small and light leaks between islands — which reads as light leaking through a wall.">Margin</label>
-          <input type="number" id="chunk-margin" min="0" max="64" step="1" placeholder="—"></div>
-        <div id="chunk-resolved" class="muted"></div>
-        <div id="chunk-error" class="err"></div>
-        <div class="group">
-          <button id="btn-chunk-new">New</button>
-          <button id="btn-chunk-apply">Apply</button>
-          <button id="btn-chunk-delete" class="danger">Delete</button>
-          <button id="btn-chunk-close">Close</button>
-        </div>
-        <h2>Defaults</h2>
-        <p class="muted">What every chunk that has not been given its own uses.</p>
-        <div class="row"><label>Samples</label>
-          <input type="number" id="bake-samples" min="1" max="16384" step="1"></div>
-        <div class="row"><label>Size</label>
-          <input type="number" id="bake-width" min="16" max="8192" step="1">
-          <span class="muted">×</span>
-          <input type="number" id="bake-height" min="16" max="8192" step="1"></div>
-        <div class="row"><label>Margin</label>
-          <input type="number" id="bake-margin" min="0" max="64" step="1"></div>
+        <div id="chunk-holds" class="muted"></div>
+      </div>
+    </div></div>
+    <div class="tool-window-footer">
+      <div id="chunk-error" class="err"></div>
+      <div class="group">
+        <button id="btn-chunk-new">New</button>
+        <button id="btn-chunk-apply">Apply</button>
+        <button id="btn-chunk-delete" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="probe-modal" role="dialog" aria-modal="false" aria-labelledby="probe-window-title" hidden>
+  <div class="panel">
+    <div id="probe-window-handle" class="tool-window-titlebar">
+      <h2 id="probe-window-title">Environment probes</h2>
+      <button id="btn-probe-close" type="button" title="Close probes window" aria-label="Close probes window">×</button>
+    </div>
+    <p class="muted">Each box owns one local cubemap, independently from chunks.
+      Cyan marks the box centre; orange marks the point it is captured from.
+      Only geometry intersecting the box is rendered into the cubemap, and
+      elements carrying a probeExcluded, dynamic, liquefiable or weapon
+      behaviour are left out of it.</p>
+    <div class="tool-window-scroll"><div class="split">
+      <select id="probe-list" size="12"></select>
+      <div class="editor">
+        <div class="row"><label>ID</label><input type="text" id="probe-id" maxlength="128"></div>
+        <div class="row"><label>Show</label><input type="checkbox" id="probe-show"></div>
+        <div class="row"><label>Env faces</label><input type="checkbox" id="probe-env"></div>
+        <div class="row"><label>Box centre</label>
+          <input type="number" id="probe-box-x" step="0.01">
+          <input type="number" id="probe-box-y" step="0.01">
+          <input type="number" id="probe-box-z" step="0.01"></div>
+        <div class="row"><label>Box size</label>
+          <input type="number" id="probe-size-x" min="0.01" step="0.01">
+          <input type="number" id="probe-size-y" min="0.01" step="0.01">
+          <input type="number" id="probe-size-z" min="0.01" step="0.01"></div>
+        <div class="row"><label>Camera</label>
+          <input type="number" id="probe-camera-x" step="0.01">
+          <input type="number" id="probe-camera-y" step="0.01">
+          <input type="number" id="probe-camera-z" step="0.01"></div>
+        <div class="row"><label title="Cubemap face width and height in pixels.">Texture size</label>
+          <input type="number" id="probe-resolution" min="16" max="4096" step="1">
+          <span class="muted">px per face</span></div>
+        <div id="probe-resolved" class="muted"></div>
+      </div>
+    </div></div>
+    <div class="tool-window-footer">
+      <div id="probe-error" class="err"></div>
+      <div class="group">
+        <button id="btn-probe-new">New</button>
+        <button id="btn-probe-apply">Apply</button>
+        <button id="btn-probe-delete" class="danger">Delete</button>
+        <button id="btn-capture-one" title="Re-capture the selected probe only, whether or not its room has changed, and write it to export/environments/. Every other probe is left as it is. No shortcut">Capture</button>
+        <button id="btn-capture-all" title="Capture the environment probes whose room has changed since they were last taken, and write them to export/environments/. Shift-click re-captures every probe. No shortcut">Capture all</button>
       </div>
     </div>
   </div>

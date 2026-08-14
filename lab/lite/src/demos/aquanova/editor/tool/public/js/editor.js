@@ -90,49 +90,6 @@ const CONFIG_RANGE = {
   hullOffset: { choices: ["centered", "negative", "positive"] },
 };
 
-/**
- * What a chunk's lightmap is rendered at, when the chunk does not say otherwise.
- *
- * A chunk is the unit the bake works in - one atlas per room - so these are the
- * natural per-room dials, and most rooms want the same numbers. They live here
- * as ship-wide defaults and each chunk may override any of the four; see
- * `setChunkBake`. `bake_lightmaps.py` reads the pair out of the manifest and
- * resolves them the same way.
- */
-export const BAKE_DEFAULTS = {
-  // Cycles samples per pixel. The noise floor of the map, and the only one of
-  // the four that costs render time rather than memory.
-  samples: 128,
-  // Atlas size. Square by default; a long corridor may be worth 2048x512,
-  // which is half the texels of 1024x1024 for the same density along the run.
-  width: 1024,
-  height: 1024,
-  // The gap left between UV islands, in pixels, and the number of pixels each
-  // island is then dilated by. Too small and light leaks between islands -
-  // which reads as light leaking through a wall.
-  margin: 4,
-};
-
-/** Lighting multipliers used by Blender's static bake, kept separate from
- * the editor/runtime environment pairs. */
-export const BAKE_LIGHTING_DEFAULTS = {
-  power: 1,
-  sky: 1,
-};
-
-const BAKE_LIGHTING_RANGE = {
-  power: { min: 0, max: 10 },
-  sky: { min: 0, max: 300 },
-};
-
-/** What each of the four will accept. Sizes are texels, so integers only. */
-const BAKE_RANGE = {
-  samples: { min: 1, max: 16384 },
-  width: { min: 16, max: 8192 },
-  height: { min: 16, max: 8192 },
-  margin: { min: 0, max: 64 },
-};
-
 export const state = {
   scene: null,
   engine: null,
@@ -143,13 +100,9 @@ export const state = {
   lights: new Map(),       // id -> authored light, riding a placement (see lights.js)
   chunks: ["CH00_Storage"],
   activeChunk: "CH00_Storage",
-  // What the bake renders a room at, ship-wide, and the per-room exceptions.
-  // `chunkBake` is deliberately SPARSE - a chunk holds only the fields it
-  // overrides, so raising the ship's sample count later still reaches every
-  // room that never asked for its own. See setChunkBake / resolveChunkBake.
-  bakeDefaults: { ...BAKE_DEFAULTS },
-  chunkBake: new Map(),    // chunk id -> { samples?, width?, height?, margin? }
-  bakeLighting: { ...BAKE_LIGHTING_DEFAULTS },
+  // Explicit local environments, independent from render chunks. A single
+  // volume may cover several chunks or only part of one.
+  environmentProbes: new Map(),
   selection: [],
   brush: null,             // module id armed for placement
   markerBrush: null,       // "door" - the only marker kind left
@@ -159,31 +112,29 @@ export const state = {
   scaleAxis: "all",        // axis Ctrl+wheel scales
   isolate: false,
   hidden: new Map(),       // id -> "ghost" | "hidden", see hideSelected
-  veilAlpha: 0.5,          // how see-through a ghosted element is
+  veilAlpha: 0.5,          // how see-through a ghosted element is, see VEIL_ALPHA_DEFAULT
+  bigPalette: true,        // double-width palette with double-size tiles, see BIG_PALETTE_DEFAULT
   behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
   entities: new Map(),     // node name -> [{ name, linked: [] }]
-  // node name -> "exclude" | "include": the author's override of what the bake
-  // works out for itself. Absent means "auto", which is the normal case. See
-  // setBakeOverride.
-  bakeOverride: new Map(),
   fluidSim: [],            // the global sim list from config.json
+  // How the viewport is lit. The two together spell one of the three named
+  // view modes - see VIEW_MODES and viewMode() - and nothing else sets them.
   unlit: false,            // show raw albedo, no lighting
-  baked: false,            // show ship_baked.glb and its lightmaps, see baked.js
-  bakedSpecularAA: true,   // Babylon.js specular anti-aliasing for baked-preview reflections
-  bakedRoughnessFactor: 1, // preview-only multiplier over authored metallic roughness
-  toneMapping: "Khronos PBR Neutral",
+  runtime: false,          // the runtime preview is on, see runtime.js
+  runtimeSpecularAA: true, // Babylon.js specular anti-aliasing, see RUNTIME_SPECULAR_AA_DEFAULT
+  runtimeRoughnessFactor: 1, // multiplier over authored metallic roughness, see RUNTIME_ROUGHNESS_FACTOR_DEFAULT
+  toneMapping: "Khronos PBR Neutral",   // the active set's, mirrored — see lightSets
   // Two independent pairs. The editor's rig adds four analytic lights the game
   // does not have, so one pair of Env/Exposure values cannot serve both: what
-  // reads well while building is nothing like what the game needs. Baked mode
-  // picks the runtime pair; the active one is mirrored into
-  // envIntensity/exposure above, which is what the scene actually gets.
+  // reads well while building is nothing like what the game needs. A runtime
+  // view mode picks the runtime set; the active one is mirrored into
+  // envIntensity/exposure/toneMapping above, which is what the scene gets.
   lightSets: {
-    editor: { strength: 1.5, dynamicStrength: 1.5, exposure: 0.55 },
-    runtime: { strength: 1.5, dynamicStrength: 1.5, exposure: 0.55 },
+    editor: { strength: 1.5, exposure: 0.55, toneMapping: "Khronos PBR Neutral" },
+    runtime: { strength: 1.5, exposure: 0.55, toneMapping: "Khronos PBR Neutral" },
   },
   exposure: 0.55,          // see EXPOSURE_DEFAULT
   envIntensity: 1.5,       // see ENV_INTENSITY_DEFAULT
-  dynamicEnvIntensity: 1.5, // environment intensity for unbaked/dynamic meshes
   walk: false,             // see setWalk
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
@@ -196,7 +147,7 @@ export const state = {
   // What was on the staging area when it was last closed, so re-opening it
   // finds the same modules in the same places rather than a blank stage.
   stageLayout: [],
-  showLayer: "both",       // "both" | "geometry" | "collision", see setShowLayer
+  showLayer: "geometry",   // "both" | "geometry" | "collision", see setShowLayer
   config: { ...CONFIG_DEFAULTS },
   nextId: 1,
 };
@@ -204,16 +155,14 @@ export const state = {
 /** Selection holds ids from any store; resolve without caring which. */
 export function entryOf(id) {
   return state.placements.get(id) || state.markers.get(id)
-    || state.colliders.get(id) || state.lights.get(id) || null;
+    || state.colliders.get(id) || state.lights.get(id)
+    || hooks.environmentProbeEntry(id) || null;
 }
 
 /**
  * Which element a mesh belongs to, whoever is drawing it.
  *
- * Every editor mesh carries a back-pointer to the node it hangs off; a baked
- * stand-in carries the *id* of the element it is standing in for instead,
- * because it outlives that element's node - undo rebuilds every placement from
- * the snapshot, and a stored node reference would survive exactly one Ctrl+Z.
+ * Every editor mesh carries a back-pointer to the node it hangs off.
  *
  * `placementsOnly` is for the walk-mode floor probe, which wants something to
  * stand on and not a door marker's portal quad.
@@ -221,9 +170,10 @@ export function entryOf(id) {
 export function ownerIdOf(mesh, placementsOnly = false) {
   const md = mesh?.metadata;
   if (!md) return null;
-  const id = md.standInFor || md.placementRoot?.name
+  const id = md.placementRoot?.name
     || (placementsOnly ? null
-      : (md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name));
+      : (md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name
+        || md.environmentProbeRoot?.metadata?.probe));
   return id || null;
 }
 
@@ -384,31 +334,78 @@ export const EXPOSURE_DEFAULT = 0.55;
  * metal ceilings and platform undersides, which no hemisphere can help.
  */
 export const ENV_INTENSITY_DEFAULT = 1.5;
-export const DYNAMIC_ENV_INTENSITY_DEFAULT = ENV_INTENSITY_DEFAULT;
-export const BAKED_SPECULAR_AA_DEFAULT = true;
-export const BAKED_ROUGHNESS_FACTOR_DEFAULT = 1;
+export const RUNTIME_SPECULAR_AA_DEFAULT = true;
+export const RUNTIME_ROUGHNESS_FACTOR_DEFAULT = 1;
+export const TONE_MAPPING_DEFAULT = "Khronos PBR Neutral";
+export const VEIL_ALPHA_DEFAULT = 0.5;
+export const BIG_PALETTE_DEFAULT = true;
+
+/**
+ * The three ways of looking at the ship.
+ *
+ * These were three independent checkboxes whose eight combinations included
+ * four that mean nothing and were only kept sane by disabling boxes from other
+ * boxes' handlers. Naming the states that actually exist is both smaller and
+ * impossible to put in a position nobody designed.
+ *
+ * `runtime` is the load-bearing flag: it says the viewport is lighting the ship
+ * the way the game does - the editor's authoring rig switched off, the authored
+ * lamps rebuilt over every mesh, the captured environment probes supplying the
+ * image-based half, and the runtime Env/Exposure pair in charge.
+ *
+ *   * `editor`       - the authoring rig, for building in.
+ *   * `editor-unlit` - raw albedo, for reading a module's own colours.
+ *   * `runtime`      - what the game renders.
+ */
+export const VIEW_MODES = {
+  "editor": { runtime: false, unlit: false },
+  "editor-unlit": { runtime: false, unlit: true },
+  "runtime": { runtime: true, unlit: false },
+};
+
+export const VIEW_MODE_DEFAULT = "editor";
+
+/** The flags a mode stands for, or the plain editor's when the name is unknown. */
+export function viewModeFlags(mode) {
+  return VIEW_MODES[mode] || VIEW_MODES[VIEW_MODE_DEFAULT];
+}
+
+/**
+ * Which mode the viewport is in, read back off the flags rather than stored.
+ *
+ * Deliberately derived: a remembered `state.viewMode` beside the flags it
+ * stands for is two truths about one thing, and the moment anything sets a flag
+ * on its own - setRuntimePreview does, on both edges, and so does every test
+ * that pokes `state.runtime` - the two would disagree and the combo box would be
+ * the one lying.
+ */
+export function viewMode() {
+  if (state.runtime) return "runtime";
+  return state.unlit ? "editor-unlit" : "editor";
+}
 
 // -------------------------------------------------------- the authoring rig
 //
 // The four analytic lights are an authoring aid: they exist so every module
 // stays legible from any angle while you build. The game has none of them - it
-// lights the ship from a Blender bake plus the authored runtime lamps - so they
-// are measurably the reason the editor looks nothing like the runtime. Measured
-// on the real ship: mean 165.7 with the rig, 35.0 without, so the rig supplies
-// about four fifths of what you see here and none of what you will ship.
+// lights the ship from the authored runtime lamps and the captured environment
+// probes - so they are measurably the reason the editor looks nothing like the
+// runtime. Measured on the real ship: mean 165.7 with the rig, 35.0 without, so
+// the rig supplies about four fifths of what you see here and none of what you
+// will ship.
 //
-// The rig is therefore tied to **Baked**, and to nothing else. There used to be
-// a separate "Runtime light" checkbox that silenced it over the authored ship,
-// but that preview was only ever half a truth: the authored ship has no
-// lightmaps, so switching the rig off left it lit by the HDRI alone - a picture
-// the game never renders either. Baked mode shows the real thing (the baked glb
-// with its atlases, and the authored lamps rebuilt over the dynamic props), so
-// it is the only state in which silencing the rig means anything, and the
-// checkbox was one more thing to get wrong.
+// The rig is therefore tied to **Runtime**, and to nothing else. There used to
+// be a separate "Runtime light" checkbox that silenced the rig but changed
+// nothing else, which was only ever half a truth - the ship was then lit by the
+// HDRI alone, a picture the game never renders either. Runtime mode shows the
+// real thing (the authored lamps over every mesh, each room's own probe on its
+// materials), so it is the only state in which silencing the rig means
+// anything, and the checkbox was one more thing to get wrong.
 //
-// The two Env/Exposure pairs survive the merge unchanged: `runtime` is what the
-// manifest's `environment` block carries and the demos read, `editor` is what
-// the rig wants, and Baked decides which pair the sliders edit.
+// The two rigs survive the merge unchanged: `runtime` is what the manifest's
+// `environment` block carries and the demos read, `editor` is what the rig
+// wants, and the view mode decides which one the scene renders through. Both
+// are on the Settings pane at once, so neither has to be guessed at.
 
 const authoredIntensity = new WeakMap();
 
@@ -416,19 +413,19 @@ function applyRuntimeLighting() {
   if (!state.scene) return;
   for (const l of state.scene.lights) {
     if (!authoredIntensity.has(l)) continue;
-    // Baked preview supplies its own clustered/regular runtime lights. The
-    // editor rig must be disabled, not merely set to zero: enabled rig lights
-    // still consume Babylon material light slots and can evict the clustered
+    // The runtime preview supplies its own clustered/regular lights. The editor
+    // rig must be disabled, not merely set to zero: enabled rig lights still
+    // consume Babylon material light slots and can evict the clustered
     // container from the compiled shader.
-    l.setEnabled(!state.baked);
-    l.intensity = state.baked ? 0 : authoredIntensity.get(l);
+    l.setEnabled(!state.runtime);
+    l.intensity = state.runtime ? 0 : authoredIntensity.get(l);
   }
 }
 
 /**
- * Put the viewport lighting in step with `state.baked`.
+ * Put the viewport lighting in step with `state.runtime`.
  *
- * Called by setBakedPreview on both edges, after it has moved the flag. Kept
+ * Called by setRuntimePreview on both edges, after it has moved the flag. Kept
  * separate from that function rather than folded into it because the Env and
  * Exposure sliders have to be refreshed by the caller afterwards, and a mode
  * switch that half-applied itself would be worse than one that did nothing.
@@ -439,9 +436,51 @@ export function syncLightingMode() {
   // switching back and forth never costs you the values you tuned.
   const set = activeLightSet();
   setEnvIntensity(set.strength);
-  setDynamicEnvIntensity(set.dynamicStrength ?? set.strength);
   setExposure(set.exposure);
+  setToneMapping(set.toneMapping ?? TONE_MAPPING_DEFAULT);
   emit("modes");
+}
+
+/** Which of the two sets the viewport is currently rendering through. */
+export function activeLightSetName() {
+  return state.runtime ? "runtime" : "editor";
+}
+
+/** Clamp one lighting value the way its own setter would. */
+function lightSettingValue(key, value) {
+  const n = Number(value);
+  if (key === "toneMapping") return String(value || TONE_MAPPING_DEFAULT);
+  if (key === "exposure") return Number.isFinite(n) ? Math.min(4, Math.max(0.15, n)) : EXPOSURE_DEFAULT;
+  return Number.isFinite(n) ? Math.min(6, Math.max(0, n)) : ENV_INTENSITY_DEFAULT;
+}
+
+/**
+ * Edit one lighting set by name, whether or not it is the one on screen.
+ *
+ * The Env/Exposure/Tone controls used to be a single row that silently meant
+ * whichever set the view mode had selected, so the same slider was two
+ * settings and you could not see the other one without changing what you were
+ * looking at. The Settings pane now shows both sets at once, which needs a way
+ * to write to the set you are *not* rendering: that is this. Only the active
+ * set reaches the scene; the other takes effect when its mode is entered,
+ * through syncLightingMode().
+ */
+export function setLightSetting(which, key, value) {
+  const set = state.lightSets[which];
+  if (!set || !(key in set)) return false;
+  const next = lightSettingValue(key, value);
+  if (set[key] === next) return false;
+  set[key] = next;
+  if (which !== activeLightSetName()) {
+    // Nothing to apply - the set is not the one being rendered - but the pane
+    // shows both at once and has to keep up with the one it is not showing.
+    emit("environment");
+    return true;
+  }
+  if (key === "strength") setEnvIntensity(next);
+  else if (key === "exposure") setExposure(next);
+  else if (key === "toneMapping") setToneMapping(next);
+  return true;
 }
 
 export function setEnvIntensity(v) {
@@ -450,41 +489,39 @@ export function setEnvIntensity(v) {
     ? Math.min(6, Math.max(0, n))
     : ENV_INTENSITY_DEFAULT;
   activeLightSet().strength = state.envIntensity;
-  if (state.scene) state.scene.environmentIntensity = state.envIntensity;
-  emit("modes");
-}
-
-/** Set the IBL strength used by materials the bake left out. */
-export function setDynamicEnvIntensity(v) {
-  const n = Number(v);
-  state.dynamicEnvIntensity = Number.isFinite(n)
-    ? Math.min(6, Math.max(0, n))
-    : DYNAMIC_ENV_INTENSITY_DEFAULT;
-  activeLightSet().dynamicStrength = state.dynamicEnvIntensity;
-  hooks.setDynamicEnvironment(state.dynamicEnvIntensity);
+  // The runtime preview drives Env per material - each mesh reflects its own
+  // room's probe, and the strength has to ride the material that holds it - so
+  // Babylon's scene-wide multiplier is kept neutral there.
+  if (state.scene) {
+    state.scene.environmentIntensity = state.runtime ? 1 : state.envIntensity;
+  }
   emit("environment");
 }
 
-/** Toggle Babylon.js PBR specular anti-aliasing for the baked preview only. */
-export function setBakedSpecularAA(on) {
+/** Toggle Babylon.js PBR specular anti-aliasing on the ship's materials. */
+export function setRuntimeSpecularAA(on) {
   const next = !!on;
-  if (state.bakedSpecularAA === next) return false;
-  state.bakedSpecularAA = next;
+  if (state.runtimeSpecularAA === next) return false;
+  state.runtimeSpecularAA = next;
   emit("reflection");
   return true;
 }
 
 /**
- * Scale the authored roughness in the baked preview without changing exported materials.
- * Values above 1 deliberately make glossy metal less likely to shimmer by broadening its IBL lobe.
+ * Scale the authored roughness of the ship's materials.
+ *
+ * The exported .glb keeps the authored values - this is a manifest setting the
+ * game applies on load, exactly as the preview does, so the two agree without
+ * rewriting any material. Values above 1 deliberately make glossy metal less
+ * likely to shimmer by broadening its IBL lobe.
  */
-export function setBakedRoughnessFactor(v) {
+export function setRuntimeRoughnessFactor(v) {
   const n = Number(v);
   const next = Number.isFinite(n)
     ? Math.min(2, Math.max(0.5, n))
-    : BAKED_ROUGHNESS_FACTOR_DEFAULT;
-  if (state.bakedRoughnessFactor === next) return false;
-  state.bakedRoughnessFactor = next;
+    : RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
+  if (state.runtimeRoughnessFactor === next) return false;
+  state.runtimeRoughnessFactor = next;
   emit("reflection");
   return true;
 }
@@ -494,11 +531,11 @@ export function setExposure(v) {
   // Number.isFinite, not `|| DEFAULT`: a literal 0 is falsy and would silently
   // jump back to the default instead of clamping to the floor.
   //
-  // The ceiling is 4 rather than 2 because of the baked view. There the scene
-  // is albedo times a lightmap holding absolute irradiance, and this ship's
-  // lamps are dim enough that the product needs lifting well past the 0.55 the
-  // lit viewport wants. Exposure is the only honest knob for that - the
-  // alternative is more lamp power in the bake, which is a different decision.
+  // The ceiling is 4 rather than 2 because of the runtime view. There the ship
+  // is lit by its own lamps alone, which are dim enough that the picture needs
+  // lifting well past the 0.55 the authoring rig wants. Exposure is the only
+  // honest knob for that - the alternative is more lamp power, which is a
+  // different decision.
   state.exposure = Number.isFinite(n)
     ? Math.min(4, Math.max(0.15, n))
     : EXPOSURE_DEFAULT;
@@ -507,26 +544,9 @@ export function setExposure(v) {
   emit("modes");
 }
 
-function bakeLightingValue(key, value) {
-  const n = Number(value);
-  const range = BAKE_LIGHTING_RANGE[key];
-  return Number.isFinite(n)
-    ? Math.min(range.max, Math.max(range.min, n))
-    : BAKE_LIGHTING_DEFAULTS[key];
-}
-
-export function setBakeLighting(key, value) {
-  if (!(key in BAKE_LIGHTING_DEFAULTS)) return false;
-  const next = bakeLightingValue(key, value);
-  if (state.bakeLighting[key] === next) return false;
-  state.bakeLighting[key] = next;
-  emit("bakeLighting");
-  return true;
-}
-
-/** The Env/Exposure pair the sliders are currently editing. */
+/** The Env/Exposure pair the viewport is rendering through. */
 export function activeLightSet() {
-  return state.lightSets[state.baked ? "runtime" : "editor"];
+  return state.lightSets[activeLightSetName()];
 }
 
 /**
@@ -553,7 +573,8 @@ export function resolveToneMapping(name) {
  * the two could still disagree after the exposure was made literal.
  */
 export function setToneMapping(name) {
-  state.toneMapping = String(name || "Khronos PBR Neutral");
+  state.toneMapping = String(name || TONE_MAPPING_DEFAULT);
+  activeLightSet().toneMapping = state.toneMapping;
   if (!state.scene) return state.toneMapping;
   const tone = resolveToneMapping(state.toneMapping);
   const ipc = state.scene.imageProcessingConfiguration;
@@ -587,12 +608,12 @@ export function noteAuthoredEmissive(mat, force = false) {
 /** Put one material into the current viewport mode. */
 export function applyViewportMode(mat) {
   if (!("unlit" in mat)) return;
-  // The baked preview's clones do their own compositing and must be left out
-  // of this sweep. Their PBR lighting is intentional: the lightmap remains a
-  // multiplier while the scene environment supplies metallic reflections.
-  // They are preview-only and never reach the export, so nothing downstream
-  // needs them swept either.
-  if (mat.metadata?.bakedPreview) return;
+  // The runtime preview's per-probe clones do their own compositing and must be
+  // left out of this sweep: their PBR lighting is intentional, and the scene
+  // environment they carry is their own room's probe rather than the global
+  // one. They are preview-only and never reach the export, so nothing
+  // downstream needs them swept either.
+  if (mat.metadata?.runtimePreview) return;
   mat.unlit = state.unlit;
   noteAuthoredEmissive(mat);
   const authored = authoredEmissive.get(mat);
@@ -794,6 +815,7 @@ export function screenHullOf(node) {
   const view = scene.getTransformMatrix();
   const pts = [];
   for (const m of node.getChildMeshes()) {
+    if (isRuntimeStandIn(m)) continue;
     m.computeWorldMatrix(true);
     for (const c of m.getBoundingInfo().boundingBox.vectorsWorld) {
       const p = Vector3.Project(c, Matrix.Identity(), view, vp);
@@ -884,6 +906,10 @@ export function elementsInRect(rect) {
   for (const e of state.placements.values()) if (overlaps(e.node)) out.push(e.id);
   for (const m of state.markers.values()) if (overlaps(m.node)) out.push(m.id);
   for (const c of state.colliders.values()) if (overlaps(c.node)) out.push(c.id);
+  for (const id of environmentProbeIds()) {
+    const probe = hooks.environmentProbeEntry(id);
+    if (probe && overlaps(probe.node)) out.push(id);
+  }
   return out;
 }
 
@@ -1216,13 +1242,14 @@ function paintAxes() {
   if (!axes) return;
   const live = new Set(liveAxes());
   const scaled = new Set(scaleAxes());
+  const rotationEnabled = entryOf(axes.id)?.canRotate !== false;
   for (const a of ["x", "y", "z"]) {
     const on = live.has(a);
     const c = AXIS_COLOR[a];
     axes.mats[a].emissiveColor.copyFromFloats(
       on ? c.r : c.r * 0.3, on ? c.g : c.g * 0.3, on ? c.b : c.b * 0.3);
     axes.mats[a].alpha = on ? 1 : 0.45;
-    axes.marks.rot[a].setEnabled(a === state.rotAxis);
+    axes.marks.rot[a].setEnabled(rotationEnabled && a === state.rotAxis);
     axes.marks.scale[a].setEnabled(scaled.has(a));
   }
 }
@@ -1768,7 +1795,12 @@ export function snapPoint(p) {
 
 export async function placeAt(moduleId, position, opts = {}) {
   if (!opts.silent) pushUndo();
-  const id = opts.id || `P${String(state.nextId++).padStart(4, "0")}`;
+  let id = opts.id;
+  if (!id) {
+    do {
+      id = `P${String(state.nextId++).padStart(4, "0")}`;
+    } while (state.environmentProbes.has(id));
+  }
   if (opts.id) {
     const n = parseInt(String(opts.id).replace(/\D/g, ""), 10);
     if (Number.isFinite(n) && n >= state.nextId) state.nextId = n + 1;
@@ -1824,6 +1856,7 @@ export function removeSelected() {
     else if (p) removePlacement(id);
     else if (state.colliders.has(id)) hooks.removeCollider(id);
     else if (state.lights.has(id)) hooks.removeLight(id);
+    else if (state.environmentProbes.has(id)) removeEnvironmentProbe(id, false);
     else removeMarkerNode(id);
   }
   select([]);
@@ -1849,9 +1882,6 @@ export function removePlacement(id) {
   // disposed with it, leaving entries pointing at scene nodes that no longer
   // exist.
   hooks.removeLightsOf(id);
-  // The stand-in drawing this element in the baked view outlives the element's
-  // own node, so it has to be told to stop.
-  hooks.settleStandIns(id);
   entry.node.getChildMeshes().forEach((m) => m.dispose());
   entry.node.dispose();
   state.placements.delete(id);
@@ -1894,9 +1924,10 @@ export function clearAll() {
   // behaviours into the new one
   state.behaviors.clear();
   state.entities.clear();
-  state.bakeOverride.clear();
+  state.environmentProbes.clear();
   emit("placements");
   emit("markers");
+  emit("environment-probes");
   emit("selection");
 }
 
@@ -2085,7 +2116,6 @@ export function removeChunk(name) {
   }
   pushUndo();
   state.chunks = state.chunks.filter((c) => c !== name);
-  state.chunkBake.delete(name);
   if (state.activeChunk === name) state.activeChunk = state.chunks[0];
   applyVisibility();
   emit("chunks");
@@ -2108,12 +2138,6 @@ export function renameChunk(from, to) {
   pushUndo();
 
   state.chunks = state.chunks.map((c) => (c === from ? name : c));
-  // Keyed by id like everything else, so the room's own bake settings have to
-  // travel with it or a rename would quietly reset it to the ship's defaults.
-  if (state.chunkBake.has(from)) {
-    state.chunkBake.set(name, state.chunkBake.get(from));
-    state.chunkBake.delete(from);
-  }
   for (const e of state.placements.values()) if (e.chunk === from) e.chunk = name;
   for (const m of state.markers.values()) {
     if (m.chunkA === from) m.chunkA = name;
@@ -2128,72 +2152,114 @@ export function renameChunk(from, to) {
   return true;
 }
 
-/** One of the four dials, rounded and clamped, or null if it is not a number. */
-function asBakeSetting(key, value) {
-  const range = BAKE_RANGE[key];
-  if (!range) return null;
-  // Explicitly, because `Number(null)` and `Number("")` are both 0, not NaN:
-  // an empty input box would otherwise clamp to the minimum and read back as a
-  // 16-pixel lightmap rather than as "follow the default".
-  if (value === null || value === undefined) return null;
-  if (typeof value === "string" && !value.trim()) return null;
-  const n = Math.round(Number(value));
-  if (!Number.isFinite(n)) return null;
-  return Math.min(range.max, Math.max(range.min, n));
+/** A probe volume component: three finite numbers, optionally all positive. */
+function validProbeVector(value, positive = false) {
+  const vector = value?.map(Number);
+  return vector?.length === 3
+    && vector.every((n) => Number.isFinite(n) && (!positive || n > 0))
+    ? vector : null;
 }
 
-/** A chunk's own overrides, if it has any. Sparse: absent means "the default". */
-export function chunkBakeOf(id) {
-  return { ...(state.chunkBake.get(id) || {}) };
+export function validEnvironmentProbeId(value) {
+  const id = String(value || "").trim();
+  return /^[A-Za-z0-9._-]{1,128}$/.test(id) ? id : null;
 }
 
-/** What the bake will actually render this chunk at, defaults folded in. */
-export function resolveChunkBake(id) {
-  return { ...state.bakeDefaults, ...(state.chunkBake.get(id) || {}) };
+/** Whether an id can identify a probe without shadowing another editor entry. */
+export function environmentProbeIdAvailable(value, currentId = null) {
+  const id = validEnvironmentProbeId(value);
+  if (!id) return false;
+  if (state.placements.has(id) || state.markers.has(id)
+    || state.colliders.has(id) || state.lights.has(id)) return false;
+  return id === currentId || !state.environmentProbes.has(id);
 }
 
-/**
- * Override some of a chunk's bake settings, or clear the override.
- *
- * A field is cleared by passing null (or anything that is not a number), and
- * clearing is not the same as writing today's default in: a cleared field
- * follows `bakeDefaults` forever after, so raising the ship's sample count
- * still reaches the room. That is the whole reason the map is sparse.
- */
-export function setChunkBake(id, patch) {
-  if (!state.chunks.includes(id)) return false;
-  const next = chunkBakeOf(id);
-  for (const [key, raw] of Object.entries(patch || {})) {
-    if (!(key in BAKE_RANGE)) continue;
-    const v = asBakeSetting(key, raw);
-    if (v === null) delete next[key]; else next[key] = v;
+function cloneEnvironmentProbe(probe) {
+  return probe ? {
+    id: probe.id,
+    boxPosition: [...probe.boxPosition],
+    boxSize: [...probe.boxSize],
+    capturePosition: [...probe.capturePosition],
+    resolution: probe.resolution,
+  } : null;
+}
+
+/** One authored local-environment volume, in editor world space. */
+export function environmentProbeOf(id) {
+  return cloneEnvironmentProbe(state.environmentProbes.get(id));
+}
+
+export function environmentProbeIds() {
+  return [...state.environmentProbes.keys()];
+}
+
+export function nextEnvironmentProbeId() {
+  for (let n = 1; ; n++) {
+    const id = `ENV${String(n).padStart(4, "0")}`;
+    if (environmentProbeIdAvailable(id)) return id;
   }
-  const before = JSON.stringify(state.chunkBake.get(id) || {});
-  if (JSON.stringify(next) === before) return false;
+}
+
+/** Add, update, or rename an explicit local-environment volume. */
+export function setEnvironmentProbe(id, probe, previousId = id) {
+  const key = validEnvironmentProbeId(id);
+  const previous = String(previousId || "").trim();
+  const boxPosition = validProbeVector(probe?.boxPosition);
+  const boxSize = validProbeVector(probe?.boxSize, true);
+  const capturePosition = validProbeVector(probe?.capturePosition);
+  const resolution = Math.round(Number(probe?.resolution));
+  if (!key || !boxPosition || !boxSize || !capturePosition
+    || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return false;
+  if (!environmentProbeIdAvailable(key, previous)) return false;
+  const next = { id: key, boxPosition, boxSize, capturePosition, resolution };
+  if (previous === key
+    && JSON.stringify(state.environmentProbes.get(key) || null) === JSON.stringify(next)) {
+    return false;
+  }
   pushUndo();
-  if (Object.keys(next).length) state.chunkBake.set(id, next);
-  else state.chunkBake.delete(id);
-  emit("chunks");
+  if (previous && previous !== key) state.environmentProbes.delete(previous);
+  state.environmentProbes.set(key, next);
+  if (previous && previous !== key) {
+    state.selection = state.selection.map((selected) => selected === previous ? key : selected);
+  }
+  emit("environment-probes");
+  if (previous && previous !== key) emit("selection");
   return true;
 }
 
 /**
- * Change the ship-wide bake defaults.
+ * Copy a displayed probe transform back to authored state.
  *
- * Unlike a chunk's, these cannot be cleared - they are the floor every chunk
- * falls through to - so a value that will not parse is simply left alone.
+ * The drag/scale gesture already pushed its undo snapshot, so this deliberately
+ * does not create another history entry.
  */
-export function setBakeDefaults(patch) {
-  const next = { ...state.bakeDefaults };
-  for (const [key, raw] of Object.entries(patch || {})) {
-    if (!(key in BAKE_RANGE)) continue;
-    const v = asBakeSetting(key, raw);
-    if (v !== null) next[key] = v;
+export function syncEnvironmentProbeTransform(id, position, size) {
+  const probe = state.environmentProbes.get(id);
+  const boxPosition = validProbeVector(position);
+  const boxSize = validProbeVector(size, true);
+  if (!probe || !boxPosition || !boxSize) return false;
+  const delta = boxPosition.map((value, axis) => value - probe.boxPosition[axis]);
+  const next = {
+    ...probe,
+    boxPosition,
+    boxSize,
+    capturePosition: probe.capturePosition.map((value, axis) => value + delta[axis]),
+  };
+  if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+  state.environmentProbes.set(id, next);
+  emit("environment-probes");
+  return true;
+}
+
+export function removeEnvironmentProbe(id, history = true) {
+  if (!state.environmentProbes.has(id)) return false;
+  if (history) pushUndo();
+  state.environmentProbes.delete(id);
+  if (state.selection.includes(id)) {
+    state.selection = state.selection.filter((selected) => selected !== id);
+    emit("selection");
   }
-  if (JSON.stringify(next) === JSON.stringify(state.bakeDefaults)) return false;
-  pushUndo();
-  state.bakeDefaults = next;
-  emit("chunks");
+  emit("environment-probes");
   return true;
 }
 
@@ -2216,21 +2282,9 @@ export function renamePlacement(id, name) {
   const next = String(name || "").trim();
   if (e.name === next) return false;
   pushUndo();
-  const before = e.name || e.id;
   e.name = next;
   // Behaviours are keyed by name and stay with the NAME, which is the whole
   // point of them - renaming one of six crates leaves the other five governed.
-  // A bake override is the opposite: it is set on the element in front of you,
-  // and an unnamed element is keyed by its id, which naming it would strand.
-  // So it travels, and only stops governing the old name once nothing is left
-  // under it.
-  const mode = state.bakeOverride.get(before);
-  const after = next || e.id;
-  if (mode && before !== after) {
-    if (!state.bakeOverride.has(after)) state.bakeOverride.set(after, mode);
-    const stillUsed = [...state.placements.values()].some((p) => (p.name || p.id) === before);
-    if (!stillUsed) state.bakeOverride.delete(before);
-  }
   emit("placements");
   emit("current");
   emit("behaviors");
@@ -2316,6 +2370,7 @@ export function entityBehaviors(nodeName) {
   return list.map((b) => ({
     name: b.name,
     linked: [...(b.linked || [])],
+    ...(b.sound ? { sound: b.sound } : {}),
     ...(b.direction ? { direction: [...b.direction] } : {}),
   }));
 }
@@ -2375,115 +2430,46 @@ export function isDynamicNode(nodeName) {
   return entityBehaviors(nodeName).some((b) => getBehaviorDef(b.name)?.dynamic === true);
 }
 
-// ----------------------------------------------------------- force baking
-//
-// The bake works out on its own which meshes it must leave out of a chunk's
-// atlas: the ones the runtime *moves* (`dynamic`) or *melts* (`liquefiable`,
-// and everything they are `linked` to). That rule is right almost always, and
-// it is the one place the three halves of the pipeline agree without being told
-// - `bake_lightmaps.py` drops them, and both the editor's Baked preview and the
-// game read the decision straight back off the geometry, as a missing UV2.
-//
-// This is the escape hatch for the cases where it is not right, and there are
-// two of them, in both directions:
-//
-//   exclude - a mesh the rule would bake but that must not be. A holographic
-//             panel or a light strip whose emission the author means to drive at
-//             runtime has a baked-in glow that fights it, and the fix is to keep
-//             it out of the atlas without inventing a behaviour it does not
-//             otherwise have.
-//   include - a mesh the rule would drop but that must be baked. The commonest
-//             case is a `liquefiable` fixture that never actually moves until it
-//             is destroyed - a wall panel, a locker - where a lightmap is right
-//             for the whole of the time the player is looking at it, and the
-//             runtime lamps are a poor substitute for the bounce it sits in.
-//
-// Keyed by NODE NAME, like behaviours and for the same reason: the bake matches
-// Blender objects back to the manifest by name, so an override keyed any other
-// way could not be applied. Unnamed elements fall back to their id, which is
-// what the exporter calls them, so every mesh can carry one.
-
-/** The three settings, in the order the inspector offers them. */
-export const BAKE_OVERRIDES = ["auto", "exclude", "include"];
-
-/** The override on a node name: "auto" when none is set. */
-export function bakeOverrideOf(nodeName) {
-  return state.bakeOverride.get(String(nodeName || "").trim()) || "auto";
-}
-
 /**
- * Force a node into or out of the bake, or hand it back to the rule.
+ * The behaviour the runtime recognises as the first-person weapon.
  *
- * "auto" deletes the entry rather than storing it: the manifest writes only
- * what is set, so a stored "auto" would be noise in the diff of every element
- * that had ever been looked at.
+ * Matched by NAME rather than by a flag because that is the runtime's own
+ * contract: `behavior-manager.ts` switches on `assignment.name`, so the name is
+ * the thing that decides, and a definition body invented here to mirror it
+ * would be a second source of truth that nothing enforces.
  */
-export function setBakeOverride(nodeName, mode) {
-  return setBakeOverrides([nodeName], mode);
-}
+const WEAPON_BEHAVIOR = "weaponLiquefactor";
 
 /**
- * The same, over a whole selection and on ONE undo step.
+ * Whether a node's geometry must be kept OUT of an environment probe.
  *
- * Forcing a room's worth of light strips out of the atlas is the reason to
- * reach for this at all, and an undo that took them back one at a time would
- * make the operation practically irreversible.
- */
-export function setBakeOverrides(nodeNames, mode) {
-  if (!BAKE_OVERRIDES.includes(mode)) return false;
-  const next = mode === "auto" ? undefined : mode;
-  const nodes = [...new Set(nodeNames.map((n) => String(n || "").trim()).filter(Boolean))]
-    .filter((n) => (state.bakeOverride.get(n) || undefined) !== next);
-  if (!nodes.length) return false;
-  pushUndo();
-  for (const node of nodes) {
-    if (next) state.bakeOverride.set(node, next);
-    else state.bakeOverride.delete(node);
-  }
-  emit("behaviors");
-  return true;
-}
-
-/**
- * What "Automatic" decides for a node name: true when the bake would leave it
- * out of the atlas.
+ * A probe is a photograph of a room's fixed geometry, taken once and worn by
+ * every material in it. Anything that will not be standing exactly there for
+ * the life of the level has to be left out, or the room reflects a crate that
+ * has since been pushed over and a weapon that is really in the player's hands.
  *
- * This mirrors `unbaked_names()` in bake_lightmaps.py statement for statement,
- * including the `linked` closure and the "first liquefiable assignment wins"
- * rule the runtime's own `liquefiableConfigOf` uses. It exists so the inspector
- * can say what the setting above actually means for the element in front of
- * you - a switch offering "Automatic" without showing what automatic came out
- * as is a switch you have to guess at.
+ * Three ways to earn it, and all three say the same thing:
+ *
+ *  - `dynamic: true` — a rigid body. Its authored pose is a starting position,
+ *    not a fact about the room.
+ *  - `liquefiable: true` — it is going to melt. What the probe would record is
+ *    its shape before the game begins.
+ *  - the weapon behaviour — a first-person viewmodel rides the camera, so it is
+ *    never in the room at all; the placement is only where it is picked up.
+ *
+ * plus the authored opt-out, `reflectionProbe: "exclude"`, for anything fixed
+ * that still must not be photographed.
+ *
+ * Excluded geometry drops out of the capture's DIGEST too - see
+ * meshesInProbeBox, which is the single list both are built from - so nudging a
+ * crate no longer marks every probe in its room as stale.
  */
-export function autoBakeExcluded(nodeName) {
-  const node = String(nodeName || "").trim();
-  if (!node) return false;
-  const assignments = (n) => state.entities.get(n) || [];
-  if (assignments(node).some((b) => getBehaviorDef(b.name)?.dynamic === true)) return true;
-  // The melt closure, walked backwards: this node is out if any node whose
-  // liquefaction it is dragged into reaches it through `linked`.
-  const meltConfig = (n) => assignments(n).find((b) => isLiquefiable(b.name)) || null;
-  const seen = new Set();
-  const pending = [...state.entities.keys()].filter((n) => meltConfig(n));
-  while (pending.length) {
-    const n = pending.pop();
-    if (seen.has(n)) continue;
-    seen.add(n);
-    if (n === node) return true;
-    for (const linked of meltConfig(n)?.linked || []) {
-      if (linked && !seen.has(linked)) pending.push(linked);
-    }
-  }
-  return false;
-}
-
-/**
- * Whether a node is left out of the bake once its override is applied - the
- * question the Baked preview and the game both answer off the geometry.
- */
-export function bakeExcluded(nodeName) {
-  const mode = bakeOverrideOf(nodeName);
-  return mode === "exclude" ? true : mode === "include" ? false : autoBakeExcluded(nodeName);
+export function isProbeExcludedNode(nodeName) {
+  return entityBehaviors(nodeName).some((b) => {
+    if (b.name === WEAPON_BEHAVIOR) return true;
+    const def = getBehaviorDef(b.name);
+    return def?.reflectionProbe === "exclude" || def?.dynamic === true || def?.liquefiable === true;
+  });
 }
 
 /**
@@ -2585,8 +2571,18 @@ export function isVeilClone(mesh) { return !!mesh?.metadata?.veilClone; }
  */
 export function isGizmoMesh(m) { return !!m?.metadata?.gizmo; }
 
+/**
+ * A stand-in the Runtime view draws in place of an authored instance.
+ *
+ * Same reason as a veil clone, and the same treatment: it is a copy that
+ * exists only to be looked at (see runtime.js dressMeshes), so nothing that
+ * walks an element's meshes should see it - not the exporter, not the veil,
+ * not the picker.
+ */
+export function isRuntimeStandIn(m) { return !!m?.metadata?.runtimePreview; }
+
 function realMeshes(node) {
-  return node.getChildMeshes().filter((m) => !isVeilClone(m) && !isGizmoMesh(m));
+  return node.getChildMeshes().filter((m) => !isVeilClone(m) && !isGizmoMesh(m) && !isRuntimeStandIn(m));
 }
 
 /**
@@ -2670,21 +2666,14 @@ export function applyVisibility() {
       && (!state.isolate || e.chunk === state.activeChunk)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
-    // The baked preview draws the exported copy of this element in place of the
-    // element's own meshes - never both, which would z-fight the whole vessel.
-    // It is offered the visibility already decided above rather than deciding
-    // any of it again, and a ghosted element keeps its own translucent clones,
-    // the point of the veil being that the thing is not really there.
-    const stood = hooks.showStandIn(e, on && veil !== "ghost");
     for (const m of realMeshes(e.node)) {
-      if (veil !== "ghost") m.setEnabled(!stood);
+      // A ghosted element is drawn by its veil clones *alone* - buildVeilClones
+      // turned the real meshes off, and turning them back on here would draw
+      // the solid original through its own ghost.
+      if (veil !== "ghost") m.setEnabled(true);
       m.isPickable = veil !== "ghost";
     }
-    for (const m of hooks.standInMeshes(e.id)) m.isPickable = veil !== "ghost";
   }
-  // A stand-in whose element has been deleted is not reached by the loop above,
-  // which is exactly how it gets noticed.
-  hooks.settleStandIns();
   // A door is not in a chunk, but it *joins* two - so isolation does have
   // something to say about it: show it when the active chunk is one of its two
   // sides. Sides left on "(auto)" are resolved the same way the manifest
@@ -2919,14 +2908,9 @@ export const hooks = {
   // palette.js owns the brush, and imports interact.js - so putting the tile
   // back down after a one-shot drop has to come back through here
   clearBrush: () => {},
-  // baked.js registers these three. While the baked preview is up the exported
-  // ship stands in for the authored one element by element, so that the one
-  // honest view of the ship is also one you can work in. Defaults that answer
-  // "there is no stand-in" keep every caller free of a mode check.
-  standInMeshes: () => [],
-  showStandIn: () => false,
-  settleStandIns: () => {},
-  setDynamicEnvironment: () => {},
+  // runtime.js registers this: the probe volume gizmo is its own, and the
+  // inspector needs to be able to select and edit it like any other entry.
+  environmentProbeEntry: () => null,
 };
 
 /**
@@ -2968,24 +2952,32 @@ export function applyView(view) {
  * getting it wrong is as much an edit to take back as moving a wall. The camera
  * stays off the stack, because where you happen to be standing is not an edit.
  *
- * These are the values tuned in **Baked** mode - the rig switched off, the
- * lightmaps on - because that is the picture the demos render. `strength`
- * is `scene.environmentIntensity`, `exposure` is the linear multiplier exactly
- * as the slider shows it, and `toneMapping` names the view transform both ends
- * apply.
+ * These are the values tuned in **Runtime** mode - the authoring rig switched
+ * off, the authored lamps and the captured probes in charge - because that is
+ * the picture the demos render. `strength` is `scene.environmentIntensity`,
+ * `exposure` is the linear multiplier exactly as the slider shows it, and
+ * `toneMapping` names the view transform both ends apply.
+ *
+ * `specularAA` and `reflectionRoughness` are the same kind of value one step
+ * further in: they land on the materials rather than the scene. They are here
+ * and not in the editor block because the game reads them - `specularAA` as
+ * the authored default for a toggle the player may still override, and
+ * `reflectionRoughness` as a multiplier over every ship material's authored
+ * roughness, exactly as the preview applies it.
  */
 export function serializeEnvironment() {
   const set = state.lightSets.runtime;
   return {
     strength: round3([set.strength])[0],
-    dynamicStrength: round3([set.dynamicStrength ?? set.strength])[0],
-    toneMapping: state.toneMapping,
+    toneMapping: set.toneMapping ?? TONE_MAPPING_DEFAULT,
     exposure: round3([set.exposure])[0],
+    specularAA: !!state.runtimeSpecularAA,
+    reflectionRoughness: round3([state.runtimeRoughnessFactor])[0],
   };
 }
 
 /**
- * The editor's own pair, kept apart from `environment` because it describes
+ * The editor's own rig, kept apart from `environment` because it describes
  * this tool and not the ship. The authoring rig adds four analytic lights the
  * game does not have, so the two need different numbers to look right, and
  * writing the editor's into `environment` would blow the demos out.
@@ -2994,32 +2986,28 @@ export function serializeEditorEnvironment() {
   const set = state.lightSets.editor;
   return {
     strength: round3([set.strength])[0],
-    dynamicStrength: round3([set.dynamicStrength ?? set.strength])[0],
+    toneMapping: set.toneMapping ?? TONE_MAPPING_DEFAULT,
     exposure: round3([set.exposure])[0],
   };
 }
 
-export function serializeBakeLighting() {
+
+/**
+ * The editor's own view preferences, saved with the ship.
+ *
+ * Not lighting, so not in `editorEnvironment`, and nothing the demos may read.
+ * They are in the manifest all the same: a ship reopened with the palette half
+ * the size you left it, or ghosts at someone else's opacity, is the tool having
+ * forgotten how you were working on *this* ship. The localStorage copy stays as
+ * the fallback for a ship whose manifest predates the block.
+ */
+export function serializeEditorPrefs() {
   return {
-    power: round3([state.bakeLighting.power])[0],
-    sky: round3([state.bakeLighting.sky])[0],
+    veilAlpha: round3([state.veilAlpha])[0],
+    bigPalette: !!state.bigPalette,
   };
 }
 
-export function applyBakeLighting(values) {
-  if (!values || typeof values !== "object") return false;
-  let changed = false;
-  for (const key of ["power", "sky"]) {
-    if (!Number.isFinite(values[key])) continue;
-    const next = bakeLightingValue(key, values[key]);
-    if (state.bakeLighting[key] !== next) {
-      state.bakeLighting[key] = next;
-      changed = true;
-    }
-  }
-  if (changed) emit("bakeLighting");
-  return changed;
-}
 
 /**
  * Put the lighting back on load. Anything missing is left alone, so a manifest
@@ -3029,38 +3017,57 @@ export function applyEnvironment(env, editorEnv) {
   if (!env && !editorEnv) return false;
   if (env && typeof env === "object") {
     if (Number.isFinite(env.strength)) state.lightSets.runtime.strength = env.strength;
-    state.lightSets.runtime.dynamicStrength = Number.isFinite(env.dynamicStrength)
-      ? env.dynamicStrength : state.lightSets.runtime.strength;
     if (Number.isFinite(env.exposure)) state.lightSets.runtime.exposure = asLinearExposure(env.exposure);
-    if (env.toneMapping) setToneMapping(env.toneMapping);
+    // Stored on the set, not through setToneMapping: that writes whichever set
+    // is live, which on a load from an editor view is the wrong one.
+    if (env.toneMapping) state.lightSets.runtime.toneMapping = String(env.toneMapping);
+    // Through their setters, which clamp and announce "reflection" - the event
+    // the preview materials and the Settings pane both listen for.
+    if (typeof env.specularAA === "boolean") setRuntimeSpecularAA(env.specularAA);
+    if (Number.isFinite(env.reflectionRoughness)) setRuntimeRoughnessFactor(env.reflectionRoughness);
   }
   if (editorEnv && typeof editorEnv === "object") {
     if (Number.isFinite(editorEnv.strength)) state.lightSets.editor.strength = editorEnv.strength;
-    state.lightSets.editor.dynamicStrength = Number.isFinite(editorEnv.dynamicStrength)
-      ? editorEnv.dynamicStrength : state.lightSets.editor.strength;
     if (Number.isFinite(editorEnv.exposure)) {
       state.lightSets.editor.exposure = asLinearExposure(editorEnv.exposure);
     }
+    if (editorEnv.toneMapping) state.lightSets.editor.toneMapping = String(editorEnv.toneMapping);
   } else if (env && typeof env === "object") {
-    // A manifest from before the split has one pair; give it to both rather
+    // A manifest from before the split has one rig; give it to both rather
     // than leaving the editor on defaults that have nothing to do with it.
     state.lightSets.editor = { ...state.lightSets.runtime };
   }
   const set = activeLightSet();
   setEnvIntensity(set.strength);
-  setDynamicEnvIntensity(set.dynamicStrength ?? set.strength);
   setExposure(set.exposure);
+  setToneMapping(set.toneMapping ?? TONE_MAPPING_DEFAULT);
   emit("environment");
   return true;
 }
 
 /**
- * Exposure used to be written in Blender STOPS and raised to a power at the
- * other end. It is the plain multiplier now - what the slider shows is what
- * every consumer applies - but a *negative* value can only have come from the
- * old format, since the slider has never gone below 0.15. That makes the
- * conversion unambiguous, and worth doing rather than clamping a real setting
- * up to the floor.
+ * Put the editor's view preferences back on load.
+ *
+ * Returns false when the manifest carries no block, which is the signal to keep
+ * whatever boot read out of localStorage rather than snapping to the defaults.
+ * `bigPalette` is stored and announced only - what it means on screen is the
+ * palette's business, and the palette lives in the UI layer.
+ */
+export function applyEditorPrefs(prefs) {
+  if (!prefs || typeof prefs !== "object") return false;
+  if (Number.isFinite(prefs.veilAlpha)) setVeilAlpha(prefs.veilAlpha);
+  if (typeof prefs.bigPalette === "boolean") state.bigPalette = prefs.bigPalette;
+  emit("prefs");
+  return true;
+}
+
+/**
+ * Exposure used to be written in STOPS and raised to a power at the other end.
+ * It is the plain multiplier now - what the slider shows is what every consumer
+ * applies - but a *negative* value can only have come from the old format,
+ * since the slider has never gone below 0.15. That makes the conversion
+ * unambiguous, and worth doing rather than clamping a real setting up to the
+ * floor.
  */
 function asLinearExposure(v) {
   if (v >= 0) return v;
@@ -3073,23 +3080,23 @@ export function serialize() {
   return {
     chunks: [...state.chunks],
     activeChunk: state.activeChunk,
-    // Bake settings are ship data too - retuning a room changes what Blender
-    // renders next - so they ride the undo stack with everything else, and a
-    // restore has to clear the ones the loaded ship does not have.
-    bakeDefaults: { ...state.bakeDefaults },
-    chunkBake: Object.fromEntries([...state.chunkBake].map(([k, v]) => [k, { ...v }])),
-    bakeLighting: { ...state.bakeLighting },
-    // The Env/Exposure pairs and the tone mapping. On the stack because they
-    // are *authored* values that the manifest carries and the runtime reads -
+    probeVolumes: [...state.environmentProbes.values()].map(cloneEnvironmentProbe),
+    // The runtime rig's Env/Exposure/tone. On the stack because they are
+    // *authored* values that the manifest carries and the runtime reads -
     // getting the lighting wrong is as much an edit to undo as moving a wall.
-    // Both pairs travel together: Baked only decides which one the sliders
-    // edit, so restoring one and not the other would leave the hidden set
-    // behind.
-    lightSets: {
-      editor: { ...state.lightSets.editor },
-      runtime: { ...state.lightSets.runtime },
-    },
-    toneMapping: state.toneMapping,
+    // It travels whether or not the viewport is currently rendering it, or an
+    // undo made in an editor view would leave the runtime rig behind.
+    //
+    // The *editor* rig is deliberately absent, for the same reason the camera
+    // is (see serializeView): it is how you happen to be looking at the ship in
+    // this browser, not part of the ship. Its slider does not push an undo
+    // entry, so restoring it here would take back a change no entry recorded.
+    lightSets: { runtime: { ...state.lightSets.runtime } },
+    // The two material dials the Runtime section carries. Authored values the
+    // manifest saves and the game reads, so they undo like the rig above them;
+    // the editor rig's rows, next to them in the pane, still do not.
+    runtimeSpecularAA: state.runtimeSpecularAA,
+    runtimeRoughnessFactor: state.runtimeRoughnessFactor,
     // Ship data, so it belongs on the undo stack with everything else - and it
     // survives the clearAll() that a restore begins with.
     behaviors: Object.fromEntries(
@@ -3100,14 +3107,10 @@ export function serialize() {
       .map(([k, v]) => [k, v.map((b) => ({
         name: b.name,
         linked: [...b.linked],
+        ...(b.sound ? { sound: b.sound } : {}),
         // glTF space, matching the manifest - readBehaviorExtras() flips it back
         ...(b.direction ? { direction: flipX(b.direction) } : {}),
       }))])),
-    // Ship data too, and on its own key rather than folded into `entities`: an
-    // override can sit on a node that carries no behaviour at all, and
-    // `entities` entries with an empty behaviour list are dropped everywhere
-    // else in the tool.
-    bakeOverride: Object.fromEntries([...state.bakeOverride]),
     instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
@@ -3262,46 +3265,98 @@ async function restoreFrom(data) {
   state.chunks = ids.length ? ids : ["CH00_Storage"];
   state.activeChunk = data.activeChunk && state.chunks.includes(data.activeChunk)
     ? data.activeChunk : state.chunks[0];
-  // Read from either shape as well: `serialize()` writes a flat `chunkBake`
-  // map, `buildManifest()` hangs each chunk's overrides off the chunk record
-  // it was already writing. Both are sparse, and both are filtered through
-  // setChunkBake's own clamping so a hand-edited manifest cannot ask Blender
-  // for a 40000-texel atlas.
-  state.bakeDefaults = { ...BAKE_DEFAULTS };
-  for (const [key, v] of Object.entries(data.bakeDefaults || {})) {
-    const clamped = asBakeSetting(key, v);
-    if (clamped !== null) state.bakeDefaults[key] = clamped;
-  }
-  state.chunkBake.clear();
-  const overrides = data.chunkBake || Object.fromEntries((data.chunks || [])
-    .filter((c) => c && typeof c === "object" && c.bake).map((c) => [c.id, c.bake]));
-  for (const id of state.chunks) {
-    const own = {};
-    for (const [key, v] of Object.entries(overrides[id] || {})) {
-      const clamped = asBakeSetting(key, v);
-      if (clamped !== null) own[key] = clamped;
+  state.environmentProbes.clear();
+  const hasExplicitProbes = Array.isArray(data.probeVolumes)
+    || Array.isArray(data.environmentProbes);
+  let probes = Array.isArray(data.probeVolumes)
+    ? data.probeVolumes
+    : (Array.isArray(data.environmentProbes)
+      ? data.environmentProbes.map((probe) => ({
+        id: probe.id,
+        boxPosition: Array.isArray(probe.boxPosition)
+          ? [-Number(probe.boxPosition[0]), Number(probe.boxPosition[1]),
+            Number(probe.boxPosition[2])] : null,
+        boxSize: probe.boxSize,
+        capturePosition: Array.isArray(probe.capturePosition)
+          ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]),
+            Number(probe.capturePosition[2])] : null,
+        resolution: probe.resolution,
+      }))
+      : []);
+  // Manifests written before explicit volumes stored one projection override
+  // on each chunk. Promote those records instead of dropping authored work.
+  if (!hasExplicitProbes) {
+    let generated = {};
+    try {
+      const response = await fetch("/api/local-environments", { cache: "no-store" });
+      if (response.ok) generated = (await response.json()).chunks || {};
+    } catch {
+      // The generated index is optional; chunk bounds remain a safe fallback.
     }
-    state.bakeLighting = { ...BAKE_LIGHTING_DEFAULTS };
-    applyBakeLighting(data.bakeLighting);
-    if (Object.keys(own).length) state.chunkBake.set(id, own);
+    probes = (data.chunks || [])
+      .filter((chunk) => chunk && typeof chunk === "object" && chunk.environmentProbe)
+      .map((chunk, index) => {
+        const legacy = chunk.environmentProbe;
+        const position = Array.isArray(legacy.boxPosition)
+          ? [-Number(legacy.boxPosition[0]), Number(legacy.boxPosition[1]),
+            Number(legacy.boxPosition[2])] : null;
+        const generatedPosition = generated[chunk.id]?.position;
+        const bounds = chunk.aabb;
+        const automatic = Array.isArray(generatedPosition)
+          ? generatedPosition
+          : (Array.isArray(bounds?.min) && Array.isArray(bounds?.max)
+            ? bounds.min.map((value, axis) => (
+              (Number(value) + Number(bounds.max[axis])) * 0.5))
+            : null);
+        const capturePosition = Array.isArray(automatic)
+          ? [-Number(automatic[0]), Number(automatic[1]), Number(automatic[2])]
+          : position;
+        return {
+          id: `ENV${String(index + 1).padStart(4, "0")}`,
+          boxPosition: position,
+          boxSize: legacy.boxSize,
+          capturePosition,
+          resolution: Number(generated[chunk.id]?.resolution) || 512,
+        };
+      });
+  }
+  for (const probe of probes) {
+    const id = validEnvironmentProbeId(probe?.id);
+    const boxPosition = validProbeVector(probe?.boxPosition);
+    const boxSize = validProbeVector(probe?.boxSize, true);
+    const capturePosition = validProbeVector(
+      probe?.capturePosition || probe?.boxPosition);
+    const resolution = Math.round(Number(probe?.resolution || 512));
+    if (!environmentProbeIdAvailable(id) || !boxPosition || !boxSize || !capturePosition
+      || resolution < 16 || resolution > 4096) continue;
+    state.environmentProbes.set(id, {
+      id, boxPosition, boxSize, capturePosition, resolution,
+    });
   }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
   // `environment` / `editorEnvironment` blocks, which loadLayout() applies
-  // through applyEnvironment() instead.
+  // through applyEnvironment() instead. Only the runtime rig is on the stack -
+  // the editor's is a per-browser view preference, like the camera - but the
+  // loop still reads by name so an older snapshot carrying both is harmless.
   if (data.lightSets) {
     for (const k of ["editor", "runtime"]) {
       const set = data.lightSets[k];
       if (!set) continue;
       if (Number.isFinite(set.strength)) state.lightSets[k].strength = set.strength;
-      if (Number.isFinite(set.dynamicStrength)) state.lightSets[k].dynamicStrength = set.dynamicStrength;
       if (Number.isFinite(set.exposure)) state.lightSets[k].exposure = set.exposure;
+      if (set.toneMapping) state.lightSets[k].toneMapping = String(set.toneMapping);
     }
-    if (data.toneMapping) setToneMapping(data.toneMapping);
     const live = activeLightSet();
     setEnvIntensity(live.strength);
     setExposure(live.exposure);
+    setToneMapping(live.toneMapping ?? TONE_MAPPING_DEFAULT);
     emit("environment");            // the sliders and their readouts follow
   }
+  // Alongside the rig, and separate from it: these reach the materials rather
+  // than the scene, so the setters announce them as "reflection" and not as
+  // "environment". Absent from an older snapshot means "leave them alone".
+  if (typeof data.runtimeSpecularAA === "boolean") setRuntimeSpecularAA(data.runtimeSpecularAA);
+  if (Number.isFinite(data.runtimeRoughnessFactor)) setRuntimeRoughnessFactor(data.runtimeRoughnessFactor);
   for (const inst of data.instances || []) {
     if (!getModule(inst.module)) {
       console.warn("skipping unknown module", inst.module);
@@ -3347,12 +3402,6 @@ async function restoreFrom(data) {
   for (const [node, list] of Object.entries(data.entities || {})) {
     const key = String(node || "").trim();
     if (!key) continue;
-    // Read before the shape guard below: an entry may carry a bake override and
-    // no behaviours at all, which is exactly what forcing an ordinary kit wall
-    // out of the atlas looks like.
-    if (!Array.isArray(list) && BAKE_OVERRIDES.includes(list?.bake) && list.bake !== "auto") {
-      state.bakeOverride.set(key, list.bake);
-    }
     if (!Array.isArray(list?.behaviors ?? list)) continue;
     // accept both the manifest's { behaviors: [...] } and a bare array
     const raw = Array.isArray(list) ? list : list.behaviors;
@@ -3376,17 +3425,11 @@ async function restoreFrom(data) {
     }
     if (kept.length) state.entities.set(key, kept);
   }
-  // The undo snapshot's own flat form. `entities` there holds bare arrays, so
-  // there is nowhere on them to hang a `bake` - and an override on a node with
-  // no behaviours would have no entry to sit in at all.
-  for (const [node, mode] of Object.entries(data.bakeOverride || {})) {
-    const key = String(node || "").trim();
-    if (key && BAKE_OVERRIDES.includes(mode) && mode !== "auto") state.bakeOverride.set(key, mode);
-  }
   emit("chunks");
   emit("placements");
   emit("markers");
   emit("behaviors");
+  emit("environment-probes");
   emit("selection");
 }
 
@@ -3403,6 +3446,7 @@ function flipX(v) { return [-Number(v[0]), Number(v[1]), Number(v[2])]; }
 function readBehaviorExtras(b) {
   const out = {};
   if (Array.isArray(b.linked)) out.linked = b.linked.map(String);
+  if (typeof b.sound === "string" && b.sound.trim()) out.sound = b.sound.trim();
   if (Array.isArray(b.direction) && b.direction.length === 3
     && b.direction.every(Number.isFinite)) {
     out.direction = flipX(b.direction);
@@ -3446,6 +3490,64 @@ export async function whileBusy(message, fn) {
     emit("busy");
   }
 }
+
+/**
+ * Say what the editor is busy WITH, part-way through being busy.
+ *
+ * A capture takes a room at a time and each one is seconds long, so a label
+ * fixed when the lock was taken would sit there saying nothing for a minute.
+ * Ignored when nothing is locked: a message with no overlay under it would be
+ * a claim about a state the editor is not in.
+ */
+export function setBusyMessage(message) {
+  if (!busyDepth || !message || message === busyMessage) return;
+  busyMessage = message;
+  emit("busy");
+}
+
+/**
+ * Fail a step that never finishes, instead of holding the editor for ever.
+ *
+ * Every long await in the probe capture path is a promise that Babylon settles
+ * from inside the render loop - a shader that becomes ready, a read-back, a
+ * prefilter pass - and each one of them can be waited on for ever if the thing
+ * it is waiting for cannot happen. A material whose effect fails to link never
+ * reports ready; a tab moved to the background stops producing frames; a fetch
+ * to a server that has gone away hangs on the socket. None of those throw.
+ *
+ * That matters far beyond the capture itself, because the capture holds the
+ * busy lock: a stall does not merely leave a probe untaken, it leaves the whole
+ * editor inert with an overlay over it and no way back except a reload. Turning
+ * every such await into one that CAN fail is what lets `whileBusy` unwind and
+ * hand the tool back with an error that names the step.
+ *
+ * `Promise.race` leaves the loser running - there is no cancelling a Babylon
+ * readiness poll - which is fine: it resolves into nothing once the caller has
+ * given up on it.
+ */
+export function withDeadline(promise, ms, what) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${what} did not finish within ${Math.round(ms / 1000)}s`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// --------------------------------------------------------- viewport suspend
+//
+// There is deliberately no such thing. Stopping the editor's frame during a
+// probe capture looks obviously right - the capture drives the scene with its
+// own camera and its own image processing, and a frame drawn in the middle of
+// that is a picture of no state the editor is meant to have - and it does not
+// work. Babylon compiles a material's shader as part of rendering, so with the
+// loop stopped the effects a capture dirties (the light set, the image
+// processing define) never rebuild, and `whenReadyAsync` waits for a readiness
+// that can no longer arrive. Measured: the capture hung indefinitely.
+//
+// The busy overlay is what keeps those frames private. It covers the viewport
+// and makes every panel inert, so the editor may as well keep drawing.
 
 /**
  * How much history to keep.
@@ -3572,10 +3674,15 @@ function round3(a) { return a.map((v) => Math.round(v * 1000) / 1000); }
 export function worldBounds(node) {
   let min = null, max = null;
   for (const m of node.getChildMeshes()) {
+    // A Runtime-view stand-in sits exactly on the mesh it stands in for, so it
+    // cannot widen these bounds - but it can be the only mesh left when its
+    // original is invisible, and measuring a copy is measuring nothing new.
+    if (isRuntimeStandIn(m)) continue;
     // A light's gizmo rides the placement it lights. Measured with it, a wall
     // panel would report the lamp's size as its own and "Drop to plane" would
     // lift the panel off the floor by however far the lamp hangs below it.
-    if (isGizmoMesh(m) && m.metadata.lightRoot !== node) continue;
+    if (isGizmoMesh(m) && m.metadata.lightRoot !== node
+      && m.metadata.environmentProbeRoot !== node) continue;
     m.computeWorldMatrix(true);
     const bb = m.getBoundingInfo().boundingBox;
     min = min ? Vector3.Minimize(min, bb.minimumWorld) : bb.minimumWorld.clone();

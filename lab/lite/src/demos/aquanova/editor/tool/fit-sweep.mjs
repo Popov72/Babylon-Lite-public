@@ -11,11 +11,11 @@ import { fit } from "./public/js/hullfit.js";
 const IN = process.env.FIT_IN || "D:/alexis/TombRaider/Popov72/fitter/modules.json";
 const data = JSON.parse(fs.readFileSync(IN, "utf8"));
 
-const ROUND = ["Props/Prop_Barrel_Small", "Props/Prop_Pipe_Thick_Straight",
-  "Platforms/Platform_Round1", "Walls/WallAstra_Corner_Round_Outer",
-  "Walls/WallAstra_Corner_Round_Inner", "Walls/TopPadded_Incline_Curve_Round_Inner"];
-const FLAT = ["Props/Prop_Crate1", "Platforms/Platform_Metal", "Walls/WallWideBand_Straight",
-  "Platforms/Door_Metal"];
+const ROUND = ["Modular SciFi MegaKit/Props/Prop_Barrel_Small", "Modular SciFi MegaKit/Props/Prop_Pipe_Thick_Straight",
+  "Modular SciFi MegaKit/Platforms/Platform_Round1", "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Outer",
+  "Modular SciFi MegaKit/Walls/WallAstra_Corner_Round_Inner", "Modular SciFi MegaKit/Walls/TopPadded_Incline_Curve_Round_Inner"];
+const FLAT = ["Modular SciFi MegaKit/Props/Prop_Crate1", "Modular SciFi MegaKit/Platforms/Platform_Metal", "Modular SciFi MegaKit/Walls/WallWideBand_Straight",
+  "Modular SciFi MegaKit/Platforms/Door_Metal"];
 const TOL = [0.25, 0.15, 0.1, 0.06, 0.04, 0.025];
 const THICK = Number(process.env.FIT_THICK || 0.35);
 
@@ -43,8 +43,8 @@ show("flat — should stay at one box whatever the tolerance", FLAT);
 console.log("\noffset — where the art sits inside its hull (thickness 0.35 m)");
 console.log("module".padEnd(44) + "centered".padStart(22) + "negative".padStart(22)
   + "positive".padStart(22));
-for (const m of ["Walls/WallWideBand_Straight", "Platforms/Platform_Metal",
-  "Decals/Decal_Caution", "Props/Prop_Crate1"]) {
+for (const m of ["Modular SciFi MegaKit/Walls/WallWideBand_Straight", "Modular SciFi MegaKit/Platforms/Platform_Metal",
+  "Modular SciFi MegaKit/Decals/Decal_Caution", "Modular SciFi MegaKit/Props/Prop_Crate1"]) {
   const tris = data.modules[m];
   if (!tris) continue;
   const cells = ["centered", "negative", "positive"].map((offset) => {

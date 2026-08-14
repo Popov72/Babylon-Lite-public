@@ -12,7 +12,25 @@ const browser = await chromium.launch({ channel: "msedge", headless: true });
 const page = await browser.newPage({ viewport: { width: 1700, height: 950 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
-page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+// Chromium's own console line for a bad response is just "Failed to load
+// resource: the server responded with a status of 404" - no URL, which is
+// useless when it fires somewhere in a suite this long. Record the response
+// itself and drop the blind console echo of it.
+//
+// Before the first capture there is no .env on disk, and the Runtime view asks
+// for one anyway - the miss is what makes a probe fall back to no reflection
+// rather than to a stale one. Those 404s are the editor working, not breaking.
+const EXPECTED_MISSING = /\/environments\//;
+page.on("response", (r) => {
+  if (r.status() >= 400 && !EXPECTED_MISSING.test(r.url())) {
+    errors.push(`HTTP ${r.status()} ${r.url()}`);
+  }
+});
+page.on("console", (m) => {
+  if (m.type() !== "error") return;
+  if (/Failed to load resource/i.test(m.text())) return;
+  errors.push(m.text());
+});
 
 await page.goto(URL, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => document.querySelectorAll("#palette-list .item").length > 0,
@@ -59,7 +77,7 @@ async function screenOf(world) {
   return r;
 }
 
-const MODULE = "Walls/ShortWall_Band2_Straight";
+const MODULE = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
 
 // ---- 1. arming the palette creates a ghost that follows the cursor ----------
 await page.evaluate((m) => import("/js/palette.js").then((p) => p.setBrush(m)), MODULE);
@@ -111,7 +129,7 @@ const centred = await page.evaluate(async () => {
   const vp = s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight());
   const px = (v) => BABYLON.Vector3.Project(v, BABYLON.Matrix.Identity(), s.getTransformMatrix(), vp);
   const pb = px(body), po = px(root.position);
-  const proto = await (await import("/js/kit.js")).getProto("Walls/ShortWall_Band2_Straight");
+  const proto = await (await import("/js/kit.js")).getProto("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
   ed.state.snap.pos = snapWas;
   return {
     bodyGap: Math.hypot(pb.x - s.pointerX, pb.y - s.pointerY),
@@ -136,7 +154,7 @@ check("cursor hidden while placing", cursorHidden === "none", `cursor="${cursorH
 // Following the build plane would leave the ghost floating far up-screen.
 const highModule = await page.evaluate(async () => {
   const kit = await import("/js/kit.js");
-  const id = "Walls/TopCables_Corner_Square_Inner";
+  const id = "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner";
   if (!kit.getModule(id)) return null;
   const b = await kit.moduleBounds(id);
   return { id, centreY: (b.min.y + b.max.y) / 2 };
@@ -203,7 +221,7 @@ const ghostMat = await page.evaluate(async () => {
   const m = root.getChildMeshes()[0];
   const mat = m.material;
   const proto = (await import("/js/kit.js")).getProto
-    ? await (await import("/js/kit.js")).getProto("Walls/ShortWall_Band2_Straight") : null;
+    ? await (await import("/js/kit.js")).getProto("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight") : null;
   const srcMat = proto?.parts[0].mesh.material;
   const tex = mat.getActiveTextures().map((t) => t.name);
   const srcTex = srcMat ? srcMat.getActiveTextures().map((t) => t.name) : [];
@@ -274,7 +292,7 @@ const axisSpin = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.state.snap.rot = 90;
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([e.id]);
   const up = () => {
     const m = new BABYLON.Matrix();
@@ -506,11 +524,11 @@ const history = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const base = ed.state.placements.size;
 
   ed.pushUndo();
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   const added = ed.state.placements.size;
   await ed.undo();
   const undone = ed.state.placements.size;
@@ -548,13 +566,13 @@ const withSpawn = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   mk.addDoor(new V(2, 0, 2), { silent: true });
   const base = { placements: ed.state.placements.size, markers: ed.state.markers.size };
 
   // two placements, exactly as a run of palette clicks would
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0));
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0));
   const twice = ed.state.placements.size;
 
   await ed.undo();
@@ -594,9 +612,9 @@ const naming = await page.evaluate(async () => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.addChunk("CH_A"); ed.addChunk("CH_B");
   ed.state.activeChunk = "CH_A";
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.state.activeChunk = "CH_B";
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
   mk.addDoor(new V(4, 0, 0), { chunkA: "CH_A", chunkB: "CH_B", silent: true });
   ed.state.activeChunk = "CH_A";
 
@@ -637,10 +655,7 @@ check("a named element shows its name rather than its module",
 
 // ---- 1d-quinquies-bis. the chunks pane -------------------------------------
 // Deleting a chunk that still holds anything would turn one keystroke into
-// unbounded loss, so it refuses and names what is in the way. The per-chunk
-// bake settings are overrides rather than absolutes: a field left alone has to
-// keep following the ship's defaults, or raising the sample count later would
-// silently miss every room that had ever been touched.
+// unbounded loss, so it refuses and names what is in the way.
 const pane = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
@@ -649,10 +664,10 @@ const pane = await page.evaluate(async () => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   // The chunk list survives `clearAll` - it is the ship's layout, not its
   // contents - so it is emptied by hand to make the "last chunk" case reachable.
-  ed.state.chunks = []; ed.state.chunkBake.clear();
+  ed.state.chunks = [];
   ed.addChunk("CH_P_A"); ed.addChunk("CH_P_B");
   ed.state.activeChunk = "CH_P_A";
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
 
   const busy = ed.removeChunk("CH_P_A");
   const users = ed.chunkUsers("CH_P_A");
@@ -660,35 +675,19 @@ const pane = await page.evaluate(async () => {
   const freed = ed.removeChunk("CH_P_A");
   const gone = !ed.state.chunks.includes("CH_P_A");
 
-  // Overrides: one field set, the rest following the defaults.
-  ed.setBakeDefaults({ samples: 256 });
-  ed.setChunkBake("CH_P_B", { width: 2048, height: 512 });
-  const sparse = ed.chunkBakeOf("CH_P_B");
-  const resolved = ed.resolveChunkBake("CH_P_B");
-  // Raising the ship's default has to reach the field the room never claimed.
-  ed.setBakeDefaults({ samples: 512 });
-  const followed = ed.resolveChunkBake("CH_P_B").samples;
-  const inManifest = mf.buildManifest().chunks.find((c) => c.id === "CH_P_B")?.bake;
-  const defaultsInManifest = mf.buildManifest().bakeDefaults;
+  // A room reaches the manifest whether or not anything is in it: the runtime
+  // streams collision per chunk, and a room that vanished when it was emptied
+  // would take its portals with it.
+  const inManifest = mf.buildManifest().chunks.map((c) => c.id);
 
   await ed.deserialize(JSON.parse(JSON.stringify(ed.serialize())));
-  const survived = ed.resolveChunkBake("CH_P_B");
-  // Clearing a field puts it back on the default rather than freezing today's.
-  ed.setChunkBake("CH_P_B", { width: null, height: null });
-  const cleared = Object.keys(ed.chunkBakeOf("CH_P_B")).length;
-  // Out of range is clamped, not accepted: the bake would refuse it later, in
-  // Blender, minutes into a run.
-  ed.setChunkBake("CH_P_B", { samples: 999999 });
-  const clamped = ed.chunkBakeOf("CH_P_B").samples;
+  const survived = [...ed.state.chunks];
 
   ed.renameChunk("CH_P_B", "CH_P_C");
-  const rekeyed = ed.chunkBakeOf("CH_P_C").samples;
+  const rekeyed = ed.state.chunks.includes("CH_P_C");
   const last = ed.removeChunk("CH_P_C");
-  ed.setBakeDefaults({ samples: 128, width: 1024, height: 1024, margin: 4 });
-  ed.setChunkBake("CH_P_C", { samples: null });
   ed.clearAll(); ed.select([]);
-  return { busy, users, freed, gone, sparse, resolved, followed, inManifest,
-           defaultsInManifest, survived, cleared, clamped, rekeyed, last };
+  return { busy, users, freed, gone, inManifest, survived, rekeyed, last };
 });
 check("a chunk that still holds something refuses to be deleted, and says what",
   pane.busy.ok === false && pane.busy.reason === "in use"
@@ -698,27 +697,12 @@ check("an emptied chunk can be deleted, and the last one cannot",
   pane.freed.ok === true && pane.gone && pane.last.ok === false
     && pane.last.reason === "last",
   `freed=${pane.freed.ok}, gone=${pane.gone}, last=${pane.last.reason}`);
-check("per-chunk bake settings are stored sparse and resolved against defaults",
-  Object.keys(pane.sparse).join() === "width,height"
-    && pane.resolved.width === 2048 && pane.resolved.height === 512
-    && pane.resolved.samples === 256 && pane.resolved.margin === 4,
-  `${JSON.stringify(pane.sparse)} -> ${JSON.stringify(pane.resolved)}`);
-check("a field a chunk never overrode keeps following the ship's default",
-  pane.followed === 512, `samples=${pane.followed}`);
-check("the manifest carries the overrides sparse, and the defaults beside them",
-  pane.inManifest && Object.keys(pane.inManifest).join() === "width,height"
-    && pane.defaultsInManifest?.samples === 512,
-  `${JSON.stringify(pane.inManifest)} / ${JSON.stringify(pane.defaultsInManifest)}`);
-check("bake settings survive a save/load round-trip",
-  pane.survived.width === 2048 && pane.survived.height === 512
-    && pane.survived.samples === 512,
-  JSON.stringify(pane.survived));
-check("clearing an override drops it rather than freezing today's default",
-  pane.cleared === 0, `${pane.cleared} field(s) left`);
-check("an out-of-range bake setting is clamped where it is typed",
-  pane.clamped === 16384, `samples=${pane.clamped}`);
-check("renaming a chunk carries its bake settings with it",
-  pane.rekeyed === 16384, `samples=${pane.rekeyed}`);
+check("an empty room still reaches the manifest",
+  pane.inManifest.includes("CH_P_B"), pane.inManifest.join());
+check("the chunk list survives a save/load round-trip",
+  pane.survived.includes("CH_P_B"), pane.survived.join());
+check("renaming a chunk rekeys it",
+  pane.rekeyed === true, `rekeyed=${pane.rekeyed}`);
 
 // The pane itself, driven through the DOM rather than through the module: the
 // wiring between the two is where the buttons that were removed from the
@@ -730,7 +714,7 @@ const paneUi = await page.evaluate(async () => {
   const $ = (id) => document.getElementById(id);
   let refreshedAlone = false;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.state.chunks = []; ed.state.chunkBake.clear();
+  ed.state.chunks = [];
   ed.addChunk("CH_UI_A");
 
   $("btn-chunks").click();
@@ -739,33 +723,22 @@ const paneUi = await page.evaluate(async () => {
   const added = ed.state.chunks.length === 2;
   const listed = $("chunk-list").options.length;
 
-  // Pick the first room and give it a size through the form.
+  // Pick the first room and rename it through the form.
   $("chunk-list").value = "CH_UI_A";
   $("chunk-list").dispatchEvent(new Event("change"));
-  const placeholder = $("chunk-samples").placeholder;
   $("chunk-name").value = "CH_UI_Renamed";
-  $("chunk-width").value = "512";
   $("btn-chunk-apply").click();
-  const applied = ed.chunkBakeOf("CH_UI_Renamed");
   const renamed = ed.state.chunks.includes("CH_UI_Renamed");
-  const dotted = [...$("chunk-list").options].find((o) => o.value === "CH_UI_Renamed")?.text;
-
-  // Blank means "follow the default", and must not read back as a 16px map.
-  $("chunk-width").value = "";
-  $("btn-chunk-apply").click();
-  const cleared = Object.keys(ed.chunkBakeOf("CH_UI_Renamed")).length;
-
-  // The defaults section writes through to the ship.
-  $("bake-samples").value = "64";
-  $("bake-samples").dispatchEvent(new Event("change"));
-  const defaulted = ed.state.bakeDefaults.samples;
 
   // Deleting a room that still holds something has to say what, in the pane.
   ed.state.activeChunk = "CH_UI_Renamed";
-  const obj = await ed.placeAt("Walls/ShortWall_Band2_Straight",
+  const obj = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
     new BABYLON.Vector3(0, 0, 0), { silent: true });
   $("chunk-list").value = "CH_UI_Renamed";
   $("chunk-list").dispatchEvent(new Event("change"));
+  // What the room holds is shown rather than left to be discovered by a
+  // refused Delete: the count is the whole reason to open the pane at all.
+  const holds = $("chunk-holds").textContent;
   $("btn-chunk-delete").click();
   const refused = $("chunk-error").textContent;
   const survived = ed.state.chunks.includes("CH_UI_Renamed");
@@ -778,30 +751,195 @@ const paneUi = await page.evaluate(async () => {
 
   $("btn-chunk-close").click();
   const closed = $("chunk-modal").hidden;
-  ed.setBakeDefaults({ samples: 128, width: 1024, height: 1024, margin: 4 });
   ed.clearAll(); ed.select([]);
-  return { opened, added, listed, placeholder, applied, renamed, dotted,
-           cleared, defaulted, refused, survived, refusedId: obj.id,
-           lastIsGrey: refreshedAlone, closed };
+  return { opened, added, listed, renamed, holds, refused, survived,
+           refusedId: obj.id, lastIsGrey: refreshedAlone, closed };
 });
 check("the Chunks pane opens, lists the ship's rooms and adds one",
   paneUi.opened && paneUi.added && paneUi.listed === 2 && paneUi.closed,
   `open=${paneUi.opened}, ${paneUi.listed} listed, closed=${paneUi.closed}`);
-check("an empty field shows the ship's default as its placeholder",
-  paneUi.placeholder === "128", `"${paneUi.placeholder}"`);
-check("Apply renames and retunes in one action, and marks the tuned room",
-  paneUi.renamed && paneUi.applied.width === 512 && /•/.test(paneUi.dotted || ""),
-  `${paneUi.dotted} -> ${JSON.stringify(paneUi.applied)}`);
-check("emptying a field in the pane clears the override rather than zeroing it",
-  paneUi.cleared === 0, `${paneUi.cleared} field(s) left`);
-check("the Defaults section writes through to the ship",
-  paneUi.defaulted === 64, `samples=${paneUi.defaulted}`);
+check("Apply renames the selected room",
+  paneUi.renamed === true, `renamed=${paneUi.renamed}`);
+check("the pane says what a room holds before you try to delete it",
+  /1\b/.test(paneUi.holds || ""), `"${paneUi.holds}"`);
 check("and Delete explains what is in the way instead of just failing",
   /still holds/i.test(paneUi.refused) && paneUi.refused.includes(paneUi.refusedId)
     && paneUi.survived,
   `"${paneUi.refused}"`);
 check("and the last remaining chunk cannot be deleted at all",
   paneUi.lastIsGrey === true, `disabled=${paneUi.lastIsGrey}`);
+
+// ---- 1d-quinquies-ter. independent environment probes ---------------------
+// Reflection volumes are authored independently from chunks: one probe may
+// span several rooms, and splitting a room must not split its cubemap. The
+// capture camera is deliberately separate from the projection box centre.
+const probes = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const interact = await import("/js/interact.js");
+  const mf = await import("/js/manifest.js");
+  const runtime = await import("/js/runtime.js");
+  const $ = (id) => document.getElementById(id);
+  // The probe window's buttons kick off their own async re-show, and
+  // showEnvironmentProbe is last-request-wins: a call made from here right
+  // after a click is cancelled by the one already in flight. So wait for the
+  // window to finish dressing the gizmo rather than racing it.
+  const settle = async (probeId) => {
+    for (let i = 0; i < 400 && !ed.entryOf(probeId)?.node; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return ed.entryOf(probeId)?.node || null;
+  };
+  ed.state.environmentProbes.clear();
+
+  $("btn-probes").click();
+  const opened = !$("probe-modal").hidden;
+  // Capture acts on the selection, so with the list empty it has to open inert
+  // - and come back the moment there is a probe to point at.
+  const captureButtons = {
+    labels: [$("btn-capture-one").textContent.trim(), $("btn-capture-all").textContent.trim()],
+    emptyDisabled: $("btn-capture-one").disabled,
+    allDisabled: $("btn-capture-all").disabled,
+  };
+  $("btn-probe-new").click();
+  captureButtons.pickedDisabled = $("btn-capture-one").disabled;
+  const id = $("probe-list").value;
+
+  const values = {
+    "probe-box-x": "1", "probe-box-y": "2", "probe-box-z": "3",
+    "probe-size-x": "8", "probe-size-y": "5", "probe-size-z": "12",
+    "probe-camera-x": "7", "probe-camera-y": "8", "probe-camera-z": "9",
+    "probe-resolution": "1024",
+  };
+  for (const [field, value] of Object.entries(values)) {
+    $(field).value = value;
+    $(field).dispatchEvent(new Event("input"));
+  }
+  await settle(id);
+  await runtime.showEnvironmentProbe(id, true, {
+    id,
+    boxPosition: [1, 2, 3],
+    boxSize: [8, 5, 12],
+    capturePosition: [7, 8, 9],
+    resolution: 1024,
+  }, false);
+
+  const centre = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_BOX_CENTRE");
+  const camera = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_CAMERA");
+  const live = {
+    centre: centre?.position.asArray(),
+    camera: camera?.position.asArray(),
+    separate: centre && camera && !centre.position.equals(camera.position),
+  };
+
+  $("btn-probe-apply").click();
+  ed.setEnvironmentProbe("ENV_OTHER", {
+    boxPosition: [30, 2, 0], boxSize: [2, 2, 2],
+    capturePosition: [30, 2, 0], resolution: 64,
+  });
+  $("probe-id").value = "ENV_OTHER";
+  $("btn-probe-apply").click();
+  const duplicateRefused = /already used/i.test($("probe-error").textContent)
+    && !!ed.environmentProbeOf(id);
+
+  // Any editor entry's id is off limits for a probe, not just another probe's.
+  // The suite clears the ship before this block, so make something to collide
+  // with rather than depending on whatever an earlier block left lying around.
+  // A collider is the cheapest entry to conjure: generated geometry, no kit
+  // module to load.
+  const colliders = await import("/js/colliders.js");
+  const sceneId = colliders.addCollider(
+    "box", new BABYLON.Vector3(40, 1, 40), { silent: true })?.id;
+  $("probe-id").value = sceneId;
+  $("btn-probe-apply").click();
+  const sceneConflictRefused = !!sceneId
+    && /already used/i.test($("probe-error").textContent)
+    && !!ed.environmentProbeOf(id);
+  colliders.removeCollider(sceneId, true);
+
+  const renamedId = "storage_main";
+  $("probe-id").value = renamedId;
+  $("btn-probe-apply").click();
+  await settle(renamedId);
+  ed.select([renamedId]);
+  const renamed = !ed.environmentProbeOf(id) && !!ed.environmentProbeOf(renamedId);
+
+  const root = ed.entryOf(renamedId)?.node;
+  root.position.set(3, 5, 7);
+  root.scaling.set(10, 6, 14);
+  ed.emit("transform");
+  const transformed = ed.environmentProbeOf(renamedId);
+  const beforeRotation = root.rotationQuaternion?.asArray() || root.rotation.asArray();
+  interact.rotateCurrent(1);
+  const afterRotation = root.rotationQuaternion?.asArray() || root.rotation.asArray();
+  const axes = ed.toggleAxes(renamedId, "world");
+
+  const authored = ed.environmentProbeOf(renamedId);
+  const inManifest = mf.buildManifest().environmentProbes.find((probe) => probe.id === renamedId);
+  const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
+  await ed.deserialize(snapshot);
+  const survived = ed.environmentProbeOf(renamedId);
+
+  // Deserialize re-emits "environment-probes", which re-renders the list
+  // asynchronously; setting .value before that lands would silently select
+  // nothing and make the delete below a no-op.
+  for (let i = 0; i < 400 && !$("probe-list").querySelector(`option[value="${renamedId}"]`); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  await runtime.showEnvironmentProbe(renamedId, true, survived, false);
+  $("probe-list").value = renamedId;
+  $("probe-list").dispatchEvent(new Event("change"));
+  $("btn-probe-delete").click();
+  const deleted = !ed.environmentProbeOf(renamedId);
+  ed.removeEnvironmentProbe("ENV_OTHER");
+  captureButtons.emptiedDisabled = $("btn-capture-one").disabled;
+  $("btn-probe-close").click();
+  return {
+    opened, id, renamedId, live, authored, inManifest, survived, deleted,
+    renamed, duplicateRefused, sceneConflictRefused, sceneId,
+    transformed, beforeRotation, afterRotation, axes, captureButtons,
+    closed: $("probe-modal").hidden,
+  };
+});
+check("the Probes pane creates and deletes an independent probe volume",
+  probes.opened && /^ENV\d{4}$/.test(probes.id) && probes.deleted && probes.closed,
+  `${probes.id}, opened=${probes.opened}, deleted=${probes.deleted}, closed=${probes.closed}`);
+check("probe IDs can be renamed but remain unique",
+  probes.renamed && probes.duplicateRefused && probes.sceneConflictRefused
+    && probes.authored?.id === probes.renamedId,
+  `${probes.id} -> ${probes.renamedId}, probe=${probes.duplicateRefused}, scene=${probes.sceneConflictRefused} (vs ${probes.sceneId})`);
+check("the probe box centre and capture camera are edited and drawn separately",
+  probes.live.separate
+    && probes.live.centre?.join() === "1,2,3"
+    && probes.live.camera?.join() === "7,8,9",
+  `${JSON.stringify(probes.live.centre)} / ${JSON.stringify(probes.live.camera)}`);
+check("the regular transform tools move and scale the probe box and carry its camera",
+  probes.transformed?.boxPosition?.join() === "3,5,7"
+    && probes.transformed?.boxSize?.join() === "10,6,14"
+    && probes.transformed?.capturePosition?.join() === "9,11,13"
+    && probes.axes === probes.renamedId,
+  JSON.stringify(probes.transformed));
+check("environment probe boxes remain axis-aligned when rotation is requested",
+  JSON.stringify(probes.beforeRotation) === JSON.stringify(probes.afterRotation),
+  `${JSON.stringify(probes.beforeRotation)} -> ${JSON.stringify(probes.afterRotation)}`);
+check("probe size, camera and resolution survive an editor round-trip",
+  probes.authored?.boxSize?.join() === "10,6,14"
+    && probes.authored?.capturePosition?.join() === "9,11,13"
+    && probes.authored?.resolution === 1024
+    && JSON.stringify(probes.authored) === JSON.stringify(probes.survived),
+  `${JSON.stringify(probes.authored)} / ${JSON.stringify(probes.survived)}`);
+check("the manifest stores probes at the root and converts both positions to glTF space",
+  probes.inManifest?.boxPosition?.join() === "-3,5,7"
+    && probes.inManifest?.capturePosition?.join() === "-9,11,13"
+    && probes.inManifest?.boxSize?.join() === "10,6,14"
+    && probes.inManifest?.resolution === 1024,
+  JSON.stringify(probes.inManifest));
+check("Capture follows the selected probe, Capture all never needs one",
+  probes.captureButtons?.labels.join("|") === "Capture|Capture all"
+    && probes.captureButtons.emptyDisabled === true
+    && probes.captureButtons.pickedDisabled === false
+    && probes.captureButtons.emptiedDisabled === true
+    && probes.captureButtons.allDisabled === false,
+  JSON.stringify(probes.captureButtons));
 
 // ---- 1d-sexies. names carry into the .glb ----------------------------------
 // glTF node names come straight off the Babylon nodes, so the export renames
@@ -814,7 +952,7 @@ const glbNames = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
 
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
@@ -894,7 +1032,7 @@ const sealedDoor = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const d = mk.addDoor(new V(4, 0, 0), { silent: true });
   const fresh = mf.buildManifest().doors[0];
 
@@ -930,6 +1068,47 @@ check("the Sealed box reaches the manifest's door record",
 check("sealed survives a reload, and undo takes it back",
   sealedDoor.reloaded === true && sealedDoor.afterUndo === false,
   `reloaded=${sealedDoor.reloaded}, after undo=${sealedDoor.afterUndo}`);
+
+const enabledDoor = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const mf = await import("/js/manifest.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll();
+  const d = mk.addDoor(new V(0, 0, 0), { chunkA: "CH00", chunkB: "CH01", silent: true });
+  const byDefault = mf.buildManifest();
+
+  ed.select([d.id]);
+  document.getElementById("door-enabled").checked = false;
+  document.getElementById("door-enabled").dispatchEvent(new Event("change", { bubbles: true }));
+  const disabled = mf.buildManifest();
+
+  const layout = ed.serialize();
+  await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+  const reloaded = [...ed.state.markers.values()][0]?.enabled;
+  ed.select([d.id]);
+  await ed.undo();
+  const afterUndo = [...ed.state.markers.values()][0]?.enabled;
+
+  const out = {
+    defaultDoor: byDefault.doors[0].enabled,
+    defaultPortal: byDefault.portals[0].enabled,
+    disabledDoor: disabled.doors[0].enabled,
+    disabledPortal: disabled.portals[0].enabled,
+    reloaded, afterUndo,
+  };
+  ed.clearAll(); ed.select([]);
+  return out;
+});
+check("doors and their portals are enabled by default",
+  enabledDoor.defaultDoor === true && enabledDoor.defaultPortal === true,
+  JSON.stringify(enabledDoor));
+check("the Enabled box reaches both manifest records",
+  enabledDoor.disabledDoor === false && enabledDoor.disabledPortal === false,
+  JSON.stringify(enabledDoor));
+check("enabled survives a reload, and undo restores it",
+  enabledDoor.reloaded === false && enabledDoor.afterUndo === true,
+  JSON.stringify(enabledDoor));
 
 // ---- 1d-quatervicies. collision primitives ---------------------------------
 // Unit shapes sized by scaling - but only the box takes an arbitrary scale.
@@ -1287,8 +1466,8 @@ const shell = await page.evaluate(async () => {
   i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
   ed.loadModuleCollision({}, []);
 
-  const W = "Walls/ShortWall_Band2_Straight";
-  const P = "Platforms/Platform_3Plates";
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  const P = "Modular SciFi MegaKit/Platforms/Platform_3Plates";
   const flatBounds = await kit.moduleBounds(P);
   const wallBounds = await kit.moduleBounds(W);
 
@@ -1376,7 +1555,7 @@ const auto = await page.evaluate(async () => {
   main.markSaved();
   const quiet = await main.autoSaveNow();
 
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const afterChange = await main.autoSaveNow();
   const file = await (await fetch("/api/autosave")).json();
   const stillWarns = dirtyNow();
@@ -1388,7 +1567,7 @@ const auto = await page.evaluate(async () => {
     !== JSON.stringify(manifestWas.instances || []);
 
   ed.setConfig("autoSaveMinutes", 0);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
   const whenOff = await main.autoSaveNow();
 
   const defaults = ed.CONFIG_DEFAULTS.autoSaveMinutes;
@@ -1420,7 +1599,7 @@ check("zero minutes turns it off, timer and tick alike",
 // decided by where it sits - which is what makes copying a similar hull work.
 const PROP = await page.evaluate(async () => {
   const kit = await import("/js/kit.js");
-  return [...kit.getCatalogue().byId.keys()].filter((id) => id.startsWith("Props/"));
+  return [...kit.getCatalogue().byId.keys()].filter((id) => id.startsWith("Modular SciFi MegaKit/Props/"));
 });
 const [PROP_A, PROP_B] = PROP;
 
@@ -1432,7 +1611,7 @@ const areaOpen = await page.evaluate(async (a) => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
   ed.loadModuleCollision({}, []);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   await ed.placeAt(a, new V(8, 0, 0), { silent: true });
   co.addCollider("box", new V(-6, 0.5, 0), { silent: true });
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
@@ -2404,7 +2583,7 @@ const marks = await page.evaluate(async () => {
   const settle = () => new Promise((r) => setTimeout(r, 120));
   ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
   await settle();
-  const target = [...kit.getCatalogue().byId.keys()].find((m) => m.startsWith("Props/"));
+  const target = [...kit.getCatalogue().byId.keys()].find((m) => m.startsWith("Modular SciFi MegaKit/Props/"));
   const tile = () => document.querySelector(`#palette-list .item[data-id="${target}"]`);
   const lit = () => !!tile()?.classList.contains("has-collision");
 
@@ -2447,7 +2626,7 @@ const layers = await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   co.addCollider("box", new V(2, 0.5, 0), { silent: true });
   co.addCollider("sphere", new V(4, 0.5, 0), { silent: true, scale: [2, 2, 2] });
   const shown = () => ({
@@ -2518,7 +2697,7 @@ const primDims = await page.evaluate(async () => {
   const cap = co.addCollider("capsule", new V(12, 0, 0), { silent: true, scale: [2, 5, 2] });
   cap.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(Math.PI / 2, 0, 0);
   ed.select([cap.id]); out.capsule = read();
-  const wall = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 20), { silent: true });
+  const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 20), { silent: true });
   ed.select([wall.id]); out.wall = read();
   ed.clearAll(); ed.select([]);
   return out;
@@ -2544,7 +2723,7 @@ const bhv = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
 
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
@@ -2567,6 +2746,7 @@ const bhv = await page.evaluate(async () => {
   const unknown = ed.addEntityBehavior("crate", "nope");
   ed.addEntityBehavior("doorL", "door_liquefiable");
   ed.setEntityLinked("doorL", "door_liquefiable", ["crate", "doorL", "crate"]);
+  ed.state.entities.get("doorL")[0].sound = "longSplash";
 
   const man = mf.buildManifest();
   const written = JSON.parse(JSON.stringify(man.behaviors));
@@ -2608,6 +2788,9 @@ check("entities list the behaviours they carry",
 check("linked is de-duplicated, drops self, and is omitted when empty",
   bhv.entities.doorL.behaviors[0].linked.join() === "crate",
   JSON.stringify(bhv.entities.doorL.behaviors[0]));
+check("per-entity sound categories are written beside the behavior name",
+  bhv.entities.doorL.behaviors[0].sound === "longSplash",
+  JSON.stringify(bhv.entities.doorL.behaviors[0]));
 check("a behaviour cannot be attached twice, or when it does not exist",
   bhv.twice === false && bhv.unknown === false,
   `twice=${bhv.twice}, unknown=${bhv.unknown}`);
@@ -2616,6 +2799,9 @@ check("renaming a definition carries every reference with it",
 check("deleting a definition strips it from the entities that used it",
   !bhv.afterDelete.list.includes("meltable") && bhv.afterDelete.crate.length === 0,
   `library [${bhv.afterDelete.list}], crate ${JSON.stringify(bhv.afterDelete.crate)}`);
+check("per-entity sound categories survive undo snapshots",
+  bhv.restored[0]?.sound === "longSplash",
+  JSON.stringify(bhv.restored));
 check("behaviours ride the undo stack",
   bhv.wiped === 0 && bhv.restored[0]?.name === "door_liquefiable"
     && bhv.restored[0].linked.join() === "crate",
@@ -2697,7 +2883,7 @@ const bhvIds = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(6, 0, 0), { silent: true });
@@ -2908,6 +3094,43 @@ check("an all-zero direction is dropped, not written",
   !("direction" in dirCleared.entity) && !("direction" in dirCleared.written),
   JSON.stringify(dirCleared.written));
 
+// isProbeExcludedNode: what an environment probe must not photograph. Four
+// separate reasons, because they are four separate facts about an element -
+// and one of them is matched by name, since the weapon behaviour's contract
+// with the runtime is its name, not a flag in its body.
+const probeOut = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.setBehaviorDef("probeExcluded", { reflectionProbe: "exclude" });
+  ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: "zap" } });
+  ed.setBehaviorDef("rigid", { dynamic: true });
+  ed.setBehaviorDef("melts", { liquefiable: true });
+  ed.setBehaviorDef("sealedDoor", { sealed: true });
+  ed.addEntityBehavior("optedOut", "probeExcluded");
+  ed.addEntityBehavior("gun", "weaponLiquefactor");
+  ed.addEntityBehavior("barrel", "rigid");
+  ed.addEntityBehavior("icicle", "melts");
+  ed.addEntityBehavior("plainDoor", "sealedDoor");
+  // the last one carries a harmless behaviour first, so this also proves the
+  // test is over the whole list rather than just the first entry
+  ed.addEntityBehavior("plainDoor", "probeExcluded");
+  return {
+    optedOut: ed.isProbeExcludedNode("optedOut"),
+    gun: ed.isProbeExcludedNode("gun"),
+    barrel: ed.isProbeExcludedNode("barrel"),
+    icicle: ed.isProbeExcludedNode("icicle"),
+    second: ed.isProbeExcludedNode("plainDoor"),
+    plain: ed.isProbeExcludedNode("crateB2"),
+    unnamed: ed.isProbeExcludedNode(""),
+  };
+});
+check("a probe leaves out opt-outs, weapons, dynamics and liquefiables",
+  probeOut.optedOut && probeOut.gun && probeOut.barrel && probeOut.icicle,
+  JSON.stringify(probeOut));
+check("any behaviour in the list is enough, not just the first",
+  probeOut.second, JSON.stringify(probeOut));
+check("everything else stays in the probe",
+  !probeOut.plain && !probeOut.unnamed, JSON.stringify(probeOut));
+
 // a hand-edit that split `direction` into a sibling entry of its own
 const merged = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -2951,7 +3174,7 @@ const gizmo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.state.dragAxis = "xz";
 
@@ -3065,7 +3288,7 @@ const localGizmo = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
     { rotation: [0, 90, 0], silent: true });
   const dirs = () => {
     const out = {};
@@ -3124,7 +3347,7 @@ const axesSetSpace = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.state.camera.position = new V(4, 6, -7);
   ed.state.camera.setTarget(new V(0, 0.5, 0));
@@ -3168,7 +3391,7 @@ const axesNoTarget = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.toggleAxes(a.id, "world");
   const shown = ed.axesTarget();
@@ -3199,7 +3422,7 @@ await page.evaluate(async () => {
   const canvas = ed.state.engine.getRenderingCanvas();
   ed.state.scene.pointerX = canvas.width / 2;
   ed.state.scene.pointerY = canvas.height / 2;
-  await i.armGhost("Walls/ShortWall_Band2_Straight");
+  await i.armGhost("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
 });
 await page.waitForTimeout(300);
 await page.evaluate(() => window.dispatchEvent(
@@ -3237,7 +3460,7 @@ await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const p = await ed.placeAt("Walls/ShortWall_Band2_Straight",
+  const p = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
     new BABYLON.Vector3(0, 0, 0), { silent: true });
   ed.state.camera.position = new BABYLON.Vector3(0, 8, -12);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
@@ -3494,7 +3717,7 @@ const nearest = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const left = await ed.placeAt(M, new V(-14, 0, 0), { silent: true });
   const right = await ed.placeAt(M, new V(14, 0, 0), { silent: true });
   ed.state.camera.position = new V(0, 12, -22);
@@ -3528,7 +3751,7 @@ const follows = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(9, 0, 0), { silent: true });
@@ -3731,7 +3954,7 @@ const handed = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const a = await ed.placeAt(M, new V(7, 0, 5), { silent: true });
   await ed.placeAt(M, new V(11, 0, 5), { silent: true });
   mk.addDoor(new V(9, 0, 5), { silent: true, leaves: [a.id] });
@@ -3783,7 +4006,7 @@ const view = await page.evaluate(async () => {
 
   // undo must not touch it
   ed.pushUndo();
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   await ed.undo();
   const afterUndo = ed.state.camera.position.asArray();
 
@@ -3821,15 +4044,14 @@ check("a manifest saved before this simply has no view to apply",
 const envRound = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  // Baked mode is what selects the RUNTIME pair - the one the demos read - so
-  // the values have to be set with it active. The preview itself needs a bake
-  // on disk, which this suite has no business producing, so the flag is moved
-  // directly and syncLightingMode() is asked to follow it: that is exactly what
-  // setBakedPreview does, minus the glb.
-  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
-  bakedMode(true);
+  // The Runtime view is what selects the RUNTIME pair - the one the demos read
+  // - so the values have to be set with it active. Dressing the whole ship is
+  // not this suite's business, so the flag is moved directly and
+  // syncLightingMode() is asked to follow it: that is exactly what
+  // setRuntimePreview does, minus the materials.
+  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
+  runtimeMode(true);
   ed.setEnvIntensity(2.4);
-  ed.setDynamicEnvIntensity(0.7);
   ed.setExposure(0.82);
   const saved = mf.buildManifest().environment;
 
@@ -3852,21 +4074,25 @@ const envRound = await page.evaluate(async () => {
   try {
     await mf.saveLayout();
     ed.setEnvIntensity(0.2);          // wander off before loading it back
-    ed.setDynamicEnvIntensity(2.1);
     ed.setExposure(1.9);
     loaded = await mf.loadLayout();
     sliders = {
-      env: document.getElementById("env-intensity").value,
-      exposure: document.getElementById("exposure").value,
-      envLabel: document.getElementById("env-intensity-val").textContent,
-      exposureLabel: document.getElementById("exposure-val").textContent,
-      envStored: localStorage.getItem("envIntensity"),
-      exposureStored: localStorage.getItem("exposure"),
+      env: document.getElementById("runtime-env").value,
+      exposure: document.getElementById("runtime-exposure").value,
+      envLabel: document.getElementById("runtime-env-val").textContent,
+      exposureLabel: document.getElementById("runtime-exposure-val").textContent,
+      // The runtime rig lives in the manifest and nowhere else. Only the
+      // editor's is mirrored here, so that a fresh tab opens looking the way
+      // this one was left before a manifest has been read.
+      envStored: localStorage.getItem("editorEnv"),
+      exposureStored: localStorage.getItem("editorExposure"),
+      editorEnv: document.getElementById("editor-env").value,
     };
   } finally { window.fetch = realFetch; }
 
   const scene = {
     strength: ed.state.scene.environmentIntensity,
+    authored: ed.state.envIntensity,
     exposure: ed.state.scene.imageProcessingConfiguration.exposure,
   };
   const inUndoState = "lightSets" in JSON.parse(JSON.stringify(ed.serialize()));
@@ -3874,7 +4100,7 @@ const envRound = await page.evaluate(async () => {
 
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
-  bakedMode(false);
+  runtimeMode(false);
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   ed.clearAll(); ed.select([]);
@@ -3882,25 +4108,40 @@ const envRound = await page.evaluate(async () => {
 });
 check("the manifest carries an environment section",
   envRound.saved?.strength === 2.4
-    && envRound.saved?.dynamicStrength === 0.7
     && envRound.saved.toneMapping === "Khronos PBR Neutral"
     // the exposure is the linear multiplier, exactly as the slider shows it:
     // the demos apply it as-is, so there is only one number to know
     && envRound.saved.exposure === 0.82
-    && Object.keys(envRound.saved).sort().join() === "dynamicStrength,exposure,strength,toneMapping",
+    // the two material dials ride here too - the game reads them as the
+    // authored defaults, so they are ship values, not view preferences
+    && envRound.saved.specularAA === true
+    && envRound.saved.reflectionRoughness === 1
+    && Object.keys(envRound.saved).sort().join()
+      === "exposure,reflectionRoughness,specularAA,strength,toneMapping",
   JSON.stringify(envRound.saved));
 check("loading puts the lighting back on the scene",
-  Math.abs(envRound.scene.strength - 2.4) < 1e-6
+  Math.abs(envRound.scene.authored - 2.4) < 1e-6
+    // Babylon's scene-wide multiplier stays at 1 in the Runtime view on
+    // purpose: Env rides each material there, because each one carries its own
+    // room's probe, so a scene multiplier would be a second, invisible factor
+    // on top of it. See setEnvIntensity.
+    && Math.abs(envRound.scene.strength - 1) < 1e-6
     && Math.abs(envRound.scene.exposure - 0.82) < 1e-3,
-  `strength=${envRound.scene.strength}, exposure=${envRound.scene.exposure}`);
+  `authored=${envRound.scene.authored}, scene=${envRound.scene.strength}, exposure=${envRound.scene.exposure}`);
 check("the sliders follow the loaded lighting",
   parseFloat(envRound.sliders.env) === 2.4
-    && parseFloat(envRound.sliders.envStored) === 2.4
-    && Math.abs(parseFloat(envRound.sliders.exposureStored) - 0.82) < 1e-3
     // 0.82 is deliberately off the slider's 0.05 step: the readout and the
     // stored value stay exact, only the thumb rounds
     && envRound.sliders.exposureLabel === "0.82"
     && Math.abs(parseFloat(envRound.sliders.exposure) - 0.82) <= 0.05,
+  JSON.stringify(envRound.sliders));
+check("the runtime rig is not written to this browser's storage",
+  // It belongs to the ship. Copying it here is what used to let a session
+  // spent in a runtime view overwrite the brightness the editor came up in:
+  // storage tracks the *editor* slider, whatever the runtime one says.
+  parseFloat(envRound.sliders.envStored) === parseFloat(envRound.sliders.editorEnv)
+    && Math.abs(parseFloat(envRound.sliders.envStored) - 2.4) > 1e-6
+    && Math.abs(parseFloat(envRound.sliders.exposureStored) - 0.82) > 1e-3,
   JSON.stringify(envRound.sliders));
 check("the environment now rides the undo snapshot",
   envRound.inUndoState === true);
@@ -3908,20 +4149,22 @@ check("a manifest saved before this simply has no environment to apply",
   envRound.ignoredOld === false);
 
 // ---- 1d-vicies. the lighting is undoable, one entry per gesture -------------
-// It used to be deliberately off the stack ("not an edit to the ship"). It is
-// an authored value the manifest carries and the runtime reads, so getting it
-// wrong is as much an edit to take back as moving a wall.
+// It used to be deliberately off the stack ("not an edit to the ship"). The
+// *runtime* rig is an authored value the manifest carries and the runtime
+// reads, so getting it wrong is as much an edit to take back as moving a wall.
+// The editor's rig is the opposite and must stay off the stack - see below.
 const lightUndo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.setEnvIntensity(1.5); ed.setExposure(0.55);
-  document.getElementById("env-intensity").value = "1.5";
-  return { start: ed.state.envIntensity, depth: ed.historyDepth().undo };
+  ed.setLightSetting("runtime", "strength", 1.5);
+  ed.setLightSetting("runtime", "exposure", 0.55);
+  document.getElementById("runtime-env").value = "1.5";
+  return { start: ed.state.lightSets.runtime.strength, depth: ed.historyDepth().undo };
 });
 // one gesture: press, then several input events as the thumb travels
 await page.evaluate(() => {
-  const el = document.getElementById("env-intensity");
+  const el = document.getElementById("runtime-env");
   el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
   for (const v of ["2.0", "2.5", "3.0"]) {
     el.value = v;
@@ -3931,50 +4174,78 @@ await page.evaluate(() => {
 await page.waitForTimeout(250);
 const afterDrag = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return { env: ed.state.envIntensity, depth: ed.historyDepth().undo };
+  return { env: ed.state.lightSets.runtime.strength, depth: ed.historyDepth().undo };
 });
-check("dragging the Env slider costs exactly one undo entry",
+check("dragging the runtime Env slider costs exactly one undo entry",
   Math.abs(afterDrag.env - 3.0) < 1e-6 && afterDrag.depth === lightUndo.depth + 1,
   `${lightUndo.start} -> ${afterDrag.env}, stack ${lightUndo.depth} -> ${afterDrag.depth}`);
+
+// The editor's own rig is how you like to look at the ship, not part of it.
+// Spending the undo stack on it would push out the edits worth taking back.
+await page.evaluate(() => {
+  const el = document.getElementById("editor-env");
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  for (const v of ["2.0", "2.6"]) {
+    el.value = v;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+});
+await page.waitForTimeout(250);
+const editorDrag = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    env: ed.state.lightSets.editor.strength,
+    live: ed.state.envIntensity,
+    depth: ed.historyDepth().undo,
+    stored: localStorage.getItem("editorEnv"),
+  };
+});
+check("dragging the editor Env slider changes the view and nothing else",
+  Math.abs(editorDrag.env - 2.6) < 1e-6 && Math.abs(editorDrag.live - 2.6) < 1e-6
+    && editorDrag.depth === afterDrag.depth && parseFloat(editorDrag.stored) === 2.6,
+  JSON.stringify(editorDrag));
 
 await page.evaluate(async () => (await import("/js/editor.js")).undo());
 await page.waitForTimeout(250);
 const undone = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return {
-    env: ed.state.envIntensity,
+    env: ed.state.lightSets.runtime.strength,
+    slider: parseFloat(document.getElementById("runtime-env").value),
+    readout: document.getElementById("runtime-env-val").textContent,
+    // the editor rig is live, so it is what reached the scene
     scene: ed.state.scene.environmentIntensity,
-    slider: parseFloat(document.getElementById("env-intensity").value),
-    readout: document.getElementById("env-intensity-val").textContent,
+    editor: ed.state.lightSets.editor.strength,
   };
 });
-check("undo puts the Env back, on the scene and on the slider",
-  Math.abs(undone.env - 1.5) < 1e-6 && Math.abs(undone.scene - 1.5) < 1e-6
-    && Math.abs(undone.slider - 1.5) < 1e-6 && undone.readout === "1.5",
+check("undo puts the runtime Env back, on the slider and its readout",
+  Math.abs(undone.env - 1.5) < 1e-6
+    && Math.abs(undone.slider - 1.5) < 1e-6 && undone.readout === "1.5"
+    // and leaves the editor's rig, which the undo entry never covered, alone
+    && Math.abs(undone.editor - 2.6) < 1e-6 && Math.abs(undone.scene - 2.6) < 1e-6,
   JSON.stringify(undone));
 
 await page.evaluate(async () => (await import("/js/editor.js")).redo());
 await page.waitForTimeout(250);
 const redone = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.envIntensity);
+  (await import("/js/editor.js")).state.lightSets.runtime.strength);
 check("redo brings it back", Math.abs(redone - 3.0) < 1e-6, `${redone}`);
 
-// the *inactive* light set must travel too, or switching Baked after an undo
-// would surface a value that was never restored
+// the *inactive* light set must travel too, or switching to a runtime view
+// after an undo would surface a value that was never restored
 const bothSets = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
-  bakedMode(false);
-  ed.setEnvIntensity(1.2);
+  ed.setLightSetting("runtime", "strength", 1.5);
+  ed.setLightSetting("editor", "strength", 1.2);
   ed.pushUndo();
-  bakedMode(true);
-  ed.setEnvIntensity(3.9);                 // edits the runtime set
-  bakedMode(false);
+  ed.setLightSetting("runtime", "strength", 3.9);   // the set nothing is rendering
   const before = { ...ed.state.lightSets.runtime };
   await ed.undo();
   const after = { ...ed.state.lightSets.runtime };
-  bakedMode(false);
-  ed.setEnvIntensity(1.5); ed.setExposure(0.55);
+  ed.setLightSetting("editor", "strength", 1.5);
+  ed.setLightSetting("editor", "exposure", 0.55);
+  ed.setLightSetting("runtime", "strength", 1.5);
+  ed.setLightSetting("runtime", "exposure", 0.55);
   ed.clearAll(); ed.select([]);
   return { before: before.strength, after: after.strength };
 });
@@ -3999,7 +4270,7 @@ const guard = await page.evaluate(async () => {
 const dirty = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   window.__answer = false;
   window.__confirms.length = 0;
   return ed.state.placements.size;
@@ -4057,7 +4328,7 @@ check("closing a saved ship does not warn", unloadClean === false);
 const unloadDirty = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
   const e = new Event("beforeunload", { cancelable: true });
   dispatchEvent(e);
   return { prevented: e.defaultPrevented, returnValue: e.returnValue };
@@ -4077,43 +4348,43 @@ await page.evaluate(async () => {
   ed.clearAll(); ed.select([]);
 });
 
-// ---- 1d-vicies. baked mode silences the authoring rig ----------------------
+// ---- 1d-vicies. the Runtime view silences the authoring rig ----------------
 // The editor's four analytic lights are an authoring aid the game does not
 // have, and they are the reason it looks nothing like the runtime - not the
-// exposure conversion, which round-trips exactly. Baked mode is the one state
-// where dropping them says something true, so it owns the switch.
-const bakedRig = await page.evaluate(async () => {
+// exposure conversion, which round-trips exactly. The Runtime view is the one
+// state where dropping them says something true, so it owns the switch.
+const runtimeRig = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
+  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
   const rig = () => ed.state.scene.lights
     .filter((l) => ["hemi", "hemiUp", "key", "fill"].includes(l.name))
     .map((l) => l.intensity);
 
   const before = rig();
-  bakedMode(true);
+  runtimeMode(true);
   const off = rig();
-  bakedMode(false);
+  runtimeMode(false);
   const back = rig();
 
   // the numbers the demos read must be the ones the slider shows
-  bakedMode(true);
+  runtimeMode(true);
   ed.setExposure(0.55);
   ed.setEnvIntensity(1.7);
   const env = mf.buildManifest().environment;
-  bakedMode(false);
-  return { before, off, back, env, mode: ed.state.baked };
+  runtimeMode(false);
+  return { before, off, back, env, mode: ed.state.runtime };
 });
-check("baked mode silences the authoring rig, and only it",
-  bakedRig.before.length === 4 && bakedRig.off.every((v) => v === 0)
-    && bakedRig.before.some((v) => v > 0),
-  `${JSON.stringify(bakedRig.before)} -> ${JSON.stringify(bakedRig.off)}`);
+check("the Runtime view silences the authoring rig, and only it",
+  runtimeRig.before.length === 4 && runtimeRig.off.every((v) => v === 0)
+    && runtimeRig.before.some((v) => v > 0),
+  `${JSON.stringify(runtimeRig.before)} -> ${JSON.stringify(runtimeRig.off)}`);
 check("switching back restores the authored intensities exactly",
-  bakedRig.back.join() === bakedRig.before.join() && !bakedRig.mode,
-  JSON.stringify(bakedRig.back));
+  runtimeRig.back.join() === runtimeRig.before.join() && !runtimeRig.mode,
+  JSON.stringify(runtimeRig.back));
 check("the exposure is written as the slider shows it, no conversion",
-  bakedRig.env.exposure === 0.55 && bakedRig.env.strength === 1.7,
-  `exposure ${bakedRig.env.exposure}, strength ${bakedRig.env.strength}`);
+  runtimeRig.env.exposure === 0.55 && runtimeRig.env.strength === 1.7,
+  `exposure ${runtimeRig.env.exposure}, strength ${runtimeRig.env.strength}`);
 
 // ---- 1d-unvicies. two light sets, one per mode ----------------------------
 // The rig adds four lights the game does not have, so one pair of Env/Exposure
@@ -4122,15 +4393,14 @@ check("the exposure is written as the slider shows it, no conversion",
 const lightSets = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  const bakedMode = (on) => { ed.state.baked = on; ed.syncLightingMode(); };
-  bakedMode(false);
+  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
+  runtimeMode(false);
   ed.setEnvIntensity(1.5); ed.setExposure(0.55);        // editor pair
-  bakedMode(true);
+  runtimeMode(true);
   ed.setEnvIntensity(3.2); ed.setExposure(1.1);         // runtime pair
-  ed.setDynamicEnvIntensity(0.7);
-  const inRuntime = { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure };
-  bakedMode(false);
-  const backInEditor = { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure };
+  const inRuntime = { env: ed.state.envIntensity, exp: ed.state.exposure };
+  runtimeMode(false);
+  const backInEditor = { env: ed.state.envIntensity, exp: ed.state.exposure };
 
   const man = mf.buildManifest();
   const written = { environment: man.environment, editorEnvironment: man.editorEnvironment };
@@ -4141,7 +4411,7 @@ const lightSets = await page.evaluate(async () => {
   const restored = {
     editor: { ...ed.state.lightSets.editor },
     runtime: { ...ed.state.lightSets.runtime },
-    active: { env: ed.state.envIntensity, dynamic: ed.state.dynamicEnvIntensity, exp: ed.state.exposure },
+    active: { env: ed.state.envIntensity, exp: ed.state.exposure },
   };
 
   // an old single-pair manifest gives its values to both
@@ -4151,36 +4421,101 @@ const lightSets = await page.evaluate(async () => {
     runtime: { ...ed.state.lightSets.runtime },
   };
 
-  ed.state.baked = false; ed.syncLightingMode();
+  ed.state.runtime = false; ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
-  ed.setDynamicEnvIntensity(ed.DYNAMIC_ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { inRuntime, backInEditor, written, restored, legacy };
 });
 check("each mode keeps its own Env/Exposure",
   lightSets.inRuntime.env === 3.2 && lightSets.inRuntime.exp === 1.1
-    && lightSets.inRuntime.dynamic === 0.7
-    && lightSets.backInEditor.env === 1.5 && lightSets.backInEditor.dynamic === 1.5
+    && lightSets.backInEditor.env === 1.5
     && lightSets.backInEditor.exp === 0.55,
   `runtime ${JSON.stringify(lightSets.inRuntime)}, editor ${JSON.stringify(lightSets.backInEditor)}`);
 check("the demos get the runtime pair, the editor pair is filed separately",
   lightSets.written.environment.strength === 3.2
-    && lightSets.written.environment.dynamicStrength === 0.7
     && lightSets.written.environment.exposure === 1.1
     && lightSets.written.editorEnvironment.strength === 1.5
-    && lightSets.written.editorEnvironment.dynamicStrength === 1.5
     && lightSets.written.editorEnvironment.exposure === 0.55,
   JSON.stringify(lightSets.written));
 check("a round trip keeps the two pairs apart",
-  lightSets.restored.runtime.strength === 3.2 && lightSets.restored.runtime.dynamicStrength === 0.7
-    && lightSets.restored.editor.strength === 1.5 && lightSets.restored.editor.dynamicStrength === 1.5
+  lightSets.restored.runtime.strength === 3.2
+    && lightSets.restored.editor.strength === 1.5
     && lightSets.restored.active.env === 1.5,
   JSON.stringify(lightSets.restored));
 check("a manifest with one pair gives it to both, rather than to neither",
   lightSets.legacy.editor.strength === 2 && lightSets.legacy.runtime.strength === 2
-    && lightSets.legacy.editor.dynamicStrength === 2 && lightSets.legacy.runtime.dynamicStrength === 2
     && lightSets.legacy.editor.exposure === 0.9,
   JSON.stringify(lightSets.legacy));
+
+// ---- 1d-duovicies. every row on the Settings pane survives a save ----------
+// The pane is the ship's global settings, so nothing on it may be a value you
+// have to set again next session. The two material dials ride `environment`,
+// where the game reads them; the editor's view preferences ride `editorPrefs`,
+// where it must not. A manifest predating either block leaves both alone.
+const settingsRoundTrip = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  ed.setRuntimeSpecularAA(false);
+  ed.setRuntimeRoughnessFactor(1.35);
+  ed.setVeilAlpha(0.25);
+  ed.state.bigPalette = false;
+
+  const man = mf.buildManifest();
+  const written = { environment: man.environment, editorPrefs: man.editorPrefs };
+
+  // move every one of them, then load what was written back
+  ed.setRuntimeSpecularAA(true);
+  ed.setRuntimeRoughnessFactor(2);
+  ed.setVeilAlpha(0.9);
+  ed.state.bigPalette = true;
+  ed.applyEnvironment(written.environment, man.editorEnvironment);
+  ed.applyEditorPrefs(written.editorPrefs);
+  const restored = {
+    specularAA: ed.state.runtimeSpecularAA,
+    roughness: ed.state.runtimeRoughnessFactor,
+    veilAlpha: ed.state.veilAlpha,
+    bigPalette: ed.state.bigPalette,
+  };
+
+  // a manifest from before the blocks existed must not reset what is on screen
+  ed.applyEnvironment({ strength: 1.5, exposure: 0.55 }, undefined);
+  ed.applyEditorPrefs(undefined);
+  const legacy = {
+    specularAA: ed.state.runtimeSpecularAA,
+    roughness: ed.state.runtimeRoughnessFactor,
+    veilAlpha: ed.state.veilAlpha,
+    bigPalette: ed.state.bigPalette,
+  };
+
+  ed.setRuntimeSpecularAA(ed.RUNTIME_SPECULAR_AA_DEFAULT);
+  ed.setRuntimeRoughnessFactor(ed.RUNTIME_ROUGHNESS_FACTOR_DEFAULT);
+  // through applyEditorPrefs, so the palette and the slider follow state back
+  ed.applyEditorPrefs({ veilAlpha: ed.VEIL_ALPHA_DEFAULT, bigPalette: ed.BIG_PALETTE_DEFAULT });
+  ed.state.runtime = false; ed.syncLightingMode();
+  ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
+  ed.setExposure(ed.EXPOSURE_DEFAULT);
+  return { written, restored, legacy };
+});
+check("the material dials are written where the game reads them",
+  settingsRoundTrip.written.environment.specularAA === false
+    && settingsRoundTrip.written.environment.reflectionRoughness === 1.35,
+  JSON.stringify(settingsRoundTrip.written.environment));
+check("the editor's view preferences are written apart from the ship's",
+  settingsRoundTrip.written.editorPrefs.veilAlpha === 0.25
+    && settingsRoundTrip.written.editorPrefs.bigPalette === false,
+  JSON.stringify(settingsRoundTrip.written.editorPrefs));
+check("every one of them comes back on load",
+  settingsRoundTrip.restored.specularAA === false
+    && settingsRoundTrip.restored.roughness === 1.35
+    && settingsRoundTrip.restored.veilAlpha === 0.25
+    && settingsRoundTrip.restored.bigPalette === false,
+  JSON.stringify(settingsRoundTrip.restored));
+check("a manifest without the blocks leaves them where they are",
+  settingsRoundTrip.legacy.specularAA === false
+    && settingsRoundTrip.legacy.roughness === 1.35
+    && settingsRoundTrip.legacy.veilAlpha === 0.25
+    && settingsRoundTrip.legacy.bigPalette === false,
+  JSON.stringify(settingsRoundTrip.legacy));
 
 // a negative exposure can only be the old stops format - the slider has never
 // gone below 0.15 - so it is converted rather than clamped up to the floor
@@ -4190,9 +4525,8 @@ const oldStops = await page.evaluate(async () => {
   const migrated = { ...ed.state.lightSets.runtime };
   ed.applyEnvironment({ strength: 1.7, exposure: 0.55 }, undefined);
   const literal = { ...ed.state.lightSets.runtime };
-  ed.state.baked = false; ed.syncLightingMode();
+  ed.state.runtime = false; ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
-  ed.setDynamicEnvIntensity(ed.DYNAMIC_ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { migrated, literal };
 });
@@ -4223,6 +4557,116 @@ check("the tone mapping named in the manifest is the one applied",
     && tone.neutral.type === tone.IPC.neutral && !tone.off.on,
   `ACES=${tone.aces.type}, neutral=${tone.neutral.type}, none enabled=${tone.off.on}`);
 
+// each rig keeps its own transform, or picking one in a runtime view would
+// silently restyle the editor too
+const tonePerSet = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  ed.setLightSetting("editor", "toneMapping", "ACES");
+  ed.setLightSetting("runtime", "toneMapping", "Standard");
+  const live = ed.state.toneMapping;                    // editor is the live one
+  const man = mf.buildManifest();
+  ed.setLightSetting("editor", "toneMapping", "None");
+  ed.setLightSetting("runtime", "toneMapping", "None");
+  ed.applyEnvironment(man.environment, man.editorEnvironment);
+  const restored = {
+    editor: ed.state.lightSets.editor.toneMapping,
+    runtime: ed.state.lightSets.runtime.toneMapping,
+  };
+  // read while the restore is still showing - resetting first would only
+  // prove the combos follow the reset
+  const combos = {
+    editor: document.getElementById("editor-tone").value,
+    runtime: document.getElementById("runtime-tone").value,
+  };
+  ed.setLightSetting("editor", "toneMapping", "Khronos PBR Neutral");
+  ed.setLightSetting("runtime", "toneMapping", "Khronos PBR Neutral");
+  return {
+    live, restored, combos,
+    written: man.environment.toneMapping,
+    writtenEditor: man.editorEnvironment.toneMapping,
+  };
+});
+check("the two rigs keep their own view transform, through the manifest",
+  tonePerSet.live === "ACES" && tonePerSet.written === "Standard"
+    && tonePerSet.writtenEditor === "ACES"
+    && tonePerSet.restored.editor === "ACES" && tonePerSet.restored.runtime === "Standard"
+    && tonePerSet.combos.editor === "ACES" && tonePerSet.combos.runtime === "Standard",
+  JSON.stringify(tonePerSet));
+
+// ---- 1d-duovicies. one combo names the view, and the flags agree with it ----
+// The modes used to be checkboxes that could spell states nothing rendered.
+// The flags stayed; the combo is read back off them, so it cannot claim a mode
+// the viewport is not in.
+const viewModes = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const sel = document.getElementById("view-mode");
+  const derived = {};
+  for (const [mode, flags] of Object.entries(ed.VIEW_MODES)) {
+    ed.state.runtime = flags.runtime;
+    ed.state.unlit = flags.unlit;
+    derived[mode] = ed.viewMode();
+  }
+  ed.state.runtime = false; ed.state.unlit = false;
+  ed.syncLightingMode();
+  return {
+    derived,
+    options: [...sel.options].map((o) => o.value),
+    value: sel.value,
+    // the controls it replaced
+    gone: ["unlit", "baked", "baked-diffuse-only", "env-intensity", "exposure",
+           "tone-mapping", "dynamic-env-intensity", "btn-export"]
+      .filter((id) => document.getElementById(id)),
+    // both rigs on the Settings pane, neither on the toolbar
+    inSettings: ["editor-env", "editor-exposure", "editor-tone", "runtime-env",
+                 "runtime-exposure", "runtime-tone"]
+      .filter((id) => !document.getElementById("settings-pane")?.contains(document.getElementById(id))),
+  };
+});
+check("the combo offers exactly the three view modes",
+  viewModes.options.join() === "editor,editor-unlit,runtime"
+    && viewModes.value === "editor",
+  `${viewModes.options.join()} — showing ${viewModes.value}`);
+check("every mode's flags name that mode back",
+  Object.entries(viewModes.derived).every(([k, v]) => k === v),
+  JSON.stringify(viewModes.derived));
+check("the toolbar controls it replaced are gone",
+  viewModes.gone.length === 0, `still present: ${viewModes.gone.join()}`);
+check("both lighting rigs live on the Settings pane",
+  viewModes.inSettings.length === 0, `not in Settings: ${viewModes.inSettings.join()}`);
+
+// ---- 1d-tervicies. Save writes the manifest and the glb together ------------
+// They describe one thing: the runtime loads the geometry from the glb and
+// everything else - rooms, portals, collision, lamps - out of the manifest. A
+// manifest saved without its glb is a ship whose description and geometry
+// disagree.
+const saveBoth = await page.evaluate(async () => {
+  const realFetch = window.fetch;
+  const posted = [];
+  window.fetch = (url, opts) => {
+    const u = String(url);
+    if (opts?.method === "POST" && /\/api\/(layout|export|collision)/.test(u)) {
+      posted.push(u.replace(location.origin, ""));
+      return Promise.resolve(new Response(
+        JSON.stringify({ ok: true, bytes: 1048576, path: "x" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    document.getElementById("btn-save").click();
+    for (let i = 0; i < 200 && !posted.some((u) => u.includes("export")); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  } finally { window.fetch = realFetch; }
+  return { posted, status: document.getElementById("status-text").textContent };
+});
+check("one Save writes both files and says so",
+  saveBoth.posted.some((u) => u.includes("/api/layout"))
+    && saveBoth.posted.some((u) => u.includes("/api/export"))
+    && /saved \d+ bytes/.test(saveBoth.status) && /MB →/.test(saveBoth.status),
+  `${saveBoth.posted.join(" ")} — "${saveBoth.status}"`);
+
 // ---- 1d-septendecies. the inspector never shows a stale element ------------
 // `hidden` only works through the UA rule `[hidden] { display: none }`, and any
 // author `display` rule beats it: `.row { display: flex }` left the Name and
@@ -4233,7 +4677,7 @@ const stale = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const p = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const p = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.renamePlacement(p.id, "weaponHolder");
   mk.addDoor(new V(8, 0, 0), { silent: true });
 
@@ -4256,7 +4700,7 @@ const stale = await page.evaluate(async () => {
   ed.select([p.id]);
   const backAgain = read();
   // the Id names *which* element the transform below belongs to
-  const q = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
+  const q = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   ed.select([p.id, q.id]);
   const onMulti = { ...read(), posX: document.getElementById("pos-x").value };
   ed.clearAll(); ed.select([]);
@@ -4303,7 +4747,7 @@ const lockShape = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
 
   const seen = [];
   let inside = null;
@@ -4511,7 +4955,7 @@ check("a kit light keeps its authored emissive across an unlit round-trip",
 // The blocks above clear the scene, so re-arm the ghost these tests need.
 await page.evaluate(async () => {
   const i = await import("/js/interact.js");
-  await i.armGhost("Walls/ShortWall_Band2_Straight");
+  await i.armGhost("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
 });
 await page.waitForTimeout(900);
 const spin = await page.evaluate(async () => {
@@ -5257,7 +5701,7 @@ await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
   ed.clearAll();
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([...ed.state.placements.keys()]);
   const cam = ed.state.camera;
   cam.position.set(0, 6, -18);
@@ -5781,7 +6225,7 @@ const decimalId = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   document.getElementById("scl-uniform").checked = false;
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight",
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
     new BABYLON.Vector3(0, 0, 0), { silent: true });
   ed.select([e.id]);
   return e.id;
@@ -5974,7 +6418,7 @@ const exposure = await page.evaluate(async () => {
   const isDefault = Math.abs(startedAt - ed.EXPOSURE_DEFAULT) < 1e-6;
 
   ed.clearAll();
-  await ed.placeAt("Platforms/Platform_Simple", new BABYLON.Vector3(0, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new BABYLON.Vector3(0, 0, 0));
   await new Promise((r) => setTimeout(r, 1200));
   ed.select([]);
   ed.setGridVisible(false);
@@ -6122,6 +6566,372 @@ check("a still and a turntable never share the thumbnail scene",
   race.skip ? "(modules not in catalogue)"
     : `peak ${race.peak} render(s), ${race.peakRoots} module(s) on stage [${race.worst}]`);
 
+// ---- 1h-bis. the kit picker --------------------------------------------------
+// The library spans five unrelated packs. Merged, their categories are one
+// strip of 27 tabs where Walls, Rocks and Potions sit side by side and group
+// nothing, so the palette shows one kit at a time and the tabs are that kit's.
+await page.fill("#palette-search", "");
+await page.waitForTimeout(400);
+
+const kitPicker = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const sel = document.getElementById("palette-kit");
+  const head = document.querySelector(".palette-head");
+  return {
+    exists: !!sel,
+    // above the search box: it decides what the search is searching
+    beforeSearch: [...head.children].indexOf(sel)
+      < [...head.children].indexOf(document.getElementById("palette-search")),
+    options: [...sel.options].map((o) => o.value),
+    value: sel.value,
+    tabs: [...document.getElementById("palette-tabs").children].map((b) => b.textContent),
+    tiles: document.querySelectorAll("#palette-list .item").length,
+    expected: kit.getCatalogue().kits.find((k) => k.name === sel.value)?.count,
+    tip: sel.title,
+  };
+});
+check("the palette has a kit picker, above the search box",
+  kitPicker.exists && kitPicker.beforeSearch, JSON.stringify(kitPicker.exists));
+check("it offers every kit on disk and starts on the first",
+  kitPicker.options.length >= 2
+  && kitPicker.options[0] === "Modular SciFi MegaKit"
+  && kitPicker.value === "Modular SciFi MegaKit",
+  `[${kitPicker.options}] on "${kitPicker.value}"`);
+check("the tabs are the chosen kit's categories, not every kit's",
+  kitPicker.tabs[0] === "All" && kitPicker.tabs.includes("Walls")
+  && !kitPicker.tabs.includes("Enemies") && !kitPicker.tabs.includes("Rocks"),
+  `[${kitPicker.tabs}]`);
+check("and every tile shown belongs to that kit",
+  kitPicker.tiles > 0 && kitPicker.tiles === kitPicker.expected,
+  `${kitPicker.tiles} tiles, kit holds ${kitPicker.expected}`);
+
+// A category belongs to the kit it came from: leaving "Walls" selected while
+// showing a pack that has none would empty the palette with no clue why.
+const kitSwitch = await page.evaluate(async () => {
+  const pal = await import("/js/palette.js");
+  const sel = document.getElementById("palette-kit");
+  const tabs = () => [...document.getElementById("palette-tabs").children].map((b) => b.textContent);
+  const pick = (name) => {
+    sel.value = name;
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const other = [...sel.options].map((o) => o.value).find((n) => n !== "Modular SciFi MegaKit");
+
+  [...document.getElementById("palette-tabs").children].find((b) => b.textContent === "Walls").click();
+  const narrowed = document.querySelectorAll("#palette-list .item").length;
+
+  pick(other);
+  const after = {
+    tabs: tabs(),
+    active: [...document.getElementById("palette-tabs").children]
+      .find((b) => b.classList.contains("active"))?.textContent,
+    tiles: document.querySelectorAll("#palette-list .item").length,
+    kits: new Set([...document.querySelectorAll("#palette-list .item")]
+      .map((el) => el.dataset.id.split("/")[0])),
+    stored: localStorage.getItem("paletteKit"),
+  };
+  pick("Modular SciFi MegaKit");
+  return {
+    other, narrowed, ...after, kits: [...after.kits],
+    back: document.querySelectorAll("#palette-list .item").length,
+    pal: typeof pal.refreshPalette,
+  };
+});
+check("a tab narrows the list to its category",
+  kitSwitch.narrowed > 0 && kitSwitch.narrowed < kitPicker.expected,
+  `${kitSwitch.narrowed} tiles`);
+check("switching kit shows only that kit's modules",
+  kitSwitch.kits.length === 1 && kitSwitch.kits[0] === kitSwitch.other && kitSwitch.tiles > 0,
+  `${kitSwitch.tiles} tiles from [${kitSwitch.kits}]`);
+check("and drops a category the new kit does not have, rather than showing nothing",
+  kitSwitch.active === "All" && !kitSwitch.tabs.includes("Walls"),
+  `active "${kitSwitch.active}" of [${kitSwitch.tabs}]`);
+check("the choice is remembered for the next session",
+  kitSwitch.stored === kitSwitch.other, `stored "${kitSwitch.stored}"`);
+check("and switching back restores the first kit's list",
+  kitSwitch.back === kitPicker.expected, `${kitSwitch.back} tiles`);
+
+// A module nobody has previewed has to be loaded and rendered before there is
+// a picture at all, and a fresh kit queues a hundred and fifty of them. The
+// tile used to sit blank throughout, which reads as a broken image.
+const pending = await page.evaluate(async () => {
+  const t = await import("/js/thumbs.js");
+  const kit = await import("/js/kit.js");
+  const mods = [];
+  for (const c of kit.getCatalogue().categories) {
+    for (const m of c.modules) if (m.kit === "Modular SciFi MegaKit") mods.push(m);
+  }
+  for (const m of mods.slice(0, 40)) t.forgetCached(m.id);
+
+  const pal = await import("/js/palette.js");
+  pal.refreshPalette();
+  await new Promise((r) => setTimeout(r, 120));
+  const tile = document.querySelector("#palette-list .item.thumb-pending");
+  const msg = tile ? getComputedStyle(tile, "::before").content : null;
+  const covers = tile
+    ? getComputedStyle(tile, "::before").position === "absolute" : false;
+  // and it goes away again once the picture is there
+  const gone = await new Promise((resolve) => {
+    const until = Date.now() + 30000;
+    const iv = setInterval(() => {
+      const still = document.querySelectorAll("#palette-list .item.thumb-pending").length;
+      if (!still || Date.now() > until) { clearInterval(iv); resolve(still); }
+    }, 200);
+  });
+  const withSrc = [...document.querySelectorAll("#palette-list .item img.thumb")]
+    .filter((i) => i.src).length;
+  return { msg, covers, gone, withSrc };
+});
+check("a tile being rendered says so instead of showing a blank thumbnail",
+  /Generating preview/.test(pending.msg || "") && pending.covers,
+  `${pending.msg}`);
+check("and the message goes away when the picture arrives",
+  pending.gone === 0 && pending.withSrc > 0,
+  `${pending.gone} still pending, ${pending.withSrc} filled`);
+
+// FBX packs are read in the file's own units - Babylon parses UnitScaleFactor
+// and never applies it - so a tree arrives 248 units tall. Everything else here
+// is metres, so placing one dropped a 248-metre tree beside a 3-metre corridor.
+const fbxUnits = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const cm = new Uint8Array(64).fill(0);
+  const fbx = kit.getCatalogue().kits.find((k) => k.name === "Ultimate Nature Pack");
+  let size = null;
+  if (fbx) {
+    let id = null;
+    for (const c of kit.getCatalogue().categories) {
+      for (const m of c.modules) if (m.kit === fbx.name && m.name === "CommonTree_1") id = m.id;
+    }
+    if (id) {
+      const b = await kit.moduleBounds(id);
+      const s = b.max.subtract(b.min);
+      size = [+s.x.toFixed(2), +s.y.toFixed(2), +s.z.toFixed(2)];
+    }
+  }
+  return {
+    hasKit: !!fbx,
+    size,
+    // a file that says nothing falls back to the FBX default, the centimetre
+    fallback: kit.fbxMetresPerUnit(cm.buffer),
+    // a format is packaging, not a category: a kit read through its `glTF/` or
+    // `FBX/` folder would show one tab holding everything
+    formatTabs: kit.getCatalogue().kits.flatMap((k) =>
+      k.categories.filter((c) => /^(gltf|glb|fbx|obj|blend|source)$/i.test(c)).map((c) => `${k.name}/${c}`)),
+  };
+});
+check("an FBX module is brought into metres from the unit its file declares",
+  !fbxUnits.hasKit || (fbxUnits.size && fbxUnits.size[1] > 1 && fbxUnits.size[1] < 6),
+  `CommonTree_1 is ${fbxUnits.size} m`);
+check("and a file that declares nothing is read as centimetres, the FBX default",
+  fbxUnits.fallback === 0.01, `${fbxUnits.fallback}`);
+check("no kit offers a tab named after a file format",
+  fbxUnits.formatTabs.length === 0, `[${fbxUnits.formatTabs}]`);
+
+// Every kit keeps its texture atlases at the kit root while its models sit in
+// category folders, so each one leans on the loader rule that redirects a bare
+// filename back up. Sorting a kit into folders is what turns that rule on for
+// it, and nothing else in these suites loads a module from a second kit. The
+// turntable is rendered too, because that is a second load of the same module
+// through the thumbnail scene - any miss is a 404 the harness records.
+const foldered = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const thumbs = await import("/js/thumbs.js");
+  const out = {};
+  for (const name of ["Prop_Crate", "Prop_Barrel"]) {
+    let mod = null;
+    for (const c of kit.getCatalogue().categories) {
+      for (const m of c.modules) if (m.name === name && m.kit !== "Modular SciFi MegaKit") mod = m;
+    }
+    if (!mod) continue;
+    const proto = await kit.getProto(mod.id);
+    const textures = proto.parts
+      .map((p) => p.mesh.material && (p.mesh.material.albedoTexture || p.mesh.material.diffuseTexture))
+      .filter(Boolean);
+    await thumbs.requestTurntable(mod);
+    out[name] = { id: mod.id, ready: textures.length > 0 && textures.every((t) => t.isReady()) };
+  }
+  return out;
+});
+check("a module from another kit finds the atlas its kit keeps at the root",
+  Object.values(foldered).length > 0 && Object.values(foldered).every((m) => m.ready),
+  JSON.stringify(foldered));
+
+// The editor server is started once and left running for days, and it serves
+// public/ off disk - so the page can end up newer than the process answering
+// it. That skew took the texture redirect out silently: a catalogue without
+// `modelDirs` built no rules, and every kit 404'd its atlases while looking
+// like a broken kit rather than a stale server.
+const shape = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const ok = { categories: [], kits: [{ name: "K", modelDirs: [], rootTextures: [] }] };
+  const say = (cat) => { try { kit.assertCatalogueShape(cat); return null; } catch (e) { return e.message; } };
+  return {
+    current: say(kit.getCatalogue()),
+    good: say(ok),
+    noField: say({ categories: [], kits: [{ name: "K", rootTextures: [] }] }),
+    noKits: say({ categories: [] }),
+  };
+});
+check("the catalogue the server is serving is one this page can read",
+  shape.current === null && shape.good === null, `${shape.current || shape.good}`);
+check("and a catalogue from an older server is refused, naming the cure",
+  shape.noField && shape.noField.includes("modelDirs") && /restart it/i.test(shape.noField)
+  && shape.noKits && shape.noKits.includes('"kits"'),
+  `${shape.noField}`);
+
+// Two materials are the same material when they read the same textures, not
+// when they share a name. Every Pirate model calls its material `Atlas` and
+// embeds its own 32x32 slice of the palette, so a name-keyed cache handed the
+// first-loaded module's atlas to all of them: the characters came out grey
+// except for the prop in their hand, which reads from a row the props' atlas
+// also fills in. Five more names - MI_Trim_01 and friends - are shared between
+// the MegaKit and the Essentials Kit over different atlases.
+//
+// The prop is loaded first here on purpose: that is the order that used to
+// break, and the check is worthless in the other one.
+const identity = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const find = (n, k) => {
+    for (const c of kit.getCatalogue().categories) {
+      for (const m of c.modules) if (m.name === n && (!k || m.kit === k)) return m;
+    }
+    return null;
+  };
+  const out = { pirate: null, mega: null };
+
+  const prop = find("Prop_Barrel", "Pirate Kit");
+  const character = find("Characters_Anne", "Pirate Kit");
+  if (prop && character) {
+    const a = await kit.getProto(prop.id);
+    const b = await kit.getProto(character.id);
+    const urlOf = (proto) => proto.parts.map((p) => p.mesh.material.albedoTexture?.url);
+    const propUrls = urlOf(a), charUrls = urlOf(b);
+    out.pirate = {
+      // the character's own atlas, on every one of its parts - body and the
+      // weapon in its hand alike
+      character: charUrls.every((u) => u && u.includes("Characters_Anne")),
+      // and not the prop's, which is what it used to be given
+      notTheProps: !charUrls.some((u) => propUrls.includes(u)),
+      shared: b.parts.every((p) => p.mesh.material === b.parts[0].mesh.material),
+      urls: [propUrls[0], charUrls[0]],
+    };
+  }
+
+  // What the sharing is for has to keep working: the MegaKit names the same
+  // files at its root from every module, so those must still be one material.
+  const mega = [];
+  for (const c of kit.getCatalogue().categories) {
+    for (const m of c.modules) if (m.kit === "Modular SciFi MegaKit") mega.push(m);
+  }
+  const before = kit.materialRegistry.size;
+  for (const m of mega.slice(0, 12)) await kit.getProto(m.id);
+  const seen = new Map();
+  for (const m of mega.slice(0, 12)) {
+    for (const p of (await kit.getProto(m.id)).parts) {
+      const name = p.mesh.material.name;
+      if (!seen.has(name)) seen.set(name, new Set());
+      seen.get(name).add(p.mesh.material);
+    }
+  }
+  out.mega = {
+    added: kit.materialRegistry.size - before,
+    names: seen.size,
+    // one material per name across all twelve modules, as before
+    copies: Math.max(...[...seen.values()].map((s) => s.size)),
+  };
+  return out;
+});
+check("a material is shared over its textures, not its name",
+  identity.pirate?.character && identity.pirate.notTheProps && identity.pirate.shared,
+  JSON.stringify(identity.pirate?.urls));
+check("and the kit that names one atlas everywhere still shares it",
+  identity.mega && identity.mega.copies === 1 && identity.mega.names > 0,
+  JSON.stringify(identity.mega));
+
+// Quaternius' .fbx packs are exported with every face flat - the normals in
+// the file itself are as many as the mesh has corners, up to 159 degrees apart
+// - so the smoothing is ours to do. It is opt-in per kit, because doing it to
+// the sci-fi kits would change the ship and every probe captured from it.
+const shading = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const splitFraction = async (mod) => {
+    const proto = await kit.getProto(mod.id);
+    const m = proto.parts[0].mesh;
+    const pos = m.getVerticesData("position"), nor = m.getVerticesData("normal");
+    const at = new Map();
+    for (let i = 0; i < pos.length; i += 3) {
+      const k = [pos[i], pos[i + 1], pos[i + 2]].map((v) => Math.round(v * 1e4)).join(",");
+      if (!at.has(k)) at.set(k, []);
+      at.get(k).push(i / 3);
+    }
+    let split = 0;
+    for (const g of at.values()) {
+      let diff = false;
+      for (const a of g) for (const b of g) {
+        const d = nor[a * 3] * nor[b * 3] + nor[a * 3 + 1] * nor[b * 3 + 1] + nor[a * 3 + 2] * nor[b * 3 + 2];
+        if (Math.acos(Math.min(1, Math.max(-1, d))) > 0.02) diff = true;
+      }
+      if (diff) split++;
+    }
+    return { positions: at.size, split, frac: +(split / at.size).toFixed(2) };
+  };
+  const find = (n, k) => {
+    for (const c of kit.getCatalogue().categories) {
+      for (const m of c.modules) if (m.name === n && (!k || m.kit === k)) return m;
+    }
+    return null;
+  };
+  const tree = find("CommonTree_1", "Ultimate Nature Pack");
+  const wall = [];
+  for (const c of kit.getCatalogue().categories) {
+    for (const m of c.modules) if (m.kit === "Modular SciFi MegaKit") wall.push(m);
+  }
+  return {
+    configured: kit.getKitReading("Ultimate Nature Pack")?.smoothNormalsBelowDeg ?? null,
+    megaKitLeftAlone: kit.getKitReading("Modular SciFi MegaKit"),
+    tree: tree ? await splitFraction(tree) : null,
+  };
+});
+check("a pack exported flat is smoothed, creases kept",
+  shading.configured > 0 && shading.megaKitLeftAlone === null
+  && shading.tree && shading.tree.frac > 0 && shading.tree.frac < 0.2,
+  JSON.stringify(shading.tree));
+
+// The RPG pack's six see-through materials are the only ones in it that arrive
+// with no colour: Blender's FBX exporter writes Phong properties out of a
+// Principled BSDF and has nothing to write for a transparent shader. Babylon
+// then gave all of them its default 0.8 grey, which made a filled potion
+// identical to an empty one - liquid, glass and air all the same colour.
+const potions = await page.evaluate(async () => {
+  const kit = await import("/js/kit.js");
+  const find = (n) => {
+    for (const c of kit.getCatalogue().categories) {
+      for (const m of c.modules) if (m.name === n && m.kit === "Ultimate RPG Items Pack") return m;
+    }
+    return null;
+  };
+  const materials = async (name) => {
+    const mod = find(name); if (!mod) return null;
+    const out = {};
+    for (const p of (await kit.getProto(mod.id)).parts) {
+      for (const sub of p.mesh.material.subMaterials || [p.mesh.material]) {
+        const c = sub.diffuseColor || sub.albedoColor;
+        out[sub.name] = { rgb: c && [c.r, c.g, c.b].map((v) => +v.toFixed(3)), alpha: sub.alpha };
+      }
+    }
+    return out;
+  };
+  return { filled: await materials("Potion1_Filled"), empty: await materials("Potion1_Empty") };
+});
+const liquid = potions.filled?.Liquid_Red;
+check("a liquid the .fbx forgot to colour is coloured, and the glass sees through",
+  liquid && liquid.rgb[0] > 0.5 && liquid.rgb[1] < 0.2 && liquid.alpha === 1
+  && potions.filled.Glass.alpha < 1 && !potions.empty.Liquid_Red,
+  JSON.stringify(potions.filled));
+
+await page.fill("#palette-search", "");
+await page.waitForTimeout(300);
+
 // ---- 1i. the button split ----------------------------------------------------
 // Look lives on the right button and editing on the left, with no overlap, so
 // there is no gesture that could do the wrong one of the two.
@@ -6207,7 +7017,7 @@ const walkSetup = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   for (let k = 0; k < 12; k++) {
-    await ed.placeAt("Platforms/Platform_3Plates", new V(k * 4, 0, 0));
+    await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new V(k * 4, 0, 0));
   }
   ed.select([]);
   ed.state.camera.position = new V(0, 25, 0);
@@ -6341,7 +7151,7 @@ const dupSetup = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
     { rotation: [0, 90, 0], scale: [-1, 1, 1] });
   ed.select([e.id]);
   ed.state.camera.position = new V(0, 14, -10);
@@ -6504,7 +7314,7 @@ const carrySet = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(8, 0, 0), { rotation: [0, 90, 0], silent: true });
   const c = await ed.placeAt(M, new V(0, 0, 8), { scale: [-1, 1, 1], silent: true });
@@ -6600,7 +7410,7 @@ const relGrab = await page.evaluate(async () => {
     target: ed.state.camera.getTarget().asArray(),
   };
   // off the 1 m grid on purpose, so a re-snap would show
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(10.27, 0, 3.4),
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(10.27, 0, 3.4),
     { silent: true });
   // Look almost straight down, so the plane the ghost tracks (one through the
   // module's body, a metre up on a wall) and the y = 0 plane this test projects
@@ -6688,7 +7498,7 @@ const mmb = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Platforms/Platform_Simple", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(0, 0, 0), { silent: true });
   ed.state.camera.position = new V(0, 8, -0.2);
   ed.state.camera.setTarget(new V(0, 0, 0));
   ed.state.camera.cameraDirection.setAll(0);
@@ -6722,7 +7532,7 @@ const dupHigh = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.setGridElevation(0);
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 12, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 12, 0), { silent: true });
   ed.select([e.id]);
   ed.state.camera.position = new V(0, 20, -22);
   ed.state.camera.setTarget(new V(0, 12, 0));
@@ -6769,8 +7579,8 @@ const dupMulti = await page.evaluate(async () => {
   i.cancelGhost();
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
-  const b = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const b = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
   ed.select([a.id, b.id]);
   const before = ed.state.placements.size;
   await ed.duplicateSelected();
@@ -6795,7 +7605,7 @@ const qSetup = await page.evaluate(async () => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.state.snap.pos = 1;
   ed.state.dragAxis = "xz";
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([]);
   ed.state.camera.position = new V(0, 6, -14);
   ed.state.camera.setTarget(new V(0, 1, 0));
@@ -6931,7 +7741,7 @@ const tapped = await page.evaluate((accent) => {
     return { id, idle, during, marked, lit: during === accent };
   };
   return {
-    actions: ["btn-save", "btn-load", "btn-export", "btn-focus", "btn-ground"].map(flash),
+    actions: ["btn-save", "btn-load", "btn-focus", "btn-ground"].map(flash),
     toggle: flash("btn-isolate"),
   };
 }, ACCENT);
@@ -7227,7 +8037,7 @@ await page.evaluate(async () => {
   ed.state.camera.position = new BABYLON.Vector3(0, 26, -20);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 2, 0));
   ed.state.camera.cameraDirection.setAll(0);
-  await i.armGhost("Walls/ShortWall_Band2_Straight");
+  await i.armGhost("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
 });
 await page.waitForTimeout(1200);
 const gCv = await page.evaluate(() => {
@@ -7285,7 +8095,7 @@ const tall = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.state.snap.pos = 1; ed.state.dragAxis = "xz";
-  const e = await ed.placeAt("Columns/Column_Large3", new V(0, 0, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Columns/Column_Large3", new V(0, 0, 0), { silent: true });
   ed.select([]);
   const bb = ed.worldBounds(e.node);
   const cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
@@ -7374,7 +8184,7 @@ const exclusive = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const e = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.state.camera.position = new V(0, 10, -10);
   ed.state.camera.setTarget(new V(0, 1, 0));
   ed.state.camera.cameraDirection.setAll(0);
@@ -7429,7 +8239,7 @@ const rmbHover = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const e = await ed.placeAt("Platforms/Platform_3Plates", new V(0, 0, 0), { silent: true });
+  const e = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new V(0, 0, 0), { silent: true });
   ed.select([]);
   ed.state.camera.position = new V(0, 10, -10);
   ed.state.camera.setTarget(new V(0, 0, 0));
@@ -7584,7 +8394,7 @@ const rectIds = await page.evaluate(async () => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   const made = [];
   for (let k = 0; k < 4; k++) {
-    made.push((await ed.placeAt("Walls/ShortWall_Band2_Straight",
+    made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
       new V(k * 6, 0, 0), { silent: true })).id);
   }
   ed.select([]);
@@ -7697,7 +8507,7 @@ const spawnRect = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const wall = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   mk.addDoor(new V(8, 0, 0), { silent: true });
   ed.state.camera.position = new V(4, 12, -14);
   ed.state.camera.setTarget(new V(4, 1, 0));
@@ -7725,7 +8535,7 @@ const hiding = await page.evaluate(async () => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   const made = [];
   for (let k = 0; k < 3; k++) {
-    made.push((await ed.placeAt("Walls/ShortWall_Band2_Straight",
+    made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
       new V(k * 6, 0, 0), { silent: true })).id);
   }
   ed.select([made[0], made[1]]);
@@ -7923,7 +8733,7 @@ const doorScale = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const d = mk.addDoor(new V(8, 0, 0), { silent: true });
   ed.select([d.id]);
 
@@ -7993,7 +8803,7 @@ const veilSlider = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.hideSelected();                       // ghost, with the slider at its default
   const veilOf = () => a.node.getChildMeshes().find((m) => ed.isVeilClone(m));
@@ -8031,11 +8841,11 @@ const afterClear = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
-  const one = (await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
+  const one = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
   ed.select([one]);
   ed.hideSelected();
   ed.clearAll();
-  const fresh = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const fresh = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const out = { one, fresh: fresh.id, enabled: fresh.node.isEnabled(), count: ed.hiddenCount() };
   ed.clearAll(); ed.select([]);
   return out;
@@ -8050,8 +8860,8 @@ const hideUndo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
-  const a = (await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
-  const b = (await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true })).id;
+  const a = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
+  const b = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true })).id;
   const on = () => [a, b].map((id) => ed.state.placements.get(id).node.isEnabled());
   ed.select([a]);
   ed.hideSelected(); ed.hideSelected();       // ghost, then hidden
@@ -8087,10 +8897,10 @@ const hideKept = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
-  const a = (await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
+  const a = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
   ed.select([a]);
   ed.hideSelected(); ed.hideSelected();       // ghost, then hidden
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0));   // not silent: pushes undo
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0));   // not silent: pushes undo
   await ed.undo();                             // takes back the placement, not the hide
   const out = {
     enabled: ed.state.placements.get(a).node.isEnabled(),
@@ -8112,7 +8922,7 @@ const histCap = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
   const limits = ed.historyLimits();
-  await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const one = JSON.stringify(ed.serialize()).length;
 
   const before = ed.historyDepth().undo;
@@ -8176,7 +8986,7 @@ const portalSetup = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const pane = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const pane = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([pane.id]);
   const door = mk.doorFromSelection();
   ed.select([]);
@@ -8377,7 +9187,7 @@ const quick = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const id = await ed.placeAt("Platforms/Platform_Simple", new BABYLON.Vector3(0, 0, 0));
+  const id = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new BABYLON.Vector3(0, 0, 0));
   ed.state.camera.position = new BABYLON.Vector3(0, 6, -0.2);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
   return { id, clickMs: ed.CLICK_MS };
@@ -8438,9 +9248,9 @@ const isolate = await page.evaluate(async () => {
   ed.addChunk("CH_ISO_A");
   ed.addChunk("CH_ISO_B");
   ed.state.activeChunk = "CH_ISO_A";
-  await ed.placeAt("Platforms/Platform_3Plates", new BABYLON.Vector3(0, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new BABYLON.Vector3(0, 0, 0));
   ed.state.activeChunk = "CH_ISO_B";
-  await ed.placeAt("Platforms/Platform_3Plates", new BABYLON.Vector3(8, 0, 0));
+  await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new BABYLON.Vector3(8, 0, 0));
   ed.state.activeChunk = "CH_ISO_A";
   document.getElementById("chunk-select").value = "CH_ISO_A";
 
@@ -8506,7 +9316,7 @@ const doorIso = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const W = "Walls/ShortWall_Band2_Straight";
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   ed.addChunk("CH_D_A"); ed.addChunk("CH_D_B"); ed.addChunk("CH_D_C");
   ed.state.activeChunk = "CH_D_A";
   await ed.placeAt(W, new V(0, 0, 0), { silent: true });
@@ -8562,7 +9372,7 @@ const sky = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const W = "Walls/ShortWall_Band2_Straight";
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   ed.addChunk("CH_SKY_A");
   ed.state.activeChunk = "CH_SKY_A";
   await ed.placeAt(W, new V(0, 0, 0), { silent: true });
@@ -8650,7 +9460,7 @@ await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 // So B fetches it, and takes the **build plane** with it. That second half is
 // the one that matters: a one-shot teleport would be undone by the very next
 // mouse move, which re-derives the ghost's position from the plane.
-const WALL = "Walls/ShortWall_Band2_Straight";
+const WALL = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
 const bringGhost = await page.evaluate(async (WALL) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
@@ -8658,7 +9468,7 @@ const bringGhost = await page.evaluate(async (WALL) => {
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   // One deck, scaled up, a long way from the origin - so "wherever the ghost
   // already was" is unmistakably the wrong answer.
-  await ed.placeAt("Platforms/Platform_Simple", new V(96, 0, 96),
+  await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(96, 0, 96),
     { scale: [8, 1, 8], silent: true });
   ed.state.scene.pointerX = ed.state.engine.getRenderWidth() / 2;
   ed.state.scene.pointerY = ed.state.engine.getRenderHeight() / 2;
@@ -9070,14 +9880,91 @@ check("unfolding brings the controls back, and the window is as it was",
   paneBack.open && paneBack.shown && paneBack.h > 700,
   `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`);
 
+// ---- both side panels are draggable ----------------------------------------
+// The palette carries a fixed number of columns, so its width is the tile size,
+// and the inspector's rows are long enough to wrap at 232 px. Neither was
+// adjustable, and both are read for hours at a stretch.
+const gripBefore = await page.evaluate(() => ({
+  palette: Math.round(document.getElementById("palette").getBoundingClientRect().width),
+  inspector: Math.round(document.getElementById("inspector").getBoundingClientRect().width),
+  viewport: Math.round(document.getElementById("viewport").getBoundingClientRect().width),
+  grips: ["resize-palette", "resize-inspector"].filter((id) => document.getElementById(id)).length,
+}));
+
+async function dragGrip(id, dx) {
+  const b = await page.locator(`#${id}`).boundingBox();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+}
+
+await dragGrip("resize-palette", 140);
+await dragGrip("resize-inspector", -100);
+const gripAfter = await page.evaluate(() => ({
+  palette: Math.round(document.getElementById("palette").getBoundingClientRect().width),
+  inspector: Math.round(document.getElementById("inspector").getBoundingClientRect().width),
+  viewport: Math.round(document.getElementById("viewport").getBoundingClientRect().width),
+  storedPalette: localStorage.getItem("paletteWidth.big"),
+  storedInspector: localStorage.getItem("inspectorWidth"),
+  // the canvas has to be told, or it renders at the old size, stretched
+  canvas: Math.round(document.getElementById("render-canvas").width / devicePixelRatio),
+}));
+check("both panels have a grip, and dragging it moves them",
+  gripBefore.grips === 2
+    && Math.abs(gripAfter.palette - gripBefore.palette - 140) <= 4
+    && Math.abs(gripAfter.inspector - gripBefore.inspector - 100) <= 4,
+  `palette ${gripBefore.palette}->${gripAfter.palette}, `
+  + `inspector ${gripBefore.inspector}->${gripAfter.inspector}`);
+check("the viewport gives up exactly what the panels took, and re-renders at it",
+  Math.abs(gripAfter.viewport - (gripBefore.viewport - 240)) <= 6
+    && Math.abs(gripAfter.canvas - gripAfter.viewport) <= 6,
+  `viewport ${gripBefore.viewport}->${gripAfter.viewport}, canvas ${gripAfter.canvas}`);
+check("the widths are remembered here, not in the ship",
+  Math.abs(parseFloat(gripAfter.storedPalette) - gripAfter.palette) <= 1
+    && Math.abs(parseFloat(gripAfter.storedInspector) - gripAfter.inspector) <= 1,
+  `stored ${gripAfter.storedPalette} / ${gripAfter.storedInspector}`);
+
+// Big icons is the palette's other width. One remembered number for both
+// would mean one drag permanently defeated the toggle.
+const gripBig = await page.evaluate(async () => {
+  const b = document.getElementById("big-palette");
+  b.checked = false; b.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  const small = Math.round(document.getElementById("palette").getBoundingClientRect().width);
+  b.checked = true; b.dispatchEvent(new Event("change", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  const big = Math.round(document.getElementById("palette").getBoundingClientRect().width);
+  // and double-click puts whichever one you are on back to its default
+  document.getElementById("resize-palette").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  document.getElementById("resize-inspector").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 120));
+  const reset = Math.round(document.getElementById("palette").getBoundingClientRect().width);
+  const resetInspector = Math.round(document.getElementById("inspector").getBoundingClientRect().width);
+  for (const k of ["paletteWidth", "paletteWidth.big", "inspectorWidth"]) localStorage.removeItem(k);
+  return { small, big, reset, resetInspector };
+});
+check("the two icon sizes keep separate widths, and double-click restores",
+  gripBig.small === 260 && Math.abs(gripBig.big - gripAfter.palette) <= 1
+    && gripBig.reset === 520 && gripBig.resetInspector === 232,
+  `small ${gripBig.small}, big ${gripBig.big}, after double-click `
+  + `${gripBig.reset} / ${gripBig.resetInspector}`);
+
 const editorCleanup = await page.evaluate(() => {
   const settings = document.getElementById("settings-pane");
+  const sections = [...document.querySelectorAll("#settings-pane .settings-section")];
+  const titleOf = (s) => s.querySelector("h3")?.textContent.trim();
+  const runtimeSection = sections.find((s) => titleOf(s) === "Runtime");
   const source = BABYLON.ShaderStore?.IncludesShadersStore?.imageProcessingFunctions || "";
   const clamp = source.indexOf("result.rgb = max(result.rgb, vec3(1e-7));");
   const neutral = source.lastIndexOf("PBRNeutralToneMapping(result.rgb);");
   return {
     ghostInSettings: settings?.contains(document.getElementById("veil-alpha")),
     bigIconsInSettings: settings?.contains(document.getElementById("big-palette")),
+    sections: sections.map(titleOf),
+    aaInRuntime: !!runtimeSection?.contains(document.getElementById("runtime-specular-aa")),
+    roughnessInRuntime: !!runtimeSection?.contains(document.getElementById("runtime-roughness")),
     taaRemoved: !document.getElementById("taa"),
     neutralPatchBeforeCall: clamp >= 0 && neutral > clamp,
   };
@@ -9085,6 +9972,14 @@ const editorCleanup = await page.evaluate(() => {
 check("Ghost and Big icons live in global Settings",
   editorCleanup.ghostInSettings && editorCleanup.bigIconsInSettings,
   `ghost ${editorCleanup.ghostInSettings}, big icons ${editorCleanup.bigIconsInSettings}`);
+// Both dials are saved in the manifest and read by the game, so the section
+// that told you they were preview-only is gone and they sit with the rest of
+// the ship's runtime settings.
+check("Specular AA and Reflection roughness sit under Runtime, with no preview section left",
+  editorCleanup.aaInRuntime && editorCleanup.roughnessInRuntime
+    && !editorCleanup.sections.includes("Runtime preview"),
+  `sections ${JSON.stringify(editorCleanup.sections)}, `
+  + `AA ${editorCleanup.aaInRuntime}, roughness ${editorCleanup.roughnessInRuntime}`);
 check("TAA is removed from the editor",
   editorCleanup.taaRemoved, `TAA control present: ${!editorCleanup.taaRemoved}`);
 check("Khronos PBR Neutral shader patch is installed before the tone mapper",
@@ -9092,16 +9987,15 @@ check("Khronos PBR Neutral shader patch is installed before the tone mapper",
   `clamp before call: ${editorCleanup.neutralPatchBeforeCall}`);
 
 // ---- authored lights -------------------------------------------------------
-// A light rides a placement, so the module's transform carries it, and it holds
-// two halves - a Blender area light and a runtime Babylon light - that describe
-// the same lamp to two consumers that cannot see each other.
+// A light rides a placement, so the module's transform carries it, and the
+// record holds one Babylon light: what the runtime will create at that spot.
 const lightModel = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const lt = await import("/js/lights.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const M = "Walls/ShortWall_Band2_Straight";
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const owner = await ed.placeAt(M, new V(10, 0, 0), { silent: true });
   const bench = await ed.placeAt(M, new V(0, 0, 0), { silent: true, stage: true });
 
@@ -9111,7 +10005,6 @@ const lightModel = await page.evaluate(async () => {
     parented: l.node.parent === owner.node,
     // the offset is the OWNER's local space, so it lands beside the owner
     world: l.node.getAbsolutePosition().asArray().map((v) => +v.toFixed(3)),
-    bake: l.bake,
     runtime: l.runtime,
     onBench: lt.addLight(bench.id, { silent: true }),
     unknown: lt.addLight("nope", { silent: true }),
@@ -9122,10 +10015,10 @@ check("a light attaches to a placement and hangs off its node",
   lightModel.parented && lightModel.listed === 1
     && lightModel.world.join() === "10,2.5,0",
   `${lightModel.id} at [${lightModel.world}], parented ${lightModel.parented}`);
-check("it defaults to a ceiling panel: a square area light, shining down",
-  lightModel.bake.shape === "square" && lightModel.bake.watts === 40
-    && lightModel.runtime.type === "point" && lightModel.runtime.clustered,
-  `${JSON.stringify(lightModel.bake)} / ${JSON.stringify(lightModel.runtime)}`);
+check("it defaults to a ceiling lamp: a clustered point light",
+  lightModel.runtime.type === "point" && lightModel.runtime.clustered
+    && lightModel.runtime.intensity === 1,
+  JSON.stringify(lightModel.runtime));
 check("nothing that cannot reach the ship can own one",
   lightModel.onBench === null && lightModel.unknown === null,
   `bench ${lightModel.onBench}, unknown ${lightModel.unknown}`);
@@ -9138,7 +10031,6 @@ const lightRules = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const id = [...ed.state.lights.keys()][0];
   const run = (patch) => ({ ...lt.setLightPart(id, "runtime", patch).runtime });
-  const bake = (patch) => ({ ...lt.setLightPart(id, "bake", patch).bake });
   return {
     // no cube shadow generator exists, so a point light can never cast
     point: run({ type: "point", clustered: false, castsShadows: true }),
@@ -9149,10 +10041,8 @@ const lightRules = await page.evaluate(async () => {
     // a directional has no position to bin and no falloff to cluster
     dir: run({ type: "directional", clustered: true, castsShadows: true }),
     bogus: run({ type: "lava-lamp" }),
-    // Blender reads ONE size for a square or a disk
-    rect: bake({ shape: "rectangle", sizeX: 2, sizeY: 0.25 }),
-    square: bake({ shape: "square" }),
-    clamped: bake({ spread: 500, watts: -3, color: [2, -1, 0.5] }),
+    // a lamp that reaches nowhere and a colour off the end of the scale
+    clamped: run({ range: -3, intensity: -1, angle: 500, color: [2, -1, 0.5] }),
   };
 });
 check("a point light cannot cast a shadow, and neither can a clustered one",
@@ -9164,13 +10054,11 @@ check("an ordinary spot can, which is the whole reason for the flag",
 check("a directional light is never clustered",
   !lightRules.dir.clustered && lightRules.dir.castsShadows,
   JSON.stringify(lightRules.dir));
-check("an unknown kind falls back rather than reaching the bake",
+check("an unknown kind falls back rather than reaching the scene",
   lightRules.bogus.type === "point", JSON.stringify(lightRules.bogus));
-check("a two-sided shape keeps its second size, a square folds it back",
-  lightRules.rect.sizeY === 0.25 && lightRules.square.sizeY === lightRules.square.sizeX,
-  `rect ${lightRules.rect.sizeX}x${lightRules.rect.sizeY}, square ${lightRules.square.sizeX}x${lightRules.square.sizeY}`);
-check("out-of-range bake values are clamped, not stored",
-  lightRules.clamped.spread === 180 && lightRules.clamped.watts === 0
+check("out-of-range values are clamped on the way in, not stored",
+  lightRules.clamped.range > 0 && lightRules.clamped.intensity === 0
+    && lightRules.clamped.angle === 179
     && lightRules.clamped.color.join() === "1,0,0.5",
   JSON.stringify(lightRules.clamped));
 
@@ -9199,9 +10087,9 @@ const lightLife = await page.evaluate(async () => {
     saved: snapshot.lights.length,
     afterDelete,
     restored: back.length,
-    // both halves, field for field, not just the count
+    // field for field, not just the count
     identical: JSON.stringify(back) === JSON.stringify(snapshot.lights),
-    edited: `${back[0]?.bake.shape} ${back[0]?.bake.sizeX} ${back[0]?.bake.watts}`,
+    edited: `${back[0]?.runtime.type} ${back[0]?.runtime.intensity} ${back[0]?.runtime.angle}`,
     orphans: ed.state.lights.size,
   };
 });
@@ -9210,10 +10098,10 @@ check("a copied element brings its lights, as new entries of its own",
   JSON.stringify(lightLife));
 check("deleting the element it rides takes the light with it",
   lightLife.afterDelete === 1, `${lightLife.afterDelete} left`);
-check("lights ride the undo stack, both halves intact",
+check("lights ride the undo stack, field for field",
   lightLife.saved === 2 && lightLife.restored === 2 && lightLife.identical
     // the edits above, not the defaults a fresh light would come back with
-    && lightLife.edited === "square 2 0",
+    && lightLife.edited === "point 0 179",
   JSON.stringify(lightLife));
 check("and one whose element is gone is dropped, not stranded",
   lightLife.orphans === 0, `${lightLife.orphans} orphan(s)`);
@@ -9226,7 +10114,7 @@ const lightDuplicate = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   ed.clearAll(); ed.select([]);
   ed.state.snap.pos = 1;
-  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
+  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
     { silent: true });
   const source = lt.addLight(owner.id, { offset: [0, 2, 0], silent: true });
   ed.select([source.id]);
@@ -9257,10 +10145,9 @@ const lightManifest = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
+  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   lt.addLight(owner.id, {
     offset: [0, 3, 0],
-    bake: { shape: "disk", sizeX: 1.25, watts: 90 },
     runtime: { type: "spot", clustered: false, castsShadows: true, angle: 45 },
     silent: true,
   });
@@ -9289,17 +10176,17 @@ const kitLights = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
 
-  const wide = await ed.placeAt("Props/Prop_Light_Wide", new V(0, 3, 0), { silent: true });
+  const wide = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(0, 3, 0), { silent: true });
   const seeded = lt.lightsOf(wide.id);
   // an arc cannot be one flat area light, so the corner strip is three
-  const corner = await ed.placeAt("Props/Prop_Light_Corner", new V(20, 3, 0), { silent: true });
+  const corner = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Corner", new V(20, 3, 0), { silent: true });
   // nothing in the kit lights a plain wall
-  const wall = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(40, 0, 0), { silent: true });
+  const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(40, 0, 0), { silent: true });
   // ... and the collision bench is a stand-in, not ship geometry
-  const bench = await ed.placeAt("Props/Prop_Light_Wide", new V(0, 0, 0), { silent: true, stage: true });
+  const bench = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(0, 0, 0), { silent: true, stage: true });
 
   // the seed is a starting point, not a derivation: edit it, then copy and save
-  lt.setLightPart(seeded[0].id, "bake", { watts: 7 });
+  lt.setLightPart(seeded[0].id, "runtime", { intensity: 7 });
   ed.select([wide.id]);
   await ed.duplicateSelected();
   const copied = lt.lightsOf(ed.state.selection[0]);
@@ -9312,32 +10199,33 @@ const kitLights = await page.evaluate(async () => {
   return {
     wideCount: seeded.length,
     offset: seeded[0] && lt.lightOffset(seeded[0]).join(),
-    shape: seeded[0]?.bake.shape,
-    sizeX: seeded[0]?.bake.sizeX,
+    kind: seeded[0]?.runtime.type,
+    range: seeded[0]?.runtime.range,
+    clustered: seeded[0]?.runtime.clustered,
     cornerCount: lt.lightsOf(corner.id).length,
     cornerTurned: lt.lightsOf(corner.id).map((l) => lt.lightRotation(l)[1]).join(),
     wallCount: lt.lightsOf(wall.id).length,
     benchCount: lt.lightsOf(bench.id).length,
     copies: copied.length,
-    copiedWatts: copied[0]?.bake.watts,
+    copiedIntensity: copied[0]?.runtime.intensity,
     before,
     after: reloaded.length,
-    keptEdit: reloaded.filter((l) => l.bake.watts === 7).length,
+    keptEdit: reloaded.filter((l) => l.runtime.intensity === 7).length,
   };
 });
 check("placing a light module brings its lamp, on the face of its strip",
   kitLights.wideCount === 1 && kitLights.offset === "0.58,-0.1,0"
-    && kitLights.shape === "rectangle" && kitLights.sizeX === 1.16,
+    && kitLights.kind === "point" && kitLights.range === 8 && kitLights.clustered,
   JSON.stringify(kitLights));
-check("a curved strip gets one segment per chord, each turned to its tangent",
+check("a curved strip gets one lamp per segment, each turned to its tangent",
   kitLights.cornerCount === 3 && kitLights.cornerTurned === "-17.3,-45.7,-74.1",
   `${kitLights.cornerCount} at [${kitLights.cornerTurned}]`);
 check("a module with nothing to light gets nothing, and neither does the bench",
   kitLights.wallCount === 0 && kitLights.benchCount === 0,
   `wall ${kitLights.wallCount}, bench ${kitLights.benchCount}`);
 check("a copy carries the edited light rather than a fresh default",
-  kitLights.copies === 1 && kitLights.copiedWatts === 7,
-  `${kitLights.copies} copy(ies) at ${kitLights.copiedWatts} W`);
+  kitLights.copies === 1 && kitLights.copiedIntensity === 7,
+  `${kitLights.copies} copy(ies) at intensity ${kitLights.copiedIntensity}`);
 check("and a reload restores what was saved instead of seeding a second lamp",
   kitLights.after === kitLights.before && kitLights.keptEdit === 2,
   `${kitLights.before} -> ${kitLights.after}, ${kitLights.keptEdit} edited`);
@@ -9353,7 +10241,7 @@ const lightUi = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
 
-  const owner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
+  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const bare = ed.worldBounds(owner.node);
   const light = lt.addLight(owner.id, { offset: [0, 6, 0], silent: true });
   const withLight = ed.worldBounds(owner.node);
@@ -9367,26 +10255,27 @@ const lightUi = await page.evaluate(async () => {
     behavior: shown("behavior-fields"), door: shown("door-fields"),
     ownerId: document.getElementById("lgt-owner").value,
     ownerLabel: document.getElementById("lgt-owner").selectedOptions[0]?.textContent,
-    shape: val("lgt-shape"), watts: val("lgt-watts"),
-    // a square reads one size, so Size Z is shown but not arguable
-    sizeYOff: off("lgt-size-y"), angleOff: off("lgt-angle"),
-    shadowsOff: off("lgt-shadows"),
+    kind: val("lgt-type"), intensity: val("lgt-intensity"),
+    // a point light has no cone, and cannot cast whatever the checkbox says
+    angleOff: off("lgt-angle"), shadowsOff: off("lgt-shadows"),
+    // ...and every lamp with a position has a Range the engine reads
+    rangeOff: off("lgt-range"),
     // the offset row is the light's own, in its owner's space
     posY: val("pos-y"),
   };
 
   // editing a field lands on the record, through the same normalisation
-  const shapeEl = document.getElementById("lgt-shape");
-  shapeEl.value = "rectangle";
-  shapeEl.dispatchEvent(new Event("change", { bubbles: true }));
-  const wattsEl = document.getElementById("lgt-watts");
-  wattsEl.value = "12";
-  wattsEl.dispatchEvent(new Event("input", { bubbles: true }));
+  const intensityEl = document.getElementById("lgt-intensity");
+  intensityEl.value = "12";
+  intensityEl.dispatchEvent(new Event("input", { bubbles: true }));
+  const clusteredEl = document.getElementById("lgt-clustered");
+  clusteredEl.checked = false;
+  clusteredEl.dispatchEvent(new Event("change", { bubbles: true }));
   const typeEl = document.getElementById("lgt-type");
   typeEl.value = "spot";
   typeEl.dispatchEvent(new Event("change", { bubbles: true }));
 
-  const newOwner = await ed.placeAt("Walls/ShortWall_Band2_Straight", new V(4, 0, 0),
+  const newOwner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0),
     { silent: true });
   const beforeRehome = light.node.getAbsolutePosition().clone();
   ed.select([light.id]);
@@ -9395,7 +10284,22 @@ const lightUi = await page.evaluate(async () => {
   ownerEl.dispatchEvent(new Event("change", { bubbles: true }));
   const afterRehome = light.node.getAbsolutePosition().clone();
 
-  const gizmo = ed.state.scene.meshes.filter((m) => ed.isGizmoMesh(m));
+  // A directional light is the one lamp Range still means nothing to: no
+  // position, so no distance to fall off over. Probe it and put the light back
+  // the way the checks below expect to find it.
+  typeEl.value = "directional";
+  typeEl.dispatchEvent(new Event("change", { bubbles: true }));
+  const rangeDirectional = off("lgt-range");
+  const hintDirectional = document.getElementById("lgt-hint").textContent;
+  typeEl.value = "spot";
+  typeEl.dispatchEvent(new Event("change", { bubbles: true }));
+
+  // Only the gizmos that belong to a *light*: the probe window leaves its own
+  // box/centre/camera gizmos parked (disabled) in the scene, and they are none
+  // of this check's business. Keeping every light's gizmo in scope still
+  // catches one leaking from a lamp that was edited earlier.
+  const gizmo = ed.state.scene.meshes
+    .filter((m) => ed.isGizmoMesh(m) && m.metadata.lightRoot);
   const shipMeshes = owner.node.getChildMeshes()
     .filter((m) => !ed.isGizmoMesh(m)).length;
 
@@ -9405,14 +10309,19 @@ const lightUi = await page.evaluate(async () => {
 
   return {
     panel,
-    editedShape: light.bake.shape,
-    editedWatts: light.bake.watts,
+    editedIntensity: light.runtime.intensity,
+    editedClustered: light.runtime.clustered,
     editedType: light.runtime.type,
     rehomed: light.owner === newOwner.id && light.node.parent === newOwner.node,
     rehomeWorldGap: BABYLON.Vector3.Distance(beforeRehome, afterRehome),
-    // a rectangle can be told apart in Z, and a spot has a cone
-    sizeYNow: off("lgt-size-y") === false,
+    // a spot has a cone, and an unclustered one can cast
+    shadowsNow: off("lgt-shadows") === false,
     angleNow: off("lgt-angle") === false,
+    // ...and unclustering no longer takes Range away
+    rangeNow: off("lgt-range"),
+    rangeHint: document.getElementById("lgt-hint").textContent,
+    rangeDirectional,
+    hintDirectional,
     gizmos: gizmo.length,
     gizmoOwned: gizmo.every((m) => m.metadata.lightRoot === light.node),
     shipMeshes,
@@ -9425,21 +10334,37 @@ check("selecting a light shows its two forms and drops the ones it has none of",
   lightUi.panel.light && !lightUi.panel.scale && !lightUi.panel.behavior
     && !lightUi.panel.door && lightUi.panel.posY === "6",
   JSON.stringify(lightUi.panel));
-check("the panel says what the light rides, and starts on the kit defaults",
+check("the panel says what the light rides, and starts on the defaults",
   lightUi.panel.ownerId === "P0001"
-    && lightUi.panel.ownerLabel === "P0001 — Walls/ShortWall_Band2_Straight"
-    && lightUi.panel.shape === "square" && lightUi.panel.watts === "40",
+    && lightUi.panel.ownerLabel === "P0001 — Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight"
+    && lightUi.panel.kind === "point" && lightUi.panel.intensity === "1",
   JSON.stringify(lightUi.panel));
 check("the light owner is editable and reparenting keeps its world position",
   lightUi.rehomed && lightUi.rehomeWorldGap < 1e-5,
   JSON.stringify({ rehomed: lightUi.rehomed, worldGap: lightUi.rehomeWorldGap }));
 check("rows the engine has no meaning for are disabled, not silently ignored",
-  lightUi.panel.sizeYOff && lightUi.panel.angleOff && lightUi.panel.shadowsOff,
+  lightUi.panel.angleOff && lightUi.panel.shadowsOff,
   JSON.stringify(lightUi.panel));
 check("editing a field lands on the record, and reopens the rows it unlocks",
-  lightUi.editedShape === "rectangle" && lightUi.editedWatts === 12
-    && lightUi.editedType === "spot" && lightUi.sizeYNow && lightUi.angleNow,
+  lightUi.editedIntensity === 12 && lightUi.editedClustered === false
+    && lightUi.editedType === "spot" && lightUi.shadowsNow && lightUi.angleNow,
   JSON.stringify(lightUi));
+// Range reaches the shader on every lamp that has a position, and only because
+// the preview materials ask Babylon for the glTF falloff instead of the PBR
+// physical one. Physical is a plain 1/d² that never cuts off, so Range authored
+// a number nothing read - and on a clustered lamp it was worse still, because
+// the cluster sizes and culls the light proxy by Range and the light stopped
+// dead where the proxy ended.
+check("Range is live on a clustered lamp and on an unclustered one alike",
+  lightUi.panel.rangeOff === false && lightUi.rangeNow === false,
+  JSON.stringify({ clustered: lightUi.panel.rangeOff, unclustered: lightUi.rangeNow }));
+check("an unclustered lamp is told the game ramps it down to Range differently",
+  /straight ramp rather than this preview/.test(lightUi.rangeHint),
+  JSON.stringify(lightUi.rangeHint));
+// A directional light is the one lamp with no distance to fall off over.
+check("Range is dead on a directional light, with the reason under it",
+  lightUi.rangeDirectional === true && /no distance falloff/.test(lightUi.hintDirectional),
+  JSON.stringify({ off: lightUi.rangeDirectional, hint: lightUi.hintDirectional }));
 check("the light has a plate and a stub in the viewport, both hung off its node",
   lightUi.gizmos === 2 && lightUi.gizmoOwned, `${lightUi.gizmos} gizmo mesh(es)`);
 check("neither reaches the ship: not its meshes, not its size, not the export",
@@ -9447,6 +10372,271 @@ check("neither reaches the ship: not its meshes, not its size, not the export",
   `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`);
 check("and selecting the element it rides puts the light panel away",
   !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
+
+// ---- a field keeps only the keys it can use ---------------------------------
+// Standing aside for a focused control is what typing is - but a number field
+// cannot spell a letter, so R after typing a position did nothing at all, and
+// nothing said why. That is the whole of "sometimes R takes several presses".
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll();
+  const el = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+    new V(0, 0, 0), { silent: true });
+  ed.select([el.id]);
+  ed.state.rotAxis = "y";
+});
+await page.waitForTimeout(150);
+await page.focus("#pos-x");
+await page.keyboard.press("r");
+await page.waitForTimeout(120);
+const blindField = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { axis: ed.state.rotAxis, focus: document.activeElement.id };
+});
+check("a number field hands back a letter it could only have dropped",
+  blindField.axis !== "y" && blindField.focus === "pos-x", JSON.stringify(blindField));
+
+await page.fill("#palette-search", "");
+await page.focus("#palette-search");
+await page.evaluate(async () => { (await import("/js/editor.js")).state.rotAxis = "y"; });
+await page.keyboard.press("r");
+await page.waitForTimeout(120);
+const textField = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { axis: ed.state.rotAxis, value: document.getElementById("palette-search").value };
+});
+check("a text field keeps it, because there the letter is the point",
+  textField.axis === "y" && textField.value === "r", JSON.stringify(textField));
+
+// Enter is "done with this field": it hands the keyboard back, which is the way
+// out of a search box, where the letters really were the field's.
+await page.keyboard.press("Enter");
+await page.waitForTimeout(120);
+const afterEnter = await page.evaluate(() => document.activeElement.id);
+await page.keyboard.press("r");
+await page.waitForTimeout(120);
+const afterEnterAxis = await page.evaluate(async () =>
+  (await import("/js/editor.js")).state.rotAxis);
+check("Enter releases a field, so the next shortcut lands on the ship",
+  afterEnter !== "palette-search" && afterEnterAxis !== "y",
+  `${afterEnter || "(body)"}, axis ${afterEnterAxis}`);
+await page.fill("#palette-search", "");
+await page.waitForTimeout(300);
+
+// ---- the wheel aims a lamp --------------------------------------------------
+// A lamp is aimed rather than built, so while the selection is lights and
+// nothing else the wheel drives the light instead of the camera and the
+// transform tools: bare intensity, Ctrl range, Alt cone, Shift a 0.5° turn.
+const lamp = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  // The settings the lamp turn must ignore: a world space and a 90° snap are
+  // for laying walls out on a grid, and are not aiming.
+  i.setAxisSpace("world");
+  ed.state.rotAxis = "y";
+  ed.state.snap.rot = 90;
+  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+    new V(0, 0, 0), { silent: true });
+  // Turned, so a step about a *world* axis would land on a different local one.
+  ed.setEuler(owner.node, [0, 0, 90]);
+  const light = lt.addLight(owner.id, {
+    offset: [0, 2, 0],
+    runtime: { type: "spot", clustered: false, intensity: 1, range: 8, angle: 60 },
+    silent: true,
+  });
+  ed.select([light.id]);
+  return { id: light.id, owner: owner.id };
+});
+{
+  const c = await page.evaluate(() =>
+    window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+  await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2, { steps: 3 });
+}
+const lampCamBefore = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
+await page.mouse.wheel(0, -120);
+await page.waitForTimeout(150);
+const lampUp = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    intensity: ed.entryOf(ed.state.selection[0]).runtime.intensity,
+    field: document.getElementById("lgt-intensity").value,
+    status: document.getElementById("status-text").textContent,
+    cam: window.__scene.activeCamera.position.asArray(),
+  };
+});
+check("the bare wheel steps a selected lamp's intensity, a whole unit on a spot",
+  Math.abs(lampUp.intensity - 2) < 1e-9 && lampUp.field === "2"
+    && /intensity 2\b/.test(lampUp.status),
+  JSON.stringify(lampUp));
+check("and it is an edit, so the camera stays where it was",
+  JSON.stringify(lampCamBefore) === JSON.stringify(lampUp.cam),
+  `${lampCamBefore.map((v) => v.toFixed(1))} -> ${lampUp.cam.map((v) => v.toFixed(1))}`);
+
+// A light of negative intensity is not a shadow, it is a broken manifest.
+for (let k = 0; k < 12; k++) await page.mouse.wheel(0, 120);
+await page.waitForTimeout(200);
+const lampFloor = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return ed.entryOf(ed.state.selection[0]).runtime.intensity;
+});
+check("winding it down stops at zero rather than going negative",
+  lampFloor === 0, `${lampFloor}`);
+
+await page.keyboard.down("Control");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Control");
+await page.keyboard.down("Alt");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Alt");
+await page.keyboard.down("Shift");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Shift");
+await page.waitForTimeout(250);
+const lampTuned = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const e = ed.entryOf(ed.state.selection[0]);
+  return {
+    range: e.runtime.range, angle: e.runtime.angle,
+    rotation: lt.lightRotation(e).join(),
+    space: ed.state.axisSpace, snap: ed.state.snap.rot,
+    rangeField: document.getElementById("lgt-range").value,
+    status: document.getElementById("status-text").textContent,
+  };
+});
+check("Ctrl takes the range and Alt the cone, both by the panel's step",
+  Math.abs(lampTuned.range - 8.5) < 1e-9 && lampTuned.angle === 65
+    && lampTuned.rangeField === "8.5",
+  JSON.stringify(lampTuned));
+// The lamp rides an element turned 90° about Z, so a step about the *world* Y
+// spinNode would have taken lands on the node's local X instead - which aims
+// the beam somewhere nobody asked for.
+check("Shift turns it 0.5° about its own current axis, whatever the space says",
+  lampTuned.rotation === "0,0.5,0" && lampTuned.space === "world" && lampTuned.snap === 90,
+  `${lampTuned.rotation} with space ${lampTuned.space}, snap ${lampTuned.snap}`);
+
+// A wheel notch is a CDP round trip, and the one-entry-per-gesture rule is a
+// 400 ms wall-clock window - so the runs of notches that have to collapse into
+// single undo entries are dispatched in the page, where they cannot be starved.
+//
+// Counting the stack would not answer this: it is capped by memory, so at the
+// cap a push also drops the oldest entry and the depth never moves. Two
+// separated gestures and two undos say the same thing and survive the cap.
+const lampUndo = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const id = [...ed.state.lights.keys()][0];
+  const canvas = window.__scene.getEngine().getRenderingCanvas();
+  const intensity = () => ed.state.lights.get(id).runtime.intensity;
+  const gap = () => new Promise((r) => setTimeout(r, 500));
+  const notches = (n) => {
+    for (let k = 0; k < n; k++) {
+      canvas.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }));
+    }
+  };
+  await gap();
+  const start = intensity();
+  notches(5);
+  const first = intensity();
+  await gap();
+  notches(3);
+  const second = intensity();
+  await ed.undo();
+  const back = intensity();
+  await ed.undo();
+  const backAgain = intensity();
+  // The undos rebuilt every record, so the selection is re-taken by id rather
+  // than trusted to have survived them.
+  ed.select([id]);
+  return { start, first, second, back, backAgain };
+});
+check("a run of notches is one undo entry, and the next gesture is another",
+  Math.abs(lampUndo.first - (lampUndo.start + 5)) < 1e-9
+    && Math.abs(lampUndo.second - (lampUndo.start + 8)) < 1e-9
+    && Math.abs(lampUndo.back - lampUndo.first) < 1e-9
+    && Math.abs(lampUndo.backAgain - lampUndo.start) < 1e-9,
+  JSON.stringify(lampUndo));
+
+// A lamp that has no such setting says so, rather than silently doing nothing.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  lt.setLightPart(ed.state.selection[0], "runtime", { type: "directional" });
+});
+await page.keyboard.down("Control");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Control");
+await page.waitForTimeout(150);
+const lampNoRange = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    range: ed.entryOf(ed.state.selection[0]).runtime.range,
+    status: document.getElementById("status-text").textContent,
+  };
+});
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  lt.setLightPart(ed.state.selection[0], "runtime", { type: "point" });
+});
+await page.keyboard.down("Alt");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Alt");
+await page.waitForTimeout(150);
+const lampNoCone = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return {
+    angle: ed.entryOf(ed.state.selection[0]).runtime.angle,
+    status: document.getElementById("status-text").textContent,
+  };
+});
+check("a directional lamp has no range and a point light no cone, and both say so",
+  Math.abs(lampNoRange.range - 8.5) < 1e-9 && /no range/.test(lampNoRange.status)
+    && lampNoCone.angle === 65 && /only a spot light/.test(lampNoCone.status),
+  `${lampNoRange.status} | ${lampNoCone.status}`);
+
+// One notch does not mean one number: the lamp above is now a point light,
+// which fills a small room from the inside, where the spot's whole unit would
+// blow the room out in a single click.
+await page.waitForTimeout(500);
+await page.mouse.wheel(0, -120);
+await page.waitForTimeout(150);
+const lampPointStep = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return ed.entryOf(ed.state.selection[0]).runtime.intensity;
+});
+check("the intensity step follows the kind of lamp: 0.05 on a point light",
+  Math.abs(lampPointStep - 0.05) < 1e-9, `${lampPointStep}`);
+
+// The bindings arm on a selection that is lamps and *nothing else*: mixed with
+// the element it rides, the wheel is the camera dolly again.
+const lampMixedStart = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const light = ed.state.lights.values().next().value;
+  ed.select([light.id, light.owner]);
+  return { intensity: light.runtime.intensity, cam: window.__scene.activeCamera.position.asArray() };
+});
+await page.mouse.wheel(0, -240);
+await page.waitForTimeout(600);
+const lampMixed = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const light = ed.state.lights.values().next().value;
+  return { intensity: light.runtime.intensity, cam: window.__scene.activeCamera.position.asArray() };
+});
+{
+  const d = Math.hypot(...lampMixed.cam.map((v, k) => v - lampMixedStart.cam[k]));
+  check("a mixed selection leaves the wheel to the camera",
+    d > 0.5 && lampMixed.intensity === lampMixedStart.intensity,
+    `camera moved ${d.toFixed(2)} m, intensity ${lampMixedStart.intensity} -> ${lampMixed.intensity}`);
+}
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.clearAll(); ed.select([]);
+});
 
 await page.fill("#palette-search", "");
 await page.waitForTimeout(400);
