@@ -1974,7 +1974,9 @@ export function nudgeSelection(delta) {
   pushUndo();
   for (const id of state.selection) {
     const e = entryOf(id);
-    if (e) e.node.position.addInPlace(step);
+    // A probe's inner blend box has no centre of its own - it rides the outer
+    // one's - so there is nothing here for an arrow key to write.
+    if (e && e.canMove !== false) e.node.position.addInPlace(step);
   }
   emit("transform");
 }
@@ -2165,6 +2167,33 @@ export function validEnvironmentProbeId(value) {
   return /^[A-Za-z0-9._-]{1,128}$/.test(id) ? id : null;
 }
 
+/**
+ * A probe's two blending volumes are selected as PARTS of it.
+ *
+ * A part is an **id**, not a second kind of element: `"ENV0001#influence"` runs
+ * through selection, hover, dragging and the inspector unchanged, and is
+ * resolved back to the probe it belongs to here. That keeps direct manipulation
+ * of the volumes out of every generic path in the tool, which is what made the
+ * capture box editable in the first place.
+ *
+ * `#` is deliberately outside the grammar validEnvironmentProbeId accepts - and
+ * outside every id the tool generates - so a part id can never shadow a real
+ * element, whichever store it lives in.
+ */
+export const PROBE_PARTS = ["influence", "inner"];
+
+export function environmentProbePartId(id, part) { return `${id}#${part}`; }
+
+export function environmentProbePartOf(id) {
+  const text = String(id ?? "");
+  const at = text.indexOf("#");
+  if (at < 0) return null;
+  const probe = text.slice(0, at);
+  const part = text.slice(at + 1);
+  return PROBE_PARTS.includes(part) && state.environmentProbes.has(probe)
+    ? { probe, part } : null;
+}
+
 /** Whether an id can identify a probe without shadowing another editor entry. */
 export function environmentProbeIdAvailable(value, currentId = null) {
   const id = validEnvironmentProbeId(value);
@@ -2174,12 +2203,41 @@ export function environmentProbeIdAvailable(value, currentId = null) {
   return id === currentId || !state.environmentProbes.has(id);
 }
 
+/**
+ * How far past the projection box a probe reaches by default, in metres.
+ *
+ * The runtime blends probes with Lagarde's normalized distance field: full
+ * strength inside an inner box, fading to nothing at an outer one. Nothing
+ * about the room says where those two should sit, so the default is a margin
+ * either side of the box the author DID draw - which is what the runtime falls
+ * back to on its own (DEFAULT_BLEND_DISTANCE in local-environments.ts), and
+ * agreeing with it means a probe authored before these fields existed does not
+ * change how it blends the day it is re-saved.
+ */
+const PROBE_BLEND_MARGIN = 1.5;
+
+/**
+ * The influence volumes a probe gets when nobody has said otherwise: centred on
+ * the box, one margin out and one margin in. The inner box floors at zero,
+ * where a room narrower than two margins simply has no full-strength core.
+ */
+function defaultProbeInfluence(boxPosition, boxSize) {
+  return {
+    influenceBoxPosition: [...boxPosition],
+    influenceBoxSize: boxSize.map((n) => n + PROBE_BLEND_MARGIN * 2),
+    influenceInnerBoxSize: boxSize.map((n) => Math.max(0, n - PROBE_BLEND_MARGIN * 2)),
+  };
+}
+
 function cloneEnvironmentProbe(probe) {
   return probe ? {
     id: probe.id,
     boxPosition: [...probe.boxPosition],
     boxSize: [...probe.boxSize],
     capturePosition: [...probe.capturePosition],
+    influenceBoxPosition: [...probe.influenceBoxPosition],
+    influenceBoxSize: [...probe.influenceBoxSize],
+    influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
     resolution: probe.resolution,
   } : null;
 }
@@ -2211,7 +2269,9 @@ export function setEnvironmentProbe(id, probe, previousId = id) {
   if (!key || !boxPosition || !boxSize || !capturePosition
     || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return false;
   if (!environmentProbeIdAvailable(key, previous)) return false;
-  const next = { id: key, boxPosition, boxSize, capturePosition, resolution };
+  const influence = probeInfluence(probe, boxPosition, boxSize);
+  if (!influence) return false;
+  const next = { id: key, boxPosition, boxSize, capturePosition, ...influence, resolution };
   if (previous === key
     && JSON.stringify(state.environmentProbes.get(key) || null) === JSON.stringify(next)) {
     return false;
@@ -2228,10 +2288,40 @@ export function setEnvironmentProbe(id, probe, previousId = id) {
 }
 
 /**
+ * The influence volumes off a caller's record, or the defaults for the box.
+ *
+ * Absent is not the same as wrong: a manifest written before these fields
+ * existed, and every caller that only cares about the projection box, get the
+ * derived pair. Present but impossible is refused, because the runtime divides
+ * by `outer - inner` per axis - an inner box outside its outer one does not
+ * blend backwards, it produces a gradient pointing the wrong way.
+ */
+function probeInfluence(probe, boxPosition, boxSize) {
+  const defaults = defaultProbeInfluence(boxPosition, boxSize);
+  const has = probe?.influenceBoxPosition || probe?.influenceBoxSize
+    || probe?.influenceInnerBoxSize;
+  if (!has) return defaults;
+  const influenceBoxPosition = validProbeVector(probe?.influenceBoxPosition)
+    || defaults.influenceBoxPosition;
+  const influenceBoxSize = validProbeVector(probe?.influenceBoxSize, true)
+    || defaults.influenceBoxSize;
+  const influenceInnerBoxSize = validProbeVector(probe?.influenceInnerBoxSize)
+    || defaults.influenceInnerBoxSize;
+  if (influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
+  return { influenceBoxPosition, influenceBoxSize, influenceInnerBoxSize };
+}
+
+/**
  * Copy a displayed probe transform back to authored state.
  *
  * The drag/scale gesture already pushed its undo snapshot, so this deliberately
  * does not create another history entry.
+ *
+ * The camera and the influence volumes ride along: dragging the box across the
+ * room is "move this probe", not "leave its capture point and its blend region
+ * behind". A resize keeps the margins the author set rather than the ratio -
+ * blending is a distance in metres, so growing a corridor by 2 m should not
+ * silently widen the fade with it.
  */
 export function syncEnvironmentProbeTransform(id, position, size) {
   const probe = state.environmentProbes.get(id);
@@ -2239,12 +2329,72 @@ export function syncEnvironmentProbeTransform(id, position, size) {
   const boxSize = validProbeVector(size, true);
   if (!probe || !boxPosition || !boxSize) return false;
   const delta = boxPosition.map((value, axis) => value - probe.boxPosition[axis]);
+  const grow = boxSize.map((value, axis) => value - probe.boxSize[axis]);
   const next = {
     ...probe,
     boxPosition,
     boxSize,
     capturePosition: probe.capturePosition.map((value, axis) => value + delta[axis]),
+    influenceBoxPosition: probe.influenceBoxPosition.map((value, axis) => value + delta[axis]),
+    influenceBoxSize: probe.influenceBoxSize.map((value, axis) => Math.max(0.01, value + grow[axis])),
+    influenceInnerBoxSize: probe.influenceInnerBoxSize.map((value, axis) => Math.max(0, value + grow[axis])),
   };
+  if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+  state.environmentProbes.set(id, next);
+  emit("environment-probes");
+  return true;
+}
+
+/**
+ * Copy a dragged influence volume back to authored state.
+ *
+ * The gesture is direct manipulation of the outer blend box: its centre is the
+ * pair's centre, so moving it takes the inner box with it, and its size is set
+ * outright rather than by carrying a margin - unlike a capture-box resize,
+ * which is a move of the thing the influence was measured from.
+ *
+ * A shrunken outer box takes the inner one down with it instead of refusing the
+ * gesture. The runtime divides by `outer - inner` per axis, so an inner box
+ * left sticking out of its outer one is not a tighter blend, it is a gradient
+ * pointing the wrong way - and a drag that silently stops halfway is worse than
+ * one that is honest about the volume it is squeezing.
+ *
+ * Like syncEnvironmentProbeTransform, this deliberately adds no history entry:
+ * the gesture pushed its own snapshot before it started moving anything.
+ */
+export function syncEnvironmentProbeInfluence(id, position, size) {
+  const probe = state.environmentProbes.get(id);
+  const influenceBoxPosition = validProbeVector(position);
+  const influenceBoxSize = validProbeVector(size, true);
+  if (!probe || !influenceBoxPosition || !influenceBoxSize) return false;
+  const next = {
+    ...probe,
+    influenceBoxPosition,
+    influenceBoxSize,
+    influenceInnerBoxSize: probe.influenceInnerBoxSize
+      .map((value, axis) => Math.min(value, influenceBoxSize[axis])),
+  };
+  if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+  state.environmentProbes.set(id, next);
+  emit("environment-probes");
+  return true;
+}
+
+/**
+ * Copy a resized inner volume back to authored state.
+ *
+ * Size only: the inner box has no centre of its own - it shares the outer one's,
+ * because a probe that faded out asymmetrically would have to be two probes -
+ * so there is nothing for a move gesture to write, which is why the entry is
+ * marked immovable rather than being allowed to drift and be corrected after.
+ */
+export function syncEnvironmentProbeInnerSize(id, size) {
+  const probe = state.environmentProbes.get(id);
+  const inner = validProbeVector(size);
+  if (!probe || !inner) return false;
+  const influenceInnerBoxSize = inner
+    .map((value, axis) => Math.min(Math.max(0, value), probe.influenceBoxSize[axis]));
+  const next = { ...probe, influenceInnerBoxSize };
   if (JSON.stringify(next) === JSON.stringify(probe)) return false;
   state.environmentProbes.set(id, next);
   emit("environment-probes");
@@ -2255,8 +2405,12 @@ export function removeEnvironmentProbe(id, history = true) {
   if (!state.environmentProbes.has(id)) return false;
   if (history) pushUndo();
   state.environmentProbes.delete(id);
-  if (state.selection.includes(id)) {
-    state.selection = state.selection.filter((selected) => selected !== id);
+  // Its blending volumes go with it: they are parts of this probe, and a
+  // selection still holding one would resolve to nothing from here on.
+  const parts = new Set(PROBE_PARTS.map((part) => environmentProbePartId(id, part)));
+  if (state.selection.some((selected) => selected === id || parts.has(selected))) {
+    state.selection = state.selection
+      .filter((selected) => selected !== id && !parts.has(selected));
     emit("selection");
   }
   emit("environment-probes");
@@ -2364,36 +2518,58 @@ export function deleteBehaviorDef(name) {
   return true;
 }
 
-/** The behaviours a node name carries, as a copy. */
+/**
+ * The behaviours a node name carries, as a copy.
+ *
+ * Every key is copied, not a known subset: the runtime owns which parameters an
+ * applied behaviour may carry, exactly as it owns which flags a definition may
+ * carry, and a whitelist here would quietly delete the ones this tool has not
+ * heard of the first time the panel read a record back.
+ */
 export function entityBehaviors(nodeName) {
   const list = state.entities.get(String(nodeName || "").trim()) || [];
   return list.map((b) => ({
+    ...JSON.parse(JSON.stringify(b)),
     name: b.name,
     linked: [...(b.linked || [])],
-    ...(b.sound ? { sound: b.sound } : {}),
-    ...(b.direction ? { direction: [...b.direction] } : {}),
   }));
 }
 
-/** Attach a library behaviour to a node name. Names cannot carry one twice. */
+/**
+ * Attach a library behaviour to a node name.
+ *
+ * The same behaviour may be attached **more than once**. An entity's behaviours
+ * are a *list* of assignments, not a set keyed by name: the runtime walks the
+ * list and builds one instance per entry, so two entries of the same behaviour
+ * with different parameters are two different things happening to one prop.
+ *
+ * Which is why nothing below identifies an assignment by name - a name is not
+ * unique within a node - and every editing call takes its **index** instead.
+ */
 export function addEntityBehavior(nodeName, behaviorName) {
   const node = String(nodeName || "").trim();
   if (!node || !state.behaviors.has(behaviorName)) return false;
   const list = state.entities.get(node) || [];
-  if (list.some((b) => b.name === behaviorName)) return false;
   pushUndo();
   state.entities.set(node, [...list, { name: behaviorName, linked: [] }]);
   emit("behaviors");
   return true;
 }
 
-export function removeEntityBehavior(nodeName, behaviorName) {
+/** Where an assignment sits in a node's list, or -1 if that is not a slot. */
+function assignmentAt(list, index) {
+  const at = Number(index);
+  return Array.isArray(list) && Number.isInteger(at) && at >= 0 && at < list.length ? at : -1;
+}
+
+/** Detach one assignment, by its position in the node's list. */
+export function removeEntityBehavior(nodeName, index) {
   const node = String(nodeName || "").trim();
   const list = state.entities.get(node);
-  if (!list) return false;
-  const kept = list.filter((b) => b.name !== behaviorName);
-  if (kept.length === list.length) return false;
+  const at = assignmentAt(list, index);
+  if (at < 0) return false;
   pushUndo();
+  const kept = list.filter((_, i) => i !== at);
   if (kept.length) state.entities.set(node, kept);
   else state.entities.delete(node);
   emit("behaviors");
@@ -2401,18 +2577,25 @@ export function removeEntityBehavior(nodeName, behaviorName) {
 }
 
 /** The other nodes this one drags along with it - a door half links its twin. */
-export function setEntityLinked(nodeName, behaviorName, linked) {
+export function setEntityLinked(nodeName, index, linked) {
   const node = String(nodeName || "").trim();
   const list = state.entities.get(node);
-  const entry = list?.find((b) => b.name === behaviorName);
-  if (!entry) return false;
-  const next = [...new Set(linked.map((s) => String(s).trim()).filter(Boolean))]
-    .filter((n) => n !== node);          // linking a node to itself says nothing
+  const at = assignmentAt(list, index);
+  if (at < 0) return false;
+  const entry = list[at];
+  const next = cleanLinked(linked, node);
   if (JSON.stringify(entry.linked) === JSON.stringify(next)) return false;
   pushUndo();
   entry.linked = next;
   emit("behaviors");
   return true;
+}
+
+/** A `linked` list with the duplicates, the blanks and the self-reference out. */
+function cleanLinked(linked, node) {
+  if (!Array.isArray(linked)) return [];
+  return [...new Set(linked.map((s) => String(s).trim()).filter(Boolean))]
+    .filter((n) => n !== node);          // linking a node to itself says nothing
 }
 
 /** True when a definition asks for liquefaction, which is what needs `linked`. */
@@ -2473,39 +2656,51 @@ export function isProbeExcludedNode(nodeName) {
 }
 
 /**
- * The default direction a definition suggests, if it names one.
+ * The parameters an applied behaviour carries, replaced wholesale.
  *
- * `direction` is optional on *every* applied behaviour, so this is only a
- * starting value for the fields - not a gate on whether they appear. Gating on
- * it was the first design and it was wrong: it made an optional parameter
- * invisible until you knew to declare it, which is precisely the thing the
- * person editing does not know.
+ * The panel edits the assignment as JSON, so this takes the whole object rather
+ * than one named field: which parameters a behaviour understands is the
+ * runtime's business, and a per-field setter here would be a second, always
+ * out-of-date copy of that list.
+ *
+ * Only three things are normalised, and each is a rule this tool owns rather
+ * than the runtime:
+ *
+ *  - `name` is the identity of the assignment, never a parameter, so a `name`
+ *    typed into the JSON is ignored.
+ *  - `linked` is a node-name list this tool builds the picker from, so it gets
+ *    the same cleaning the picker applies.
+ *  - `direction` is stored as typed rather than normalised - normalising on
+ *    every commit fights you as you fill it in - but rounded, and an all-zero
+ *    vector is dropped: it names no direction, and writing it out would ask the
+ *    runtime to face nowhere.
  */
-export function defaultDirection(behaviorName) {
-  const d = getBehaviorDef(behaviorName)?.direction;
-  return Array.isArray(d) && d.length === 3 && d.every(Number.isFinite) ? d.map(Number) : null;
-}
-
-/**
- * The way an entity faces. Stored as typed rather than normalised: normalising
- * on every commit fights you as you fill the three fields in - typing 1 into Y
- * after X would turn both into 0.707 before you reached Z.
- */
-export function setEntityDirection(nodeName, behaviorName, dir) {
+export function setEntityParams(nodeName, index, params) {
   const node = String(nodeName || "").trim();
   const list = state.entities.get(node);
-  const entry = list?.find((b) => b.name === behaviorName);
-  if (!entry) return false;
-  const next = Array.isArray(dir) && dir.length === 3 && dir.every(Number.isFinite)
-    && dir.some((v) => v !== 0)
-    ? dir.map((v) => Math.round(v * 1e4) / 1e4)
-    : null;
-  if (JSON.stringify(entry.direction ?? null) === JSON.stringify(next)) return false;
+  const at = assignmentAt(list, index);
+  if (at < 0 || !params || typeof params !== "object" || Array.isArray(params)) return false;
+  const entry = list[at];
+  const next = { name: entry.name, linked: cleanLinked(params.linked, node) };
+  for (const [key, value] of Object.entries(params)) {
+    if (key === "name" || key === "linked") continue;
+    if (value === undefined) continue;
+    next[key] = JSON.parse(JSON.stringify(value));
+  }
+  if (isVector3(next.direction)) {
+    if (next.direction.some((v) => v !== 0)) next.direction = next.direction.map((v) => Math.round(v * 1e4) / 1e4);
+    else delete next.direction;
+  }
+  if (JSON.stringify(entry) === JSON.stringify(next)) return false;
   pushUndo();
-  if (next) entry.direction = next;
-  else delete entry.direction;
+  list[at] = next;
   emit("behaviors");
   return true;
+}
+
+/** A finite 3-number array - what both `direction` and a position look like. */
+function isVector3(v) {
+  return Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
 }
 
 /**
@@ -3104,13 +3299,7 @@ export function serialize() {
     // Not ship data, but on the stack all the same: a restore clears it, so
     // leaving it out made every undo reveal what H had parked away.
     hidden: [...state.hidden],    entities: Object.fromEntries([...state.entities]
-      .map(([k, v]) => [k, v.map((b) => ({
-        name: b.name,
-        linked: [...b.linked],
-        ...(b.sound ? { sound: b.sound } : {}),
-        // glTF space, matching the manifest - readBehaviorExtras() flips it back
-        ...(b.direction ? { direction: flipX(b.direction) } : {}),
-      }))])),
+      .map(([k, v]) => [k, v.map((b) => ({ name: b.name, ...writeBehaviorExtras(b) }))])),
     instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
@@ -3280,6 +3469,14 @@ async function restoreFrom(data) {
         capturePosition: Array.isArray(probe.capturePosition)
           ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]),
             Number(probe.capturePosition[2])] : null,
+        // Absent on anything written before influence volumes were authored,
+        // where the record takes the defaults instead - which are what that
+        // ship was already blending with.
+        influenceBoxPosition: Array.isArray(probe.influenceBoxPosition)
+          ? [-Number(probe.influenceBoxPosition[0]), Number(probe.influenceBoxPosition[1]),
+            Number(probe.influenceBoxPosition[2])] : null,
+        influenceBoxSize: probe.influenceBoxSize,
+        influenceInnerBoxSize: probe.influenceInnerBoxSize,
         resolution: probe.resolution,
       }))
       : []);
@@ -3329,8 +3526,13 @@ async function restoreFrom(data) {
     const resolution = Math.round(Number(probe?.resolution || 512));
     if (!environmentProbeIdAvailable(id) || !boxPosition || !boxSize || !capturePosition
       || resolution < 16 || resolution > 4096) continue;
+    // A file is allowed to be wrong about its influence volumes without losing
+    // the probe: a refused pair falls back to the defaults, the same as one
+    // that was never written.
+    const influence = probeInfluence(probe, boxPosition, boxSize)
+      || defaultProbeInfluence(boxPosition, boxSize);
     state.environmentProbes.set(id, {
-      id, boxPosition, boxSize, capturePosition, resolution,
+      id, boxPosition, boxSize, capturePosition, ...influence, resolution,
     });
   }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
@@ -3442,15 +3644,50 @@ let restoring = false;
  */
 function flipX(v) { return [-Number(v[0]), Number(v[1]), Number(v[2])]; }
 
-/** The optional per-entity fields of an applied behaviour, validated. */
+/**
+ * The parameters of an applied behaviour, on the way IN from the wire.
+ *
+ * Everything but `name` is carried through: the runtime decides which
+ * parameters a behaviour understands, and a whitelist here would delete an
+ * authored one the first time this tool loaded a file it did not write.
+ *
+ * Two keys are not opaque. `linked` is a node-name list, coerced to strings
+ * because the picker and `setEntityParams` both assume that. `direction` is a
+ * vector, so it is mirrored into editor space; anything that is not a valid
+ * 3-vector is left alone, since flipping a sign inside something we cannot read
+ * would corrupt it.
+ *
+ * The inverse of writeBehaviorExtras - the pair has to stay symmetric, so keep
+ * them next to each other.
+ */
 function readBehaviorExtras(b) {
   const out = {};
-  if (Array.isArray(b.linked)) out.linked = b.linked.map(String);
-  if (typeof b.sound === "string" && b.sound.trim()) out.sound = b.sound.trim();
-  if (Array.isArray(b.direction) && b.direction.length === 3
-    && b.direction.every(Number.isFinite)) {
-    out.direction = flipX(b.direction);
+  for (const [key, value] of Object.entries(b)) {
+    if (key === "name" || value === undefined) continue;
+    out[key] = JSON.parse(JSON.stringify(value));
   }
+  if (Array.isArray(out.linked)) out.linked = out.linked.map(String);
+  else delete out.linked;
+  if (isVector3(out.direction)) out.direction = flipX(out.direction);
+  return out;
+}
+
+/**
+ * The parameters of an applied behaviour, on the way OUT to the wire.
+ *
+ * The inverse of readBehaviorExtras: same pass-through, same two special cases,
+ * plus one asymmetry - an empty `linked` is dropped rather than written, since
+ * every behaviour carries the key in state and only a few ever fill it.
+ */
+export function writeBehaviorExtras(b) {
+  const out = {};
+  for (const [key, value] of Object.entries(b)) {
+    if (key === "name" || value === undefined) continue;
+    out[key] = JSON.parse(JSON.stringify(value));
+  }
+  if (Array.isArray(out.linked) && out.linked.length) out.linked = out.linked.map(String);
+  else delete out.linked;
+  if (isVector3(out.direction)) out.direction = flipX(out.direction);
   return out;
 }
 

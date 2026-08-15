@@ -11,7 +11,7 @@ import {
   serializeEditorPrefs, applyEditorPrefs,
   applyEnvironment, whileBusy, withVeilSuspended,
   isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
-  environmentProbeIds, environmentProbeOf,
+  environmentProbeIds, environmentProbeOf, writeBehaviorExtras,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -82,7 +82,10 @@ export function nodeNameOf(placement) {
  *
  * Definitions are written through untouched: the body is arbitrary JSON because
  * the runtime owns which flags exist, and a tool that normalised the ones it
- * happened to know about would quietly drop the rest.
+ * happened to know about would quietly drop the rest. The parameters of an
+ * APPLIED behaviour go through for the same reason, via writeBehaviorExtras -
+ * one helper, shared with the undo snapshot, so the two can never disagree
+ * about what an assignment is allowed to carry.
  *
  * `linked` is omitted when empty rather than written as `[]` - the absence is
  * what "this one stands alone" means - and entries pointing at a behaviour that
@@ -100,12 +103,7 @@ function serializeEntities() {
   for (const node of nodes) {
     const kept = (state.entities.get(node) || [])
       .filter((b) => state.behaviors.has(b.name))
-      .map((b) => ({
-        name: b.name,
-        ...(b.linked.length ? { linked: [...b.linked] } : {}),
-        ...(b.sound ? { sound: b.sound } : {}),
-        ...(b.direction ? { direction: toGltf(b.direction) } : {}),
-      }));
+      .map((b) => ({ name: b.name, ...writeBehaviorExtras(b) }));
     if (kept.length) out[node] = { behaviors: kept };
   }
   return out;
@@ -281,6 +279,14 @@ export function buildManifest() {  const layout = serialize();
       boxPosition: toGltf(probe.boxPosition),
       boxSize: r(probe.boxSize),
       capturePosition: toGltf(probe.capturePosition),
+      // The volume the runtime blends this probe over, which is a different
+      // question from the volume it projects onto: the box above is the room's
+      // walls, these two are where the cubemap starts and stops being the one
+      // to use. Sizes are full extents, and the inner box shares the outer
+      // one's centre.
+      influenceBoxPosition: toGltf(probe.influenceBoxPosition),
+      influenceBoxSize: r(probe.influenceBoxSize),
+      influenceInnerBoxSize: r(probe.influenceInnerBoxSize),
       resolution: probe.resolution,
     };
   });
@@ -364,12 +370,15 @@ export function buildManifest() {  const layout = serialize();
     space: {
       gltf: ["chunks[].aabb", "environmentProbes[].boxPosition",
         "environmentProbes[].capturePosition",
+        "environmentProbes[].influenceBoxPosition",
         "collision", "moduleCollision", "portals", "doors"],
       editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
       none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kits",
         "activeChunk", "fluidSim", "behaviors", "entities", "environment",
         "editorEnvironment", "editorPrefs", "adjacency", "space",
-        "environmentProbes[].boxSize", "environmentProbes[].resolution"],
+        "environmentProbes[].boxSize", "environmentProbes[].resolution",
+        "environmentProbes[].influenceBoxSize",
+        "environmentProbes[].influenceInnerBoxSize"],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",

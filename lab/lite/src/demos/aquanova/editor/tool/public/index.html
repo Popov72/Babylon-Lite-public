@@ -286,9 +286,11 @@
         <button id="btn-bhv-library">Edit behaviours…</button>
       </div>
 
-      <h3 id="insp-h-pos">Position</h3>
-      <div class="vec">
-        <input type="number" id="pos-x" step="0.25"><input type="number" id="pos-y" step="0.25"><input type="number" id="pos-z" step="0.25">
+      <div id="position-fields">
+        <h3 id="insp-h-pos">Position</h3>
+        <div class="vec">
+          <input type="number" id="pos-x" step="0.25"><input type="number" id="pos-y" step="0.25"><input type="number" id="pos-z" step="0.25">
+        </div>
       </div>
       <div id="rotation-fields">
         <h3>Rotation (deg)</h3>
@@ -416,7 +418,11 @@
       Cyan marks the box centre; orange marks the point it is captured from.
       Only geometry intersecting the box is rendered into the cubemap, and
       elements carrying a probeExcluded, dynamic, liquefiable or weapon
-      behaviour are left out of it.</p>
+      behaviour are left out of it. The influence boxes are a separate
+      question: violet marks where this cubemap fades out, and the red box
+      inside it where it is used at full strength. All three are pickable:
+      drag to move, Ctrl+wheel to resize. The red box has no centre of its own
+      — it is always concentric with the violet one — so it only resizes.</p>
     <div class="tool-window-scroll"><div class="split">
       <select id="probe-list" size="12"></select>
       <div class="editor">
@@ -431,10 +437,22 @@
           <input type="number" id="probe-size-x" min="0.01" step="0.01">
           <input type="number" id="probe-size-y" min="0.01" step="0.01">
           <input type="number" id="probe-size-z" min="0.01" step="0.01"></div>
-        <div class="row"><label>Camera</label>
+        <div class="row"><label title="Where the cubemap is rendered from.">Camera</label>
           <input type="number" id="probe-camera-x" step="0.01">
           <input type="number" id="probe-camera-y" step="0.01">
           <input type="number" id="probe-camera-z" step="0.01"></div>
+        <div class="row"><label title="Centre of the volume this probe is blended over. Shared by both influence boxes, and independent of the projection box above.">Influence centre</label>
+          <input type="number" id="probe-influence-x" step="0.01">
+          <input type="number" id="probe-influence-y" step="0.01">
+          <input type="number" id="probe-influence-z" step="0.01"></div>
+        <div class="row"><label title="Full size of the outer influence box: this probe has faded to nothing at its faces.">Influence size</label>
+          <input type="number" id="probe-influence-size-x" min="0.01" step="0.01">
+          <input type="number" id="probe-influence-size-y" min="0.01" step="0.01">
+          <input type="number" id="probe-influence-size-z" min="0.01" step="0.01"></div>
+        <div class="row"><label title="Full size of the inner box, inside which this probe is at full strength. Zero on an axis means no full-strength core. Never larger than the influence size.">Inner size</label>
+          <input type="number" id="probe-inner-size-x" min="0" step="0.01">
+          <input type="number" id="probe-inner-size-y" min="0" step="0.01">
+          <input type="number" id="probe-inner-size-z" min="0" step="0.01"></div>
         <div class="row"><label title="Cubemap face width and height in pixels.">Texture size</label>
           <input type="number" id="probe-resolution" min="16" max="4096" step="1">
           <span class="muted">px per face</span></div>

@@ -460,6 +460,8 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   padding: 3px 0; border-bottom: 1px solid var(--line);
 }
 #bhv-applied .item .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The ordinal shown only when a node carries the same behaviour more than once. */
+#bhv-applied .item .muted { flex: 0 0 auto; font-size: 11px; }
 #bhv-applied .item button { flex: 0 0 auto; }
 #bhv-applied .linked { margin: 2px 0 6px; }
 #bhv-applied .linked select { width: 100%; }
@@ -494,8 +496,13 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 /* Nudged clear of the cube it belongs to: the cube sits on the very tip of the
    arrow, so a centred chip would bury it. */
 .axis-snap.axis-scale { transform: translate(-50%, -140%); }
-#bhv-applied .vec { display: flex; gap: 4px; }
-#bhv-applied .vec input { flex: 1 1 0; min-width: 0; }
+#bhv-applied textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 3px; padding: 5px 6px;
+}
+#bhv-applied .bhv-err:not(:empty) { margin-top: 3px; color: var(--danger); font-size: 11px; }
 
 /* ------------------------------------------------------- collision pane */
 /*

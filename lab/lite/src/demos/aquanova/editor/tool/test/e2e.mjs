@@ -838,7 +838,7 @@ void main(void) {
     const dragged = await m.captureProbes();
     subject.node.position.x -= 1.5;
 
-    ed.removeEntityBehavior("probeSubject", "probeExcluded");
+    ed.removeEntityBehavior("probeSubject", 0);
     ed.deleteBehaviorDef("probeExcluded");
     ed.renamePlacement(subjectId, wasName);
     // Put the stamps back in step with the ship for the rest of the run.

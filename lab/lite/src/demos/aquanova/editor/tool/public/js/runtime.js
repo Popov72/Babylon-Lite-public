@@ -35,7 +35,7 @@ const {
 
 import {
   state, emit, on, hooks, syncLightingMode, applyVisibility, environmentProbeOf, ownerIdOf,
-  isProbeExcludedNode, withDeadline,
+  isProbeExcludedNode, withDeadline, environmentProbePartId, environmentProbePartOf,
 } from "./editor.js";
 
 const ROOT_NAME = "RUNTIME_PREVIEW";
@@ -55,6 +55,8 @@ let localEnvironmentBox = null;
 let localEnvironmentBoxMaterial = null;
 let localEnvironmentBoxCentre = null;
 let localEnvironmentBoxCentreMaterial = null;
+let localEnvironmentInfluenceBox = null;
+let localEnvironmentInnerBox = null;
 let localEnvironmentCamera = null;
 let localEnvironmentCameraMaterial = null;
 let localEnvironmentBoxSurface = null;
@@ -194,6 +196,12 @@ function editorPoint(point) {
   return converted.every(Number.isFinite) ? converted : null;
 }
 
+function probeVector(value) {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const numbers = value.map(Number);
+  return numbers.every(Number.isFinite) ? numbers : null;
+}
+
 /** Authored probe volume plus its generated asset, when one exists. */
 export async function localEnvironmentProbeOf(id) {
   const index = await fetchLocalEnvironmentIndex();
@@ -245,6 +253,8 @@ function ensureLocalEnvironmentBox() {
       box: localEnvironmentBox,
       centre: localEnvironmentBoxCentre,
       camera: localEnvironmentCamera,
+      influence: localEnvironmentInfluenceBox,
+      inner: localEnvironmentInnerBox,
     };
   }
   localEnvironmentBoxMaterial = new StandardMaterial("LOCAL_ENVIRONMENT_BOX_mat", state.scene);
@@ -296,11 +306,51 @@ function ensureLocalEnvironmentBox() {
     probe: null,
     environmentProbeRoot: localEnvironmentBox,
   };
+  // The two blending volumes. Editable in their own right - each is its own
+  // selectable part of the probe - but they are NOT handles on the capture box:
+  // the box is what the cubemap sees, the influence is only where that cubemap
+  // is worth using, and the two move and resize independently.
+  //
+  // Two hues rather than two shades of one: the boxes are nested and often only
+  // a metre or so apart, and a dimmer violet inside a brighter one reads as the
+  // far side of the same box.
+  localEnvironmentInfluenceBox = makeLocalEnvironmentInfluenceBox(
+    "LOCAL_ENVIRONMENT_INFLUENCE_BOX", new Color3(0.75, 0.35, 1), 0.7);
+  localEnvironmentInnerBox = makeLocalEnvironmentInfluenceBox(
+    "LOCAL_ENVIRONMENT_INNER_BOX", new Color3(1, 0.2, 0.2), 0.7);
   return {
     box: localEnvironmentBox,
     centre: localEnvironmentBoxCentre,
     camera: localEnvironmentCamera,
+    influence: localEnvironmentInfluenceBox,
+    inner: localEnvironmentInnerBox,
   };
+}
+
+function makeLocalEnvironmentInfluenceBox(name, colour, alpha) {
+  const material = new StandardMaterial(`${name}_mat`, state.scene);
+  material.emissiveColor = colour;
+  material.diffuseColor = Color3.Black();
+  material.specularColor = Color3.Black();
+  material.disableLighting = true;
+  material.wireframe = true;
+  material.alpha = alpha;
+  // Root plus box, exactly like the capture volume above: the tool's selection,
+  // hover, drag and framing all walk an element's CHILD meshes, so a bare mesh
+  // as the entry's node would be pickable but never outlined and never framed.
+  const root = new TransformNode(`${name}_ROOT`, state.scene);
+  root.metadata = { gizmo: true, localEnvironmentInfluenceBox: true, probe: null };
+  const mesh = MeshBuilder.CreateBox(name, { size: 1 }, state.scene);
+  mesh.parent = root;
+  mesh.material = material;
+  mesh.isPickable = true;
+  mesh.renderingGroupId = 3;
+  mesh.metadata = {
+    gizmo: true,
+    localEnvironmentInfluenceBox: true,
+    environmentProbeRoot: root,
+  };
+  return root;
 }
 
 function ensureLocalEnvironmentBoxSurface() {
@@ -460,25 +510,28 @@ async function localEnvironmentTextureForBox(id) {
   }
 }
 
+function hideEnvironmentProbeGizmos() {
+  localEnvironmentBox?.setEnabled(false);
+  localEnvironmentBoxCentre?.setEnabled(false);
+  localEnvironmentCamera?.setEnabled(false);
+  localEnvironmentInfluenceBox?.setEnabled(false);
+  localEnvironmentInnerBox?.setEnabled(false);
+  localEnvironmentBoxSurface?.setEnabled(false);
+}
+
 /** Show, hide, or live-preview one explicit local-environment volume. */
 export async function showEnvironmentProbe(id, visible, draft = null, showEnvironment = localEnvironmentBoxEnvironmentVisible) {
   const request = ++localEnvironmentBoxShowRequest;
   localEnvironmentBoxEnvironmentVisible = !!showEnvironment;
   if (!visible || !id) {
-    localEnvironmentBox?.setEnabled(false);
-    localEnvironmentBoxCentre?.setEnabled(false);
-    localEnvironmentCamera?.setEnabled(false);
-    localEnvironmentBoxSurface?.setEnabled(false);
+    hideEnvironmentProbeGizmos();
     return null;
   }
   const info = await localEnvironmentProbeOf(id);
   if (request !== localEnvironmentBoxShowRequest) return info;
   const box = draft || info.effective;
   if (!box) {
-    localEnvironmentBox?.setEnabled(false);
-    localEnvironmentBoxCentre?.setEnabled(false);
-    localEnvironmentCamera?.setEnabled(false);
-    localEnvironmentBoxSurface?.setEnabled(false);
+    hideEnvironmentProbeGizmos();
     return info;
   }
   const meshes = ensureLocalEnvironmentBox();
@@ -493,6 +546,27 @@ export async function showEnvironmentProbe(id, visible, draft = null, showEnviro
   meshes.camera.position.copyFromFloats(...box.capturePosition);
   meshes.camera.metadata.probe = id;
   meshes.camera.setEnabled(true);
+  // A probe read straight off a legacy generated index has no influence of its
+  // own; showing nothing beats showing a volume the author never wrote.
+  const influenceCentre = probeVector(box.influenceBoxPosition);
+  const influenceSize = probeVector(box.influenceBoxSize);
+  const innerSize = probeVector(box.influenceInnerBoxSize);
+  if (influenceCentre && influenceSize) {
+    meshes.influence.position.copyFromFloats(...influenceCentre);
+    meshes.influence.scaling.copyFromFloats(...influenceSize);
+    meshes.influence.metadata.probe = environmentProbePartId(id, "influence");
+    meshes.influence.setEnabled(true);
+  } else {
+    meshes.influence.setEnabled(false);
+  }
+  if (influenceCentre && innerSize && innerSize.some((n) => n > 0)) {
+    meshes.inner.position.copyFromFloats(...influenceCentre);
+    meshes.inner.scaling.copyFromFloats(...innerSize);
+    meshes.inner.metadata.probe = environmentProbePartId(id, "inner");
+    meshes.inner.setEnabled(true);
+  } else {
+    meshes.inner.setEnabled(false);
+  }
   if (!localEnvironmentBoxEnvironmentVisible) {
     localEnvironmentBoxSurface?.setEnabled(false);
     return info;
@@ -1248,14 +1322,39 @@ function nearestChunkTo(position, bounds) {
   return nearest ?? state.activeChunk ?? null;
 }
 
+/**
+ * The selectable elements a shown probe puts in the scene.
+ *
+ * Three, not one: the capture box, and each of the two blending volumes as a
+ * PART of the probe (see environmentProbePartOf). They share the probe's `type`
+ * so that every panel already written for a probe - no rotation row, sizes
+ * floored, no behaviours - covers them without a second case to keep in step.
+ *
+ * None of them rotate: a projection box and a blend region are both
+ * axis-aligned by construction, and the runtime has nowhere to put an angle.
+ * The inner box does not move either - it has no centre of its own, it rides
+ * the outer one's - so it is marked immovable rather than left to drift and be
+ * corrected afterwards.
+ */
 hooks.environmentProbeEntry = (id) => {
-  if (!state.environmentProbes.has(id) || localEnvironmentBox?.metadata?.probe !== id) return null;
+  const shown = localEnvironmentBox?.metadata?.probe;
+  if (!shown || !state.environmentProbes.has(shown)) return null;
+  if (id === shown) {
+    return { id, name: id, type: "environment-probe", node: localEnvironmentBox, canRotate: false };
+  }
+  const part = environmentProbePartOf(id);
+  if (part?.probe !== shown) return null;
+  const node = part.part === "influence" ? localEnvironmentInfluenceBox : localEnvironmentInnerBox;
+  if (!node?.isEnabled()) return null;
   return {
     id,
     name: id,
     type: "environment-probe",
-    node: localEnvironmentBox,
+    probe: part.probe,
+    part: part.part,
+    node,
     canRotate: false,
+    canMove: part.part !== "inner",
   };
 };
 

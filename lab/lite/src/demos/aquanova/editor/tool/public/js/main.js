@@ -32,12 +32,14 @@ import {
   renameChunk, removeChunk, chunkUsers,
   environmentProbeIds, environmentProbeOf, nextEnvironmentProbeId,
   setEnvironmentProbe, removeEnvironmentProbe, syncEnvironmentProbeTransform,
+  syncEnvironmentProbeInfluence, syncEnvironmentProbeInnerSize,
+  environmentProbePartOf, environmentProbePartId,
   validEnvironmentProbeId, environmentProbeIdAvailable,
   renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
   setVeilAlpha, SKYBOX_CHUNK,
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
-  isLiquefiable, defaultDirection, setEntityDirection, nodeNamesInChunk, nodesNamed,
+  isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
@@ -129,6 +131,9 @@ function refreshInspector() {
   // an offset within that element - and a lamp has no size of its own: an engine
   // light is a point, a direction and a falloff.
   $("insp-h-pos").textContent = isLight ? "Offset (local)" : "Position";
+  // A probe's inner blend box has no centre of its own - it is concentric with
+  // the outer one - so there is nothing for the row to edit.
+  $("position-fields").hidden = e.canMove === false;
   $("scale-fields").hidden = isLight;
   $("rotation-fields").hidden = isProbe;
   const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
@@ -278,12 +283,13 @@ function refreshBehavior() {
     : "";
   renderApplied(name, applied);
 
-  const free = library.filter((b) => !applied.some((a) => a.name === b));
-  $("bhv-add").innerHTML = free.length
-    ? free.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join("")
-    : `<option disabled>${library.length ? "(all attached)" : "(none defined)"}</option>`;
-  $("bhv-add").disabled = !name || !free.length;
-  $("btn-bhv-add").disabled = !name || !free.length;
+  // The whole library, every time: a behaviour may be attached more than once,
+  // so "already attached" is no longer a reason to leave it out of the list.
+  $("bhv-add").innerHTML = library.length
+    ? library.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join("")
+    : `<option disabled>(none defined)</option>`;
+  $("bhv-add").disabled = !name || !library.length;
+  $("btn-bhv-add").disabled = !name || !library.length;
 
   $("bhv-hint").textContent = !name
     ? "Name the element first — behaviours attach to the node name."
@@ -294,12 +300,26 @@ const esc = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 /**
- * The behaviours on this node, each with a Remove button - and, for the ones
- * that liquefy, the `linked` picker. Only liquefaction needs it: linking is for
- * pieces that melt as one, which is what a pair of door halves is.
+ * The behaviours on this node, each with a Remove button, a JSON editor for its
+ * parameters - and, for the ones that liquefy, the `linked` picker.
  *
- * Candidates come from the **current room**, since linked pieces are neighbours
- * in practice and a ship-wide list would be hundreds of entries long.
+ * Rows are keyed by **position**, not by behaviour name. A node may carry the
+ * same behaviour twice - the runtime builds one instance per entry in the list
+ * - and keying by name would have the second row's Remove take the first one
+ * away and both parameter boxes write to the same assignment. Where a name
+ * appears more than once the rows are numbered, since otherwise nothing on
+ * screen would tell them apart.
+ *
+ * The parameters are edited as raw JSON rather than as named fields because the
+ * runtime owns which parameters a behaviour understands: a form built here
+ * would list whatever this tool happened to know about on the day it was
+ * written, and hide the rest. The old three `direction` boxes were exactly that
+ * - one runtime parameter promoted to a widget, with no way to author a second.
+ *
+ * The `linked` picker survives on top of the JSON because its value is a list
+ * of node names from the current room, which is knowledge the editor has and
+ * the person typing does not. It edits the same key, and that key is shown in
+ * the JSON too, so neither view can silently contradict the other.
  */
 function renderApplied(nodeName, applied) {
   const host = $("bhv-applied");
@@ -307,7 +327,7 @@ function renderApplied(nodeName, applied) {
   // same trap the inspector's number fields fell into. A focused *button* is
   // not editing, so Remove still redraws the list it just changed.
   const el = document.activeElement;
-  if (host.contains(el) && /^(INPUT|SELECT)$/.test(el.tagName)) return;
+  if (host.contains(el) && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return;
 
   if (!applied.length) {
     host.innerHTML = nodeName ? '<div class="muted">none attached</div>' : "";
@@ -315,62 +335,105 @@ function renderApplied(nodeName, applied) {
   }
   const chunk = entryOf(state.selection[0])?.chunk;
   const candidates = nodeNamesInChunk(chunk, nodeName);
-  const picker = (kind, label, options, chosen, name) => {
+  const picker = (kind, label, options, chosen, at) => {
     const opts = options.length
       ? options.map((n) =>
         `<option value="${esc(n)}"${chosen.includes(n) ? " selected" : ""}>${esc(n)}</option>`)
         .join("")
       : `<option disabled>(nothing else named in this room)</option>`;
     return `<div class="linked"><div class="lbl">${label}</div>`
-      + `<select multiple size="4" data-${kind}="${esc(name)}">${opts}</select></div>`;
+      + `<select multiple size="4" data-${kind}="${at}">${opts}</select></div>`;
   };
-  host.innerHTML = applied.map((b) => {
+  const total = new Map();
+  for (const b of applied) total.set(b.name, (total.get(b.name) || 0) + 1);
+  const seen = new Map();
+  host.innerHTML = applied.map((b, at) => {
+    const ordinal = (seen.get(b.name) || 0) + 1;
+    seen.set(b.name, ordinal);
     const rows = [
       `<div class="item"><span class="n">${esc(b.name)}</span>`
-      + `<button data-remove="${esc(b.name)}">Remove</button></div>`,
+      + (total.get(b.name) > 1 ? `<span class="muted">#${ordinal}</span>` : "")
+      + `<button data-remove="${at}">Remove</button></div>`,
     ];
     if (isLiquefiable(b.name)) {
-      rows.push(picker("linked", "linked — melts together", candidates, b.linked, b.name));
+      rows.push(picker("linked", "linked — melts together", candidates, b.linked, at));
     }
-    // Optional on every applied behaviour - the definition only supplies a
-    // starting value. Gating this on the definition declaring it made an
-    // optional parameter invisible until you knew to declare it.
-    const d = b.direction || defaultDirection(b.name) || [];
-    const f = (i) => `<input type="number" step="0.1" data-dir="${esc(b.name)}" `
-      + `data-axis="${i}" value="${Number.isFinite(d[i]) ? d[i] : ""}">`;
-    rows.push('<div class="linked"><div class="lbl">direction — the way it faces (optional)</div>'
-      + `<div class="vec">${f(0)}${f(1)}${f(2)}</div></div>`);
+    // Empty rather than "{}" when there is nothing set, so the placeholder can
+    // show what this behaviour's definition suggests - the hint the old
+    // direction fields gave by pre-filling, which a filled-in "{}" would hide.
+    const text = behaviorParamsText(b);
+    const lines = text ? text.split("\n").length : 3;
+    rows.push('<div class="linked"><div class="lbl">parameters — JSON, editor space</div>'
+      + `<textarea data-params="${at}" spellcheck="false" `
+      + `rows="${Math.min(Math.max(lines, 3), 14)}" `
+      + `placeholder="${esc(behaviorParamsHint(b.name))}">${esc(text)}</textarea>`
+      + `<div class="bhv-err" data-err="${at}"></div></div>`);
     return rows.join("");
   }).join("");
 
   for (const btn of host.querySelectorAll("[data-remove]")) {
     btn.addEventListener("click", () => {
-      removeEntityBehavior(nodeName, btn.dataset.remove);
+      removeEntityBehavior(nodeName, Number(btn.dataset.remove));
       refreshBehavior();
     });
 
   }
   for (const sel of host.querySelectorAll("[data-linked]")) {
     sel.addEventListener("change", () => {
-      setEntityLinked(nodeName, sel.dataset.linked,
+      setEntityLinked(nodeName, Number(sel.dataset.linked),
         [...sel.selectedOptions].map((o) => o.value));
       refreshBehavior();
     });
   }
-  // `change`, not `input`: committing on every keystroke would store a
-  // half-typed "-" or "0." as the direction.
-  for (const input of host.querySelectorAll("[data-dir]")) {
-    input.addEventListener("change", () => {
-      const name = input.dataset.dir;
-      const fields = [...host.querySelectorAll(`[data-dir="${CSS.escape(name)}"]`)];
-      const vec = [0, 1, 2].map((i) => {
-        const f = fields.find((x) => +x.dataset.axis === i);
-        return f && f.value.trim() !== "" ? parseFloat(f.value) : 0;
-      });
-      setEntityDirection(nodeName, name, vec.every((v) => v === 0) ? null : vec);
+  // `change`, not `input`: JSON is invalid for most of the time it takes to
+  // type, so committing on every keystroke would be one long error message.
+  for (const area of host.querySelectorAll("[data-params]")) {
+    area.addEventListener("change", () => {
+      const at = Number(area.dataset.params);
+      const err = host.querySelector(`[data-err="${at}"]`);
+      const text = area.value.trim();
+      let params;
+      try {
+        params = text ? JSON.parse(text) : {};
+      } catch (e) {
+        // Left as typed, and NOT redrawn: the text is wrong but it is the
+        // user's, and replacing it with the stored value would throw away the
+        // edit they are in the middle of making.
+        if (err) err.textContent = String(e.message || e);
+        return;
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) {
+        if (err) err.textContent = "expected a JSON object, like { \"direction\": [0, 0, 1] }";
+        return;
+      }
+      setEntityParams(nodeName, at, params);
       refreshBehavior();
     });
   }
+}
+
+/** An applied behaviour as the JSON the panel shows: its parameters, no name. */
+function behaviorParamsText(b) {
+  const out = {};
+  for (const [key, value] of Object.entries(b)) {
+    if (key === "name") continue;
+    if (key === "linked" && !value.length) continue;   // absent means "stands alone"
+    out[key] = value;
+  }
+  return Object.keys(out).length ? JSON.stringify(out, null, 2) : "";
+}
+
+/**
+ * The placeholder for an empty parameter box: what this behaviour's definition
+ * suggests. `direction` is the one the kit's definitions carry, and the old
+ * fields pre-filled from it; the definition body is not otherwise a template
+ * for the assignment, so nothing else is offered.
+ */
+function behaviorParamsHint(behaviorName) {
+  const d = getBehaviorDef(behaviorName)?.direction;
+  return Array.isArray(d) && d.length === 3 && d.every(Number.isFinite)
+    ? `{ "direction": [${d.map(Number).join(", ")}] }`
+    : "{ }";
 }
 
 function selectedName() {
@@ -583,8 +646,10 @@ function applyInspector(source) {
     }
   }
   const p = e.node.position, s = e.node.scaling, r = eulerOf(e.node);
-  e.node.position.set(
-    num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
+  if (e.canMove !== false) {
+    e.node.position.set(
+      num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
+  }
   if (e.type !== "environment-probe") {
     setEuler(e.node, [num(rotIn[0], r[0]), num(rotIn[1], r[1]), num(rotIn[2], r[2])]);
   }
@@ -1013,8 +1078,12 @@ let probeRefreshRequest = 0;
 const PROBE_BOX_FIELDS = ["x", "y", "z"].map((axis) => `probe-box-${axis}`);
 const PROBE_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-size-${axis}`);
 const PROBE_CAMERA_FIELDS = ["x", "y", "z"].map((axis) => `probe-camera-${axis}`);
+const PROBE_INFLUENCE_FIELDS = ["x", "y", "z"].map((axis) => `probe-influence-${axis}`);
+const PROBE_INFLUENCE_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-influence-size-${axis}`);
+const PROBE_INNER_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-inner-size-${axis}`);
 const PROBE_VALUE_FIELDS = [
   ...PROBE_BOX_FIELDS, ...PROBE_SIZE_FIELDS, ...PROBE_CAMERA_FIELDS,
+  ...PROBE_INFLUENCE_FIELDS, ...PROBE_INFLUENCE_SIZE_FIELDS, ...PROBE_INNER_SIZE_FIELDS,
 ];
 
 function placeProbeWindow(left, top) {
@@ -1074,6 +1143,8 @@ function defaultProbeVolume() {
     : (state.camera?.globalPosition || state.camera?.position
       || new BABYLON.Vector3(0, 2.5, 0)).clone();
   const size = min && max ? max.subtract(min) : new BABYLON.Vector3(8, 5, 8);
+  // The influence volumes are left out on purpose: setEnvironmentProbe derives
+  // them from the box, which is the one place that default is written down.
   return {
     boxPosition: centre.asArray(),
     boxSize: size.asArray().map((n) => Math.max(0.01, n)),
@@ -1090,13 +1161,21 @@ function probeDraft() {
   const boxPosition = values.slice(0, 3);
   const boxSize = values.slice(3, 6);
   const capturePosition = values.slice(6, 9);
+  const influenceBoxPosition = values.slice(9, 12);
+  const influenceBoxSize = values.slice(12, 15);
+  const influenceInnerBoxSize = values.slice(15, 18);
   if (!values.every(Number.isFinite) || !boxSize.every((n) => n > 0)
+    || !influenceBoxSize.every((n) => n > 0)
+    || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])
     || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return null;
   return {
     id: validEnvironmentProbeId($("probe-id").value),
     boxPosition,
     boxSize,
     capturePosition,
+    influenceBoxPosition,
+    influenceBoxSize,
+    influenceInnerBoxSize,
     resolution: Math.round(resolution),
   };
 }
@@ -1113,7 +1192,9 @@ async function refreshProbeWindow(pick = probeSelected) {
   const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
   $("probe-id").value = probe?.id || "";
   const values = probe
-    ? [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition] : [];
+    ? [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition,
+      ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
+      ...probe.influenceInnerBoxSize] : [];
   PROBE_VALUE_FIELDS.forEach((id, index) => { $(id).value = values[index] ?? ""; });
   $("probe-resolution").value = probe?.resolution ?? "";
   $("btn-probe-delete").disabled = !probe;
@@ -1162,10 +1243,24 @@ function closeProbes() {
   $("probe-modal").hidden = true;
   $("probe-show").checked = false;
   $("probe-env").checked = false;
-  if (state.selection.some((id) => state.environmentProbes.has(id))) {
-    select(state.selection.filter((id) => !state.environmentProbes.has(id)));
-  }
+  dropProbeSelection();
   void showEnvironmentProbe(null, false, null, false);
+}
+
+/**
+ * Drop every gizmo of `id` - or of all probes - from the selection.
+ *
+ * The gizmos go with the window, and a selection holding an element that no
+ * longer exists is a selection whose inspector, wheel and arrow keys all point
+ * at nothing. `probe` names the capture box; its two blend volumes are parts of
+ * the same id and have to go with it.
+ */
+function dropProbeSelection(id = null) {
+  const doomed = (sel) => (id
+    ? sel === id || environmentProbePartOf(sel)?.probe === id
+    : state.environmentProbes.has(sel) || !!environmentProbePartOf(sel));
+  if (!state.selection.some(doomed)) return;
+  select(state.selection.filter((sel) => !doomed(sel)));
 }
 
 $("btn-probes").addEventListener("click", openProbes);
@@ -1189,9 +1284,7 @@ for (const id of [...PROBE_VALUE_FIELDS, "probe-resolution"]) {
 $("probe-show").addEventListener("change", (e) => {
   if (!e.target.checked) $("probe-env").checked = false;
   if (!e.target.checked) {
-    if (state.selection.includes(probeSelected)) {
-      select(state.selection.filter((id) => id !== probeSelected));
-    }
+    dropProbeSelection(probeSelected);
     void showEnvironmentProbe(null, false, null, false);
     return;
   }
@@ -1230,7 +1323,8 @@ $("btn-probe-apply").addEventListener("click", () => {
   }
   if (!draft) {
     $("probe-error").textContent =
-      "Enter numeric box/camera positions, positive box sizes, and a texture size from 16 to 4096.";
+      "Enter numeric box/camera positions, positive box sizes, an inner size from"
+      + " 0 up to the influence size, and a texture size from 16 to 4096.";
     return;
   }
   const previousId = probeSelected;
@@ -1258,7 +1352,11 @@ on("environment-probes", () => {
 });
 
 on("selection", () => {
-  const selectedProbe = state.selection.find((id) => state.environmentProbes.has(id));
+  // A blend volume is part of its probe: clicking one in the viewport should
+  // bring that probe up in the window, exactly as clicking its capture box does.
+  const selectedProbe = state.selection
+    .map((id) => (state.environmentProbes.has(id) ? id : environmentProbePartOf(id)?.probe))
+    .find(Boolean);
   if (!selectedProbe || $("probe-modal").hidden || selectedProbe === probeSelected) return;
   probeSelected = selectedProbe;
   $("probe-show").checked = true;
@@ -2569,12 +2667,27 @@ on("chunks", () => {
 on("markers", () => { refreshStats(); validate(); });
 on("transform", () => {
   for (const id of state.selection) {
-    if (!state.environmentProbes.has(id)) continue;
+    const isProbe = state.environmentProbes.has(id);
+    const part = isProbe ? null : environmentProbePartOf(id);
+    if (!isProbe && !part) continue;
     const entry = entryOf(id);
     if (!entry) continue;
+    // The gizmo is the truth for the length of a gesture, and the record is
+    // written from it - but a box dragged down to nothing is no box at all, so
+    // a floor goes on first and is written back to the node too, or the next
+    // notch would resume from the value the wheel reached rather than the one
+    // that was kept.
     const size = entry.node.scaling.asArray().map((value) => Math.max(0.01, Math.abs(value)));
     entry.node.scaling.set(...size);
-    syncEnvironmentProbeTransform(id, entry.node.position.asArray(), size);
+    if (isProbe) {
+      syncEnvironmentProbeTransform(id, entry.node.position.asArray(), size);
+    } else if (part.part === "influence") {
+      // The blend volumes ride the same kind of gizmo but write other fields,
+      // and the inner one has no centre of its own to write at all.
+      syncEnvironmentProbeInfluence(part.probe, entry.node.position.asArray(), size);
+    } else {
+      syncEnvironmentProbeInnerSize(part.probe, size);
+    }
   }
   refreshInspector();
   validate();

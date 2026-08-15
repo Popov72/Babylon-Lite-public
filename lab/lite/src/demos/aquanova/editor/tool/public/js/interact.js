@@ -879,7 +879,13 @@ function beginDragCandidate(id, ev, pickedPoint) {
   const alreadySelected = state.selection.includes(id);
   const ids = alreadySelected ? [...state.selection] : [id];
 
-  const entries = ids.map(entryOf).filter(Boolean);
+  // Some elements have no centre of their own to write - a probe's inner blend
+  // box rides the outer one's. Grabbing one is therefore never a drag, and any
+  // that are merely along for the ride in a multi-selection sit the move out.
+  // Bailing out rather than dragging nothing is deliberate: it leaves the
+  // gesture to be read as a click, which still selects the thing.
+  if (entryOf(id)?.canMove === false) return false;
+  const entries = ids.map(entryOf).filter((e) => e && e.canMove !== false);
   if (!entries.length) return false;
 
   // Anchor on the point actually clicked, not the element's origin.

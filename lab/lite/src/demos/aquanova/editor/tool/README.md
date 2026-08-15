@@ -46,7 +46,10 @@ as a module id plus a transform, so a layout reloads exactly:
   "chunks":   [ { "id": "CH00_Storage", "node": "CHUNK_CH00_Storage", "aabb": {...} } ],
   "environmentProbes": [
     { "id": "ENV0001", "boxPosition": [-8,2.5,0], "boxSize": [16,5,8],
-      "capturePosition": [-8,2.5,0], "resolution": 512 }
+      "capturePosition": [-8,2.5,0],
+      // where the runtime blends this probe, as opposed to what it projects
+      "influenceBoxPosition": [-8,2.5,0], "influenceBoxSize": [19,8,11],
+      "influenceInnerBoxSize": [13,2,5], "resolution": 512 }
   ],
   "portals":  [ { "id", "chunkA", "chunkB", "door", "centre", "normal", "corners" } ],
   "doors":    [ { "id", "chunkA", "chunkB", "position", "triggerRadius", "sealed", "leaves" } ],
@@ -160,6 +163,16 @@ Attaching one can be affecting one crate or thirty, and there is no other way to
 tell. A name is required first: a behaviour with nothing to key on could never
 be matched to an element.
 
+**The same behaviour may be attached more than once.** An entity's behaviours
+are a _list_ of assignments, not a set keyed by name: the runtime walks the list
+and builds one instance per entry, so two entries of one behaviour carrying
+different parameters are two different things happening to one prop. Which means
+a name is **not** an identity here — the panel keys its rows, and the model keys
+its edits, by **position** in the list. Keying by name is exactly the bug this
+replaced: the second row's `Remove` took the first one away, and both parameter
+boxes wrote to the same assignment. Repeated names are numbered on screen
+(`#1`, `#2`), since otherwise nothing would tell the rows apart.
+
 **`linked`** appears only for definitions with `liquefiable: true`, because
 linking is for pieces that melt as one — a pair of door halves. The candidates
 are the other named nodes **in the same room**: linked pieces are neighbours in
@@ -167,26 +180,42 @@ practice, and a ship-wide list would be hundreds of entries long. The list is
 de-duplicated, drops the node itself, and is omitted from the manifest when
 empty — the absence is what "this one stands alone" means.
 
-**`direction`** is the way an entity faces — what a start position needs — and
-rides the applied entry beside `name`:
+**Parameters** ride the applied entry beside `name`, and are edited as **raw
+JSON**, one box per attached behaviour:
 
 ```jsonc
 { "name": "player_startpos", "direction": [-1, 0, 0] }
 ```
 
-It is **optional on every applied behaviour**, so the three fields always
-appear. Gating them on the definition declaring a `direction` key was the first
-design and it was wrong: it made an optional parameter invisible until you knew
-to declare it, which is exactly the thing the person editing does not know. A
-definition that _does_ name a `direction` still supplies the starting value, but
-nothing is written until the entity says so.
+Raw JSON for the same reason the definition body is raw JSON: the **runtime**
+owns which parameters a behaviour understands. The panel used to offer three
+number fields for `direction` and nothing else — one runtime parameter promoted
+to a widget, with no way to author a second, and no way to see one that some
+other tool had written. Every key is now carried through untouched, in and out,
+by one symmetric pair of helpers (`readBehaviorExtras` / `writeBehaviorExtras`)
+shared by the manifest writer and the undo snapshot, so the two can never
+disagree about what an assignment may carry.
 
-Stored **as typed, not normalised**: normalising on every commit fights you as
-you fill the three fields in — typing `1` into Y after X would turn both into
-`0.707` before you reached Z. An all-zero vector is dropped rather than written,
-since it names no direction at all.
+The box holds the entry **minus its `name`** — the name is the identity of the
+assignment, not a parameter, and a `name` typed inside is ignored. An empty box
+means "no parameters"; its placeholder shows what the definition suggests, which
+is the hint the old fields gave by pre-filling. Invalid JSON is reported under
+the box and **changes nothing**, and the text is left as typed rather than
+replaced with the stored value — that would throw away the edit in progress.
+Committed on blur, not on every keystroke: JSON is invalid for most of the time
+it takes to type one.
 
-> A hand-edit that splits the parameter into a sibling entry of its own —
+Three keys are not opaque:
+
+- **`name`** — ignored, as above.
+- **`linked`** — cleaned exactly as the picker cleans it, and shown in the JSON
+  as well so neither view can silently contradict the other.
+- **`direction`** — a vector, so it is mirrored between editor and glTF space.
+  Stored **as typed, not normalised**: normalising on every commit would fight
+  you as you type. An all-zero vector is dropped rather than written, since it
+  names no direction at all.
+
+> A hand-edit that splits a parameter into a sibling entry of its own —
 > `[ { "name": "player_startpos" }, { "direction": [...] } ]` — is **folded back
 > into the entry above it** on load, with a console warning. An entry with no
 > `name` means nothing to the runtime, so that is the only reading under which
@@ -706,7 +735,7 @@ the same thing.
 | Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                         |
 | Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Behaviour        | inspector panel — attach library behaviours to the element's node name, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Behaviour        | inspector panel — attach library behaviours to the element's node name (the same one may be attached more than once; repeats are numbered), edit each one's parameters as **raw JSON**, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body)                                                                                                                                                                                                                                                                                                                                                                      |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Steps            | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard _step sizes_, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns                                                                                                                                                                                                                                                                                                                                                   |
@@ -2923,6 +2952,7 @@ Probes are authored in **Probes…** in the toolbar. Each one is:
 | --- | --- |
 | **box** | position and size of the volume the probe covers, in editor space |
 | **capture point** | where the six faces are rendered from — usually eye height, not the box centre |
+| **influence centre / size / inner size** | the volume the *runtime* blends this probe over — see [The influence volumes](#the-influence-volumes) |
 | **resolution** | face size; 256 by default, which is the kit's own texel density |
 
 An element belongs to a probe when its bounding box **intersects** that probe's
@@ -2936,6 +2966,47 @@ volume is exactly zero against every probe.
 
 An element in no probe box at all reflects **nothing**, which is exactly what
 the runtime does with it.
+
+### The influence volumes
+
+The box above answers "what does this cubemap *show*, and onto what does it get
+projected". It does **not** answer "when the player is standing here, whose
+cubemap is this room". That is a separate pair of boxes, because the two
+genuinely differ: the projection box has to be the room's walls or the parallax
+correction is wrong, while the hand-over to the next room wants to start before
+the doorway and finish after it.
+
+The runtime blends two probes with Lagarde's normalized distance field: **full
+strength inside the inner box, fading to nothing at the faces of the outer
+one**. Both boxes share one centre — a probe that faded out asymmetrically would
+have to be two probes — so the pane has one **Influence centre** row and two
+sizes. Sizes are **full extents**, not half-extents, like every other size in
+the tool. Violet in the viewport is the outer box; the red box inside it is
+the inner one.
+
+Both are editable directly, as parts of the probe: click either to select it,
+drag the violet one to move the pair, and `Ctrl`+wheel to resize whichever is
+selected. The red box does not move — it has no centre of its own — so it has
+no **Position** row in the inspector and ignores a drag and the arrow keys.
+Neither box rotates: a blend region is axis-aligned by construction, as the
+capture box is.
+
+An inner size may be **zero** on an axis — a corridor narrower than the fade
+simply has no full-strength core — but never larger than the influence size on
+that axis, because the runtime divides by `outer − inner` per axis and a
+negative width is a gradient pointing the wrong way. **Apply** refuses that pair
+rather than storing it; direct manipulation **clamps** instead, shrinking the
+inner box as the outer one closes in on it. The difference is deliberate: a
+typed number is a claim to be checked, while a drag that silently stopped
+halfway would be a tool fighting the hand.
+
+A probe that has never had them typed derives them from its box: **1.5 m out on
+every face, and 1.5 m in**, which is exactly what the runtime falls back to on
+its own. A ship authored before these fields existed therefore blends
+identically the day it is re-saved. Dragging or scaling the box carries them
+rigidly — a move shifts the centre, a resize grows both sizes by the same
+**absolute** amount, so the margins the author set survive a room getting 2 m
+longer.
 
 #### What a probe deliberately does not see
 
@@ -3422,6 +3493,19 @@ them under `lab/public/aquanova/`. The `.stamp` beside each `.env` is what lets
 it refuse a half-captured folder: a probe whose stamp does not match the digest
 in `local-environments.json` has not finished being taken, and publishing it
 would ship a cubemap of a room that no longer exists.
+
+`export/environments/local-environments.json` is **generated, never authored**,
+which is why it is git-ignored. Every capture rewrites it from scratch out of
+the probe list the browser declares, so a value hand-typed into it survives
+exactly until the next capture. It records what was *taken* — the `.env` file,
+its digest, its byte count, and the box that was rendered — and it is in
+**editor space**, because that is what the browser sent.
+
+The authored truth is `export/ship_manifest.json` → `environmentProbes[]`, in
+glTF space. `sync-ship.ts` therefore reads the geometry out of the manifest and
+only the file facts out of the generated index, so the published
+`lab/public/aquanova/local-environments.json` is glTF space throughout, which is
+what the runtime's `toLite` conversion expects.
 
 ## Testing
 

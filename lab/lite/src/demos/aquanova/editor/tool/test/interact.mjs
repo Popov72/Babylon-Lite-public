@@ -803,11 +803,22 @@ const probes = await page.evaluate(async () => {
   $("btn-probe-new").click();
   captureButtons.pickedDisabled = $("btn-capture-one").disabled;
   const id = $("probe-list").value;
+  // A brand-new probe never had influence volumes typed for it, so they are
+  // derived from the box it does have. The box itself depends on the camera,
+  // so the check is the relationship rather than the numbers.
+  const created = ed.environmentProbeOf(id);
+  const derivedInfluence = created.influenceBoxPosition.join() === created.boxPosition.join()
+    && created.influenceBoxSize.every((n, axis) => n === created.boxSize[axis] + 3)
+    && created.influenceInnerBoxSize.every(
+      (n, axis) => n === Math.max(0, created.boxSize[axis] - 3));
 
   const values = {
     "probe-box-x": "1", "probe-box-y": "2", "probe-box-z": "3",
     "probe-size-x": "8", "probe-size-y": "5", "probe-size-z": "12",
     "probe-camera-x": "7", "probe-camera-y": "8", "probe-camera-z": "9",
+    "probe-influence-x": "1.5", "probe-influence-y": "2", "probe-influence-z": "3",
+    "probe-influence-size-x": "12", "probe-influence-size-y": "9", "probe-influence-size-z": "16",
+    "probe-inner-size-x": "4", "probe-inner-size-y": "1", "probe-inner-size-z": "8",
     "probe-resolution": "1024",
   };
   for (const [field, value] of Object.entries(values)) {
@@ -820,16 +831,45 @@ const probes = await page.evaluate(async () => {
     boxPosition: [1, 2, 3],
     boxSize: [8, 5, 12],
     capturePosition: [7, 8, 9],
+    influenceBoxPosition: [1.5, 2, 3],
+    influenceBoxSize: [12, 9, 16],
+    influenceInnerBoxSize: [4, 1, 8],
     resolution: 1024,
   }, false);
 
   const centre = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_BOX_CENTRE");
   const camera = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_CAMERA");
+  // The volumes are a root plus a box, like the capture volume: the root is
+  // what carries the transform, the box is what is picked and outlined.
+  const outerRoot = ed.state.scene.getTransformNodeByName("LOCAL_ENVIRONMENT_INFLUENCE_BOX_ROOT");
+  const innerRoot = ed.state.scene.getTransformNodeByName("LOCAL_ENVIRONMENT_INNER_BOX_ROOT");
+  const outerBox = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_INFLUENCE_BOX");
+  const innerBox = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_INNER_BOX");
   const live = {
     centre: centre?.position.asArray(),
     camera: camera?.position.asArray(),
     separate: centre && camera && !centre.position.equals(camera.position),
+    outer: outerRoot?.isEnabled() ? outerRoot.scaling.asArray() : null,
+    inner: innerRoot?.isEnabled() ? innerRoot.scaling.asArray() : null,
+    influenceCentre: outerRoot?.position.asArray(),
+    innerCentre: innerRoot?.position.asArray(),
+    influencePickable: !!outerBox?.isPickable && !!innerBox?.isPickable,
+    // Each volume is its own selectable part of the probe, and picking one of
+    // its meshes has to resolve to that part rather than to the capture box.
+    influenceOwners: [ed.ownerIdOf(outerBox), ed.ownerIdOf(innerBox)],
+    influencePartIds: [
+      ed.environmentProbePartId(id, "influence"), ed.environmentProbePartId(id, "inner"),
+    ],
   };
+
+  // An inner box outside its outer one would make the runtime's normalized
+  // distance field run backwards, so the pane refuses it rather than storing it.
+  $("probe-inner-size-x").value = "99";
+  $("btn-probe-apply").click();
+  const innerRefused = /inner size/i.test($("probe-error").textContent)
+    && ed.environmentProbeOf(id).influenceInnerBoxSize.join()
+      === created.influenceInnerBoxSize.join();
+  $("probe-inner-size-x").value = "4";
 
   $("btn-probe-apply").click();
   ed.setEnvironmentProbe("ENV_OTHER", {
@@ -886,6 +926,40 @@ const probes = await page.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 25));
   }
   await runtime.showEnvironmentProbe(renamedId, true, survived, false);
+
+  // ---- direct manipulation of the two blend volumes ---------------------
+  // They are parts of the probe rather than entries of their own, so the same
+  // selection, drag, wheel and inspector paths that move the capture box work
+  // on them - which is the whole point of giving them synthetic ids.
+  const influenceId = ed.environmentProbePartId(renamedId, "influence");
+  const innerId = ed.environmentProbePartId(renamedId, "inner");
+  ed.select([influenceId]);
+  const outerNode = ed.entryOf(influenceId)?.node;
+  outerNode.position.set(4, 6, 8);
+  // Deliberately shorter on Z than the inner box already is: shrinking the
+  // outer volume has to take the inner one with it, not leave a blend gradient
+  // pointing the wrong way.
+  outerNode.scaling.set(9, 8, 7);
+  ed.emit("transform");
+  const influenceDragged = ed.environmentProbeOf(renamedId);
+
+  await runtime.showEnvironmentProbe(renamedId, true, influenceDragged, false);
+  ed.select([innerId]);
+  const innerEntry = ed.entryOf(innerId);
+  const innerCanMove = innerEntry?.canMove;
+  const innerPositionRow = $("position-fields").hidden;
+  const innerBefore = innerEntry.node.position.asArray();
+  ed.nudgeSelection(new BABYLON.Vector3(5, 0, 0));
+  const innerAfterNudge = innerEntry.node.position.asArray();
+  const snapScale = ed.state.snap.scale, savedAxis = ed.state.scaleAxis;
+  ed.state.snap.scale = 0.5;
+  ed.state.scaleAxis = "all";
+  interact.scaleCurrent(1);
+  ed.state.snap.scale = snapScale;
+  ed.state.scaleAxis = savedAxis;
+  const innerResized = ed.environmentProbeOf(renamedId);
+
+  ed.select([renamedId]);
   $("probe-list").value = renamedId;
   $("probe-list").dispatchEvent(new Event("change"));
   $("btn-probe-delete").click();
@@ -897,6 +971,9 @@ const probes = await page.evaluate(async () => {
     opened, id, renamedId, live, authored, inManifest, survived, deleted,
     renamed, duplicateRefused, sceneConflictRefused, sceneId,
     transformed, beforeRotation, afterRotation, axes, captureButtons,
+    derivedInfluence, innerRefused,
+    influenceDragged, innerResized, innerCanMove, innerPositionRow,
+    innerMoveRefused: innerBefore.join() === innerAfterNudge.join(),
     closed: $("probe-modal").hidden,
   };
 });
@@ -918,6 +995,39 @@ check("the regular transform tools move and scale the probe box and carry its ca
     && probes.transformed?.capturePosition?.join() === "9,11,13"
     && probes.axes === probes.renamedId,
   JSON.stringify(probes.transformed));
+check("a new probe derives its influence volumes from the box it was given",
+  probes.derivedInfluence === true, JSON.stringify(probes.derivedInfluence));
+check("the influence volumes are authored, drawn, and selectable in their own right",
+  probes.live.outer?.join() === "12,9,16"
+    && probes.live.inner?.join() === "4,1,8"
+    && probes.live.influenceCentre?.join() === "1.5,2,3"
+    && probes.live.influenceCentre?.join() === probes.live.innerCentre?.join()
+    && probes.live.influencePickable
+    && probes.live.influenceOwners?.join() === probes.live.influencePartIds?.join(),
+  `${JSON.stringify(probes.live.outer)} / ${JSON.stringify(probes.live.inner)} @ ${JSON.stringify(probes.live.influenceCentre)}`
+  + ` owners ${JSON.stringify(probes.live.influenceOwners)}`);
+check("an inner influence box larger than its outer one is refused",
+  probes.innerRefused === true, JSON.stringify(probes.innerRefused));
+check("the outer influence volume is moved and resized with the mouse, and takes the inner one down with it",
+  probes.influenceDragged?.influenceBoxPosition?.join() === "4,6,8"
+    && probes.influenceDragged?.influenceBoxSize?.join() === "9,8,7"
+    && probes.influenceDragged?.influenceInnerBoxSize?.join() === "6,2,7"
+    && probes.influenceDragged?.boxPosition?.join() === "3,5,7"
+    && probes.influenceDragged?.boxSize?.join() === "10,6,14",
+  JSON.stringify(probes.influenceDragged));
+check("the inner influence volume resizes but never moves, and offers no Position row",
+  probes.innerCanMove === false && probes.innerMoveRefused === true
+    && probes.innerPositionRow === true
+    && probes.innerResized?.influenceInnerBoxSize?.join() === "6.5,2.5,7"
+    && probes.innerResized?.influenceBoxPosition?.join() === "4,6,8"
+    && probes.innerResized?.influenceBoxSize?.join() === "9,8,7",
+  `canMove=${probes.innerCanMove}, moved=${!probes.innerMoveRefused},`
+  + ` row hidden=${probes.innerPositionRow}, ${JSON.stringify(probes.innerResized)}`);
+check("a probe drag carries its influence volumes and a resize keeps their margins",
+  probes.transformed?.influenceBoxPosition?.join() === "3.5,5,7"
+    && probes.transformed?.influenceBoxSize?.join() === "14,10,18"
+    && probes.transformed?.influenceInnerBoxSize?.join() === "6,2,10",
+  JSON.stringify(probes.transformed));
 check("environment probe boxes remain axis-aligned when rotation is requested",
   JSON.stringify(probes.beforeRotation) === JSON.stringify(probes.afterRotation),
   `${JSON.stringify(probes.beforeRotation)} -> ${JSON.stringify(probes.afterRotation)}`);
@@ -930,7 +1040,10 @@ check("probe size, camera and resolution survive an editor round-trip",
 check("the manifest stores probes at the root and converts both positions to glTF space",
   probes.inManifest?.boxPosition?.join() === "-3,5,7"
     && probes.inManifest?.capturePosition?.join() === "-9,11,13"
+    && probes.inManifest?.influenceBoxPosition?.join() === "-3.5,5,7"
     && probes.inManifest?.boxSize?.join() === "10,6,14"
+    && probes.inManifest?.influenceBoxSize?.join() === "14,10,18"
+    && probes.inManifest?.influenceInnerBoxSize?.join() === "6,2,10"
     && probes.inManifest?.resolution === 1024,
   JSON.stringify(probes.inManifest));
 check("Capture follows the selected probe, Capture all never needs one",
@@ -2742,10 +2855,15 @@ const bhv = await page.evaluate(async () => {
   ed.setBehaviorDef("dynamic", { dynamic: true });
 
   ed.addEntityBehavior("crate", "any_liquefiable");
-  const twice = ed.addEntityBehavior("crate", "any_liquefiable");   // no duplicates
+  // The same behaviour twice is legal - the runtime builds one instance per
+  // entry - so the second attach lands beside the first, not on top of it.
+  const twice = ed.addEntityBehavior("crate", "any_liquefiable");
+  const twiceListed = ed.entityBehaviors("crate").map((x) => x.name);
+  ed.removeEntityBehavior("crate", 1);
+  const afterOneRemoved = ed.entityBehaviors("crate").map((x) => x.name);
   const unknown = ed.addEntityBehavior("crate", "nope");
   ed.addEntityBehavior("doorL", "door_liquefiable");
-  ed.setEntityLinked("doorL", "door_liquefiable", ["crate", "doorL", "crate"]);
+  ed.setEntityLinked("doorL", 0, ["crate", "doorL", "crate"]);
   ed.state.entities.get("doorL")[0].sound = "longSplash";
 
   const man = mf.buildManifest();
@@ -2771,7 +2889,8 @@ const bhv = await page.evaluate(async () => {
   const global = man.fluidSim;
   ed.clearAll(); ed.select([]);
   const afterClearAll = { defs: ed.behaviorNames(), ents: ed.entityBehaviors("crate") };
-  return { blank, notObject, twice, unknown, written, entities, afterRename, afterDelete,
+  return { blank, notObject, twice, twiceListed, afterOneRemoved, unknown, written,
+    entities, afterRename, afterDelete,
     wiped, restored, inRoom, liquefies, global, afterClearAll };
 });
 check("a definition needs a name, and a JSON object for a body",
@@ -2791,9 +2910,12 @@ check("linked is de-duplicated, drops self, and is omitted when empty",
 check("per-entity sound categories are written beside the behavior name",
   bhv.entities.doorL.behaviors[0].sound === "longSplash",
   JSON.stringify(bhv.entities.doorL.behaviors[0]));
-check("a behaviour cannot be attached twice, or when it does not exist",
-  bhv.twice === false && bhv.unknown === false,
-  `twice=${bhv.twice}, unknown=${bhv.unknown}`);
+check("a behaviour can be attached twice and removed by position, but not when it does not exist",
+  bhv.twice === true && bhv.unknown === false
+    && bhv.twiceListed?.join() === "any_liquefiable,any_liquefiable"
+    && bhv.afterOneRemoved?.join() === "any_liquefiable",
+  `twice=${bhv.twice}, listed=${JSON.stringify(bhv.twiceListed)},`
+  + ` after remove=${JSON.stringify(bhv.afterOneRemoved)}, unknown=${bhv.unknown}`);
 check("renaming a definition carries every reference with it",
   bhv.afterRename.join() === "meltable", `[${bhv.afterRename}]`);
 check("deleting a definition strips it from the entities that used it",
@@ -3003,7 +3125,7 @@ check("`dynamic: true` makes a node dynamic",
 check("an empty linked list is left out of the manifest",
   !("linked" in dyn.heavy), JSON.stringify(dyn.heavy));
 
-await page.click("#bhv-applied [data-remove='heavy']");
+await page.click("#bhv-applied [data-remove='1']");
 await page.waitForTimeout(250);
 const removed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -3015,72 +3137,105 @@ check("Remove detaches it again", removed.names.join() === "meltable", `[${remov
 check("liquefiable alone does not make a node dynamic",
   !removed.stillDynamic, JSON.stringify(removed));
 
-// direction: optional on every applied behaviour, no declaration needed
-const dirFields = await page.evaluate(() => ({
-  // one set per attached behaviour - "meltable" is attached, and takes one too
-  fields: document.querySelectorAll("#bhv-applied [data-dir]").length,
-  onMeltable: !!document.querySelector('#bhv-applied [data-dir="meltable"]'),
-}));
-check("every applied behaviour offers a direction, declared or not",
-  dirFields.fields === 3 && dirFields.onMeltable, JSON.stringify(dirFields));
+// parameters: edited as raw JSON, because the runtime owns which parameters a
+// behaviour understands - a form here would list only the ones this tool knows.
+// Rows are addressed by position, since a node may carry one behaviour twice.
+const paramBoxes = await page.evaluate(() => {
+  const areas = [...document.querySelectorAll("#bhv-applied [data-params]")];
+  return {
+    slots: areas.map((a) => a.dataset.params),
+    names: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
+    value: areas[0]?.value,
+  };
+});
+check("every applied behaviour gets a JSON box for its parameters",
+  paramBoxes.slots.join() === "0" && paramBoxes.names.join() === "meltable"
+    && JSON.parse(paramBoxes.value || "{}").linked?.join() === "crateB",
+  JSON.stringify(paramBoxes));
 
-await page.fill('#bhv-applied [data-dir="meltable"][data-axis="0"]', "-1");
-await page.locator('#bhv-applied [data-dir="meltable"][data-axis="0"]').blur();
+await page.fill('#bhv-applied [data-params="0"]',
+  '{ "linked": ["crateB"], "direction": [-1, 0, 0], "impactSound": "thud",'
+  + ' "tuning": { "delay": 0.25 } }');
+await page.locator('#bhv-applied [data-params="0"]').blur();
 await page.waitForTimeout(250);
-const dirStored = await page.evaluate(async () => {
+const paramsStored = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
   const b = ed.entityBehaviors("crate").find((x) => x.name === "meltable");
-  return { direction: b?.direction, written: mf.buildManifest().entities.crate.behaviors };
+  return { entity: b, written: mf.buildManifest().entities.crate.behaviors };
 });
-check("the direction is stored on the applied behaviour, not the definition",
-  dirStored.direction?.join() === "-1,0,0",
-  JSON.stringify(dirStored.direction));
-check("the manifest writes it beside the name",
-  JSON.stringify(dirStored.written.find((b) => b.name === "meltable"))
-    // X is negated: the manifest is glTF space, the editor's gizmo is not
-    === JSON.stringify({
-      name: "meltable", linked: ["crateB"], direction: [1, 0, 0],
-    }),
-  JSON.stringify(dirStored.written));
+const paramsWritten = paramsStored.written.find((b) => b.name === "meltable");
+check("the parameters are stored on the applied behaviour, not the definition",
+  paramsStored.entity?.direction?.join() === "-1,0,0"
+    && paramsStored.entity?.impactSound === "thud"
+    && paramsStored.entity?.tuning?.delay === 0.25,
+  JSON.stringify(paramsStored.entity));
+check("parameters the tool knows nothing about reach the manifest intact",
+  paramsWritten?.impactSound === "thud" && paramsWritten?.tuning?.delay === 0.25
+    && paramsWritten?.linked?.join() === "crateB",
+  JSON.stringify(paramsWritten));
+check("the manifest writes the direction beside the name, in glTF space",
+  // X is negated: the manifest is glTF space, the editor's gizmo is not
+  paramsWritten?.direction?.join() === "1,0,0", JSON.stringify(paramsWritten));
 
 // the flip must be its own inverse, or undo would mirror the facing each time
 const dirRoundTrip = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  const before = ed.entityBehaviors("crate").find((b) => b.name === "meltable").direction;
+  const before = ed.entityBehaviors("crate").find((b) => b.name === "meltable");
   const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
   await ed.deserialize(snapshot);
-  const after = ed.entityBehaviors("crate").find((b) => b.name === "meltable")?.direction;
+  const after = ed.entityBehaviors("crate").find((b) => b.name === "meltable");
   // a restore clears the selection; put it back so the panel below still has
   // something to render
   const crate = [...ed.state.placements.values()].find((p) => p.name === "crate");
   if (crate) ed.select([crate.id]);
-  return { before, snapshot: snapshot.entities.crate[0].direction, after };
+  return { before, snapshot: snapshot.entities.crate[0], after };
 });
 check("a direction survives undo without mirroring itself",
-  dirRoundTrip.before.join() === "-1,0,0" && dirRoundTrip.snapshot.join() === "1,0,0"
-    && dirRoundTrip.after.join() === "-1,0,0",
-  `editor ${dirRoundTrip.before} -> stored ${dirRoundTrip.snapshot} -> back ${dirRoundTrip.after}`);
+  dirRoundTrip.before.direction.join() === "-1,0,0"
+    && dirRoundTrip.snapshot.direction.join() === "1,0,0"
+    && dirRoundTrip.after?.direction.join() === "-1,0,0",
+  `editor ${dirRoundTrip.before.direction} -> stored ${dirRoundTrip.snapshot.direction}`
+  + ` -> back ${dirRoundTrip.after?.direction}`);
+check("unknown parameters survive undo too",
+  dirRoundTrip.after?.impactSound === "thud" && dirRoundTrip.after?.tuning?.delay === 0.25,
+  JSON.stringify(dirRoundTrip.after));
 
-// a definition that names a direction supplies the starting value
+// invalid JSON is refused: the text stays as typed, since replacing it with the
+// stored value would throw away the edit being made
+await page.fill('#bhv-applied [data-params="0"]', '{ "direction": [1, 0');
+await page.locator('#bhv-applied [data-params="0"]').blur();
+await page.waitForTimeout(250);
+const badParams = await page.evaluate(async () => ({
+  error: document.querySelector('#bhv-applied [data-err="0"]')?.textContent || "",
+  text: document.querySelector('#bhv-applied [data-params="0"]')?.value,
+  entity: (await import("/js/editor.js")).entityBehaviors("crate")
+    .find((x) => x.name === "meltable"),
+}));
+check("invalid JSON is reported and changes nothing",
+  badParams.error.length > 0 && badParams.text === '{ "direction": [1, 0'
+    && badParams.entity?.direction?.join() === "-1,0,0",
+  JSON.stringify(badParams));
+
+// a definition that names a direction suggests it as the empty box's example
 const seeded = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   ed.setBehaviorDef("facing", { direction: [0, 0, 1] });
   ed.addEntityBehavior("crate", "facing");
-  const shown = [...document.querySelectorAll('#bhv-applied [data-dir="facing"]')]
-    .map((i) => i.value);
-  // …but it is only a default: nothing is written until the entity says so
+  const box = document.querySelector('#bhv-applied [data-params="1"]');
+  // …but it is only an example: nothing is written until the entity says so
   const written = (await import("/js/manifest.js")).buildManifest()
     .entities.crate.behaviors.find((b) => b.name === "facing");
-  return { shown, written };
+  return { value: box?.value, hint: box?.placeholder, written };
 });
-check("a definition's direction seeds the fields without being written",
-  seeded.shown.join() === "0,0,1" && !("direction" in seeded.written),
-  `${JSON.stringify(seeded.shown)} -> ${JSON.stringify(seeded.written)}`);
+check("a definition's direction is offered as a hint without being written",
+  seeded.value === "" && seeded.hint === '{ "direction": [0, 0, 1] }'
+    && !("direction" in seeded.written),
+  `${JSON.stringify(seeded.hint)} -> ${JSON.stringify(seeded.written)}`);
 
-// clearing every field drops it rather than writing a zero vector
-await page.fill('#bhv-applied [data-dir="meltable"][data-axis="0"]', "");
-await page.locator('#bhv-applied [data-dir="meltable"][data-axis="0"]').blur();
+// an all-zero direction names no direction at all, so it is dropped
+await page.fill('#bhv-applied [data-params="0"]', '{ "direction": [0, 0, 0] }');
+await page.locator('#bhv-applied [data-params="0"]').blur();
 await page.waitForTimeout(250);
 const dirCleared = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -3088,11 +3243,52 @@ const dirCleared = await page.evaluate(async () => {
   return {
     entity: ed.entityBehaviors("crate").find((x) => x.name === "meltable"),
     written: mf.buildManifest().entities.crate.behaviors.find((b) => b.name === "meltable"),
+    box: document.querySelector('#bhv-applied [data-params="0"]')?.value,
   };
 });
 check("an all-zero direction is dropped, not written",
-  !("direction" in dirCleared.entity) && !("direction" in dirCleared.written),
-  JSON.stringify(dirCleared.written));
+  !("direction" in dirCleared.entity) && !("direction" in dirCleared.written)
+    && dirCleared.box === "",
+  JSON.stringify(dirCleared));
+
+// The same behaviour, twice on one node. The runtime walks the list and builds
+// one instance per entry, so this is a real thing to author - which means the
+// panel cannot key its rows by behaviour name, or the second row's Remove
+// would take the first one away and both boxes would edit one assignment.
+await page.selectOption("#bhv-add", "facing");
+await page.click("#btn-bhv-add");
+await page.waitForTimeout(250);
+const twiceUi = await page.evaluate(() => ({
+  names: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
+  ordinals: [...document.querySelectorAll("#bhv-applied .item .muted")].map((e) => e.textContent),
+  slots: [...document.querySelectorAll("#bhv-applied [data-params]")].map((a) => a.dataset.params),
+}));
+check("the same behaviour can be attached twice, and the repeats are numbered",
+  twiceUi.names.join() === "meltable,facing,facing"
+    && twiceUi.ordinals.join() === "#1,#2"
+    && twiceUi.slots.join() === "0,1,2",
+  JSON.stringify(twiceUi));
+
+await page.fill('#bhv-applied [data-params="2"]', '{ "direction": [0, 1, 0] }');
+await page.locator('#bhv-applied [data-params="2"]').blur();
+await page.waitForTimeout(250);
+const twiceEdited = await page.evaluate(async () =>
+  (await import("/js/editor.js")).entityBehaviors("crate")
+    .map((b) => `${b.name}:${(b.direction || []).join("|")}`));
+check("editing one row of a repeated behaviour leaves the other alone",
+  twiceEdited.join() === "meltable:,facing:,facing:0|1|0", JSON.stringify(twiceEdited));
+
+await page.click("#bhv-applied [data-remove='1']");
+await page.waitForTimeout(250);
+const twiceRemoved = await page.evaluate(async () => ({
+  entity: (await import("/js/editor.js")).entityBehaviors("crate")
+    .map((b) => `${b.name}:${(b.direction || []).join("|")}`),
+  ordinals: [...document.querySelectorAll("#bhv-applied .item .muted")].map((e) => e.textContent),
+}));
+check("Remove takes the row it was pressed on, not the first one with that name",
+  twiceRemoved.entity.join() === "meltable:,facing:0|1|0"
+    && twiceRemoved.ordinals.length === 0,
+  JSON.stringify(twiceRemoved));
 
 // isProbeExcludedNode: what an environment probe must not photograph. Four
 // separate reasons, because they are four separate facts about an element -
