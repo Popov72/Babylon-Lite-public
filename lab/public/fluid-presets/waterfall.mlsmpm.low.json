@@ -21,6 +21,8 @@
         "emitRate": 6,
         "spread": 0,
         "frontBias": 8.5,
+        "pondParticles": 50000,
+        "pondWaveSources": 8,
         "bloomIntensity": 0.25,
         "bloomThreshold": 0
     },
@@ -31,7 +33,8 @@
         "sunElevation": 38,
         "sunIntensity": 9,
         "ambientIntensity": 0.16,
-        "oasis": "low"
+        "oasis": "low",
+        "pondEnabled": true
     },
     "showContainer": true,
     "envIntensity": 0.3,
