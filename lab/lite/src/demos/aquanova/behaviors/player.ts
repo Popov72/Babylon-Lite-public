@@ -353,6 +353,9 @@ export class PlayerBehavior implements Behavior<"player"> {
             bar("left:50%;bottom:0;width:2px;height:8px;margin-left:-1px;") +
             bar("top:50%;left:0;height:2px;width:8px;margin-top:-1px;") +
             bar("top:50%;right:0;height:2px;width:8px;margin-top:-1px;");
+        if (this.context.canvas.dataset.weaponEnabled === "false") {
+            crosshair.style.display = "none";
+        }
         document.body.appendChild(crosshair);
         this.crosshair = crosshair;
     }

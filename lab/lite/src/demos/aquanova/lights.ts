@@ -12,9 +12,9 @@
 // can be tuned without rebuilding the glTF.
 //
 // ── The emission axis is local −Y ─────────────────────────────────────────────────────────────
-// Not −Z. The editor chose −Y so that the +90° X rotation glTF picks up on the way into Blender
-// lands it exactly on Blender's −Z, the axis an Area lamp emits along, with no fix-up at either
-// end. See the header of `editor/tool/public/js/lights.js`.
+// Not −Z. A rotation of [0,0,0] then means a ceiling panel shining at the floor, which is where
+// almost every lamp in the kit points, so the common case needs no rotation at all.
+// See the header of `editor/tool/public/js/lights.js`.
 //
 // ── Clustered vs. not ─────────────────────────────────────────────────────────────────────────
 // `runtime.clustered` decides which of Lite's two lighting paths a lamp takes:
@@ -201,13 +201,21 @@ export function buildRuntimeLights(
     // glTF kit instances share material objects. Clustered lighting is material-gated, so clone the
     // ship materials before the scene-global container stamps them; otherwise an unrelated scene
     // mesh sharing the same source material would receive the lamps.
+    //
+    // The clone is also where physical falloff comes off. Lite's clustered shader hardcodes the
+    // glTF range window and never reads `lightFalloffMode`, but its analytic path does, and its
+    // default - a plain 1/d² - ignores `range` entirely, so an unclustered lamp would light the
+    // whole chunk however short the authored range. `false` picks the linear ramp instead, which is
+    // the only range-respecting curve Lite's analytic path offers; the editor draws these lamps
+    // with the glTF curve, so the two agree on where a lamp ends but not on its shape between here
+    // and there.
     const dynamicMaterialClones = new Map<object, object>();
     for (const mesh of litSet) {
         const source = mesh.material;
         if (!source) continue;
         let clone = dynamicMaterialClones.get(source);
         if (!clone) {
-            clone = { ...source };
+            clone = { ...source, usePhysicalLightFalloff: false };
             delete (clone as { _renderFeatures?: unknown })._renderFeatures;
             delete (clone as { _clusteredLightState?: unknown })._clusteredLightState;
             dynamicMaterialClones.set(source, clone);
@@ -299,8 +307,11 @@ export function buildRuntimeLights(
             stats.overflow++;
             continue;
         }
-        // exponent 0: Lite's spot falloff is the glTF smooth cone ramp, matching the clustered path
-        // above, so the two kinds of spot light look the same.
+        // exponent 0 is not a tuning value: it is only read by Lite's standard cone falloff,
+        // `pow(cos, exponent)`, which steps to zero at the cone edge whatever the exponent - so
+        // there is no exponent that would round it off. An unclustered spot therefore has a harder
+        // rim than a clustered one, which ramps smoothly with the glTF cone. Nothing on the ship is
+        // an unclustered spot today; if one is ever authored, this is the difference it will show.
         const light =
             r.type === "spot"
                 ? createSpotLight(position, direction, angle, 0, r.intensity)

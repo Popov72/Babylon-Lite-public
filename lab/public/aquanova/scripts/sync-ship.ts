@@ -22,7 +22,6 @@ const REPO_ROOT = path.resolve(HERE, "../../../..");
 const execFileAsync = promisify(execFile);
 
 interface SourceLocalEnvironment {
-    hdr: string;
     env: string;
     position: [number, number, number];
     boxPosition: [number, number, number];
@@ -41,6 +40,9 @@ interface RuntimeLocalEnvironment {
     position: [number, number, number];
     boxPosition: [number, number, number];
     boxSize: [number, number, number];
+    influenceBoxPosition: [number, number, number];
+    influenceBoxSize: [number, number, number];
+    influenceInnerBoxSize: [number, number, number];
     resolution: number;
     bytes: number;
 }
@@ -49,11 +51,17 @@ interface RuntimeLocalEnvironmentIndex {
     probes: Record<string, RuntimeLocalEnvironment>;
 }
 
+const DEFAULT_BLEND_DISTANCE = 1.5;
+
 interface ShipManifest {
     environmentProbes?: Array<{
         id?: string;
         boxPosition?: [number, number, number];
         boxSize?: [number, number, number];
+        capturePosition?: [number, number, number];
+        influenceBoxPosition?: [number, number, number];
+        influenceBoxSize?: [number, number, number];
+        influenceInnerBoxSize?: [number, number, number];
     }>;
     chunks?: Array<{
         id?: string;
@@ -62,6 +70,20 @@ interface ShipManifest {
             boxSize?: [number, number, number];
         };
     }>;
+}
+
+/**
+ * What the manifest says about a probe, which is the authored truth. The
+ * generated index only records what was captured, in editor space, so
+ * everything the author can type belongs here instead.
+ */
+interface AuthoredProbe {
+    boxPosition: [number, number, number];
+    boxSize: [number, number, number];
+    capturePosition?: [number, number, number];
+    influenceBoxPosition?: [number, number, number];
+    influenceBoxSize?: [number, number, number];
+    influenceInnerBoxSize?: [number, number, number];
 }
 
 interface Options {
@@ -139,20 +161,46 @@ async function readLocalEnvironmentIndex(sourceDir: string): Promise<SourceLocal
     }
 }
 
-function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<
-    string,
-    {
-        boxPosition: [number, number, number];
-        boxSize: [number, number, number];
-    }
-> {
-    const boxes = new Map<
-        string,
-        {
-            boxPosition: [number, number, number];
-            boxSize: [number, number, number];
+async function readPublishedLocalEnvironmentIndex(outputDir: string): Promise<RuntimeLocalEnvironmentIndex | null> {
+    try {
+        return JSON.parse(await readFile(path.join(outputDir, "local-environments.json"), "utf8")) as RuntimeLocalEnvironmentIndex;
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
         }
-    >();
+        throw err;
+    }
+}
+
+function defaultInfluenceSizes(boxSize: readonly number[]): {
+    inner: [number, number, number];
+    outer: [number, number, number];
+} {
+    return {
+        inner: [
+            Math.max(0, boxSize[0]! - DEFAULT_BLEND_DISTANCE * 2),
+            Math.max(0, boxSize[1]! - DEFAULT_BLEND_DISTANCE * 2),
+            Math.max(0, boxSize[2]! - DEFAULT_BLEND_DISTANCE * 2),
+        ],
+        outer: [boxSize[0]! + DEFAULT_BLEND_DISTANCE * 2, boxSize[1]! + DEFAULT_BLEND_DISTANCE * 2, boxSize[2]! + DEFAULT_BLEND_DISTANCE * 2],
+    };
+}
+
+function authoredVector(value: readonly number[] | undefined, bound?: "positive" | "nonNegative"): [number, number, number] | undefined {
+    if (!value || value.length !== 3 || !value.every(Number.isFinite)) {
+        return undefined;
+    }
+    if (bound === "positive" && !value.every((n) => n > 0)) {
+        return undefined;
+    }
+    if (bound === "nonNegative" && !value.every((n) => n >= 0)) {
+        return undefined;
+    }
+    return [value[0]!, value[1]!, value[2]!];
+}
+
+function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, AuthoredProbe> {
+    const boxes = new Map<string, AuthoredProbe>();
     const explicit = manifest.environmentProbes;
     if (explicit) {
         for (const probe of explicit) {
@@ -169,9 +217,19 @@ function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<
             ) {
                 continue;
             }
+            const influenceBoxSize = authoredVector(probe.influenceBoxSize, "positive");
+            const influenceInnerBoxSize = authoredVector(probe.influenceInnerBoxSize, "nonNegative");
             boxes.set(probe.id, {
                 boxPosition: [...position],
                 boxSize: [...size],
+                capturePosition: authoredVector(probe.capturePosition),
+                influenceBoxPosition: authoredVector(probe.influenceBoxPosition),
+                influenceBoxSize,
+                // An inner box larger than the outer one would make the runtime
+                // divide by a negative width, so it is dropped rather than
+                // published; the derived default takes over.
+                influenceInnerBoxSize:
+                    influenceBoxSize && influenceInnerBoxSize?.every((n, axis) => n <= influenceBoxSize[axis]!) ? influenceInnerBoxSize : undefined,
             });
         }
         return boxes;
@@ -215,9 +273,7 @@ async function assertLocalEnvironmentsReady(sourceDir: string, index: SourceLoca
     }
     if (problems.length) {
         throw Error(
-            `Local environment conversion is incomplete: ${problems.join(", ")}. ` +
-                "Blender produces the HDR panoramas only. Convert them to .env files in the ship " +
-                "editor, then run this sync again."
+            `Local environment capture is incomplete: ${problems.join(", ")}. ` + "Open the ship editor, press Capture to render the missing probes, then run this sync again."
         );
     }
 }
@@ -351,7 +407,7 @@ async function main(): Promise<void> {
     assertIntegerRange("--ship-uastc-level", opts.shipUastcLevel, 0, 4);
     assertIntegerRange("--ship-etc1s-quality", opts.shipEtc1sQuality, 1, 255);
     assertIntegerRange("--ship-zstd", opts.shipZstd, 0, 22);
-    const generatedDir = path.join(opts.src, "lightmaps");
+    const generatedDir = path.join(opts.src, "environments");
     const localSource = await readLocalEnvironmentIndex(generatedDir);
     const manifest = JSON.parse(await readFile(path.join(opts.src, "ship_manifest.json"), "utf8")) as ShipManifest;
     const authoredBoxes = authoredLocalEnvironmentBoxes(manifest);
@@ -359,7 +415,7 @@ async function main(): Promise<void> {
         await assertLocalEnvironmentsReady(generatedDir, localSource);
     }
 
-    const shipName = "ship_baked.glb";
+    const shipName = "ship.glb";
     const shipSource = path.join(opts.src, shipName);
     const shipDestination = path.join(opts.out, shipName);
     await publishShipGlb(shipSource, shipDestination, opts);
@@ -371,6 +427,7 @@ async function main(): Promise<void> {
     if (localSource) {
         const outEnvironments = path.join(opts.out, "environments");
         await mkdir(outEnvironments, { recursive: true });
+        const published = await readPublishedLocalEnvironmentIndex(opts.out);
         const localRuntime: RuntimeLocalEnvironmentIndex = { probes: {} };
         for (const [probeId, probe] of Object.entries(localSource.probes ?? localSource.chunks ?? {})) {
             const authored = authoredBoxes.get(probeId);
@@ -379,11 +436,21 @@ async function main(): Promise<void> {
             const copied = await copyIfChanged(source, destination);
             const bytes = (await stat(destination)).size;
             console.log(`${copied ? "copied " : "current"}  environments/${probeId}.env  ${mb(bytes)}`);
+            const boxPosition = authored?.boxPosition ?? probe.boxPosition;
+            const boxSize = authored?.boxSize ?? probe.boxSize;
+            const previous = published?.probes[probeId];
+            const defaults = defaultInfluenceSizes(boxSize);
             localRuntime.probes[probeId] = {
                 url: `environments/${probeId}.env`,
-                position: probe.position,
-                boxPosition: authored?.boxPosition || probe.boxPosition,
-                boxSize: authored?.boxSize || probe.boxSize,
+                // The generated index is in editor space, where X runs the
+                // other way; the runtime mirrors what it reads here, so the
+                // manifest - already glTF space - is the only safe source.
+                position: authored?.capturePosition ?? probe.position,
+                boxPosition,
+                boxSize,
+                influenceBoxPosition: authored?.influenceBoxPosition ?? previous?.influenceBoxPosition ?? boxPosition,
+                influenceBoxSize: authored?.influenceBoxSize ?? previous?.influenceBoxSize ?? defaults.outer,
+                influenceInnerBoxSize: authored?.influenceInnerBoxSize ?? previous?.influenceInnerBoxSize ?? defaults.inner,
                 resolution: probe.resolution,
                 bytes,
             };

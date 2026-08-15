@@ -21,7 +21,10 @@ parameters. The current definitions are:
 | `stdLiquefaction`       | Liquefies with the standard fluid setting             |
 | `explosiveLiquefaction` | Liquefies with the explosive fluid setting            |
 | `player`                | Owns first-person input, movement, and weapon firing  |
-| `weapon`                | Represents the weapon entity                          |
+| `weaponLiquefactor`     | Gates and drives the Liquefactor weapon               |
+| `pickEntity`            | Collects an intersected entity and emits an event     |
+| `enableEntity`          | Forwards a configured entity event as `enable`        |
+| `disableEntity`         | Forwards a configured entity event as `disable`       |
 
 Definition parameters are merged with per-entity overrides while retaining the
 behavior identity; assignments are never flattened into one anonymous parameter
@@ -56,6 +59,16 @@ The system currently emits:
 - `physicsStep` after Havok has stepped and synchronized nodes;
 - `frameEnd` after Aquanova's registered per-frame update callbacks.
 
+`entityEvent` carries a target entity name and event name. It is the generic
+manifest-driven link between otherwise independent behaviors. `pickEntity` may
+define `raiseEvent: { name, event }`; after collection it emits that payload
+exactly once. Consumers ignore events addressed to other entities.
+
+`enableEntity` and `disableEntity` listen for `onEvent` addressed to the entity
+that owns the behavior, then forward `enable` or `disable` to the configured
+`entity` target. Door ids are valid targets. Runtime door handlers update both
+the door's `enabled` property and its portal-traversal state.
+
 The player emits `hitWithWeapon` after a center-screen pick. The player does not
 know whether the picked mesh is liquefiable. Each liquefiable behavior listens
 for that event, accepts hits addressed to its own mesh while it remains an
@@ -81,12 +94,32 @@ disposal. `main.ts` consumes its classified mesh sets and gameplay queries but
 does not parse or merge behavior definitions.
 
 Named implementations remain explicit for structurally different behaviors
-such as `player`, `weapon`, and `dynamic`; liquefiable definitions use the
+such as `player`, `weaponLiquefactor`, `pickEntity`, and `dynamic`; liquefiable definitions use the
 shared implementation.
 
 Player and weapon are singleton entity behaviors. Geometry behaviors are
 instantiated for every matching mesh primitive so a picked primitive can receive
 the event directly.
+
+`pickEntity` is also one instance per manifest entity, but it owns every mesh
+primitive under that entity. At each physics step it intersects the live player
+capsule's world AABB with the entity's initial world AABB. Optional
+`boundingBoxScale: [x, y, z]` scales that box's half-extents around its centre
+before intersection testing and defaults to `[1, 1, 1]`. The first
+intersection hides all owned primitives, optionally plays its preloaded MP3,
+optionally emits `entityEvent`, and unregisters the intersection check.
+`sound` is an MP3 file name without extension under `/aquanova/sounds/` and
+defaults to `pickItem`. The resolved sound for every pickup is loaded once by
+`PickEntityBehavior.init()` before behavior instances start.
+
+`weaponLiquefactor` starts disabled. Disabled means the selected viewmodel is
+hidden, frame/aim updates are skipped, and trigger events cannot start a shot.
+The behavior listens for `entityEvent` addressed to the manifest entity on
+which it was instantiated. The `enable` event reveals the currently selected
+viewmodel and permanently enables firing for that behavior instance.
+When liquefaction starts it raises `startLiquefaction` once for every unique
+entity in the target's linked liquefaction group. If reversal restores the
+group completely, it raises `cancelLiquefaction` for those same entities.
 
 ## Migration boundary
 

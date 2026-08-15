@@ -1,7 +1,7 @@
 /**
  * Shared reader for `ship_manifest.json`'s `environment` block.
  *
- * The manifest records the Blender view transform the Aquanova ship was authored against. Both the
+ * The manifest records the view transform the Aquanova ship was authored against. Both the
  * Aquanova demo and the Liquefactor demo's `?foes=ship` mode grade the scene from it, so the two
  * render the same interior at the same brightness and the water look can be compared directly.
  */
@@ -14,12 +14,22 @@ export interface ShipEnvironment {
     hdri?: string;
     /** IBL intensity applied as each PBR material's `environmentIntensity`. */
     strength?: number;
-    /** IBL intensity for meshes without baked lightmap UVs, such as dynamic props. */
-    dynamicStrength?: number;
     /** Linear exposure multiplier, used exactly as authored (see {@link resolveExposure}). */
     exposure?: number;
     /** Human-readable view-transform name (see {@link resolveToneMapping}). */
     toneMapping?: string;
+    /**
+     * Authored default for PBR specular anti-aliasing on the ship's materials. A player who has
+     * chosen it themselves in the graphics panel keeps their choice — this only moves the default.
+     */
+    specularAA?: boolean;
+    /**
+     * Multiplier applied to every ship material's authored `roughnessFactor` on load. Above 1 it
+     * broadens metallic reflections, which is the cheapest cure for specular shimmer. The .glb keeps
+     * the authored values; this is the one place the multiplier lives, so the editor's Runtime
+     * preview and the game apply the identical number.
+     */
+    reflectionRoughness?: number;
 }
 
 /**

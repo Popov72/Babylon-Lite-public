@@ -1,26 +1,34 @@
 import {
+    createPbrLocalEnvironmentBlend,
     enablePbrLocalCubemap,
     isPbrMaterial,
     loadEnvironment,
-    markMaterialUboDirty,
+    markMaterialBindingsDirty,
+    updatePbrLocalEnvironmentBlend,
     type EnvironmentTextures,
     type Mesh,
+    type PbrLocalEnvironmentBlend,
     type PbrMaterialProps,
     type SceneContext,
 } from "babylon-lite";
 import { LOCAL_ENVIRONMENTS_URL, toLite, type Vec3 } from "./constants.js";
+import { boxProbeNdf, selectContainingBoxProbe, selectPoiProbeBlend, type BoxProbeInfluence, type BoxProbeRegion, type ProbeBlendWeight } from "./probe-blending.js";
 
 export interface LocalEnvironmentProbe {
     url: string;
     position: Vec3;
     boxPosition: Vec3;
     boxSize: Vec3;
+    /** Optional POI influence volume. Defaults to the parallax box expanded for overlap. */
+    influenceBoxPosition?: Vec3;
+    influenceBoxSize?: Vec3;
+    /** Full size of the 100%-influence inner box. */
+    influenceInnerBoxSize?: Vec3;
     resolution: number;
     bytes: number;
 }
 
 export interface LocalEnvironmentIndex {
-    /** Explicit spatial probes. */
     probes?: Record<string, LocalEnvironmentProbe>;
     /** Pre-probe runtime indexes, retained as a migration fallback. */
     chunks?: Record<string, LocalEnvironmentProbe>;
@@ -33,24 +41,34 @@ export interface LocalEnvironmentStats {
     missing: string[];
 }
 
+export interface LocalEnvironmentBlendInfo {
+    readonly probes: readonly ProbeBlendWeight[];
+    readonly dominantProbeId: string | undefined;
+}
+
+export interface LocalEnvironmentProbeVolume extends BoxProbeInfluence, BoxProbeRegion {
+    readonly capturePosition: Vec3;
+}
+
 export interface LocalEnvironmentController extends LocalEnvironmentStats {
-    /** Probe for a point — the degenerate case of `probeForBounds`. */
-    probeAt(position: readonly number[]): string | undefined;
-    /** Probe holding the largest share of a world-space AABB. */
-    probeForBounds(min: readonly number[], max: readonly number[]): string | undefined;
-    /** Loaded environment for a resolved probe. */
+    /** Recompute the scene-wide two-probe blend from the player/camera point of interest. */
+    updatePoi(position: readonly [number, number, number]): LocalEnvironmentBlendInfo;
+    /** Switch between camera-driven two-probe blending and immutable per-mesh assignments. */
+    setBlendingEnabled(enabled: boolean): void;
+    blendingEnabled(): boolean;
+    blendInfo(): LocalEnvironmentBlendInfo;
+    /** Authored POI volumes in Lite scene coordinates, for editor/debug visualization. */
+    probeVolumes(): readonly LocalEnvironmentProbeVolume[];
     environment(probeId: string | undefined): EnvironmentTextures | undefined;
-    /** Swap meshes to one resolved probe, or to a material with no IBL outside every probe. */
-    update(meshes: readonly Mesh[], probeId: string | undefined): number;
+    dominantEnvironment(): EnvironmentTextures | undefined;
 }
 
-interface LoadedProbe {
-    id: string;
-    centre: Vec3;
-    size: Vec3;
-    volume: number;
+interface LoadedProbe extends LocalEnvironmentProbeVolume {
+    environment: EnvironmentTextures;
 }
 
+/** Default transition width on each side of a probe's parallax box. */
+const DEFAULT_BLEND_DISTANCE = 1.5;
 /** Two overlap shares closer than this count as equal, so the tie goes to the tighter probe. */
 const SHARE_EPSILON = 1e-6;
 
@@ -65,64 +83,65 @@ async function fetchLocalEnvironmentIndex(): Promise<LocalEnvironmentIndex | nul
     }
 }
 
-/**
- * Grow `min`/`max` to cover one mesh's world-space AABB.
- *
- * All eight corners are transformed rather than just the local centre, because probe membership is
- * about where the element's surfaces are, not where its middle is.
- */
+function halfSize(size: readonly number[]): [number, number, number] {
+    return [size[0]! * 0.5, size[1]! * 0.5, size[2]! * 0.5];
+}
+
+function defaultInfluenceHalfSizes(boxSize: Vec3): {
+    inner: [number, number, number];
+    outer: [number, number, number];
+} {
+    const half = halfSize(boxSize);
+    return {
+        inner: [Math.max(0, half[0] - DEFAULT_BLEND_DISTANCE), Math.max(0, half[1] - DEFAULT_BLEND_DISTANCE), Math.max(0, half[2] - DEFAULT_BLEND_DISTANCE)],
+        outer: [half[0] + DEFAULT_BLEND_DISTANCE, half[1] + DEFAULT_BLEND_DISTANCE, half[2] + DEFAULT_BLEND_DISTANCE],
+    };
+}
+
 function accumulateWorldBounds(mesh: Mesh, min: [number, number, number], max: [number, number, number]): void {
     const lo = mesh.boundMin;
     const hi = mesh.boundMax;
-    if (!lo || !hi) {
-        return;
-    }
-    const w = mesh.worldMatrix;
+    if (!lo || !hi) return;
+    const world = mesh.worldMatrix;
     for (let corner = 0; corner < 8; corner++) {
         const x = (corner & 1) === 0 ? lo[0]! : hi[0]!;
         const y = (corner & 2) === 0 ? lo[1]! : hi[1]!;
         const z = (corner & 4) === 0 ? lo[2]! : hi[2]!;
-        const p = [
-            w[0]! * x + w[4]! * y + w[8]! * z + w[12]!,
-            w[1]! * x + w[5]! * y + w[9]! * z + w[13]!,
-            w[2]! * x + w[6]! * y + w[10]! * z + w[14]!,
-        ] as const;
-        for (let i = 0; i < 3; i++) {
-            if (p[i]! < min[i]!) min[i] = p[i]!;
-            if (p[i]! > max[i]!) max[i] = p[i]!;
+        const point: Vec3 = [
+            world[0]! * x + world[4]! * y + world[8]! * z + world[12]!,
+            world[1]! * x + world[5]! * y + world[9]! * z + world[13]!,
+            world[2]! * x + world[6]! * y + world[10]! * z + world[14]!,
+        ];
+        for (let axis = 0; axis < 3; axis++) {
+            min[axis] = Math.min(min[axis]!, point[axis]!);
+            max[axis] = Math.max(max[axis]!, point[axis]!);
         }
     }
 }
 
-/**
- * World-space AABB of a whole element — every primitive of one placement unioned.
- *
- * A probe is a property of the element, not of a primitive: a wall whose trim is a second primitive
- * cannot have its band lit by the corridor and its face by the room, so all of its primitives are
- * resolved together against one shared box.
- */
-function elementWorldBounds(meshes: readonly Mesh[]): { min: [number, number, number]; max: [number, number, number] } {
+function elementWorldBounds(meshes: readonly Mesh[]): { min: [number, number, number]; max: [number, number, number] } | undefined {
     const min: [number, number, number] = [Infinity, Infinity, Infinity];
     const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
     for (const mesh of meshes) accumulateWorldBounds(mesh, min, max);
-    return { min, max };
+    return min[0] <= max[0] ? { min, max } : undefined;
 }
 
 /**
- * Load generated probe environments, assign static elements once from their world-space bounds, and
- * retain material variants for moving meshes.
+ * Load generated probes and prepare both local-environment modes.
  *
- * Each local probe supplies both diffuse SH and specular radiance. Materials outside every probe
- * retain no environment lighting.
- * @param scene - Scene the ship was loaded into.
- * @param meshes - Every mesh that may ever be assigned a probe, static or not.
- * @param staticElements - Never-moving geometry grouped by placement: one entry per element, holding
- *   all of its primitives.
+ * Blended mode drives every mesh from one camera/POI blend. Static mode resolves each authored
+ * element once from its initial world-space bounds, then never changes that mesh's probe.
  */
 export async function applyLocalEnvironmentProbes(
     scene: SceneContext,
     meshes: readonly Mesh[],
-    staticElements: readonly (readonly Mesh[])[]
+    options: {
+        readonly blendingEnabled?: boolean;
+        /** Mesh primitives grouped by authored element, so one element cannot straddle probes. */
+        readonly staticElements?: readonly (readonly Mesh[])[];
+        /** Camera-attached meshes use the POI's single dominant probe when blending is disabled. */
+        readonly poiMeshes?: readonly Mesh[];
+    } = {}
 ): Promise<LocalEnvironmentController | null> {
     const index = await fetchLocalEnvironmentIndex();
     if (!index) return null;
@@ -144,16 +163,21 @@ export async function applyLocalEnvironmentProbes(
                     skipSkybox: true,
                     skipGround: true,
                 });
-                const centre = toLite(probe.boxPosition);
-                const size: Vec3 = [...probe.boxSize];
-                environment.boundingBoxPosition = [...centre];
-                environment.boundingBoxSize = [...size];
+                const boxCentre = toLite(probe.boxPosition);
+                environment.boundingBoxPosition = [...boxCentre];
+                environment.boundingBoxSize = [...probe.boxSize];
                 environments.set(probeId, environment);
+
+                const defaults = defaultInfluenceHalfSizes(probe.boxSize);
                 loadedProbes.push({
                     id: probeId,
-                    centre,
-                    size,
-                    volume: size[0] * size[1] * size[2],
+                    environment,
+                    capturePosition: toLite(probe.position),
+                    projectionCentre: boxCentre,
+                    projectionHalfSize: halfSize(probe.boxSize),
+                    centre: probe.influenceBoxPosition ? toLite(probe.influenceBoxPosition) : boxCentre,
+                    innerHalfSize: probe.influenceInnerBoxSize ? halfSize(probe.influenceInnerBoxSize) : defaults.inner,
+                    outerHalfSize: probe.influenceBoxSize ? halfSize(probe.influenceBoxSize) : defaults.outer,
                 });
             } catch (err) {
                 missing.push(probeId);
@@ -165,113 +189,184 @@ export async function applyLocalEnvironmentProbes(
         Object.assign(scene.imageProcessing, savedImageProcessing);
     }
 
-    // Membership is INTERSECTION, not containment. A probe box is drawn around the room it captures,
-    // so an element flush with a wall — a skirting band, a door frame, a ceiling trim — routinely
-    // pokes a centimetre or two through a face, and a containment test would leave it with no
-    // environment at all rather than the obvious one. The winner is the probe holding the largest
-    // SHARE of the element, which is a fraction rather than an overlap volume because ship trim is
-    // frequently a zero-thickness sliver whose volume is exactly zero on every probe.
-    //
-    // An element sitting entirely inside several boxes scores 1 against all of them, and that tie is
-    // broken by the tightest box — so a small room nested inside a corridor's probe still wins its
-    // own geometry, exactly as it did when this was a containment test.
-    const probeForBounds = (min: readonly number[], max: readonly number[]): string | undefined => {
+    const first = loadedProbes[0];
+    if (!first) {
+        return {
+            loaded: 0,
+            assigned: 0,
+            bytes: Object.values(records).reduce((sum, probe) => sum + probe.bytes, 0),
+            missing,
+            updatePoi: () => ({ probes: [], dominantProbeId: undefined }),
+            setBlendingEnabled: () => {},
+            blendingEnabled: () => options.blendingEnabled !== false,
+            blendInfo: () => ({ probes: [], dominantProbeId: undefined }),
+            probeVolumes: () => [],
+            environment: () => undefined,
+            dominantEnvironment: () => undefined,
+        };
+    }
+
+    const blendState: PbrLocalEnvironmentBlend = createPbrLocalEnvironmentBlend(scene, {
+        primary: first.environment,
+        secondary: first.environment,
+        weight: 0,
+        parallaxCorrection: true,
+    });
+    const staticBlendByProbe = new Map(
+        loadedProbes.map((probe) => [
+            probe.id,
+            createPbrLocalEnvironmentBlend(scene, {
+                primary: probe.environment,
+                secondary: probe.environment,
+                weight: 0,
+                parallaxCorrection: true,
+            }),
+        ])
+    );
+
+    const probeForBounds = (min: readonly number[], max: readonly number[]): LoadedProbe | undefined => {
         let best: LoadedProbe | undefined;
         let bestShare = 0;
+        let bestVolume = Infinity;
         for (const probe of loadedProbes) {
             let share = 1;
-            for (let i = 0; i < 3; i++) {
-                const half = probe.size[i]! * 0.5;
-                const lo = Math.max(min[i]!, probe.centre[i]! - half);
-                const hi = Math.min(max[i]!, probe.centre[i]! + half);
+            for (let axis = 0; axis < 3; axis++) {
+                const half = probe.projectionHalfSize[axis]!;
+                const lo = Math.max(min[axis]!, probe.projectionCentre[axis]! - half);
+                const hi = Math.min(max[axis]!, probe.projectionCentre[axis]! + half);
                 if (hi < lo) {
                     share = 0;
                     break;
                 }
-                const extent = max[i]! - min[i]!;
+                const extent = max[axis]! - min[axis]!;
                 if (extent > 0) share *= (hi - lo) / extent;
             }
-            if (share <= 0) {
-                continue;
-            }
-            if (!best || share > bestShare + SHARE_EPSILON || (share > bestShare - SHARE_EPSILON && probe.volume < best.volume)) {
+            if (share <= 0) continue;
+            const volume = probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2];
+            if (!best || share > bestShare + SHARE_EPSILON || (share > bestShare - SHARE_EPSILON && volume < bestVolume)) {
                 best = probe;
                 bestShare = share;
+                bestVolume = volume;
             }
         }
-        return best?.id;
+        return best;
     };
 
-    const probeAt = (position: readonly number[]): string | undefined => probeForBounds(position, position);
-
-    const sourceByMesh = new Map<Mesh, PbrMaterialProps>();
+    const staticProbeByMesh = new Map<Mesh, LoadedProbe>();
+    const poiMeshes = new Set(options.poiMeshes ?? []);
+    for (const element of options.staticElements ?? []) {
+        const bounds = elementWorldBounds(element);
+        const probe = bounds ? probeForBounds(bounds.min, bounds.max) : undefined;
+        if (!probe) continue;
+        for (const mesh of element) staticProbeByMesh.set(mesh, probe);
+    }
     for (const mesh of meshes) {
-        const source = mesh.material;
-        if (source && isPbrMaterial(source)) sourceByMesh.set(mesh, source);
+        if (staticProbeByMesh.has(mesh)) continue;
+        const bounds = elementWorldBounds([mesh]);
+        staticProbeByMesh.set(mesh, (bounds && probeForBounds(bounds.min, bounds.max)) || first);
     }
 
-    const clones = new Map<string, Map<PbrMaterialProps, PbrMaterialProps>>();
-    const materialFor = (source: PbrMaterialProps, probeId: string | undefined): PbrMaterialProps => {
-        const environment = probeId ? environments.get(probeId) : undefined;
-        if (!environment) return source;
-        let byMaterial = clones.get(probeId!);
-        if (!byMaterial) {
-            byMaterial = new Map();
-            clones.set(probeId!, byMaterial);
+    let blendingEnabled = options.blendingEnabled !== false;
+    const cloneBySource = new Map<PbrMaterialProps, Map<string, PbrMaterialProps>>();
+    let assigned = 0;
+    for (const mesh of meshes) {
+        const source = mesh.material;
+        if (!source || !isPbrMaterial(source)) continue;
+        const staticProbe = staticProbeByMesh.get(mesh) ?? first;
+        let byProbe = cloneBySource.get(source);
+        if (!byProbe) {
+            byProbe = new Map();
+            cloneBySource.set(source, byProbe);
         }
-        let clone = byMaterial.get(source);
+        let clone = byProbe.get(staticProbe.id);
         if (!clone) {
-            clone = { ...source, localEnvironment: environment };
+            clone = {
+                ...source,
+                localEnvironmentBlend: blendingEnabled ? blendState : staticBlendByProbe.get(poiMeshes.has(mesh) ? first.id : staticProbe.id)!,
+            };
             delete (clone as { _renderFeatures?: unknown })._renderFeatures;
-            byMaterial.set(source, clone);
+            byProbe.set(staticProbe.id, clone);
         }
-        return clone;
+        mesh.material = clone;
+        assigned++;
+    }
+
+    let currentProbeIds = `${first.id}|${first.id}`;
+    let info: LocalEnvironmentBlendInfo = {
+        probes: [{ id: first.id, weight: 1, ndf: Number.NEGATIVE_INFINITY }],
+        dominantProbeId: first.id,
+    };
+    let selectedWeights: readonly ProbeBlendWeight[] = info.probes;
+    let poiPosition: Vec3 | undefined;
+
+    const applySelection = (weights: readonly ProbeBlendWeight[], position: Vec3 | undefined): LocalEnvironmentBlendInfo => {
+        const primaryWeight = weights[0];
+        const secondaryWeight = weights[1];
+        const selectedPrimary = loadedProbes.find((probe) => probe.id === primaryWeight?.id) ?? first;
+        const selectedSecondary = loadedProbes.find((probe) => probe.id === secondaryWeight?.id) ?? selectedPrimary;
+        const weightedDominant = secondaryWeight && secondaryWeight.weight > (primaryWeight?.weight ?? 0) ? secondaryWeight : primaryWeight;
+        const contained = !blendingEnabled && position ? selectContainingBoxProbe(loadedProbes, position) : undefined;
+        const dominant = contained ?? loadedProbes.find((probe) => probe.id === weightedDominant?.id) ?? selectedPrimary;
+        const dominantNdf = weights.find((weight) => weight.id === dominant.id)?.ndf ?? (position ? boxProbeNdf(dominant, position) : Number.NEGATIVE_INFINITY);
+        const nextWeight = secondaryWeight?.weight ?? 0;
+        const ids = `${selectedPrimary.id}|${selectedSecondary.id}`;
+        const pairChanged = ids !== currentProbeIds;
+        const weightChanged = Math.abs(nextWeight - blendState.weight) > 1e-5;
+        if (blendingEnabled && (pairChanged || weightChanged)) {
+            updatePbrLocalEnvironmentBlend(blendState, {
+                primary: selectedPrimary.environment,
+                secondary: selectedSecondary.environment,
+                weight: nextWeight,
+            });
+            currentProbeIds = ids;
+        }
+        info = {
+            probes: blendingEnabled ? weights : [{ id: dominant.id, weight: 1, ndf: dominantNdf }],
+            dominantProbeId: dominant.id,
+        };
+        return info;
+    };
+
+    const applyMeshMode = (modeMeshes: readonly Mesh[] = meshes): void => {
+        for (const mesh of modeMeshes) {
+            const material = mesh.material;
+            if (!material || !isPbrMaterial(material)) continue;
+            const staticProbe = staticProbeByMesh.get(mesh) ?? first;
+            const probeId = poiMeshes.has(mesh) ? (info.dominantProbeId ?? first.id) : staticProbe.id;
+            const nextBlend = blendingEnabled ? blendState : staticBlendByProbe.get(probeId)!;
+            if (material.localEnvironmentBlend === nextBlend) continue;
+            material.localEnvironmentBlend = nextBlend;
+            markMaterialBindingsDirty(material);
+        }
     };
 
     const controller: LocalEnvironmentController = {
         loaded: environments.size,
-        assigned: 0,
+        assigned,
         bytes: Object.values(records).reduce((sum, probe) => sum + probe.bytes, 0),
         missing,
-        probeAt,
-        probeForBounds,
-        environment(probeId) {
-            return probeId ? environments.get(probeId) : undefined;
-        },
-        update(updateMeshes, probeId) {
-            let changed = 0;
-            for (const mesh of updateMeshes) {
-                const source = sourceByMesh.get(mesh);
-                if (!source) continue;
-                const currentIntensity = isPbrMaterial(mesh.material) ? mesh.material.environmentIntensity : undefined;
-                const next = materialFor(source, probeId);
-                if (currentIntensity !== undefined && next.environmentIntensity !== currentIntensity) {
-                    next.environmentIntensity = currentIntensity;
-                    markMaterialUboDirty(next);
-                }
-                if (mesh.material === next) continue;
-                mesh.material = next;
-                changed++;
+        updatePoi(position) {
+            const previousDominantProbeId = info.dominantProbeId;
+            poiPosition = position;
+            selectedWeights = selectPoiProbeBlend(loadedProbes, position, 2);
+            const nextInfo = applySelection(selectedWeights, position);
+            if (!blendingEnabled && nextInfo.dominantProbeId !== previousDominantProbeId) {
+                applyMeshMode(options.poiMeshes ?? []);
             }
-            return changed;
+            return nextInfo;
         },
+        setBlendingEnabled(enabled) {
+            if (blendingEnabled === enabled) return;
+            blendingEnabled = enabled;
+            applySelection(selectedWeights, poiPosition);
+            applyMeshMode();
+        },
+        blendingEnabled: () => blendingEnabled,
+        blendInfo: () => info,
+        probeVolumes: () => loadedProbes,
+        environment: (probeId) => (probeId ? environments.get(probeId) : undefined),
+        dominantEnvironment: () => environments.get(info.dominantProbeId ?? ""),
     };
 
-    for (const element of staticElements) {
-        const { min, max } = elementWorldBounds(element);
-        if (min[0] > max[0]) {
-            continue;
-        }
-        const probeId = probeForBounds(min, max);
-        if (!probeId) {
-            continue;
-        }
-        for (const mesh of element) {
-            const source = sourceByMesh.get(mesh);
-            if (!source) continue;
-            mesh.material = materialFor(source, probeId);
-            controller.assigned++;
-        }
-    }
     return controller;
 }

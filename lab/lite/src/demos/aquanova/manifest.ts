@@ -1,4 +1,4 @@
-// Loading and typing of `ship_manifest.json` — the Blender exporter's companion to `ship.glb`.
+// Loading and typing of `ship_manifest.json` — the ship editor's companion to `ship.glb`.
 //
 // The manifest is the single source of truth for the ship's structure: chunk AABBs and their glTF
 // root nodes, portals, per-entity behaviours and spawns. Anything that needs to know "which room is
@@ -82,6 +82,11 @@ export interface ShipPortal {
     enabled?: boolean;
 }
 
+export interface ShipDoor {
+    id: string;
+    enabled?: boolean;
+}
+
 // `behaviors` is a library of named behaviour definitions; `entities` assigns them to MESH NAMES,
 // optionally overriding parameters per entity. Mesh names are shared across rooms, so an entity
 // applies to every mesh carrying that name. Assignments remain separate so several strongly typed
@@ -95,6 +100,7 @@ export interface ShipManifest {
     /** Spatial reflection volumes, independent from rendering chunks. */
     environmentProbes?: ShipEnvironmentProbe[];
     portals: ShipPortal[];
+    doors?: ShipDoor[];
     environment?: ShipEnvironment;
     spawns?: { player?: Vec3; weapon?: Vec3; startChunk?: string };
     /** Every placed kit module. Together with `moduleCollision` this is the ship's collision data. */

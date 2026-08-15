@@ -19,6 +19,26 @@ export interface PlayerBehaviorConfig {
     characterStrength?: number;
 }
 
+export interface EntityEventConfig {
+    name: string;
+    event: string;
+}
+
+export interface EntityToggleBehaviorConfig {
+    /** Event addressed to the entity owning this behavior that triggers the forwarding. */
+    onEvent: string;
+    /** Entity or door that receives the forwarded `enable` or `disable` event. */
+    entity: string;
+}
+
+export interface PickEntityBehaviorConfig {
+    /** Per-axis scale applied to the pickup's world-space bounding box. Defaults to `[1, 1, 1]`. */
+    boundingBoxScale?: number[];
+    raiseEvent?: EntityEventConfig;
+    /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `pickItem`. */
+    sound?: string;
+}
+
 export interface WeaponLiquefactorBehaviorConfig {
     direction?: number[];
     /** Maximum beam range when the crosshair does not hit geometry. */
@@ -38,10 +58,23 @@ export interface BehaviorConfig {
     range?: number;
     sound?: string;
     sounds?: Record<string, string[]>;
+    boundingBoxScale?: number[];
+    entity?: string;
+    onEvent?: string;
+    raiseEvent?: EntityEventConfig;
+    reflectionProbe?: "exclude";
 }
 
 export function isLiquefiableBehaviorConfig<Config extends BehaviorConfig>(config: Config): config is Config & LiquefiableBehaviorConfig {
     return config.liquefiable === true;
+}
+
+export function isPickEntityBehaviorConfig(config: BehaviorReference): config is BehaviorReference & PickEntityBehaviorConfig & { name: "pickEntity" } {
+    return config.name === "pickEntity";
+}
+
+export function isEntityToggleBehaviorConfig(config: BehaviorReference): config is BehaviorReference & EntityToggleBehaviorConfig & { name: "disableEntity" | "enableEntity" } {
+    return config.name === "disableEntity" || config.name === "enableEntity";
 }
 
 export interface BehaviorReference extends BehaviorConfig {
@@ -53,6 +86,7 @@ export type BehaviorLibrary = Record<string, BehaviorConfig>;
 export type Entities = Record<string, { behaviors?: BehaviorReference[] }>;
 
 export interface WeaponLiquefactorRuntime {
+    setEnabled(enabled: boolean): void;
     setTargetDistance(distance: number | null, restart?: boolean): void;
     stop(): void;
     update(deltaMs: number): boolean;

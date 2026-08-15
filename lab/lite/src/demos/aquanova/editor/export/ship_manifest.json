@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-14T15:09:38.941Z",
+  "savedAt": "2026-08-15T00:19:14.670Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -9,6 +9,7 @@
       "chunks[].aabb",
       "environmentProbes[].boxPosition",
       "environmentProbes[].capturePosition",
+      "environmentProbes[].influenceBoxPosition",
       "collision",
       "moduleCollision",
       "portals",
@@ -42,7 +43,9 @@
       "adjacency",
       "space",
       "environmentProbes[].boxSize",
-      "environmentProbes[].resolution"
+      "environmentProbes[].resolution",
+      "environmentProbes[].influenceBoxSize",
+      "environmentProbes[].influenceInnerBoxSize"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
@@ -68,6 +71,7 @@
     "folders": [
       "Modular SciFi MegaKit",
       "Sci-Fi Essentials Kit",
+      "Aquanova",
       "Pirate Kit",
       "Ultimate Nature Pack",
       "Ultimate RPG Items Pack"
@@ -89,8 +93,8 @@
           4.4267
         ]
       },
-      "instanceCount": 37,
-      "meshCount": 72
+      "instanceCount": 38,
+      "meshCount": 75
     },
     {
       "id": "CH01_StorageC",
@@ -183,6 +187,21 @@
         2.5,
         2
       ],
+      "influenceBoxPosition": [
+        2,
+        2.5,
+        2
+      ],
+      "influenceBoxSize": [
+        16,
+        8,
+        7.5
+      ],
+      "influenceInnerBoxSize": [
+        8.6,
+        3.5,
+        1.5
+      ],
       "resolution": 1024
     },
     {
@@ -201,6 +220,21 @@
         10.313207630119352,
         2.499047666788101,
         -8.170461957037828
+      ],
+      "influenceBoxPosition": [
+        10.313207630119352,
+        2.499047666788101,
+        -8.170461957037828
+      ],
+      "influenceBoxSize": [
+        7.7035,
+        8.011,
+        27.648
+      ],
+      "influenceInnerBoxSize": [
+        1.7035,
+        3.5,
+        16
       ],
       "resolution": 1024
     },
@@ -221,6 +255,21 @@
         2.5,
         0.03219
       ],
+      "influenceBoxPosition": [
+        -7.95142,
+        2.5,
+        0.03219
+      ],
+      "influenceBoxSize": [
+        14,
+        5,
+        8
+      ],
+      "influenceInnerBoxSize": [
+        5.0972,
+        2,
+        5.0644
+      ],
       "resolution": 512
     },
     {
@@ -239,6 +288,21 @@
         14.079641277139773,
         2.297625784585776,
         -18.05311936597713
+      ],
+      "influenceBoxPosition": [
+        14.079641277139773,
+        2.297625784585776,
+        -18.05311936597713
+      ],
+      "influenceBoxSize": [
+        7.1035,
+        8.011,
+        7.648
+      ],
+      "influenceInnerBoxSize": [
+        1.1035,
+        2.011,
+        1.648
       ],
       "resolution": 512
     }
@@ -3073,6 +3137,28 @@
         1
       ],
       "node": "P0353"
+    },
+    {
+      "id": "P0354",
+      "module": "Aquanova/Weapons/liquefactorItem",
+      "chunk": "CH00_Storage",
+      "name": "itemLiquefactor",
+      "position": [
+        6.012,
+        0.126,
+        -1
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        2.1,
+        2.1,
+        2.1
+      ],
+      "node": "itemLiquefactor"
     }
   ],
   "markers": [
@@ -3278,7 +3364,7 @@
           1,
           1
         ],
-        "intensity": 250,
+        "intensity": 25,
         "range": 6,
         "angle": 160,
         "castsShadows": false
@@ -3359,7 +3445,7 @@
           1,
           1
         ],
-        "intensity": 250,
+        "intensity": 2,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3386,7 +3472,7 @@
           1,
           1
         ],
-        "intensity": 250,
+        "intensity": 25,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3413,7 +3499,7 @@
           1,
           1
         ],
-        "intensity": 250,
+        "intensity": 25,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3740,6 +3826,33 @@
         "intensity": 90,
         "range": 5,
         "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0020",
+      "owner": "P0177",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 30,
+        "range": 1.5,
+        "angle": 160,
         "castsShadows": false
       }
     }
@@ -12116,7 +12229,7 @@
       ]
     }
   ],
-  "activeChunk": "CH03_StorageC2",
+  "activeChunk": "CH00_Storage",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -12157,7 +12270,10 @@
           "waterLongSplash"
         ]
       }
-    }
+    },
+    "pickEntity": {},
+    "enableEntity": {},
+    "disableEntity": {}
   },
   "entities": {
     "player": {
@@ -12289,6 +12405,16 @@
             "storageDoorRF"
           ],
           "sound": "longSplash"
+        },
+        {
+          "name": "enableEntity",
+          "onEvent": "startLiquefaction",
+          "entity": "Door_D00"
+        },
+        {
+          "name": "disableEntity",
+          "onEvent": "cancelLiquefaction",
+          "entity": "Door_D00"
         }
       ]
     },
@@ -12341,36 +12467,51 @@
         }
       ]
     },
-    "weaponLiquefactorHolder": {
-      "behaviors": [
-        {
-          "name": "weaponLiquefactor"
-        }
-      ]
-    },
     "StoragePipe0": {
       "behaviors": [
         {
           "name": "stdLiquefaction"
         }
       ]
+    },
+    "itemLiquefactor": {
+      "behaviors": [
+        {
+          "name": "probeExcluded"
+        },
+        {
+          "name": "weaponLiquefactor"
+        },
+        {
+          "name": "pickEntity",
+          "boundingBoxScale": [
+            8,
+            1,
+            1
+          ],
+          "raiseEvent": {
+            "name": "itemLiquefactor",
+            "event": "enable"
+          }
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      10.935,
-      2.199,
-      -0.791
+      10.07,
+      2.533,
+      0.249
     ],
     "rotation": [
-      0.118,
-      463.761,
+      0.121,
+      513.87,
       0
     ],
     "target": [
-      1.698,
-      1.02,
-      2.854
+      0.382,
+      1.326,
+      2.414
     ]
   },
   "environment": {

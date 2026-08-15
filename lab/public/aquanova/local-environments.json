@@ -1,5 +1,75 @@
 {
  "probes": {
+  "CH01_Corridor1": {
+   "url": "environments/CH01_Corridor1.env",
+   "position": [
+    2.1080118962737684,
+    2.5,
+    2
+   ],
+   "boxPosition": [
+    2.1080118962737684,
+    2.5,
+    2
+   ],
+   "boxSize": [
+    11.6,
+    5,
+    4.5
+   ],
+   "influenceBoxPosition": [
+    2,
+    2.5,
+    2
+   ],
+   "influenceBoxSize": [
+    16,
+    8,
+    7.5
+   ],
+   "influenceInnerBoxSize": [
+    8.6,
+    3.5,
+    1.5
+   ],
+   "resolution": 1024,
+   "bytes": 4253812
+  },
+  "CH01_Corridor2": {
+   "url": "environments/CH01_Corridor2.env",
+   "position": [
+    10.313207630119352,
+    2.499047666788101,
+    -8.170461957037828
+   ],
+   "boxPosition": [
+    10.313207630119352,
+    2.499047666788101,
+    -8.170461957037828
+   ],
+   "boxSize": [
+    4.7035,
+    5.011,
+    24.648
+   ],
+   "influenceBoxPosition": [
+    10.313207630119352,
+    2.499047666788101,
+    -8.170461957037828
+   ],
+   "influenceBoxSize": [
+    7.7035,
+    8.011,
+    27.648
+   ],
+   "influenceInnerBoxSize": [
+    1.7035,
+    3.5,
+    16
+   ],
+   "resolution": 1024,
+   "bytes": 4600892
+  },
   "CH00_Storage": {
    "url": "environments/CH00_Storage.env",
    "position": [
@@ -17,55 +87,30 @@
     5,
     8.0644
    ],
-   "resolution": 512,
-   "bytes": 2032466
-  },
-  "CH01_Corridor1": {
-   "url": "environments/CH01_Corridor1.env",
-   "position": [
-    2.10801,
+   "influenceBoxPosition": [
+    -7.95142,
     2.5,
-    2
+    0.03219
    ],
-   "boxPosition": [
-    2.1080118962737684,
-    2.5,
-    2
-   ],
-   "boxSize": [
-    11.6,
+   "influenceBoxSize": [
+    14,
     5,
-    4.5
+    8
    ],
-   "resolution": 1024,
-   "bytes": 7112452
-  },
-  "CH01_Corridor2": {
-   "url": "environments/CH01_Corridor2.env",
-   "position": [
-    10.31321,
-    2.49905,
-    -8.17046
+   "influenceInnerBoxSize": [
+    5.0972,
+    2,
+    5.0644
    ],
-   "boxPosition": [
-    10.313207630119352,
-    2.499047666788101,
-    -8.170461957037828
-   ],
-   "boxSize": [
-    4.7035,
-    5.011,
-    24.648
-   ],
-   "resolution": 1024,
-   "bytes": 7876835
+   "resolution": 512,
+   "bytes": 1067196
   },
   "CH01_CorridorEnd": {
    "url": "environments/CH01_CorridorEnd.env",
    "position": [
-    14.07964,
-    2.29763,
-    -18.05312
+    14.079641277139773,
+    2.297625784585776,
+    -18.05311936597713
    ],
    "boxPosition": [
     14.079641277139773,
@@ -77,8 +122,23 @@
     5.011,
     4.648
    ],
+   "influenceBoxPosition": [
+    14.079641277139773,
+    2.297625784585776,
+    -18.05311936597713
+   ],
+   "influenceBoxSize": [
+    7.1035,
+    8.011,
+    7.648
+   ],
+   "influenceInnerBoxSize": [
+    1.1035,
+    2.011,
+    1.648
+   ],
    "resolution": 512,
-   "bytes": 70474
+   "bytes": 93677
   }
  }
 }

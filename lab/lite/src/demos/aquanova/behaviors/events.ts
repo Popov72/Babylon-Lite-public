@@ -5,6 +5,7 @@ export interface EventMap {
     frameStart: { deltaMs: number };
     physicsStep: { deltaSeconds: number };
     frameEnd: { deltaMs: number };
+    entityEvent: { name: string; event: string };
     weaponTriggerPressed: { held: boolean };
     hitWithWeapon: {
         mesh: Mesh;
@@ -17,7 +18,8 @@ export interface EventMap {
         distance: number | null;
     };
     weaponTriggerReleased: Record<string, never>;
-    liquefactionStarted: Record<string, never>;
+    liquefactionStarted: { meshes: readonly Mesh[] };
     liquefactionReversed: Record<string, never>;
+    liquefactionCancelled: { meshes: readonly Mesh[] };
     liquefactionCompleted: { sound: string };
 }

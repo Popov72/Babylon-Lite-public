@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-12T20:37:06.250Z",
+  "savedAt": "2026-08-15T00:19:14.670Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -9,6 +9,7 @@
       "chunks[].aabb",
       "environmentProbes[].boxPosition",
       "environmentProbes[].capturePosition",
+      "environmentProbes[].influenceBoxPosition",
       "collision",
       "moduleCollision",
       "portals",
@@ -38,13 +39,13 @@
       "entities",
       "environment",
       "editorEnvironment",
-      "bakeLighting",
+      "editorPrefs",
       "adjacency",
       "space",
-      "bakeDefaults",
-      "chunks[].bake",
       "environmentProbes[].boxSize",
-      "environmentProbes[].resolution"
+      "environmentProbes[].resolution",
+      "environmentProbes[].influenceBoxSize",
+      "environmentProbes[].influenceInnerBoxSize"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
@@ -65,10 +66,15 @@
     "hullOffset": "centered"
   },
   "kits": {
-    "source": null,
-    "base": null,
+    "source": "local",
+    "base": "D:\\alexis\\TombRaider\\Popov72\\BabylonAssets\\kits",
     "folders": [
-      "Modular SciFi MegaKit"
+      "Modular SciFi MegaKit",
+      "Sci-Fi Essentials Kit",
+      "Aquanova",
+      "Pirate Kit",
+      "Ultimate Nature Pack",
+      "Ultimate RPG Items Pack"
     ]
   },
   "chunks": [
@@ -87,13 +93,8 @@
           4.4267
         ]
       },
-      "instanceCount": 37,
-      "meshCount": 72,
-      "bake": {
-        "samples": 256,
-        "width": 1024,
-        "height": 1024
-      }
+      "instanceCount": 38,
+      "meshCount": 75
     },
     {
       "id": "CH01_StorageC",
@@ -111,13 +112,7 @@
         ]
       },
       "instanceCount": 18,
-      "meshCount": 46,
-      "bake": {
-        "samples": 512,
-        "width": 2048,
-        "height": 2048,
-        "margin": 4
-      }
+      "meshCount": 46
     },
     {
       "id": "CH02_StorageCTL",
@@ -135,12 +130,7 @@
         ]
       },
       "instanceCount": 26,
-      "meshCount": 62,
-      "bake": {
-        "samples": 256,
-        "width": 1024,
-        "height": 1024
-      }
+      "meshCount": 62
     },
     {
       "id": "CH03_StorageC2",
@@ -154,16 +144,11 @@
         "max": [
           16.2534,
           5.006,
-          -3.3811
+          -3.3814
         ]
       },
       "instanceCount": 43,
-      "meshCount": 110,
-      "bake": {
-        "width": 2048,
-        "height": 2048,
-        "samples": 512
-      }
+      "meshCount": 110
     },
     {
       "id": "Test",
@@ -202,6 +187,21 @@
         2.5,
         2
       ],
+      "influenceBoxPosition": [
+        2,
+        2.5,
+        2
+      ],
+      "influenceBoxSize": [
+        16,
+        8,
+        7.5
+      ],
+      "influenceInnerBoxSize": [
+        8.6,
+        3.5,
+        1.5
+      ],
       "resolution": 1024
     },
     {
@@ -220,6 +220,21 @@
         10.313207630119352,
         2.499047666788101,
         -8.170461957037828
+      ],
+      "influenceBoxPosition": [
+        10.313207630119352,
+        2.499047666788101,
+        -8.170461957037828
+      ],
+      "influenceBoxSize": [
+        7.7035,
+        8.011,
+        27.648
+      ],
+      "influenceInnerBoxSize": [
+        1.7035,
+        3.5,
+        16
       ],
       "resolution": 1024
     },
@@ -240,6 +255,21 @@
         2.5,
         0.03219
       ],
+      "influenceBoxPosition": [
+        -7.95142,
+        2.5,
+        0.03219
+      ],
+      "influenceBoxSize": [
+        14,
+        5,
+        8
+      ],
+      "influenceInnerBoxSize": [
+        5.0972,
+        2,
+        5.0644
+      ],
       "resolution": 512
     },
     {
@@ -259,19 +289,24 @@
         2.297625784585776,
         -18.05311936597713
       ],
+      "influenceBoxPosition": [
+        14.079641277139773,
+        2.297625784585776,
+        -18.05311936597713
+      ],
+      "influenceBoxSize": [
+        7.1035,
+        8.011,
+        7.648
+      ],
+      "influenceInnerBoxSize": [
+        1.1035,
+        2.011,
+        1.648
+      ],
       "resolution": 512
     }
   ],
-  "bakeDefaults": {
-    "samples": 128,
-    "width": 1024,
-    "height": 1024,
-    "margin": 4
-  },
-  "bakeLighting": {
-    "power": 1.1,
-    "sky": 0
-  },
   "instances": [
     {
       "id": "P0011",
@@ -1644,6 +1679,7 @@
       "id": "P0179",
       "module": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped",
       "chunk": "CH00_Storage",
+      "name": "StoragePipe0",
       "position": [
         10,
         4.75,
@@ -1659,7 +1695,7 @@
         1,
         1
       ],
-      "node": "P0179"
+      "node": "StoragePipe0"
     },
     {
       "id": "P0180",
@@ -3101,6 +3137,28 @@
         1
       ],
       "node": "P0353"
+    },
+    {
+      "id": "P0354",
+      "module": "Aquanova/Weapons/liquefactorItem",
+      "chunk": "CH00_Storage",
+      "name": "itemLiquefactor",
+      "position": [
+        6.012,
+        0.126,
+        -1
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        2.1,
+        2.1,
+        2.1
+      ],
+      "node": "itemLiquefactor"
     }
   ],
   "markers": [
@@ -3271,18 +3329,6 @@
         -4.1616,
         -3.827
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.6,
-        "sizeY": 0.2,
-        "spread": 70,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 150
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3292,7 +3338,7 @@
           1
         ],
         "intensity": 80,
-        "range": 4.6,
+        "range": 10,
         "angle": 70,
         "castsShadows": false
       }
@@ -3301,7 +3347,7 @@
       "id": "L0002",
       "owner": "P0308",
       "offset": [
-        0.5624,
+        0.9796,
         -0.138,
         0
       ],
@@ -3310,18 +3356,6 @@
         0,
         0
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 200
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3330,9 +3364,9 @@
           1,
           1
         ],
-        "intensity": 150,
+        "intensity": 25,
         "range": 6,
-        "angle": 120,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -3340,8 +3374,8 @@
       "id": "L0003",
       "owner": "P0136",
       "offset": [
-        1.568,
-        0.04,
+        1.5621,
+        0.078,
         0.002
       ],
       "rotation": [
@@ -3349,28 +3383,16 @@
         -0.0086,
         -88.4997
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.015,
-        "sizeY": 0.06,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "none",
-        "clustered": false,
+        "type": "point",
+        "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 1,
-        "range": 8,
+        "intensity": 0.1,
+        "range": 0.5,
         "angle": 90,
         "castsShadows": false
       }
@@ -3380,26 +3402,14 @@
       "owner": "P0323",
       "offset": [
         0,
-        0.2212,
-        0.0967
+        0.1677,
+        -0.0306
       ],
       "rotation": [
-        47.4024,
-        -180,
+        13.4024,
+        180,
         -180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 180,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 80
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3408,9 +3418,9 @@
           1,
           1
         ],
-        "intensity": 130,
-        "range": 8,
-        "angle": 90,
+        "intensity": 100,
+        "range": 5,
+        "angle": 100,
         "castsShadows": false
       }
     },
@@ -3418,7 +3428,7 @@
       "id": "L0005",
       "owner": "P0312",
       "offset": [
-        0.538,
+        1.0258,
         -0.138,
         -0.004
       ],
@@ -3427,96 +3437,6 @@
         0,
         0
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 200
-      },
-      "runtime": {
-        "type": "none",
-        "clustered": false,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "intensity": 1,
-        "range": 8,
-        "angle": 90,
-        "castsShadows": false
-      }
-    },
-    {
-      "id": "L0006",
-      "owner": "P0324",
-      "offset": [
-        0.58,
-        -0.138,
-        0
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 200
-      },
-      "runtime": {
-        "type": "none",
-        "clustered": false,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "intensity": 1,
-        "range": 8,
-        "angle": 90,
-        "castsShadows": false
-      }
-    },
-    {
-      "id": "L0007",
-      "owner": "P0325",
-      "offset": [
-        0.5229,
-        -0.138,
-        0
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 1.1,
-        "sizeY": 0.15,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 200
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3525,9 +3445,63 @@
           1,
           1
         ],
-        "intensity": 150,
-        "range": 6,
-        "angle": 120,
+        "intensity": 2,
+        "range": 8,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0006",
+      "owner": "P0324",
+      "offset": [
+        1.0128,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 25,
+        "range": 8,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0007",
+      "owner": "P0325",
+      "offset": [
+        0.9577,
+        -0.138,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 25,
+        "range": 8,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -3544,18 +3518,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3583,18 +3545,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3605,7 +3555,7 @@
         ],
         "intensity": 130,
         "range": 8,
-        "angle": 90,
+        "angle": 101,
         "castsShadows": false
       }
     },
@@ -3622,18 +3572,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
         "type": "spot",
         "clustered": true,
@@ -3661,27 +3599,15 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 90,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 90,
         "range": 5,
         "angle": 90,
         "castsShadows": false
@@ -3700,18 +3626,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 90,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
         "type": "point",
         "clustered": true,
@@ -3739,29 +3653,17 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 80
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 90,
         "range": 5,
-        "angle": 90,
+        "angle": 100,
         "castsShadows": false
       }
     },
@@ -3778,18 +3680,6 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
         "type": "point",
         "clustered": true,
@@ -3817,29 +3707,17 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 80,
         "range": 5,
-        "angle": 90,
+        "angle": 110,
         "castsShadows": false
       }
     },
@@ -3856,29 +3734,17 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 80,
         "range": 5,
-        "angle": 90,
+        "angle": 120,
         "castsShadows": false
       }
     },
@@ -3895,29 +3761,17 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 80,
         "range": 5,
-        "angle": 90,
+        "angle": 120,
         "castsShadows": false
       }
     },
@@ -3934,29 +3788,17 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 120,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 90,
         "range": 5,
-        "angle": 90,
+        "angle": 120,
         "castsShadows": false
       }
     },
@@ -3973,29 +3815,44 @@
         180,
         180
       ],
-      "bake": {
-        "shape": "rectangle",
-        "sizeX": 0.89,
-        "sizeY": 0.18,
-        "spread": 90,
-        "color": [
-          1,
-          1,
-          1
-        ],
-        "watts": 50
-      },
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 90,
         "range": 5,
         "angle": 90,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0020",
+      "owner": "P0177",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 30,
+        "range": 1.5,
+        "angle": 160,
         "castsShadows": false
       }
     }
@@ -12372,7 +12229,7 @@
       ]
     }
   ],
-  "activeChunk": "CH03_StorageC2",
+  "activeChunk": "CH00_Storage",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -12413,7 +12270,10 @@
           "waterLongSplash"
         ]
       }
-    }
+    },
+    "pickEntity": {},
+    "enableEntity": {},
+    "disableEntity": {}
   },
   "entities": {
     "player": {
@@ -12427,10 +12287,9 @@
           ]
         },
         {
-          "name": "weaponLiquefactor"
+          "name": "probeExcluded"
         }
-      ],
-      "bake": "exclude"
+      ]
     },
     "storageDoorL": {
       "behaviors": [
@@ -12468,8 +12327,7 @@
           ],
           "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "crate2": {
       "behaviors": [
@@ -12547,9 +12405,18 @@
             "storageDoorRF"
           ],
           "sound": "longSplash"
+        },
+        {
+          "name": "enableEntity",
+          "onEvent": "startLiquefaction",
+          "entity": "Door_D00"
+        },
+        {
+          "name": "disableEntity",
+          "onEvent": "cancelLiquefaction",
+          "entity": "Door_D00"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorLFB": {
       "behaviors": [
@@ -12563,8 +12430,7 @@
           ],
           "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorRB": {
       "behaviors": [
@@ -12578,8 +12444,7 @@
           ],
           "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "storageDoorRF": {
       "behaviors": [
@@ -12593,8 +12458,7 @@
           ],
           "sound": "longSplash"
         }
-      ],
-      "bake": "include"
+      ]
     },
     "test": {
       "behaviors": [
@@ -12602,35 +12466,69 @@
           "name": "explosiveLiquefaction"
         }
       ]
+    },
+    "StoragePipe0": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "itemLiquefactor": {
+      "behaviors": [
+        {
+          "name": "probeExcluded"
+        },
+        {
+          "name": "weaponLiquefactor"
+        },
+        {
+          "name": "pickEntity",
+          "boundingBoxScale": [
+            8,
+            1,
+            1
+          ],
+          "raiseEvent": {
+            "name": "itemLiquefactor",
+            "event": "enable"
+          }
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      -3.436,
-      1.832,
-      2.332
+      10.07,
+      2.533,
+      0.249
     ],
     "rotation": [
-      -0.027,
-      406.803,
+      0.121,
+      513.87,
       0
     ],
     "target": [
-      -13.427,
-      2.102,
-      1.996
+      0.382,
+      1.326,
+      2.414
     ]
   },
   "environment": {
     "strength": 1,
-    "dynamicStrength": 0.8,
     "toneMapping": "Khronos PBR Neutral",
-    "exposure": 1.05
+    "exposure": 1.05,
+    "specularAA": false,
+    "reflectionRoughness": 1
   },
   "editorEnvironment": {
     "strength": 1,
-    "dynamicStrength": 1.5,
+    "toneMapping": "Khronos PBR Neutral",
     "exposure": 1
+  },
+  "editorPrefs": {
+    "veilAlpha": 0.5,
+    "bigPalette": true
   },
   "portals": [
     {

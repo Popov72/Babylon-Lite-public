@@ -54,6 +54,7 @@ export interface AquanovaControlPanelOptions {
         };
     };
     readonly environment: {
+        readonly localCubemapBlending: ToggleOption;
         readonly envIntensity: {
             readonly get: () => number;
             readonly set: (value: number) => void;
@@ -252,6 +253,7 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
     const localGuideRotation = addVectorReadout(weapon, "Aim rotation (deg)");
 
     const environment = addSection("Environment");
+    addToggle(environment, options.environment.localCubemapBlending);
     addSlider(environment, "Env intensity", 0, 4, 0.05, options.environment.envIntensity.get, options.environment.envIntensity.set);
     addSlider(environment, "Exposure", 0, 4, 0.05, options.environment.exposure.get, options.environment.exposure.set);
     addSelect(environment, "Tone mapping", options.environment.toneMapping.options, options.environment.toneMapping.get, options.environment.toneMapping.set);

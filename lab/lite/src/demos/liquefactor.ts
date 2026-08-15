@@ -584,7 +584,7 @@ async function main(): Promise<void> {
             1.5,
             (c.aabb.min[2]! + c.aabb.max[2]!) / 2,
         ];
-        const iblStrength = shipManifest?.environment?.dynamicStrength ?? shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
+        const iblStrength = shipManifest?.environment?.strength ?? DEFAULT_SHIP_IBL_STRENGTH;
         // A chunk is a room the ship editor laid out, and an EMPTY one (no meshes placed yet) is
         // exported with `aabb: null` — it has no spatial extent to describe. Every use here is
         // geometric (framing a room, hit-testing a point against one, building its collision shell),

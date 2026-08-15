@@ -4,7 +4,7 @@
 // (scale x = -1), so glTF (x, y, z) renders at Lite (-x, y, z) — every manifest coordinate goes
 // through `toLite` before use.
 
-export const SHIP_URL = "/aquanova/ship_baked.glb";
+export const SHIP_URL = "/aquanova/ship.glb";
 export const MANIFEST_URL = "/aquanova/ship_manifest.json";
 /** Generated spatial box-projected specular environment probes. */
 export const LOCAL_ENVIRONMENTS_URL = "/aquanova/local-environments.json";

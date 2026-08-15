@@ -1,9 +1,11 @@
 import type { Mesh, PhysicsWorld, SceneContext } from "babylon-lite";
 import { DynamicBehavior } from "./dynamic.js";
+import { DisableEntityBehavior, EnableEntityBehavior } from "./entity-toggle.js";
 import { EventManager } from "./event-manager.js";
 import { LiquefiableBehavior } from "./liquefiable.js";
+import { PickEntityBehavior } from "./pick-entity.js";
 import { PlayerBehavior } from "./player.js";
-import { isLiquefiableBehaviorConfig } from "./types.js";
+import { isEntityToggleBehaviorConfig, isLiquefiableBehaviorConfig, isPickEntityBehaviorConfig } from "./types.js";
 import type { Behavior, BehaviorAssignment, BehaviorContext, BehaviorLibrary, Entities, LiquefiableBehaviorConfig } from "./types.js";
 import { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
 
@@ -97,17 +99,35 @@ export class BehaviorManager {
         try {
             const weapon = this.findEntityWithBehavior("weaponLiquefactor");
             if (weapon?.meshes.length) await WeaponLiquefactorBehavior.init(weapon.assignment);
+            const pickEntityConfigs = Object.keys(this.entities ?? {}).flatMap((entityName) => {
+                if (!(this.meshesByEntityName.get(entityName)?.length ?? 0)) {
+                    return [];
+                }
+                return this.assignmentsOf(entityName).filter(isPickEntityBehaviorConfig);
+            });
+            await PickEntityBehavior.init(pickEntityConfigs);
             for (const entityName of Object.keys(this.entities ?? {})) {
                 const meshes = this.meshesByEntityName.get(entityName) ?? [];
                 for (const assignment of this.assignmentsOf(entityName)) {
-                    const targets = assignment.name === "player" || assignment.name === "weaponLiquefactor" ? meshes.slice(0, 1) : meshes;
-                    for (const mesh of targets) this.instances.push(createBehavior(assignment, mesh, behaviorContext));
+                    if (assignment.reflectionProbe) {
+                        continue;
+                    }
+                    if (isPickEntityBehaviorConfig(assignment)) {
+                        if (meshes.length) {
+                            this.instances.push(new PickEntityBehavior(meshes, assignment, behaviorContext));
+                        }
+                        continue;
+                    }
+                    const targets =
+                        assignment.name === "player" || assignment.name === "weaponLiquefactor" || isEntityToggleBehaviorConfig(assignment) ? meshes.slice(0, 1) : meshes;
+                    for (const mesh of targets) this.instances.push(createBehavior(assignment, mesh, behaviorContext, entityName));
                 }
             }
             for (const behavior of this.instances) behavior.start();
         } catch (error) {
             for (let index = this.instances.length - 1; index >= 0; index--) this.instances[index]!.dispose();
             this.instances.length = 0;
+            PickEntityBehavior.dispose();
             WeaponLiquefactorBehavior.dispose();
             this.started = false;
             throw error;
@@ -160,6 +180,7 @@ export class BehaviorManager {
     public dispose(): void {
         for (let index = this.instances.length - 1; index >= 0; index--) this.instances[index]!.dispose();
         this.instances.length = 0;
+        PickEntityBehavior.dispose();
         WeaponLiquefactorBehavior.dispose();
         this.events.dispose();
         this.started = false;
@@ -204,14 +225,19 @@ export class BehaviorManager {
     }
 }
 
-function createBehavior(assignment: BehaviorAssignment, mesh: Mesh, context: BehaviorContext): Behavior {
+function createBehavior(assignment: BehaviorAssignment, mesh: Mesh, context: BehaviorContext, entityName: string): Behavior {
+    if (isEntityToggleBehaviorConfig(assignment)) {
+        return assignment.name === "disableEntity"
+            ? new DisableEntityBehavior(entityName, mesh, assignment, context)
+            : new EnableEntityBehavior(entityName, mesh, assignment, context);
+    }
     switch (assignment.name) {
         case "dynamic":
             return new DynamicBehavior(mesh, assignment);
         case "player":
             return new PlayerBehavior(mesh, assignment, context);
         case "weaponLiquefactor":
-            return new WeaponLiquefactorBehavior(mesh, assignment, context);
+            return new WeaponLiquefactorBehavior(entityName, mesh, assignment, context);
     }
     if (isLiquefiableBehaviorConfig(assignment)) return new LiquefiableBehavior(assignment.name, mesh, assignment, context);
     throw new Error(`[aquanova] behavior "${assignment.name}" has no runtime implementation`);

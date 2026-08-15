@@ -178,7 +178,7 @@ export function createLightOverlay({ engine, scene, canvas, lights, roomAt }: Li
         panel.style.display = "block";
         panel.textContent =
             `RUNTIME LIGHTS (L)   Chunk: ${room}   ${roomLights.length} light(s)\n` +
-            "Transforms: ship_baked.glb   Parameters: ship_manifest.json override\n" +
+            "Transforms: ship.glb   Parameters: ship_manifest.json override\n" +
             (roomLights.length
                 ? roomLights
                       .map(({ light }) => {
