@@ -14,6 +14,7 @@ import type {
     FluidProfiler,
     FluidSim,
     FluidSink,
+    ForceFieldSpec,
     HemisphericLight,
     Mat4,
     Mesh,
@@ -300,6 +301,8 @@ export interface FluidDemo {
     flow(): FluidFlowConfig;
     /** Optional notification after the generic authoring UI restores or edits the flow. */
     onFlowChanged?(flow: FluidFlowConfig): void;
+    /** Persistent demo-local force field. The core's interactive mouse force temporarily overrides it. */
+    forceField?(): ForceFieldSpec | null;
     /** Entering this demo: show meshes, set camera mode, etc. */
     onEnter(): void;
     /** Leaving this demo: hide meshes, undo camera mode / any force. */

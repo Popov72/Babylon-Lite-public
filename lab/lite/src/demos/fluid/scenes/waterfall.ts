@@ -29,7 +29,7 @@
 
 import { addToScene, createDisc, createMeshFromData, createPbrMaterial, enableMirroredMeshes, loadGltf, setMeshVisible } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { configureDemoDecoderBases, demoAssetUrl } from "../../demo-asset-url.js";
 import { screenRay } from "../pick.js";
@@ -207,6 +207,15 @@ const OASIS_OFFSET_Z = 0.9;
  *  island where a shadow would hang in mid-air. (OASIS_OFFSET_* re-centres the ring on the rock,
  *  so the hole is concentric with ROCK_CX/ROCK_CZ.) */
 const POND_RADIUS = 40;
+const POND_WAVE_SOURCES_DEFAULT = 8;
+const POND_WAVE_SOURCES_MAX = 32;
+const POND_WAVE_STRENGTH = 25;
+const POND_WAVE_DURATION = 2.4;
+const POND_WAVE_PERIOD_MIN = 4.5;
+const POND_WAVE_PERIOD_MAX = 6;
+const POND_WAVE_TRAVEL_SPEED = 3;
+const POND_WAVE_BAND_WIDTH = 2.5;
+const POND_WAVE_VERTICAL_STRENGTH = 50;
 
 // ── Front bias ─────────────────────────────────────────────────────────────────────────
 // Emitted water gets a small HORIZONTAL launch velocity toward the viewer, on top of the
@@ -229,6 +238,7 @@ const FRONT_DIR_Z = Math.sin(VIEW_ALPHA);
 // Nothing is rendered for it — the rock is presented against open sky, and a visible quad
 // only ever announced itself as a hard edge once the camera dipped below the horizon.
 const FLOOR_Y = 0;
+const POND_TOP_Y = FLOOR_Y + 0.7;
 // Seat the model's base just BELOW the floor so the rock rises out of the ground rather
 // than resting on it — at the silhouette the height map falls to the model's own floor, and
 // max(rock, FLOOR_Y) then hands the ground back to the quad with no seam or z-fight.
@@ -525,6 +535,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         bloom: false,
         bloomIntensity: 0.25,
         bloomThreshold: 0.0,
+        pondWaveSources: POND_WAVE_SOURCES_DEFAULT,
     };
 
     /** Push the three bloom params to the shared presentation stage. The stage is owned by
@@ -599,6 +610,95 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         sdfData[15] = 0;
         engine._device.queue.writeBuffer(ctx.sceneSdfBuffer, 0, sdfData);
     };
+
+    // Sustained, expanding pressure rings keep the shallow pond moving without coupling the
+    // effect to any solver. Source placement is deterministic so fixed-step captures replay.
+    const pondWaveData = new Float32Array(4 + POND_WAVE_SOURCES_MAX * 8);
+    const pondWaveBuffer = engine._device.createBuffer({
+        label: "waterfall-pond-wave-force",
+        size: pondWaveData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const pondWaveSpec: ForceFieldSpec = {
+        struct: `struct ForceFieldParams {
+    head: vec4<f32>,
+    points: array<vec4<f32>, ${POND_WAVE_SOURCES_MAX}>,
+    pushes: array<vec4<f32>, ${POND_WAVE_SOURCES_MAX}>,
+};`,
+        wgsl: `fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
+    if (pos.y < forceFieldParams.head.z - 0.1 || pos.y > forceFieldParams.head.w + 0.2) { return vec3<f32>(0.0); }
+    var dv = vec2<f32>(0.0);
+    var dy = 0.0;
+    let count = u32(forceFieldParams.head.y);
+    for (var i = 0u; i < ${POND_WAVE_SOURCES_MAX}u; i++) {
+        if (i >= count) { break; }
+        let point = forceFieldParams.points[i];
+        let push = forceFieldParams.pushes[i];
+        let cycle = (forceFieldParams.head.x + push.x) % push.y;
+        let attack = smoothstep(0.0, 0.12, cycle);
+        let release = 1.0 - smoothstep(${POND_WAVE_DURATION - 0.25}, ${POND_WAVE_DURATION}, cycle);
+        let pulse = attack * release;
+        let radial = pos.xz - point.xy;
+        let dist = length(radial);
+        let direction = radial / max(dist, 0.001);
+        let hemisphere = smoothstep(-0.12, 0.12, dot(direction, point.zw));
+        let front = cycle * ${POND_WAVE_TRAVEL_SPEED};
+        let signedOffset = clamp((dist - front) / ${POND_WAVE_BAND_WIDTH}, -1.0, 1.0);
+        let falloff = max(0.0, 1.0 - abs(signedOffset));
+        dv += direction * (${POND_WAVE_STRENGTH} * hemisphere * pulse * falloff * falloff * dt);
+        dy += ${POND_WAVE_VERTICAL_STRENGTH} * hemisphere * signedOffset * falloff * pulse * dt;
+    }
+    return vec3<f32>(dv.x, dy, dv.y);
+}`,
+        buffer: pondWaveBuffer,
+    };
+    let pondWaveTime = 0;
+    const writePondWaveParams = (): void => {
+        pondWaveData[0] = pondWaveTime;
+        pondWaveData[1] = wf.pondWaveSources;
+        pondWaveData[2] = FLOOR_Y;
+        pondWaveData[3] = POND_TOP_Y;
+        engine._device.queue.writeBuffer(pondWaveBuffer, 0, pondWaveData);
+    };
+    const randomizePondWaves = (): void => {
+        let seed = 0x57415645;
+        const random = (): number => {
+            seed = (seed + 0x6d2b79f5) | 0;
+            let value = seed;
+            value = Math.imul(value ^ (value >>> 15), value | 1);
+            value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+            return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+        pondWaveData.fill(0, 4);
+        const count = Math.min(POND_WAVE_SOURCES_MAX, Math.max(0, Math.floor(wf.pondWaveSources)));
+        for (let i = 0; i < count; i++) {
+            let x = ROCK_CX;
+            let z = ROCK_CZ;
+            for (let attempt = 0; attempt < 64; attempt++) {
+                const angle = random() * Math.PI * 2;
+                const radius = Math.sqrt(random()) * (POND_RADIUS - POND_WAVE_DURATION * POND_WAVE_TRAVEL_SPEED - POND_WAVE_BAND_WIDTH);
+                const candidateX = ROCK_CX + Math.cos(angle) * radius;
+                const candidateZ = ROCK_CZ + Math.sin(angle) * radius;
+                if (terrainHeightWorld(candidateX, candidateZ) < POND_TOP_Y - 0.08) {
+                    x = candidateX;
+                    z = candidateZ;
+                    break;
+                }
+            }
+            const facing = random() * Math.PI * 2;
+            const period = POND_WAVE_PERIOD_MIN + random() * (POND_WAVE_PERIOD_MAX - POND_WAVE_PERIOD_MIN);
+            const pointOffset = 4 + i * 4;
+            const pushOffset = 4 + POND_WAVE_SOURCES_MAX * 4 + i * 4;
+            pondWaveData[pointOffset] = x;
+            pondWaveData[pointOffset + 1] = z;
+            pondWaveData[pointOffset + 2] = Math.cos(facing);
+            pondWaveData[pointOffset + 3] = Math.sin(facing);
+            pondWaveData[pushOffset] = random() * period;
+            pondWaveData[pushOffset + 1] = period;
+        }
+        writePondWaveParams();
+    };
+    randomizePondWaves();
 
     // ── Waterfall sources: one POLYGON EMITTER per terrace on the rock's top. Each spawn
     //    volume is the terrace's own outline given a small height, so water wells up across the
@@ -1569,6 +1669,9 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         flow() {
             return buildFlow();
         },
+        forceField(): ForceFieldSpec | null {
+            return wf.pondWaveSources > 0 ? pondWaveSpec : null;
+        },
         onEnter(): void {
             active = true;
             for (const m of meshes) {
@@ -1667,10 +1770,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             }
             applyShadows(); // a hidden ring must stop casting too
         },
-        update(): void {
+        update(dt: number): void {
             // The core zeroes the shared UBO's bytes 32..159 on every pair switch, so the
             // 16-float collision block is re-written each frame (cheap: one 64-byte write).
             writeSdfParams();
+            if (wf.pondWaveSources > 0) {
+                pondWaveTime += dt;
+                writePondWaveParams();
+            }
             if (authoring) {
                 drawOverlay();
             }
@@ -1712,6 +1819,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         },
         demoParams(): DemoParam[] {
             return [
+                { key: "pondWaveSources", label: "Pond wave sources", type: "number", min: 0, max: POND_WAVE_SOURCES_MAX, step: 1, value: wf.pondWaveSources },
                 // { key: "meshScale", label: "Mesh scale", type: "number", min: 1, max: 3, step: 0.05, value: wf.meshScale },
                 // { key: "rockYaw", label: "Rock yaw", type: "number", min: 0, max: 360, step: 1, value: wf.rockYaw },
                 { key: "bloom", label: "Bloom", type: "boolean", value: wf.bloom },
@@ -1750,6 +1858,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                 authorSlot = Math.max(0, Math.round(value as number) - 1);
                 while (authorPolys.length <= authorSlot) {
                     authorPolys.push([]);
+                }
+                return;
+            }
+            if (key === "pondWaveSources") {
+                const next = Math.min(POND_WAVE_SOURCES_MAX, Math.max(0, Math.round(value as number)));
+                if (next !== wf.pondWaveSources) {
+                    wf.pondWaveSources = next;
+                    randomizePondWaves();
                 }
                 return;
             }

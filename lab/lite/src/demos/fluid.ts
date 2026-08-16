@@ -3812,7 +3812,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             activeSim.setForceField(rayForce.spec);
             pendingForce = null;
         } else {
-            activeSim.setForceField(null);
+            activeSim.setForceField(importedScene ? null : (activeDemo?.forceField?.() ?? null));
         }
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
         // Rendering and the camera keep running, so you can inspect the frozen state;
