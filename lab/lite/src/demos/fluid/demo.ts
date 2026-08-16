@@ -5,8 +5,21 @@
 // plain data+behaviour object (a `FluidDemo`) built from a `FluidCtx` of the
 // services the core hands it. No demo references the core module directly.
 
-import type { ArcRotateCamera, DirectionalLight, EngineContext, HemisphericLight, Mat4, Mesh, SceneContext } from "babylon-lite";
-import type { EmitterConfig, FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type {
+    ArcRotateCamera,
+    DirectionalLight,
+    EngineContext,
+    FluidEmitter,
+    FluidFlowConfig,
+    FluidProfiler,
+    FluidSim,
+    FluidSink,
+    HemisphericLight,
+    Mat4,
+    Mesh,
+    SceneContext,
+    SceneSdfSpec,
+} from "babylon-lite";
 
 /** Default (capsule / box) spawn box: a tall central column that drops in to
  *  fill the tank. The fountain overrides this with a wide shallow basin block. */
@@ -62,6 +75,14 @@ export interface PairState {
     schema: Record<string, number>;
     /** Generic per-demo tunables (empty for demos with no `demoParams`). */
     demoParams: Record<string, number>;
+    /** Solver-independent fluid sources, stored in grid-local coordinates. */
+    emitters?: FluidEmitter[];
+    /** Solver-independent recycling volumes, stored in grid-local coordinates. */
+    sinks?: FluidSink[];
+    /** Fill the full particle capacity from initial emitters even when inflows exist. */
+    initialEmittersFillCapacity?: boolean;
+    /** Legacy presets without explicit flow arrays rebuild the demo-owned graph after restoring demo state. */
+    legacyFlow?: boolean;
     color: string;
     half: boolean;
     /** Thickness-texture downscale factor (thickness size = canvas / factor). */
@@ -71,6 +92,8 @@ export interface PairState {
     physScale: number;
     /** Explicit simulation grid in world space. Omitted by legacy presets that use demo-authored bounds. */
     grid?: FluidGridSettings;
+    /** Whether the active simulation-domain wireframe is visible. */
+    showGridBounds?: boolean;
     /** Legacy format <=3 simulation-domain AABB. */
     domain?: FluidDomainBounds;
     /** Legacy format <=3 divisions along the longest domain axis. */
@@ -183,13 +206,8 @@ export interface FluidCtx {
     getActiveSim(): FluidSim;
     /** Re-seed the active sim (does NOT clear holes — call clearSceneHoles too). */
     resetActiveSim(): void;
-    /** Push new emitters (from the active demo) to BOTH backends. */
-    refreshEmitters(): void;
-    /** Re-read the active demo's `spawn()` and push it (plus its warm-up) to every backend.
-     *  Needed when a demo's seed volume is only known asynchronously — the waterfall derives
-     *  its from a height map that lands after the demo is already on screen, and without this
-     *  a following `resetActiveSim()` would re-seed against the stale volume. */
-    refreshSpawn(): void;
+    /** Replace the active pair's authored flow with the demo's current defaults. */
+    refreshFlow(): void;
     /** Carve a drain hole into the scene-SDF hole ring (offset 32 region). */
     addSceneHole(center: [number, number, number], radius: number): void;
     /** Clear all drain holes (zero the hole ring). */
@@ -274,11 +292,10 @@ export interface FluidDemo {
     readonly sdf: SceneSdfSpec;
     /** Pack this demo's static params into the shared UBO (offset 0 region). */
     writeSdfParams(): void;
-    /** Re-seed spawn box used by the sim's reset(). `accept`, when returned,
-     *  restricts seeding (CPU reject-sampling) so particles fit a non-box shape. */
-    spawn(): { min: [number, number, number]; max: [number, number, number]; accept?: (x: number, y: number, z: number) => boolean; warmupFrames?: number };
-    /** Recirculating jet emitters (fountain), or null. */
-    emitters(): EmitterConfig | null;
+    /** Default, solver-independent initial volumes, inflows and recycling sinks. */
+    flow(): FluidFlowConfig;
+    /** Optional notification after the generic authoring UI restores or edits the flow. */
+    onFlowChanged?(flow: FluidFlowConfig): void;
     /** Entering this demo: show meshes, set camera mode, etc. */
     onEnter(): void;
     /** Leaving this demo: hide meshes, undo camera mode / any force. */

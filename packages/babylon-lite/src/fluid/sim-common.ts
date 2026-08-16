@@ -355,11 +355,15 @@ export interface FluidSink {
     targets: string[];
     /** Omitted means every captured particle is recycled. Otherwise world-volume/second. */
     volumeRate?: number;
+    /** Per-particle recycle attempts/second. Mutually exclusive with volumeRate. */
+    perParticleRecycleRate?: number;
 }
 
 export interface FluidFlowConfig {
     emitters: FluidEmitter[];
     sinks: FluidSink[];
+    /** Fill the complete particle pool from initial emitters even when enabled inflows exist. */
+    initialEmittersFillCapacity?: boolean;
     /** @internal Exact compatibility metadata produced by legacyEmitterConfigToFluidFlow(). */
     _legacyEmitter?: LegacyEmitterFlowCompatibility;
 }
@@ -396,6 +400,11 @@ export interface EmitterConfig {
 
 /** Legacy per-particle relaunch probability for one frame. */
 export function legacyEmitterRelaunchProbability(rate: number, dt: number): number {
+    return fluidPerParticleRecycleProbability(rate, dt);
+}
+
+/** Per-particle recycle probability for one frame. */
+export function fluidPerParticleRecycleProbability(rate: number, dt: number): number {
     return Math.min(1, Math.max(0, rate * dt));
 }
 
@@ -781,8 +790,9 @@ export interface FluidInitialParticles {
 }
 
 /** Returns reset-time initial particles, or null to preserve legacy spawn-box seeding.
- *  Initial-only graphs activate the complete selected pool. Graphs with enabled inflows
- *  activate only the initial volumes' demand and reserve the remaining slots for inflow.
+ *  Initial-only graphs activate the complete selected pool. By default, graphs with enabled
+ *  inflows activate only the initial volumes' demand and reserve the remaining slots for inflow.
+ *  `initialEmittersFillCapacity` explicitly fills the complete pool instead.
  *  An inflow-only graph deliberately returns an empty active prefix so subsequent frames can
  *  activate dormant slots at the authored inflow rate. */
 export function createFluidInitialParticles(count: number, config: FluidFlowConfig | null, particleVolume = 1): FluidInitialParticles | null {
@@ -800,7 +810,7 @@ export function createFluidInitialParticles(count: number, config: FluidFlowConf
     if (!(total > 0)) {
         return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
     }
-    const activeCount = hasInflow ? Math.min(count, Math.max(0, Math.floor(total / Math.max(particleVolume, 1e-12)))) : count;
+    const activeCount = hasInflow && !config?.initialEmittersFillCapacity ? Math.min(count, Math.max(0, Math.floor(total / Math.max(particleVolume, 1e-12)))) : count;
     const allocations = volumes.map((volume, index) => {
         const exact = (activeCount * volume) / total;
         return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
@@ -848,6 +858,9 @@ export const FLUID_FLOW_BYTES = FLUID_FLOW_FLOATS * 4;
 const FLOW_EMITTER_COUNTER_U32 = MAX_FLUID_EMITTERS * 2;
 export const FLUID_FLOW_COUNTER_BYTES = (FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS) * 4;
 const UNLIMITED_FLOW_BUDGET = 0xffffffff;
+const FLOW_SINK_MODE_VOLUME = 0;
+const FLOW_SINK_MODE_LEGACY = 1;
+const FLOW_SINK_MODE_PER_PARTICLE = 2;
 
 export interface FluidFlowState {
     readonly device: GPUDevice;
@@ -1016,6 +1029,14 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
         }
         ids.add(item.id);
     }
+    for (const sink of config?.sinks ?? []) {
+        if (sink.volumeRate !== undefined && sink.perParticleRecycleRate !== undefined) {
+            throw new Error(`Fluid sink "${sink.id}" cannot define both volumeRate and perParticleRecycleRate.`);
+        }
+        if (sink.perParticleRecycleRate !== undefined && (!Number.isFinite(sink.perParticleRecycleRate) || sink.perParticleRecycleRate < 0)) {
+            throw new RangeError(`Fluid sink "${sink.id}" perParticleRecycleRate must be a finite non-negative number.`);
+        }
+    }
     const previousEmitterCarries = new Map(state.emitterIds.map((id, index) => [id, state.emitterCarries[index]!]));
     const previousSinkCarries = new Map(state.sinkIds.map((id, index) => [id, state.sinkCarries[index]!]));
     state.config = config;
@@ -1076,8 +1097,12 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
             }
         }
         state.u32.set([sink.enabled && sinkPacked ? 1 : 0, targetMask >>> 0, sink.volumeRate === undefined ? UNLIMITED_FLOW_BUDGET : 0, i], offset + 24);
+        state.u32[offset + 28] = sink.perParticleRecycleRate === undefined ? FLOW_SINK_MODE_VOLUME : FLOW_SINK_MODE_PER_PARTICLE;
+        if (sink.perParticleRecycleRate !== undefined) {
+            state.f32[offset + 30] = sink.perParticleRecycleRate;
+        }
         if (i === 0 && state.legacyEmitter) {
-            state.u32[offset + 28] = 1;
+            state.u32[offset + 28] = FLOW_SINK_MODE_LEGACY;
             state.u32[offset + 29] = state.legacyEmitter.fixedStreamCount;
             state.f32[offset + 30] = state.legacyEmitter.rate;
             state.f32[offset + 31] = state.legacyEmitter.fixedStreamDrainY;
@@ -1351,6 +1376,14 @@ fn fluidLegacyLaunch(e:FluidEmitterData,seed:u32)->FluidLaunch{
     let spread=(vec3<f32>(fluidRnd(seed*11u),fluidRnd(seed*13u),fluidRnd(seed*17u))-0.5)*(e.shape.params0.w*e.velocitySpread.w);
     return FluidLaunch(fluidLegacySamplePosition(e,seed),e.velocitySpread.xyz+spread,1u);
 }
+fn fluidPerParticleLaunch(e:FluidEmitterData,seed:u32)->FluidLaunch{
+    let s=e.shape;let kind=u32(s.scaleKind.w);var position=vec3<f32>(0.0);
+    if(e.flags.z==0u&&(kind==0u||kind==5u)){position=fluidLegacySamplePosition(e,seed);}
+    else{position=fluidToWorld(s,fluidSampleLocal(s,e.flags.z!=0u,seed));}
+    var velocity=e.velocitySpread.xyz;if(e.flags.w==0u){velocity=fluidQuatRotate(s.rotation,velocity);}
+    let spread=(vec3<f32>(fluidRnd(seed*11u),fluidRnd(seed*13u),fluidRnd(seed*17u))-0.5)*(length(velocity)*e.velocitySpread.w);
+    return FluidLaunch(position,velocity+spread,1u);
+}
 fn fluidTryLegacyRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
     if(flow.header.x==0u){return FluidLaunch(world,vec3<f32>(0.0),0u);}
     let sink=flow.sinks[0];let fixedN=sink.compat.y;let seed=flow.header.w*2654435761u+particleIndex;
@@ -1365,13 +1398,16 @@ fn fluidTryLegacyRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
     return fluidLegacyLaunch(flow.emitters[ei],seed);
 }
 fn fluidTryRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
-    if(flow.header.y>0u&&flow.sinks[0].compat.x!=0u){return fluidTryLegacyRelaunch(world,particleIndex);}
+    if(flow.header.y>0u&&flow.sinks[0].compat.x==${FLOW_SINK_MODE_LEGACY}u){return fluidTryLegacyRelaunch(world,particleIndex);}
     for(var si=0u;si<flow.header.y;si=si+1u){
         let sink=flow.sinks[si];
         if(sink.route.x==0u||sink.route.y==0u||!fluidInsideShape(sink.shape,world)){continue;}
+        let perParticle=sink.compat.x==${FLOW_SINK_MODE_PER_PARTICLE}u;
+        let seed=select((flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u),flow.header.w*2654435761u+particleIndex+si*3266489917u,perParticle);
+        if(perParticle&&!(fluidRnd(seed)<clamp(bitcast<f32>(sink.compat.z)*flow.frame.x,0.0,1.0))){continue;}
         if(!fluidClaimSink(sink.route.w,sink.route.z)){continue;}
-        let seed=(flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u);
         let ei=fluidChooseEmitter(sink.route.y,seed);if(ei>=flow.header.x){continue;}let e=flow.emitters[ei];
+        if(perParticle){return fluidPerParticleLaunch(e,seed);}
         let local=fluidSampleLocal(e.shape,e.flags.z!=0u,seed*3u+1u);let position=fluidToWorld(e.shape,local);
         var velocity=e.velocitySpread.xyz;if(e.flags.w==0u){velocity=fluidQuatRotate(e.shape.rotation,velocity);}
         let spread=(vec3<f32>(fluidRnd(seed*5u+2u),fluidRnd(seed*7u+3u),fluidRnd(seed*11u+5u))-0.5)*(length(velocity)*e.velocitySpread.w);

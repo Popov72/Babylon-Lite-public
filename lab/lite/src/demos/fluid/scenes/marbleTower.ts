@@ -11,8 +11,8 @@
 // per-switch `clearSceneHoles()` (which zeroes offset 32..159).
 
 import { addToScene, loadGltf, setMeshVisible } from "babylon-lite";
-import type { Mesh, SceneNode } from "babylon-lite";
-import type { EmitterConfig, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
+import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
 import { createPlane, createMeshFromData } from "babylon-lite/mesh/mesh-factories.js";
 import { createShaderMaterial, setShaderTexture } from "babylon-lite/material/shader/shader-material.js";
@@ -79,10 +79,10 @@ const OVERSHOT_ABOVE = 1.05; // height of the nozzle above the rim top — sits 
 // below the top of the square opening, not right at its lip).
 const OVERSHOT_FIXED = 3000; // particles dedicated to the overshot jet (count-independent — the LAST
 // emitter is fed only by indices [0, OVERSHOT_FIXED), so the wheel-driving stream looks the same at
-// 40k and 200k). See EmitterConfig.fixedStreamCount.
+// 40k and 200k).
 const OVERSHOT_DRAIN = WHEEL_C[1] - WHEEL_R * 0.55; // world-Y drain height for the fixed overshot loop:
 // once a jet particle sinks this far below the axle (past mid-wheel) it teleports straight back to the
-// nozzle (EmitterConfig.fixedStreamDrainY), so the ~3k jet particles never reach the floor pool and cycle
+// nozzle, so the ~3k jet particles never reach the floor pool and cycle
 // in a tight loop over the wheel — the flow (and hence the torque) is essentially count-independent. Tuned
 // empirically: recycling any HIGHER (e.g. 0.35·R) yanks the sparse 40k stream off the buckets before a
 // drive-side load can build (wheel stays dry); this depth lets water ride down and load the buckets at
@@ -135,7 +135,7 @@ export function createMarbleTowerDemo(ctx: FluidCtx): FluidDemo {
     // inner cylindrical SOLE (floor), two axial SHROUD side walls, and two radial VANES — and is
     // OPEN on the outer radial face, so gravity holds water while the pocket climbs/descends and
     // dumps it once the opening rotates to face downward. Walls are thin but tunnel-safe.
-    const BUCKET_DEPTH = 0.40; // radial depth of the pocket band (sole/shroud collision walls)
+    const BUCKET_DEPTH = 0.4; // radial depth of the pocket band (sole/shroud collision walls)
     const BUCKET_WALL = 0.1; // sole / shroud wall half-thickness (tunnel-safe)
     const VANE_HALF_W = 0.09; // vane tangential half-width
     // The paddle DIVIDERS (vanes) span the pocket radially from the sole (bInner) OUT to the measured
@@ -485,7 +485,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // the axis until the async load fills it.
     const topStructure = { cx: 0, cz: 0, hx: 0.5, hz: 0.5, y: TOP_EMIT_Y };
 
-    const marbleConfig = (): EmitterConfig => {
+    const marbleConfig = (): FluidFlowConfig => {
         // FOUR nozzles straddling the top cube's inlet holes (2×2), each pouring straight
         // down from just under the apex. Multiple emitters share the recycle budget (`rate`),
         // so this splits the same flow across the four holes rather than quadrupling it.
@@ -502,33 +502,75 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // steep drop). Small -Y so gravity + the arc land it on the wheel a bit below the launch height.
         const osRaw: [number, number, number] = [0, -0.15, WHEEL_DRIVE_SIDE];
         const osLen = Math.hypot(osRaw[0], osRaw[1], osRaw[2]);
-        const emitters = [
-            ...([[-1, -1], [1, -1], [-1, 1], [1, 1]] as const).map(([sx, sz]) => ({
-                pos: [topStructure.cx * k + sx * ox, ey, topStructure.cz * k + sz * oz] as [number, number, number],
-                dir: [0, -1, 0] as [number, number, number],
-                speed,
-                radius,
-            })),
-            // Overshot spout (MUST be LAST — the dedicated fixedStreamCount stream routes here). Sits
-            // just above the wheel top and pours mostly sideways toward the drive side so the water
-            // lands on the descending buckets, keeping the gravity-torque load one-signed.
-            {
-                pos: [WHEEL_C[0] * k, (WHEEL_C[1] + WHEEL_R + OVERSHOT_ABOVE) * k, WHEEL_C[2] * k] as [number, number, number],
-                dir: [osRaw[0] / osLen, osRaw[1] / osLen, osRaw[2] / osLen] as [number, number, number],
-                speed,
-                radius,
-            },
-        ];
-        return {
-            emitters,
-            // Pump intake: a thin slab across the whole domain floor. Settled water is pulled
-            // back up to the top nozzles (throttled by `rate` — a controlled trickle).
-            intakeMin: [-DOMAIN_R * k, FLOOR_Y * k, -DOMAIN_R * k],
-            intakeMax: [DOMAIN_R * k, (FLOOR_Y + 0.8) * k, DOMAIN_R * k],
-            rate: marbleParams.emitRate,
+        const topEmitters: FluidEmitter[] = (
+            [
+                [-1, -1],
+                [1, -1],
+                [-1, 1],
+                [1, 1],
+            ] as const
+        ).map(([sx, sz], index) => ({
+            id: `tower-top-${index + 1}`,
+            name: `Top pour ${index + 1}`,
+            enabled: true,
+            behavior: "inflow",
+            transform: { position: [topStructure.cx * k + sx * ox, ey, topStructure.cz * k + sz * oz], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "sphere", radius },
+            sampling: "volume",
+            velocity: [0, -speed, 0],
+            velocitySpace: "world",
             spread: 0.2,
-            fixedStreamCount: OVERSHOT_FIXED, // ~3k particles cycle through the overshot spout, regardless of total count
-            fixedStreamDrainY: OVERSHOT_DRAIN * k, // tight self-contained loop → flow independent of total count
+            volumeRate: 50 * marbleParams.emitRate,
+        }));
+        const overshot: FluidEmitter = {
+            id: "tower-overshot",
+            name: "Overshot wheel jet",
+            enabled: true,
+            behavior: "inflow",
+            transform: { position: [WHEEL_C[0] * k, (WHEEL_C[1] + WHEEL_R + OVERSHOT_ABOVE) * k, WHEEL_C[2] * k], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "sphere", radius },
+            sampling: "volume",
+            velocity: [(osRaw[0] / osLen) * speed, (osRaw[1] / osLen) * speed, (osRaw[2] / osLen) * speed],
+            velocitySpace: "world",
+            spread: 0.2,
+            volumeRate: 200 * marbleParams.emitRate,
+        };
+        return {
+            emitters: [
+                {
+                    id: "tower-fill",
+                    name: "Initial floor pool",
+                    enabled: true,
+                    behavior: "initial",
+                    transform: { position: [0, (FLOOR_Y + 1.65) * k, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "box", size: [10 * k, 2.7 * k, 10 * k] },
+                    sampling: "volume",
+                    velocity: [0, 0, 0],
+                    velocitySpace: "world",
+                    spread: 0,
+                },
+                ...topEmitters,
+                overshot,
+            ],
+            sinks: [
+                {
+                    id: "tower-overshot-recycle",
+                    name: "Wheel return",
+                    enabled: true,
+                    transform: { position: [WHEEL_C[0] * k, (OVERSHOT_DRAIN - WHEEL_R) * 0.5 * k, WHEEL_C[2] * k], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "box", size: [WHEEL_R * 3 * k, (OVERSHOT_DRAIN + WHEEL_R) * k, WHEEL_R * 3 * k] },
+                    targets: [overshot.id],
+                },
+                {
+                    id: "tower-floor-recycle",
+                    name: "Floor return",
+                    enabled: true,
+                    transform: { position: [0, (FLOOR_Y + 0.4) * k, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "box", size: [DOMAIN_R * 2 * k, 0.8 * k, DOMAIN_R * 2 * k] },
+                    targets: topEmitters.map((emitter) => emitter.id),
+                    volumeRate: 200 * marbleParams.emitRate,
+                },
+            ],
         };
     };
 
@@ -664,6 +706,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // rebuildSims → applySceneSdf re-reads demo.sdf/writeSdfParams/emitters/spawn on both sims.
         writeSdfParams();
         ctx.setDomainScale(meshScale);
+        ctx.refreshFlow();
         // 5) Follow-up visual bits the core doesn't own: camera framing + the (optional) debug overlays.
         ctx.camera.target.y = TOWER_HEIGHT * 0.5 * meshScale;
         if (dbgActive) {
@@ -1306,25 +1349,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const buildFluxRegion = (rIn: number, rOut: number, axHalf: number, seg: number): { positions: Float32Array; indices: Uint32Array } => {
         const p: number[] = [];
         const idx: number[] = [];
-        const inX0: number[] = [], outX0: number[] = [], inX1: number[] = [], outX1: number[] = [];
-        const push = (x: number, y: number, z: number): number => { p.push(x, y, z); return p.length / 3 - 1; };
+        const inX0: number[] = [],
+            outX0: number[] = [],
+            inX1: number[] = [],
+            outX1: number[] = [];
+        const push = (x: number, y: number, z: number): number => {
+            p.push(x, y, z);
+            return p.length / 3 - 1;
+        };
         for (let j = 0; j <= seg; j++) {
             const phi = -Math.PI / 2 + Math.PI * (j / seg);
-            const cy = Math.cos(phi), sy = Math.sin(phi);
+            const cy = Math.cos(phi),
+                sy = Math.sin(phi);
             inX0.push(push(-axHalf, rIn * cy, rIn * sy));
             outX0.push(push(-axHalf, rOut * cy, rOut * sy));
             inX1.push(push(axHalf, rIn * cy, rIn * sy));
             outX1.push(push(axHalf, rOut * cy, rOut * sy));
         }
-        const quad = (a: number, b: number, c: number, d: number): void => { idx.push(a, b, c, a, c, d); };
+        const quad = (a: number, b: number, c: number, d: number): void => {
+            idx.push(a, b, c, a, c, d);
+        };
         for (let j = 0; j < seg; j++) {
             quad(outX0[j]!, outX0[j + 1]!, outX1[j + 1]!, outX1[j]!); // outer wall
-            quad(inX1[j]!, inX1[j + 1]!, inX0[j + 1]!, inX0[j]!);     // inner wall
-            quad(inX0[j]!, outX0[j]!, outX0[j + 1]!, inX0[j + 1]!);   // −X annular cap
-            quad(inX1[j + 1]!, outX1[j + 1]!, outX1[j]!, inX1[j]!);   // +X annular cap
+            quad(inX1[j]!, inX1[j + 1]!, inX0[j + 1]!, inX0[j]!); // inner wall
+            quad(inX0[j]!, outX0[j]!, outX0[j + 1]!, inX0[j + 1]!); // −X annular cap
+            quad(inX1[j + 1]!, outX1[j + 1]!, outX1[j]!, inX1[j]!); // +X annular cap
         }
-        quad(inX0[0]!, inX1[0]!, outX1[0]!, outX0[0]!);             // φ=-π/2 end cap
-        quad(outX0[seg]!, outX1[seg]!, inX1[seg]!, inX0[seg]!);     // φ=+π/2 end cap
+        quad(inX0[0]!, inX1[0]!, outX1[0]!, outX0[0]!); // φ=-π/2 end cap
+        quad(outX0[seg]!, outX1[seg]!, inX1[seg]!, inX0[seg]!); // φ=+π/2 end cap
         return { positions: new Float32Array(p), indices: new Uint32Array(idx) };
     };
     // Debug region mesh is kept at BASE scale (invisible by default; a dev-only overlay).
@@ -1599,7 +1651,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let bestMag = 0;
         let bestPhase = 0;
         if (cnt > 0) {
-            for (let n = NMIN; n <= 18; n++) { // spoke fundamental (12) lives here — exclude its 24/36 harmonics
+            for (let n = NMIN; n <= 18; n++) {
+                // spoke fundamental (12) lives here — exclude its 24/36 harmonics
                 const mag = Math.hypot(re[n]!, im[n]!) / cnt;
                 if (mag > bestMag) {
                     bestMag = mag;
@@ -1791,7 +1844,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     topStructure.hx = (mxx - mnx) / 2;
                     topStructure.hz = (mxz - mnz) / 2;
                     topStructure.y = apexY;
-                    ctx.refreshEmitters(); // re-pack the nozzles now that they're located
+                    if (active) {
+                        ctx.refreshFlow();
+                    }
                 }
                 // eslint-disable-next-line no-console
                 console.warn(
@@ -1823,13 +1878,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         envUrl: ENV_STUDIO_URL,
         sdf,
         writeSdfParams,
-        spawn() {
-            // A block pooled near the floor across the domain footprint — the top nozzle
-            // then recirculates it upward and pours it back down. Scales with the tower.
-            const k = meshScale;
-            return { min: [-5 * k, (FLOOR_Y + 0.3) * k, -5 * k] as [number, number, number], max: [5 * k, 3 * k, 5 * k] as [number, number, number] };
-        },
-        emitters() {
+        flow() {
             return marbleConfig();
         },
         onEnter(): void {
@@ -1880,12 +1929,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             writeSdfParams();
         },
         demoParams(): DemoParam[] {
-            return [
-                { key: "meshScale", label: "Mesh scale", type: "number", min: 0.25, max: 4, step: 0.05, value: meshScale },
-                { key: "centralSpeed", label: "Top pour speed", type: "number", min: 0, max: 16, step: 0.25, value: marbleParams.centralSpeed },
-                { key: "nozzleRadius", label: "Nozzle radius", type: "number", min: 0.1, max: 0.8, step: 0.05, value: marbleParams.nozzleRadius },
-                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0, max: 3, step: 0.02, value: marbleParams.emitRate },
-            ];
+            return [{ key: "meshScale", label: "Mesh scale", type: "number", min: 0.25, max: 4, step: 0.05, value: meshScale }];
         },
         getDomainScale(): number {
             // The core reads this on every switchPair to size the fluid-sim bounds. A larger tower
@@ -1921,8 +1965,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 return;
             }
-            (marbleParams as Record<string, number>)[key] = value as number;
-            ctx.refreshEmitters();
+            if (key in marbleParams && typeof value === "number") {
+                (marbleParams as unknown as Record<string, number>)[key] = value;
+            }
         },
         extraControls() {
             // Sync the persistent bake status + the SDF-texture visualizer controls (state persists

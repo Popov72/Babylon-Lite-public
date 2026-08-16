@@ -17,6 +17,9 @@ import {
     addTaskAfter,
     addTaskBefore,
     addToScene,
+    attachPositionGizmoToNode,
+    attachRotationGizmoToNode,
+    attachScaleGizmoToNode,
     attachControl,
     createArcRotateCamera,
     createDepthResolveTask,
@@ -24,28 +27,44 @@ import {
     createEngine,
     createGround,
     createHemisphericLight,
+    createLineMaterial,
+    createLineSystem,
     createMeshFromData,
     createPbrMaterial,
     createPcfDirectionalShadowGenerator,
+    createPositionGizmo,
     createRenderTarget,
     createRenderTask,
+    createRotationGizmo,
+    createScaleGizmo,
     createSceneContext,
     createStandardMaterial,
+    createUtilityLayer,
     getEffectiveAspectRatio,
     getFrameGraph,
     getViewProjectionMatrix,
+    isGizmoDragging,
+    isGizmoInteracting,
+    isGizmoPickPending,
     loadEnvironment,
     loadHdrEnvironment,
     createBlurPostProcessTask,
     markMaterialUboDirty,
     onBeforeRender,
     registerSceneWithShadowSupport,
+    registerUtilityLayer,
+    setPositionGizmoLocalCoordinates,
+    setRotationGizmoLocalCoordinates,
+    setScaleGizmoLocalCoordinates,
     setMeshVisible,
     setShadowTaskCasterMeshes,
     startEngine,
+    updateLineSystem,
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
+import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink, FluidTransform } from "babylon-lite";
 import type { FluidSim } from "babylon-lite/fluid/sim-common.js";
+import { MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_SINKS } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
@@ -53,7 +72,7 @@ import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js"
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
 import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
-import type { Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps } from "babylon-lite";
+import type { Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, Vec3 } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
 // re-exported from the package root, so the factory comes from its own module (the same
@@ -159,7 +178,11 @@ async function main(): Promise<void> {
     // claimsPointer — the camera ignores those too. Everything else rotates (LMB) /
     // slides (RMB) / zooms (wheel) through the built-in arc control.
     const isForceGesture = (e: PointerEvent): boolean => e.button === 2 && e.shiftKey;
-    attachControl(cam, canvas, scene, { shouldHandlePointerDown: (e) => !isForceGesture(e) && !activeDemo?.claimsPointer?.(e) });
+    attachControl(cam, canvas, scene, {
+        shouldHandlePointerDown: (e) => !isGizmoInteracting(canvas) && !isForceGesture(e) && !activeDemo?.claimsPointer?.(e),
+        isExternalDragActive: () => isGizmoDragging(canvas),
+        isExternalPickPending: () => isGizmoPickPending(canvas),
+    });
 
     // Ambient fill. It exists for the STANDARD-material demos (capsule / box / fountain), which
     // sample no environment map at all and would otherwise be lit by the sun alone. The waterfall
@@ -334,6 +357,8 @@ async function main(): Promise<void> {
     let gridSettings: FluidGridSettings | undefined;
     let builtGridSettings: FluidGridSettings | undefined;
     let builtGridMethod = methodName;
+    let showGridBounds = false;
+    let showGridGizmo = false;
 
     // Seed box scaled with the physics particle size. The fixed spawn box only
     // matches the rest density at 1×; at other sizes the seed is far under-dense
@@ -521,6 +546,8 @@ async function main(): Promise<void> {
     // The active demo (capsule / box / fountain). Assigned by the first switchPair;
     // every consumer below runs only after that, so the `!` reads are safe.
     let activeDemo: FluidDemo | null = null;
+    let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
+    let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
 
     // Composite target for the whole fluid chain. The surface / foam / container-overlay
     // passes write HERE instead of straight to the swapchain, so a post-process stage can
@@ -1100,30 +1127,68 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let forceLastY = 0;
     let forceLastT = 0;
 
-    // Push the active demo's emitters to BOTH backends (fountain live-tuning).
-    function applyEmitters(): void {
-        const emit = activeDemo!.emitters();
-        pbfSim.setEmitters(emit);
-        mpmSim.setEmitters(emit);
-        pbmpmSim.setEmitters(emit);
+    const effectiveGridSettings = (method = methodName, scale = domainScale): FluidGridSettings => gridSettings ?? defaultGridSettings(method, scale);
+    const gridLocalToWorld = (local: readonly [number, number, number], position: readonly [number, number, number]): [number, number, number] => [
+        local[0] + position[0],
+        local[1] + position[1],
+        local[2] + position[2],
+    ];
+    const worldToGridLocal = (world: readonly [number, number, number], position: readonly [number, number, number]): [number, number, number] => [
+        world[0] - position[0],
+        world[1] - position[1],
+        world[2] - position[2],
+    ];
+    const withFlowPosition = <T extends FluidEmitter | FluidSink>(object: T, position: [number, number, number]): T => {
+        const copy = structuredClone(object);
+        copy.transform.position = position;
+        return copy;
+    };
+    const flowToWorld = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig => ({
+        emitters: flow.emitters.map((emitter) => withFlowPosition(emitter, gridLocalToWorld(emitter.transform.position, position))),
+        sinks: flow.sinks.map((sink) => withFlowPosition(sink, gridLocalToWorld(sink.transform.position, position))),
+        ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
+    });
+    const flowToGridLocal = (flow: FluidFlowConfig, position = effectiveGridSettings().position): FluidFlowConfig => ({
+        emitters: flow.emitters.map((emitter) => withFlowPosition(emitter, worldToGridLocal(emitter.transform.position, position))),
+        sinks: flow.sinks.map((sink) => withFlowPosition(sink, worldToGridLocal(sink.transform.position, position))),
+        ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
+    });
+    function setInstalledFlow(): void {
+        pbfSim.setFlow(installedFlow);
+        mpmSim.setFlow(installedFlow);
+        pbmpmSim.setFlow(installedFlow);
     }
-
-    // Inject the active demo's scene SDF, emitters and spawn into both sims.
-    // Re-applied after any sim rebuild. The demo packs its own params into the UBO
-    // (offset 0); the hole ring (offset 32) is managed here.
-    // Push the active demo's seed volume + warm-up to every backend. Split out of
-    // applySceneSdf so a demo whose spawn volume resolves asynchronously can re-push it
-    // (see ctx.refreshSpawn) without redoing the whole SDF/emitter apply.
-    function applySpawn(): void {
-        const s = activeDemo!.spawn();
-        pbfSim.setSpawn(s.min, s.max, s.accept);
-        mpmSim.setSpawn(s.min, s.max, s.accept);
-        pbmpmSim.setSpawn(s.min, s.max, s.accept);
-        // Per-demo start-of-sim warm-up (PB-MPM no-ops it). Applied on the next
-        // reset()/seed() — switchPair resets the active sim right after this.
-        pbfSim.setWarmup?.(s.warmupFrames ?? 0);
-        mpmSim.setWarmup?.(s.warmupFrames ?? 0);
-        pbmpmSim.setWarmup?.(s.warmupFrames ?? 0);
+    function applyFlow(): void {
+        installedFlow = flowToWorld(activeFlow);
+        setInstalledFlow();
+        activeDemo?.onFlowChanged?.(installedFlow);
+        canvas.dataset.emitterCount = String(activeFlow.emitters.length);
+        canvas.dataset.sinkCount = String(activeFlow.sinks.length);
+    }
+    function updateInstalledFlowObject(kind: "emitter" | "sink", object: FluidEmitter | FluidSink): void {
+        const position = effectiveGridSettings().position;
+        if (kind === "emitter") {
+            const index = installedFlow.emitters.findIndex((candidate) => candidate.id === object.id);
+            if (index < 0) {
+                return;
+            }
+            installedFlow.emitters[index] = withFlowPosition(object as FluidEmitter, gridLocalToWorld(object.transform.position, position));
+        } else {
+            const index = installedFlow.sinks.findIndex((candidate) => candidate.id === object.id);
+            if (index < 0) {
+                return;
+            }
+            installedFlow.sinks[index] = withFlowPosition(object as FluidSink, gridLocalToWorld(object.transform.position, position));
+        }
+        setInstalledFlow();
+        activeDemo?.onFlowChanged?.(installedFlow);
+    }
+    function resetActiveFlow(clearHoles: boolean): void {
+        applyFlow();
+        activeSim.reset();
+        if (clearHoles) {
+            clearSceneHoles();
+        }
     }
 
     function applySceneSdf(): void {
@@ -1132,11 +1197,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         pbfSim.setSceneSdf(demo.sdf);
         mpmSim.setSceneSdf(demo.sdf);
         pbmpmSim.setSceneSdf(demo.sdf);
-        const emit = demo.emitters();
-        pbfSim.setEmitters(emit);
-        mpmSim.setEmitters(emit);
-        pbmpmSim.setEmitters(emit);
-        applySpawn();
+        applyFlow();
     }
 
     // ── Live tuning UI ───────────────────────────────────────────────
@@ -1376,6 +1437,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             gridPosition: [...initialGridSettings.position],
             gridSize: [...initialGridSettings.size],
             cellSize: cellSizeForPhysicsScale(methodName, physicsScale) * domainScale,
+            showGridBounds,
             color: "#16a3c3", // matches the default FLUID_COLOR
             absorption: 1,
             size: 1,
@@ -1467,6 +1529,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
             onPhysScale: (s) => setPhysicsScale(s),
             onGridSettings: (position, size) => setGridSettings({ position, size }),
+            onGridGizmo: (visible) => setGridGizmoVisible(visible),
+            onShowGridBounds: (visible) => {
+                showGridBounds = visible;
+                syncGridBoundsWireframe();
+            },
             onActiveBlocks: (enabled) => {
                 if (enabled === mpmActiveBlocks) return;
                 mpmActiveBlocks = enabled;
@@ -1495,10 +1562,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 mpmFusedBlockDiscovery = enabled;
                 rebuildSims(particleCount, physicsScale);
             },
-            onReset: () => {
-                activeSim.reset();
-                clearSceneHoles();
-            },
+            onReset: () => resetActiveFlow(true),
             onFoamEnable: () => pushFoam(),
             onFoamActiveParticles: () => pushFoam(),
             onFoamKta: () => {
@@ -1550,6 +1614,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     controls.demoSlot.append(
         ...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!])
     );
+
+    const emitterFlowHost = document.createElement("div");
+    const sinkFlowHost = document.createElement("div");
+    controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
 
     // ── Export parameters ────────────────────────────────────────────────────
     // Serialise the FULL current parameter set (pair state + render mode + surface +
@@ -1683,6 +1751,1007 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
     }
 
+    let selectedEmitterId: string | null = null;
+    let selectedSinkId: string | null = null;
+    let showEmitterWireframe = false;
+    let showSinkWireframe = false;
+    type FlowObjectKind = "emitter" | "sink";
+    let flowGizmoOwner: FlowObjectKind | null = null;
+
+    type FlowWireframeSegment = readonly [Vec3, Vec3];
+    const FLOW_WIREFRAME_SEGMENTS = MAX_FLUID_POLYGON_POINTS * 3;
+    const flowPoint = (x: number, y: number, z: number): Vec3 => ({ x, y, z });
+    const boxWireframeSegments = (min: readonly [number, number, number], max: readonly [number, number, number]): FlowWireframeSegment[] => {
+        const corners = [
+            flowPoint(min[0], min[1], min[2]),
+            flowPoint(max[0], min[1], min[2]),
+            flowPoint(max[0], min[1], max[2]),
+            flowPoint(min[0], min[1], max[2]),
+            flowPoint(min[0], max[1], min[2]),
+            flowPoint(max[0], max[1], min[2]),
+            flowPoint(max[0], max[1], max[2]),
+            flowPoint(min[0], max[1], max[2]),
+        ];
+        return [
+            [corners[0]!, corners[1]!],
+            [corners[1]!, corners[2]!],
+            [corners[2]!, corners[3]!],
+            [corners[3]!, corners[0]!],
+            [corners[4]!, corners[5]!],
+            [corners[5]!, corners[6]!],
+            [corners[6]!, corners[7]!],
+            [corners[7]!, corners[4]!],
+            [corners[0]!, corners[4]!],
+            [corners[1]!, corners[5]!],
+            [corners[2]!, corners[6]!],
+            [corners[3]!, corners[7]!],
+        ];
+    };
+    const gridBoundsSegments = (size: readonly [number, number, number]): FlowWireframeSegment[] =>
+        boxWireframeSegments([-size[0] * 0.5, -size[1] * 0.5, -size[2] * 0.5], [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5]);
+    const initialEffectiveGrid = effectiveGridSettings();
+    const gridBoundsWireframe = createLineSystem(engine, {
+        name: "fluid-grid-bounds",
+        lines: gridBoundsSegments(initialEffectiveGrid.size),
+        material: createLineMaterial({
+            name: "fluid-grid-bounds-material",
+            color: { r: 0.45, g: 1, b: 0.35, a: 0.85 },
+            useVertexAlpha: true,
+            depthWrite: false,
+            depthCompare: "always",
+        }),
+    });
+    gridBoundsWireframe.pickable = false;
+    gridBoundsWireframe.renderOrder = 9_999;
+    addToScene(scene, gridBoundsWireframe);
+    setMeshVisible(gridBoundsWireframe, false);
+    const syncGridBoundsWireframe = (): void => {
+        const grid = effectiveGridSettings();
+        updateLineSystem(engine, gridBoundsWireframe, { lines: gridBoundsSegments(grid.size) });
+        gridBoundsWireframe.position.set(grid.position[0], grid.position[1], grid.position[2]);
+        gridBoundsWireframe.scaling.set(1, 1, 1);
+        setMeshVisible(gridBoundsWireframe, showGridBounds || showGridGizmo);
+    };
+    const appendPolyline = (segments: FlowWireframeSegment[], points: readonly Vec3[], closed = true): void => {
+        for (let i = 1; i < points.length; i++) {
+            segments.push([points[i - 1]!, points[i]!]);
+        }
+        if (closed && points.length > 2) {
+            segments.push([points[points.length - 1]!, points[0]!]);
+        }
+    };
+    const appendRing = (segments: FlowWireframeSegment[], plane: "xy" | "xz" | "yz", radius: number, center: Vec3 = flowPoint(0, 0, 0), steps = 32): void => {
+        const points: Vec3[] = [];
+        for (let i = 0; i < steps; i++) {
+            const angle = (i / steps) * Math.PI * 2;
+            const a = Math.cos(angle) * radius;
+            const b = Math.sin(angle) * radius;
+            points.push(
+                plane === "xy"
+                    ? flowPoint(center.x + a, center.y + b, center.z)
+                    : plane === "xz"
+                      ? flowPoint(center.x + a, center.y, center.z + b)
+                      : flowPoint(center.x, center.y + a, center.z + b)
+            );
+        }
+        appendPolyline(segments, points);
+    };
+    const flowShapeWireframe = (shape: FluidShape): FlowWireframeSegment[] => {
+        const segments: FlowWireframeSegment[] = [];
+        if (shape.type === "box") {
+            const [hx, hy, hz] = shape.size.map((value) => value * 0.5);
+            segments.push(...boxWireframeSegments([-hx!, -hy!, -hz!], [hx!, hy!, hz!]));
+        } else if (shape.type === "sphere") {
+            appendRing(segments, "xy", shape.radius);
+            appendRing(segments, "xz", shape.radius);
+            appendRing(segments, "yz", shape.radius);
+        } else if (shape.type === "cylinder") {
+            const halfHeight = shape.height * 0.5;
+            for (const y of [-halfHeight, halfHeight]) {
+                appendRing(segments, "xz", shape.radius, flowPoint(0, y, 0));
+                if ((shape.innerRadius ?? 0) > 0) {
+                    appendRing(segments, "xz", shape.innerRadius!, flowPoint(0, y, 0));
+                }
+            }
+            const radii = shape.innerRadius && shape.innerRadius > 0 ? [shape.radius, shape.innerRadius] : [shape.radius];
+            for (const radius of radii) {
+                for (let i = 0; i < 8; i++) {
+                    const angle = (i / 8) * Math.PI * 2;
+                    const x = Math.cos(angle) * radius;
+                    const z = Math.sin(angle) * radius;
+                    segments.push([flowPoint(x, -halfHeight, z), flowPoint(x, halfHeight, z)]);
+                }
+            }
+        } else if (shape.type === "cone") {
+            const halfHeight = shape.height * 0.5;
+            if (shape.bottomRadius > 0) {
+                appendRing(segments, "xz", shape.bottomRadius, flowPoint(0, -halfHeight, 0));
+            }
+            if (shape.topRadius > 0) {
+                appendRing(segments, "xz", shape.topRadius, flowPoint(0, halfHeight, 0));
+            }
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const x = Math.cos(angle);
+                const z = Math.sin(angle);
+                segments.push([flowPoint(x * shape.bottomRadius, -halfHeight, z * shape.bottomRadius), flowPoint(x * shape.topRadius, halfHeight, z * shape.topRadius)]);
+            }
+        } else if (shape.type === "capsule") {
+            const bodyHalfHeight = Math.max(0, shape.height * 0.5 - shape.radius);
+            appendRing(segments, "xz", shape.radius, flowPoint(0, -bodyHalfHeight, 0));
+            appendRing(segments, "xz", shape.radius, flowPoint(0, bodyHalfHeight, 0));
+            const meridian: Vec3[] = [];
+            for (let i = 0; i <= 16; i++) {
+                const angle = Math.PI - (i / 16) * Math.PI;
+                meridian.push(flowPoint(Math.cos(angle) * shape.radius, bodyHalfHeight + Math.sin(angle) * shape.radius, 0));
+            }
+            meridian.push(flowPoint(shape.radius, -bodyHalfHeight, 0));
+            for (let i = 1; i <= 16; i++) {
+                const angle = -(i / 16) * Math.PI;
+                meridian.push(flowPoint(Math.cos(angle) * shape.radius, -bodyHalfHeight + Math.sin(angle) * shape.radius, 0));
+            }
+            appendPolyline(segments, meridian);
+            appendPolyline(
+                segments,
+                meridian.map((point) => flowPoint(0, point.y, point.x))
+            );
+        } else {
+            const halfThickness = shape.thickness * 0.5;
+            for (let i = 0; i < shape.points.length; i++) {
+                const point = shape.points[i]!;
+                const next = shape.points[(i + 1) % shape.points.length]!;
+                const bottom = flowPoint(point[0], -halfThickness, point[1]);
+                const top = flowPoint(point[0], halfThickness, point[1]);
+                segments.push([bottom, flowPoint(next[0], -halfThickness, next[1])], [top, flowPoint(next[0], halfThickness, next[1])], [bottom, top]);
+            }
+        }
+        return segments;
+    };
+    const paddedFlowWireframe = (shape?: FluidShape): FlowWireframeSegment[] => {
+        const segments = shape ? flowShapeWireframe(shape).slice(0, FLOW_WIREFRAME_SEGMENTS) : [];
+        while (segments.length < FLOW_WIREFRAME_SEGMENTS) {
+            segments.push([flowPoint(0, 0, 0), flowPoint(0, 0, 0)]);
+        }
+        return segments;
+    };
+    const createFlowWireframe = (name: string, color: { r: number; g: number; b: number; a: number }): Mesh => {
+        const mesh = createLineSystem(engine, {
+            name,
+            lines: paddedFlowWireframe(),
+            material: createLineMaterial({ name: `${name}-material`, color, useVertexAlpha: true, depthWrite: false, depthCompare: "always" }),
+        });
+        mesh.pickable = false;
+        mesh.renderOrder = 10_000;
+        addToScene(scene, mesh);
+        setMeshVisible(mesh, false);
+        return mesh;
+    };
+    const emitterFlowWireframe = createFlowWireframe("fluid-emitter-wireframe", { r: 0.1, g: 0.9, b: 1, a: 0.9 });
+    const sinkFlowWireframe = createFlowWireframe("fluid-sink-wireframe", { r: 1, g: 0.55, b: 0.1, a: 0.9 });
+    const selectedFlowObject = (kind: FlowObjectKind): FluidEmitter | FluidSink | undefined => {
+        const selectedId = kind === "emitter" ? selectedEmitterId : selectedSinkId;
+        return kind === "emitter" ? activeFlow.emitters.find((emitter) => emitter.id === selectedId) : activeFlow.sinks.find((sink) => sink.id === selectedId);
+    };
+    const syncFlowWireframe = (kind: FlowObjectKind): void => {
+        const isEmitter = kind === "emitter";
+        const mesh = isEmitter ? emitterFlowWireframe : sinkFlowWireframe;
+        const visible = isEmitter ? showEmitterWireframe : showSinkWireframe;
+        const flowObject = selectedFlowObject(kind);
+        if (!flowObject) {
+            setMeshVisible(mesh, false);
+            return;
+        }
+        updateLineSystem(engine, mesh, { lines: paddedFlowWireframe(flowObject.shape) });
+        const { position, rotation, scale } = flowObject.transform;
+        const worldPosition = gridLocalToWorld(position, effectiveGridSettings().position);
+        mesh.position.set(worldPosition[0], worldPosition[1], worldPosition[2]);
+        mesh.rotationQuaternion.set(rotation[0], rotation[1], rotation[2], rotation[3]);
+        mesh.scaling.set(scale[0], scale[1], scale[2]);
+        setMeshVisible(mesh, visible || flowGizmoOwner === kind);
+    };
+
+    const flowGizmoLayer = createUtilityLayer(engine, scene);
+    const flowPositionGizmo = createPositionGizmo(engine, flowGizmoLayer, { planarEnabled: true });
+    const flowRotationGizmo = createRotationGizmo(engine, flowGizmoLayer);
+    const flowScaleGizmo = createScaleGizmo(engine, flowGizmoLayer);
+    const gridPositionGizmo = createPositionGizmo(engine, flowGizmoLayer, { planarEnabled: true });
+    const gridScaleGizmo = createScaleGizmo(engine, flowGizmoLayer);
+    setPositionGizmoLocalCoordinates(flowPositionGizmo, false);
+    setRotationGizmoLocalCoordinates(flowRotationGizmo, true);
+    setScaleGizmoLocalCoordinates(flowScaleGizmo, true);
+    setPositionGizmoLocalCoordinates(gridPositionGizmo, false);
+    setScaleGizmoLocalCoordinates(gridScaleGizmo, true);
+    const flowPositionSubGizmos = [
+        flowPositionGizmo.xGizmo,
+        flowPositionGizmo.yGizmo,
+        flowPositionGizmo.zGizmo,
+        ...(flowPositionGizmo.xPlaneGizmo ? [flowPositionGizmo.xPlaneGizmo] : []),
+        ...(flowPositionGizmo.yPlaneGizmo ? [flowPositionGizmo.yPlaneGizmo] : []),
+        ...(flowPositionGizmo.zPlaneGizmo ? [flowPositionGizmo.zPlaneGizmo] : []),
+    ];
+    const flowRotationSubGizmos = [flowRotationGizmo.xGizmo, flowRotationGizmo.yGizmo, flowRotationGizmo.zGizmo];
+    const flowScaleSubGizmos = [flowScaleGizmo.xGizmo, flowScaleGizmo.yGizmo, flowScaleGizmo.zGizmo, flowScaleGizmo.uniformScaleGizmo];
+    const gridPositionSubGizmos = [
+        gridPositionGizmo.xGizmo,
+        gridPositionGizmo.yGizmo,
+        gridPositionGizmo.zGizmo,
+        ...(gridPositionGizmo.xPlaneGizmo ? [gridPositionGizmo.xPlaneGizmo] : []),
+        ...(gridPositionGizmo.yPlaneGizmo ? [gridPositionGizmo.yPlaneGizmo] : []),
+        ...(gridPositionGizmo.zPlaneGizmo ? [gridPositionGizmo.zPlaneGizmo] : []),
+    ];
+    const gridScaleSubGizmos = [gridScaleGizmo.xGizmo, gridScaleGizmo.yGizmo, gridScaleGizmo.zGizmo, gridScaleGizmo.uniformScaleGizmo];
+    const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
+        for (const gizmo of gizmos) {
+            for (const mesh of gizmo._visibleMeshes) {
+                setMeshVisible(mesh, visible);
+            }
+        }
+    };
+    const syncFlowTransformFromGizmo = (): void => {
+        if (!flowGizmoOwner) {
+            return;
+        }
+        const flowObject = selectedFlowObject(flowGizmoOwner);
+        if (!flowObject) {
+            return;
+        }
+        const mesh = flowGizmoOwner === "emitter" ? emitterFlowWireframe : sinkFlowWireframe;
+        flowObject.transform.position = worldToGridLocal([mesh.position.x, mesh.position.y, mesh.position.z], effectiveGridSettings().position);
+        flowObject.transform.rotation = [mesh.rotationQuaternion.x, mesh.rotationQuaternion.y, mesh.rotationQuaternion.z, mesh.rotationQuaternion.w];
+        flowObject.transform.scale = [mesh.scaling.x, mesh.scaling.y, mesh.scaling.z];
+        updateInstalledFlowObject(flowGizmoOwner, flowObject);
+    };
+    const finishFlowGizmoDrag = (): void => {
+        syncFlowTransformFromGizmo();
+        refreshFlowUI();
+    };
+    for (const gizmo of flowPositionSubGizmos) {
+        gizmo.onPositionChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    for (const gizmo of flowRotationSubGizmos) {
+        gizmo.onRotationChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    for (const gizmo of flowScaleSubGizmos) {
+        gizmo.onScaleChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    const syncFlowGizmo = (): void => {
+        const owner = flowGizmoOwner;
+        const flowObject = owner ? selectedFlowObject(owner) : undefined;
+        const target = owner && flowObject ? (owner === "emitter" ? emitterFlowWireframe : sinkFlowWireframe) : null;
+        attachPositionGizmoToNode(flowPositionGizmo, target);
+        attachRotationGizmoToNode(flowRotationGizmo, target);
+        attachScaleGizmoToNode(flowScaleGizmo, target);
+        setGizmoMeshesVisible(!!target, flowPositionSubGizmos);
+        setGizmoMeshesVisible(!!target, flowRotationSubGizmos);
+        setGizmoMeshesVisible(!!target, flowScaleSubGizmos);
+        if (owner) {
+            syncFlowWireframe(owner);
+        }
+    };
+    const finishGridGizmoDrag = (): void => {
+        const base = effectiveGridSettings();
+        const next: FluidGridSettings = {
+            position: [
+                Math.round(gridBoundsWireframe.position.x * 10) / 10,
+                Math.round(gridBoundsWireframe.position.y * 10) / 10,
+                Math.round(gridBoundsWireframe.position.z * 10) / 10,
+            ],
+            size: [
+                Math.max(0.1, Math.round(Math.abs(base.size[0] * gridBoundsWireframe.scaling.x) * 10) / 10),
+                Math.max(0.1, Math.round(Math.abs(base.size[1] * gridBoundsWireframe.scaling.y) * 10) / 10),
+                Math.max(0.1, Math.round(Math.abs(base.size[2] * gridBoundsWireframe.scaling.z) * 10) / 10),
+            ],
+        };
+        const error = setGridSettings(next);
+        if (typeof error === "string") {
+            controls.setGridStatus(error);
+            syncGridBoundsWireframe();
+        }
+        syncGridGizmo();
+    };
+    for (const gizmo of gridPositionSubGizmos) {
+        gizmo.drag.onDragEnd.add(finishGridGizmoDrag);
+    }
+    for (const gizmo of gridScaleSubGizmos) {
+        gizmo.drag.onDragEnd.add(finishGridGizmoDrag);
+    }
+    const syncGridGizmo = (): void => {
+        attachPositionGizmoToNode(gridPositionGizmo, showGridGizmo ? gridBoundsWireframe : null);
+        attachScaleGizmoToNode(gridScaleGizmo, showGridGizmo ? gridBoundsWireframe : null);
+        setGizmoMeshesVisible(showGridGizmo, gridPositionSubGizmos);
+        setGizmoMeshesVisible(showGridGizmo, gridScaleSubGizmos);
+    };
+    function setGridGizmoVisible(visible: boolean): void {
+        showGridGizmo = visible;
+        canvas.dataset.gridGizmo = visible ? "true" : "false";
+        syncGridBoundsWireframe();
+        syncGridGizmo();
+    }
+    syncGridBoundsWireframe();
+    syncGridGizmo();
+
+    const identityFlowTransform = (): FluidTransform => ({ position: [0, 1, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] });
+    const defaultFlowShape = (type: FluidShape["type"]): FluidShape => {
+        if (type === "sphere") {
+            return { type, radius: 0.25 };
+        }
+        if (type === "cylinder") {
+            return { type, radius: 0.5, height: 0.5 };
+        }
+        if (type === "cone") {
+            return { type, bottomRadius: 0.5, topRadius: 0, height: 1 };
+        }
+        if (type === "capsule") {
+            return { type, radius: 0.5, height: 1 };
+        }
+        if (type === "polygonPrism") {
+            return {
+                type,
+                points: [
+                    [-0.5, -0.5],
+                    [0.5, -0.5],
+                    [0.5, 0.5],
+                    [-0.5, 0.5],
+                ],
+                thickness: 0.25,
+            };
+        }
+        return { type: "box", size: [1, 1, 1] };
+    };
+    const uniqueFlowId = (prefix: string): string => {
+        const used = new Set([...activeFlow.emitters.map((emitter) => emitter.id), ...activeFlow.sinks.map((sink) => sink.id)]);
+        let index = 1;
+        while (used.has(`${prefix}-${index}`)) {
+            index++;
+        }
+        return `${prefix}-${index}`;
+    };
+    const updateAuthoredFlow = (rebuildEditor = true): void => {
+        if (rebuildEditor) {
+            refreshFlowUI();
+        } else {
+            syncFlowWireframe("emitter");
+            syncFlowWireframe("sink");
+            syncFlowGizmo();
+        }
+    };
+    const updateLiveFlowObject = (kind: FlowObjectKind, object: FluidEmitter | FluidSink, rebuildEditor = true): void => {
+        updateInstalledFlowObject(kind, object);
+        updateAuthoredFlow(rebuildEditor);
+    };
+    const flowButton = (label: string, onClick: () => void): HTMLButtonElement => {
+        const button = document.createElement("button");
+        button.textContent = label;
+        button.style.cssText = "padding:3px 7px;background:#25354a;color:#e8eef5;border:1px solid #40536d;border-radius:3px;cursor:pointer;";
+        button.onclick = onClick;
+        return button;
+    };
+    const flowField = (label: string, control: HTMLElement, info?: string): HTMLElement => {
+        const row = document.createElement("label");
+        row.style.cssText = "display:grid;grid-template-columns:105px 1fr;align-items:center;gap:6px;margin:4px 0;";
+        const text = document.createElement("span");
+        text.textContent = label;
+        if (info) {
+            row.title = info;
+            const icon = document.createElement("span");
+            icon.textContent = " ⓘ";
+            icon.style.cssText = "color:#6d7f95;cursor:help;";
+            text.appendChild(icon);
+        }
+        row.append(text, control);
+        return row;
+    };
+    const numberInput = (value: number, onChange: (value: number) => void, step = 0.1, min?: number): HTMLInputElement => {
+        let committed = value;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.step = String(step);
+        if (min !== undefined) {
+            input.min = String(min);
+        }
+        input.value = String(value);
+        input.style.cssText = "width:100%;min-width:0;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:3px 5px;";
+        input.onchange = () => {
+            const next = Number(input.value);
+            if (Number.isFinite(next) && (min === undefined || next >= min)) {
+                committed = next;
+                onChange(next);
+            } else {
+                input.value = String(committed);
+            }
+        };
+        return input;
+    };
+    const textInput = (value: string, onChange: (value: string) => void): HTMLInputElement => {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = value;
+        input.style.cssText = "width:100%;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:2px 4px;";
+        input.onchange = () => onChange(input.value.trim() || value);
+        return input;
+    };
+    const selectInput = <T extends string>(value: T, values: readonly T[], onChange: (value: T) => void): HTMLSelectElement => {
+        const select = document.createElement("select");
+        select.style.cssText = "width:100%;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:2px;";
+        for (const item of values) {
+            const option = document.createElement("option");
+            option.value = item;
+            option.textContent = item;
+            select.appendChild(option);
+        }
+        select.value = value;
+        select.onchange = () => onChange(select.value as T);
+        return select;
+    };
+    const vec3Editor = (value: [number, number, number], onChange: (value: [number, number, number]) => void, step = 0.1): HTMLElement => {
+        const current: [number, number, number] = [...value];
+        const host = document.createElement("div");
+        host.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:3px;";
+        for (let axis = 0; axis < 3; axis++) {
+            host.appendChild(
+                numberInput(
+                    value[axis]!,
+                    (next) => {
+                        current[axis] = next;
+                        onChange([...current]);
+                    },
+                    step
+                )
+            );
+        }
+        return host;
+    };
+    const quatFromEulerDegrees = (value: [number, number, number]): [number, number, number, number] => {
+        const x = (value[0] * Math.PI) / 360;
+        const y = (value[1] * Math.PI) / 360;
+        const z = (value[2] * Math.PI) / 360;
+        const sx = Math.sin(x);
+        const cx = Math.cos(x);
+        const sy = Math.sin(y);
+        const cy = Math.cos(y);
+        const sz = Math.sin(z);
+        const cz = Math.cos(z);
+        return [sx * cy * cz - cx * sy * sz, cx * sy * cz + sx * cy * sz, cx * cy * sz - sx * sy * cz, cx * cy * cz + sx * sy * sz];
+    };
+    const eulerDegreesFromQuat = (q: [number, number, number, number]): [number, number, number] => {
+        const [x, y, z, w] = q;
+        const rx = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+        const sy = Math.max(-1, Math.min(1, 2 * (w * y - z * x)));
+        const ry = Math.asin(sy);
+        const rz = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+        return [(rx * 180) / Math.PI, (ry * 180) / Math.PI, (rz * 180) / Math.PI];
+    };
+    const appendTransformEditor = (host: HTMLElement, kind: FlowObjectKind, target: FluidEmitter | FluidSink): void => {
+        const transform = target.transform;
+        host.append(
+            flowField(
+                "Position",
+                vec3Editor(transform.position, (value) => {
+                    transform.position = value;
+                    updateLiveFlowObject(kind, target, false);
+                }),
+                "Grid-local offset from Grid position."
+            ),
+            flowField(
+                "Rotation °",
+                vec3Editor(
+                    eulerDegreesFromQuat(transform.rotation),
+                    (value) => {
+                        transform.rotation = quatFromEulerDegrees(value);
+                        updateLiveFlowObject(kind, target, false);
+                    },
+                    1
+                )
+            ),
+            flowField(
+                "Scale",
+                vec3Editor(
+                    transform.scale,
+                    (value) => {
+                        transform.scale = value;
+                        updateLiveFlowObject(kind, target, false);
+                    },
+                    0.05
+                )
+            )
+        );
+    };
+    const appendShapeEditor = (host: HTMLElement, kind: FlowObjectKind, target: FluidEmitter | FluidSink): void => {
+        const shapeTypes: FluidShape["type"][] = ["box", "sphere", "cylinder", "cone", "capsule", "polygonPrism"];
+        host.appendChild(
+            flowField(
+                "Shape",
+                selectInput(target.shape.type, shapeTypes, (type) => {
+                    target.shape = defaultFlowShape(type);
+                    updateLiveFlowObject(kind, target);
+                })
+            )
+        );
+        const shape = target.shape;
+        if (shape.type === "box") {
+            host.appendChild(
+                flowField(
+                    "Size",
+                    vec3Editor(shape.size, (value) => {
+                        shape.size = value;
+                        updateLiveFlowObject(kind, target, false);
+                    })
+                )
+            );
+        } else if (shape.type === "sphere") {
+            host.appendChild(
+                flowField(
+                    "Radius",
+                    numberInput(
+                        shape.radius,
+                        (value) => {
+                            shape.radius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        } else if (shape.type === "cylinder") {
+            host.append(
+                flowField(
+                    "Radius",
+                    numberInput(
+                        shape.radius,
+                        (value) => {
+                            shape.radius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                ),
+                flowField(
+                    "Inner radius",
+                    numberInput(
+                        shape.innerRadius ?? 0,
+                        (value) => {
+                            shape.innerRadius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                ),
+                flowField(
+                    "Height",
+                    numberInput(
+                        shape.height,
+                        (value) => {
+                            shape.height = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        } else if (shape.type === "cone") {
+            host.append(
+                flowField(
+                    "Bottom radius",
+                    numberInput(
+                        shape.bottomRadius,
+                        (value) => {
+                            shape.bottomRadius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                ),
+                flowField(
+                    "Top radius",
+                    numberInput(
+                        shape.topRadius,
+                        (value) => {
+                            shape.topRadius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                ),
+                flowField(
+                    "Height",
+                    numberInput(
+                        shape.height,
+                        (value) => {
+                            shape.height = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        } else if (shape.type === "capsule") {
+            host.append(
+                flowField(
+                    "Radius",
+                    numberInput(
+                        shape.radius,
+                        (value) => {
+                            shape.radius = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                ),
+                flowField(
+                    "Total height",
+                    numberInput(
+                        shape.height,
+                        (value) => {
+                            shape.height = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        } else {
+            const points = document.createElement("textarea");
+            points.value = shape.points.map((point) => `${point[0]},${point[1]}`).join("; ");
+            points.rows = 3;
+            points.style.cssText = "width:100%;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;";
+            points.onchange = () => {
+                const parsed = points.value
+                    .split(";")
+                    .map((entry) => entry.split(",").map(Number))
+                    .filter((entry) => entry.length === 2 && entry.every(Number.isFinite))
+                    .map((entry) => [entry[0]!, entry[1]!] as [number, number]);
+                if (parsed.length >= 3) {
+                    shape.points = parsed;
+                    updateLiveFlowObject(kind, target, false);
+                }
+            };
+            host.append(
+                flowField("Points x,z", points),
+                flowField(
+                    "Thickness",
+                    numberInput(
+                        shape.thickness,
+                        (value) => {
+                            shape.thickness = value;
+                            updateLiveFlowObject(kind, target, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        }
+    };
+    const flowWireframeCheckbox = (kind: FlowObjectKind): HTMLInputElement => {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = kind === "emitter" ? showEmitterWireframe : showSinkWireframe;
+        checkbox.onchange = () => {
+            if (kind === "emitter") {
+                showEmitterWireframe = checkbox.checked;
+            } else {
+                showSinkWireframe = checkbox.checked;
+            }
+            syncFlowWireframe(kind);
+        };
+        return checkbox;
+    };
+    const flowGizmoCheckbox = (kind: FlowObjectKind): HTMLInputElement => {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = flowGizmoOwner === kind;
+        checkbox.onchange = () => {
+            flowGizmoOwner = checkbox.checked ? kind : flowGizmoOwner === kind ? null : flowGizmoOwner;
+            refreshFlowUI();
+        };
+        return checkbox;
+    };
+    const flowList = (kind: FlowObjectKind): HTMLSelectElement => {
+        const objects = kind === "emitter" ? activeFlow.emitters : activeFlow.sinks;
+        const selectedId = kind === "emitter" ? selectedEmitterId : selectedSinkId;
+        const list = document.createElement("select");
+        list.size = Math.min(8, Math.max(3, objects.length));
+        list.style.cssText = "width:100%;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;";
+        for (const object of objects) {
+            const option = document.createElement("option");
+            option.value = object.id;
+            option.textContent = object.name;
+            list.appendChild(option);
+        }
+        if (selectedId) {
+            list.value = selectedId;
+        }
+        list.onchange = () => {
+            if (kind === "emitter") {
+                selectedEmitterId = list.value || null;
+            } else {
+                selectedSinkId = list.value || null;
+            }
+            refreshFlowUI();
+        };
+        return list;
+    };
+    const flowButtons = (kind: FlowObjectKind): HTMLElement => {
+        const host = document.createElement("div");
+        host.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;margin:5px 0;";
+        const selected = selectedFlowObject(kind);
+        const objects = kind === "emitter" ? activeFlow.emitters : activeFlow.sinks;
+        const limit = kind === "emitter" ? MAX_FLUID_EMITTERS : MAX_FLUID_SINKS;
+        const add = flowButton(kind === "emitter" ? "+ Emitter" : "+ Sink", () => {
+            const id = uniqueFlowId(kind);
+            if (kind === "emitter") {
+                activeFlow.emitters.push({
+                    id,
+                    name: "New emitter",
+                    enabled: true,
+                    behavior: "inflow",
+                    transform: identityFlowTransform(),
+                    shape: defaultFlowShape("box"),
+                    sampling: "volume",
+                    velocity: [0, 1, 0],
+                    velocitySpace: "local",
+                    spread: 0,
+                });
+                selectedEmitterId = id;
+            } else {
+                const firstInflow = activeFlow.emitters.find((emitter) => emitter.behavior === "inflow");
+                activeFlow.sinks.push({
+                    id,
+                    name: "New recycle sink",
+                    enabled: true,
+                    transform: identityFlowTransform(),
+                    shape: defaultFlowShape("box"),
+                    targets: firstInflow ? [firstInflow.id] : [],
+                    volumeRate: 1,
+                });
+                selectedSinkId = id;
+            }
+            applyFlow();
+            refreshFlowUI();
+        });
+        add.disabled = objects.length >= limit;
+        const duplicate = flowButton("Duplicate", () => {
+            if (!selected) {
+                return;
+            }
+            const copy = structuredClone(selected);
+            copy.id = uniqueFlowId(kind);
+            copy.name += " copy";
+            if (kind === "emitter") {
+                activeFlow.emitters.push(copy as FluidEmitter);
+                selectedEmitterId = copy.id;
+            } else {
+                activeFlow.sinks.push(copy as FluidSink);
+                selectedSinkId = copy.id;
+            }
+            applyFlow();
+            refreshFlowUI();
+        });
+        duplicate.disabled = !selected || objects.length >= limit;
+        const remove = flowButton("Delete", () => {
+            if (!selected) {
+                return;
+            }
+            if (kind === "emitter") {
+                activeFlow.emitters = activeFlow.emitters.filter((emitter) => emitter.id !== selected.id);
+                for (const sink of activeFlow.sinks) {
+                    sink.targets = sink.targets.filter((id) => id !== selected.id);
+                }
+                selectedEmitterId = null;
+            } else {
+                activeFlow.sinks = activeFlow.sinks.filter((sink) => sink.id !== selected.id);
+                selectedSinkId = null;
+            }
+            applyFlow();
+            refreshFlowUI();
+        });
+        remove.disabled = !selected;
+        host.append(add, duplicate, remove);
+        return host;
+    };
+    const commonFlowEditor = (kind: FlowObjectKind, object: FluidEmitter | FluidSink): HTMLElement => {
+        const editor = document.createElement("div");
+        editor.style.cssText = "border-top:1px solid #33445b;margin-top:6px;padding-top:5px;";
+        const enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.checked = object.enabled;
+        enabled.onchange = () => {
+            object.enabled = enabled.checked;
+            updateLiveFlowObject(kind, object);
+        };
+        editor.append(
+            flowField("Wireframe", flowWireframeCheckbox(kind)),
+            flowField("Gizmo", flowGizmoCheckbox(kind)),
+            flowField("Enabled", enabled),
+            flowField(
+                "Name",
+                textInput(object.name, (value) => {
+                    object.name = value;
+                    refreshFlowUI();
+                })
+            )
+        );
+        appendTransformEditor(editor, kind, object);
+        appendShapeEditor(editor, kind, object);
+        return editor;
+    };
+    const refreshEmitterUI = (): void => {
+        const fillCapacity = document.createElement("input");
+        fillCapacity.type = "checkbox";
+        fillCapacity.checked = activeFlow.initialEmittersFillCapacity === true;
+        fillCapacity.onchange = () => {
+            activeFlow.initialEmittersFillCapacity = fillCapacity.checked;
+            applyFlow();
+        };
+        if (!activeFlow.emitters.some((emitter) => emitter.id === selectedEmitterId)) {
+            selectedEmitterId = activeFlow.emitters[0]?.id ?? null;
+        }
+        const emitter = activeFlow.emitters.find((item) => item.id === selectedEmitterId);
+        const editor = emitter ? commonFlowEditor("emitter", emitter) : document.createElement("div");
+        if (emitter) {
+            const unlimited = document.createElement("input");
+            unlimited.type = "checkbox";
+            unlimited.checked = emitter.volumeRate === undefined;
+            unlimited.onchange = () => {
+                emitter.volumeRate = unlimited.checked ? undefined : 1;
+                updateLiveFlowObject("emitter", emitter);
+            };
+            editor.prepend(
+                flowField(
+                    "Behavior",
+                    selectInput(emitter.behavior, ["initial", "inflow"] as const, (value) => {
+                        emitter.behavior = value;
+                        updateLiveFlowObject("emitter", emitter);
+                    })
+                ),
+                flowField(
+                    "Sampling",
+                    selectInput(emitter.sampling, ["volume", "surface"] as const, (value) => {
+                        emitter.sampling = value;
+                        updateLiveFlowObject("emitter", emitter);
+                    })
+                )
+            );
+            if (emitter.behavior === "inflow") {
+                editor.appendChild(flowField("Unlimited", unlimited));
+                if (emitter.volumeRate !== undefined) {
+                    editor.appendChild(
+                        flowField(
+                            "Volume / second",
+                            numberInput(
+                                emitter.volumeRate,
+                                (value) => {
+                                    emitter.volumeRate = value;
+                                    updateLiveFlowObject("emitter", emitter, false);
+                                },
+                                0.1,
+                                0
+                            )
+                        )
+                    );
+                }
+            }
+            editor.append(
+                flowField(
+                    "Velocity",
+                    vec3Editor(emitter.velocity, (value) => {
+                        emitter.velocity = value;
+                        updateLiveFlowObject("emitter", emitter, false);
+                    })
+                ),
+                flowField(
+                    "Velocity space",
+                    selectInput(emitter.velocitySpace, ["local", "world"] as const, (value) => {
+                        emitter.velocitySpace = value;
+                        updateLiveFlowObject("emitter", emitter);
+                    })
+                ),
+                flowField(
+                    "Spread",
+                    numberInput(
+                        emitter.spread,
+                        (value) => {
+                            emitter.spread = value;
+                            updateLiveFlowObject("emitter", emitter, false);
+                        },
+                        0.05,
+                        0
+                    )
+                )
+            );
+        }
+        emitterFlowHost.replaceChildren(flowField("Initial emitters fill capacity", fillCapacity), flowList("emitter"), flowButtons("emitter"), editor);
+    };
+    const refreshSinkUI = (): void => {
+        if (!activeFlow.sinks.some((sink) => sink.id === selectedSinkId)) {
+            selectedSinkId = activeFlow.sinks[0]?.id ?? null;
+        }
+        const sink = activeFlow.sinks.find((item) => item.id === selectedSinkId);
+        const editor = sink ? commonFlowEditor("sink", sink) : document.createElement("div");
+        if (sink) {
+            const targets = document.createElement("div");
+            targets.style.cssText = "display:grid;gap:2px;";
+            for (const emitter of activeFlow.emitters.filter((item) => item.behavior === "inflow")) {
+                const label = document.createElement("label");
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.checked = sink.targets.includes(emitter.id);
+                checkbox.onchange = () => {
+                    sink.targets = checkbox.checked ? [...sink.targets, emitter.id] : sink.targets.filter((id) => id !== emitter.id);
+                    updateLiveFlowObject("sink", sink);
+                };
+                label.append(checkbox, ` ${emitter.name}`);
+                targets.appendChild(label);
+            }
+            const rateMode = sink.perParticleRecycleRate !== undefined ? "perParticle" : sink.volumeRate !== undefined ? "volume" : "all";
+            const mode = selectInput(rateMode, ["all", "volume", "perParticle"] as const, (value) => {
+                if (value === "all") {
+                    sink.volumeRate = undefined;
+                    sink.perParticleRecycleRate = undefined;
+                } else if (value === "volume") {
+                    sink.volumeRate ??= 1;
+                    sink.perParticleRecycleRate = undefined;
+                } else {
+                    sink.volumeRate = undefined;
+                    sink.perParticleRecycleRate ??= 1;
+                }
+                updateLiveFlowObject("sink", sink);
+            });
+            editor.append(flowField("Targets", targets), flowField("Recycle mode", mode));
+            if (sink.volumeRate !== undefined) {
+                editor.appendChild(
+                    flowField(
+                        "Volume / second",
+                        numberInput(
+                            sink.volumeRate,
+                            (value) => {
+                                sink.volumeRate = value;
+                                updateLiveFlowObject("sink", sink, false);
+                            },
+                            0.1,
+                            0
+                        )
+                    )
+                );
+            } else if (sink.perParticleRecycleRate !== undefined) {
+                editor.appendChild(
+                    flowField(
+                        "Per-particle / second",
+                        numberInput(
+                            sink.perParticleRecycleRate,
+                            (value) => {
+                                sink.perParticleRecycleRate = value;
+                                updateLiveFlowObject("sink", sink, false);
+                            },
+                            0.05,
+                            0
+                        )
+                    )
+                );
+            }
+        }
+        sinkFlowHost.replaceChildren(flowList("sink"), flowButtons("sink"), editor);
+    };
+    function refreshFlowUI(): void {
+        refreshEmitterUI();
+        refreshSinkUI();
+        syncFlowWireframe("emitter");
+        syncFlowWireframe("sink");
+        syncFlowGizmo();
+    }
+
     // Apply a solver parameter, folding in the physics particle-size coupling.
     // The sliders expose the base (1×) values; PBF's restDensity and constraint
     // relaxation must additionally track the particle scale (restDensity ∝
@@ -1713,6 +2782,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         for (const [key, value] of Object.entries(controls.getPhysicsValues(name))) {
             applyParam(activeSim, key, value);
         }
+        applyFlow();
         activeSim.reset();
         clearSceneHoles();
         particleTask.setSim(activeSim);
@@ -1775,6 +2845,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const cellSize = cellSizeForPhysicsScale(methodName, physicsScale) * (gridSettings ? 1 : domainScale);
         const cells = gridCellsForSize(effectiveGrid.size, cellSize);
         controls.setGridSettings([...effectiveGrid.position], [...effectiveGrid.size], cellSize);
+        controls.setShowGridBounds(showGridBounds);
         canvas.dataset.gridPosition = effectiveGrid.position.join(",");
         canvas.dataset.gridSize = effectiveGrid.size.join(",");
         canvas.dataset.gridCells = cells.join(",");
@@ -1829,6 +2900,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         applySceneSdf();
         applyMethod(methodName);
         syncGridControls();
+        syncGridBoundsWireframe();
+        syncFlowWireframe("emitter");
+        syncFlowWireframe("sink");
+        syncFlowGizmo();
         canvas.dataset.particleCount = String(count);
         controls.setParticleCount(count); // sync the Particles dropdown (no rebuild re-entry)
         controls.setPhysScale(scale); // sync the physics-size slider + its read-out (no side effect)
@@ -1885,15 +2960,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let currentPairKey: string | null = null;
 
     function defaultPairState(demo: FluidDemo, method: string): PairState {
+        const flowPosition = defaultGridSettings(method, demo.getDomainScale?.() ?? 1).position;
+        const flow = flowToGridLocal(demo.flow(), flowPosition);
         return {
             schema: { ...SCHEMA_DEFAULTS[method]! },
             demoParams: { ...(DEMO_PARAM_DEFAULTS[demo.key] ?? {}) },
+            emitters: flow.emitters,
+            sinks: flow.sinks,
+            initialEmittersFillCapacity: flow.initialEmittersFillCapacity,
             color: RENDER_DEFAULTS.color,
             half: RENDER_DEFAULTS.half,
             thicknessDownscale: RENDER_DEFAULTS.thicknessDownscale,
             absorption: RENDER_DEFAULTS.absorption,
             size: RENDER_DEFAULTS.size,
             physScale: RENDER_DEFAULTS.physScale,
+            showGridBounds: false,
             count: RENDER_DEFAULTS.count,
             material: method === "PB-MPM" ? 0 : undefined,
             renderMode: RENDER_DEFAULTS.renderMode,
@@ -1933,6 +3014,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return {
             schema: { ...base.schema, ...(p.schema ?? {}) },
             demoParams: { ...base.demoParams, ...(p.demoParams ?? {}) },
+            emitters: structuredClone(p.emitters ?? base.emitters ?? []),
+            sinks: structuredClone(p.sinks ?? base.sinks ?? []),
+            initialEmittersFillCapacity: p.initialEmittersFillCapacity ?? base.initialEmittersFillCapacity,
+            legacyFlow: p.legacyFlow ?? (p.emitters === undefined && p.sinks === undefined),
             color: p.color ?? base.color,
             half: p.half ?? base.half,
             thicknessDownscale: p.thicknessDownscale ?? base.thicknessDownscale,
@@ -1940,6 +3025,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             size: p.size ?? base.size,
             physScale: p.physScale ?? base.physScale,
             grid: presetGrid,
+            showGridBounds: p.showGridBounds ?? base.showGridBounds,
             count: p.count ?? base.count,
             material: p.material ?? base.material,
             camera: p.camera ?? base.camera,
@@ -1985,6 +3071,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return {
             schema: controls.getPhysicsValues(method),
             demoParams,
+            emitters: structuredClone(activeFlow.emitters),
+            sinks: structuredClone(activeFlow.sinks),
+            initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
             color: v.color,
             half: v.half,
             thicknessDownscale: v.thicknessDownscale,
@@ -1992,6 +3081,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             size: v.size,
             physScale: physicsScale,
             grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
+            showGridBounds,
             count: particleCount,
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
             camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius },
@@ -2024,6 +3114,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // when the count/scale differ from what's currently built; otherwise re-apply
     // in place). The component's setters re-render the controls to match; refreshDemoParams
     // re-renders the demo section.
+    let loadingPairState = false;
     function loadPairState(st: PairState): void {
         const demo = activeDemo!;
         const nextGridSettings = st.grid ? cloneGridSettings(st.grid) : undefined;
@@ -2047,9 +3138,25 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             pbmpmMaterial = st.material;
         }
         refreshPbMpmMaterialUi();
-        for (const k of Object.keys(st.demoParams)) {
-            demo.applyParam(k, st.demoParams[k]!);
+        loadingPairState = true;
+        try {
+            for (const k of Object.keys(st.demoParams)) {
+                demo.applyParam(k, st.demoParams[k]!);
+            }
+            if (st.demoState) {
+                demo.restoreState?.(st.demoState);
+            }
+        } finally {
+            loadingPairState = false;
         }
+        const flowPosition = (nextGridSettings ?? defaultGridSettings(methodName, domainScale)).position;
+        activeFlow = st.legacyFlow
+            ? flowToGridLocal(demo.flow(), flowPosition)
+            : {
+                  emitters: structuredClone(st.emitters ?? []),
+                  sinks: structuredClone(st.sinks ?? []),
+                  ...(st.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: st.initialEmittersFillCapacity } : {}),
+              };
         controls.setColor(st.color);
         controls.setHalf(st.half);
         controls.setThicknessDownscale(st.thicknessDownscale);
@@ -2139,16 +3246,13 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 subsurfaceColor: f.subsurfaceColor ?? cur.subsurfaceColor,
             });
         }
-        // Demo extra-control state (box size / paddle) — before applySceneSdf so the
-        // restored box bounds are written into the scene SDF.
-        if (st.demoState) {
-            demo.restoreState?.(st.demoState);
-        }
         // Container/nozzle-mesh visibility (applied to the demo by switchPair's post-load
         // setContainerVisible(...) below).
         if (st.showContainer !== undefined) {
             controls.setShowContainer(st.showContainer);
         }
+        showGridBounds = st.showGridBounds ?? false;
+        controls.setShowGridBounds(showGridBounds);
         // Core-owned viewing options the pair pins. Both are optional so files written before
         // they existed restore the defaults rather than turning themselves off/on at random.
         if (st.envIntensity !== undefined && st.envIntensity !== envIntensity) {
@@ -2188,6 +3292,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         controls.setParticleCount(st.count);
         controls.setPhysScale(nextPhysicsScale);
         refreshDemoParams();
+        refreshFlowUI();
         // Apply the pair's camera framing (preset default on first visit, or the
         // viewpoint captured when this pair was last left). ArcRotate self-clamps.
         if (st.camera) {
@@ -2207,21 +3312,27 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (currentPairKey !== null) {
             pairStates.set(currentPairKey, readLivePairState(methodName));
         }
-        // Adopt the target method BEFORE anything reads the demo back (the demo-change branch
-        // below calls applySceneSdf, which asks the demo for its spawn and emitters). Those can
-        // legitimately depend on the method, so they must not be answering for the one we are
-        // leaving.
+        // Adopt the target method before applying scene state.
         methodName = nextMethod;
         if (activeDemo !== nextDemo || currentPairKey === null) {
             if (activeDemo) {
                 activeDemo.onLeave();
             }
+            selectedEmitterId = null;
+            selectedSinkId = null;
+            showEmitterWireframe = false;
+            showSinkWireframe = false;
+            flowGizmoOwner = null;
+            setMeshVisible(emitterFlowWireframe, false);
+            setMeshVisible(sinkFlowWireframe, false);
+            syncFlowGizmo();
             activeDemo = nextDemo;
+            activeFlow = flowToGridLocal(nextDemo.flow(), defaultGridSettings(nextMethod, nextDemo.getDomainScale?.() ?? 1).position);
             activeDemo.onEnter(); // meshes, camera mode
             applyDemoEnv(activeDemo); // swap skybox background + surface-reflection cube
             applyEnvRotation(activeDemo.envRotationDeg ?? 0); // aim the backdrop the way this demo wants it
             envRotInput.value = String(activeDemo.envRotationDeg ?? 0);
-            applySceneSdf(); // scene bounds + emitters + spawn
+            applySceneSdf();
             refreshDemoParams();
             pendingForce = null;
             activeSim.reset();
@@ -2238,10 +3349,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const key = withMaterial ? `${nextDemo.key}:${nextMethod}:${nextQuality}:m${pbmpmMaterial}` : `${nextDemo.key}:${nextMethod}:${nextQuality}`;
         const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial);
         currentPairKey = key;
-        // Propagate the target demo's domain (world) scale BEFORE loading the pair state, so the
-        // pair-state rebuild guard fires when it differs from the built scale — switching AWAY from a
-        // scaled demo resets it to 1 (base bounds), switching TO one grows the sim domain.
-        domainScale = nextDemo.getDomainScale?.() ?? 1;
+        domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
         loadPairState(st);
         // Re-apply the container-mesh visibility choice (onEnter shows it by default).
         nextDemo.setContainerVisible?.(controls.getValues().showContainer);
@@ -2256,9 +3364,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         ground,
         sceneSdfBuffer,
         getActiveSim: () => activeSim,
-        resetActiveSim: () => activeSim.reset(),
-        refreshEmitters: applyEmitters,
-        refreshSpawn: applySpawn,
+        resetActiveSim: () => resetActiveFlow(false),
+        refreshFlow: () => {
+            if (loadingPairState) {
+                return;
+            }
+            activeFlow = flowToGridLocal(activeDemo!.flow());
+            applyFlow();
+            activeSim.reset();
+            refreshFlowUI();
+        },
         addSceneHole,
         clearSceneHoles,
         sun,
@@ -2567,6 +3682,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     await envReady;
     applyDemoEnv(activeDemo!); // install the initial (box) skybox + surface env before frame 0
     await registerSceneWithShadowSupport(scene);
+    await registerUtilityLayer(flowGizmoLayer);
 
     // Strip the translucent container meshes out of the auto-mirrored scene-colour
     // pass: they are now drawn only by the container-glass overlay task (after the

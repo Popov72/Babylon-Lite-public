@@ -1,0 +1,165 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://babylon-lite.dev/schema/fluid-flow-v5.json",
+    "title": "Babylon Lite fluid flow objects",
+    "type": "object",
+    "required": ["formatVersion", "emitters", "sinks"],
+    "properties": {
+        "formatVersion": { "const": 5 },
+        "gridPosition": { "$ref": "#/$defs/vec3" },
+        "gridSize": {
+            "type": "array",
+            "prefixItems": [
+                { "type": "number", "exclusiveMinimum": 0 },
+                { "type": "number", "exclusiveMinimum": 0 },
+                { "type": "number", "exclusiveMinimum": 0 }
+            ],
+            "items": false
+        },
+        "emitters": {
+            "type": "array",
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/emitter" }
+        },
+        "sinks": {
+            "type": "array",
+            "maxItems": 16,
+            "items": { "$ref": "#/$defs/sink" }
+        },
+        "initialEmittersFillCapacity": {
+            "type": "boolean",
+            "description": "When true, enabled initial emitters allocate the full particle capacity even when inflows exist."
+        }
+    },
+    "additionalProperties": true,
+    "$defs": {
+        "vec3": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }],
+            "items": false
+        },
+        "quat": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }],
+            "items": false
+        },
+        "transform": {
+            "type": "object",
+            "required": ["position", "rotation", "scale"],
+            "properties": {
+                "position": {
+                    "$ref": "#/$defs/vec3",
+                    "description": "Grid-local world-unit offset. Installed world position = gridPosition + position."
+                },
+                "rotation": { "$ref": "#/$defs/quat" },
+                "scale": { "$ref": "#/$defs/vec3" }
+            },
+            "additionalProperties": false
+        },
+        "shape": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["type", "size"],
+                    "properties": { "type": { "const": "box" }, "size": { "$ref": "#/$defs/vec3" } },
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "radius"],
+                    "properties": { "type": { "const": "sphere" }, "radius": { "type": "number", "minimum": 0 } },
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "radius", "height"],
+                    "properties": {
+                        "type": { "const": "cylinder" },
+                        "radius": { "type": "number", "minimum": 0 },
+                        "innerRadius": { "type": "number", "minimum": 0 },
+                        "height": { "type": "number", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "bottomRadius", "topRadius", "height"],
+                    "properties": {
+                        "type": { "const": "cone" },
+                        "bottomRadius": { "type": "number", "minimum": 0 },
+                        "topRadius": { "type": "number", "minimum": 0 },
+                        "height": { "type": "number", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "radius", "height"],
+                    "properties": {
+                        "type": { "const": "capsule" },
+                        "radius": { "type": "number", "minimum": 0 },
+                        "height": { "type": "number", "minimum": 0, "description": "Total end-to-end height along local Y." }
+                    },
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "required": ["type", "points", "thickness"],
+                    "properties": {
+                        "type": { "const": "polygonPrism" },
+                        "points": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 256,
+                            "items": {
+                                "type": "array",
+                                "prefixItems": [{ "type": "number" }, { "type": "number" }],
+                                "items": false
+                            }
+                        },
+                        "thickness": { "type": "number", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                }
+            ]
+        },
+        "emitter": {
+            "type": "object",
+            "required": ["id", "name", "enabled", "behavior", "transform", "shape", "sampling", "velocity", "velocitySpace", "spread"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "name": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "behavior": { "enum": ["initial", "inflow"] },
+                "transform": { "$ref": "#/$defs/transform" },
+                "shape": { "$ref": "#/$defs/shape" },
+                "sampling": { "enum": ["volume", "surface"] },
+                "velocity": { "$ref": "#/$defs/vec3" },
+                "velocitySpace": { "enum": ["local", "world"] },
+                "spread": { "type": "number", "minimum": 0 },
+                "volumeRate": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+        },
+        "sink": {
+            "type": "object",
+            "required": ["id", "name", "enabled", "transform", "shape", "targets"],
+            "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "name": { "type": "string" },
+                "enabled": { "type": "boolean" },
+                "transform": { "$ref": "#/$defs/transform" },
+                "shape": { "$ref": "#/$defs/shape" },
+                "targets": { "type": "array", "items": { "type": "string" } },
+                "volumeRate": { "type": "number", "minimum": 0 },
+                "perParticleRecycleRate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Per-particle recycle attempts per second. Mutually exclusive with volumeRate."
+                }
+            },
+            "not": { "required": ["volumeRate", "perParticleRecycleRate"] },
+            "additionalProperties": false
+        }
+    }
+}

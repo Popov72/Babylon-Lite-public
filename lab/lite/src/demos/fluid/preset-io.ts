@@ -8,6 +8,7 @@
 // back into a Partial<PairState> the core merges over its defaults. Keeping both
 // directions here guarantees Export → drop-in file → import round-trips cleanly.
 
+import type { FluidEmitter, FluidSink } from "babylon-lite";
 import type { DemoStateValue, FluidDomainBounds, PairState } from "./demo.js";
 import { cellSizeForPhysicsScale, gridPositionForBounds, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
 
@@ -18,6 +19,11 @@ export interface FluidExportJson {
     physics: Record<string, number>;
     demoParams: Record<string, number>;
     demoState: Record<string, DemoStateValue>;
+    /** Solver-independent flow authoring data. Optional for legacy presets. */
+    emitters?: FluidEmitter[];
+    sinks?: FluidSink[];
+    /** Fill the full particle capacity from initial emitters even when inflows exist. */
+    initialEmittersFillCapacity?: boolean;
     showContainer: boolean;
     /** Image-based-lighting multiplier ("Environment intensity"), default 1. Optional so files
      *  written before it existed still load. */
@@ -42,6 +48,8 @@ export interface FluidExportJson {
     domain?: FluidDomainBounds;
     /** Legacy format <=3 longest-axis resolution. */
     gridResolution?: number;
+    /** Display the active solver domain wireframe. */
+    showGridBounds?: boolean;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
@@ -129,6 +137,9 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
         demoState: ps.demoState ? { ...ps.demoState } : {},
+        emitters: structuredClone(ps.emitters ?? []),
+        sinks: structuredClone(ps.sinks ?? []),
+        ...(ps.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: ps.initialEmittersFillCapacity } : {}),
         showContainer: ps.showContainer ?? true,
         ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
         ...(ps.msaa !== undefined ? { msaa: ps.msaa } : {}),
@@ -138,6 +149,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: ps.fusedBlockDiscovery } : {}),
         physicsParticleSize: ps.physScale,
         ...(ps.grid ? { gridPosition: [...ps.grid.position], gridSize: [...ps.grid.size] } : {}),
+        showGridBounds: ps.showGridBounds ?? false,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
@@ -204,9 +216,31 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     const gridPosition: [number, number, number] = j.gridPosition ? [...j.gridPosition] : gridPositionForBounds(legacyBounds);
     const cellSize = cellSizeForPhysicsScale(j.meta.method, physScale);
     const gridSize: [number, number, number] = j.gridSize ? [...j.gridSize] : j.gridCells ? gridWorldSize(j.gridCells, cellSize) : gridSizeForBounds(legacyBounds);
+    const localizeFlow = <T extends FluidEmitter | FluidSink>(objects: T[] | undefined): T[] | undefined => {
+        if (!objects) {
+            return undefined;
+        }
+        const copies = structuredClone(objects);
+        if ((j.formatVersion ?? 0) < 4) {
+            for (const object of copies) {
+                object.transform.position = [
+                    object.transform.position[0] - gridPosition[0],
+                    object.transform.position[1] - gridPosition[1],
+                    object.transform.position[2] - gridPosition[2],
+                ];
+            }
+        }
+        return copies;
+    };
+    const emitters = localizeFlow(j.emitters);
+    const sinks = localizeFlow(j.sinks);
     return {
         schema: { ...j.physics },
         demoParams: { ...j.demoParams },
+        ...(emitters ? { emitters } : {}),
+        ...(sinks ? { sinks } : {}),
+        ...(j.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: j.initialEmittersFillCapacity } : {}),
+        legacyFlow: j.emitters === undefined && j.sinks === undefined,
         color: r.waterColor,
         half: r.halfRendering,
         thicknessDownscale: r.thicknessDownscale,
@@ -214,6 +248,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         size: r.particleSize,
         physScale,
         ...(hasGridDefinition ? { grid: { position: gridPosition, size: gridSize } } : {}),
+        showGridBounds: j.showGridBounds ?? false,
         count: j.particleCount,
         material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),

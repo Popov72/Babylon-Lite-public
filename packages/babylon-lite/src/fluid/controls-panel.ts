@@ -347,6 +347,7 @@ export interface FluidControlValues {
     gridPosition: [number, number, number];
     gridSize: [number, number, number];
     cellSize: number;
+    showGridBounds: boolean;
     count: number;
     renderMode: "surface" | "spheres";
     refraction: number;
@@ -382,6 +383,8 @@ export interface FluidControlsInitial {
     gridSize?: [number, number, number];
     /** Derived world-space cubic cell size. */
     cellSize?: number;
+    /** Initial visibility of the simulation-domain wireframe. */
+    showGridBounds?: boolean;
     color: string;
     absorption: number;
     size: number;
@@ -446,6 +449,8 @@ export interface FluidControlsCallbacks {
     onPhysScale?(scale: number): void;
     /** Return an error message to reject proposed grid settings without installing them. */
     onGridSettings?(position: [number, number, number], size: [number, number, number]): string | void;
+    onGridGizmo?(visible: boolean): void;
+    onShowGridBounds?(visible: boolean): void;
     onActiveBlocks?(enabled: boolean): void;
     onPagedGrid?(enabled: boolean): void;
     onPagedGridMaxPages?(pages: number): void;
@@ -569,6 +574,7 @@ export interface FluidControlsHandle {
     setPhysScale(scale: number): void;
     setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void;
     setGridStatus(message: string): void;
+    setShowGridBounds(visible: boolean): void;
     setActiveBlocks(enabled: boolean): void;
     setPagedGrid(enabled: boolean): void;
     setPagedGridMaxPages(pages: number): void;
@@ -1175,7 +1181,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     const gridPositionControl = createGridVectorRow(
         "Grid position",
-        "World-space center of the axis-aligned simulation domain. Scene meshes, spawn volumes and collision SDFs remain fixed in world space.",
+        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center; scene meshes and collision SDFs remain fixed in world space.",
         init.gridPosition ?? [0, 9.5, 0]
     );
     const gridSizeControl = createGridVectorRow(
@@ -1219,6 +1225,24 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     updateCellSizeValue();
     cellSizeRow.append(cellSizeLabel, cellSizeValue);
+
+    const gridBoundsRow = document.createElement("label");
+    gridBoundsRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+    const gridBoundsChk = document.createElement("input");
+    gridBoundsChk.type = "checkbox";
+    gridBoundsChk.checked = init.showGridBounds ?? false;
+    gridBoundsRow.append(
+        gridBoundsChk,
+        labelWithInfo("Show grid bounds", "Displays the active solver's simulation-domain bounding box. This visualization does not draw every cell or affect the simulation.")
+    );
+    gridBoundsChk.onchange = () => on.onShowGridBounds?.(gridBoundsChk.checked);
+
+    const gridGizmoRow = document.createElement("label");
+    gridGizmoRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+    const gridGizmoCheckbox = document.createElement("input");
+    gridGizmoCheckbox.type = "checkbox";
+    gridGizmoCheckbox.onchange = () => on.onGridGizmo?.(gridGizmoCheckbox.checked);
+    gridGizmoRow.append(gridGizmoCheckbox, labelWithInfo("Gizmo", "Shows position and scale gizmos together. Scaling is rounded to 0.1 world unit when the drag ends."));
 
     const sliderHost = document.createElement("div");
     const activeBlocksRow = document.createElement("label");
@@ -1835,7 +1859,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
         const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
-        const gridRows = opts.showGridControls ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow] : [];
+        const gridRows = opts.showGridControls ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, gridBoundsRow, gridGizmoRow] : [];
         const physItems = opts.hidePhysScale ? [...gridRows, ...activeBlockRows, sliderHost, resetBtn] : [physRow, ...gridRows, ...activeBlockRows, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
@@ -2054,6 +2078,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             setGridStatus("");
         },
         setGridStatus,
+        setShowGridBounds(visible: boolean): void {
+            gridBoundsChk.checked = visible;
+        },
         setActiveBlocks(enabled: boolean): void {
             activeBlocksChk.checked = enabled;
             applyActiveBlockDependencies();
@@ -2124,6 +2151,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 gridPosition: readGridVector(gridPositionControl.inputs),
                 gridSize: readGridVector(gridSizeControl.inputs),
                 cellSize: gridCellSize,
+                showGridBounds: gridBoundsChk.checked,
                 count: parseInt(particlesSel.value, 10),
                 renderMode: renderChk.checked ? "spheres" : "surface",
                 refraction: surfRefraction,

@@ -41,6 +41,44 @@ describe("fluid preset grid migration", () => {
         expect(imported.grid).toEqual(state.grid);
     });
 
+    it("round-trips config-level initial allocation and structured sink recycle semantics", () => {
+        const state = pairState();
+        state.initialEmittersFillCapacity = true;
+        state.emitters = [
+            {
+                id: "source",
+                name: "source",
+                enabled: true,
+                behavior: "inflow",
+                transform: { position: [1, 2, 3], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                shape: { type: "box", size: [2, 2, 2] },
+                sampling: "volume",
+                velocity: [0, -1, 0],
+                velocitySpace: "world",
+                spread: 0.5,
+            },
+        ];
+        state.sinks = [
+            {
+                id: "sink",
+                name: "sink",
+                enabled: true,
+                transform: { position: [4, 5, 6], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                shape: { type: "box", size: [8, 1, 8] },
+                targets: ["source"],
+                perParticleRecycleRate: 0.7,
+            },
+        ];
+
+        const exported = exportJsonFromPairState("waterfall", "PB-MPM", state);
+        const imported = presetFromExportJson(exported);
+
+        expect(exported.initialEmittersFillCapacity).toBe(true);
+        expect(imported.initialEmittersFillCapacity).toBe(true);
+        expect(imported.emitters).toEqual(state.emitters);
+        expect(imported.sinks).toEqual(state.sinks);
+    });
+
     it("leaves gridless legacy presets on the demo-authored default domain", () => {
         const path = resolve(process.cwd(), "lab/public/fluid-presets/box.sph.low.json");
         const json = JSON.parse(readFileSync(path, "utf8")) as FluidExportJson;
