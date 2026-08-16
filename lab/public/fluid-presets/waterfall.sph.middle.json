@@ -32,7 +32,7 @@
     "showContainer": true,
     "envIntensity": 0.3,
     "msaa": true,
-    "physicsParticleSize": 0.6,
+    "physicsParticleSize": 1.8,
     "particleCount": 120000,
     "camera": {
         "alpha": -2.096342275594117,
@@ -76,5 +76,16 @@
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.4
-    }
+    },
+    "formatVersion": 5,
+    "gridPosition": [
+        0,
+        30,
+        0
+    ],
+    "gridSize": [
+        120,
+        60,
+        120
+    ]
 }

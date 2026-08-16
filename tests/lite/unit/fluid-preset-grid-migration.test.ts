@@ -20,14 +20,32 @@ const pairState = (): PairState => ({
 });
 
 describe("fluid preset grid migration", () => {
-    it("keeps the known-good Waterfall on its gridless hidden domain scale and 0.4 preset", () => {
-        const path = resolve(process.cwd(), "lab/public/fluid-presets/waterfall.pbmpm.liquid.high.json");
-        const json = JSON.parse(readFileSync(path, "utf8")) as FluidExportJson;
-        const preset = presetFromExportJson(json);
+    it("makes the Waterfall domain explicit without dropping hidden flow parameters", () => {
+        const expected = {
+            "waterfall.mlsmpm.high.json": [0.9, 0, 6, 0, 8.5],
+            "waterfall.mlsmpm.low.json": [2.4, 0, 6, 0, 8.5],
+            "waterfall.mlsmpm.middle.json": [1.2, 0, 6, 0, 8.5],
+            "waterfall.pbmpm.liquid.high.json": [1.2, 0, 0.05, 0.5, 16],
+            "waterfall.pbmpm.liquid.low.json": [2.4, 0, 6, 0.5, 16],
+            "waterfall.pbmpm.liquid.middle.json": [1.5, 0, 6, 0.5, 16],
+            "waterfall.sph.high.json": [1.2, 0.6, 3.25, 0.5, 4.5],
+            "waterfall.sph.low.json": [2.4, 0.6, 3.25, 0.5, 4.5],
+            "waterfall.sph.middle.json": [1.8, 0.6, 6, 0.5, 4.5],
+        } as const;
 
-        expect(json.physicsParticleSize).toBe(0.4);
-        expect(preset.physScale).toBe(0.4);
-        expect(preset.grid).toBeUndefined();
+        for (const [filename, [particleSize, sourceSpeed, emitRate, spread, frontBias]] of Object.entries(expected)) {
+            const path = resolve(process.cwd(), "lab/public/fluid-presets", filename);
+            const json = JSON.parse(readFileSync(path, "utf8")) as FluidExportJson;
+            const preset = presetFromExportJson(json);
+
+            expect(json.formatVersion, filename).toBe(5);
+            expect(json.physicsParticleSize, filename).toBe(particleSize);
+            expect(json.gridPosition, filename).toEqual([0, 30, 0]);
+            expect(json.gridSize, filename).toEqual([120, 60, 120]);
+            expect(json.demoParams, filename).toMatchObject({ sourceSpeed, emitRate, spread, frontBias });
+            expect(preset.physScale, filename).toBe(particleSize);
+            expect(preset.grid, filename).toEqual({ position: [0, 30, 0], size: [120, 60, 120] });
+        }
     });
 
     it("round-trips format-5 world position and size", () => {

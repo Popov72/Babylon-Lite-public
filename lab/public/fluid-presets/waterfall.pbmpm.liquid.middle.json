@@ -36,7 +36,7 @@
     "showContainer": true,
     "envIntensity": 0.3,
     "msaa": true,
-    "physicsParticleSize": 0.5,
+    "physicsParticleSize": 1.5,
     "particleCount": 200000,
     "material": 0,
     "camera": {
@@ -82,5 +82,16 @@
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.5
-    }
+    },
+    "formatVersion": 5,
+    "gridPosition": [
+        0,
+        30,
+        0
+    ],
+    "gridSize": [
+        120,
+        60,
+        120
+    ]
 }
