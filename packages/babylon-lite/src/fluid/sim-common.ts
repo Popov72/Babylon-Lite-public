@@ -1,8 +1,11 @@
 // Shared contract + helpers for the demo-local GPU fluid backends.
 //
-// PBF, MLS-MPM and PB-MPM implement the same `FluidSim` interface so renderers
-// can swap backends. This module owns their common contracts, generic fluid-flow
-// sampling/routing/packing, shared WGSL, scene-SDF helpers and foam state.
+// Both `createPbfSim` (Position Based Fluids) and `createMlsMpmSim` (MLS-MPM)
+// implement the same `FluidSim` interface so the renderer and the demo can swap
+// backends at runtime. This module owns everything the two solvers have in
+// common: the interface, the base options, the per-demo scene-SDF injection
+// contract, the recirculating-emitter config + packing, and the generic SDF
+// normal WGSL snippet both solvers inject.
 //
 // Foam reference (the shared diffuse-particle model, `FOAM_COMMON_WGSL`): Ihmsen et al. 2012,
 // "Unified spray, foam and air bubbles for particle-based fluids" —
@@ -23,8 +26,6 @@ export interface FluidProfiler {
  *  Both backends expose their state through these buffers in WORLD units. */
 export interface FluidSim {
     readonly count: number;
-    /** Number of particles currently participating in simulation and rendering. */
-    readonly activeCount?: number;
     readonly particleRadius: number;
     /** Optional multiplier on the screen-space surface impostor size (and the
      *  bilateral-blur kernel derived from it). Backends whose particles settle at
@@ -46,8 +47,7 @@ export interface FluidSim {
     readonly gpuBytes: number;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
-    /** Re-seed enabled initial volumes, reserve dormant capacity for inflows, or use the
-     *  legacy spawn box when no enabled emitter exists. */
+    /** Re-seed all particles into the spawn box with zero velocity. */
     reset(): void;
     /** Live-update a named simulation parameter (for the demo's tuning UI). */
     setParam(key: string, value: number): void;
@@ -56,14 +56,17 @@ export interface FluidSim {
     /** Inject the per-demo scene SDF used for collision (or null to disable it).
      *  Rebuilds the confinement pipeline; compiled variants are cached by source. */
     setSceneSdf(spec: SceneSdfSpec | null): void;
-    /** Configure solver-independent initial volumes, inflows and recycling sinks. */
-    setFlow(config: FluidFlowConfig | null): void;
+    /** Configure recirculating jet emitters (or null to disable). Particles inside
+     *  the intake box are probabilistically relaunched from a nozzle each step. */
+    setEmitters(cfg: EmitterConfig | null): void;
     /** Set the spawn box used by `reset()` to re-seed particles. `accept`, when
      *  provided, restricts seeding to positions where it returns true (CPU
      *  reject-sampling), so particles fit a non-box container shape. */
     setSpawn(min: [number, number, number], max: [number, number, number], accept?: ((x: number, y: number, z: number) => boolean) | null): void;
-    /** Set the start-of-sim warm-up length used by `reset()`/`seed()` to gradually
-     *  release particles instead of all at once. */
+    /** Set the start-of-sim warm-up length (frames) used by `reset()`/`seed()` to
+     *  gradually release particles instead of all at once. Optional: only MLS-MPM
+     *  implements it (a dense open-shelf seed otherwise spikes and sprays); PBF omits
+     *  it and callers no-op via `?.`. */
     setWarmup?(frames: number): void;
     /** Inject a generic external force field (or null to disable it). Rebuilds the
      *  integration pass; compiled variants are cached by source. When null the force
@@ -312,920 +315,285 @@ export interface ForceFieldSpec {
 
 export const DEFAULT_FORCE_FIELD_WGSL = "fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> { return vec3<f32>(0.0); }";
 
-// ── Generic particle flow ────────────────────────────────────────────
-export type FluidVec3 = [number, number, number];
+// ── Generic particle emitter / recycling ─────────────────────────────
+// Fixed particle pool: "emitting" recycles particles rather than adding them.
+// A compute pass run first each step relaunches particles that sit inside the
+// pump-intake box, probabilistically (rand < rate·dt, to throttle so jets are
+// continuous streams), at a random emitter nozzle with its jet velocity.
+export const MAX_EMITTERS = 16;
+/** Triangles available to polygon emitters, shared across every emitter in the config. */
+export const MAX_EMITTER_TRIS = 64;
 
-export interface FluidTransform {
-    position: FluidVec3;
-    rotation: [number, number, number, number];
-    scale: FluidVec3;
-}
-
-export type FluidShape =
-    | { type: "box"; size: FluidVec3 }
-    | { type: "sphere"; radius: number }
-    | { type: "cylinder"; radius: number; height: number; innerRadius?: number }
-    | { type: "cone"; bottomRadius: number; topRadius: number; height: number }
-    | { type: "capsule"; radius: number; height: number }
-    | { type: "polygonPrism"; points: [number, number][]; thickness: number };
-
-export interface FluidEmitter {
-    id: string;
-    name: string;
-    enabled: boolean;
-    behavior: "initial" | "inflow";
-    transform: FluidTransform;
-    shape: FluidShape;
-    sampling: "volume" | "surface";
-    velocity: FluidVec3;
-    velocitySpace: "local" | "world";
-    spread: number;
-    /** Inflow world-volume/second. Omitted means unlimited. Ignored by initial emitters. */
-    volumeRate?: number;
-}
-
-export interface FluidSink {
-    id: string;
-    name: string;
-    enabled: boolean;
-    transform: FluidTransform;
-    shape: FluidShape;
-    targets: string[];
-    /** Omitted means every captured particle is recycled. Otherwise world-volume/second. */
-    volumeRate?: number;
-}
-
-export interface FluidFlowConfig {
-    emitters: FluidEmitter[];
-    sinks: FluidSink[];
-}
-
-export const MAX_FLUID_EMITTERS = 16;
-export const MAX_FLUID_SINKS = 16;
-export const MAX_FLUID_POLYGON_TRIANGLES = 128;
-export const MAX_FLUID_POLYGON_POINTS = 256;
-
-/** Rejection attempts for the legacy spawn-box acceptance fallback. */
+/** Rejection-sampling attempts per particle when `setSpawn` carries an `accept` predicate.
+ *  Shapes that fill little of their bounding box (two small prisms on a summit fill only a few
+ *  percent of it) reject often, so this needs headroom — the seeders additionally fall back to
+ *  the last ACCEPTED point rather than a rejected one, so exhausting it can never place a
+ *  particle outside the container. */
 export const SPAWN_ACCEPT_TRIES = 64;
 
+export interface EmitterConfig {
+    /** Jet nozzles. Each relaunches recycled particles at `dir`·`speed` from a random point in
+     *  its spawn volume. That volume is a BOX: `halfExtents` when given, otherwise a cube of
+     *  half-extent `radius` (so a nozzle stays a point-ish jet unless it opts in). A box emitter
+     *  lets a source cover a real surface — e.g. the flat shelves on top of a waterfall — instead
+     *  of pretending to be a point. `polygon` generalises that to an arbitrary outline. */
+    emitters: {
+        pos: [number, number, number];
+        dir: [number, number, number];
+        speed: number;
+        radius: number;
+        /** Per-axis half-extents (width/2, height/2, depth/2) of the spawn box, world units.
+         *  Defaults to `(radius, radius, radius)`. */
+        halfExtents?: [number, number, number];
+        /** Spawn area as a simple closed polygon in the world XZ plane — the vertices only, with
+         *  no repeated closing vertex; either winding works. When set it REPLACES the box's X/Z
+         *  extents, so the source can match a real surface (e.g. a terrace on a rock) instead of
+         *  the bounding box around it; `pos[0]`/`pos[2]` are then ignored. Height still comes from
+         *  `halfExtents[1]` about `pos[1]`, which is what gives the outline its "small height".
+         *
+         *  Triangulated here on the CPU (ear clipping) and uploaded as an area-weighted triangle
+         *  list, so the shader samples it uniformly in O(triangles) with no rejection sampling —
+         *  rejection would both waste relaunches and bias density when the outline fills little of
+         *  its bounding box. Polygons are shared out of a {@link MAX_EMITTER_TRIS} budget. */
+        polygon?: [number, number][];
+    }[];
+    /** Axis-aligned pump-intake box min: particles inside are eligible to recycle. */
+    intakeMin: [number, number, number];
+    /** Axis-aligned pump-intake box max. */
+    intakeMax: [number, number, number];
+    /** Per-second probability an eligible particle relaunches (throttles the jets). */
+    rate: number;
+    /** Random velocity spread added at launch (world units/s). Default 0. */
+    spread?: number;
+    /** When positive, the LAST emitter becomes a DEDICATED stream fed only by particle indices
+     *  [0, fixedStreamCount); the other emitters serve indices [fixedStreamCount, count).
+     *  This gives that nozzle a roughly fixed-size stream INDEPENDENT of the total particle
+     *  count (e.g. a wheel-driving jet that looks the same at 40k and 200k). Default 0 (off:
+     *  all emitters share every recycled particle, the original behaviour). */
+    fixedStreamCount?: number;
+    /** Drain height for the fixed stream (only meaningful with fixedStreamCount positive). The
+     *  fixed-stream particles form a self-contained TIGHT LOOP: the instant one sinks below this
+     *  world-Y it relaunches DETERMINISTICALLY at the last emitter, never touching the shared
+     *  pump-intake or the main pool. So ~fixedStreamCount particles are always in flight over the
+     *  target, at a cadence set only by gravity + geometry — fully independent of the total count
+     *  or how deep the main pool is. Default 0 (fixed particles fall through to the shared intake). */
+    fixedStreamDrainY?: number;
+}
+
+// Emitters-UBO float layout: head, head2, intakeMin, intakeMax, then
+// MAX_EMITTERS × (pos+radius, dir+speed, halfExtents+pad, triStart+triCount+pad2), then a
+// shared triangle table of MAX_EMITTER_TRIS × (ax,az,bx,bz | cx,cz,cumArea,pad) for polygon
+// emitters. packEmitters writes everything except the sim-owned fields: head2.x (particle
+// count) and head.z / head2.y (seed, dt).
+// head2.z = fixedStreamCount (dedicated last-emitter stream, 0 = off).
+// head2.w = fixedStreamDrainY (fixed-stream tight-loop drain height).
+export const EMITTERS_FLOATS = 16 + MAX_EMITTERS * 16 + MAX_EMITTER_TRIS * 8;
+
+/** Twice the signed area of a closed polygon (positive when counter-clockwise in XZ). */
 function polyArea2(poly: readonly [number, number][]): number {
-    let area = 0;
+    let a = 0;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        area += poly[j]![0] * poly[i]![1] - poly[i]![0] * poly[j]![1];
+        a += poly[j]![0] * poly[i]![1] - poly[i]![0] * poly[j]![1];
     }
-    return area;
+    return a;
 }
 
 function inTriangle(px: number, py: number, ax: number, ay: number, bx: number, by: number, cx: number, cy: number): boolean {
     const d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
     const d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
     const d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
-    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+    const neg = d1 < 0 || d2 < 0 || d3 < 0;
+    const pos = d1 > 0 || d2 > 0 || d3 > 0;
+    return !(neg && pos);
 }
 
-/** Ear-clips a simple polygon for area-weighted CPU and GPU sampling. */
-export function triangulateFluidPolygon(poly: readonly [number, number][]): number[] {
-    if (poly.length < 3) {
+/** Ear-clipping triangulation of a SIMPLE polygon (no holes, no self-intersections), returning
+ *  flat index triples into `poly`. Ear clipping rather than a triangle fan because a fan is only
+ *  correct for convex outlines — a hand-drawn terrace is routinely concave, and a fan would then
+ *  spawn particles outside the shape. Bails out returning what it has if the input turns out not
+ *  to be simple, so bad authoring degrades instead of hanging. */
+function triangulatePolygon(poly: readonly [number, number][]): number[] {
+    const n = poly.length;
+    if (n < 3) {
         return [];
     }
-    const indices = Array.from({ length: poly.length }, (_, i) => i);
-    if (polyArea2(poly) < 0) {
-        indices.reverse();
+    // Work counter-clockwise so the convexity test has one consistent sign.
+    const idx: number[] = [];
+    for (let i = 0; i < n; i++) {
+        idx.push(i);
     }
-    const result: number[] = [];
-    let guard = poly.length * poly.length + 8;
-    while (indices.length > 3 && guard-- > 0) {
+    if (polyArea2(poly) < 0) {
+        idx.reverse();
+    }
+    const out: number[] = [];
+    let guard = n * n + 8;
+    while (idx.length > 3 && guard-- > 0) {
         let clipped = false;
-        for (let k = 0; k < indices.length; k++) {
-            const i0 = indices[(k + indices.length - 1) % indices.length]!;
-            const i1 = indices[k]!;
-            const i2 = indices[(k + 1) % indices.length]!;
+        for (let k = 0; k < idx.length; k++) {
+            const i0 = idx[(k + idx.length - 1) % idx.length]!;
+            const i1 = idx[k]!;
+            const i2 = idx[(k + 1) % idx.length]!;
             const [ax, ay] = poly[i0]!;
             const [bx, by] = poly[i1]!;
             const [cx, cy] = poly[i2]!;
+            // Reflex corner (or collinear) — not an ear.
             if ((bx - ax) * (cy - ay) - (cx - ax) * (by - ay) <= 0) {
                 continue;
             }
             let contains = false;
-            for (const m of indices) {
+            for (const m of idx) {
                 if (m !== i0 && m !== i1 && m !== i2 && inTriangle(poly[m]![0], poly[m]![1], ax, ay, bx, by, cx, cy)) {
                     contains = true;
                     break;
                 }
             }
-            if (!contains) {
-                result.push(i0, i1, i2);
-                indices.splice(k, 1);
-                clipped = true;
-                break;
+            if (contains) {
+                continue;
             }
+            out.push(i0, i1, i2);
+            idx.splice(k, 1);
+            clipped = true;
+            break;
         }
         if (!clipped) {
             break;
         }
     }
-    if (indices.length === 3) {
-        result.push(indices[0]!, indices[1]!, indices[2]!);
+    if (idx.length === 3) {
+        out.push(idx[0]!, idx[1]!, idx[2]!);
     }
-    return result;
+    return out;
 }
 
-interface PreparedPolygon {
-    area: number;
-    perimeter: number;
-    triangles: { a: [number, number]; b: [number, number]; c: [number, number]; cumulative: number }[];
-    edges: { a: [number, number]; b: [number, number]; cumulative: number }[];
-}
-
-function preparePolygon(points: readonly [number, number][]): PreparedPolygon {
-    const indices = triangulateFluidPolygon(points);
-    const triangles: PreparedPolygon["triangles"] = [];
-    let area = 0;
-    for (let i = 0; i + 2 < indices.length; i += 3) {
-        const a = points[indices[i]!]!;
-        const b = points[indices[i + 1]!]!;
-        const c = points[indices[i + 2]!]!;
-        area += Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) * 0.5;
-        triangles.push({ a, b, c, cumulative: area });
+export function packEmitters(data: Float32Array, cfg: EmitterConfig | null): void {
+    // Preserve head2.x (particle count) written by the sim; clear the rest.
+    const count = data[4];
+    data.fill(0);
+    data[4] = count!;
+    if (!cfg || cfg.emitters.length === 0) {
+        return;
     }
-    const edges: PreparedPolygon["edges"] = [];
-    let perimeter = 0;
-    for (let i = 0; i < points.length; i++) {
-        const a = points[i]!;
-        const b = points[(i + 1) % points.length]!;
-        perimeter += Math.hypot(b[0] - a[0], b[1] - a[1]);
-        edges.push({ a, b, cumulative: perimeter });
-    }
-    return { area, perimeter, triangles, edges };
-}
-
-function absFinite(value: number): number {
-    return Number.isFinite(value) ? Math.abs(value) : 0;
-}
-
-function localShapeVolume(shape: FluidShape): number {
-    switch (shape.type) {
-        case "box":
-            return absFinite(shape.size[0] * shape.size[1] * shape.size[2]);
-        case "sphere": {
-            const r = absFinite(shape.radius);
-            return (4 / 3) * Math.PI * r ** 3;
-        }
-        case "cylinder": {
-            const r = absFinite(shape.radius);
-            const inner = Math.min(r, absFinite(shape.innerRadius ?? 0));
-            return Math.PI * (r * r - inner * inner) * absFinite(shape.height);
-        }
-        case "cone": {
-            const r0 = absFinite(shape.bottomRadius);
-            const r1 = absFinite(shape.topRadius);
-            return (Math.PI * absFinite(shape.height) * (r0 * r0 + r0 * r1 + r1 * r1)) / 3;
-        }
-        case "capsule": {
-            const r = absFinite(shape.radius);
-            const segment = Math.max(0, absFinite(shape.height) - 2 * r);
-            return Math.PI * r * r * segment + (4 / 3) * Math.PI * r ** 3;
-        }
-        case "polygonPrism":
-            return Math.abs(polyArea2(shape.points)) * 0.5 * absFinite(shape.thickness);
-    }
-}
-
-export function fluidShapeVolume(shape: FluidShape, transform: FluidTransform): number {
-    return localShapeVolume(shape) * absFinite(transform.scale[0] * transform.scale[1] * transform.scale[2]);
-}
-
-export function fluidParticleVolume(particleRadius: number): number {
-    const r = absFinite(particleRadius);
-    return (4 / 3) * Math.PI * r ** 3;
-}
-
-function randomUnitVector(): FluidVec3 {
-    const y = Math.random() * 2 - 1;
-    const angle = Math.random() * Math.PI * 2;
-    const horizontal = Math.sqrt(Math.max(0, 1 - y * y));
-    return [Math.cos(angle) * horizontal, y, Math.sin(angle) * horizontal];
-}
-
-function sampleDisk(radius: number): [number, number] {
-    const r = radius * Math.sqrt(Math.random());
-    const angle = Math.random() * Math.PI * 2;
-    return [Math.cos(angle) * r, Math.sin(angle) * r];
-}
-
-function sampleAnnulus(inner: number, outer: number): [number, number] {
-    const r = Math.sqrt(inner * inner + Math.random() * (outer * outer - inner * inner));
-    const angle = Math.random() * Math.PI * 2;
-    return [Math.cos(angle) * r, Math.sin(angle) * r];
-}
-
-function sampleTriangle(poly: PreparedPolygon): [number, number] {
-    if (!(poly.area > 0) || poly.triangles.length === 0) {
-        return [0, 0];
-    }
-    const pick = Math.random() * poly.area;
-    const tri = poly.triangles.find((value) => pick <= value.cumulative) ?? poly.triangles[poly.triangles.length - 1]!;
-    let u = Math.random();
-    let v = Math.random();
-    if (u + v > 1) {
-        u = 1 - u;
-        v = 1 - v;
-    }
-    return [tri.a[0] + u * (tri.b[0] - tri.a[0]) + v * (tri.c[0] - tri.a[0]), tri.a[1] + u * (tri.b[1] - tri.a[1]) + v * (tri.c[1] - tri.a[1])];
-}
-
-function sampleEdge(poly: PreparedPolygon): [number, number] {
-    if (!(poly.perimeter > 0) || poly.edges.length === 0) {
-        return [0, 0];
-    }
-    const pick = Math.random() * poly.perimeter;
-    const edge = poly.edges.find((value) => pick <= value.cumulative) ?? poly.edges[poly.edges.length - 1]!;
-    const t = Math.random();
-    return [edge.a[0] + (edge.b[0] - edge.a[0]) * t, edge.a[1] + (edge.b[1] - edge.a[1]) * t];
-}
-
-function sampleLocalShape(shape: FluidShape, sampling: "volume" | "surface"): FluidVec3 {
-    switch (shape.type) {
-        case "box": {
-            const size = shape.size.map(absFinite) as FluidVec3;
-            const p: FluidVec3 = [(Math.random() - 0.5) * size[0], (Math.random() - 0.5) * size[1], (Math.random() - 0.5) * size[2]];
-            if (sampling === "volume") {
-                return p;
-            }
-            const areas = [size[1] * size[2], size[0] * size[2], size[0] * size[1]];
-            const pick = Math.random() * 2 * (areas[0]! + areas[1]! + areas[2]!);
-            if (pick < 2 * areas[0]!) {
-                p[0] = pick < areas[0]! ? -size[0] * 0.5 : size[0] * 0.5;
-            } else if (pick < 2 * areas[0]! + 2 * areas[1]!) {
-                p[1] = pick < 2 * areas[0]! + areas[1]! ? -size[1] * 0.5 : size[1] * 0.5;
-            } else {
-                p[2] = pick < 2 * areas[0]! + 2 * areas[1]! + areas[2]! ? -size[2] * 0.5 : size[2] * 0.5;
-            }
-            return p;
-        }
-        case "sphere": {
-            const direction = randomUnitVector();
-            const radius = absFinite(shape.radius) * (sampling === "surface" ? 1 : Math.cbrt(Math.random()));
-            return [direction[0] * radius, direction[1] * radius, direction[2] * radius];
-        }
-        case "cylinder": {
-            const outer = absFinite(shape.radius);
-            const inner = Math.min(outer, absFinite(shape.innerRadius ?? 0));
-            const height = absFinite(shape.height);
-            if (sampling === "volume") {
-                const [x, z] = sampleAnnulus(inner, outer);
-                return [x, (Math.random() - 0.5) * height, z];
-            }
-            const outerArea = 2 * Math.PI * outer * height;
-            const innerArea = 2 * Math.PI * inner * height;
-            const capArea = Math.PI * (outer * outer - inner * inner);
-            const pick = Math.random() * (outerArea + innerArea + 2 * capArea);
-            if (pick < outerArea) {
-                const angle = Math.random() * Math.PI * 2;
-                return [Math.cos(angle) * outer, (Math.random() - 0.5) * height, Math.sin(angle) * outer];
-            }
-            if (pick < outerArea + innerArea) {
-                const angle = Math.random() * Math.PI * 2;
-                return [Math.cos(angle) * inner, (Math.random() - 0.5) * height, Math.sin(angle) * inner];
-            }
-            const [x, z] = sampleAnnulus(inner, outer);
-            return [x, pick < outerArea + innerArea + capArea ? -height * 0.5 : height * 0.5, z];
-        }
-        case "cone": {
-            const r0 = absFinite(shape.bottomRadius);
-            const r1 = absFinite(shape.topRadius);
-            const height = absFinite(shape.height);
-            const delta = r1 - r0;
-            if (sampling === "volume") {
-                const radius = Math.abs(delta) > 1e-8 ? Math.cbrt(r0 ** 3 + Math.random() * (r1 ** 3 - r0 ** 3)) : r0;
-                const t = Math.abs(delta) > 1e-8 ? (radius - r0) / delta : Math.random();
-                const [x, z] = sampleDisk(radius);
-                return [x, (t - 0.5) * height, z];
-            }
-            const lateral = Math.PI * (r0 + r1) * Math.hypot(delta, height);
-            const bottom = Math.PI * r0 * r0;
-            const top = Math.PI * r1 * r1;
-            const pick = Math.random() * (lateral + bottom + top);
-            if (pick < lateral) {
-                const target = Math.random() * (r0 + delta * 0.5);
-                const t = Math.abs(delta) > 1e-8 ? (-r0 + Math.sqrt(Math.max(0, r0 * r0 + 2 * delta * target))) / delta : Math.random();
-                const radius = r0 + delta * t;
-                const angle = Math.random() * Math.PI * 2;
-                return [Math.cos(angle) * radius, (t - 0.5) * height, Math.sin(angle) * radius];
-            }
-            const isTop = pick >= lateral + bottom;
-            const [x, z] = sampleDisk(isTop ? r1 : r0);
-            return [x, isTop ? height * 0.5 : -height * 0.5, z];
-        }
-        case "capsule": {
-            const radius = absFinite(shape.radius);
-            const segment = Math.max(0, absFinite(shape.height) - 2 * radius);
-            const cylinderMeasure = sampling === "volume" ? Math.PI * radius * radius * segment : 2 * Math.PI * radius * segment;
-            const capMeasure = sampling === "volume" ? (4 / 3) * Math.PI * radius ** 3 : 4 * Math.PI * radius * radius;
-            if (Math.random() * (cylinderMeasure + capMeasure) < cylinderMeasure) {
-                const angle = Math.random() * Math.PI * 2;
-                const r = sampling === "volume" ? radius * Math.sqrt(Math.random()) : radius;
-                return [Math.cos(angle) * r, (Math.random() - 0.5) * segment, Math.sin(angle) * r];
-            }
-            const sign = Math.random() < 0.5 ? -1 : 1;
-            const y = Math.random();
-            const angle = Math.random() * Math.PI * 2;
-            const h = Math.sqrt(Math.max(0, 1 - y * y));
-            const r = sampling === "volume" ? radius * Math.cbrt(Math.random()) : radius;
-            return [Math.cos(angle) * h * r, sign * (segment * 0.5 + y * r), Math.sin(angle) * h * r];
-        }
-        case "polygonPrism": {
-            const polygon = preparePolygon(shape.points);
-            const thickness = absFinite(shape.thickness);
-            if (sampling === "volume") {
-                const [x, z] = sampleTriangle(polygon);
-                return [x, (Math.random() - 0.5) * thickness, z];
-            }
-            if (Math.random() * (2 * polygon.area + polygon.perimeter * thickness) < 2 * polygon.area) {
-                const [x, z] = sampleTriangle(polygon);
-                return [x, Math.random() < 0.5 ? -thickness * 0.5 : thickness * 0.5, z];
-            }
-            const [x, z] = sampleEdge(polygon);
-            return [x, (Math.random() - 0.5) * thickness, z];
-        }
-    }
-}
-
-function normalisedRotation(rotation: FluidTransform["rotation"]): FluidTransform["rotation"] {
-    const length = Math.hypot(rotation[0], rotation[1], rotation[2], rotation[3]);
-    return length > 1e-8 ? [rotation[0] / length, rotation[1] / length, rotation[2] / length, rotation[3] / length] : [0, 0, 0, 1];
-}
-
-function rotateVector(rotation: FluidTransform["rotation"], value: FluidVec3): FluidVec3 {
-    const [qx, qy, qz, qw] = normalisedRotation(rotation);
-    const tx = 2 * (qy * value[2] - qz * value[1]);
-    const ty = 2 * (qz * value[0] - qx * value[2]);
-    const tz = 2 * (qx * value[1] - qy * value[0]);
-    return [value[0] + qw * tx + qy * tz - qz * ty, value[1] + qw * ty + qz * tx - qx * tz, value[2] + qw * tz + qx * ty - qy * tx];
-}
-
-export function sampleFluidEmitterPosition(emitter: FluidEmitter): FluidVec3 {
-    const local = sampleLocalShape(emitter.shape, emitter.sampling);
-    const scaled: FluidVec3 = [local[0] * emitter.transform.scale[0], local[1] * emitter.transform.scale[1], local[2] * emitter.transform.scale[2]];
-    const rotated = rotateVector(emitter.transform.rotation, scaled);
-    return [rotated[0] + emitter.transform.position[0], rotated[1] + emitter.transform.position[1], rotated[2] + emitter.transform.position[2]];
-}
-
-function sampleFluidEmitterVelocity(emitter: FluidEmitter): FluidVec3 {
-    const base = emitter.velocitySpace === "world" ? emitter.velocity : rotateVector(emitter.transform.rotation, emitter.velocity);
-    const spread = Math.hypot(base[0], base[1], base[2]) * emitter.spread;
-    return [base[0] + (Math.random() - 0.5) * spread, base[1] + (Math.random() - 0.5) * spread, base[2] + (Math.random() - 0.5) * spread];
-}
-
-export interface FluidInitialParticles {
-    positions: Float32Array;
-    velocities: Float32Array;
-    activeCount: number;
-}
-
-/** Returns reset-time initial particles, or null to preserve legacy spawn-box seeding.
- *  Initial-only graphs activate the complete selected pool. Graphs with enabled inflows
- *  activate only the initial volumes' demand and reserve the remaining slots for inflow.
- *  An inflow-only graph deliberately returns an empty active prefix so subsequent frames can
- *  activate dormant slots at the authored inflow rate. */
-export function createFluidInitialParticles(count: number, config: FluidFlowConfig | null, particleVolume = 1): FluidInitialParticles | null {
-    const enabled = (config?.emitters.slice(0, MAX_FLUID_EMITTERS) ?? []).filter((emitter) => emitter.enabled);
-    const initial = enabled.filter((emitter) => emitter.behavior === "initial");
-    const hasInflow = enabled.some((emitter) => emitter.behavior === "inflow");
-    if (initial.length === 0) {
-        if (hasInflow) {
-            return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
-        }
-        return null;
-    }
-    const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
-    const total = volumes.reduce((sum, value) => sum + value, 0);
-    if (!(total > 0)) {
-        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
-    }
-    const activeCount = hasInflow ? Math.min(count, Math.max(0, Math.floor(total / Math.max(particleVolume, 1e-12)))) : count;
-    const allocations = volumes.map((volume, index) => {
-        const exact = (activeCount * volume) / total;
-        return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
-    });
-    const left = activeCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
-    const ranked = [...allocations].sort((a, b) => {
-        const remainder = b.remainder - a.remainder;
-        if (remainder !== 0) {
-            return remainder;
-        }
-        const aid = initial[a.index]!.id;
-        const bid = initial[b.index]!.id;
-        return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
-    });
-    for (let i = 0; i < left; i++) {
-        ranked[i]!.count++;
-    }
-    const positions = new Float32Array(activeCount * 3);
-    const velocities = new Float32Array(activeCount * 3);
-    let cursor = 0;
-    for (const allocation of allocations) {
-        const emitter = initial[allocation.index]!;
-        for (let i = 0; i < allocation.count; i++) {
-            const point = sampleFluidEmitterPosition(emitter);
-            const velocity = sampleFluidEmitterVelocity(emitter);
-            positions[cursor] = point[0];
-            velocities[cursor++] = velocity[0];
-            positions[cursor] = point[1];
-            velocities[cursor++] = velocity[1];
-            positions[cursor] = point[2];
-            velocities[cursor++] = velocity[2];
-        }
-    }
-    return { positions, velocities, activeCount };
-}
-
-const FLOW_HEADER_FLOATS = 8;
-const FLOW_ENTITY_FLOATS = 32;
-const FLOW_EMITTER_BASE = FLOW_HEADER_FLOATS;
-const FLOW_SINK_BASE = FLOW_EMITTER_BASE + MAX_FLUID_EMITTERS * FLOW_ENTITY_FLOATS;
-const FLOW_TRI_BASE = FLOW_SINK_BASE + MAX_FLUID_SINKS * FLOW_ENTITY_FLOATS;
-const FLOW_POINT_BASE = FLOW_TRI_BASE + MAX_FLUID_POLYGON_TRIANGLES * 8;
-export const FLUID_FLOW_FLOATS = FLOW_POINT_BASE + MAX_FLUID_POLYGON_POINTS * 4;
-export const FLUID_FLOW_BYTES = FLUID_FLOW_FLOATS * 4;
-const FLOW_EMITTER_COUNTER_U32 = MAX_FLUID_EMITTERS * 2;
-export const FLUID_FLOW_COUNTER_BYTES = (FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS) * 4;
-const UNLIMITED_FLOW_BUDGET = 0xffffffff;
-
-export interface FluidFlowState {
-    readonly device: GPUDevice;
-    readonly uniformBuffer: GPUBuffer;
-    readonly counterBuffer: GPUBuffer;
-    readonly data: ArrayBuffer;
-    readonly f32: Float32Array;
-    readonly u32: Uint32Array;
-    readonly counterData: Uint32Array;
-    readonly particleVolume: number;
-    config: FluidFlowConfig | null;
-    active: boolean;
-    frameSeed: number;
-    emitterCursor: number;
-    emitterIds: string[];
-    emitterRates: (number | undefined)[];
-    emitterActive: boolean[];
-    emitterCarries: Float64Array;
-    sinkIds: string[];
-    sinkRates: (number | undefined)[];
-    sinkCarries: Float64Array;
-}
-
-export interface FluidFlowFrame {
-    readonly particles: FluidInitialParticles | null;
-    readonly recycleActive: boolean;
-}
-
-export interface FluidVolumeBudget {
-    readonly count: number;
-    readonly carry: number;
-}
-
-/** Converts a world-volume rate to a whole-particle frame budget with fractional carry. */
-export function fluidVolumeBudget(volumeRate: number, dt: number, particleVolume: number, carry: number): FluidVolumeBudget {
-    const exact = carry + (Math.max(0, Number.isFinite(volumeRate) ? volumeRate : 0) * Math.max(0, dt)) / Math.max(particleVolume, 1e-12);
-    const count = Math.min(Math.floor(exact), UNLIMITED_FLOW_BUDGET - 1);
-    return { count, carry: exact - Math.floor(exact) };
-}
-
-/** Allocates finite inflow budgets first, then divides remaining capacity among unlimited inflows. */
-export function allocateFluidInflowCapacity(budgets: ArrayLike<number>, unlimited: ArrayLike<boolean>, inactiveCapacity: number, cursor = 0): Uint32Array {
-    const count = Math.max(budgets.length, unlimited.length);
-    const allocations = new Uint32Array(count);
-    let remaining = Math.max(0, Math.floor(inactiveCapacity));
-    for (let offset = 0; offset < count && remaining > 0; offset++) {
-        const index = (cursor + offset) % Math.max(1, count);
-        if (unlimited[index] || !(budgets[index]! > 0)) {
+    const n = Math.min(cfg.emitters.length, MAX_EMITTERS);
+    data[0] = n;
+    data[1] = cfg.rate;
+    // data[2] = seed and data[5] = dt are written per frame by the sim.
+    data[3] = cfg.spread ?? 0;
+    data[6] = cfg.fixedStreamCount ?? 0; // head2.z — dedicated-stream particle count (0 = off)
+    data[7] = cfg.fixedStreamDrainY ?? 0; // head2.w — fixed-stream tight-loop drain height
+    data[8] = cfg.intakeMin[0];
+    data[9] = cfg.intakeMin[1];
+    data[10] = cfg.intakeMin[2];
+    data[12] = cfg.intakeMax[0];
+    data[13] = cfg.intakeMax[1];
+    data[14] = cfg.intakeMax[2];
+    const triBase = 16 + MAX_EMITTERS * 16;
+    let triCursor = 0;
+    for (let k = 0; k < n; k++) {
+        const o = 16 + k * 16;
+        const e = cfg.emitters[k]!;
+        data[o] = e.pos[0];
+        data[o + 1] = e.pos[1];
+        data[o + 2] = e.pos[2];
+        data[o + 3] = e.radius;
+        data[o + 4] = e.dir[0];
+        data[o + 5] = e.dir[1];
+        data[o + 6] = e.dir[2];
+        data[o + 7] = e.speed;
+        // Spawn-box half-extents. A plain nozzle keeps the historical CUBE of half-extent
+        // `radius`, so omitting halfExtents reproduces the original jitter exactly.
+        const h = e.halfExtents;
+        data[o + 8] = h ? h[0] : e.radius;
+        data[o + 9] = h ? h[1] : e.radius;
+        data[o + 10] = h ? h[2] : e.radius;
+        // Polygon spawn area: triangulate, then store each triangle with the RUNNING FRACTION of
+        // the outline's area it completes. The shader picks with a single uniform random against
+        // those fractions, so big triangles are chosen proportionally more often and the outline
+        // fills evenly — a uniform pick would crowd particles into the slivers.
+        const poly = e.polygon;
+        if (!poly || poly.length < 3) {
             continue;
         }
-        const allocated = Math.min(remaining, Math.floor(budgets[index]!));
-        allocations[index] = allocated;
-        remaining -= allocated;
-    }
-    const unlimitedIndices: number[] = [];
-    for (let i = 0; i < count; i++) {
-        if (unlimited[i]) {
-            unlimitedIndices.push(i);
+        const tris = triangulatePolygon(poly);
+        const budget = Math.min(tris.length / 3, MAX_EMITTER_TRIS - triCursor);
+        let total = 0;
+        for (let t = 0; t < budget; t++) {
+            const a = poly[tris[t * 3]!]!;
+            const b = poly[tris[t * 3 + 1]!]!;
+            const c = poly[tris[t * 3 + 2]!]!;
+            total += Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
         }
-    }
-    if (remaining > 0 && unlimitedIndices.length > 0) {
-        const perEmitter = Math.floor(remaining / unlimitedIndices.length);
-        let extra = remaining % unlimitedIndices.length;
-        for (const index of unlimitedIndices) {
-            allocations[index] = perEmitter + (extra-- > 0 ? 1 : 0);
+        if (budget < 1 || total <= 0) {
+            continue; // degenerate outline — fall back to the box extents above
         }
-    }
-    return allocations;
-}
-
-interface PolygonPackCursor {
-    triangle: number;
-    point: number;
-}
-
-function shapeKind(shape: FluidShape): number {
-    return shape.type === "box" ? 0 : shape.type === "sphere" ? 1 : shape.type === "cylinder" ? 2 : shape.type === "cone" ? 3 : shape.type === "capsule" ? 4 : 5;
-}
-
-function packFluidShape(f32: Float32Array, u32: Uint32Array, offset: number, transform: FluidTransform, shape: FluidShape, cursor: PolygonPackCursor): boolean {
-    f32.set(transform.position, offset);
-    f32.set(normalisedRotation(transform.rotation), offset + 4);
-    f32.set(transform.scale, offset + 8);
-    f32[offset + 11] = shapeKind(shape);
-    switch (shape.type) {
-        case "box":
-            f32.set(shape.size, offset + 12);
-            return true;
-        case "sphere":
-            f32[offset + 12] = shape.radius;
-            return true;
-        case "cylinder":
-            f32.set([shape.radius, shape.height, shape.innerRadius ?? 0], offset + 12);
-            return true;
-        case "cone":
-            f32.set([shape.bottomRadius, shape.topRadius, shape.height], offset + 12);
-            return true;
-        case "capsule":
-            f32.set([shape.radius, shape.height], offset + 12);
-            return true;
-        case "polygonPrism": {
-            const polygon = preparePolygon(shape.points);
-            f32.set([shape.thickness, polygon.area, polygon.perimeter], offset + 12);
-            if (
-                polygon.triangles.length === 0 ||
-                polygon.triangles.length > MAX_FLUID_POLYGON_TRIANGLES - cursor.triangle ||
-                polygon.edges.length > MAX_FLUID_POLYGON_POINTS - cursor.point
-            ) {
-                return false;
-            }
-            u32.set([cursor.triangle, polygon.triangles.length, cursor.point, polygon.edges.length], offset + 20);
-            for (const tri of polygon.triangles) {
-                const to = FLOW_TRI_BASE + cursor.triangle++ * 8;
-                f32.set([tri.a[0], tri.a[1], tri.b[0], tri.b[1], tri.c[0], tri.c[1], tri.cumulative / polygon.area], to);
-            }
-            for (const edge of polygon.edges) {
-                const po = FLOW_POINT_BASE + cursor.point++ * 4;
-                f32.set([edge.a[0], edge.a[1], edge.cumulative / polygon.perimeter], po);
-            }
-            return true;
+        const start = triCursor;
+        let acc = 0;
+        for (let t = 0; t < budget; t++) {
+            const a = poly[tris[t * 3]!]!;
+            const b = poly[tris[t * 3 + 1]!]!;
+            const c = poly[tris[t * 3 + 2]!]!;
+            acc += Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2;
+            const to = triBase + (start + t) * 8;
+            data[to] = a[0];
+            data[to + 1] = a[1];
+            data[to + 2] = b[0];
+            data[to + 3] = b[1];
+            data[to + 4] = c[0];
+            data[to + 5] = c[1];
+            // Last triangle pinned to exactly 1 so a random of 1.0 can never fall through.
+            data[to + 6] = t === budget - 1 ? 1 : acc / total;
         }
+        triCursor += budget;
+        data[o + 12] = start;
+        data[o + 13] = budget;
     }
 }
 
-export function createFluidFlowState(device: GPUDevice, particleCount: number, particleRadius: number): FluidFlowState {
-    const data = new ArrayBuffer(FLUID_FLOW_BYTES);
-    const state: FluidFlowState = {
-        device,
-        uniformBuffer: device.createBuffer({ label: "fluid-flow", size: FLUID_FLOW_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-        counterBuffer: device.createBuffer({ label: "fluid-flow-counters", size: FLUID_FLOW_COUNTER_BYTES, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
-        data,
-        f32: new Float32Array(data),
-        u32: new Uint32Array(data),
-        counterData: new Uint32Array(FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS),
-        particleVolume: Math.max(fluidParticleVolume(particleRadius), 1e-12),
-        config: null,
-        active: false,
-        frameSeed: 0,
-        emitterCursor: 0,
-        emitterIds: [],
-        emitterRates: [],
-        emitterActive: [],
-        emitterCarries: new Float64Array(MAX_FLUID_EMITTERS),
-        sinkIds: [],
-        sinkRates: [],
-        sinkCarries: new Float64Array(MAX_FLUID_SINKS),
-    };
-    state.u32[2] = particleCount;
-    device.queue.writeBuffer(state.uniformBuffer, 0, data);
-    return state;
-}
-
-export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfig | null): void {
-    if ((config?.emitters.length ?? 0) > MAX_FLUID_EMITTERS) {
-        throw new RangeError(`Fluid flow supports at most ${MAX_FLUID_EMITTERS} emitters.`);
-    }
-    if ((config?.sinks.length ?? 0) > MAX_FLUID_SINKS) {
-        throw new RangeError(`Fluid flow supports at most ${MAX_FLUID_SINKS} sinks.`);
-    }
-    const ids = new Set<string>();
-    for (const item of [...(config?.emitters ?? []), ...(config?.sinks ?? [])]) {
-        if (!item.id || ids.has(item.id)) {
-            throw new Error(`Fluid flow object IDs must be non-empty and unique: "${item.id}".`);
-        }
-        ids.add(item.id);
-    }
-    const previousEmitterCarries = new Map(state.emitterIds.map((id, index) => [id, state.emitterCarries[index]!]));
-    const previousSinkCarries = new Map(state.sinkIds.map((id, index) => [id, state.sinkCarries[index]!]));
-    state.config = config;
-    state.active = false;
-    state.emitterIds = [];
-    state.emitterRates = [];
-    state.emitterActive = [];
-    state.emitterCarries.fill(0);
-    state.sinkIds = [];
-    state.sinkRates = [];
-    state.sinkCarries.fill(0);
-    const particleCount = state.u32[2];
-    state.f32.fill(0);
-    state.u32[2] = particleCount!;
-    const emitters = config?.emitters ?? [];
-    const sinks = config?.sinks ?? [];
-    state.u32[0] = emitters.length;
-    state.u32[1] = sinks.length;
-    const cursor: PolygonPackCursor = { triangle: 0, point: 0 };
-    const emitterPacked: boolean[] = [];
-    for (let i = 0; i < emitters.length; i++) {
-        const emitter = emitters[i]!;
-        const offset = FLOW_EMITTER_BASE + i * FLOW_ENTITY_FLOATS;
-        const packed = packFluidShape(state.f32, state.u32, offset, emitter.transform, emitter.shape, cursor);
-        if (!packed) {
-            throw new RangeError(`Fluid emitter "${emitter.id}" exceeds the polygon flow-buffer capacity or has an invalid polygon.`);
-        }
-        emitterPacked.push(packed);
-        state.f32.set(emitter.velocity, offset + 24);
-        state.f32[offset + 27] = emitter.spread;
-        state.u32.set(
-            [emitter.enabled && packed ? 1 : 0, emitter.behavior === "inflow" ? 1 : 0, emitter.sampling === "surface" ? 1 : 0, emitter.velocitySpace === "world" ? 1 : 0],
-            offset + 28
-        );
-        const active = emitter.enabled && packed && emitter.behavior === "inflow";
-        state.emitterIds.push(emitter.id);
-        state.emitterRates.push(emitter.volumeRate);
-        state.emitterActive.push(active);
-        state.emitterCarries[i] = previousEmitterCarries.get(emitter.id) ?? 0;
-    }
-    for (let i = 0; i < sinks.length; i++) {
-        const sink = sinks[i]!;
-        const offset = FLOW_SINK_BASE + i * FLOW_ENTITY_FLOATS;
-        const sinkPacked = packFluidShape(state.f32, state.u32, offset, sink.transform, sink.shape, cursor);
-        if (!sinkPacked) {
-            throw new RangeError(`Fluid sink "${sink.id}" exceeds the polygon flow-buffer capacity or has an invalid polygon.`);
-        }
-        const targetIds = new Set(sink.targets);
-        let targetMask = 0;
-        for (let emitterIndex = 0; emitterIndex < emitters.length; emitterIndex++) {
-            const emitter = emitters[emitterIndex]!;
-            if (emitter.enabled && emitterPacked[emitterIndex] && emitter.behavior === "inflow" && targetIds.has(emitter.id)) {
-                targetMask |= 1 << emitterIndex;
-            }
-        }
-        state.u32.set([sink.enabled && sinkPacked ? 1 : 0, targetMask >>> 0, sink.volumeRate === undefined ? UNLIMITED_FLOW_BUDGET : 0, i], offset + 24);
-        state.sinkIds.push(sink.id);
-        state.sinkRates.push(sink.volumeRate);
-        state.sinkCarries[i] = previousSinkCarries.get(sink.id) ?? 0;
-        state.active ||= sink.enabled && sinkPacked && targetMask !== 0;
-    }
-    state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
-}
-
-export function resetFluidFlowState(state: FluidFlowState): void {
-    state.frameSeed = 0;
-    state.emitterCursor = 0;
-    state.emitterCarries.fill(0);
-    state.sinkCarries.fill(0);
-}
-
-/** Activates dormant slots, updates exact budgets, and initializes GPU atomic counters.
- *  Unmet whole-particle capacity is discarded each frame rather than accumulated. */
-export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, particleCount: number, inactiveCapacity: number, velocityScale = 1): FluidFlowFrame {
-    if (!state.active && !state.emitterActive.some(Boolean)) {
-        return { particles: null, recycleActive: false };
-    }
-    const emitterBudgets = new Uint32Array(MAX_FLUID_EMITTERS);
-    const unlimited = new Array<boolean>(MAX_FLUID_EMITTERS).fill(false);
-    for (let i = 0; i < state.emitterRates.length; i++) {
-        if (!state.emitterActive[i]) {
-            continue;
-        }
-        const rate = state.emitterRates[i];
-        if (rate === undefined) {
-            emitterBudgets[i] = UNLIMITED_FLOW_BUDGET;
-            unlimited[i] = true;
-        } else {
-            const budget = fluidVolumeBudget(rate, dt, state.particleVolume, state.emitterCarries[i]!);
-            state.emitterCarries[i] = budget.carry;
-            emitterBudgets[i] = budget.count;
-        }
-    }
-    const allocations = allocateFluidInflowCapacity(emitterBudgets, unlimited, inactiveCapacity, state.emitterCursor);
-    if (state.emitterRates.length > 0) {
-        state.emitterCursor = (state.emitterCursor + 1) % state.emitterRates.length;
-    }
-    const activationCount = allocations.reduce((sum, value) => sum + value, 0);
-    let particles: FluidInitialParticles | null = null;
-    if (activationCount > 0) {
-        const positions = new Float32Array(activationCount * 3);
-        const velocities = new Float32Array(activationCount * 3);
-        let cursor = 0;
-        const emitters = state.config?.emitters ?? [];
-        for (let i = 0; i < allocations.length; i++) {
-            const emitter = emitters[i];
-            if (!emitter) {
-                continue;
-            }
-            for (let j = 0; j < allocations[i]!; j++) {
-                const point = sampleFluidEmitterPosition(emitter);
-                const velocity = sampleFluidEmitterVelocity(emitter);
-                positions[cursor] = point[0];
-                velocities[cursor++] = velocity[0];
-                positions[cursor] = point[1];
-                velocities[cursor++] = velocity[1];
-                positions[cursor] = point[2];
-                velocities[cursor++] = velocity[2];
-            }
-        }
-        particles = { positions, velocities, activeCount: activationCount };
-    }
-    state.u32[2] = particleCount + activationCount;
-    state.u32[3] = state.frameSeed++;
-    state.f32[4] = dt;
-    state.f32[5] = velocityScale;
-    state.counterData.fill(0);
-    for (let i = 0; i < MAX_FLUID_EMITTERS; i++) {
-        state.counterData[i * 2] = allocations[i]!;
-        state.counterData[i * 2 + 1] = emitterBudgets[i]!;
-    }
-    for (let i = 0; i < state.sinkRates.length; i++) {
-        const rate = state.sinkRates[i];
-        const budgetOffset = FLOW_SINK_BASE + i * FLOW_ENTITY_FLOATS + 26;
-        if (rate === undefined) {
-            state.u32[budgetOffset] = UNLIMITED_FLOW_BUDGET;
-            continue;
-        }
-        const budget = fluidVolumeBudget(rate, dt, state.particleVolume, state.sinkCarries[i]!);
-        state.sinkCarries[i] = budget.carry;
-        state.u32[budgetOffset] = budget.count;
-    }
-    state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
-    state.device.queue.writeBuffer(state.counterBuffer, 0, state.counterData);
-    return { particles, recycleActive: state.active };
-}
-
-export function disposeFluidFlowState(state: FluidFlowState): void {
-    state.uniformBuffer.destroy();
-    state.counterBuffer.destroy();
-}
-
-export const FLUID_FLOW_STRUCT_WGSL = /* wgsl */ `
-struct FluidShapeData { position: vec4<f32>, rotation: vec4<f32>, scaleKind: vec4<f32>, params0: vec4<f32>, params1: vec4<f32>, polygon: vec4<u32>, };
-struct FluidEmitterData { shape: FluidShapeData, velocitySpread: vec4<f32>, flags: vec4<u32>, };
-struct FluidSinkData { shape: FluidShapeData, route: vec4<u32>, pad: vec4<u32>, };
-struct FluidFlowData {
-    header: vec4<u32>, frame: vec4<f32>,
-    emitters: array<FluidEmitterData, ${MAX_FLUID_EMITTERS}>, sinks: array<FluidSinkData, ${MAX_FLUID_SINKS}>,
-    triangles: array<vec4<f32>, ${MAX_FLUID_POLYGON_TRIANGLES * 2}>, points: array<vec4<f32>, ${MAX_FLUID_POLYGON_POINTS}>,
+/** Emitter UBO declarations for the backends' emit shaders. Shared so the three sims can never
+ *  drift from each other or from {@link packEmitters} — the layout is written in one place only.
+ *  On PB-MPM `intakeMin.w` additionally carries subDt. */
+export const EMITTER_STRUCT_WGSL = /* wgsl */ `
+struct Emitter {
+    p: vec4<f32>,           // pos.xyz, radius
+    d: vec4<f32>,           // dir.xyz, speed
+    e: vec4<f32>,           // spawn-box half-extents.xyz
+    q: vec4<f32>,           // triStart, triCount (polygon spawn area; triCount 0 = plain box)
 };
-struct FluidLaunch { position: vec3<f32>, velocity: vec3<f32>, launched: u32, };`;
+struct Emitters {
+    head: vec4<f32>,        // emitterCount, rate, seed, spread
+    head2: vec4<f32>,       // particleCount, dt, fixedStreamCount, fixedStreamDrainY
+    intakeMin: vec4<f32>,
+    intakeMax: vec4<f32>,
+    list: array<Emitter, ${MAX_EMITTERS}>,
+    // Polygon triangles: pairs of vec4 = (ax, az, bx, bz) then (cx, cz, cumAreaFraction, pad).
+    tris: array<vec4<f32>, ${MAX_EMITTER_TRIS * 2}>,
+};`;
 
-/** Requires global `flow` uniform and `flowCounters` atomic-storage declarations. */
-export const FLUID_FLOW_RUNTIME_WGSL = /* wgsl */ `
-fn fluidHash(x0: u32) -> u32 { var h=x0; h^=h>>16u; h*=0x7feb352du; h^=h>>15u; h*=0x846ca68bu; h^=h>>16u; return h; }
-fn fluidRnd(x: u32) -> f32 { return f32(fluidHash(x))/4294967296.0; }
-fn fluidQuatRotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> { return v+2.0*cross(q.xyz,cross(q.xyz,v)+q.w*v); }
-fn fluidToLocal(s: FluidShapeData, p: vec3<f32>) -> vec3<f32> {
-    let q=vec4<f32>(-s.rotation.xyz,s.rotation.w); let z=s.scaleKind.xyz;
-    let safe=select(vec3<f32>(1e-6),z,abs(z)>vec3<f32>(1e-6));
-    return fluidQuatRotate(q,p-s.position.xyz)/safe;
-}
-fn fluidToWorld(s: FluidShapeData, p: vec3<f32>) -> vec3<f32> { return s.position.xyz+fluidQuatRotate(s.rotation,p*s.scaleKind.xyz); }
-fn fluidInsidePolygon(s: FluidShapeData, p: vec2<f32>) -> bool {
-    let start=s.polygon.z; let count=s.polygon.w; if(count<3u){return false;} var inside=false; var j=count-1u;
-    for(var i=0u;i<count;i=i+1u){
-        let a=flow.points[start+i].xy; let b=flow.points[start+j].xy;
-        if((a.y>p.y)!=(b.y>p.y)&&p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y)+a.x){inside=!inside;} j=i;
-    }
-    return inside;
-}
-fn fluidInsideShape(s: FluidShapeData, world: vec3<f32>) -> bool {
-    let p=fluidToLocal(s,world); let k=u32(s.scaleKind.w);
-    if(k==0u){return all(abs(p)<=abs(s.params0.xyz)*0.5);}
-    if(k==1u){return dot(p,p)<=s.params0.x*s.params0.x;}
-    if(k==2u){
-        let r2=dot(p.xz,p.xz); let ro=abs(s.params0.x); let ri=min(ro,abs(s.params0.z));
-        return abs(p.y)<=abs(s.params0.y)*0.5&&r2<=ro*ro&&r2>=ri*ri;
-    }
-    if(k==3u){
-        let h=max(abs(s.params0.z),1e-6); let t=clamp(p.y/h+0.5,0.0,1.0); let r=mix(abs(s.params0.x),abs(s.params0.y),t);
-        return abs(p.y)<=h*0.5&&dot(p.xz,p.xz)<=r*r;
-    }
-    if(k==4u){
-        let r=abs(s.params0.x); let l=max(0.0,abs(s.params0.y)-2.0*r);
-        let q=vec3<f32>(p.x,p.y-clamp(p.y,-l*0.5,l*0.5),p.z); return dot(q,q)<=r*r;
-    }
-    return abs(p.y)<=abs(s.params0.x)*0.5&&fluidInsidePolygon(s,p.xz);
-}
-fn fluidUnit(seed:u32)->vec3<f32>{
-    let y=fluidRnd(seed)*2.0-1.0; let a=fluidRnd(seed*3u+1u)*6.28318530718; let h=sqrt(max(0.0,1.0-y*y));
-    return vec3<f32>(cos(a)*h,y,sin(a)*h);
-}
-fn fluidDisk(r:f32,seed:u32)->vec2<f32>{
-    let q=r*sqrt(fluidRnd(seed)); let a=fluidRnd(seed*3u+1u)*6.28318530718; return vec2<f32>(cos(a),sin(a))*q;
-}
-fn fluidAnnulus(ri:f32,ro:f32,seed:u32)->vec2<f32>{
-    let q=sqrt(ri*ri+fluidRnd(seed)*(ro*ro-ri*ri)); let a=fluidRnd(seed*3u+1u)*6.28318530718; return vec2<f32>(cos(a),sin(a))*q;
-}
-fn fluidTriangle(s:FluidShapeData,seed:u32)->vec2<f32>{
-    let st=s.polygon.x; let n=s.polygon.y; if(n==0u){return vec2<f32>(0.0);}
-    let r=fluidRnd(seed); var pick=n-1u;
-    for(var i=0u;i<n;i=i+1u){if(r<=flow.triangles[(st+i)*2u+1u].z){pick=i;break;}}
-    let ab=flow.triangles[(st+pick)*2u]; let c=flow.triangles[(st+pick)*2u+1u];
-    var u=fluidRnd(seed*3u+1u); var v=fluidRnd(seed*5u+2u); if(u+v>1.0){u=1.0-u;v=1.0-v;}
-    return ab.xy+u*(ab.zw-ab.xy)+v*(c.xy-ab.xy);
-}
-fn fluidEdge(s:FluidShapeData,seed:u32)->vec2<f32>{
-    let st=s.polygon.z; let n=s.polygon.w; if(n==0u){return vec2<f32>(0.0);}
-    let r=fluidRnd(seed); var pick=n-1u;
-    for(var i=0u;i<n;i=i+1u){if(r<=flow.points[st+i].z){pick=i;break;}}
-    return mix(flow.points[st+pick].xy,flow.points[st+(pick+1u)%n].xy,fluidRnd(seed*3u+1u));
-}
-fn fluidSampleLocal(s:FluidShapeData,surface:bool,seed:u32)->vec3<f32>{
-    let k=u32(s.scaleKind.w);
-    if(k==0u){
-        let z=abs(s.params0.xyz); var p=(vec3<f32>(fluidRnd(seed),fluidRnd(seed*3u+1u),fluidRnd(seed*5u+2u))-0.5)*z;
-        if(!surface){return p;} let ax=z.y*z.z; let ay=z.x*z.z; let az=z.x*z.y; let q=fluidRnd(seed*7u+3u)*2.0*(ax+ay+az);
-        if(q<2.0*ax){p.x=select(z.x*0.5,-z.x*0.5,q<ax);}
-        else if(q<2.0*ax+2.0*ay){p.y=select(z.y*0.5,-z.y*0.5,q<2.0*ax+ay);}
-        else{p.z=select(z.z*0.5,-z.z*0.5,q<2.0*ax+2.0*ay+az);} return p;
-    }
-    if(k==1u){return fluidUnit(seed)*abs(s.params0.x)*select(pow(fluidRnd(seed*7u+3u),1.0/3.0),1.0,surface);}
-    if(k==2u){
-        let ro=abs(s.params0.x); let h=abs(s.params0.y); let ri=min(ro,abs(s.params0.z));
-        if(!surface){let xz=fluidAnnulus(ri,ro,seed);return vec3<f32>(xz.x,(fluidRnd(seed*5u+2u)-0.5)*h,xz.y);}
-        let ao=6.28318530718*ro*h; let ai=6.28318530718*ri*h; let ac=3.14159265359*(ro*ro-ri*ri);
-        let q=fluidRnd(seed*7u+3u)*(ao+ai+2.0*ac);
-        if(q<ao){let a=fluidRnd(seed)*6.28318530718;return vec3<f32>(cos(a)*ro,(fluidRnd(seed*3u+1u)-0.5)*h,sin(a)*ro);}
-        if(q<ao+ai){let a=fluidRnd(seed)*6.28318530718;return vec3<f32>(cos(a)*ri,(fluidRnd(seed*3u+1u)-0.5)*h,sin(a)*ri);}
-        let xz=fluidAnnulus(ri,ro,seed);return vec3<f32>(xz.x,select(h*0.5,-h*0.5,q<ao+ai+ac),xz.y);
-    }
-    if(k==3u){
-        let r0=abs(s.params0.x); let r1=abs(s.params0.y); let h=abs(s.params0.z); let d=r1-r0;
-        if(!surface){
-            let r=select(pow(max(0.0,r0*r0*r0+fluidRnd(seed)*(r1*r1*r1-r0*r0*r0)),1.0/3.0),r0,abs(d)<1e-6);
-            let t=select((r-r0)/d,fluidRnd(seed*3u+1u),abs(d)<1e-6); let xz=fluidDisk(r,seed*5u+2u);
-            return vec3<f32>(xz.x,(t-0.5)*h,xz.y);
+/** Spawn-point sampling shared by the three emit shaders. Requires `em` and `rnd` in scope.
+ *  Returns an ABSOLUTE world position: polygon emitters take X/Z from the outline (so `p.xz` is
+ *  unused), everything else keeps the historical box jitter about `p.xyz` — and consumes the very
+ *  same random stream in that case, so non-polygon emitters are bit-for-bit unchanged. */
+export const EMITTER_SPAWN_WGSL = /* wgsl */ `
+fn spawnPoint(e: Emitter, seed: u32) -> vec3<f32> {
+    let tc = u32(e.q.y);
+    if (tc > 0u) {
+        // Area-weighted triangle pick: cumulative fractions ascend to exactly 1 on the last one.
+        let t0 = u32(e.q.x);
+        let r = rnd(seed * 23u);
+        var pick = tc - 1u;
+        for (var k = 0u; k < tc; k = k + 1u) {
+            if (r <= em.tris[(t0 + k) * 2u + 1u].z) { pick = k; break; }
         }
-        let al=3.14159265359*(r0+r1)*length(vec2<f32>(d,h)); let ab=3.14159265359*r0*r0; let at=3.14159265359*r1*r1;
-        let q=fluidRnd(seed)*(al+ab+at);
-        if(q<al){
-            let radialPick=fluidRnd(seed*3u+1u)*(r0+0.5*d);
-            let t=select((-r0+sqrt(max(0.0,r0*r0+2.0*d*radialPick)))/d,fluidRnd(seed*5u+2u),abs(d)<1e-6);
-            let r=r0+d*t; let a=fluidRnd(seed*7u+3u)*6.28318530718; return vec3<f32>(cos(a)*r,(t-0.5)*h,sin(a)*r);
-        }
-        let top=q>=al+ab; let xz=fluidDisk(select(r0,r1,top),seed*3u+1u); return vec3<f32>(xz.x,select(-h*0.5,h*0.5,top),xz.y);
+        let ab = em.tris[(t0 + pick) * 2u];
+        let cc = em.tris[(t0 + pick) * 2u + 1u];
+        // Uniform barycentric sample; folding u+v>1 back mirrors the far half of the
+        // parallelogram into the triangle, which keeps the distribution even.
+        var u = rnd(seed * 3u);
+        var v = rnd(seed * 7u);
+        if (u + v > 1.0) { u = 1.0 - u; v = 1.0 - v; }
+        let x = ab.x + u * (ab.z - ab.x) + v * (cc.x - ab.x);
+        let z = ab.y + u * (ab.w - ab.y) + v * (cc.y - ab.y);
+        return vec3<f32>(x, e.p.y + (rnd(seed * 5u) - 0.5) * (2.0 * e.e.y), z);
     }
-    if(k==4u){
-        let r=abs(s.params0.x); let l=max(0.0,abs(s.params0.y)-2.0*r);
-        let cm=select(3.14159265359*r*r*l,6.28318530718*r*l,surface); let sm=select(4.18879020479*r*r*r,12.56637061436*r*r,surface);
-        if(fluidRnd(seed)*(cm+sm)<cm){
-            let rr=r*select(sqrt(fluidRnd(seed*3u+1u)),1.0,surface); let a=fluidRnd(seed*5u+2u)*6.28318530718;
-            return vec3<f32>(cos(a)*rr,(fluidRnd(seed*7u+3u)-0.5)*l,sin(a)*rr);
-        }
-        let sg=select(-1.0,1.0,fluidRnd(seed*3u+1u)>=0.5); let y=fluidRnd(seed*5u+2u); let a=fluidRnd(seed*7u+3u)*6.28318530718;
-        let rr=r*select(pow(fluidRnd(seed*11u+5u),1.0/3.0),1.0,surface); let q=sqrt(max(0.0,1.0-y*y));
-        return vec3<f32>(cos(a)*q*rr,sg*(l*0.5+y*rr),sin(a)*q*rr);
-    }
-    let h=abs(s.params0.x); let area=s.params0.y; let per=s.params0.z;
-    if(!surface){let xz=fluidTriangle(s,seed);return vec3<f32>(xz.x,(fluidRnd(seed*7u+3u)-0.5)*h,xz.y);}
-    if(fluidRnd(seed)*(2.0*area+per*h)<2.0*area){
-        let xz=fluidTriangle(s,seed*3u+1u);return vec3<f32>(xz.x,select(-h*0.5,h*0.5,fluidRnd(seed*5u+2u)>=0.5),xz.y);
-    }
-    let xz=fluidEdge(s,seed*3u+1u);return vec3<f32>(xz.x,(fluidRnd(seed*5u+2u)-0.5)*h,xz.y);
-}
-fn fluidClaimEmitter(index:u32)->bool{
-    let counterIndex=index*2u;let budget=atomicLoad(&flowCounters[counterIndex+1u]);
-    if(budget==0xffffffffu){atomicAdd(&flowCounters[counterIndex],1u);return true;}
-    loop{let old=atomicLoad(&flowCounters[counterIndex]);if(old>=budget){return false;}if(atomicCompareExchangeWeak(&flowCounters[counterIndex],old,old+1u).exchanged){return true;}}
-}
-fn fluidChooseEmitter(mask:u32,seed:u32)->u32{
-    var n=0u;for(var i=0u;i<${MAX_FLUID_EMITTERS}u;i=i+1u){if((mask&(1u<<i))!=0u){n=n+1u;}}
-    if(n==0u){return ${MAX_FLUID_EMITTERS}u;}let wanted=fluidHash(seed)%n;
-    for(var attempt=0u;attempt<n;attempt=attempt+1u){
-        let ordinal=(wanted+attempt)%n;var seen=0u;
-        for(var i=0u;i<${MAX_FLUID_EMITTERS}u;i=i+1u){
-            if((mask&(1u<<i))!=0u){if(seen==ordinal&&fluidClaimEmitter(i)){return i;}seen=seen+1u;}
-        }
-    }
-    return ${MAX_FLUID_EMITTERS}u;
-}
-fn fluidClaimSink(index:u32,budget:u32)->bool{
-    let counterIndex=${FLOW_EMITTER_COUNTER_U32}u+index;
-    if(budget==0xffffffffu){atomicAdd(&flowCounters[counterIndex],1u);return true;}
-    loop{let old=atomicLoad(&flowCounters[counterIndex]);if(old>=budget){return false;}if(atomicCompareExchangeWeak(&flowCounters[counterIndex],old,old+1u).exchanged){return true;}}
-}
-fn fluidTryRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
-    for(var si=0u;si<flow.header.y;si=si+1u){
-        let sink=flow.sinks[si];
-        if(sink.route.x==0u||sink.route.y==0u||!fluidInsideShape(sink.shape,world)){continue;}
-        if(!fluidClaimSink(sink.route.w,sink.route.z)){continue;}
-        let seed=(flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u);
-        let ei=fluidChooseEmitter(sink.route.y,seed);if(ei>=flow.header.x){continue;}let e=flow.emitters[ei];
-        let local=fluidSampleLocal(e.shape,e.flags.z!=0u,seed*3u+1u);let position=fluidToWorld(e.shape,local);
-        var velocity=e.velocitySpread.xyz;if(e.flags.w==0u){velocity=fluidQuatRotate(e.shape.rotation,velocity);}
-        let spread=(vec3<f32>(fluidRnd(seed*5u+2u),fluidRnd(seed*7u+3u),fluidRnd(seed*11u+5u))-0.5)*(length(velocity)*e.velocitySpread.w);
-        return FluidLaunch(position,velocity+spread,1u);
-    }
-    return FluidLaunch(world,vec3<f32>(0.0),0u);
+    let jit = (vec3<f32>(rnd(seed * 3u), rnd(seed * 5u), rnd(seed * 7u)) - 0.5) * (2.0 * e.e.xyz);
+    return e.p.xyz + jit;
 }`;

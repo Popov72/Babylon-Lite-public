@@ -34,7 +34,7 @@ import {
     setPhysicsTimestepMs,
     setPhysicsVelocityLimits,
 } from "babylon-lite";
-import type { FluidFlowConfig, Mesh, PhysicsBody, PhysicsShape, SceneNode } from "babylon-lite";
+import type { Mesh, PhysicsBody, PhysicsShape, SceneNode } from "babylon-lite";
 import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createFloatingBodySystem } from "babylon-lite/fluid/floating-body.js";
 import { generateMeshSdf } from "babylon-lite/fluid/volume-sampling/index.js";
@@ -87,13 +87,7 @@ export async function createBoxDemo(ctx: FluidCtx): Promise<FluidDemo> {
     const BODY_REL_DENSITY = 0.45; // < 1 → floats, settling partially submerged
     // Fixed bake bounds (a cube): both the placeholder and the duck bake with these, so the grid dims —
     // and hence the GPU buffer — are identical and the duck can be written into the pre-allocated buffer.
-    const BAKE = {
-        min: [-BODY_HALF, -BODY_HALF, -BODY_HALF] as [number, number, number],
-        max: [BODY_HALF, BODY_HALF, BODY_HALF] as [number, number, number],
-        cellSize: BODY_CELL,
-        padding: 3,
-        sweepPasses: 1,
-    };
+    const BAKE = { min: [-BODY_HALF, -BODY_HALF, -BODY_HALF] as [number, number, number], max: [BODY_HALF, BODY_HALF, BODY_HALF] as [number, number, number], cellSize: BODY_CELL, padding: 3, sweepPasses: 1 };
     const buildBoxMesh = (h: [number, number, number]): { pos: Float32Array; idx: Uint32Array } => {
         const [hx, hy, hz] = h;
         const pos = new Float32Array([-hx, -hy, -hz, hx, -hy, -hz, hx, hy, -hz, -hx, hy, -hz, -hx, -hy, hz, hx, -hy, hz, hx, hy, hz, -hx, hy, hz]);
@@ -108,9 +102,7 @@ export async function createBoxDemo(ctx: FluidCtx): Promise<FluidDemo> {
         return v;
     };
     const boxInertia = (m: number, h: [number, number, number]): [number, number, number] => {
-        const ex = (2 * h[0]) ** 2,
-            ey = (2 * h[1]) ** 2,
-            ez = (2 * h[2]) ** 2;
+        const ex = (2 * h[0]) ** 2, ey = (2 * h[1]) ** 2, ez = (2 * h[2]) ** 2;
         return [(m / 12) * (ey + ez), (m / 12) * (ex + ez), (m / 12) * (ex + ey)];
     };
     const collectMeshes = (node: SceneNode, out: Mesh[]): void => {
@@ -276,12 +268,7 @@ export async function createBoxDemo(ctx: FluidCtx): Promise<FluidDemo> {
                 applyPhysicsBodyForce(physicsWorld, duck.body, { x: 0, y: buoy, z: 0 }, { x: m.submergedCentroid[0], y: m.submergedCentroid[1], z: m.submergedCentroid[2] });
             }
             const dampY = m.submergedCount > 0 ? -v.y * m.mass * VERTICAL_DAMP : 0;
-            applyPhysicsBodyForce(
-                physicsWorld,
-                duck.body,
-                { x: -v.x * m.mass * LINEAR_DAMP, y: dampY, z: -v.z * m.mass * LINEAR_DAMP },
-                { x: bodyPos.x, y: bodyPos.y, z: bodyPos.z }
-            );
+            applyPhysicsBodyForce(physicsWorld, duck.body, { x: -v.x * m.mass * LINEAR_DAMP, y: dampY, z: -v.z * m.mass * LINEAR_DAMP }, { x: bodyPos.x, y: bodyPos.y, z: bodyPos.z });
             if (m.submergedCount > 0) {
                 const carry = Math.min(DRAG_CARRY_FORCE * m.submergedCount, 4);
                 applyPhysicsBodyForce(
@@ -481,76 +468,42 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             const first = await loadDuckRoot();
             if (!first) return;
             const { root, meshes } = first;
-            let totalV = 0,
-                totalI = 0;
+            let totalV = 0, totalI = 0;
             for (const m of meshes) {
                 const cm = m as CpuMeshNode;
-                if (cm._cpuPositions && cm._cpuIndices) {
-                    totalV += cm._cpuPositions.length;
-                    totalI += cm._cpuIndices.length;
-                }
+                if (cm._cpuPositions && cm._cpuIndices) { totalV += cm._cpuPositions.length; totalI += cm._cpuIndices.length; }
             }
             if (totalV === 0 || totalI === 0) return;
             // Merge asset-frame WORLD positions (local × worldMatrix; root now identity) + vertex-offset
             // indices, tracking the AABB → centre + scale so the duck fits the bake cube.
             const q = new Float32Array(totalV);
             const idx = new Uint32Array(totalI);
-            let pOff = 0,
-                iOff = 0;
-            let minx = Infinity,
-                miny = Infinity,
-                minz = Infinity,
-                maxx = -Infinity,
-                maxy = -Infinity,
-                maxz = -Infinity;
+            let pOff = 0, iOff = 0;
+            let minx = Infinity, miny = Infinity, minz = Infinity, maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
             for (const m of meshes) {
                 const cm = m as CpuMeshNode;
-                const src = cm._cpuPositions,
-                    ix = cm._cpuIndices;
+                const src = cm._cpuPositions, ix = cm._cpuIndices;
                 if (!src || !ix) continue;
                 const w = m.worldMatrix;
-                const m0 = w[0]!,
-                    m1 = w[1]!,
-                    m2 = w[2]!,
-                    m4 = w[4]!,
-                    m5 = w[5]!,
-                    m6 = w[6]!,
-                    m8 = w[8]!,
-                    m9 = w[9]!,
-                    m10 = w[10]!,
-                    m12 = w[12]!,
-                    m13 = w[13]!,
-                    m14 = w[14]!;
+                const m0 = w[0]!, m1 = w[1]!, m2 = w[2]!, m4 = w[4]!, m5 = w[5]!, m6 = w[6]!, m8 = w[8]!, m9 = w[9]!, m10 = w[10]!, m12 = w[12]!, m13 = w[13]!, m14 = w[14]!;
                 const base = pOff / 3;
                 for (let i = 0; i < src.length; i += 3) {
-                    const lx = src[i]!,
-                        ly = src[i + 1]!,
-                        lz = src[i + 2]!;
+                    const lx = src[i]!, ly = src[i + 1]!, lz = src[i + 2]!;
                     const x = m0 * lx + m4 * ly + m8 * lz + m12;
                     const y = m1 * lx + m5 * ly + m9 * lz + m13;
                     const z = m2 * lx + m6 * ly + m10 * lz + m14;
-                    q[pOff++] = x;
-                    q[pOff++] = y;
-                    q[pOff++] = z;
-                    minx = Math.min(minx, x);
-                    miny = Math.min(miny, y);
-                    minz = Math.min(minz, z);
-                    maxx = Math.max(maxx, x);
-                    maxy = Math.max(maxy, y);
-                    maxz = Math.max(maxz, z);
+                    q[pOff++] = x; q[pOff++] = y; q[pOff++] = z;
+                    minx = Math.min(minx, x); miny = Math.min(miny, y); minz = Math.min(minz, z);
+                    maxx = Math.max(maxx, x); maxy = Math.max(maxy, y); maxz = Math.max(maxz, z);
                 }
                 for (let i = 0; i < ix.length; i++) idx[iOff++] = ix[i]! + base;
             }
-            const cqx = (minx + maxx) / 2,
-                cqy = (miny + maxy) / 2,
-                cqz = (minz + maxz) / 2;
+            const cqx = (minx + maxx) / 2, cqy = (miny + maxy) / 2, cqz = (minz + maxz) / 2;
             const maxDim = Math.max(maxx - minx, maxy - miny, maxz - minz) || 1;
             const S = DUCK_TARGET / maxDim;
             const baked = new Float32Array(totalV);
             for (let i = 0; i < totalV; i += 3) {
-                baked[i] = S * (q[i]! - cqx);
-                baked[i + 1] = S * (q[i + 1]! - cqy);
-                baked[i + 2] = S * (q[i + 2]! - cqz);
+                baked[i] = S * (q[i]! - cqx); baked[i + 1] = S * (q[i + 1]! - cqy); baked[i + 2] = S * (q[i + 2]! - cqz);
             }
             const g = generateMeshSdf(baked, idx, BAKE);
             if (g.data.length !== phGrid.data.length) {
@@ -738,38 +691,18 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         setBodyVisible(bodyOn);
     };
 
-    const flow = (): FluidFlowConfig => ({
-        emitters: [
-            {
-                id: "box-fill",
-                name: "Initial box fill",
-                enabled: true,
-                behavior: "initial",
-                transform: {
-                    position: [(BOX_SPAWN_MIN[0] + BOX_SPAWN_MAX[0]) / 2, (BOX_SPAWN_MIN[1] + BOX_SPAWN_MAX[1]) / 2, (BOX_SPAWN_MIN[2] + BOX_SPAWN_MAX[2]) / 2],
-                    rotation: [0, 0, 0, 1],
-                    scale: [1, 1, 1],
-                },
-                shape: {
-                    type: "box",
-                    size: [BOX_SPAWN_MAX[0] - BOX_SPAWN_MIN[0], BOX_SPAWN_MAX[1] - BOX_SPAWN_MIN[1], BOX_SPAWN_MAX[2] - BOX_SPAWN_MIN[2]],
-                },
-                sampling: "volume",
-                velocity: [0, 0, 0],
-                velocitySpace: "world",
-                spread: 0,
-            },
-        ],
-        sinks: [],
-    });
-
     return {
         key: "box",
         label: "Box (closed)",
         envUrl: ENV_STUDIO_URL,
         sdf,
         writeSdfParams,
-        flow,
+        spawn() {
+            return { min: BOX_SPAWN_MIN, max: BOX_SPAWN_MAX };
+        },
+        emitters() {
+            return null;
+        },
         onEnter(): void {
             demoActive = true;
             setMeshVisible(boxMesh, containerVisible);
@@ -835,5 +768,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             updatePaddleVisibility();
         },
+
     };
 }

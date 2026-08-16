@@ -1,5 +1,4 @@
 {
-    "formatVersion": 5,
     "meta": {
         "demo": "marbleTower",
         "method": "MLS-MPM"
@@ -25,9 +24,7 @@
     },
     "demoState": {},
     "showContainer": true,
-    "physicsParticleSize": 2,
-    "gridPosition": [0, 38, 0],
-    "gridSize": [160.16, 84.04, 160.16],
+    "physicsParticleSize": 0.5,
     "particleCount": 750000,
     "camera": {
         "alpha": -6.8996465845275665,

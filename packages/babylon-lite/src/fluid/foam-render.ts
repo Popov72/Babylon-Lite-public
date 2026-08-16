@@ -221,7 +221,7 @@ struct Comp {
     texel: vec4<f32>,    // 1/fullW, 1/fullH, smoothOn, debugByKind
     light: vec4<f32>,    // lightIntensity, ambient, aoStrength, normalStrength
     ldir: vec4<f32>,     // lightDir.xyz, specStrength
-    sub: vec4<f32>,      // submerged-bubble tint rgb, global opacity
+    sub: vec4<f32>,      // submerged-bubble tint rgb, _
 };
 @group(0) @binding(0) var accumRaw: texture_2d<f32>;
 @group(0) @binding(1) var accumBlur: texture_2d<f32>;
@@ -284,7 +284,7 @@ fn surfAt(uv: vec2<f32>) -> f32 {
         let c = vec3<f32>(clamp(sprayT, 0.0, 1.0), clamp(foamT, 0.0, 1.0), clamp(subT, 0.0, 1.0));
         let a = max(max(sprayT, foamT), subT);
         if (a <= 0.002) { discard; }
-        return vec4<f32>(c, min(a, 1.0) * 0.95 * u.sub.w);
+        return vec4<f32>(c, min(a, 1.0) * 0.95);
     }
 
     let foamAlpha = smoothstep(u.params.x, u.params.y, surfaceT);
@@ -311,10 +311,9 @@ fn surfAt(uv: vec2<f32>) -> f32 {
     let subAlpha = smoothstep(u.params.x, u.params.y, subT) * u.params.z;
 
     // Composite the (opaque) foam over the (faint) bubble layer, non-premultiplied.
-    let baseA = foamAlpha + subAlpha * (1.0 - foamAlpha);
-    let outA = baseA * u.sub.w;
+    let outA = foamAlpha + subAlpha * (1.0 - foamAlpha);
     if (outA <= 0.002) { discard; }
-    let outRGB = (foamColor * foamAlpha + subColor * subAlpha * (1.0 - foamAlpha)) / max(baseA, 1e-4);
+    let outRGB = (foamColor * foamAlpha + subColor * subAlpha * (1.0 - foamAlpha)) / max(outA, 1e-4);
     return vec4<f32>(outRGB, min(outA, 1.0));
 }`;
 
@@ -349,7 +348,6 @@ export function createFoamRenderTask(
 ): Task & {
     setSim(s: FluidSim): void;
     setEnabled(on: boolean): void;
-    setOpacity(v: number): void;
     setSizeScale(s: number): void;
     setDebugByKind(on: boolean): void;
     setThresholds(t0: number, t1: number): void;
@@ -370,7 +368,6 @@ export function createFoamRenderTask(
     const getSurfaceDepth = opts.getSurfaceDepth;
     let currentSim = opts.sim;
     let enabled = true;
-    let opacity = 1;
     let sizeScale = 1;
     let debugByKind = false;
     let t0 = 0.25;
@@ -536,11 +533,11 @@ export function createFoamRenderTask(
                 lightDir[1],
                 lightDir[2],
                 specStrength,
-                // sub: submerged-bubble tint rgb, global opacity
+                // sub: submerged-bubble tint rgb, _
                 subColor[0],
                 subColor[1],
                 subColor[2],
-                opacity,
+                0,
             ])
         );
     }
@@ -665,10 +662,6 @@ export function createFoamRenderTask(
         /** Enable/disable this renderer. */
         setEnabled(on: boolean): void {
             enabled = on;
-        },
-        /** Fade all rendered diffuse particles without changing their pool. */
-        setOpacity(v: number): void {
-            opacity = Math.max(0, Math.min(1, v));
         },
         /** Visual foam size multiplier (screen-space splat radius). */
         setSizeScale(s: number): void {

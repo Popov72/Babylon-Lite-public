@@ -1,5 +1,4 @@
 {
-    "formatVersion": 5,
     "meta": {
         "demo": "waterfall",
         "method": "PB-MPM"
@@ -18,7 +17,10 @@
         "maxSubDtMs": 16.7
     },
     "demoParams": {
-        "pondWaveSources": 12,
+        "sourceSpeed": 0,
+        "emitRate": 0.05,
+        "spread": 0.5,
+        "frontBias": 16,
         "bloomIntensity": 0.2,
         "bloomThreshold": 0
     },
@@ -34,7 +36,7 @@
     "showContainer": true,
     "envIntensity": 0.6,
     "msaa": true,
-    "physicsParticleSize": 1.2,
+    "physicsParticleSize": 0.4,
     "particleCount": 500000,
     "material": 0,
     "camera": {
@@ -46,12 +48,9 @@
         "renderAsSpheres": false,
         "waterColor": "#faffff",
         "absorption": 0.4,
-        "particleSize": 0.7,
+        "particleSize": 0.14,
         "refractionStrength": 0,
         "specularPower": 250,
-        "reflectionExposure": 1,
-        "reflectionContrast": 1.1,
-        "waterReflectivity": 0.02,
         "surfaceDepthBlur": 23,
         "depthBlurEdgeThreshold": 10,
         "surfaceThicknessBlur": 0,
@@ -65,7 +64,6 @@
     },
     "foam": {
         "enableFoam": true,
-        "activeParticles": false,
         "trappedAirRate": 461,
         "waveCrestRate": 16,
         "foamLifetime": 0.3,
@@ -84,15 +82,5 @@
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.25
-    },
-    "gridPosition": [
-        0,
-        30,
-        0
-    ],
-    "gridSize": [
-        120,
-        60,
-        120
-    ]
+    }
 }

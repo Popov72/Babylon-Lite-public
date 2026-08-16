@@ -21,8 +21,6 @@
         "emitRate": 6,
         "spread": 0.5,
         "frontBias": 16,
-        "pondParticles": 50000,
-        "pondWaveSources": 8,
         "bloomIntensity": 0.2,
         "bloomThreshold": 0
     },
@@ -33,13 +31,12 @@
         "sunElevation": 38,
         "sunIntensity": 19.9,
         "ambientIntensity": 0.16,
-        "oasis": "mid",
-        "pondEnabled": true
+        "oasis": "mid"
     },
     "showContainer": true,
     "envIntensity": 0.3,
     "msaa": true,
-    "physicsParticleSize": 1.5,
+    "physicsParticleSize": 0.5,
     "particleCount": 200000,
     "material": 0,
     "camera": {
@@ -51,7 +48,7 @@
         "renderAsSpheres": false,
         "waterColor": "#faffff",
         "absorption": 0.4,
-        "particleSize": 0.7,
+        "particleSize": 0.15,
         "refractionStrength": 0,
         "specularPower": 250,
         "surfaceDepthBlur": 23,
@@ -85,16 +82,5 @@
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.5
-    },
-    "formatVersion": 5,
-    "gridPosition": [
-        0,
-        30,
-        0
-    ],
-    "gridSize": [
-        120,
-        60,
-        120
-    ]
+    }
 }

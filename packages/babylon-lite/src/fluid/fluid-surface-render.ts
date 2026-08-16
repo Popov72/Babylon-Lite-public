@@ -141,8 +141,8 @@ struct Cam {
 @group(0) @binding(0) var<uniform> cam: Cam;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> dbg: array<f32>;
-// Per-particle alpha (opt-in). cam.misc.z encodes global opacity in [0,1], plus 2 when
-// the per-particle buffer is enabled. The binding is a harmless dummy when disabled.
+// Per-particle alpha (opt-in). Only consulted when cam.misc.z > 0.5, otherwise a=1 and the
+// binding is a harmless dummy so the OFF path is byte-identical.
 @group(0) @binding(4) var<storage, read> palpha: array<f32>;
 // Per-particle RGBA colour (opt-in). Read by the fsColor accumulation pass (mesh-tinted water);
 // unused by fsDepth/fsThick, so the surface shape is unaffected. Dummy buffer when disabled.
@@ -197,9 +197,7 @@ fn corner(vi: u32) -> vec2<f32> {
     o.viewPos = viewPos;
     o.speed = dbg[ii];
     o.ndc = o.clip;
-    let hasParticleAlpha = cam.misc.z > 1.5;
-    let globalAlpha = select(cam.misc.z, cam.misc.z - 2.0, hasParticleAlpha);
-    o.alpha = select(1.0, palpha[ii], hasParticleAlpha) * globalAlpha;
+    o.alpha = select(1.0, palpha[ii], cam.misc.z > 0.5);
     o.col = pcolor[ii].rgb;
     return o;
 }
@@ -614,7 +612,6 @@ misc: vec4<f32>,
 @group(0) @binding(1) var<storage, read> aniso: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> dbg: array<f32>;
 @group(0) @binding(3) var sceneDepthTex: texture_depth_2d;
-@group(0) @binding(4) var<storage, read> palpha: array<f32>;
 
 fn occludedByScene(fragEyeZ: f32, ndc: vec4<f32>) -> bool {
 let uv = ndc.xy / ndc.w;
@@ -660,7 +657,6 @@ struct VOutA {
 @location(4) @interpolate(flat) ai2: vec3<f32>,
 @location(5) @interpolate(flat) speed: f32,
 @location(6) ndc: vec4<f32>,
-@location(7) @interpolate(flat) alpha: f32,
 };
 
 @vertex fn vsAniso(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOutA {
@@ -688,9 +684,6 @@ o.ai1 = ainv[1];
 o.ai2 = ainv[2];
 o.speed = dbg[ii];
 o.ndc = o.clip;
-let hasParticleAlpha = cam.misc.z > 1.5;
-let globalAlpha = select(cam.misc.z, cam.misc.z - 2.0, hasParticleAlpha);
-o.alpha = select(1.0, palpha[ii], hasParticleAlpha) * globalAlpha;
 return o;
 }
 
@@ -704,7 +697,6 @@ struct DepthOut {
 };
 
 @fragment fn fsDepthAniso(i: VOutA) -> DepthOut {
-if (i.alpha < 0.004) { discard; }
 let dir = normalize(i.fragView);
 let op = -ainvMul(i, i.center);
 let dp = ainvMul(i, dir);
@@ -743,8 +735,7 @@ if (occludedByScene(hit.z, i.ndc)) { discard; }
 // Chord length through the ellipsoid (view-space distance) = 2*sqrt(disc)/a; normalise by
 // the isotropic diameter so an all-interior particle matches the sphere path (frac in 0..1).
 let frac = clamp(sq / a / cam.misc.y, 0.0, 1.0);
-let wt = cam.misc.w * i.alpha * frac;
-return vec4<f32>(wt, cam.misc.w * frac, wt, 1.0);
+return vec4<f32>(vec3<f32>(cam.misc.w * frac), 1.0);
 }
 
 struct DebugOut {
@@ -757,7 +748,6 @@ struct DebugOut {
 // the analytic surface normal, and writes reverse-Z frag_depth so the nearest ellipsoid wins,
 // so the user sees each particle's true ellipsoid shape/size and any surface gaps.
 @fragment fn fsEllipsoidDebug(i: VOutA) -> DebugOut {
-if (i.alpha < 0.004) { discard; }
 let dir = normalize(i.fragView);
 let op = -ainvMul(i, i.center);
 let dp = ainvMul(i, dir);
@@ -791,7 +781,7 @@ let base = mix(vec3<f32>(0.10, 0.35, 0.75), vec3<f32>(0.65, 0.85, 1.0), clamp(i.
 let clipPos = cam.proj * vec4<f32>(hit, 1.0);
 var o: DebugOut;
 o.depth = clipPos.z / clipPos.w;
-o.color = vec4<f32>(base * (0.22 + 0.72 * ndl) + vec3<f32>(spec), i.alpha);
+o.color = vec4<f32>(base * (0.22 + 0.72 * ndl) + vec3<f32>(spec), 1.0);
 return o;
 }`;
 
@@ -1300,7 +1290,6 @@ export function createFluidSurfaceTask(
 ): Task & {
     setSim(s: FluidSim): void;
     setParticleAlpha(buf: GPUBuffer | null): void;
-    setOpacity(v: number): void;
     setParticleColor(buf: GPUBuffer | null): void;
     setUseParticleColor(on: boolean): void;
     setMode(m: "surface" | "blit" | "ellipsoidDebug"): void;
@@ -1501,7 +1490,6 @@ export function createFluidSurfaceTask(
     let particleBGL: GPUBindGroupLayout | null = null;
     let particleBG: GPUBindGroup | null = null;
     let particleAlphaBuf: GPUBuffer | null = null; // opt-in per-particle alpha (null = disabled, byte-identical)
-    let opacity = 1;
     let particleColorBuf: GPUBuffer | null = null; // opt-in per-particle RGBA colour (null = disabled)
     let useParticleColor = false; // render toggle: tint the water by per-particle mesh colour
     let particleColorActive = false; // resolved per-frame (on + buffer present + not aniso)
@@ -1751,19 +1739,7 @@ export function createFluidSurfaceTask(
             label: "fluid-aniso-ellipsoid-debug",
             layout: partPL,
             vertex: { module: anisoMod, entryPoint: "vsAniso" },
-            fragment: {
-                module: anisoMod,
-                entryPoint: "fsEllipsoidDebug",
-                targets: [
-                    {
-                        format: engine.format,
-                        blend: {
-                            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-                        },
-                    },
-                ],
-            },
+            fragment: { module: anisoMod, entryPoint: "fsEllipsoidDebug", targets: [{ format: engine.format }] },
             primitive: { topology: "triangle-list", cullMode: "none" },
             depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "greater-equal" },
         });
@@ -2011,7 +1987,7 @@ export function createFluidSurfaceTask(
         }
         camData[32] = size;
         camData[33] = size / 2;
-        camData[34] = opacity + (particleAlphaBuf ? 2 : 0); // global opacity + per-particle-alpha enable bit
+        camData[34] = particleAlphaBuf ? 1 : 0; // per-particle alpha enable (misc.z)
         camData[35] = PARTICLE_THICKNESS_ALPHA;
         device.queue.writeBuffer(camBuffer, 0, camData);
 
@@ -2137,10 +2113,6 @@ export function createFluidSurfaceTask(
             // so the composite fades the water to the background as alpha → 0.
             particleAlphaBuf = buf;
             buildParticleBG();
-        },
-        /** Fade the complete fluid surface without changing particle state. */
-        setOpacity(v: number): void {
-            opacity = Math.max(0, Math.min(1, v));
         },
         setParticleColor(buf: GPUBuffer | null): void {
             // Opt-in per-particle RGBA colour (vec4 per particle, same indexing as positionBuffer).

@@ -307,12 +307,12 @@ function createUniformData(task: PostProcessTaskInternal): Float32Array | null {
 }
 
 function writePostProcessUniforms(task: PostProcessTaskInternal, engine: EngineContext): void {
-    if ((task._shader.uniformByteLength ?? 0) === 0 || !task._uniformData || !task._uniformBuffer) {
+    if ((task._shader.uniformByteLength ?? 0) === 0) {
         return;
     }
-    task._uniformData.fill(0);
-    task._shader.writeUniforms?.(task._uniformData);
-    engine._device.queue.writeBuffer(task._uniformBuffer, 0, task._uniformData as Float32Array<ArrayBuffer>);
+    task._uniformData!.fill(0);
+    task._shader.writeUniforms?.(task._uniformData!);
+    engine._device.queue.writeBuffer(task._uniformBuffer!, 0, task._uniformData as Float32Array<ArrayBuffer>);
 }
 
 function applyColorAttachmentState(att: GPURenderPassColorAttachment, rt: RenderTarget, clear: boolean): void {

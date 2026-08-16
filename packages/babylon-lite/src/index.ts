@@ -271,9 +271,6 @@ export { enableMirroredMeshes } from "./mesh/enable-mirrored-meshes.js";
 export { createPbrMaterial } from "./material/pbr/pbr-material.js";
 export { enablePbrLightmap, setPbrLightmap } from "./material/pbr/enable-pbr-lightmap.js";
 export type { PbrLightmapOptions } from "./material/pbr/enable-pbr-lightmap.js";
-export { enablePbrDiffuseLightmap, setPbrDiffuseLightmap } from "./material/pbr/enable-pbr-diffuse-lightmap.js";
-export type { PbrDiffuseLightmapOptions } from "./material/pbr/enable-pbr-diffuse-lightmap.js";
-export { enablePbrLocalCubemap } from "./material/pbr/enable-pbr-local-cubemap.js";
 export {
     createShaderMaterial,
     setShaderUniform,
@@ -743,22 +740,6 @@ export {
     unregisterTextRenderer,
     disposeTextRenderer,
 } from "./text/text-renderer.js";
-
-// ─── Fluid authoring ─────────────────────────────────────────────────
-export { MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_POLYGON_TRIANGLES, MAX_FLUID_SINKS } from "./fluid/sim-common.js";
-export type {
-    FluidEmitter,
-    FluidFlowConfig,
-    FluidProfiler,
-    FluidShape,
-    FluidSim,
-    FluidSink,
-    FluidTransform,
-    FluidVec3,
-    FoamConfig,
-    ForceFieldSpec,
-    SceneSdfSpec,
-} from "./fluid/sim-common.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

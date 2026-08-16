@@ -4,7 +4,7 @@
 // lattice artefacts of a box.
 
 import { addToScene, createCsgFromMesh, createCylinder, createMeshFromCsg, createSphere, createStandardMaterial, csgUnion, setMeshVisible } from "babylon-lite";
-import type { FluidFlowConfig, Mesh } from "babylon-lite";
+import type { Mesh } from "babylon-lite";
 import { disposeMeshGpu } from "babylon-lite/mesh/mesh-dispose.js";
 import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import type { FluidCtx, FluidDemo } from "../demo.js";
@@ -118,27 +118,6 @@ export function createCapsuleDemo(ctx: FluidCtx): FluidDemo {
     }
     const shell: Mesh[] = [capsule];
     let containerVisible = true; // toggled by the "Show container mesh" UI checkbox
-    const flow = (): FluidFlowConfig => ({
-        emitters: [
-            {
-                id: "capsule-fill",
-                name: "Initial capsule fill",
-                enabled: true,
-                behavior: "initial",
-                transform: { position: [0, (CAP_A[1] + CAP_B[1]) / 2, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
-                shape: {
-                    type: "capsule",
-                    radius: CAP_R - WALL_HALF - 0.2,
-                    height: CAP_B[1] - CAP_A[1] + 2 * (CAP_R - WALL_HALF - 0.2),
-                },
-                sampling: "volume",
-                velocity: [0, 0, 0],
-                velocitySpace: "world",
-                spread: 0,
-            },
-        ],
-        sinks: [],
-    });
 
     return {
         key: "capsule",
@@ -150,7 +129,32 @@ export function createCapsuleDemo(ctx: FluidCtx): FluidDemo {
             // (offset 32) is owned by the core's hole ring.
             engine._device.queue.writeBuffer(ctx.sceneSdfBuffer, 0, new Float32Array([CAP_A[0], CAP_A[1], CAP_A[2], CAP_R, CAP_B[0], CAP_B[1], CAP_B[2], 0]));
         },
-        flow,
+        spawn() {
+            // Seed the interior of the pill (not a box): reject-sample inside the inner
+            // capsule radius so no particle starts inside/beyond the solid wall shell —
+            // which would otherwise be violently ejected at t=0.
+            const inR = CAP_R - WALL_HALF;
+            const m = 0.2;
+            const bax = CAP_B[0] - CAP_A[0],
+                bay = CAP_B[1] - CAP_A[1],
+                baz = CAP_B[2] - CAP_A[2];
+            const baLen2 = bax * bax + bay * bay + baz * baz;
+            const accept = (x: number, y: number, z: number): boolean => {
+                const t = Math.max(0, Math.min(1, ((x - CAP_A[0]) * bax + (y - CAP_A[1]) * bay + (z - CAP_A[2]) * baz) / baLen2));
+                const cx = CAP_A[0] + bax * t,
+                    cy = CAP_A[1] + bay * t,
+                    cz = CAP_A[2] + baz * t;
+                return Math.hypot(x - cx, y - cy, z - cz) < inR - m;
+            };
+            return {
+                min: [-inR, CAP_A[1] - inR, -inR] as [number, number, number],
+                max: [inR, CAP_B[1] + inR, inR] as [number, number, number],
+                accept,
+            };
+        },
+        emitters() {
+            return null;
+        },
         onEnter(): void {
             for (const m of shell) {
                 setMeshVisible(m, containerVisible);
@@ -187,8 +191,7 @@ export function createCapsuleDemo(ctx: FluidCtx): FluidDemo {
         },
         extraControls() {
             return [];
-        },
-
+        },
         claimsPointer(e: PointerEvent): boolean {
             // LMB over the tank wall belongs to the demo (punch a hole), so tell the
             // camera to ignore it instead of rotating. Any other button/miss rotates.

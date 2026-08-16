@@ -4,25 +4,21 @@
 // shaped to the same FluidSim contract as the PBF and MLS-MPM demo backends.
 
 import type { EngineContext } from "../engine/engine.js";
-import type { DiffusePool, FluidFlowConfig, FluidProfiler, FluidSim, FluidSimBaseOptions, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "./sim-common.js";
+import type { DiffusePool, EmitterConfig, FluidProfiler, FluidSim, FluidSimBaseOptions, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "./sim-common.js";
 import {
     FOAM_BYTES,
     FOAM_ACTIVE_FINISH_WGSL,
     FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_COMMON_WGSL,
+    EMITTERS_FLOATS,
     SPAWN_ACCEPT_TRIES,
-    FLUID_FLOW_RUNTIME_WGSL,
-    FLUID_FLOW_STRUCT_WGSL,
-    createFluidFlowState,
-    createFluidInitialParticles,
-    disposeFluidFlowState,
-    prepareFluidFlowFrame,
-    resetFluidFlowState,
+    EMITTER_STRUCT_WGSL,
+    EMITTER_SPAWN_WGSL,
+    packEmitters,
     foamActiveListOffset,
     foamActiveStateBytes,
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
-    setFluidFlowConfig,
 } from "./sim-common.js";
 import { SVD3_WGSL } from "./svd3.js";
 
@@ -687,26 +683,53 @@ ${keepActive}
 }`;
 }
 
-// Generic flow recycling; PB-MPM maps launch velocity to per-substep displacement.
-const FLOW_WGSL = /* wgsl */ `
+// Recirculating jet emitters (setEmitters): a pass run once per frame BEFORE the substeps that
+// relaunches recycled particles from a nozzle. PB-MPM carries motion as a per-substep DISPLACEMENT, so
+// a relaunched particle is teleported to the nozzle and given displacement = jetVelocity·subDt (with D
+// reset and F/liquidDensity refreshed) so the jet flows through that frame's grid transfer. Mirrors the
+// MLS-MPM emit pass (fixed-stream tight loop + probabilistic pump-intake). subDt is passed in
+// intakeMin.w (an otherwise-unused padding slot).
+const EMIT_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
-${FLUID_FLOW_STRUCT_WGSL}
+${EMITTER_STRUCT_WGSL}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
-@group(0) @binding(1) var<uniform> flow: FluidFlowData;
-@group(0) @binding(2) var<storage, read_write> flowCounters: array<atomic<u32>>;
-${FLUID_FLOW_RUNTIME_WGSL}
+@group(0) @binding(1) var<uniform> em: Emitters;
+fn hashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
+fn rnd(x: u32) -> f32 { return f32(hashU(x)) / 4294967296.0; }
+${EMITTER_SPAWN_WGSL}
+fn relaunch(i: u32, e: Emitter, seed: u32, spread: f32, subDt: f32) {
+    let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * spread);
+    let vel = e.d.xyz * e.d.w + sj;
+    particles[i].position = spawnPoint(e, seed);
+    particles[i].displacement = vel * subDt;
+    particles[i].D = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    particles[i].F = ident3();
+    particles[i].liquidDensity = 1.0;
+}
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i >= flow.header.z) { return; }
-    let launch = fluidTryRelaunch(particles[i].position, i);
-    if (launch.launched != 0u) {
-        particles[i].position = launch.position;
-        particles[i].displacement = launch.velocity * flow.frame.y;
-        particles[i].D = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
-        particles[i].F = ident3();
-        particles[i].liquidDensity = 1.0;
+    if (i >= u32(em.head2.x)) { return; }
+    let ec = u32(em.head.x);
+    if (ec == 0u) { return; }
+    let p = particles[i].position;
+    let seed = u32(em.head.z) * 2654435761u + i;
+    let fixedN = u32(em.head2.z);
+    let subDt = em.intakeMin.w;
+    // Dedicated fixed-size stream through the LAST emitter (relaunches deterministically below the
+    // drain height) — a count-independent tight loop, e.g. the Marble Tower overshot nozzle.
+    if (fixedN > 0u && i < fixedN) {
+        if (p.y < em.head2.w) { relaunch(i, em.list[ec - 1u], seed, em.head.w, subDt); }
+        return;
+    }
+    // The shared probabilistic pump-intake recycle for everything else.
+    if (all(p >= em.intakeMin.xyz) && all(p <= em.intakeMax.xyz)) {
+        if (rnd(seed) < em.head.y * em.head2.y) {
+            var ei = hashU(seed) % ec;
+            if (fixedN > 0u) { ei = hashU(seed) % max(ec - 1u, 1u); }
+            relaunch(i, em.list[ei], seed, em.head.w, subDt);
+        }
     }
 }`;
 
@@ -734,8 +757,6 @@ export interface PbMpmOptions extends FluidSimBaseOptions {
     boundsMin?: [number, number, number];
     /** Simulation box max corner. Default [20, 15, 20]. */
     boundsMax?: [number, number, number];
-    /** Exact grid cell count along X/Y/Z. Derived from bounds when omitted. */
-    gridDim?: [number, number, number];
     /** Ground plane height. Default boundsMin.y. */
     groundY?: number;
     /** Grid cell size in world units. Default 0.25. */
@@ -793,13 +814,11 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     const initialPositions = options.initialPositions ?? null;
     let simProfiler: FluidProfiler | null = null;
 
-    const gridDim: [number, number, number] = options.gridDim
-        ? (options.gridDim.map((value) => Math.max(4, Math.round(value))) as [number, number, number])
-        : [
-              Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
-              Math.max(4, Math.ceil((boundsMax[1] - boundsMin[1]) / dx)),
-              Math.max(4, Math.ceil((boundsMax[2] - boundsMin[2]) / dx)),
-          ];
+    const gridDim: [number, number, number] = [
+        Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
+        Math.max(4, Math.ceil((boundsMax[1] - boundsMin[1]) / dx)),
+        Math.max(4, Math.ceil((boundsMax[2] - boundsMin[2]) / dx)),
+    ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
     // Start-of-sim WARM-UP ramp (mirrors MLS-MPM): only `liveCount` particles are simulated
     // each frame, growing by `warmupStep`. Dormant particles are skipped by every particle pass
@@ -810,7 +829,6 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     let warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 0));
     let warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
     let liveCount = count;
-    let initialTargetCount = count;
     let particleGroups = Math.ceil(count / WORKGROUP_SIZE);
     const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
 
@@ -818,6 +836,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     function applyLiveCount(): void {
         particleGroups = Math.max(1, Math.ceil(liveCount / WORKGROUP_SIZE));
         pu[COUNTS_OFFSET_F32] = liveCount;
+        emitData[4] = liveCount; // head2.x — the emit pass must not relaunch dormant particles
     }
 
     const particleBuffer = device.createBuffer({ label: "pbmpm-particles", size: count * PARTICLE_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -827,7 +846,6 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     const velocityBuffer = device.createBuffer({ label: "pbmpm-render-vel", size: count * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const debugBuffer = device.createBuffer({ label: "pbmpm-debug", size: count * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const paramsBuffer = device.createBuffer({ label: "pbmpm-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const flowState = createFluidFlowState(device, count, particleRadius);
 
     const paramsData = new ArrayBuffer(PARAMS_BYTES);
     const pf = new Float32Array(paramsData);
@@ -862,22 +880,13 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     }
 
     function seed(): void {
-        resetFluidFlowState(flowState);
-        const flowParticles = initialPositions ? null : createFluidInitialParticles(count, flowState.config, flowState.particleVolume);
-        initialTargetCount = initialPositions ? count : (flowParticles?.activeCount ?? count);
-        warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(initialTargetCount / warmupFrames)) : initialTargetCount;
-        // Reset the warm-up ramp: start with just the first initial batch live (or the
-        // whole initial prefix when disabled). Inflow capacity remains dormant.
-        liveCount = warmupFrames > 0 ? Math.min(initialTargetCount, warmupStep) : initialTargetCount;
+        // Reset the warm-up ramp: start with just the first batch live (or everything, when
+        // warm-up is disabled). step() grows liveCount back up to count.
+        liveCount = warmupFrames > 0 ? Math.min(count, warmupStep) : count;
         applyLiveCount();
         const buf = new ArrayBuffer(count * PARTICLE_STRIDE);
         const f = new Float32Array(buf);
         const rp = new Float32Array(count * 4);
-        const flowPositions = flowParticles?.positions;
-        const flowVelocities = flowParticles?.velocities;
-        const renderVelocities = new Float32Array(count * 4);
-        const nominalFrameDt = 1 / 60;
-        const seedSubDt = nominalFrameDt / Math.max(substepsMut, Math.ceil(nominalFrameDt / maxSubDt));
         // Last position that passed `spawnAccept`, reused when a particle exhausts its retries.
         let lastOkX = 0;
         let lastOkY = 0;
@@ -892,14 +901,6 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
                 x = initialPositions[i * 3]!;
                 y = initialPositions[i * 3 + 1]!;
                 z = initialPositions[i * 3 + 2]!;
-            } else if (flowPositions && i < initialTargetCount) {
-                x = flowPositions[i * 3]!;
-                y = flowPositions[i * 3 + 1]!;
-                z = flowPositions[i * 3 + 2]!;
-            } else if (flowParticles) {
-                x = 0;
-                y = 0;
-                z = 0;
             } else {
                 x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
                 y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
@@ -930,14 +931,6 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             f[o] = x;
             f[o + 1] = y;
             f[o + 2] = z;
-            if (flowVelocities && i < initialTargetCount) {
-                f[o + 4] = flowVelocities[i * 3]! * seedSubDt;
-                f[o + 5] = flowVelocities[i * 3 + 1]! * seedSubDt;
-                f[o + 6] = flowVelocities[i * 3 + 2]! * seedSubDt;
-                renderVelocities[i * 4] = flowVelocities[i * 3]!;
-                renderVelocities[i * 4 + 1] = flowVelocities[i * 3 + 1]!;
-                renderVelocities[i * 4 + 2] = flowVelocities[i * 3 + 2]!;
-            }
             f[o + 8] = 1;
             f[o + 13] = 1;
             f[o + 18] = 1;
@@ -954,30 +947,8 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         }
         device.queue.writeBuffer(particleBuffer, 0, buf);
         device.queue.writeBuffer(positionBuffer, 0, rp);
-        device.queue.writeBuffer(velocityBuffer, 0, renderVelocities);
+        device.queue.writeBuffer(velocityBuffer, 0, new Float32Array(count * 4));
         device.queue.writeBuffer(debugBuffer, 0, new Float32Array(count));
-    }
-
-    function activateInflowParticles(start: number, particles: NonNullable<ReturnType<typeof prepareFluidFlowFrame>["particles"]>, subDt: number): void {
-        const data = new ArrayBuffer(particles.activeCount * PARTICLE_STRIDE);
-        const values = new Float32Array(data);
-        for (let i = 0; i < particles.activeCount; i++) {
-            const source = i * 3;
-            const target = (i * PARTICLE_STRIDE) / 4;
-            values[target] = particles.positions[source]!;
-            values[target + 1] = particles.positions[source + 1]!;
-            values[target + 2] = particles.positions[source + 2]!;
-            values[target + 4] = particles.velocities[source]! * subDt;
-            values[target + 5] = particles.velocities[source + 1]! * subDt;
-            values[target + 6] = particles.velocities[source + 2]! * subDt;
-            values[target + 8] = 1;
-            values[target + 13] = 1;
-            values[target + 18] = 1;
-            values[target + 32] = 1;
-            values[target + 33] = 1;
-            values[target + 34] = currentMaterial;
-        }
-        device.queue.writeBuffer(particleBuffer, start * PARTICLE_STRIDE, data);
     }
 
     function pipeline(label: string, code: string): GPUComputePipeline {
@@ -1037,13 +1008,18 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
     let gridUpdateBG = buildGridUpdateBG(gridUpdatePipe, null);
     let integrateBG = buildIntegrateBG(integratePipe, null);
 
-    const flowPipe = pipeline("pbmpm-flow", FLOW_WGSL);
-    const flowBG = device.createBindGroup({
-        layout: flowPipe.getBindGroupLayout(0),
+    // Recirculating jet emitters (setEmitters) — used by the fountain / waterfall / marble-tower nozzles.
+    const emitPipe = pipeline("pbmpm-emit", EMIT_WGSL);
+    const emittersBuffer = device.createBuffer({ label: "pbmpm-emitters", size: EMITTERS_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const emitData = new Float32Array(EMITTERS_FLOATS);
+    emitData[4] = count; // head2.x = particle count
+    let emitEnabled = false;
+    let emitSeed = 0;
+    const emitBG = device.createBindGroup({
+        layout: emitPipe.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: flowState.uniformBuffer } },
-            { binding: 2, resource: { buffer: flowState.counterBuffer } },
+            { binding: 1, resource: { buffer: emittersBuffer } },
         ],
     });
 
@@ -1328,9 +1304,6 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
 
     return {
         count,
-        get activeCount(): number {
-            return liveCount;
-        },
         particleRadius,
         surfaceSizeScale: 1.5,
         positionBuffer,
@@ -1338,16 +1311,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
         debugBuffer,
         debugNorm: 1 / 6,
         get gpuBytes(): number {
-            let b =
-                particleBuffer.size +
-                cellBuffer.size +
-                volumeBuffer.size +
-                positionBuffer.size +
-                velocityBuffer.size +
-                debugBuffer.size +
-                paramsBuffer.size +
-                flowState.uniformBuffer.size +
-                flowState.counterBuffer.size;
+            let b = particleBuffer.size + cellBuffer.size + volumeBuffer.size + positionBuffer.size + velocityBuffer.size + debugBuffer.size + paramsBuffer.size;
             if (diffuseBuffer) {
                 b += diffuseBuffer.size;
             }
@@ -1370,21 +1334,19 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             // absorbs float error so an exact multiple stays on the lower sub-step count.)
             const stepCount = Math.max(substepsMut, Math.ceil(frameDt / maxSubDt - 1e-9));
             const subDt = frameDt / stepCount;
-            if (liveCount < initialTargetCount) {
+            if (liveCount < count) {
                 // Release the next slice BEFORE writing params, so this frame simulates it.
-                liveCount = Math.min(initialTargetCount, liveCount + warmupStep);
-                applyLiveCount();
-            }
-            const flowFrame = prepareFluidFlowFrame(flowState, frameDt, liveCount, liveCount >= initialTargetCount ? count - liveCount : 0, subDt);
-            if (flowFrame.particles) {
-                activateInflowParticles(liveCount, flowFrame.particles, subDt);
-                liveCount += flowFrame.particles.activeCount;
+                liveCount = Math.min(count, liveCount + warmupStep);
                 applyLiveCount();
             }
             writeDynamicParams(subDt, frameDt);
             encoder.pushDebugGroup("PB-MPM sim step");
-            if (flowFrame.recycleActive) {
-                dispatch(encoder, "pbmpm-flow", flowPipe, flowBG, particleGroups);
+            if (emitEnabled) {
+                emitData[2] = emitSeed++; // head.z = seed
+                emitData[5] = frameDt; // head2.y = frameDt (rate throttle)
+                emitData[11] = subDt; // intakeMin.w = subDt (velocity → displacement)
+                device.queue.writeBuffer(emittersBuffer, 0, emitData);
+                dispatch(encoder, "pbmpm-emit", emitPipe, emitBG, particleGroups);
             }
             for (let s = 0; s < stepCount; s++) {
                 if (forceSpec && forcePipe && forceBG) {
@@ -1476,8 +1438,10 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             gridUpdateBG = buildGridUpdateBG(gridUpdatePipe, spec);
             integrateBG = buildIntegrateBG(integratePipe, spec);
         },
-        setFlow(config: FluidFlowConfig | null): void {
-            setFluidFlowConfig(flowState, config);
+        setEmitters(cfg: EmitterConfig | null): void {
+            packEmitters(emitData, cfg);
+            emitEnabled = !!cfg && cfg.emitters.length > 0;
+            device.queue.writeBuffer(emittersBuffer, 0, emitData);
         },
         setSpawn(min: [number, number, number], max: [number, number, number], accept?: ((x: number, y: number, z: number) => boolean) | null): void {
             spawnMin[0] = min[0];
@@ -1489,8 +1453,8 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             spawnAccept = accept ?? null;
         },
         setWarmup(frames: number): void {
-            // Number of frames over which reset()/seed() gradually releases initial
-            // particles (0 = all at once). Takes effect on the next seed()/reset().
+            // Number of frames over which reset()/seed() gradually releases particles
+            // (0 = release all at once). Takes effect on the next seed()/reset().
             warmupFrames = Math.max(0, Math.floor(frames));
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
@@ -1534,7 +1498,7 @@ export function createPbMpmSim(engine: EngineContext, options: PbMpmOptions = {}
             velocityBuffer.destroy();
             debugBuffer.destroy();
             paramsBuffer.destroy();
-            disposeFluidFlowState(flowState);
+            emittersBuffer.destroy();
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
             foamActiveStateBuffer?.destroy();

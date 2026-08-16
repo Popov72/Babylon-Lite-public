@@ -3,9 +3,9 @@
 // throttles how much settled water is relaunched, keeping most of it pooled.
 
 import { addToScene, createCylinder, createStandardMaterial, setMeshVisible } from "babylon-lite";
-import type { FluidEmitter, FluidFlowConfig, Mesh } from "babylon-lite";
-import type { SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import type { FluidCtx, FluidDemo } from "../demo.js";
+import type { Mesh } from "babylon-lite";
+import type { EmitterConfig, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { DemoParam, FluidCtx, FluidDemo } from "../demo.js";
 import { ENV_STUDIO_URL } from "../demo.js";
 
 const FOUNTAIN_R = 8;
@@ -47,25 +47,11 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
         buffer: ctx.sceneSdfBuffer,
     };
 
-    // Defaults used to build the editable, solver-independent flow description.
+    // Live-tweakable fountain params (exposed in the Demo-parameters UI).
     const fountainParams = { centralSpeed: 11, ringSpeed: 9, ringOut: 1.0, rate: 0.45, spread: 0.4, centralRadius: 0.15, ringRadius: 0.12 };
 
-    const buildFountainEmitters = (): FluidEmitter[] => {
-        const list: FluidEmitter[] = [
-            {
-                id: "fountain-center",
-                name: "Center jet",
-                enabled: true,
-                behavior: "inflow",
-                transform: { position: [0, FOUNTAIN_CENTRAL_Y, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
-                shape: { type: "sphere", radius: fountainParams.centralRadius },
-                sampling: "volume",
-                velocity: [0, fountainParams.centralSpeed, 0],
-                velocitySpace: "world",
-                spread: fountainParams.spread,
-                volumeRate: (200 * fountainParams.rate) / (FOUNTAIN_RING_N + 1),
-            },
-        ];
+    const buildFountainEmitters = (): EmitterConfig["emitters"] => {
+        const list: EmitterConfig["emitters"] = [{ pos: [0, FOUNTAIN_CENTRAL_Y, 0], dir: [0, 1, 0], speed: fountainParams.centralSpeed, radius: fountainParams.centralRadius }];
         for (let k = 0; k < FOUNTAIN_RING_N; k++) {
             const th = (k / FOUNTAIN_RING_N) * Math.PI * 2;
             const ox = Math.cos(th);
@@ -73,65 +59,21 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
             const dx = ox * fountainParams.ringOut;
             const dz = oz * fountainParams.ringOut;
             const len = Math.hypot(dx, 1.1, dz);
-            list.push({
-                id: `fountain-ring-${k + 1}`,
-                name: `Ring jet ${k + 1}`,
-                enabled: true,
-                behavior: "inflow",
-                transform: { position: [ox * FOUNTAIN_RING_R, FOUNTAIN_RING_Y, oz * FOUNTAIN_RING_R], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
-                shape: { type: "sphere", radius: fountainParams.ringRadius },
-                sampling: "volume",
-                velocity: [(dx / len) * fountainParams.ringSpeed, (1.1 / len) * fountainParams.ringSpeed, (dz / len) * fountainParams.ringSpeed],
-                velocitySpace: "world",
-                spread: fountainParams.spread,
-                volumeRate: (200 * fountainParams.rate) / (FOUNTAIN_RING_N + 1),
-            });
+            list.push({ pos: [ox * FOUNTAIN_RING_R, FOUNTAIN_RING_Y, oz * FOUNTAIN_RING_R], dir: [dx / len, 1.1 / len, dz / len], speed: fountainParams.ringSpeed, radius: fountainParams.ringRadius });
         }
         return list;
     };
 
-    const fountainConfig = (): FluidFlowConfig => {
-        const jets = buildFountainEmitters();
-        return {
-            emitters: [
-                {
-                    id: "fountain-fill",
-                    name: "Initial basin fill",
-                    enabled: true,
-                    behavior: "initial",
-                    transform: {
-                        position: [
-                            (FOUNTAIN_SPAWN_MIN[0] + FOUNTAIN_SPAWN_MAX[0]) / 2,
-                            (FOUNTAIN_SPAWN_MIN[1] + FOUNTAIN_SPAWN_MAX[1]) / 2,
-                            (FOUNTAIN_SPAWN_MIN[2] + FOUNTAIN_SPAWN_MAX[2]) / 2,
-                        ],
-                        rotation: [0, 0, 0, 1],
-                        scale: [1, 1, 1],
-                    },
-                    shape: {
-                        type: "box",
-                        size: [FOUNTAIN_SPAWN_MAX[0] - FOUNTAIN_SPAWN_MIN[0], FOUNTAIN_SPAWN_MAX[1] - FOUNTAIN_SPAWN_MIN[1], FOUNTAIN_SPAWN_MAX[2] - FOUNTAIN_SPAWN_MIN[2]],
-                    },
-                    sampling: "volume",
-                    velocity: [0, 0, 0],
-                    velocitySpace: "world",
-                    spread: 0,
-                },
-                ...jets,
-            ],
-            sinks: [
-                {
-                    id: "fountain-basin-recycle",
-                    name: "Basin recycle",
-                    enabled: true,
-                    transform: { position: [0, FOUNTAIN_FLOOR + 0.4, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
-                    shape: { type: "box", size: [FOUNTAIN_R * 2, 0.8, FOUNTAIN_R * 2] },
-                    targets: jets.map((emitter) => emitter.id),
-                    volumeRate: 200 * fountainParams.rate,
-                },
-            ],
-        };
-    };
+    const fountainConfig = (): EmitterConfig => ({
+        emitters: buildFountainEmitters(),
+        // Pump intake: a thin slab across the basin floor. Settled water is pulled
+        // up a jet (throttled by `rate` — high enough to feed the jets, low enough
+        // that most water stays pooled).
+        intakeMin: [-FOUNTAIN_R, FOUNTAIN_FLOOR, -FOUNTAIN_R],
+        intakeMax: [FOUNTAIN_R, FOUNTAIN_FLOOR + 0.8, FOUNTAIN_R],
+        rate: fountainParams.rate,
+        spread: fountainParams.spread,
+    });
 
     // Visible nozzle spouts (dark metal cylinders pointing along each jet).
     // Created at unit diameter (radius 0.5) so the bore can be scaled to the
@@ -147,23 +89,16 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
         setMeshVisible(m, false);
         nozzles.push(m);
     }
-    const updateFountainNozzles = (flow: FluidFlowConfig = fountainConfig()): void => {
-        const es = flow.emitters.filter((emitter) => emitter.behavior === "inflow");
+    const updateFountainNozzles = (): void => {
+        const es = buildFountainEmitters();
         for (let k = 0; k < nozzles.length; k++) {
             const e = es[k]!;
             const m = nozzles[k]!;
-            if (!e) {
-                setMeshVisible(m, false);
-                continue;
-            }
-            const radius = e.shape.type === "sphere" ? e.shape.radius : 0.1;
-            const speed = Math.hypot(e.velocity[0], e.velocity[1], e.velocity[2]);
-            const dir: [number, number, number] = speed > 1e-6 ? [e.velocity[0] / speed, e.velocity[1] / speed, e.velocity[2] / speed] : [0, 1, 0];
             // Scale the unit-diameter bore to the emitter radius (X/Z only; height fixed).
-            m.scaling.set(2 * radius, 1, 2 * radius);
+            m.scaling.set(2 * e.radius, 1, 2 * e.radius);
             // Sink the spout so its tip sits at the emit point.
-            m.position.set(e.transform.position[0] - dir[0] * (NOZZLE_H / 2), e.transform.position[1] - dir[1] * (NOZZLE_H / 2), e.transform.position[2] - dir[2] * (NOZZLE_H / 2));
-            const q = quatFromY(dir);
+            m.position.set(e.pos[0] - e.dir[0] * (NOZZLE_H / 2), e.pos[1] - e.dir[1] * (NOZZLE_H / 2), e.pos[2] - e.dir[2] * (NOZZLE_H / 2));
+            const q = quatFromY(e.dir);
             m.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
         }
     };
@@ -178,11 +113,11 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
         writeSdfParams(): void {
             engine._device.queue.writeBuffer(ctx.sceneSdfBuffer, 0, new Float32Array([FOUNTAIN_R, FOUNTAIN_FLOOR, 0, 0]));
         },
-        flow() {
-            return fountainConfig();
+        spawn() {
+            return { min: FOUNTAIN_SPAWN_MIN, max: FOUNTAIN_SPAWN_MAX };
         },
-        onFlowChanged(flow): void {
-            updateFountainNozzles(flow);
+        emitters() {
+            return fountainConfig();
         },
         onEnter(): void {
             updateFountainNozzles();
@@ -205,13 +140,21 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
         update(): void {
             /* jets refresh on param change, not per-frame */
         },
-        demoParams() {
-            return [];
+        demoParams(): DemoParam[] {
+            return [
+                { key: "centralSpeed", label: "Central jet speed", type: "number", min: 4, max: 18, step: 0.5, value: fountainParams.centralSpeed },
+                { key: "ringSpeed", label: "Ring jet speed", type: "number", min: 4, max: 18, step: 0.5, value: fountainParams.ringSpeed },
+                { key: "ringOut", label: "Ring outward angle", type: "number", min: 0, max: 2, step: 0.05, value: fountainParams.ringOut },
+                { key: "centralRadius", label: "Central nozzle radius", type: "number", min: 0.05, max: 0.6, step: 0.01, value: fountainParams.centralRadius },
+                { key: "ringRadius", label: "Ring nozzle radius", type: "number", min: 0.05, max: 0.6, step: 0.01, value: fountainParams.ringRadius },
+                { key: "rate", label: "Emit rate", type: "number", min: 0.05, max: 1.5, step: 0.05, value: fountainParams.rate },
+                { key: "spread", label: "Jet spread", type: "number", min: 0, max: 2, step: 0.05, value: fountainParams.spread },
+            ];
         },
         applyParam(key: string, value: number | boolean | string): void {
-            if (key in fountainParams && typeof value === "number") {
-                (fountainParams as unknown as Record<string, number>)[key] = value;
-            }
+            (fountainParams as Record<string, number>)[key] = value as number;
+            updateFountainNozzles();
+            ctx.refreshEmitters();
         },
         extraControls() {
             return [];

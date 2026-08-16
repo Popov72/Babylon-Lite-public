@@ -45,25 +45,21 @@
 //   per-iteration gathers). There is no per-cell capacity cap.
 
 import type { EngineContext } from "../engine/engine.js";
-import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, FluidFlowConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
+import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
 import {
+    EMITTERS_FLOATS,
     SPAWN_ACCEPT_TRIES,
-    FLUID_FLOW_RUNTIME_WGSL,
-    FLUID_FLOW_STRUCT_WGSL,
+    EMITTER_STRUCT_WGSL,
+    EMITTER_SPAWN_WGSL,
     FOAM_ACTIVE_FINISH_WGSL,
     FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_BYTES,
     FOAM_COMMON_WGSL,
-    createFluidFlowState,
-    createFluidInitialParticles,
-    disposeFluidFlowState,
     foamActiveListOffset,
     foamActiveStateBytes,
-    prepareFluidFlowFrame,
-    resetFluidFlowState,
+    packEmitters,
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
-    setFluidFlowConfig,
 } from "./sim-common.js";
 
 // Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
@@ -78,8 +74,6 @@ export interface PbfOptions extends FluidSimBaseOptions {
     boundsMin?: [number, number, number];
     /** Simulation box max corner — the neighbour-grid domain AABB. Default [4, 20, 4]. */
     boundsMax?: [number, number, number];
-    /** Exact neighbour-grid cell count along X/Y/Z. Derived from bounds when omitted. */
-    gridDim?: [number, number, number];
     /** Capsule tank boundary: centre of the bottom hemisphere. Default null (box boundary). */
     capsuleA?: [number, number, number];
     /** Capsule tank boundary: centre of the top hemisphere. */
@@ -682,22 +676,58 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     dst[k] = src[k];
 }`;
 
-// ── Generic flow recycling ────────────────────────────────────────────
-const FLOW_WGSL = /* wgsl */ `
-${FLUID_FLOW_STRUCT_WGSL}
+// ── Generic particle emitter / recycling ─────────────────────────────
+// Fixed particle pool: "emitting" recycles particles rather than adding them.
+// A compute pass run first each step relaunches particles that sit inside the
+// pump-intake box, probabilistically (rand < rate·dt, to throttle so jets are
+// continuous streams), at a random emitter nozzle with its jet velocity.
+// (EmitterConfig / MAX_EMITTERS / EMITTERS_FLOATS / packEmitters live in sim-common.)
+const EMIT_WGSL = /* wgsl */ `
+${EMITTER_STRUCT_WGSL}
 @group(0) @binding(0) var<storage, read_write> pos: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> vel: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> flow: FluidFlowData;
-@group(0) @binding(3) var<storage, read_write> flowCounters: array<atomic<u32>>;
-${FLUID_FLOW_RUNTIME_WGSL}
+@group(0) @binding(2) var<uniform> em: Emitters;
+
+fn hashU(x0: u32) -> u32 { var h = x0; h ^= h >> 16u; h *= 0x7feb352du; h ^= h >> 15u; h *= 0x846ca68bu; h ^= h >> 16u; return h; }
+fn rnd(x: u32) -> f32 { return f32(hashU(x)) / 4294967296.0; }
+${EMITTER_SPAWN_WGSL}
+
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
-    if (i >= flow.header.z) { return; }
-    let launch = fluidTryRelaunch(pos[i].xyz, i);
-    if (launch.launched != 0u) {
-        pos[i] = vec4<f32>(launch.position, 1.0);
-        vel[i] = vec4<f32>(launch.velocity, 0.0);
+    if (i >= u32(em.head2.x)) { return; }
+    let ec = u32(em.head.x);
+    if (ec == 0u) { return; }
+    let p = pos[i].xyz;
+    let seed = u32(em.head.z) * 2654435761u + i;
+    let fixedN = u32(em.head2.z);
+    // Dedicated fixed-size stream (fixedN > 0): indices [0, fixedN) form a self-contained TIGHT
+    // LOOP through the LAST emitter. The instant such a particle sinks below the drain height
+    // (head2.w) it relaunches DETERMINISTICALLY — no rate throttle, no floor-intake test — so
+    // ~fixedN particles are always in flight at a cadence set only by gravity + geometry, fully
+    // INDEPENDENT of the total particle count or how deep the main pool is. These particles never
+    // touch the shared pump-intake, so the main pool can't dilute or starve the jet.
+    if (fixedN > 0u && i < fixedN) {
+        if (p.y < em.head2.w) {
+            let e = em.list[ec - 1u];
+            let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
+            pos[i] = vec4<f32>(spawnPoint(e, seed), 1.0);
+            vel[i] = vec4<f32>(e.d.xyz * e.d.w + sj, 0.0);
+        }
+        return;
+    }
+    // Everything else: the original probabilistic pump-intake recycle. When fixedN > 0 the last
+    // emitter is reserved for the fixed stream, so the general pool recycles through the first
+    // ec-1 emitters; when fixedN == 0 all emitters are shared (byte-identical original path).
+    if (all(p >= em.intakeMin.xyz) && all(p <= em.intakeMax.xyz)) {
+        if (rnd(seed) < em.head.y * em.head2.y) {
+            var ei = hashU(seed) % ec;
+            if (fixedN > 0u) { ei = hashU(seed) % max(ec - 1u, 1u); }
+            let e = em.list[ei];
+            let sj = (vec3<f32>(rnd(seed * 11u), rnd(seed * 13u), rnd(seed * 17u)) - 0.5) * (e.d.w * em.head.w);
+            pos[i] = vec4<f32>(spawnPoint(e, seed), 1.0);
+            vel[i] = vec4<f32>(e.d.xyz * e.d.w + sj, 0.0);
+        }
     }
 }`;
 
@@ -1024,7 +1054,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let warmupFrames = Math.max(0, Math.floor(options.warmupFrames ?? 0));
     let warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
     let liveCount = count;
-    let initialTargetCount = count;
     const seedPositions = new Float32Array(count * 4);
     const gravity = options.gravity ?? 9.8;
     const h = options.smoothingRadius ?? 0.4;
@@ -1051,13 +1080,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const restDensity = options.restDensity ?? (count / spawnVol) * restDensityScale;
 
     // Grid derived from the bounds so cells tightly cover the active region.
-    const gridDim: [number, number, number] = options.gridDim
-        ? (options.gridDim.map((value) => Math.max(1, Math.round(value))) as [number, number, number])
-        : [
-              Math.max(1, Math.ceil((boundsMax[0] - boundsMin[0]) / h)),
-              Math.max(1, Math.ceil((boundsMax[1] - boundsMin[1]) / h)),
-              Math.max(1, Math.ceil((boundsMax[2] - boundsMin[2]) / h)),
-          ];
+    const gridDim: [number, number, number] = [
+        Math.max(1, Math.ceil((boundsMax[0] - boundsMin[0]) / h)),
+        Math.max(1, Math.ceil((boundsMax[1] - boundsMin[1]) / h)),
+        Math.max(1, Math.ceil((boundsMax[2] - boundsMin[2]) / h)),
+    ];
     const numCells = gridDim[0] * gridDim[1] * gridDim[2];
     // Per-chunk totals for the multi-level counting-sort prefix scan over numCells.
     const scanChunks = Math.ceil(numCells / SCAN_WG);
@@ -1096,7 +1123,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const sortedVelBuffer = device.createBuffer({ label: "fluid-sorted-vel", size: count * 16, usage: GPUBufferUsage.STORAGE });
     const simBuffer = device.createBuffer({ label: "fluid-sim", size: SIM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const gridBuffer = device.createBuffer({ label: "fluid-grid", size: GRID_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const flowState = createFluidFlowState(device, count, particleRadius);
+    const emittersBuffer = device.createBuffer({ label: "fluid-emitters", size: EMITTERS_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const emitData = new Float32Array(EMITTERS_FLOATS);
+    emitData[4] = count; // head2.x = particle count
+    let emitEnabled = false;
+    let emitSeed = 0;
 
     const simData = new ArrayBuffer(SIM_BYTES);
     const simF32 = new Float32Array(simData);
@@ -1148,17 +1179,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     }
 
     function seed(): void {
-        resetFluidFlowState(flowState);
-        const flowParticles = initialPositions ? null : createFluidInitialParticles(count, flowState.config, flowState.particleVolume);
-        initialTargetCount = initialPositions ? count : (flowParticles?.activeCount ?? count);
-        warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(initialTargetCount / warmupFrames)) : initialTargetCount;
-        // Reset the warm-up ramp: start with just the first initial batch live (or the
-        // whole initial prefix when disabled). Inflow capacity remains dormant.
-        liveCount = warmupFrames > 0 ? Math.min(initialTargetCount, warmupStep) : initialTargetCount;
+        // Reset the warm-up ramp: start with just the first batch live (or everything
+        // when disabled). step() grows liveCount, teleporting dormant particles from
+        // off-screen to their stored spawn position as they activate.
+        liveCount = warmupFrames > 0 ? Math.min(count, warmupStep) : count;
         const positions = new Float32Array(count * 4);
-        const flowPositions = flowParticles?.positions;
-        const flowVelocities = flowParticles?.velocities;
-        const velocities = new Float32Array(count * 4);
         // Last position that passed `spawnAccept`, reused when a particle exhausts its retries.
         let lastOkX = 0;
         let lastOkY = 0;
@@ -1176,14 +1201,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 x = initialPositions[i * 3]!;
                 y = initialPositions[i * 3 + 1]!;
                 z = initialPositions[i * 3 + 2]!;
-            } else if (flowPositions && i < initialTargetCount) {
-                x = flowPositions[i * 3]!;
-                y = flowPositions[i * 3 + 1]!;
-                z = flowPositions[i * 3 + 2]!;
-            } else if (flowParticles) {
-                x = 0;
-                y = 0;
-                z = 0;
             } else {
                 x = spawnMin[0] + Math.random() * (spawnMax[0] - spawnMin[0]);
                 y = spawnMin[1] + Math.random() * (spawnMax[1] - spawnMin[1]);
@@ -1217,11 +1234,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             seedPositions[o + 1] = y;
             seedPositions[o + 2] = z;
             seedPositions[o + 3] = 1;
-            if (flowVelocities && i < initialTargetCount) {
-                velocities[o] = flowVelocities[i * 3]!;
-                velocities[o + 1] = flowVelocities[i * 3 + 1]!;
-                velocities[o + 2] = flowVelocities[i * 3 + 2]!;
-            }
             const live = i < liveCount;
             positions[o] = live ? x : 0;
             positions[o + 1] = live ? y : -1.0e5; // park dormant particles off-screen
@@ -1229,27 +1241,8 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             positions[o + 3] = 1;
         }
         device.queue.writeBuffer(positionBuffer, 0, positions);
-        device.queue.writeBuffer(velocityBuffer, 0, velocities);
+        device.queue.writeBuffer(velocityBuffer, 0, new Float32Array(count * 4));
         device.queue.writeBuffer(debugBuffer, 0, new Float32Array(count));
-    }
-
-    function activateInflowParticles(start: number, particles: NonNullable<ReturnType<typeof prepareFluidFlowFrame>["particles"]>): void {
-        const positions = new Float32Array(particles.activeCount * 4);
-        const velocities = new Float32Array(particles.activeCount * 4);
-        for (let i = 0; i < particles.activeCount; i++) {
-            const source = i * 3;
-            const target = i * 4;
-            positions[target] = particles.positions[source]!;
-            positions[target + 1] = particles.positions[source + 1]!;
-            positions[target + 2] = particles.positions[source + 2]!;
-            positions[target + 3] = 1;
-            velocities[target] = particles.velocities[source]!;
-            velocities[target + 1] = particles.velocities[source + 1]!;
-            velocities[target + 2] = particles.velocities[source + 2]!;
-        }
-        seedPositions.set(positions, start * 4);
-        device.queue.writeBuffer(positionBuffer, start * 16, positions);
-        device.queue.writeBuffer(velocityBuffer, start * 16, velocities);
     }
     seed();
 
@@ -1288,7 +1281,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     const predictPipeline = computePipeline("fluid-predict", buildPredictWgsl());
     const finalizePipeline = computePipeline("fluid-finalize", FINALIZE_WGSL);
     const viscosityPipeline = computePipeline("fluid-viscosity", VISCOSITY_WGSL);
-    const flowPipeline = computePipeline("fluid-flow", FLOW_WGSL);
+    const emitPipeline = computePipeline("fluid-emit", EMIT_WGSL);
 
     const predictBG = device.createBindGroup({
         layout: predictPipeline.getBindGroupLayout(0),
@@ -1463,13 +1456,12 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             { binding: 2, resource: { buffer: simBuffer } },
         ],
     });
-    const flowBG = device.createBindGroup({
-        layout: flowPipeline.getBindGroupLayout(0),
+    const emitBG = device.createBindGroup({
+        layout: emitPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: positionBuffer } },
             { binding: 1, resource: { buffer: velocityBuffer } },
-            { binding: 2, resource: { buffer: flowState.uniformBuffer } },
-            { binding: 3, resource: { buffer: flowState.counterBuffer } },
+            { binding: 2, resource: { buffer: emittersBuffer } },
         ],
     });
 
@@ -1743,9 +1735,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
 
     return {
         count,
-        get activeCount(): number {
-            return liveCount;
-        },
         particleRadius,
         positionBuffer,
         velocityBuffer,
@@ -1772,8 +1761,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 sortedVelBuffer.size +
                 simBuffer.size +
                 gridBuffer.size +
-                flowState.uniformBuffer.size +
-                flowState.counterBuffer.size;
+                emittersBuffer.size;
             if (diffuseBuffer) {
                 b += diffuseBuffer.size;
             }
@@ -1803,15 +1791,10 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             simF32[0] = dt;
             // Warm-up ramp: grow the live count one batch per frame, teleporting the
             // newly-activated particles from off-screen to their stored spawn position.
-            if (liveCount < initialTargetCount) {
+            if (liveCount < count) {
                 const prev = liveCount;
-                liveCount = Math.min(initialTargetCount, liveCount + warmupStep);
+                liveCount = Math.min(count, liveCount + warmupStep);
                 device.queue.writeBuffer(positionBuffer, prev * 16, seedPositions, prev * 4, (liveCount - prev) * 4);
-            }
-            const flowFrame = prepareFluidFlowFrame(flowState, dt, liveCount, liveCount >= initialTargetCount ? count - liveCount : 0);
-            if (flowFrame.particles) {
-                activateInflowParticles(liveCount, flowFrame.particles);
-                liveCount += flowFrame.particles.activeCount;
             }
             simU32[15] = liveCount;
             device.queue.writeBuffer(simBuffer, 0, simData);
@@ -1820,8 +1803,11 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             // (plus the nested solver + foam groups) into one collapsible event.
             // Balanced by the popDebugGroup at the end of step().
             encoder.pushDebugGroup("PBF sim step");
-            if (flowFrame.recycleActive) {
-                dispatch(encoder, "fluid-flow", flowPipeline, flowBG, particleGroups);
+            if (emitEnabled) {
+                emitData[2] = emitSeed++;
+                emitData[5] = dt;
+                device.queue.writeBuffer(emittersBuffer, 0, emitData);
+                dispatch(encoder, "fluid-emit", emitPipeline, emitBG, particleGroups);
             }
             if (forceSpec && forcePipeline && forceBG) {
                 dispatch(encoder, "fluid-force", forcePipeline, forceBG, particleGroups);
@@ -1927,8 +1913,10 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                 applyBG = null;
             }
         },
-        setFlow(config: FluidFlowConfig | null): void {
-            setFluidFlowConfig(flowState, config);
+        setEmitters(cfg: EmitterConfig | null): void {
+            packEmitters(emitData, cfg);
+            emitEnabled = !!cfg && cfg.emitters.length > 0;
+            device.queue.writeBuffer(emittersBuffer, 0, emitData);
         },
         setSpawn(min: [number, number, number], max: [number, number, number], accept?: ((x: number, y: number, z: number) => boolean) | null): void {
             spawnMin[0] = min[0];
@@ -1940,8 +1928,8 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             spawnAccept = accept ?? null;
         },
         setWarmup(frames: number): void {
-            // Frames over which reset()/seed() gradually releases initial particles
-            // (0 = all at once). Takes effect on the next seed()/reset().
+            // Frames over which reset()/seed() gradually releases particles (0 = all at
+            // once). Takes effect on the next seed()/reset(). Mirrors the MLS backend.
             warmupFrames = Math.max(0, Math.floor(frames));
             warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(count / warmupFrames)) : count;
         },
@@ -1989,7 +1977,6 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             sortedVelBuffer.destroy();
             simBuffer.destroy();
             gridBuffer.destroy();
-            disposeFluidFlowState(flowState);
             diffuseBuffer?.destroy();
             diffuseHeadBuffer?.destroy();
             foamActiveStateBuffer?.destroy();

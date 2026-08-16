@@ -14,8 +14,6 @@ packages/babylon-lite/build/
 *.py
 __pycache__/
 *.py[cod]
-!scripts/export-blender-fluid.py
-!scripts/blender-fluid-addon.py
 our-render*
 our-*
 test-actual*.png

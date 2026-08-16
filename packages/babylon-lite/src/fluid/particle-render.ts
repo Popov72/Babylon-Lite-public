@@ -33,7 +33,7 @@ struct Cam {
     vp: mat4x4<f32>,
     right: vec4<f32>,
     up: vec4<f32>,
-    misc: vec4<f32>,   // x = particle radius, y = debug normalisation reciprocal, z = opacity
+    misc: vec4<f32>,   // x = particle radius, y = debug normalisation reciprocal
     tint: vec4<f32>,   // rgb = base particle colour (settable, e.g. blue liquid / tan sand)
 };
 @group(0) @binding(0) var<uniform> cam: Cam;
@@ -80,7 +80,7 @@ struct VOut {
     var col = i.color * (0.32 + 0.68 * diff);
     col += vec3<f32>(0.9, 0.97, 1.0) * (spec * 0.6);
     col += vec3<f32>(0.45, 0.65, 0.95) * (fres * 0.25);
-    return vec4<f32>(col, cam.misc.z);
+    return vec4<f32>(col, 1.0);
 }`;
 
 export function createParticleRenderTask(
@@ -90,7 +90,6 @@ export function createParticleRenderTask(
 ): Task & {
     setSim(s: FluidSim): void;
     setEnabled(on: boolean): void;
-    setOpacity(v: number): void;
     setSizeScale(s: number): void;
     setTint(rgb: [number, number, number]): void;
     setVelocityBrighten(v: number): void;
@@ -100,7 +99,6 @@ export function createParticleRenderTask(
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
     let enabled = true;
-    let opacity = 1;
     let sizeScale = 1; // user-controlled visual particle-size multiplier
     const tint: [number, number, number] = [0.1, 0.35, 0.85]; // base particle colour (deep-blue liquid default)
     let velocityBrighten = 1; // how much fast particles brighten toward white (0 = uniform, e.g. sand)
@@ -139,19 +137,7 @@ export function createParticleRenderTask(
             label: "fluid-particles",
             layout: "auto",
             vertex: { module, entryPoint: "vs" },
-            fragment: {
-                module,
-                entryPoint: "fs",
-                targets: [
-                    {
-                        format: engine.format,
-                        blend: {
-                            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-                        },
-                    },
-                ],
-            },
+            fragment: { module, entryPoint: "fs", targets: [{ format: engine.format }] },
             primitive: { topology: "triangle-list", cullMode: "none" },
             depthStencil: {
                 format: depthRT._descriptor.dFormat!,
@@ -181,7 +167,7 @@ export function createParticleRenderTask(
         camData[23] = 0;
         camData[24] = currentSim.particleRadius * sizeScale;
         camData[25] = currentSim.debugNorm;
-        camData[26] = opacity;
+        camData[26] = 0;
         camData[27] = 0;
         camData[28] = tint[0];
         camData[29] = tint[1];
@@ -203,10 +189,6 @@ export function createParticleRenderTask(
         /** Enable/disable this renderer (so the demo can swap to surface mode). */
         setEnabled(on: boolean): void {
             enabled = on;
-        },
-        /** Fade every rendered sphere without changing simulation state. */
-        setOpacity(v: number): void {
-            opacity = Math.max(0, Math.min(1, v));
         },
         /** Visual particle-size multiplier (does not affect the physics). */
         setSizeScale(s: number): void {
