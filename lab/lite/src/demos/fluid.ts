@@ -63,10 +63,26 @@ import { createFluidProfiler } from "./fluid/gpu-profiler.js";
 import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
-import type { DemoParam, FluidCtx, FluidDemo, PairState, PendingForce } from "./fluid/demo.js";
+import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
 import { exportJsonFromPairState } from "./fluid/preset-io.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
+import {
+    cellSizeForPhysicsScale,
+    gridBounds,
+    gridCellsForSize,
+    gridPositionForBounds,
+    gridSizeForBounds,
+    MPM_MAX_SCALE,
+    MPM_MIN_SCALE,
+    PBF_MAX_SCALE,
+    PBF_MIN_SCALE,
+    PBMPM_MAX_SCALE,
+    PBMPM_MIN_SCALE,
+    PHYS_MAX_SCALE,
+    PHYS_MIN_SCALE,
+    scaleLimitsForMethod,
+} from "./fluid/grid-settings.js";
 import { screenRay } from "./fluid/pick.js";
 import { CAP_A, CAP_B, CAP_R, createCapsuleDemo } from "./fluid/scenes/capsule.js";
 import { createBoxDemo } from "./fluid/scenes/box.js";
@@ -82,21 +98,6 @@ import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_BELFAST_ENV_URL } fro
 const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000, 750000, 1000000, 1200000, 1500000, 1800000, 2000000];
 const DEFAULT_PARTICLE_COUNT = 80000;
 
-// Physics particle-size range (matches the spirit of the visual "Particle size"
-// slider). Min is 0.1× so fine-grained fluid is reachable for detail-heavy scenes
-// (e.g. the waterfall's rock terraces); below ~0.5× the fluid gets stiff for a
-// 60 fps timestep (CFL) and more spray-prone, so treat the low end as opt-in.
-// PBF over-compresses the closed box above ~2×, so PBF is capped at 2× (MLS-MPM
-// handles the larger overfill gracefully up to 3×). The per-backend floors match
-// the slider floor so the slider is never silently clamped into a no-op.
-const PHYS_MIN_SCALE = 0.1;
-const PHYS_MAX_SCALE = 3;
-const PBF_MIN_SCALE = 0.1;
-const PBF_MAX_SCALE = 2;
-const MPM_MIN_SCALE = 0.1;
-const MPM_MAX_SCALE = 3;
-const PBMPM_MIN_SCALE = 0.1;
-const PBMPM_MAX_SCALE = 3;
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
 const FORCE_RADIUS = 3.5;
@@ -296,16 +297,43 @@ async function main(): Promise<void> {
     const SPAWN_MAX: [number, number, number] = [2, 12, 2];
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
+    const defaultDomainBounds = (method: string, scale = 1): FluidDomainBounds => ({
+        min: [-20 * scale, (method === "PBF" ? 0 : -1) * scale, -20 * scale],
+        max: BOUNDS_MAX.map((value) => value * scale) as [number, number, number],
+    });
+    const defaultGridSettings = (method: string, scale = 1): FluidGridSettings => {
+        const bounds = defaultDomainBounds(method, scale);
+        return { position: gridPositionForBounds(bounds), size: gridSizeForBounds(bounds) };
+    };
+    const cloneGridSettings = (grid: FluidGridSettings): FluidGridSettings => ({ position: [...grid.position], size: [...grid.size] });
+    const validGridSettings = (grid: FluidGridSettings): boolean => grid.position.every(Number.isFinite) && grid.size.every((value) => Number.isFinite(value) && value > 0);
+    const gridSettingsEqual = (a: FluidGridSettings | undefined, b: FluidGridSettings | undefined): boolean =>
+        a === undefined || b === undefined ? a === b : a.position.every((value, index) => value === b.position[index]) && a.size.every((value, index) => value === b.size[index]);
+    const GRID_CELLS_MAX = 2048;
+    const GRID_CELL_COUNT_MAX = Math.floor(engine._device.limits.maxStorageBufferBindingSize / 16);
+    const gridCellsForSettings = (grid: FluidGridSettings, method: string, physicsSize: number): [number, number, number] =>
+        gridCellsForSize(grid.size, cellSizeForPhysicsScale(method, physicsSize));
+    const gridAllocationError = (grid: FluidGridSettings, method: string, physicsSize: number): string | undefined => {
+        const cells = gridCellsForSettings(grid, method, physicsSize);
+        const oversizedAxis = cells.findIndex((value) => value > GRID_CELLS_MAX);
+        if (oversizedAxis >= 0) {
+            return `Grid size requires ${cells[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]} at the current Physics particle size; maximum is ${GRID_CELLS_MAX.toLocaleString()}.`;
+        }
+        const totalCells = cells[0] * cells[1] * cells[2];
+        return totalCells > GRID_CELL_COUNT_MAX
+            ? `Grid size requires ${totalCells.toLocaleString()} cells at the current Physics particle size; this device supports at most ${GRID_CELL_COUNT_MAX.toLocaleString()}.`
+            : undefined;
+    };
 
-    // Domain (world) scale for the sim bounds. Base 1× keeps the tank at ±20; a demo can grow
-    // the whole simulated domain (marble tower "Mesh scale") by scaling the BOUNDS, the grid
-    // cell `dx`, the particle/smoothing radius and the spawn box together — so the grid
-    // dimensions (bounds/dx) and therefore the GPU memory stay CONSTANT while the domain
-    // physically grows. `domainScale` is the desired value (set by switchPair from the active
-    // demo's getDomainScale, or by setDomainScale); `builtDomainScale` is what the live sims were
-    // last created with (rebuild fires when they differ).
+    // Gridless presets retain the historical hidden domain multiplier. Once a pair has an
+    // explicit grid, its position/size are exact world units and Physics particle size alone
+    // controls particle radius and cubic cell size.
     let domainScale = 1;
     let builtDomainScale = 1;
+    let methodName = "PBF";
+    let gridSettings: FluidGridSettings | undefined;
+    let builtGridSettings: FluidGridSettings | undefined;
+    let builtGridMethod = methodName;
 
     // Seed box scaled with the physics particle size. The fixed spawn box only
     // matches the rest density at 1×; at other sizes the seed is far under-dense
@@ -342,38 +370,43 @@ async function main(): Promise<void> {
         //     λ = -C/(Σ|∇C|² + ε) must track the rescaling or the liquid collapses).
         //   • MLS-MPM: cell size dx grows by scale; restDensity (particles/cell)
         //     stays fixed so the per-particle volume = dx³/restDensity grows ∝ scale³.
-        // Each backend's scale is clamped to its own visually-clean range: below
-        // ~0.8× the fluid is too stiff for the real-time timestep and sprays
-        // (CFL), and PBF over-compresses the closed box above ~2×.
+        // Extreme scale values remain opt-in because timestep and density settings
+        // may also need adjustment.
         const pbfScale = clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE);
         const mpmScale = clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE);
         const pbmpmScale = clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE);
-        // Domain scale grows the WORLD (bounds + dx + particle/smoothing radius + spawn) uniformly,
-        // leaving the grid dimensions (bounds/dx) — and hence GPU memory — constant. It is a
-        // separate axis from the physics particle-size `scale` above (which changes per-particle
-        // density). restDensity/relaxation stay keyed off pbfScale/mpmScale ONLY: they encode the
-        // per-particle size ratio, not the world size.
         const ds = domainScale;
         const scaleTriple = (t: [number, number, number]): [number, number, number] => [t[0] * ds, t[1] * ds, t[2] * ds];
-        const boundsMin = scaleTriple(BOUNDS_MIN);
-        const boundsMax = scaleTriple(BOUNDS_MAX);
+        const explicitGrid = gridSettings !== undefined;
+        const explicitBounds = gridSettings ? gridBounds(gridSettings.position, gridSettings.size) : undefined;
+        const cellSize = explicitGrid ? cellSizeForPhysicsScale(methodName, scale) : undefined;
+        if (gridSettings) {
+            const allocationError = gridAllocationError(gridSettings, methodName, scale);
+            if (allocationError) {
+                throw new Error(allocationError);
+            }
+        }
+        const pbfBoundsMin = explicitBounds?.min ?? scaleTriple(BOUNDS_MIN);
+        const pbfBoundsMax = explicitBounds?.max ?? scaleTriple(BOUNDS_MAX);
+        const mpmBoundsMin = explicitBounds?.min ?? [pbfBoundsMin[0], -1 * ds, pbfBoundsMin[2]];
+        const mpmBoundsMax = explicitBounds?.max ?? pbfBoundsMax;
         const pbfSpawn = scaledSpawn(pbfScale);
         const mpmSpawn = scaledSpawn(mpmScale);
         const pbmpmSpawn = scaledSpawn(pbmpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createPbfSim(engine, {
             count,
-            particleRadius: 0.09 * pbfScale * ds,
-            smoothingRadius: 0.4 * pbfScale * ds,
-            spawnMin: scaleTriple(pbfSpawn.min),
-            spawnMax: scaleTriple(pbfSpawn.max),
+            particleRadius: 0.09 * pbfScale * (explicitGrid ? 1 : ds),
+            smoothingRadius: cellSize ?? 0.4 * pbfScale * ds,
+            spawnMin: explicitGrid ? pbfSpawn.min : scaleTriple(pbfSpawn.min),
+            spawnMax: explicitGrid ? pbfSpawn.max : scaleTriple(pbfSpawn.max),
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
             groundY: 0,
             restDensity: 341 / (pbfScale * pbfScale * pbfScale),
-            boundsMin,
-            boundsMax,
+            boundsMin: pbfBoundsMin,
+            boundsMax: pbfBoundsMax,
             maxPerCell: 48,
             relaxation: 50 / (pbfScale * pbfScale),
         });
@@ -381,9 +414,9 @@ async function main(): Promise<void> {
         // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
             count,
-            particleRadius: 0.09 * mpmScale * ds,
-            spawnMin: scaleTriple(mpmSpawn.min),
-            spawnMax: scaleTriple(mpmSpawn.max),
+            particleRadius: 0.09 * mpmScale * (explicitGrid ? 1 : ds),
+            spawnMin: explicitGrid ? mpmSpawn.min : scaleTriple(mpmSpawn.min),
+            spawnMax: explicitGrid ? mpmSpawn.max : scaleTriple(mpmSpawn.max),
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
@@ -395,9 +428,9 @@ async function main(): Promise<void> {
             // leaving the fluid hovering a row above the floor (PBF hard-clamps, so
             // it sat flush). The border now sits harmlessly below all demo floors.
             // The -1 floor offset scales with the domain too so the grid dims stay constant.
-            boundsMin: [boundsMin[0], -1 * ds, boundsMin[2]],
-            boundsMax,
-            dx: 0.22 * mpmScale * ds,
+            boundsMin: mpmBoundsMin,
+            boundsMax: mpmBoundsMax,
+            dx: cellSize ?? 0.22 * mpmScale * ds,
             restDensity: 3,
             stiffness: 350,
             gravity: 9.8,
@@ -422,13 +455,13 @@ async function main(): Promise<void> {
         // Backend 3 — Position-Based MPM (liquid-only PB-MPM phase 1).
         const pbmpm = createPbMpmSim(engine, {
             count,
-            particleRadius: 0.09 * pbmpmScale * ds,
-            spawnMin: scaleTriple(pbmpmSpawn.min),
-            spawnMax: scaleTriple(pbmpmSpawn.max),
+            particleRadius: 0.09 * pbmpmScale * (explicitGrid ? 1 : ds),
+            spawnMin: explicitGrid ? pbmpmSpawn.min : scaleTriple(pbmpmSpawn.min),
+            spawnMax: explicitGrid ? pbmpmSpawn.max : scaleTriple(pbmpmSpawn.max),
             groundY: 0,
-            boundsMin: [boundsMin[0], -1 * ds, boundsMin[2]],
-            boundsMax,
-            dx: 0.22 * pbmpmScale * ds,
+            boundsMin: mpmBoundsMin,
+            boundsMax: mpmBoundsMax,
+            dx: cellSize ?? 0.22 * pbmpmScale * ds,
             gravity: 9.8,
             substeps: 3,
             iterations: 5,
@@ -455,7 +488,6 @@ async function main(): Promise<void> {
     let mpmFusedBlockDiscovery = false;
     let { pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
-    let methodName = "PBF";
     let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
     /** Demos the user has already opened once, so FluidDemo.defaultMethod/defaultQuality are
      *  honoured on the first visit only. Seeded with the start-up demo below. */
@@ -1327,18 +1359,23 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // Host for the active demo's live tunables ("Demo parameters") + its demo-specific
     // panel controls.
     const demoParamsHost = document.createElement("div");
+    const initialGridSettings = defaultGridSettings(methodName, domainScale);
 
     const controls = createFluidControlsPanel({
         schemas: DEFAULT_FLUID_SCHEMAS,
         methods: Object.keys(DEFAULT_FLUID_SCHEMAS),
         particleCounts: PARTICLE_COUNTS,
         showActiveBlocks: true,
+        showGridControls: true,
         physScaleMin: PHYS_MIN_SCALE,
         physScaleMax: PHYS_MAX_SCALE,
         initial: {
             method: methodName,
             count: DEFAULT_PARTICLE_COUNT,
             physScale: physicsScale,
+            gridPosition: [...initialGridSettings.position],
+            gridSize: [...initialGridSettings.size],
+            cellSize: cellSizeForPhysicsScale(methodName, physicsScale) * domainScale,
             color: "#16a3c3", // matches the default FLUID_COLOR
             absorption: 1,
             size: 1,
@@ -1429,6 +1466,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
             onPhysScale: (s) => setPhysicsScale(s),
+            onGridSettings: (position, size) => setGridSettings({ position, size }),
             onActiveBlocks: (enabled) => {
                 if (enabled === mpmActiveBlocks) return;
                 mpmActiveBlocks = enabled;
@@ -1726,34 +1764,58 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // the new count, then re-applying the current demo and method (which re-seeds
     // and rebinds the renderer).
     function setParticleCount(n: number): void {
-        if (n === particleCount) return;
-        particleCount = n;
-        pbfSim.dispose();
-        mpmSim.dispose();
-        pbmpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(n, physicsScale));
-        applySceneSdf();
-        applyMethod(methodName);
-        canvas.dataset.particleCount = String(n);
+        if (n === particleCount) {
+            return;
+        }
+        rebuildSims(n, physicsScale);
     }
 
-    // Rebuild both backends at a new physics particle-size scale (couples the
-    // smoothing radius / grid cell + rest spacing). Like a count change it
-    // reallocates + re-seeds, so it is wired to the slider's release (change).
+    function syncGridControls(): void {
+        const effectiveGrid = gridSettings ?? defaultGridSettings(methodName, domainScale);
+        const cellSize = cellSizeForPhysicsScale(methodName, physicsScale) * (gridSettings ? 1 : domainScale);
+        const cells = gridCellsForSize(effectiveGrid.size, cellSize);
+        controls.setGridSettings([...effectiveGrid.position], [...effectiveGrid.size], cellSize);
+        canvas.dataset.gridPosition = effectiveGrid.position.join(",");
+        canvas.dataset.gridSize = effectiveGrid.size.join(",");
+        canvas.dataset.gridCells = cells.join(",");
+        canvas.dataset.gridCellSize = String(cellSize);
+        canvas.dataset.gridExplicit = String(gridSettings !== undefined);
+    }
+
     function setPhysicsScale(s: number): void {
-        if (s === physicsScale) return;
-        physicsScale = s;
-        pbfSim.dispose();
-        mpmSim.dispose();
-        pbmpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale));
-        applySceneSdf();
-        applyMethod(methodName);
+        const [minScale, maxScale] = scaleLimitsForMethod(methodName);
+        const nextScale = Math.min(maxScale, Math.max(minScale, Math.round(s * 100) / 100));
+        if (nextScale === physicsScale) {
+            return;
+        }
+        if (gridSettings) {
+            const allocationError = gridAllocationError(gridSettings, methodName, nextScale);
+            if (allocationError) {
+                controls.setPhysScale(physicsScale);
+                controls.setGridStatus(allocationError);
+                return;
+            }
+        }
+        rebuildSims(particleCount, nextScale);
     }
 
-    // Rebuild both sims at a new particle count + physics scale in one shot.
-    // Re-applies demo + method so the new params, emitters and spawn all land
-    // before the re-seed.
+    function setGridSettings(next: FluidGridSettings): string | void {
+        if (!validGridSettings(next)) {
+            return "Grid position must be finite and Grid size must contain positive finite world-space dimensions.";
+        }
+        const allocationError = gridAllocationError(next, methodName, physicsScale);
+        if (allocationError) {
+            return allocationError;
+        }
+        if (gridSettingsEqual(next, gridSettings)) {
+            syncGridControls();
+            return;
+        }
+        gridSettings = cloneGridSettings(next);
+        rebuildSims(particleCount, physicsScale);
+    }
+
+    // Rebuild all sims at a new particle count, physics size and active grid.
     function rebuildSims(count: number, scale: number): void {
         particleCount = count;
         physicsScale = scale;
@@ -1761,9 +1823,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         mpmSim.dispose();
         pbmpmSim.dispose();
         ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(count, scale));
+        builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
+        builtGridMethod = methodName;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
         applyMethod(methodName);
+        syncGridControls();
         canvas.dataset.particleCount = String(count);
         controls.setParticleCount(count); // sync the Particles dropdown (no rebuild re-entry)
         controls.setPhysScale(scale); // sync the physics-size slider + its read-out (no side effect)
@@ -1861,6 +1926,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (!p) {
             return base;
         }
+        const presetGrid = p.grid ? cloneGridSettings(p.grid) : base.grid ? cloneGridSettings(base.grid) : undefined;
+        if (presetGrid && !validGridSettings(presetGrid)) {
+            throw new Error(`Invalid fluid grid in ${demo.key}/${method}/${q}: position must be finite and size must be positive.`);
+        }
         return {
             schema: { ...base.schema, ...(p.schema ?? {}) },
             demoParams: { ...base.demoParams, ...(p.demoParams ?? {}) },
@@ -1870,6 +1939,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             absorption: p.absorption ?? base.absorption,
             size: p.size ?? base.size,
             physScale: p.physScale ?? base.physScale,
+            grid: presetGrid,
             count: p.count ?? base.count,
             material: p.material ?? base.material,
             camera: p.camera ?? base.camera,
@@ -1921,6 +1991,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             absorption: v.absorption,
             size: v.size,
             physScale: physicsScale,
+            grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
             count: particleCount,
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
             camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius },
@@ -1955,6 +2026,18 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // re-renders the demo section.
     function loadPairState(st: PairState): void {
         const demo = activeDemo!;
+        const nextGridSettings = st.grid ? cloneGridSettings(st.grid) : undefined;
+        if (nextGridSettings && !validGridSettings(nextGridSettings)) {
+            throw new Error("Invalid fluid grid: position must be finite and size must be positive.");
+        }
+        const [minScale, maxScale] = scaleLimitsForMethod(methodName);
+        const nextPhysicsScale = Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
+        if (nextGridSettings) {
+            const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale);
+            if (allocationError) {
+                throw new Error(allocationError);
+            }
+        }
         // Sync the component's current method BEFORE pushing the physics values so
         // setPhysics targets the target method's slider block (methodName is already the
         // target method here — switchPair set it before calling loadPairState).
@@ -2086,14 +2169,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         mpmPagedGrid = nextPagedGrid;
         mpmPagedGridMaxPages = nextPagedGridMaxPages;
         mpmFusedBlockDiscovery = nextFusedBlockDiscovery;
-        if (st.count !== particleCount || st.physScale !== physicsScale || domainScale !== builtDomainScale || activeBlocksChanged) {
-            rebuildSims(st.count, st.physScale); // re-does demo + sceneSdf + method (at the current domain scale)
+        const gridChanged = !gridSettingsEqual(nextGridSettings, gridSettings) || !gridSettingsEqual(nextGridSettings, builtGridSettings);
+        gridSettings = nextGridSettings;
+        if (
+            st.count !== particleCount ||
+            nextPhysicsScale !== physicsScale ||
+            domainScale !== builtDomainScale ||
+            gridChanged ||
+            (gridSettings !== undefined && builtGridMethod !== methodName) ||
+            activeBlocksChanged
+        ) {
+            rebuildSims(st.count, nextPhysicsScale);
         } else {
             applySceneSdf(); // refresh emitters/spawn for the loaded demo params
             applyMethod(methodName);
+            syncGridControls();
         }
         controls.setParticleCount(st.count);
-        controls.setPhysScale(st.physScale);
+        controls.setPhysScale(nextPhysicsScale);
         refreshDemoParams();
         // Apply the pair's camera framing (preset default on first visit, or the
         // viewpoint captured when this pair was last left). ArcRotate self-clamps.
@@ -2171,13 +2264,36 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         sun,
         ambient,
         setSunShadows,
-        simHalfExtentXZ: BOUNDS_MAX[0],
+        get simHalfExtentXZ(): number {
+            const bounds = gridSettings ? gridBounds(gridSettings.position, gridSettings.size) : defaultDomainBounds(methodName, domainScale);
+            return Math.max(Math.abs(bounds.min[0]), Math.abs(bounds.max[0]), Math.abs(bounds.min[2]), Math.abs(bounds.max[2]));
+        },
         viewProjection: () => getViewProjectionMatrix(cam, getEffectiveAspectRatio(cam, canvas.width, canvas.height)),
         getProfiler: () => (timingEnabled ? profiler : null),
         setDomainScale: (s: number) => {
-            // Rebuild both backends with bounds/dx/radius/spawn scaled by `s` (grid dims — and GPU
-            // memory — stay constant) and re-apply the active demo's scene SDF. builtDomainScale is
-            // set inside rebuildSims.
+            if (s === domainScale) {
+                return;
+            }
+            if (gridSettings) {
+                const scaleRatio = s / Math.max(domainScale, 1e-6);
+                const nextGridSettings: FluidGridSettings = {
+                    position: gridSettings.position.map((value) => value * scaleRatio) as [number, number, number],
+                    size: gridSettings.size.map((value) => value * scaleRatio) as [number, number, number],
+                };
+                const [minScale, maxScale] = scaleLimitsForMethod(methodName);
+                const nextPhysicsScale = clampScale(physicsScale * scaleRatio, minScale, maxScale);
+                const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale);
+                if (allocationError) {
+                    controls.setGridStatus(allocationError);
+                    return;
+                }
+                gridSettings = nextGridSettings;
+                domainScale = s;
+                rebuildSims(particleCount, nextPhysicsScale);
+                return;
+            }
+            // Gridless presets retain the historical hidden scale on bounds, cell size,
+            // particle radius and spawn so existing demos (notably Waterfall) are unchanged.
             domainScale = s;
             rebuildSims(particleCount, physicsScale);
         },

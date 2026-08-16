@@ -344,6 +344,9 @@ export interface FluidControlValues {
     absorption: number;
     size: number;
     physScale: number;
+    gridPosition: [number, number, number];
+    gridSize: [number, number, number];
+    cellSize: number;
     count: number;
     renderMode: "surface" | "spheres";
     refraction: number;
@@ -373,6 +376,12 @@ export interface FluidControlsInitial {
     method: string;
     count: number;
     physScale: number;
+    /** World-space center of the active simulation grid. */
+    gridPosition?: [number, number, number];
+    /** Exact world-space simulation-domain extent along X/Y/Z. */
+    gridSize?: [number, number, number];
+    /** Derived world-space cubic cell size. */
+    cellSize?: number;
     color: string;
     absorption: number;
     size: number;
@@ -435,6 +444,8 @@ export interface FluidControlsCallbacks {
     onDebug?(mode: FluidDebug): void;
     onPhysicsParam?(key: string, value: number): void;
     onPhysScale?(scale: number): void;
+    /** Return an error message to reject proposed grid settings without installing them. */
+    onGridSettings?(position: [number, number, number], size: [number, number, number]): string | void;
     onActiveBlocks?(enabled: boolean): void;
     onPagedGrid?(enabled: boolean): void;
     onPagedGridMaxPages?(pages: number): void;
@@ -483,6 +494,8 @@ export interface FluidControlsOptions {
     hidePhysics?: boolean;
     /** Show the MLS-MPM active-block execution checkbox. */
     showActiveBlocks?: boolean;
+    /** Show grid position, world-space XYZ size and derived cell-size controls. */
+    showGridControls?: boolean;
     /** When true, the "Physics simulation" section OMITS the "Physics particle size"
      *  row but KEEPS the per-method sliders + reset button. Use
      *  when the host owns its own particle-size control (so physScale would conflict).
@@ -554,6 +567,8 @@ export interface FluidControlsHandle {
     setDebug(mode: string): void;
     setPhysics(schema: Record<string, number>): void;
     setPhysScale(scale: number): void;
+    setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void;
+    setGridStatus(message: string): void;
     setActiveBlocks(enabled: boolean): void;
     setPagedGrid(enabled: boolean): void;
     setPagedGridMaxPages(pages: number): void;
@@ -1115,20 +1130,95 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     );
     const physVal = document.createElement("span");
     physVal.style.cssText = "color:#9fb4cc;";
-    physVal.textContent = `${init.physScale.toFixed(1)}\u00d7`;
+    physVal.textContent = `${init.physScale.toFixed(2)}\u00d7`;
     physHead.append(physLab, physVal);
     const physInput = document.createElement("input");
     physInput.type = "range";
     physInput.min = String(physMin);
     physInput.max = String(physMax);
-    physInput.step = "0.1";
+    physInput.step = "0.01";
     physInput.value = String(init.physScale);
     physInput.style.cssText = "width:100%;";
     physInput.oninput = () => {
-        physVal.textContent = `${parseFloat(physInput.value).toFixed(1)}\u00d7`;
+        physVal.textContent = `${parseFloat(physInput.value).toFixed(2)}\u00d7`;
     };
     physInput.onchange = () => on.onPhysScale?.(parseFloat(physInput.value));
     physRow.append(physHead, physInput);
+
+    const createGridVectorRow = (
+        label: string,
+        info: string,
+        values: [number, number, number]
+    ): { row: HTMLElement; inputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] } => {
+        const row = document.createElement("div");
+        row.style.cssText = "margin:8px 0;";
+        row.appendChild(labelWithInfo(label, info));
+        const fields = document.createElement("div");
+        fields.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:5px;";
+        const inputs = values.map((value, index) => {
+            const field = document.createElement("label");
+            field.style.cssText = "display:flex;align-items:center;gap:4px;min-width:0;";
+            const axis = document.createElement("span");
+            axis.textContent = "XYZ"[index]!;
+            axis.style.cssText = "color:#7c8aa0;font-size:11px;";
+            const input = document.createElement("input");
+            input.type = "number";
+            input.step = "0.1";
+            input.value = String(value);
+            input.style.cssText = "width:100%;min-width:0;box-sizing:border-box;";
+            field.append(axis, input);
+            fields.appendChild(field);
+            return input;
+        }) as [HTMLInputElement, HTMLInputElement, HTMLInputElement];
+        row.appendChild(fields);
+        return { row, inputs };
+    };
+    const gridPositionControl = createGridVectorRow(
+        "Grid position",
+        "World-space center of the axis-aligned simulation domain. Scene meshes, spawn volumes and collision SDFs remain fixed in world space.",
+        init.gridPosition ?? [0, 9.5, 0]
+    );
+    const gridSizeControl = createGridVectorRow(
+        "Grid size",
+        "Exact world-space X/Y/Z extents of the simulation domain, centered around Grid position. Changing them rebuilds and restarts the simulation.",
+        init.gridSize ?? [40, 21, 40]
+    );
+    const gridStatus = document.createElement("div");
+    gridStatus.style.cssText = "display:none;margin:4px 0 8px;font-size:11px;color:#ff8a80;";
+    const readGridVector = (inputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement]): [number, number, number] =>
+        inputs.map((input) => Number.parseFloat(input.value)) as [number, number, number];
+    const setGridStatus = (message: string): void => {
+        gridStatus.textContent = message;
+        gridStatus.style.display = message ? "block" : "none";
+    };
+    const commitGridSettings = (): void => {
+        const position = readGridVector(gridPositionControl.inputs);
+        const size = readGridVector(gridSizeControl.inputs);
+        if (!position.every(Number.isFinite)) {
+            setGridStatus("Grid position must contain finite numbers.");
+            return;
+        }
+        if (!size.every((value) => Number.isFinite(value) && value > 0)) {
+            setGridStatus("Grid size must contain positive finite world-space dimensions.");
+            return;
+        }
+        const error = on.onGridSettings?.(position, size);
+        setGridStatus(typeof error === "string" ? error : "");
+    };
+    for (const input of [...gridPositionControl.inputs, ...gridSizeControl.inputs]) {
+        input.onchange = commitGridSettings;
+    }
+    let gridCellSize = init.cellSize ?? 0;
+    const cellSizeRow = document.createElement("div");
+    cellSizeRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;";
+    const cellSizeLabel = labelWithInfo("Cell size", "Derived world-space size of one cubic simulation cell. Physics particle size controls this value.");
+    const cellSizeValue = document.createElement("span");
+    cellSizeValue.style.cssText = "color:#9fb4cc;font-variant-numeric:tabular-nums;";
+    const updateCellSizeValue = (): void => {
+        cellSizeValue.textContent = gridCellSize.toFixed(gridCellSize < 0.01 ? 5 : gridCellSize < 0.1 ? 4 : 3);
+    };
+    updateCellSizeValue();
+    cellSizeRow.append(cellSizeLabel, cellSizeValue);
 
     const sliderHost = document.createElement("div");
     const activeBlocksRow = document.createElement("label");
@@ -1745,7 +1835,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
         const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
-        const physItems = opts.hidePhysScale ? [...activeBlockRows, sliderHost, resetBtn] : [physRow, ...activeBlockRows, sliderHost, resetBtn];
+        const gridRows = opts.showGridControls ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow] : [];
+        const physItems = opts.hidePhysScale ? [...gridRows, ...activeBlockRows, sliderHost, resetBtn] : [physRow, ...gridRows, ...activeBlockRows, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
 
@@ -1951,8 +2042,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         setPhysScale(scale: number): void {
             physInput.value = String(scale);
-            physVal.textContent = `${scale.toFixed(1)}\u00d7`;
+            physVal.textContent = `${scale.toFixed(2)}\u00d7`;
         },
+        setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void {
+            for (let i = 0; i < 3; i++) {
+                gridPositionControl.inputs[i]!.value = String(position[i]);
+                gridSizeControl.inputs[i]!.value = String(size[i]);
+            }
+            gridCellSize = cellSize;
+            updateCellSizeValue();
+            setGridStatus("");
+        },
+        setGridStatus,
         setActiveBlocks(enabled: boolean): void {
             activeBlocksChk.checked = enabled;
             applyActiveBlockDependencies();
@@ -2020,6 +2121,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 absorption: parseFloat(absorbInput.value),
                 size: parseFloat(sizeInput.value),
                 physScale: parseFloat(physInput.value),
+                gridPosition: readGridVector(gridPositionControl.inputs),
+                gridSize: readGridVector(gridSizeControl.inputs),
+                cellSize: gridCellSize,
                 count: parseInt(particlesSel.value, 10),
                 renderMode: renderChk.checked ? "spheres" : "surface",
                 refraction: surfRefraction,

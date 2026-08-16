@@ -8,10 +8,12 @@
 // back into a Partial<PairState> the core merges over its defaults. Keeping both
 // directions here guarantees Export → drop-in file → import round-trips cleanly.
 
-import type { DemoStateValue, PairState } from "./demo.js";
+import type { DemoStateValue, FluidDomainBounds, PairState } from "./demo.js";
+import { cellSizeForPhysicsScale, gridPositionForBounds, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
 
 /** The grouped, human-facing JSON shape (matches the "Export parameters" download). */
 export interface FluidExportJson {
+    formatVersion?: number;
     meta: { demo: string; method: string };
     physics: Record<string, number>;
     demoParams: Record<string, number>;
@@ -31,6 +33,15 @@ export interface FluidExportJson {
     /** MLS-MPM histogram-integrated active-block discovery. Optional; defaults off. */
     fusedBlockDiscovery?: boolean;
     physicsParticleSize: number;
+    /** World-space center and exact world-space dimensions of the simulation grid. */
+    gridPosition?: [number, number, number];
+    gridSize?: [number, number, number];
+    /** Legacy format-4 exact allocated cell counts. */
+    gridCells?: [number, number, number];
+    /** Legacy format <=3 simulation-domain AABB. */
+    domain?: FluidDomainBounds;
+    /** Legacy format <=3 longest-axis resolution. */
+    gridResolution?: number;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
@@ -113,6 +124,7 @@ export interface FluidExportJson {
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
     const f = ps.foam;
     return {
+        formatVersion: 5,
         meta: { demo, method },
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
@@ -125,6 +137,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: ps.pagedGridMaxPages } : {}),
         ...(ps.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: ps.fusedBlockDiscovery } : {}),
         physicsParticleSize: ps.physScale,
+        ...(ps.grid ? { gridPosition: [...ps.grid.position], gridSize: [...ps.grid.size] } : {}),
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
@@ -179,6 +192,18 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
 export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     const r = j.render;
     const fm = j.foam;
+    const hasGridDefinition = j.gridPosition !== undefined || j.gridSize !== undefined || j.gridCells !== undefined || j.domain !== undefined || j.gridResolution !== undefined;
+    const meshScale = j.demoParams.meshScale ?? 1;
+    const legacyParticleScale = hasGridDefinition && (j.formatVersion ?? 0) < 3 && j.meta.demo === "marbleTower" ? meshScale : 1;
+    const physScale = j.physicsParticleSize * legacyParticleScale;
+    const legacyBounds: FluidDomainBounds =
+        j.domain ??
+        (j.meta.method === "PBF"
+            ? { min: [-20 * meshScale, 0, -20 * meshScale], max: [20 * meshScale, 20 * meshScale, 20 * meshScale] }
+            : { min: [-20 * meshScale, -1 * meshScale, -20 * meshScale], max: [20 * meshScale, 20 * meshScale, 20 * meshScale] });
+    const gridPosition: [number, number, number] = j.gridPosition ? [...j.gridPosition] : gridPositionForBounds(legacyBounds);
+    const cellSize = cellSizeForPhysicsScale(j.meta.method, physScale);
+    const gridSize: [number, number, number] = j.gridSize ? [...j.gridSize] : j.gridCells ? gridWorldSize(j.gridCells, cellSize) : gridSizeForBounds(legacyBounds);
     return {
         schema: { ...j.physics },
         demoParams: { ...j.demoParams },
@@ -187,7 +212,8 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         thicknessDownscale: r.thicknessDownscale,
         absorption: r.absorption,
         size: r.particleSize,
-        physScale: j.physicsParticleSize,
+        physScale,
+        ...(hasGridDefinition ? { grid: { position: gridPosition, size: gridSize } } : {}),
         count: j.particleCount,
         material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),

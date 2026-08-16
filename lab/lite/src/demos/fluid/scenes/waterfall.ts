@@ -745,7 +745,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
     // up against the wall as FOUR symmetrical dead pools. Matching the intake to the domain
     // removes the dead zone entirely: every particle on the floor stays in the loop.
     const buildConfig = (): EmitterConfig => {
-        const pr = ctx.simHalfExtentXZ * wf.meshScale;
+        const pr = ctx.simHalfExtentXZ;
         return {
             emitters: buildEmitters(),
             intakeMin: [ROCK_CX - pr, FLOOR_Y - 1.0, ROCK_CZ - pr],

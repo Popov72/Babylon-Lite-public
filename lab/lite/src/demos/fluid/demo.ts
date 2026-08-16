@@ -41,6 +41,18 @@ export type DemoParam = { hidden?: boolean } & (
  *  an index would silently re-point at a different tier the day the list is reordered. */
 export type DemoStateValue = number | boolean | string;
 
+export interface FluidDomainBounds {
+    min: [number, number, number];
+    max: [number, number, number];
+}
+
+export interface FluidGridSettings {
+    /** World-space center of the axis-aligned simulation grid. */
+    position: [number, number, number];
+    /** Exact world-space extent along X/Y/Z. */
+    size: [number, number, number];
+}
+
 // Per-(demo, simulation) parameter snapshot. The core stores one of these per
 // (demo, method) pair so e.g. SPH-fountain and MLS-fountain keep independent
 // values. `demoParams` is a generic bag captured from `FluidDemo.demoParams()`
@@ -57,6 +69,12 @@ export interface PairState {
     absorption: number;
     size: number;
     physScale: number;
+    /** Explicit simulation grid in world space. Omitted by legacy presets that use demo-authored bounds. */
+    grid?: FluidGridSettings;
+    /** Legacy format <=3 simulation-domain AABB. */
+    domain?: FluidDomainBounds;
+    /** Legacy format <=3 divisions along the longest domain axis. */
+    gridResolution?: number;
     count: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
@@ -196,8 +214,7 @@ export interface FluidCtx {
      *  under the next demo. */
     setSunShadows(on: boolean, casters: Mesh[]): void;
 
-    /** Half-extent of the fluid-sim domain along X and Z at domain scale 1, in world units.
-     *  A demo that scales its world multiplies this by its own scale (see `getDomainScale`).
+    /** Largest absolute X/Z coordinate of the active fluid-sim domain.
      *  Exposed so a demo can size a pump intake to the whole simulated floor without
      *  hard-coding the core's bounds: particles that drift outside the intake can never be
      *  recycled, and since the domain wall stops them they pile up against it forever. */
@@ -208,12 +225,9 @@ export interface FluidCtx {
      *  that encodes its own passes can tag them by forwarding this to their encode() so
      *  they appear in the GPU panel. */
     getProfiler(): FluidProfiler | null;
-    /** Set the fluid-sim DOMAIN (world) scale. Rebuilds BOTH backends with the sim bounds,
-     *  grid cell `dx`, particle/smoothing radius and spawn box all multiplied by `s` — so the
-     *  grid dimensions (bounds/dx) stay constant and GPU memory is unchanged while the domain
-     *  physically grows/shrinks. Re-applies the active demo's scene SDF. 1 = base domain. Used
-     *  by the marble-tower "Mesh scale" slider so a larger tower gets a proportionally larger
-     *  water domain instead of hitting the fixed-grid cap. */
+    /** Scale the active simulation domain and rebuild both backends. Explicit grids scale their
+     *  world-space position/size and Physics particle size together; gridless legacy demos retain
+     *  their historical hidden domain multiplier. */
     setDomainScale(s: number): void;
 
     /** Configure the shared bloom post-process. The whole fluid chain composites into an
