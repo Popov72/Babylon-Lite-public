@@ -39,7 +39,7 @@
     "showContainer": true,
     "envIntensity": 0.3,
     "msaa": true,
-    "physicsParticleSize": 0.4,
+    "physicsParticleSize": 1.2,
     "particleCount": 300000,
     "camera": {
         "alpha": -2.096342275594117,
@@ -50,7 +50,7 @@
         "renderAsSpheres": false,
         "waterColor": "#ffffff",
         "absorption": 0.5,
-        "particleSize": 0.17,
+        "particleSize": 0.7,
         "refractionStrength": 0,
         "specularPower": 250,
         "surfaceDepthBlur": 30,
@@ -83,5 +83,16 @@
         "foamNormalStrength": 0,
         "foamDebug": "off",
         "foamSize": 0.5
-    }
+    },
+    "formatVersion": 5,
+    "gridPosition": [
+        0,
+        30,
+        0
+    ],
+    "gridSize": [
+        120,
+        60,
+        120
+    ]
 }

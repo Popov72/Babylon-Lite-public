@@ -5,8 +5,22 @@
 // plain data+behaviour object (a `FluidDemo`) built from a `FluidCtx` of the
 // services the core hands it. No demo references the core module directly.
 
-import type { ArcRotateCamera, DirectionalLight, EngineContext, HemisphericLight, Mat4, Mesh, SceneContext } from "babylon-lite";
-import type { EmitterConfig, FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type {
+    ArcRotateCamera,
+    DirectionalLight,
+    EngineContext,
+    FluidEmitter,
+    FluidFlowConfig,
+    FluidProfiler,
+    FluidSim,
+    FluidSink,
+    ForceFieldSpec,
+    HemisphericLight,
+    Mat4,
+    Mesh,
+    SceneContext,
+    SceneSdfSpec,
+} from "babylon-lite";
 
 /** Default (capsule / box) spawn box: a tall central column that drops in to
  *  fill the tank. The fountain overrides this with a wide shallow basin block. */
@@ -28,7 +42,7 @@ export const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environ
  *  it round-trips when switching between (demo, method) pairs — but gets no control in the
  *  panel. Use it to retire a knob from the UI without freezing its value. */
 export type DemoParam = { hidden?: boolean } & (
-    | { key: string; label: string; type: "number"; min: number; max: number; step: number; value: number }
+    | { key: string; label: string; type: "number"; min: number; max: number; step: number; value: number; commitOnly?: boolean }
     | { key: string; label: string; type: "boolean"; value: boolean }
     | { key: string; label: string; type: "color"; value: string }
 );
@@ -41,6 +55,18 @@ export type DemoParam = { hidden?: boolean } & (
  *  an index would silently re-point at a different tier the day the list is reordered. */
 export type DemoStateValue = number | boolean | string;
 
+export interface FluidDomainBounds {
+    min: [number, number, number];
+    max: [number, number, number];
+}
+
+export interface FluidGridSettings {
+    /** World-space center of the axis-aligned simulation grid. */
+    position: [number, number, number];
+    /** Exact world-space extent along X/Y/Z. */
+    size: [number, number, number];
+}
+
 // Per-(demo, simulation) parameter snapshot. The core stores one of these per
 // (demo, method) pair so e.g. SPH-fountain and MLS-fountain keep independent
 // values. `demoParams` is a generic bag captured from `FluidDemo.demoParams()`
@@ -50,6 +76,15 @@ export interface PairState {
     schema: Record<string, number>;
     /** Generic per-demo tunables (empty for demos with no `demoParams`). */
     demoParams: Record<string, number>;
+    /** Simulated seconds before the fluid starts fading. Zero runs indefinitely. */
+    simulationDuration?: number;
+    /** Seconds taken to fade fluid opacity to zero after the duration. */
+    alphaDecay?: number;
+    /** Solver-independent fluid sources, serialized as top-level JSON arrays. */
+    emitters: FluidEmitter[];
+    sinks: FluidSink[];
+    /** Legacy presets without explicit flow arrays rebuild them after replaying demoParams/demoState. */
+    legacyFlow?: boolean;
     color: string;
     half: boolean;
     /** Thickness-texture downscale factor (thickness size = canvas / factor). */
@@ -57,6 +92,14 @@ export interface PairState {
     absorption: number;
     size: number;
     physScale: number;
+    /** Active simulation grid in world space. */
+    grid?: FluidGridSettings;
+    /** Legacy format <=3 simulation-domain AABB. */
+    domain?: FluidDomainBounds;
+    /** Legacy format <=3 divisions along the longest domain axis. */
+    gridResolution?: number;
+    /** Show the active solver domain as a visualization-only wireframe. */
+    showGridBounds?: boolean;
     count: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
@@ -165,13 +208,8 @@ export interface FluidCtx {
     getActiveSim(): FluidSim;
     /** Re-seed the active sim (does NOT clear holes — call clearSceneHoles too). */
     resetActiveSim(): void;
-    /** Push new emitters (from the active demo) to BOTH backends. */
-    refreshEmitters(): void;
-    /** Re-read the active demo's `spawn()` and push it (plus its warm-up) to every backend.
-     *  Needed when a demo's seed volume is only known asynchronously — the waterfall derives
-     *  its from a height map that lands after the demo is already on screen, and without this
-     *  a following `resetActiveSim()` would re-seed against the stale volume. */
-    refreshSpawn(): void;
+    /** Replace the active pair's authored flow with the demo's current defaults. */
+    refreshFlow(): void;
     /** Carve a drain hole into the scene-SDF hole ring (offset 32 region). */
     addSceneHole(center: [number, number, number], radius: number): void;
     /** Clear all drain holes (zero the hole ring). */
@@ -196,8 +234,7 @@ export interface FluidCtx {
      *  under the next demo. */
     setSunShadows(on: boolean, casters: Mesh[]): void;
 
-    /** Half-extent of the fluid-sim domain along X and Z at domain scale 1, in world units.
-     *  A demo that scales its world multiplies this by its own scale (see `getDomainScale`).
+    /** Largest absolute X/Z coordinate of the currently authored fluid-sim domain.
      *  Exposed so a demo can size a pump intake to the whole simulated floor without
      *  hard-coding the core's bounds: particles that drift outside the intake can never be
      *  recycled, and since the domain wall stops them they pile up against it forever. */
@@ -208,12 +245,10 @@ export interface FluidCtx {
      *  that encodes its own passes can tag them by forwarding this to their encode() so
      *  they appear in the GPU panel. */
     getProfiler(): FluidProfiler | null;
-    /** Set the fluid-sim DOMAIN (world) scale. Rebuilds BOTH backends with the sim bounds,
-     *  grid cell `dx`, particle/smoothing radius and spawn box all multiplied by `s` — so the
-     *  grid dimensions (bounds/dx) stay constant and GPU memory is unchanged while the domain
-     *  physically grows/shrinks. Re-applies the active demo's scene SDF. 1 = base domain. Used
-     *  by the marble-tower "Mesh scale" slider so a larger tower gets a proportionally larger
-     *  water domain instead of hitting the fixed-grid cap. */
+    /** Scale the currently authored world-space domain by the ratio from the previous
+     *  domain scale and apply that ratio to the explicit Physics particle size, then rebuild
+     *  both fluid backends. Re-applies the active demo's scene SDF. Used by mesh-scale controls
+     *  so authored domains follow the scene without an implicit particle-radius multiplier. */
     setDomainScale(s: number): void;
 
     /** Configure the shared bloom post-process. The whole fluid chain composites into an
@@ -260,21 +295,21 @@ export interface FluidDemo {
     readonly sdf: SceneSdfSpec;
     /** Pack this demo's static params into the shared UBO (offset 0 region). */
     writeSdfParams(): void;
-    /** Re-seed spawn box used by the sim's reset(). `accept`, when returned,
-     *  restricts seeding (CPU reject-sampling) so particles fit a non-box shape. */
-    spawn(): { min: [number, number, number]; max: [number, number, number]; accept?: (x: number, y: number, z: number) => boolean; warmupFrames?: number };
-    /** Recirculating jet emitters (fountain), or null. */
-    emitters(): EmitterConfig | null;
+    /** Default, solver-independent initial volumes, inflows and recycling sinks. */
+    flow(): FluidFlowConfig;
+    /** Optional notification after the generic authoring UI restores or edits the flow. */
+    onFlowChanged?(flow: FluidFlowConfig): void;
+    /** Persistent demo-local force field. The core's interactive mouse force temporarily overrides it. */
+    forceField?(): ForceFieldSpec | null;
     /** Entering this demo: show meshes, set camera mode, etc. */
     onEnter(): void;
     /** Leaving this demo: hide meshes, undo camera mode / any force. */
     onLeave(): void;
     /** Per-frame hook (box: spin paddle + write paddle SDF block). */
     update(dt: number): void;
-    /** Optional world/domain scale for the fluid-sim bounds (the marble tower's "Mesh scale").
-     *  The core reads this on every `switchPair` (default 1 when omitted) and, if it differs
-     *  from the currently-built domain scale, rebuilds the sims with scaled bounds. Demos that
-     *  do not resize their world omit it → the sims always use the base bounds. */
+    /** Optional world/domain-bounds scale (the marble tower's "Mesh scale"). The core reads
+     *  this on every `switchPair` (default 1 when omitted) to restore scaled bounds. Particle
+     *  radius is never multiplied by this value; presets store the complete Physics particle size. */
     getDomainScale?(): number;
     /** Live tunables shown in "Demo parameters" (empty if none). */
     demoParams(): DemoParam[];

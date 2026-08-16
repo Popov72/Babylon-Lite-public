@@ -744,6 +744,22 @@ export {
     disposeTextRenderer,
 } from "./text/text-renderer.js";
 
+// ─── Fluid authoring ─────────────────────────────────────────────────
+export { MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_POLYGON_TRIANGLES, MAX_FLUID_SINKS } from "./fluid/sim-common.js";
+export type {
+    FluidEmitter,
+    FluidFlowConfig,
+    FluidProfiler,
+    FluidShape,
+    FluidSim,
+    FluidSink,
+    FluidTransform,
+    FluidVec3,
+    FoamConfig,
+    ForceFieldSpec,
+    SceneSdfSpec,
+} from "./fluid/sim-common.js";
+
 // ─── Physics ─────────────────────────────────────────────────────────
 export {
     createHavokWorld,

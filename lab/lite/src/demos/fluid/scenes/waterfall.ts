@@ -28,8 +28,8 @@
 // → springs loop.
 
 import { addToScene, createDisc, createMeshFromData, createPbrMaterial, enableMirroredMeshes, loadGltf, setMeshVisible } from "babylon-lite";
-import type { Mesh, SceneNode } from "babylon-lite";
-import type { EmitterConfig, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
+import type { ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
 import { configureDemoDecoderBases, demoAssetUrl } from "../../demo-asset-url.js";
 import { screenRay } from "../pick.js";
@@ -207,6 +207,17 @@ const OASIS_OFFSET_Z = 0.9;
  *  island where a shadow would hang in mid-air. (OASIS_OFFSET_* re-centres the ring on the rock,
  *  so the hole is concentric with ROCK_CX/ROCK_CZ.) */
 const POND_RADIUS = 40;
+/** Open rim height above the existing floor. */
+const POND_DEPTH = 0.7;
+const POND_WAVE_SOURCES_DEFAULT = 8;
+const POND_WAVE_SOURCES_MAX = 32;
+const POND_WAVE_STRENGTH = 25;
+const POND_WAVE_DURATION = 2.4;
+const POND_WAVE_PERIOD_MIN = 4.5;
+const POND_WAVE_PERIOD_MAX = 6;
+const POND_WAVE_TRAVEL_SPEED = 3;
+const POND_WAVE_BAND_WIDTH = 2.5;
+const POND_WAVE_VERTICAL_STRENGTH = 50;
 
 // ── Front bias ─────────────────────────────────────────────────────────────────────────
 // Emitted water gets a small HORIZONTAL launch velocity toward the viewer, on top of the
@@ -229,30 +240,16 @@ const FRONT_DIR_Z = Math.sin(VIEW_ALPHA);
 // Nothing is rendered for it — the rock is presented against open sky, and a visible quad
 // only ever announced itself as a hard edge once the camera dipped below the horizon.
 const FLOOR_Y = 0;
-/** Half-width of the initial SEED disc of water around the rock, world units at 1× mesh
- *  scale. Sized a little wider than the rock's own ≈10.2-unit footprint so the pool starts
- *  at its foot. (The pump's intake is separate — it spans the whole domain, see buildConfig.) */
-const INTAKE_R = 13;
+/** The pond is intentionally shallow: particles can spill over this lip, while the cylinder wall
+ *  only confines them below it. */
+const POND_TOP_Y = FLOOR_Y + POND_DEPTH;
 // Seat the model's base just BELOW the floor so the rock rises out of the ground rather
 // than resting on it — at the silhouette the height map falls to the model's own floor, and
 // max(rock, FLOOR_Y) then hands the ground back to the quad with no seam or z-fight.
 const ROCK_Y0 = FLOOR_Y - 0.05;
 
-// Start-of-sim charge: the sources are seeded as a shallow HEAD OF WATER standing in each
-// outline, and the whole pool is poured into them over WARMUP_FRAMES. The terraces fill and
-// overflow within a couple of seconds, so the demo opens with a heavy burst off the summit
-// instead of a thin trickle — while the water still starts AT the springs, never on the ground.
-//
-// The head is deliberately shallow: it only has to be deep enough that a frame's worth of
-// particles lands sparsely. Injection density is (count / WARMUP_FRAMES) / (area × depth), and
-// at the defaults that is ~12 particles per world unit³ against the ~72 a settled pool holds —
-// so the ramp can be this fast without a frame-1 pressure spike. A full-height column holding
-// every particle at once would be ~42 units tall over a 16-unit rock: a tower in the sky.
+// Initial water depth standing on each authored terrace.
 const SOURCE_FILL_H = 2.0;
-
-// Frames over which the pool pours into the sources (~1.5 s at 60 fps). Lower = harder burst,
-// but injection density rises with it. Honoured by every backend.
-const WARMUP_FRAMES = 90;
 
 // ── Spring outlines on the rock's flat top ─────────────────────────────────────────────
 // Each source is a POLYGON in the rock's MODEL XZ plane, given a small height and used as the
@@ -338,7 +335,7 @@ let shelves: Shelf[] = [{ pts: [{ mx: -0.0076, mz: 0.012 }], topH: 0.3913 }];
 //   p0 = (originX, originZ, invCellX, invCellZ)   model-space grid mapping
 //   p1 = (nx, nz, rockY0, rockScale)
 //   p2 = (cosYaw / rockScale, sinYaw / rockScale, centreX, centreZ)
-//   p3 = (floorY, unused, unused, unused)
+//   p3 = (floorY, pondRadius, pondTopY, unused)
 const SDF_WGSL = `fn wfGrid(i: i32, j: i32, nx: i32, nz: i32) -> f32 {
 let c = clamp(vec2<i32>(i, j), vec2<i32>(0), vec2<i32>(nx - 1, nz - 1));
 return sceneSdfGrid[c.x + nx * c.y];
@@ -362,7 +359,11 @@ let rock = sceneSdfParams.p1.z + mix(h0, h1, f.y) * sceneSdfParams.p1.w;
 return max(rock, sceneSdfParams.p3.x);
 }
 fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
-return pt.y - heightAt(pt.x, pt.z);
+let terrain = pt.y - heightAt(pt.x, pt.z);
+// Open-top cylindrical basin: inside the radius OR above the rim is free space. Outside the
+// radius below the rim is solid, so the gradient pushes escaped particles back into the pond.
+let pond = max(sceneSdfParams.p3.y - length(pt.xz - sceneSdfParams.p2.zw), pt.y - sceneSdfParams.p3.z);
+return min(terrain, pond);
 }`;
 
 // ── CPU mirror of the WGSL height field ────────────────────────────────────────────────
@@ -512,15 +513,6 @@ function convexHull(pts: readonly { mx: number; mz: number }[]): [number, number
     return [...build(p), ...build([...p].reverse())];
 }
 
-/** Area of a closed polygon in the XZ plane (shoelace, winding-independent). */
-function polygonArea(poly: readonly [number, number][]): number {
-    let a = 0;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        a += poly[j]![0] * poly[i]![1] - poly[i]![0] * poly[j]![1];
-    }
-    return Math.abs(a) / 2;
-}
-
 /** Even-odd ray-crossing test in the XZ plane. */
 function pointInPolygon(x: number, z: number, poly: readonly [number, number][]): boolean {
     let inside = false;
@@ -550,7 +542,10 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         bloom: false,
         bloomIntensity: 0.25,
         bloomThreshold: 0.0,
+        pondEnabled: true,
+        pondWaveSources: POND_WAVE_SOURCES_DEFAULT,
     };
+    let pondFlowEnabled = wf.pondEnabled;
 
     /** Push the three bloom params to the shared presentation stage. The stage is owned by
      *  the core and shared with every other demo, so it is only ever driven while THIS demo
@@ -617,11 +612,96 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         sdfData[10] = ROCK_CX;
         sdfData[11] = ROCK_CZ;
         sdfData[12] = FLOOR_Y;
-        sdfData[13] = 0;
-        sdfData[14] = 0;
+        sdfData[13] = POND_RADIUS;
+        sdfData[14] = POND_TOP_Y;
         sdfData[15] = 0;
         engine._device.queue.writeBuffer(ctx.sceneSdfBuffer, 0, sdfData);
     };
+
+    // Each random source launches a sustained, expanding horizontal pressure ring. Particles
+    // are pushed radially in the same direction as the moving front for long enough to build
+    // a crest; the old sine force reversed before the surface moved and cancelled itself.
+    const pondWaveData = new Float32Array(4 + POND_WAVE_SOURCES_MAX * 8);
+    const pondWaveBuffer = engine._device.createBuffer({
+        label: "waterfall-pond-wave-force",
+        size: pondWaveData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const pondWaveSpec: ForceFieldSpec = {
+        struct: `struct ForceFieldParams {
+    head: vec4<f32>,
+    points: array<vec4<f32>, ${POND_WAVE_SOURCES_MAX}>,
+    pushes: array<vec4<f32>, ${POND_WAVE_SOURCES_MAX}>,
+};`,
+        wgsl: `fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
+    if (pos.y < forceFieldParams.head.z - 0.1 || pos.y > forceFieldParams.head.w + 0.2) { return vec3<f32>(0.0); }
+    var dv = vec2<f32>(0.0);
+    var dy = 0.0;
+    let count = u32(forceFieldParams.head.y);
+    for (var i = 0u; i < ${POND_WAVE_SOURCES_MAX}u; i++) {
+        if (i >= count) { break; }
+        let point = forceFieldParams.points[i];
+        let push = forceFieldParams.pushes[i];
+        let cycle = (forceFieldParams.head.x + push.x) % push.y;
+        let attack = smoothstep(0.0, 0.12, cycle);
+        let release = 1.0 - smoothstep(${POND_WAVE_DURATION - 0.25}, ${POND_WAVE_DURATION}, cycle);
+        let pulse = attack * release;
+        let radial = pos.xz - point.xy;
+        let dist = length(radial);
+        let direction = radial / max(dist, 0.001);
+        let hemisphere = smoothstep(-0.12, 0.12, dot(direction, point.zw));
+        let front = cycle * ${POND_WAVE_TRAVEL_SPEED};
+        let signedOffset = clamp((dist - front) / ${POND_WAVE_BAND_WIDTH}, -1.0, 1.0);
+        let falloff = max(0.0, 1.0 - abs(signedOffset));
+        dv += direction * (${POND_WAVE_STRENGTH} * hemisphere * pulse * falloff * falloff * dt);
+        // The horizontal pressure ring creates propagation; this balanced crest/trough
+        // component makes that motion visible in the reconstructed surface without
+        // continuously lifting the pond as a whole.
+        dy += ${POND_WAVE_VERTICAL_STRENGTH} * hemisphere * signedOffset * falloff * pulse * dt;
+    }
+    return vec3<f32>(dv.x, dy, dv.y);
+}`,
+        buffer: pondWaveBuffer,
+    };
+    let pondWaveTime = 0;
+    const writePondWaveParams = (): void => {
+        pondWaveData[0] = pondWaveTime;
+        pondWaveData[1] = wf.pondWaveSources;
+        pondWaveData[2] = FLOOR_Y;
+        pondWaveData[3] = POND_TOP_Y;
+        engine._device.queue.writeBuffer(pondWaveBuffer, 0, pondWaveData);
+    };
+    const randomizePondWaves = (): void => {
+        pondWaveData.fill(0, 4);
+        const count = Math.min(POND_WAVE_SOURCES_MAX, Math.max(0, Math.floor(wf.pondWaveSources)));
+        for (let i = 0; i < count; i++) {
+            let x = ROCK_CX;
+            let z = ROCK_CZ;
+            for (let attempt = 0; attempt < 64; attempt++) {
+                const a = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random()) * (POND_RADIUS - POND_WAVE_DURATION * POND_WAVE_TRAVEL_SPEED - POND_WAVE_BAND_WIDTH);
+                const candidateX = ROCK_CX + Math.cos(a) * r;
+                const candidateZ = ROCK_CZ + Math.sin(a) * r;
+                if (terrainHeightWorld(candidateX, candidateZ) < POND_TOP_Y - 0.08) {
+                    x = candidateX;
+                    z = candidateZ;
+                    break;
+                }
+            }
+            const facing = Math.random() * Math.PI * 2;
+            const period = POND_WAVE_PERIOD_MIN + Math.random() * (POND_WAVE_PERIOD_MAX - POND_WAVE_PERIOD_MIN);
+            const pointOffset = 4 + i * 4;
+            const pushOffset = 4 + POND_WAVE_SOURCES_MAX * 4 + i * 4;
+            pondWaveData[pointOffset] = x;
+            pondWaveData[pointOffset + 1] = z;
+            pondWaveData[pointOffset + 2] = Math.cos(facing);
+            pondWaveData[pointOffset + 3] = Math.sin(facing);
+            pondWaveData[pushOffset] = Math.random() * period;
+            pondWaveData[pushOffset + 1] = period;
+        }
+        writePondWaveParams();
+    };
+    randomizePondWaves();
 
     // ── Waterfall sources: one POLYGON EMITTER per terrace on the rock's top. Each spawn
     //    volume is the terrace's own outline given a small height, so water wells up across the
@@ -706,50 +786,77 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         return out;
     };
 
-    const buildEmitters = (): EmitterConfig["emitters"] => {
-        const list: EmitterConfig["emitters"] = [];
-        // One emitter takes a single dir+speed, so fold the downward source speed and the
-        // horizontal front nudge into one launch vector and hand over its direction + length.
+    const buildFlow = (): FluidFlowConfig => {
         const vx = FRONT_DIR_X * wf.frontBias;
         const vz = FRONT_DIR_Z * wf.frontBias;
         const vy = -wf.sourceSpeed;
-        const sp = Math.hypot(vx, vy, vz);
-        for (const p of buildPrisms()) {
-            const halfH = (p.y1 - p.y0) / 2;
-            list.push({
-                pos: [p.cx, (p.y0 + p.y1) / 2, p.cz], // x/z unused for a polygon emitter; kept meaningful
-                dir: sp > 1e-6 ? [vx / sp, vy / sp, vz / sp] : [0, -1, 0],
-                speed: sp,
-                radius: halfH,
-                halfExtents: [halfH, halfH, halfH], // only Y is read once `polygon` is set
-                polygon: p.poly,
-            });
-        }
-        return list;
-    };
-
-    // Intake: a THIN slab hugging the FLOOR, spanning the ENTIRE simulated footprint.
-    //
-    // The slab is thin so only the bottom layer of standing water is eligible to recycle —
-    // the pool then holds a resting surface above it instead of being pumped dry, and the
-    // level self-regulates around the slab's top.
-    //
-    // The footprint, though, must cover the whole domain. The ground is a flat, rimless
-    // plane, so water that runs off the rock keeps sliding outward until the sim's own
-    // domain wall stops it. Anything that ends up beyond the intake can NEVER be recycled,
-    // so it strands permanently — and because both the domain and the intake are AXIS-
-    // ALIGNED BOXES, the gap between them is narrowest at the four edge midpoints (±X, ±Z)
-    // and widest at the corners. Strays therefore escape through those four faces and pile
-    // up against the wall as FOUR symmetrical dead pools. Matching the intake to the domain
-    // removes the dead zone entirely: every particle on the floor stays in the loop.
-    const buildConfig = (): EmitterConfig => {
-        const pr = ctx.simHalfExtentXZ * wf.meshScale;
-        return {
-            emitters: buildEmitters(),
-            intakeMin: [ROCK_CX - pr, FLOOR_Y - 1.0, ROCK_CZ - pr],
-            intakeMax: [ROCK_CX + pr, FLOOR_Y + 0.3, ROCK_CZ + pr],
-            rate: wf.emitRate,
+        const prisms = buildPrisms();
+        const initialTerraces: FluidEmitter[] = prisms.map((p, index) => ({
+            id: `waterfall-charge-${index + 1}`,
+            name: `Initial terrace ${index + 1}`,
+            enabled: true,
+            behavior: "initial",
+            transform: { position: [0, p.y0 + SOURCE_FILL_H * wf.meshScale * 0.5, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "polygonPrism", points: p.poly, thickness: SOURCE_FILL_H * wf.meshScale },
+            sampling: "volume",
+            velocity: [0, 0, 0],
+            velocitySpace: "world",
+            spread: 0,
+        }));
+        const inflows: FluidEmitter[] = prisms.map((p, index) => ({
+            id: `waterfall-spring-${index + 1}`,
+            name: `Terrace spring ${index + 1}`,
+            enabled: true,
+            behavior: "inflow",
+            transform: { position: [0, (p.y0 + p.y1) * 0.5, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "polygonPrism", points: p.poly, thickness: p.y1 - p.y0 },
+            sampling: "volume",
+            velocity: [vx, vy, vz],
+            velocitySpace: "world",
             spread: wf.spread,
+            volumeRate: (240 * wf.emitRate) / Math.max(1, prisms.length),
+        }));
+        const pond: FluidEmitter = {
+            id: "waterfall-pond",
+            name: "Initial pond",
+            enabled: wf.pondEnabled,
+            behavior: "initial",
+            transform: { position: [ROCK_CX, FLOOR_Y + POND_DEPTH * 0.5, ROCK_CZ], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "cylinder", radius: POND_RADIUS, innerRadius: 10, height: POND_DEPTH * 0.85 },
+            sampling: "volume",
+            velocity: [0, 0, 0],
+            velocitySpace: "world",
+            spread: 0,
+        };
+        const pondReturn: FluidEmitter = {
+            ...structuredClone(pond),
+            id: "waterfall-pond-return",
+            name: "Pond return",
+            behavior: "inflow",
+            volumeRate: 240 * wf.emitRate,
+        };
+        const pr = ctx.simHalfExtentXZ;
+        return {
+            emitters: [...initialTerraces, pond, pondReturn, ...inflows],
+            sinks: [
+                {
+                    id: "waterfall-pond-overflow",
+                    name: "Pond overflow return",
+                    enabled: pond.enabled,
+                    transform: { position: [ROCK_CX, FLOOR_Y + 0.5, ROCK_CZ], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "cylinder", radius: pr, innerRadius: POND_RADIUS, height: 3 },
+                    targets: [pondReturn.id],
+                },
+                {
+                    id: "waterfall-floor-recycle",
+                    name: "Waterfall floor return",
+                    enabled: true,
+                    transform: { position: [ROCK_CX, FLOOR_Y - 0.35, ROCK_CZ], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                    shape: { type: "box", size: [pr * 2, 1.3, pr * 2] },
+                    targets: inflows.map((emitter) => emitter.id),
+                    volumeRate: 240 * wf.emitRate,
+                },
+            ],
         };
     };
 
@@ -1177,15 +1284,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             hmInvCz = 1 / sz;
         }
         engine._device.queue.writeBuffer(hmBuffer, 0, hmData);
+        randomizePondWaves();
 
         // Derive the shelf boxes from the real data now that it is in.
         shelves = findTopShelves();
 
         if (active) {
             writeSdfParams();
-            ctx.refreshEmitters(); // the outlines now cover the model's real flat terraces
-            ctx.refreshSpawn(); // and the seed volume is those outlines, not the fallback pool
-            ctx.resetActiveSim(); // re-seed from the springs against the real terrain
+            ctx.refreshFlow();
         }
     })().catch((e: unknown) => console.warn("[waterfall] height map load failed", e));
 
@@ -1237,8 +1343,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         } catch {
             // Private mode / quota — the outline still works for this session.
         }
-        ctx.refreshEmitters();
-        ctx.refreshSpawn(); // so a Reset after drawing seeds from the new outlines
+        ctx.refreshFlow();
     };
 
     /** World XZ under the cursor, by marching the cursor ray against the height field. Marching
@@ -1496,9 +1601,25 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         };
     };
     const degrees = (v: number): string => `${v.toFixed(0)}\u00b0`;
-    const az = makeSunRow("Sun azimuth", 0, 360, 1, degrees, () => sunAzimuth, (v) => (sunAzimuth = v));
+    const az = makeSunRow(
+        "Sun azimuth",
+        0,
+        360,
+        1,
+        degrees,
+        () => sunAzimuth,
+        (v) => (sunAzimuth = v)
+    );
     // Below ~10° the shadow stretches past the rock's own footprint and stops reading as shape.
-    const el = makeSunRow("Sun elevation", 5, 89, 1, degrees, () => sunElevation, (v) => (sunElevation = v));
+    const el = makeSunRow(
+        "Sun elevation",
+        5,
+        89,
+        1,
+        degrees,
+        () => sunElevation,
+        (v) => (sunElevation = v)
+    );
     // How hard the sun competes with the sky. This is the shadow CONTRAST control: a shadow can
     // only subtract direct light, so the higher this is the more there is to lose.
     //
@@ -1574,59 +1695,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
         defaultQuality: "high",
         sdf,
         writeSdfParams,
-        spawn() {
-            // Seed the water AS A CHARGE STANDING IN THE SOURCES, not as a pool on the ground:
-            // a column of water fills each outline and collapses the instant the sim starts,
-            // bursting off the summit and cascading down. Every particle is live on frame 1, so
-            // this needs no warm-up ramp and behaves the same on all three backends (PB-MPM
-            // seeds everything immediately and cannot ramp).
-            const prisms = buildPrisms();
-            if (!prisms.length) {
-                // No outlines yet (height map still loading): fall back to the old rest pool.
-                const pr = INTAKE_R * wf.meshScale;
-                const level = FLOOR_Y + 1.6 * wf.meshScale;
-                return {
-                    min: [ROCK_CX - pr, FLOOR_Y, ROCK_CZ - pr] as [number, number, number],
-                    max: [ROCK_CX + pr, level, ROCK_CZ + pr] as [number, number, number],
-                    accept: (x: number, y: number, z: number): boolean => Math.hypot(x - ROCK_CX, z - ROCK_CZ) <= pr && y > terrainHeightWorld(x, z) + 0.08,
-                    warmupFrames: WARMUP_FRAMES,
-                };
-            }
-            const s = wf.meshScale;
-            const fillH = SOURCE_FILL_H * s;
-            let x0 = Infinity;
-            let x1 = -Infinity;
-            let z0 = Infinity;
-            let z1 = -Infinity;
-            let y0 = Infinity;
-            let y1 = -Infinity;
-            for (const p of prisms) {
-                y0 = Math.min(y0, p.y0);
-                y1 = Math.max(y1, p.y0 + fillH);
-                for (const [x, z] of p.poly) {
-                    x0 = Math.min(x0, x);
-                    x1 = Math.max(x1, x);
-                    z0 = Math.min(z0, z);
-                    z1 = Math.max(z1, z);
-                }
-            }
-            let area = 0;
-            for (const p of prisms) {
-                area += polygonArea(p.poly);
-            }
-            // Sit the charge ON the terrace it stands in: above the local surface (never inside
-            // the rock, however uneven the terrace) and up to a flat top.
-            const accept = (x: number, y: number, z: number): boolean =>
-                prisms.some((p) => y <= p.y0 + fillH && y >= Math.max(p.y0, terrainHeightWorld(x, z) + SHELF_LIFT * s) && pointInPolygon(x, z, p.poly));
-            return {
-                min: [x0, y0, z0] as [number, number, number],
-                max: [x1, y1, z1] as [number, number, number],
-                accept,
-                warmupFrames: WARMUP_FRAMES,
-            };
+        flow() {
+            return buildFlow();
         },
-        emitters() {
-            return buildConfig();
+        onFlowChanged(flow): void {
+            pondFlowEnabled = flow.emitters.some((emitter) => emitter.id === "waterfall-pond" && emitter.enabled);
+        },
+        forceField(): ForceFieldSpec | null {
+            return pondFlowEnabled && wf.pondWaveSources > 0 ? pondWaveSpec : null;
         },
         onEnter(): void {
             active = true;
@@ -1681,6 +1757,8 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                 wf.bloom = state.bloom;
                 applyBloom();
             }
+            // Files written before the pond toggle existed behaved as enabled.
+            wf.pondEnabled = typeof state.pondEnabled === "boolean" ? state.pondEnabled : true;
             // Angles BEFORE the toggle: applyShadows re-aims nothing, so the direction has to be
             // current before the map is asked to render with it.
             if (typeof state.sunAzimuth === "number") {
@@ -1726,10 +1804,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             }
             applyShadows(); // a hidden ring must stop casting too
         },
-        update(): void {
+        update(dt: number): void {
             // The core zeroes the shared UBO's bytes 32..159 on every pair switch, so the
             // 16-float collision block is re-written each frame (cheap: one 64-byte write).
             writeSdfParams();
+            if (pondFlowEnabled && wf.pondWaveSources > 0) {
+                pondWaveTime += dt;
+                writePondWaveParams();
+            }
             if (authoring) {
                 drawOverlay();
             }
@@ -1767,18 +1849,8 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             }
         },
         demoParams(): DemoParam[] {
-            // `hidden` retires a knob from the panel while keeping it in the pair-state bag, so
-            // the preset files still drive it and it round-trips between pairs — that is what
-            // "Source speed" / "Jet spread" need (both feed the emitter launch velocity, and the
-            // high presets deliberately zero them). The commented rows are different: "Mesh
-            // scale" / "Rock yaw" are pinned presentation constants (MESH_SCALE /
-            // ROCK_YAW_DEG, and applyParam ignores both keys), and the two authoring rows drive
-            // the terrace-tracing tool, only needed when AUTHORED_POLYGONS has to be re-cut.
             return [
-                { key: "sourceSpeed", label: "Source speed", type: "number", min: 0, max: 4, step: 0.05, value: wf.sourceSpeed, hidden: true },
-                { key: "emitRate", label: "Recirculation rate", type: "number", min: 0.05, max: 6, step: 0.05, value: wf.emitRate },
-                { key: "spread", label: "Jet spread", type: "number", min: 0, max: 2, step: 0.02, value: wf.spread, hidden: true },
-                { key: "frontBias", label: "Front bias", type: "number", min: 0, max: 16, step: 0.5, value: wf.frontBias, hidden: true },
+                { key: "pondWaveSources", label: "Pond wave sources", type: "number", min: 0, max: POND_WAVE_SOURCES_MAX, step: 1, value: wf.pondWaveSources },
                 // { key: "meshScale", label: "Mesh scale", type: "number", min: 1, max: 3, step: 0.05, value: wf.meshScale },
                 // { key: "rockYaw", label: "Rock yaw", type: "number", min: 0, max: 360, step: 1, value: wf.rockYaw },
                 { key: "bloom", label: "Bloom", type: "boolean", value: wf.bloom },
@@ -1789,9 +1861,8 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             ];
         },
         getDomainScale(): number {
-            // The core reads this on every switchPair to size the fluid-sim bounds. A larger
-            // rock gets a proportionally larger simulated domain — otherwise a 3× formation
-            // runs straight through the ±20 grid wall (see ctx.setDomainScale in fluid.ts).
+            // The core reads this on every switchPair to restore matching authored bounds. A
+            // larger rock needs a proportionally larger domain to stay inside the grid walls.
             return wf.meshScale;
         },
         applyParam(key: string, value: number | boolean | string): void {
@@ -1809,6 +1880,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                 applyBloom();
                 return;
             }
+            if (key === "pondEnabled") {
+                const next = value as boolean;
+                if (next !== wf.pondEnabled) {
+                    wf.pondEnabled = next;
+                    ctx.refreshFlow();
+                }
+                return;
+            }
             if (key === "authorMode") {
                 setAuthoring(value as boolean);
                 return;
@@ -1817,6 +1896,14 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                 authorSlot = Math.max(0, Math.round(value as number) - 1);
                 while (authorPolys.length <= authorSlot) {
                     authorPolys.push([]);
+                }
+                return;
+            }
+            if (key === "pondWaveSources") {
+                const next = value as number;
+                if (next !== wf.pondWaveSources) {
+                    wf.pondWaveSources = next;
+                    randomizePondWaves();
                 }
                 return;
             }
@@ -1844,11 +1931,9 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                     ctx.camera.target.y = 3.2 * wf.meshScale;
                     ctx.camera.radius *= wf.meshScale / prevScale;
                 }
-                // DEBOUNCE the heavy path: ctx.setDomainScale disposes and recreates all three
-                // backends (and re-applies the SDF, emitters and spawn), so a slider drag must
-                // not do it every tick. Fires ~250 ms after the last change; skipped entirely
-                // when the scale is already the one the sims were built at (e.g. a pair-state
-                // restore re-applying the same value).
+                // DEBOUNCE the heavy path: ctx.setDomainScale resizes the bounds, updates the
+                // explicit Physics particle size and recreates all three backends, so a slider
+                // drag must not do it every tick. Fires ~250 ms after the last change.
                 if (wf.meshScale !== builtMeshScale) {
                     if (meshScaleTimer !== null) {
                         clearTimeout(meshScaleTimer);
@@ -1865,7 +1950,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                     meshScaleTimer = null;
                 }
             }
-            ctx.refreshEmitters();
+            ctx.refreshFlow();
         },
         extraControls() {
             // The panel is rebuilt on every re-enter, so re-sync from live state.
