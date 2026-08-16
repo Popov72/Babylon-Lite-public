@@ -591,6 +591,8 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
     };
 
     let active = false; // true while the waterfall demo is the on-screen demo
+    let rockReady = false;
+    let heightMapReady = false;
     // Debounce state for the heavy mesh-scale path (the sim-domain rebuild). Only reachable
     // if the "Mesh scale" row below is uncommented; the scale is otherwise fixed.
     let meshScaleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1024,6 +1026,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             setMeshVisible(m, active && containerVisible);
             meshes.push(m);
         }
+        rockReady = true;
         applyShadows(); // the casters only exist now
     })().catch((e: unknown) => console.warn("[waterfall] rock model load failed", e));
 
@@ -1180,6 +1183,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
 
         // Derive the shelf boxes from the real data now that it is in.
         shelves = findTopShelves();
+        heightMapReady = true;
 
         if (active) {
             writeSdfParams();
@@ -1733,6 +1737,9 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
             if (authoring) {
                 drawOverlay();
             }
+        },
+        isReady(): boolean {
+            return rockReady && heightMapReady && oasisCache.has(oasisQuality);
         },
         claimsPointer(e: PointerEvent): boolean {
             // Only LMB while authoring — the other buttons keep orbiting the camera.

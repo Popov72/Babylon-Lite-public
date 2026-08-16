@@ -1,0 +1,86 @@
+{
+    "meta": {
+        "demo": "waterfall",
+        "method": "PB-MPM"
+    },
+    "physics": {
+        "gravity": 11.1,
+        "iterations": 1,
+        "liquidRelaxation": 0.1,
+        "liquidViscosity": 0,
+        "elasticityRatio": 1,
+        "elasticRelaxation": 1,
+        "frictionAngle": 60,
+        "plasticity": 0.8,
+        "restitution": 1,
+        "substeps": 1,
+        "maxSubDtMs": 16.7
+    },
+    "demoParams": {
+        "sourceSpeed": 0,
+        "emitRate": 0.05,
+        "spread": 0.5,
+        "frontBias": 16,
+        "bloomIntensity": 0.2,
+        "bloomThreshold": 0
+    },
+    "demoState": {
+        "bloom": true,
+        "shadows": true,
+        "sunAzimuth": 299,
+        "sunElevation": 38,
+        "sunIntensity": 7.5,
+        "ambientIntensity": 0.16,
+        "oasis": "high"
+    },
+    "showContainer": true,
+    "envIntensity": 0.6,
+    "msaa": true,
+    "physicsParticleSize": 0.4,
+    "particleCount": 500000,
+    "material": 0,
+    "camera": {
+        "alpha": -2.096342275594117,
+        "beta": 1.4153362767020206,
+        "radius": 62.965727191577955
+    },
+    "render": {
+        "renderAsSpheres": false,
+        "waterColor": "#faffff",
+        "absorption": 0.4,
+        "particleSize": 0.14,
+        "refractionStrength": 0,
+        "specularPower": 250,
+        "surfaceDepthBlur": 23,
+        "depthBlurEdgeThreshold": 10,
+        "surfaceThicknessBlur": 0,
+        "halfRendering": true,
+        "thicknessDownscale": 8,
+        "surfaceFilter": "narrowRange",
+        "narrowRangeDelta": 5,
+        "narrowRangeMu": 0.3,
+        "anisotropicSurface": false,
+        "anisoRadiusDamping": 0.5
+    },
+    "foam": {
+        "enableFoam": true,
+        "trappedAirRate": 461,
+        "waveCrestRate": 16,
+        "foamLifetime": 0.3,
+        "foamLifetimeMin": 0.45,
+        "bubbleBuoyancy": 1.65,
+        "bubbleDrag": 0.85,
+        "poolSize": 3.5,
+        "foamSoftness": 0,
+        "foamDensity": 9.4,
+        "subsurfaceBubbleStrength": 0.2,
+        "subsurfaceBubbleColor": "#b8d1f2",
+        "foamBlurRadius": 6,
+        "foamLightIntensity": 0.15,
+        "foamAmbient": 1,
+        "foamAO": 0.22,
+        "foamNormalStrength": 0,
+        "foamDebug": "off",
+        "foamSize": 0.25
+    }
+}

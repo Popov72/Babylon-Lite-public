@@ -271,6 +271,8 @@ export interface FluidDemo {
     onLeave(): void;
     /** Per-frame hook (box: spin paddle + write paddle SDF block). */
     update(dt: number): void;
+    /** Whether asynchronously loaded assets required for deterministic capture are ready. */
+    isReady?(): boolean;
     /** Optional world/domain scale for the fluid-sim bounds (the marble tower's "Mesh scale").
      *  The core reads this on every `switchPair` (default 1 when omitted) and, if it differs
      *  from the currently-built domain scale, rebuilds the sims with scaled bounds. Demos that

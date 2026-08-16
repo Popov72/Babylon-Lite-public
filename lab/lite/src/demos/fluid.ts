@@ -117,6 +117,14 @@ const MATERIAL_DEMO_KEYS = ["box"];
 async function main(): Promise<void> {
     const __initStart = performance.now();
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const params = new URLSearchParams(location.search);
+    const captureSeconds = Number(params.get("captureSeconds"));
+    const captureFixedDt = Number(params.get("fixedDt"));
+    const captureMode = Number.isFinite(captureSeconds) && captureSeconds > 0 && Number.isFinite(captureFixedDt) && captureFixedDt > 0;
+    const captureTargetSteps = captureMode ? Math.ceil(captureSeconds / captureFixedDt) : 0;
+    const captureDemoKey = params.get("demo");
+    const captureMethod = params.get("method");
+    const captureQuality = params.get("quality") as Quality | null;
 
     // Single-sample so the swapchain RT is the direct render target and the
     // particle task can share one single-sample depth buffer with the scene.
@@ -2213,6 +2221,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     let paused = false;
+    let captureDemoActivated = !captureMode;
+    let captureWarmupFrames = 0;
+    let captureStarted = false;
+    let captureStep = 0;
+    let captureReadyPending = false;
     onBeforeRender(scene, (deltaMs: number) => {
         // A newly-inserted task (the MSAA scene pass + its depth resolve) needs the whole graph
         // re-recorded, which re-allocates canvas-sized targets other tasks' bind groups point
@@ -2220,6 +2233,31 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (pendingFrameGraphRebuild) {
             pendingFrameGraphRebuild = false;
             getFrameGraph(scene).build();
+        }
+        if (captureReadyPending) {
+            captureReadyPending = false;
+            canvas.dataset.captureTime = String(captureStep * captureFixedDt);
+            canvas.dataset.captureReady = "true";
+        }
+        if (!captureDemoActivated) {
+            if (captureWarmupFrames++ === 0) {
+                return;
+            }
+            const captureDemo = demos.find((demo) => demo.key === captureDemoKey);
+            if (!captureDemo || !captureMethod || !Object.hasOwn(DEFAULT_FLUID_SCHEMAS, captureMethod) || !captureQuality || !QUALITIES.includes(captureQuality)) {
+                throw new Error("Invalid deterministic fluid capture parameters");
+            }
+            switchPair(captureDemo, captureMethod, captureQuality);
+            visitedDemos.add(captureDemo.key);
+            containerSel.value = captureDemo.key;
+            qualitySel.value = captureQuality;
+            controls.setMethod(captureMethod);
+            captureDemoActivated = true;
+            if (pendingFrameGraphRebuild) {
+                pendingFrameGraphRebuild = false;
+                getFrameGraph(scene).build();
+            }
+            return;
         }
         // A demo's glTF resolves long after its switchPair, so meshes keep arriving. Re-fan the
         // environment intensity over them whenever the scene's mesh set grows, or a model loaded
@@ -2252,7 +2290,16 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             }
         }
         // Clamp dt so a hitch / first frame can't blow the integration up.
-        const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
+        const dt = captureMode ? captureFixedDt : Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
+        if (captureMode && !captureStarted) {
+            if (activeDemo?.isReady?.() === false) {
+                return;
+            }
+            activeDemo?.update(0);
+            activeSim.reset();
+            captureStarted = true;
+            canvas.dataset.captureStarted = "true";
+        }
         // Interactive push force: enabled ONLY while a push is pending, so the
         // dedicated force compute pass is dispatched (and first-compiled) only during
         // an active Shift+RMB drag. Idle frames disable it — nothing force-related runs.
@@ -2269,6 +2316,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (!paused) {
             activeDemo?.update(dt); // box: spin paddle + write paddle SDF block
             activeSim.step(engine._currentEncoder, dt);
+            if (captureMode && ++captureStep >= captureTargetSteps) {
+                paused = true;
+                canvas.dataset.paused = "true";
+                captureReadyPending = true;
+            }
         }
     });
 
@@ -2383,6 +2435,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     qualitySel.value = quality;
     controls.setMethod("MLS-MPM");
     applyRenderMode(false); // fluid surface by default
+    if (captureMode) {
+        setUiHidden(true);
+    }
 
     const hint = document.querySelector(".hint");
     if (hint) {
