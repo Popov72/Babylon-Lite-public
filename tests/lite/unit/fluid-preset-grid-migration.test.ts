@@ -50,13 +50,29 @@ describe("fluid preset grid migration", () => {
 
     it("round-trips format-5 world position and size", () => {
         const state = pairState();
+        state.simulationDuration = 12;
+        state.alphaDecay = 2.5;
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
         expect(exported.formatVersion).toBe(5);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
+        expect(exported.simulationDuration).toBe(12);
+        expect(exported.alphaDecay).toBe(2.5);
         expect(imported.grid).toEqual(state.grid);
+        expect(imported.simulationDuration).toBe(12);
+        expect(imported.alphaDecay).toBe(2.5);
+    });
+
+    it("defaults legacy lifecycle settings to indefinite with a two-second decay", () => {
+        const legacy = exportJsonFromPairState("box", "PBF", pairState());
+        delete legacy.simulationDuration;
+        delete legacy.alphaDecay;
+
+        const imported = presetFromExportJson(legacy);
+        expect(imported.simulationDuration).toBe(0);
+        expect(imported.alphaDecay).toBe(2);
     });
 
     it("round-trips config-level initial allocation and structured sink recycle semantics", () => {

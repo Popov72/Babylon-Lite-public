@@ -75,6 +75,10 @@ export interface PairState {
     schema: Record<string, number>;
     /** Generic per-demo tunables (empty for demos with no `demoParams`). */
     demoParams: Record<string, number>;
+    /** Simulated seconds before the fluid starts fading. Zero runs indefinitely. */
+    simulationDuration?: number;
+    /** Seconds taken to fade fluid opacity to zero after the duration. */
+    alphaDecay?: number;
     /** Solver-independent fluid sources, stored in grid-local coordinates. */
     emitters?: FluidEmitter[];
     /** Solver-independent recycling volumes, stored in grid-local coordinates. */

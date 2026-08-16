@@ -89,6 +89,7 @@ import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettin
 import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "./fluid/preset-io.js";
 import { parseBliteFluidBundle, type BliteFluidBundle } from "./fluid/blitefluid-bundle.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
+import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/simulation-lifecycle.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
@@ -593,6 +594,11 @@ async function main(): Promise<void> {
         getSurfaceDepth: () => surfaceTask.surfaceDepthView(),
     });
     addTask(scene, foamTask);
+    let simulationDuration = 0;
+    let simulationAlphaDecay = 2;
+    let simulationElapsed = 0;
+    let simulationOpacity = 1;
+    let simulationStopped = false;
 
     // Container-glass overlay — draws each demo's TRANSLUCENT container mesh (capsule
     // pill, box tank glass) AFTER the fluid surface + foam, straight into the composite
@@ -818,7 +824,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // draw on top of it. Track that mode and suppress the foam render whenever it is active.
     let surfaceDebugActive = false;
     function foamRenderVisible(): boolean {
-        return controls.getValues().foam.enabled && !!activeSim.setFoam && !surfaceDebugActive;
+        return simulationOpacity > 0 && controls.getValues().foam.enabled && !!activeSim.setFoam && !surfaceDebugActive;
     }
     function pushFoam(): void {
         const f = controls.getValues().foam;
@@ -1203,6 +1209,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function resetActiveFlow(clearHoles: boolean): void {
         applyFlow();
         activeSim.reset();
+        restartSimulationLifecycle();
         if (clearHoles) {
             clearSceneHoles();
         }
@@ -1506,11 +1513,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         particleCounts: PARTICLE_COUNTS,
         showActiveBlocks: true,
         showGridControls: true,
+        showSimulationTiming: true,
         physScaleMin: PHYS_MIN_SCALE,
         physScaleMax: PHYS_MAX_SCALE,
         initial: {
             method: methodName,
             count: DEFAULT_PARTICLE_COUNT,
+            simulationDuration,
+            alphaDecay: simulationAlphaDecay,
             physScale: physicsScale,
             gridPosition: [...initialGridSettings.position],
             gridSize: [...initialGridSettings.size],
@@ -1571,6 +1581,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         on: {
             onMethod: (name) => switchPair(activeDemo!, name),
             onParticleCount: (n) => setParticleCount(n),
+            onSimulationDuration: (seconds) => {
+                simulationDuration = seconds;
+                syncSimulationLifecycle();
+            },
+            onAlphaDecay: (seconds) => {
+                simulationAlphaDecay = seconds;
+                syncSimulationLifecycle();
+            },
             onRenderMode: (spheres) => applyRenderMode(spheres),
             onColor: (rgb) => {
                 surfaceTask.setFluidColor(rgb);
@@ -2990,6 +3008,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         applyFlow();
         activeSim.reset();
+        restartSimulationLifecycle();
         clearSceneHoles();
         particleTask.setSim(activeSim);
         surfaceTask.setSim(activeSim);
@@ -3154,6 +3173,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         narrowMu: initialValues.narrowMu,
         anisotropic: initialValues.anisotropic,
         anisoSurfScale: initialValues.anisoSurfScale ?? 0.5,
+        simulationDuration: initialValues.simulationDuration,
+        alphaDecay: initialValues.alphaDecay,
     };
     // Pristine foam look, snapshotted before any interaction; seeds the foam block of
     // every preset-less pair so foam becomes per-(demo, method) (restored on switch).
@@ -3171,6 +3192,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return {
             schema: { ...SCHEMA_DEFAULTS[method]! },
             demoParams: { ...(DEMO_PARAM_DEFAULTS[demo.key] ?? {}) },
+            simulationDuration: RENDER_DEFAULTS.simulationDuration,
+            alphaDecay: RENDER_DEFAULTS.alphaDecay,
             emitters: flow.emitters,
             sinks: flow.sinks,
             initialEmittersFillCapacity: flow.initialEmittersFillCapacity,
@@ -3220,6 +3243,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return {
             schema: { ...base.schema, ...(p.schema ?? {}) },
             demoParams: { ...base.demoParams, ...(p.demoParams ?? {}) },
+            simulationDuration: p.simulationDuration ?? base.simulationDuration,
+            alphaDecay: p.alphaDecay ?? base.alphaDecay,
             emitters: structuredClone(p.emitters ?? base.emitters ?? []),
             sinks: structuredClone(p.sinks ?? base.sinks ?? []),
             initialEmittersFillCapacity: p.initialEmittersFillCapacity ?? base.initialEmittersFillCapacity,
@@ -3277,6 +3302,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return {
             schema: controls.getPhysicsValues(method),
             demoParams,
+            simulationDuration: v.simulationDuration,
+            alphaDecay: v.alphaDecay,
             emitters: structuredClone(activeFlow.emitters),
             sinks: structuredClone(activeFlow.sinks),
             initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
@@ -3340,6 +3367,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // target method here — switchPair set it before calling loadPairState).
         controls.setMethod(methodName);
         controls.setPhysics(st.schema);
+        controls.setSimulationDuration(st.simulationDuration ?? 0);
+        controls.setAlphaDecay(st.alphaDecay ?? 2);
         if (typeof st.material === "number") {
             pbmpmMaterial = st.material;
         }
@@ -3548,6 +3577,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             refreshDemoParams();
             pendingForce = null;
             activeSim.reset();
+            restartSimulationLifecycle();
             clearSceneHoles();
         }
         quality = nextQuality;
@@ -3563,6 +3593,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         currentPairKey = key;
         domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
         loadPairState(st);
+        restartSimulationLifecycle();
         // Re-apply the container-mesh visibility choice (onEnter shows it by default).
         nextDemo.setContainerVisible?.(importedScene ? false : controls.getValues().showContainer);
     }
@@ -3584,6 +3615,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             activeFlow = flowToGridLocal(activeDemo!.flow());
             applyFlow();
             activeSim.reset();
+            restartSimulationLifecycle();
             refreshFlowUI();
         },
         addSceneHole,
@@ -3669,6 +3701,32 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let captureStarted = false;
     let captureStep = 0;
     let captureReadyPending = false;
+    let captureReadyTime = 0;
+    function syncSimulationLifecycle(): void {
+        const lifecycle = fluidSimulationLifecycle(simulationElapsed, simulationDuration, simulationAlphaDecay);
+        simulationOpacity = lifecycle.opacity;
+        simulationStopped = lifecycle.stopped;
+        particleTask.setOpacity(simulationOpacity);
+        surfaceTask.setOpacity(simulationOpacity);
+        foamTask.setOpacity(simulationOpacity);
+        foamTask.setEnabled(foamRenderVisible());
+        canvas.dataset.simulationOpacity = simulationOpacity.toFixed(3);
+        canvas.dataset.simulationStopped = simulationStopped ? "true" : "false";
+    }
+
+    function restartSimulationLifecycle(): void {
+        simulationElapsed = 0;
+        syncSimulationLifecycle();
+    }
+
+    function advanceSimulationLifecycle(dt: number): void {
+        if (simulationStopped) {
+            return;
+        }
+        simulationElapsed += dt;
+        syncSimulationLifecycle();
+    }
+
     onBeforeRender(scene, (deltaMs: number) => {
         // A newly-inserted task (the MSAA scene pass + its depth resolve) needs the whole graph
         // re-recorded, which re-allocates canvas-sized targets other tasks' bind groups point
@@ -3679,7 +3737,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         if (captureReadyPending) {
             captureReadyPending = false;
-            canvas.dataset.captureTime = String(captureStep * captureFixedDt);
+            canvas.dataset.captureTime = String(captureReadyTime);
             canvas.dataset.captureReady = "true";
         }
         if (!captureDemoActivated) {
@@ -3722,7 +3780,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (fpsAccumMs >= 500) {
             const gpu = controls.gpu;
             if (gpu) {
-                gpu.fpsLabel.textContent = paused ? "paused" : `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
+                gpu.fpsLabel.textContent = paused ? "paused" : simulationStopped ? "stopped" : `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
             }
             fpsAccumMs = 0;
             fpsFrames = 0;
@@ -3742,6 +3800,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 activeDemo?.update(0);
             }
             activeSim.reset();
+            restartSimulationLifecycle();
             captureStarted = true;
             canvas.dataset.captureStarted = "true";
         }
@@ -3758,15 +3817,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
         // Rendering and the camera keep running, so you can inspect the frozen state;
         // forces / holes resume on unpause.
-        if (!paused) {
+        if (!paused && !simulationStopped) {
+            const stepDt = fluidSimulationStepDelta(simulationElapsed, dt, simulationDuration, simulationAlphaDecay);
             if (!importedScene) {
-                activeDemo?.update(dt); // box: spin paddle + write paddle SDF block
+                activeDemo?.update(stepDt); // box: spin paddle + write paddle SDF block
             }
-            activeSim.step(engine._currentEncoder, dt);
-            if (captureMode && ++captureStep >= captureTargetSteps) {
-                paused = true;
-                canvas.dataset.paused = "true";
-                captureReadyPending = true;
+            activeSim.step(engine._currentEncoder, stepDt);
+            advanceSimulationLifecycle(stepDt);
+            if (captureMode) {
+                captureStep++;
+                const completedAt = fluidCaptureCompletionTime(simulationElapsed, captureStep >= captureTargetSteps, simulationStopped);
+                if (completedAt !== null) {
+                    paused = true;
+                    canvas.dataset.paused = "true";
+                    captureReadyTime = completedAt;
+                    captureReadyPending = true;
+                }
             }
         }
     });
@@ -3853,8 +3919,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         // Global shortcuts: R resets (refills), M toggles the backend, P pauses, F8 hides the UI.
         if (e.key === "r" || e.key === "R") {
-            activeSim.reset();
-            clearSceneHoles();
+            resetActiveFlow(true);
         } else if (e.key === "m" || e.key === "M") {
             const methods = Object.keys(DEFAULT_FLUID_SCHEMAS);
             const nextMethod = methods[(methods.indexOf(methodName) + 1) % methods.length] ?? "PBF";

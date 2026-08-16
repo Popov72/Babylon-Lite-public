@@ -19,6 +19,10 @@ export interface FluidExportJson {
     physics: Record<string, number>;
     demoParams: Record<string, number>;
     demoState: Record<string, DemoStateValue>;
+    /** Simulated seconds before fading begins. Zero runs indefinitely. */
+    simulationDuration?: number;
+    /** Seconds taken to fade fluid opacity to zero. */
+    alphaDecay?: number;
     /** Solver-independent flow authoring data. Optional for legacy presets. */
     emitters?: FluidEmitter[];
     sinks?: FluidSink[];
@@ -137,6 +141,8 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
         demoState: ps.demoState ? { ...ps.demoState } : {},
+        simulationDuration: ps.simulationDuration ?? 0,
+        alphaDecay: ps.alphaDecay ?? 2,
         emitters: structuredClone(ps.emitters ?? []),
         sinks: structuredClone(ps.sinks ?? []),
         ...(ps.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: ps.initialEmittersFillCapacity } : {}),
@@ -237,6 +243,8 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     return {
         schema: { ...j.physics },
         demoParams: { ...j.demoParams },
+        simulationDuration: j.simulationDuration ?? 0,
+        alphaDecay: j.alphaDecay ?? 2,
         ...(emitters ? { emitters } : {}),
         ...(sinks ? { sinks } : {}),
         ...(j.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: j.initialEmittersFillCapacity } : {}),

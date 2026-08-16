@@ -338,6 +338,8 @@ export interface FluidFoamValues {
 export interface FluidControlValues {
     method: string;
     schema: Record<string, number>;
+    simulationDuration: number;
+    alphaDecay: number;
     color: string;
     half: boolean;
     thicknessDownscale: number;
@@ -376,6 +378,10 @@ export interface FluidControlValues {
 export interface FluidControlsInitial {
     method: string;
     count: number;
+    /** Simulated seconds before particles begin fading. Zero runs indefinitely. */
+    simulationDuration?: number;
+    /** Seconds taken to fade particle opacity from one to zero after the duration. */
+    alphaDecay?: number;
     physScale: number;
     /** World-space center of the active simulation grid. */
     gridPosition?: [number, number, number];
@@ -425,6 +431,8 @@ export interface FluidControlsInitial {
 export interface FluidControlsCallbacks {
     onMethod?(method: string): void;
     onParticleCount?(count: number): void;
+    onSimulationDuration?(seconds: number): void;
+    onAlphaDecay?(seconds: number): void;
     onRenderMode?(spheres: boolean): void;
     onColor?(rgb: [number, number, number]): void;
     onAbsorption?(v: number): void;
@@ -501,6 +509,8 @@ export interface FluidControlsOptions {
     showActiveBlocks?: boolean;
     /** Show grid position, world-space XYZ size and derived cell-size controls. */
     showGridControls?: boolean;
+    /** Show duration and alpha-decay lifecycle controls in the General section. */
+    showSimulationTiming?: boolean;
     /** When true, the "Physics simulation" section OMITS the "Physics particle size"
      *  row but KEEPS the per-method sliders + reset button. Use
      *  when the host owns its own particle-size control (so physScale would conflict).
@@ -552,6 +562,8 @@ export interface FluidControlsHandle {
     // ── Programmatic setters (see the module contract for which fire callbacks) ──
     setMethod(method: string): void;
     setParticleCount(count: number): void;
+    setSimulationDuration(seconds: number): void;
+    setAlphaDecay(seconds: number): void;
     setRenderMode(spheres: boolean): void;
     setColor(hex: string): void;
     setAbsorption(v: number): void;
@@ -620,7 +632,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let currentMethod = init.method;
 
     // ── Labelled render-slider helper (mirrors the fluid demo's makeRenderSlider). ──
-    type RenderSliderRow = HTMLDivElement & { set(v: number): void };
+    type RenderSliderRow = HTMLDivElement & { set(v: number): void; get(): number };
     /** A hoverable "i" appended after a setting's name, explaining what the setting does.
      *  Uses the native `title` tooltip: no positioning code, no stacking-context fights with
      *  the panel's own scroll container, and it works unchanged if the panel is ever reparented. */
@@ -677,6 +689,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             val.textContent = fmt(v);
             onInput(v);
         };
+        row.get = (): number => parseFloat(input.value);
         row.append(head, input);
         return row;
     }
@@ -733,6 +746,27 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         particlesSel.appendChild(opt);
     }
     particlesSel.onchange = () => on.onParticleCount?.(parseInt(particlesSel.value, 10));
+    const formatSeconds = (v: number): string => `${Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)} s`;
+    const simulationDurationRow = makeRenderSlider(
+        "Simulation duration",
+        0,
+        120,
+        0.5,
+        init.simulationDuration ?? 0,
+        (v) => (v === 0 ? "Indefinite" : formatSeconds(v)),
+        (v) => on.onSimulationDuration?.(v),
+        "How long the simulation advances before particles begin fading. Zero keeps it running indefinitely."
+    );
+    const alphaDecayRow = makeRenderSlider(
+        "Alpha decay",
+        0,
+        10,
+        0.1,
+        init.alphaDecay ?? 2,
+        formatSeconds,
+        (v) => on.onAlphaDecay?.(v),
+        "Time taken to fade from fully visible to zero after the duration. At zero opacity, simulation and fluid rendering stop."
+    );
 
     // ── RENDER controls ─────────────────────────────────────────────────────
     // Controls that ONLY affect the screen-space fluid surface (depth/thickness/refraction
@@ -1692,6 +1726,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hideParticles) {
         generalItems.push(particlesTitle, particlesSel);
     }
+    if (opts.showSimulationTiming) {
+        generalItems.push(simulationDurationRow, alphaDecayRow);
+    }
     if (generalItems.length > 0) {
         root.append(...makeSection("General", generalItems));
     }
@@ -1981,6 +2018,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setParticleCount(count: number): void {
             particlesSel.value = String(count);
         },
+        setSimulationDuration(seconds: number): void {
+            simulationDurationRow.set(seconds);
+        },
+        setAlphaDecay(seconds: number): void {
+            alphaDecayRow.set(seconds);
+        },
         setRenderMode(spheres: boolean): void {
             renderChk.checked = spheres;
             on.onRenderMode?.(spheres);
@@ -2142,6 +2185,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             return {
                 method: currentMethod,
                 schema,
+                simulationDuration: simulationDurationRow.get(),
+                alphaDecay: alphaDecayRow.get(),
                 color: colorInput.value,
                 half: halfChk.checked,
                 thicknessDownscale: parseInt(thickDownInput.value, 10),

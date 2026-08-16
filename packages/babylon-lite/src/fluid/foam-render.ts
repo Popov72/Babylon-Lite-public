@@ -221,7 +221,7 @@ struct Comp {
     texel: vec4<f32>,    // 1/fullW, 1/fullH, smoothOn, debugByKind
     light: vec4<f32>,    // lightIntensity, ambient, aoStrength, normalStrength
     ldir: vec4<f32>,     // lightDir.xyz, specStrength
-    sub: vec4<f32>,      // submerged-bubble tint rgb, _
+    sub: vec4<f32>,      // submerged-bubble tint rgb, global opacity
 };
 @group(0) @binding(0) var accumRaw: texture_2d<f32>;
 @group(0) @binding(1) var accumBlur: texture_2d<f32>;
@@ -237,6 +237,9 @@ fn sampleActive(uv: vec2<f32>) -> vec4<f32> {
 fn surfAt(uv: vec2<f32>) -> f32 {
     let a = sampleActive(uv);
     return a.r + a.b;
+}
+fn debugComposite(rgb: vec3<f32>) -> vec4<f32> {
+    return vec4<f32>(rgb, u.sub.w);
 }
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -257,26 +260,26 @@ fn surfAt(uv: vec2<f32>) -> f32 {
     let dTdy = surfAt(uv + vec2<f32>(0.0, texel.y)) - surfAt(uv - vec2<f32>(0.0, texel.y));
     let normal = normalize(vec3<f32>(-dTdx * ns, -dTdy * ns, 1.0));
 
-    // ── Debug texture visualisations (opaque full-screen replacement) ──
+    // ── Debug texture visualisations (full-screen, lifecycle-opacity blended) ──
     if (debugTex > 0.5) {
         if (debugTex < 1.5) {          // 1: accumulation (raw RGB = foam/bubble/spray)
             let a = textureSampleLevel(accumRaw, accumSamp, uv, 0.0);
-            return vec4<f32>(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+            return debugComposite(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
         } else if (debugTex < 2.5) {   // 2: foam channel (R)
-            return vec4<f32>(vec3<f32>(clamp(foamT, 0.0, 1.0)), 1.0);
+            return debugComposite(vec3<f32>(clamp(foamT, 0.0, 1.0)));
         } else if (debugTex < 3.5) {   // 3: bubble channel (G)
-            return vec4<f32>(vec3<f32>(clamp(subT, 0.0, 1.0)), 1.0);
+            return debugComposite(vec3<f32>(clamp(subT, 0.0, 1.0)));
         } else if (debugTex < 4.5) {   // 4: spray channel (B)
-            return vec4<f32>(vec3<f32>(clamp(sprayT, 0.0, 1.0)), 1.0);
+            return debugComposite(vec3<f32>(clamp(sprayT, 0.0, 1.0)));
         } else if (debugTex < 5.5) {   // 5: blurred accumulation (RGB)
             let a = textureSampleLevel(accumBlur, accumSamp, uv, 0.0);
-            return vec4<f32>(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+            return debugComposite(clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
         } else if (debugTex < 6.5) {   // 6: foam alpha (post-smoothstep coverage)
             let fa = smoothstep(u.params.x, u.params.y, surfaceT);
-            return vec4<f32>(vec3<f32>(fa), 1.0);
+            return debugComposite(vec3<f32>(fa));
         }
         // 7: fake normals (screen-space, encoded to 0..1).
-        return vec4<f32>(normal * 0.5 + vec3<f32>(0.5), 1.0);
+        return debugComposite(normal * 0.5 + vec3<f32>(0.5));
     }
 
     // Legacy "colour by kind" checkbox (screen path): spray red / foam green / bubble blue.
@@ -284,7 +287,7 @@ fn surfAt(uv: vec2<f32>) -> f32 {
         let c = vec3<f32>(clamp(sprayT, 0.0, 1.0), clamp(foamT, 0.0, 1.0), clamp(subT, 0.0, 1.0));
         let a = max(max(sprayT, foamT), subT);
         if (a <= 0.002) { discard; }
-        return vec4<f32>(c, min(a, 1.0) * 0.95);
+        return vec4<f32>(c, min(a, 1.0) * 0.95 * u.sub.w);
     }
 
     let foamAlpha = smoothstep(u.params.x, u.params.y, surfaceT);
@@ -311,10 +314,10 @@ fn surfAt(uv: vec2<f32>) -> f32 {
     let subAlpha = smoothstep(u.params.x, u.params.y, subT) * u.params.z;
 
     // Composite the (opaque) foam over the (faint) bubble layer, non-premultiplied.
-    let outA = foamAlpha + subAlpha * (1.0 - foamAlpha);
-    if (outA <= 0.002) { discard; }
-    let outRGB = (foamColor * foamAlpha + subColor * subAlpha * (1.0 - foamAlpha)) / max(outA, 1e-4);
-    return vec4<f32>(outRGB, min(outA, 1.0));
+    let baseA = foamAlpha + subAlpha * (1.0 - foamAlpha);
+    if (baseA <= 0.002) { discard; }
+    let outRGB = (foamColor * foamAlpha + subColor * subAlpha * (1.0 - foamAlpha)) / max(baseA, 1e-4);
+    return vec4<f32>(outRGB, min(baseA, 1.0) * u.sub.w);
 }`;
 
 const ALPHA_BLEND = {
@@ -348,6 +351,7 @@ export function createFoamRenderTask(
 ): Task & {
     setSim(s: FluidSim): void;
     setEnabled(on: boolean): void;
+    setOpacity(v: number): void;
     setSizeScale(s: number): void;
     setDebugByKind(on: boolean): void;
     setThresholds(t0: number, t1: number): void;
@@ -368,6 +372,7 @@ export function createFoamRenderTask(
     const getSurfaceDepth = opts.getSurfaceDepth;
     let currentSim = opts.sim;
     let enabled = true;
+    let opacity = 1;
     let sizeScale = 1;
     let debugByKind = false;
     let t0 = 0.25;
@@ -533,11 +538,11 @@ export function createFoamRenderTask(
                 lightDir[1],
                 lightDir[2],
                 specStrength,
-                // sub: submerged-bubble tint rgb, _
+                // sub: submerged-bubble tint rgb, global opacity
                 subColor[0],
                 subColor[1],
                 subColor[2],
-                0,
+                opacity,
             ])
         );
     }
@@ -663,6 +668,10 @@ export function createFoamRenderTask(
         setEnabled(on: boolean): void {
             enabled = on;
         },
+        /** Fade all rendered diffuse particles without changing their pool. */
+        setOpacity(v: number): void {
+            opacity = Math.max(0, Math.min(1, v));
+        },
         /** Visual foam size multiplier (screen-space splat radius). */
         setSizeScale(s: number): void {
             sizeScale = s;
@@ -717,7 +726,7 @@ export function createFoamRenderTask(
             build();
         },
         execute(): number {
-            if (!enabled) {
+            if (!enabled || opacity <= 0) {
                 return 0;
             }
             const pool = currentSim.diffuse;
