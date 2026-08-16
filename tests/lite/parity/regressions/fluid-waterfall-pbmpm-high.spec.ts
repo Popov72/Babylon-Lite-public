@@ -7,7 +7,7 @@ const GOLDEN_PATH = path.join(REFERENCE_DIR, "known-good.png");
 const ACTUAL_PATH = path.join(REFERENCE_DIR, "test-actual.png");
 // Identical fixed-step runs measured about 2.6 MAD locally; retain device/GPU margin
 // while still catching domain-scale or emitter-direction changes that move large regions.
-const MAX_MAD = 8;
+const MAX_MAD = 5;
 
 test("Waterfall PB-MPM High remains visually stable after 10 simulated seconds", async ({ page }, testInfo) => {
     test.setTimeout(180_000);
