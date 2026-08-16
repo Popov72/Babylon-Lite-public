@@ -46,6 +46,7 @@ import {
     isGizmoDragging,
     isGizmoInteracting,
     isGizmoPickPending,
+    loadGltf,
     loadEnvironment,
     loadHdrEnvironment,
     createBlurPostProcessTask,
@@ -53,6 +54,7 @@ import {
     onBeforeRender,
     registerSceneWithShadowSupport,
     registerUtilityLayer,
+    removeFromScene,
     setPositionGizmoLocalCoordinates,
     setRotationGizmoLocalCoordinates,
     setScaleGizmoLocalCoordinates,
@@ -63,7 +65,7 @@ import {
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink, FluidTransform } from "babylon-lite";
-import type { FluidSim } from "babylon-lite/fluid/sim-common.js";
+import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_SINKS } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
@@ -72,8 +74,9 @@ import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js"
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
 import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
-import type { Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, Vec3 } from "babylon-lite";
+import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, Vec3 } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
+import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.js";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
 // re-exported from the package root, so the factory comes from its own module (the same
 // deep-import convention the fluid sim + HDR skybox already use here).
@@ -83,7 +86,8 @@ import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
-import { exportJsonFromPairState } from "./fluid/preset-io.js";
+import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "./fluid/preset-io.js";
+import { parseBliteFluidBundle, type BliteFluidBundle } from "./fluid/blitefluid-bundle.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import {
@@ -548,6 +552,15 @@ async function main(): Promise<void> {
     let activeDemo: FluidDemo | null = null;
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
+    interface ImportedFluidScene {
+        asset: AssetContainer;
+        sdf: SceneSdfSpec;
+        paramsBuffer: GPUBuffer;
+        gridBuffer: GPUBuffer;
+    }
+    let importedScene: ImportedFluidScene | null = null;
+    let suppressPairSnapshot = false;
+    let importGeneration = 0;
 
     // Composite target for the whole fluid chain. The surface / foam / container-overlay
     // passes write HERE instead of straight to the swapchain, so a post-process stage can
@@ -1161,7 +1174,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function applyFlow(): void {
         installedFlow = flowToWorld(activeFlow);
         setInstalledFlow();
-        activeDemo?.onFlowChanged?.(installedFlow);
+        if (!importedScene) {
+            activeDemo?.onFlowChanged?.(installedFlow);
+        }
         canvas.dataset.emitterCount = String(activeFlow.emitters.length);
         canvas.dataset.sinkCount = String(activeFlow.sinks.length);
     }
@@ -1181,7 +1196,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             installedFlow.sinks[index] = withFlowPosition(object as FluidSink, gridLocalToWorld(object.transform.position, position));
         }
         setInstalledFlow();
-        activeDemo?.onFlowChanged?.(installedFlow);
+        if (!importedScene) {
+            activeDemo?.onFlowChanged?.(installedFlow);
+        }
     }
     function resetActiveFlow(clearHoles: boolean): void {
         applyFlow();
@@ -1193,11 +1210,72 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
 
     function applySceneSdf(): void {
         const demo = activeDemo!;
-        demo.writeSdfParams();
-        pbfSim.setSceneSdf(demo.sdf);
-        mpmSim.setSceneSdf(demo.sdf);
-        pbmpmSim.setSceneSdf(demo.sdf);
+        if (!importedScene) {
+            demo.writeSdfParams();
+        }
+        const sdf = importedScene?.sdf ?? demo.sdf;
+        pbfSim.setSceneSdf(sdf);
+        mpmSim.setSceneSdf(sdf);
+        pbmpmSim.setSceneSdf(sdf);
         applyFlow();
+    }
+
+    function clearImportedScene(restoreDemo: boolean): void {
+        const previous = importedScene;
+        if (!previous) {
+            return;
+        }
+        importedScene = null;
+        canvas.dataset.importedBundle = "false";
+        removeFromScene(scene, previous.asset);
+        retireGpuResources(engine, () => {
+            previous.paramsBuffer.destroy();
+            previous.gridBuffer.destroy();
+        });
+        if (restoreDemo && activeDemo) {
+            activeDemo.setContainerVisible?.(controls.getValues().showContainer);
+            applySceneSdf();
+        }
+    }
+
+    function createImportedCollision(bundle: BliteFluidBundle): Omit<ImportedFluidScene, "asset"> {
+        const paramsBuffer = engine._device.createBuffer({
+            label: "blitefluid-sdf-params",
+            size: 32,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        let gridBuffer: GPUBuffer | undefined;
+        try {
+            gridBuffer = engine._device.createBuffer({
+                label: "blitefluid-sdf-grid",
+                size: bundle.collision.distances.byteLength,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            const { origin, cellSize, dims, distances } = bundle.collision;
+            engine._device.queue.writeBuffer(paramsBuffer, 0, new Float32Array([origin[0], origin[1], origin[2], 1 / cellSize, dims[0], dims[1], dims[2], 0]));
+            engine._device.queue.writeBuffer(gridBuffer, 0, distances);
+            return {
+                paramsBuffer,
+                gridBuffer,
+                sdf: {
+                    struct: /* wgsl */ `
+struct SceneSdfParams {
+    grid: vec4<f32>,
+    dims: vec4<f32>,
+};`,
+                    sdf: /* wgsl */ `
+fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    return sampleSdfGrid(pt, sceneSdfParams.grid.xyz, sceneSdfParams.grid.w, vec3<i32>(sceneSdfParams.dims.xyz));
+}`,
+                    buffer: paramsBuffer,
+                    sdfGrid: gridBuffer,
+                },
+            };
+        } catch (error) {
+            paramsBuffer.destroy();
+            gridBuffer?.destroy();
+            throw error;
+        }
     }
 
     // ── Live tuning UI ───────────────────────────────────────────────
@@ -1519,7 +1597,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             },
             onAnisotropySurfScale: (v) => surfaceTask.setAnisotropySurfScale(v),
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
-            onShowContainer: (visible) => activeDemo?.setContainerVisible?.(visible),
+            onShowContainer: (visible) => activeDemo?.setContainerVisible?.(importedScene ? false : visible),
             onDebug: (mode) => {
                 surfaceTask.setDebug(mode);
                 // Hide foam sprites while a surface debug texture is shown (they composite over it).
@@ -1619,11 +1697,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     const sinkFlowHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
 
-    // ── Export parameters ────────────────────────────────────────────────────
-    // Serialise the FULL current parameter set (pair state + render mode + surface +
-    // foam) to a pretty-printed JSON download. Meant to seed a default (demo, method)
-    // preset, so it must be complete + self-describing. Import is intentionally NOT
-    // implemented yet (export only).
+    // ── Preset / Blender bundle import and parameter export ──────────────────
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export parameters";
     exportBtn.style.cssText = "width:100%;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
@@ -1643,7 +1717,139 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         URL.revokeObjectURL(url);
     }
     exportBtn.onclick = exportParameters;
-    controls.root.append(...controls.makeSection("Export", [exportBtn]));
+    const supportedMethods = new Set(["PBF", "MLS-MPM", "PB-MPM"]);
+    function applyImportedPreset(json: FluidExportJson, switchMethod: boolean): void {
+        const importedMethod = json.meta?.method;
+        if (!importedMethod || !supportedMethods.has(importedMethod)) {
+            throw new Error(`Unsupported fluid method "${importedMethod}"`);
+        }
+        if (switchMethod && importedMethod !== methodName) {
+            switchPair(activeDemo!, importedMethod, quality);
+        }
+        const partial = presetFromExportJson(json);
+        const current = readLivePairState(methodName);
+        const currentDomainScale = typeof current.demoParams.meshScale === "number" ? current.demoParams.meshScale : domainScale;
+        const importedDomainScale = typeof partial.demoParams?.meshScale === "number" ? partial.demoParams.meshScale : currentDomainScale;
+        const mergedGrid = partial.grid ? cloneGridSettings(partial.grid) : current.grid ? cloneGridSettings(current.grid) : undefined;
+        domainScale = importedDomainScale;
+        loadPairState({
+            ...current,
+            ...partial,
+            grid: mergedGrid,
+            schema: { ...current.schema, ...(partial.schema ?? {}) },
+            demoParams: { ...current.demoParams, ...(partial.demoParams ?? {}) },
+            emitters: partial.emitters ?? current.emitters,
+            sinks: partial.sinks ?? current.sinks,
+            foam: partial.foam ? { ...current.foam!, ...partial.foam } : current.foam,
+        });
+    }
+    async function installImportedBundle(bundle: BliteFluidBundle, generation: number, targetDemo: FluidDemo): Promise<void> {
+        const importedMethod = bundle.manifest.preset.meta?.method;
+        if (!importedMethod || !supportedMethods.has(importedMethod)) {
+            throw new Error(`Unsupported fluid method "${importedMethod}"`);
+        }
+        let asset: AssetContainer;
+        try {
+            asset = await loadGltf(engine, bundle.sceneGlb);
+        } catch (error) {
+            if (generation !== importGeneration || activeDemo !== targetDemo) {
+                return;
+            }
+            throw error;
+        }
+        if (generation !== importGeneration || activeDemo !== targetDemo) {
+            removeFromScene(scene, asset);
+            return;
+        }
+        let collision: Omit<ImportedFluidScene, "asset">;
+        try {
+            collision = createImportedCollision(bundle);
+        } catch (error) {
+            removeFromScene(scene, asset);
+            throw error;
+        }
+        const nextImported: ImportedFluidScene = { asset, ...collision };
+        const replacingImported = importedScene !== null;
+        let assetAdded = false;
+        try {
+            clearImportedScene(false);
+            if (!replacingImported && importedMethod === methodName && currentPairKey !== null) {
+                pairStates.set(currentPairKey, readLivePairState(methodName));
+            }
+            if (importedMethod !== methodName) {
+                suppressPairSnapshot = replacingImported;
+                try {
+                    switchPair(activeDemo!, importedMethod, quality, pbmpmMaterial, false);
+                } finally {
+                    suppressPairSnapshot = false;
+                }
+            }
+            assetAdded = true;
+            addToScene(scene, asset);
+            importedScene = nextImported;
+            canvas.dataset.importedBundle = "true";
+            activeDemo!.setContainerVisible?.(false);
+            applyImportedPreset(bundle.manifest.preset, false);
+            activeDemo!.setContainerVisible?.(false);
+        } catch (error) {
+            if (importedScene === nextImported) {
+                clearImportedScene(true);
+            } else {
+                if (assetAdded) {
+                    removeFromScene(scene, asset);
+                }
+                nextImported.paramsBuffer.destroy();
+                nextImported.gridBuffer.destroy();
+            }
+            throw error;
+        }
+    }
+    const importInput = document.createElement("input");
+    importInput.type = "file";
+    importInput.accept = ".blitefluid,.json,application/json,application/zip";
+    importInput.hidden = true;
+    const importBtn = document.createElement("button");
+    importBtn.textContent = "Import preset / Blender bundle";
+    importBtn.style.cssText = exportBtn.style.cssText;
+    importBtn.onclick = () => importInput.click();
+    importInput.onchange = async () => {
+        const file = importInput.files?.[0];
+        importInput.value = "";
+        const targetDemo = activeDemo;
+        if (!file || !targetDemo) {
+            return;
+        }
+        const generation = ++importGeneration;
+        try {
+            if (file.name.toLowerCase().endsWith(".blitefluid")) {
+                const data = await file.arrayBuffer();
+                if (generation !== importGeneration || activeDemo !== targetDemo) {
+                    return;
+                }
+                await installImportedBundle(parseBliteFluidBundle(data), generation, targetDemo);
+                return;
+            }
+            const contents = await file.text();
+            if (generation !== importGeneration || activeDemo !== targetDemo) {
+                return;
+            }
+            const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
+            clearImportedScene(true);
+            if (Array.isArray(parsed.emitters) && !parsed.render) {
+                const importedFlow = { emitters: structuredClone(parsed.emitters), sinks: structuredClone(parsed.sinks ?? []) };
+                activeFlow = (parsed.formatVersion ?? 0) < 4 ? flowToGridLocal(importedFlow) : importedFlow;
+                resetActiveFlow(false);
+                updateAuthoredFlow();
+                return;
+            }
+            applyImportedPreset(parsed as FluidExportJson, true);
+        } catch (error) {
+            if (generation === importGeneration && activeDemo === targetDemo) {
+                console.error("[fluid] failed to import preset", error);
+            }
+        }
+    };
+    controls.root.append(...controls.makeSection("Presets", [importBtn, importInput, exportBtn]));
 
     // Mount the shared panel (right side) + the GPU-timing panel (top-left). The
     // `canvas.dataset.timing` flag lets tests read whether per-stage timing is active.
@@ -3303,14 +3509,20 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
     // demo visuals if the demo changed, then load the target pair's state.
-    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality, nextMaterial: number = pbmpmMaterial): void {
+    function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality, nextMaterial: number = pbmpmMaterial, invalidateImport = true): void {
+        if (invalidateImport) {
+            importGeneration++;
+        }
         // Switching demo or fluid method resumes the sim if it was paused.
         if (paused) {
             paused = false;
             canvas.dataset.paused = "false";
         }
-        if (currentPairKey !== null) {
+        if (currentPairKey !== null && !importedScene && !suppressPairSnapshot) {
             pairStates.set(currentPairKey, readLivePairState(methodName));
+        }
+        if (importedScene) {
+            clearImportedScene(false);
         }
         // Adopt the target method before applying scene state.
         methodName = nextMethod;
@@ -3352,7 +3564,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
         loadPairState(st);
         // Re-apply the container-mesh visibility choice (onEnter shows it by default).
-        nextDemo.setContainerVisible?.(controls.getValues().showContainer);
+        nextDemo.setContainerVisible?.(importedScene ? false : controls.getValues().showContainer);
     }
 
     // ── Services handed to each demo ──────────────────────────────────────
@@ -3526,7 +3738,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             if (activeDemo?.isReady?.() === false) {
                 return;
             }
-            activeDemo?.update(0);
+            if (!importedScene) {
+                activeDemo?.update(0);
+            }
             activeSim.reset();
             captureStarted = true;
             canvas.dataset.captureStarted = "true";
@@ -3545,7 +3759,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         // Rendering and the camera keep running, so you can inspect the frozen state;
         // forces / holes resume on unpause.
         if (!paused) {
-            activeDemo?.update(dt); // box: spin paddle + write paddle SDF block
+            if (!importedScene) {
+                activeDemo?.update(dt); // box: spin paddle + write paddle SDF block
+            }
             activeSim.step(engine._currentEncoder, dt);
             if (captureMode && ++captureStep >= captureTargetSteps) {
                 paused = true;
@@ -3568,7 +3784,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             forceLastX = e.clientX;
             forceLastY = e.clientY;
             forceLastT = performance.now();
-        } else {
+        } else if (!importedScene) {
             activeDemo?.onPointerDown?.(e);
         }
     });
@@ -3603,7 +3819,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             py /= plen;
             pz /= plen;
             pendingForce = { origin: ray.origin, dir: ray.dir, push: [px, py, pz], radius: FORCE_RADIUS, accel: speed * 0.5 };
-        } else {
+        } else if (!importedScene) {
             activeDemo?.onPointerMove?.(e);
         }
     });
@@ -3612,7 +3828,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             forceDragging = false;
             pendingForce = null;
             canvas.releasePointerCapture(e.pointerId);
-        } else {
+        } else if (!importedScene) {
             activeDemo?.onPointerUp?.(e);
         }
     };
@@ -3623,7 +3839,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (e.repeat) {
             return;
         }
-        activeDemo?.onKey?.(e); // demo-specific (capsule: Space punches a hole)
+        if (!importedScene) {
+            activeDemo?.onKey?.(e); // demo-specific (capsule: Space punches a hole)
+        }
         if (e.code === "Space") {
             e.preventDefault(); // prevent page scroll in every demo
             return;

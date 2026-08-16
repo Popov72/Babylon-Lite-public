@@ -12,6 +12,8 @@ packages/babylon-lite/build/
 .vite/
 .playwright-cli/
 *.py
+!scripts/export-blender-fluid.py
+!scripts/blender-fluid-addon.py
 __pycache__/
 *.py[cod]
 our-render*
