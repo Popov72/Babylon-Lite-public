@@ -51,23 +51,24 @@ let editorEnvironmentTexture = null;
 let localEnvironmentIndex = null;
 let localEnvironmentIndexPromise = null;
 let localEnvironmentIndexRequest = 0;
-let localEnvironmentBox = null;
-let localEnvironmentBoxMaterial = null;
-let localEnvironmentBoxCentre = null;
-let localEnvironmentBoxCentreMaterial = null;
-let localEnvironmentInfluenceBox = null;
-let localEnvironmentInnerBox = null;
-let localEnvironmentCamera = null;
-let localEnvironmentCameraMaterial = null;
-let localEnvironmentBoxSurface = null;
-let localEnvironmentBoxSurfaceMaterial = null;
-let localEnvironmentBoxTexture = null;
-let localEnvironmentBoxTextureProbe = null;
-let localEnvironmentBoxTexturePromise = null;
-let localEnvironmentBoxTexturePromiseProbe = null;
-let localEnvironmentBoxTextureRequest = 0;
 let localEnvironmentBoxShowRequest = 0;
-let localEnvironmentBoxEnvironmentVisible = false;
+/**
+ * One gizmo set per probe on screen, keyed by probe id.
+ *
+ * There used to be exactly one set, moved to whichever probe the window had
+ * selected. That cannot answer "show me this room's blend volume while I edit
+ * the one next door", which is the whole point of Always visible - so the set
+ * is per probe now, and the palette it wears says which one is being edited.
+ */
+const probeGizmos = new Map();
+/** Loaded cubemaps, keyed by probe id. Shared by every gizmo that wants one. */
+const probeTextures = new Map();
+const probeTexturePromises = new Map();
+let probeMaterials = null;
+/** The probes window is up. With it down no probe draws, whatever its flags. */
+let probeWindowOpen = false;
+/** The probe the window has selected: the one drawn in the bright palette. */
+let probeSelectedId = null;
 const authoredRoughness = new WeakMap();
 
 /**
@@ -113,9 +114,7 @@ on("modes", () => updateLocalEnvironmentBoxSurfaceView());
 on("environment-probes", () => {
   applyLocalEnvironmentBoxes();
   syncElementEnvironments();
-  if (localEnvironmentBox?.metadata?.probe) {
-    void showEnvironmentProbe(localEnvironmentBox.metadata.probe, true, null, localEnvironmentBoxEnvironmentVisible);
-  }
+  if (probeWindowOpen) void showEnvironmentProbes(probeSelectedId);
 });
 
 function waitForTexture(texture) {
@@ -167,23 +166,22 @@ function resetLocalEnvironmentAssets() {
   localEnvironmentBoxShowRequest++;
   localEnvironmentIndex = null;
   localEnvironmentIndexPromise = null;
-  localEnvironmentBoxTextureRequest++;
-  localEnvironmentBoxTexturePromise = null;
-  localEnvironmentBoxTexturePromiseProbe = null;
-  localEnvironmentBoxTexture?.dispose();
-  localEnvironmentBoxTexture = null;
-  localEnvironmentBoxTextureProbe = null;
-  localEnvironmentBoxSurface?.setEnabled(false);
+  dropProbeTextures();
+  for (const set of probeGizmos.values()) set.surface?.setEnabled(false);
+}
+
+/** Let go of every loaded cubemap, so the next show reloads from disk. */
+function dropProbeTextures() {
+  probeTexturePromises.clear();
+  for (const texture of probeTextures.values()) texture.dispose();
+  probeTextures.clear();
 }
 
 /** Drop the cached probe index and cubemaps after a capture rewrites them. */
 export async function refreshEnvironmentProbeAssets() {
-  const id = localEnvironmentBox?.metadata?.probe;
-  const visible = !!localEnvironmentBox?.isEnabled();
+  const wasOpen = probeWindowOpen;
   resetLocalEnvironmentAssets();
-  if (id && visible) {
-    await showEnvironmentProbe(id, true, null, localEnvironmentBoxEnvironmentVisible);
-  }
+  if (wasOpen) await showEnvironmentProbes(probeSelectedId);
 }
 
 function generatedProbeOf(index, id) {
@@ -247,102 +245,124 @@ function applyLocalEnvironmentBoxes() {
   }
 }
 
-function ensureLocalEnvironmentBox() {
-  if (localEnvironmentBox) {
-    return {
-      box: localEnvironmentBox,
-      centre: localEnvironmentBoxCentre,
-      camera: localEnvironmentCamera,
-      influence: localEnvironmentInfluenceBox,
-      inner: localEnvironmentInnerBox,
-    };
+/**
+ * The two palettes a probe gizmo can wear.
+ *
+ * Bright is the probe being edited; dim is one held on screen by Always
+ * visible. Same hues in both - a room's capture box has to stay recognisably a
+ * capture box - just taken down far enough that the selected probe reads as the
+ * live one at a glance, and that a dim box seen through a bright one does not
+ * pass for the far side of it.
+ */
+const PROBE_PALETTE = {
+  box: { colour: [0.15, 0.9, 1], alpha: 0.85, wireframe: true },
+  centre: { colour: [0.15, 0.9, 1], alpha: 1, wireframe: false },
+  camera: { colour: [1, 0.45, 0.1], alpha: 1, wireframe: false },
+  // Two hues rather than two shades of one: the influence and inner boxes are
+  // nested and often only a metre apart.
+  influence: { colour: [0.75, 0.35, 1], alpha: 0.7, wireframe: true },
+  inner: { colour: [1, 0.2, 0.2], alpha: 0.7, wireframe: true },
+};
+const PROBE_DIM_COLOUR = 0.3;
+const PROBE_DIM_ALPHA = 0.55;
+/** How solid the captured faces are drawn: selected probe, then always-visible. */
+const PROBE_SURFACE_ALPHA = 0.72;
+const PROBE_SURFACE_DIM_ALPHA = 0.34;
+
+/** Materials for one palette, made once and shared by every probe wearing it. */
+function probePalette(dim) {
+  const key = dim ? "dim" : "bright";
+  if (probeMaterials?.[key]) return probeMaterials[key];
+  if (!probeMaterials) probeMaterials = {};
+  const tag = dim ? "DIM" : "BRIGHT";
+  const materials = {};
+  for (const [part, { colour, alpha, wireframe }] of Object.entries(PROBE_PALETTE)) {
+    const material = new StandardMaterial(
+      `LOCAL_ENVIRONMENT_${part.toUpperCase()}_${tag}_mat`, state.scene);
+    material.emissiveColor = new Color3(...colour).scale(dim ? PROBE_DIM_COLOUR : 1);
+    material.diffuseColor = Color3.Black();
+    material.specularColor = Color3.Black();
+    material.disableLighting = true;
+    material.wireframe = wireframe;
+    material.alpha = alpha * (dim ? PROBE_DIM_ALPHA : 1);
+    materials[part] = material;
   }
-  localEnvironmentBoxMaterial = new StandardMaterial("LOCAL_ENVIRONMENT_BOX_mat", state.scene);
-  localEnvironmentBoxMaterial.emissiveColor = new Color3(0.15, 0.9, 1);
-  localEnvironmentBoxMaterial.diffuseColor = Color3.Black();
-  localEnvironmentBoxMaterial.specularColor = Color3.Black();
-  localEnvironmentBoxMaterial.disableLighting = true;
-  localEnvironmentBoxMaterial.wireframe = true;
-  localEnvironmentBoxMaterial.alpha = 0.85;
-  localEnvironmentBox = new TransformNode("LOCAL_ENVIRONMENT_BOX_ROOT", state.scene);
-  localEnvironmentBox.metadata = { gizmo: true, localEnvironmentBox: true, probe: null };
-  const localEnvironmentBoxMesh = MeshBuilder.CreateBox("LOCAL_ENVIRONMENT_BOX", { size: 1 }, state.scene);
-  localEnvironmentBoxMesh.parent = localEnvironmentBox;
-  localEnvironmentBoxMesh.material = localEnvironmentBoxMaterial;
-  localEnvironmentBoxMesh.isPickable = true;
-  localEnvironmentBoxMesh.renderingGroupId = 3;
-  localEnvironmentBoxMesh.metadata = {
+  probeMaterials[key] = materials;
+  return materials;
+}
+
+/**
+ * The gizmo set standing for one probe, built on first use.
+ *
+ * Every volume is a root TransformNode plus a child mesh, because the tool's
+ * selection, hover, drag and framing all walk an element's CHILD meshes: a bare
+ * mesh as the entry's node would be pickable but never outlined and never
+ * framed. Names carry the probe id so two probes on screen at once are two
+ * nodes anybody - a test, the inspector, the scene explorer - can tell apart.
+ */
+function ensureProbeGizmos(id) {
+  const existing = probeGizmos.get(id);
+  if (existing) return existing;
+  const set = { id, dim: null };
+  set.box = new TransformNode(probeNodeName("BOX_ROOT", id), state.scene);
+  set.box.metadata = { gizmo: true, localEnvironmentBox: true, probe: id };
+  set.boxMesh = MeshBuilder.CreateBox(probeNodeName("BOX", id), { size: 1 }, state.scene);
+  set.boxMesh.parent = set.box;
+  set.boxMesh.isPickable = true;
+  set.boxMesh.renderingGroupId = 3;
+  set.boxMesh.metadata = {
     gizmo: true,
     localEnvironmentBox: true,
-    environmentProbeRoot: localEnvironmentBox,
+    environmentProbeRoot: set.box,
   };
-  localEnvironmentBoxCentreMaterial = new StandardMaterial("LOCAL_ENVIRONMENT_BOX_CENTRE_mat", state.scene);
-  localEnvironmentBoxCentreMaterial.emissiveColor = new Color3(0.15, 0.9, 1);
-  localEnvironmentBoxCentreMaterial.diffuseColor = Color3.Black();
-  localEnvironmentBoxCentreMaterial.specularColor = Color3.Black();
-  localEnvironmentBoxCentreMaterial.disableLighting = true;
-  localEnvironmentBoxCentre = MeshBuilder.CreateSphere("LOCAL_ENVIRONMENT_BOX_CENTRE", { diameter: 0.3, segments: 12 }, state.scene);
-  localEnvironmentBoxCentre.material = localEnvironmentBoxCentreMaterial;
-  localEnvironmentBoxCentre.isPickable = false;
-  localEnvironmentBoxCentre.renderingGroupId = 3;
-  localEnvironmentBoxCentre.metadata = {
+  set.centre = MeshBuilder.CreateSphere(
+    probeNodeName("BOX_CENTRE", id), { diameter: 0.3, segments: 12 }, state.scene);
+  set.centre.isPickable = false;
+  set.centre.renderingGroupId = 3;
+  set.centre.metadata = {
     gizmo: true,
     localEnvironmentBoxCentre: true,
-    probe: null,
-    environmentProbeRoot: localEnvironmentBox,
+    probe: id,
+    environmentProbeRoot: set.box,
   };
-  localEnvironmentCameraMaterial = new StandardMaterial("LOCAL_ENVIRONMENT_CAMERA_mat", state.scene);
-  localEnvironmentCameraMaterial.emissiveColor = new Color3(1, 0.45, 0.1);
-  localEnvironmentCameraMaterial.diffuseColor = Color3.Black();
-  localEnvironmentCameraMaterial.specularColor = Color3.Black();
-  localEnvironmentCameraMaterial.disableLighting = true;
-  localEnvironmentCamera = MeshBuilder.CreateSphere("LOCAL_ENVIRONMENT_CAMERA", { diameter: 0.24, segments: 12 }, state.scene);
-  localEnvironmentCamera.material = localEnvironmentCameraMaterial;
-  localEnvironmentCamera.isPickable = false;
-  localEnvironmentCamera.renderingGroupId = 3;
-  localEnvironmentCamera.metadata = {
+  set.camera = MeshBuilder.CreateSphere(
+    probeNodeName("CAMERA", id), { diameter: 0.24, segments: 12 }, state.scene);
+  set.camera.isPickable = false;
+  set.camera.renderingGroupId = 3;
+  set.camera.metadata = {
     gizmo: true,
     localEnvironmentCamera: true,
-    probe: null,
-    environmentProbeRoot: localEnvironmentBox,
+    probe: id,
+    environmentProbeRoot: set.box,
   };
   // The two blending volumes. Editable in their own right - each is its own
   // selectable part of the probe - but they are NOT handles on the capture box:
   // the box is what the cubemap sees, the influence is only where that cubemap
   // is worth using, and the two move and resize independently.
-  //
-  // Two hues rather than two shades of one: the boxes are nested and often only
-  // a metre or so apart, and a dimmer violet inside a brighter one reads as the
-  // far side of the same box.
-  localEnvironmentInfluenceBox = makeLocalEnvironmentInfluenceBox(
-    "LOCAL_ENVIRONMENT_INFLUENCE_BOX", new Color3(0.75, 0.35, 1), 0.7);
-  localEnvironmentInnerBox = makeLocalEnvironmentInfluenceBox(
-    "LOCAL_ENVIRONMENT_INNER_BOX", new Color3(1, 0.2, 0.2), 0.7);
-  return {
-    box: localEnvironmentBox,
-    centre: localEnvironmentBoxCentre,
-    camera: localEnvironmentCamera,
-    influence: localEnvironmentInfluenceBox,
-    inner: localEnvironmentInnerBox,
-  };
+  const influence = makeProbeVolume("INFLUENCE_BOX", id);
+  set.influence = influence.root;
+  set.influenceMesh = influence.mesh;
+  const inner = makeProbeVolume("INNER_BOX", id);
+  set.inner = inner.root;
+  set.innerMesh = inner.mesh;
+  probeGizmos.set(id, set);
+  return set;
 }
 
-function makeLocalEnvironmentInfluenceBox(name, colour, alpha) {
-  const material = new StandardMaterial(`${name}_mat`, state.scene);
-  material.emissiveColor = colour;
-  material.diffuseColor = Color3.Black();
-  material.specularColor = Color3.Black();
-  material.disableLighting = true;
-  material.wireframe = true;
-  material.alpha = alpha;
-  // Root plus box, exactly like the capture volume above: the tool's selection,
-  // hover, drag and framing all walk an element's CHILD meshes, so a bare mesh
-  // as the entry's node would be pickable but never outlined and never framed.
-  const root = new TransformNode(`${name}_ROOT`, state.scene);
-  root.metadata = { gizmo: true, localEnvironmentInfluenceBox: true, probe: null };
-  const mesh = MeshBuilder.CreateBox(name, { size: 1 }, state.scene);
+/**
+ * Gizmo node names, so two probes drawn together are two distinguishable nodes.
+ * The bare names stayed unqualified for one probe; the id is appended after a
+ * separator no probe id may contain.
+ */
+function probeNodeName(part, id) {
+  return `LOCAL_ENVIRONMENT_${part}#${id}`;
+}
+
+function makeProbeVolume(part, id) {
+  const root = new TransformNode(probeNodeName(`${part}_ROOT`, id), state.scene);
+  root.metadata = { gizmo: true, localEnvironmentInfluenceBox: true, probe: id };
+  const mesh = MeshBuilder.CreateBox(probeNodeName(part, id), { size: 1 }, state.scene);
   mesh.parent = root;
-  mesh.material = material;
   mesh.isPickable = true;
   mesh.renderingGroupId = 3;
   mesh.metadata = {
@@ -350,13 +370,51 @@ function makeLocalEnvironmentInfluenceBox(name, colour, alpha) {
     localEnvironmentInfluenceBox: true,
     environmentProbeRoot: root,
   };
-  return root;
+  return { root, mesh };
 }
 
-function ensureLocalEnvironmentBoxSurface() {
-  if (localEnvironmentBoxSurface) return localEnvironmentBoxSurface;
-  localEnvironmentBoxSurfaceMaterial = new ShaderMaterial(
-    "LOCAL_ENVIRONMENT_BOX_SURFACE_mat",
+/** Repaint one probe's gizmos, when it goes from being edited to being watched. */
+function applyProbePalette(set, dim) {
+  if (set.dim === dim) return;
+  set.dim = dim;
+  const palette = probePalette(dim);
+  set.boxMesh.material = palette.box;
+  set.centre.material = palette.centre;
+  set.camera.material = palette.camera;
+  set.influenceMesh.material = palette.influence;
+  set.innerMesh.material = palette.inner;
+  if (set.surfaceMaterial) {
+    set.surfaceMaterial.setFloat(
+      "surfaceAlpha", dim ? PROBE_SURFACE_DIM_ALPHA : PROBE_SURFACE_ALPHA);
+  }
+}
+
+/** Take one probe's gizmos out of the scene, materials excepted: those are shared. */
+function disposeProbeGizmos(id) {
+  const set = probeGizmos.get(id);
+  if (!set) return;
+  probeGizmos.delete(id);
+  set.box.dispose();
+  set.centre.dispose();
+  set.camera.dispose();
+  set.influence.dispose();
+  set.inner.dispose();
+  set.surface?.dispose();
+  set.surfaceMaterial?.dispose();
+}
+
+/**
+ * The lit face of one probe's capture box: its own cubemap, drawn where the
+ * wireframe would be.
+ *
+ * A ShaderMaterial per probe rather than one shared: the sampler, the capture
+ * point and the reflection matrix are all per probe, so two boxes showing their
+ * faces at once cannot take turns with one material.
+ */
+function ensureProbeSurface(set) {
+  if (set.surface) return set.surface;
+  set.surfaceMaterial = new ShaderMaterial(
+    probeNodeName("BOX_SURFACE_mat", set.id),
     state.scene,
     {
       vertexSource: `
@@ -379,6 +437,7 @@ uniform float decodeRGBD;
 uniform float oppositeZ;
 uniform float exposureLinear;
 uniform float environmentIntensity;
+uniform float surfaceAlpha;
 uniform int toneMapping;
 varying vec3 vWorldPosition;
 
@@ -429,32 +488,42 @@ void main(void) {
     linearColor = neutralToneMapping(max(linearColor, vec3(1e-7)));
   }
   vec3 displayColor = clamp(pow(max(linearColor, vec3(0.0)), vec3(1.0 / 2.2)), 0.0, 1.0);
-  gl_FragColor = vec4(displayColor, 0.72);
+  gl_FragColor = vec4(displayColor, surfaceAlpha);
 }`,
     },
     {
       attributes: ["position"],
-      uniforms: ["world", "worldViewProjection", "capturePosition", "reflectionMatrix", "decodeRGBD", "oppositeZ", "exposureLinear", "environmentIntensity", "toneMapping"],
+      uniforms: ["world", "worldViewProjection", "capturePosition", "reflectionMatrix", "decodeRGBD", "oppositeZ", "exposureLinear", "environmentIntensity", "surfaceAlpha", "toneMapping"],
       samplers: ["environmentSampler"],
       needAlphaBlending: true,
     }
   );
-  localEnvironmentBoxSurfaceMaterial.backFaceCulling = false;
-  updateLocalEnvironmentBoxSurfaceView();
-  localEnvironmentBoxSurface = MeshBuilder.CreateBox("LOCAL_ENVIRONMENT_BOX_SURFACE", { size: 1 }, state.scene);
-  localEnvironmentBoxSurface.material = localEnvironmentBoxSurfaceMaterial;
-  localEnvironmentBoxSurface.isPickable = false;
-  localEnvironmentBoxSurface.renderingGroupId = 2;
-  localEnvironmentBoxSurface.metadata = {
+  set.surfaceMaterial.backFaceCulling = false;
+  set.surfaceMaterial.setFloat(
+    "surfaceAlpha", set.dim ? PROBE_SURFACE_DIM_ALPHA : PROBE_SURFACE_ALPHA);
+  updateProbeSurfaceView(set.surfaceMaterial);
+  set.surface = MeshBuilder.CreateBox(
+    probeNodeName("BOX_SURFACE", set.id), { size: 1 }, state.scene);
+  set.surface.material = set.surfaceMaterial;
+  set.surface.isPickable = false;
+  set.surface.renderingGroupId = 2;
+  set.surface.metadata = {
     gizmo: true,
     localEnvironmentBoxSurface: true,
-    probe: null,
+    probe: set.id,
   };
-  return localEnvironmentBoxSurface;
+  return set.surface;
 }
 
+/** Push the scene's exposure and tone mapping onto every lit probe face. */
 function updateLocalEnvironmentBoxSurfaceView() {
-  if (!localEnvironmentBoxSurfaceMaterial || !state.scene) return;
+  for (const set of probeGizmos.values()) {
+    if (set.surfaceMaterial) updateProbeSurfaceView(set.surfaceMaterial);
+  }
+}
+
+function updateProbeSurfaceView(material) {
+  if (!material || !state.scene) return;
   const config = state.scene.imageProcessingConfiguration;
   const IPC = BABYLON.ImageProcessingConfiguration;
   let toneMapping = 0;
@@ -463,24 +532,27 @@ function updateLocalEnvironmentBoxSurfaceView() {
     else if (config.toneMappingType === IPC.TONEMAPPING_ACES) toneMapping = 2;
     else if (config.toneMappingType === IPC.TONEMAPPING_KHR_PBR_NEUTRAL) toneMapping = 3;
   }
-  localEnvironmentBoxSurfaceMaterial.setFloat("exposureLinear", config.exposure);
-  localEnvironmentBoxSurfaceMaterial.setFloat("environmentIntensity", state.envIntensity);
-  localEnvironmentBoxSurfaceMaterial.setInt("toneMapping", toneMapping);
+  material.setFloat("exposureLinear", config.exposure);
+  material.setFloat("environmentIntensity", state.envIntensity);
+  material.setInt("toneMapping", toneMapping);
 }
 
+/**
+ * One probe's captured cubemap, loaded once and kept while the window is open.
+ *
+ * Several probes can want faces at the same time now, so the cache is a map
+ * rather than a single slot. It is emptied when the window closes and when a
+ * capture rewrites the files underneath it.
+ */
 async function localEnvironmentTextureForBox(id) {
-  if (localEnvironmentBoxTexture && localEnvironmentBoxTextureProbe === id) {
-    return localEnvironmentBoxTexture;
-  }
-  if (localEnvironmentBoxTexturePromise && localEnvironmentBoxTexturePromiseProbe === id) {
-    return localEnvironmentBoxTexturePromise;
-  }
+  const loaded = probeTextures.get(id);
+  if (loaded) return loaded;
+  const pending = probeTexturePromises.get(id);
+  if (pending) return pending;
   const index = await fetchLocalEnvironmentIndex();
   const entry = generatedProbeOf(index, id);
   if (!entry?.env) return null;
-  const request = ++localEnvironmentBoxTextureRequest;
-  localEnvironmentBoxTexturePromiseProbe = id;
-  localEnvironmentBoxTexturePromise = (async () => {
+  const promise = (async () => {
     const query = entry.hash ? `?h=${encodeURIComponent(entry.hash)}` : "";
     const texture = CubeTexture.CreateFromPrefilteredData(`/environments/${encodeURIComponent(entry.env)}${query}`, state.scene);
     texture.coordinatesMode = Texture.SKYBOX_MODE;
@@ -491,103 +563,124 @@ async function localEnvironmentTextureForBox(id) {
       console.warn(`[aquanova] local environment faces unavailable for ${id}`, err);
       return null;
     }
-    if (request !== localEnvironmentBoxTextureRequest) {
+    // A capture, a reload or a close while this was in flight emptied the
+    // cache: the texture it was loading is stale before it ever drew.
+    if (probeTexturePromises.get(id) !== promise) {
       texture.dispose();
       return null;
     }
-    localEnvironmentBoxTexture?.dispose();
-    localEnvironmentBoxTexture = texture;
-    localEnvironmentBoxTextureProbe = id;
+    probeTextures.set(id, texture);
     return texture;
   })();
+  probeTexturePromises.set(id, promise);
   try {
-    return await localEnvironmentBoxTexturePromise;
+    return await promise;
   } finally {
-    if (request === localEnvironmentBoxTextureRequest) {
-      localEnvironmentBoxTexturePromise = null;
-      localEnvironmentBoxTexturePromiseProbe = null;
-    }
+    if (probeTexturePromises.get(id) === promise) probeTexturePromises.delete(id);
   }
 }
 
-function hideEnvironmentProbeGizmos() {
-  localEnvironmentBox?.setEnabled(false);
-  localEnvironmentBoxCentre?.setEnabled(false);
-  localEnvironmentCamera?.setEnabled(false);
-  localEnvironmentInfluenceBox?.setEnabled(false);
-  localEnvironmentInnerBox?.setEnabled(false);
-  localEnvironmentBoxSurface?.setEnabled(false);
+/** Take every probe gizmo down: the window is closed. */
+export function hideEnvironmentProbes() {
+  probeWindowOpen = false;
+  probeSelectedId = null;
+  localEnvironmentBoxShowRequest++;
+  for (const id of [...probeGizmos.keys()]) disposeProbeGizmos(id);
+  dropProbeTextures();
 }
 
-/** Show, hide, or live-preview one explicit local-environment volume. */
-export async function showEnvironmentProbe(id, visible, draft = null, showEnvironment = localEnvironmentBoxEnvironmentVisible) {
+/**
+ * Draw the probes window's worth of gizmos.
+ *
+ * `selected` is the probe being edited and is drawn bright; every probe with
+ * Always visible set is drawn alongside it in the dim palette, and everything
+ * else comes down. Which of its three volumes each one shows is the probe's
+ * own business too - two rooms rarely need reading the same way at the same
+ * time - so it is read off the record here rather than passed in.
+ */
+export async function showEnvironmentProbes(selected) {
   const request = ++localEnvironmentBoxShowRequest;
-  localEnvironmentBoxEnvironmentVisible = !!showEnvironment;
-  if (!visible || !id) {
-    hideEnvironmentProbeGizmos();
-    return null;
+  probeWindowOpen = true;
+  probeSelectedId = selected && state.environmentProbes.has(selected) ? selected : null;
+  const wanted = new Set();
+  if (probeSelectedId) wanted.add(probeSelectedId);
+  for (const [id, probe] of state.environmentProbes) {
+    if (probe.alwaysVisible) wanted.add(id);
   }
+  for (const id of [...probeGizmos.keys()]) {
+    if (!wanted.has(id)) disposeProbeGizmos(id);
+  }
+  const drawn = await Promise.all([...wanted].map((id) => drawEnvironmentProbe(id, request)));
+  return drawn.find((info) => info?.id === selected)?.info || null;
+}
+
+/** Put one probe's gizmos where its record says, in the palette it has earned. */
+async function drawEnvironmentProbe(id, request) {
   const info = await localEnvironmentProbeOf(id);
-  if (request !== localEnvironmentBoxShowRequest) return info;
-  const box = draft || info.effective;
+  if (request !== localEnvironmentBoxShowRequest) return null;
+  const box = info.effective;
   if (!box) {
-    hideEnvironmentProbeGizmos();
-    return info;
+    disposeProbeGizmos(id);
+    return { id, info };
   }
-  const meshes = ensureLocalEnvironmentBox();
-  meshes.box.position.copyFromFloats(...box.boxPosition);
-  meshes.box.scaling.copyFromFloats(...box.boxSize);
-  meshes.box.metadata.probe = id;
-  meshes.box.name = id;
-  meshes.box.setEnabled(true);
-  meshes.centre.position.copyFromFloats(...box.boxPosition);
-  meshes.centre.metadata.probe = id;
-  meshes.centre.setEnabled(true);
-  meshes.camera.position.copyFromFloats(...box.capturePosition);
-  meshes.camera.metadata.probe = id;
-  meshes.camera.setEnabled(true);
+  const set = ensureProbeGizmos(id);
+  applyProbePalette(set, id !== probeSelectedId);
+  // Which volumes this probe draws is its own view state. A probe read straight
+  // off a legacy generated index has none at all, and draws all three.
+  const view = state.environmentProbes.get(id);
+  const shows = (volume) => view?.visibleParts?.[volume] !== false;
+  const showBox = shows("box");
+  set.box.position.copyFromFloats(...box.boxPosition);
+  set.box.scaling.copyFromFloats(...box.boxSize);
+  set.box.setEnabled(showBox);
+  set.centre.position.copyFromFloats(...box.boxPosition);
+  set.centre.setEnabled(showBox);
+  set.camera.position.copyFromFloats(...box.capturePosition);
+  set.camera.setEnabled(showBox);
   // A probe read straight off a legacy generated index has no influence of its
   // own; showing nothing beats showing a volume the author never wrote.
   const influenceCentre = probeVector(box.influenceBoxPosition);
   const influenceSize = probeVector(box.influenceBoxSize);
   const innerSize = probeVector(box.influenceInnerBoxSize);
   if (influenceCentre && influenceSize) {
-    meshes.influence.position.copyFromFloats(...influenceCentre);
-    meshes.influence.scaling.copyFromFloats(...influenceSize);
-    meshes.influence.metadata.probe = environmentProbePartId(id, "influence");
-    meshes.influence.setEnabled(true);
+    set.influence.position.copyFromFloats(...influenceCentre);
+    set.influence.scaling.copyFromFloats(...influenceSize);
+    set.influence.metadata.probe = environmentProbePartId(id, "influence");
+    set.influence.setEnabled(shows("influence"));
   } else {
-    meshes.influence.setEnabled(false);
+    set.influence.setEnabled(false);
   }
   if (influenceCentre && innerSize && innerSize.some((n) => n > 0)) {
-    meshes.inner.position.copyFromFloats(...influenceCentre);
-    meshes.inner.scaling.copyFromFloats(...innerSize);
-    meshes.inner.metadata.probe = environmentProbePartId(id, "inner");
-    meshes.inner.setEnabled(true);
+    set.inner.position.copyFromFloats(...influenceCentre);
+    set.inner.scaling.copyFromFloats(...innerSize);
+    set.inner.metadata.probe = environmentProbePartId(id, "inner");
+    set.inner.setEnabled(shows("inner"));
   } else {
-    meshes.inner.setEnabled(false);
+    set.inner.setEnabled(false);
   }
-  if (!localEnvironmentBoxEnvironmentVisible) {
-    localEnvironmentBoxSurface?.setEnabled(false);
-    return info;
+  // The lit surface *is* the capture box, drawn with its own cubemap rather
+  // than in wireframe, so it goes down with it.
+  if (!view?.envFaces || !showBox) {
+    set.surface?.setEnabled(false);
+    return { id, info };
   }
-  const surface = ensureLocalEnvironmentBoxSurface();
+  const surface = ensureProbeSurface(set);
   surface.setEnabled(false);
   const texture = await localEnvironmentTextureForBox(id);
-  if (request !== localEnvironmentBoxShowRequest || !texture || !localEnvironmentBoxEnvironmentVisible || localEnvironmentBox?.metadata?.probe !== id) return info;
+  if (request !== localEnvironmentBoxShowRequest || !texture
+    || !probeGizmos.has(id) || !state.environmentProbes.get(id)?.envFaces) return { id, info };
   const capturePosition = box.capturePosition || box.boxPosition;
-  localEnvironmentBoxSurfaceMaterial.setTexture("environmentSampler", texture);
-  localEnvironmentBoxSurfaceMaterial.setVector3("capturePosition", Vector3.FromArray(capturePosition));
-  localEnvironmentBoxSurfaceMaterial.setMatrix("reflectionMatrix", texture.getReflectionTextureMatrix());
-  localEnvironmentBoxSurfaceMaterial.setFloat("decodeRGBD", texture.isRGBD ? 1 : 0);
+  set.surfaceMaterial.setTexture("environmentSampler", texture);
+  set.surfaceMaterial.setVector3("capturePosition", Vector3.FromArray(capturePosition));
+  set.surfaceMaterial.setMatrix("reflectionMatrix", texture.getReflectionTextureMatrix());
+  set.surfaceMaterial.setFloat("decodeRGBD", texture.isRGBD ? 1 : 0);
   const oppositeZ = state.scene.useRightHandedSystem ? !texture.invertZ : texture.invertZ;
-  localEnvironmentBoxSurfaceMaterial.setFloat("oppositeZ", oppositeZ ? -1 : 1);
-  updateLocalEnvironmentBoxSurfaceView();
+  set.surfaceMaterial.setFloat("oppositeZ", oppositeZ ? -1 : 1);
+  updateProbeSurfaceView(set.surfaceMaterial);
   surface.position.copyFromFloats(...box.boxPosition);
   surface.scaling.copyFromFloats(...box.boxSize);
-  surface.metadata.probe = id;
   surface.setEnabled(true);
-  return info;
+  return { id, info };
 }
 
 async function loadLocalEnvironments() {
@@ -1337,14 +1430,16 @@ function nearestChunkTo(position, bounds) {
  * corrected afterwards.
  */
 hooks.environmentProbeEntry = (id) => {
-  const shown = localEnvironmentBox?.metadata?.probe;
-  if (!shown || !state.environmentProbes.has(shown)) return null;
-  if (id === shown) {
-    return { id, name: id, type: "environment-probe", node: localEnvironmentBox, canRotate: false };
-  }
   const part = environmentProbePartOf(id);
-  if (part?.probe !== shown) return null;
-  const node = part.part === "influence" ? localEnvironmentInfluenceBox : localEnvironmentInnerBox;
+  const probe = part?.probe || id;
+  // Any probe on screen, not just the selected one: clicking a dim box is how
+  // an always-visible probe is brought up in the window.
+  const set = probeGizmos.get(probe);
+  if (!set || !state.environmentProbes.has(probe)) return null;
+  if (!part) {
+    return { id, name: id, type: "environment-probe", node: set.box, canRotate: false };
+  }
+  const node = part.part === "influence" ? set.influence : set.inner;
   if (!node?.isEnabled()) return null;
   return {
     id,
@@ -1641,8 +1736,6 @@ export async function setRuntimePreview(on) {
   syncLightingMode();
   applyVisibility();
   emit("modes");
-  if (localEnvironmentBox?.metadata?.probe && localEnvironmentBox.isEnabled()) {
-    await showEnvironmentProbe(localEnvironmentBox.metadata.probe, true, null, localEnvironmentBoxEnvironmentVisible);
-  }
+  if (probeWindowOpen) await showEnvironmentProbes(probeSelectedId);
   return true;
 }

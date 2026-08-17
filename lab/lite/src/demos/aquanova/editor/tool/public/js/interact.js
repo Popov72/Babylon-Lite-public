@@ -6,16 +6,18 @@
 // holds, or whatever the cursor hovers, or failing both the selection, is the
 // *current element*: Shift+wheel turns it, Ctrl+wheel resizes it, Alt+F flips it.
 
-import { getProto } from "./kit.js";
+import { getProto, getModule } from "./kit.js";
 import { renderListFor } from "./runtime.js";
-import { setLightPart } from "./lights.js";
+import { setLightPart, addLight } from "./lights.js";
+import { compoundSpecs } from "./compounds.js";
 import {
   state, emit, on, pushUndo, placeAt, select, toggleSelect, entryOf,
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
   constrainMove, axisBasis, cameraDropPoint, isGizmoMesh, ownerIdOf, setShowLayer,
-  isRuntimeStandIn,
+  isRuntimeStandIn, groupExpand, groupOf, groupAnchor, nextGroupId,
+  COMPOUND_CHUNK, STAGE_CHUNK,
 } from "./editor.js";
 
 const {
@@ -210,6 +212,15 @@ async function buildGhost(specs, opts = {}) {
     items.push({
       module: spec.module || null, collider: spec.collider || null,
       node, sourceId: spec.sourceId || null,
+      // What a drop needs that the transform does not carry. `originId` is the
+      // element a *copy* came from, kept even when `sourceId` is deliberately
+      // null, so the copy can inherit its lamps and its compound. `lights` is
+      // the same information for a compound tile, which has no source element
+      // in the scene at all.
+      originId: spec.originId || null,
+      lights: spec.lights || null,
+      name: spec.name || "",
+      compound: spec.compound || "",
       // Kept alongside the node so the drop can *compose* the world transform
       // rather than decompose a matrix. A mirrored element has a negative
       // determinant, which has no unique rotation/scale split - Babylon's
@@ -235,6 +246,8 @@ async function buildGhost(specs, opts = {}) {
   return {
     // the module a single-item ghost holds, for the HUD and repeat placement
     module: items.length === 1 ? items[0].module : null,
+    // the compound a ghost expanded from, whatever its member count
+    compound: items[0]?.compound || "",
     // likewise for a collision primitive, which has a kind instead of a module
     collider: items.length === 1 ? items[0].collider : null,
     root, items, meshes,
@@ -272,13 +285,29 @@ hooks.ghostNode = () => (ghost && !ghost.root.isDisposed() ? ghost.root : null);
  * `opts.rotation` / `opts.scaling` seed the ghost, which is what makes Ctrl+D
  * feel like a duplicate rather than a fresh placement - the copy keeps the
  * orientation and any mirroring of the thing it came from.
+ *
+ * `opts.originId` names that element, and is what makes the copy a copy of the
+ * whole of it rather than of its mesh: the drop reads the source and brings its
+ * lamps, its name and its compound across. Without it a duplicate of a lit
+ * panel came back with the *kit's* default lamp - or with none at all, when the
+ * light had been added by hand - and every tuned intensity was lost on the way.
  */
 export async function armGhost(moduleId, opts = {}) {
   cancelGhost();
   if (!moduleId) { emit("current"); return null; }
   floorDragAxisForGhost();
   const token = ++ghostToken;
-  const built = await buildGhost([{ module: moduleId }], opts);
+  // A compound tile has no model file of its own: it expands into one spec per
+  // member, which the ghost already knows how to carry - the same machinery a
+  // grabbed multi-selection uses. Everything downstream is then identical, and
+  // arming one is still just `setBrush(id)`.
+  const tile = getModule(moduleId);
+  // A compound tile carries its lamps in its recipe and has no source element
+  // in the scene, so `originId` is meaningless there - and passing it would
+  // hand every member the same one.
+  const built = await buildGhost(
+    tile?.compound ? compoundSpecs(tile)
+      : [{ module: moduleId, originId: opts.originId || null }], opts);
   if (token !== ghostToken) { disposeGhost(built); return null; }  // cancelled while loading
 
   ghost = built;
@@ -368,7 +397,7 @@ export async function grabSelection(opts = {}) {
     // belongs here rather than only at the Ctrl+D key, which filtered a list it
     // then did not pass on, so a module selected alongside a shape was copied
     // anyway. Carrying one with `M` is still fine; it is copying that is not.
-    .filter((e) => !(opts.copy && state.collisionMode && e.stage && e.type !== "collider"));
+    .filter((e) => !(opts.copy && state.mode === "collision" && e.stage && e.type !== "collider"));
   if (!entries.length) return null;
   // A copy is a new thing being placed, so it wants the floor plane; a carry is
   // moving what is already there, and raising it is a fair reason to be in Y.
@@ -389,6 +418,10 @@ export async function grabSelection(opts = {}) {
     rotation: eulerOf(e.node),
     scaling: e.node.scaling.asArray(),
     sourceId: opts.copy ? null : e.id,
+    // Where a copy came from. `sourceId` is deliberately null for a copy - it
+    // means "the element this ghost is standing in for" - but a copy still has
+    // to inherit its source's lamps and its compound, and that needs the id.
+    originId: e.id,
   }));
   const built = await buildGhost(specs, { mode: opts.copy ? "copy" : "move" });
   if (token !== ghostToken) { disposeGhost(built); return null; }
@@ -723,7 +756,11 @@ export async function dropGhost() {
       g.scaling[0] * it.scaling[0],
       g.scaling[1] * it.scaling[1],
       g.scaling[2] * it.scaling[2]);
-    return { module: it.module, collider: it.collider, sourceId: it.sourceId, pos, rot, scl };
+    return {
+      module: it.module, collider: it.collider, sourceId: it.sourceId,
+      originId: it.originId, lights: it.lights, name: it.name,
+      compound: it.compound, pos, rot, scl,
+    };
   });
 
   let made = null;
@@ -750,34 +787,80 @@ export async function dropGhost() {
 
   // The manifest stores Euler triples, so the orientation is decomposed only
   // here, once, at the boundary - never accumulated in that form.
+  //
+  // Compound bookkeeping rides along. A compound tile lands as several
+  // placements sharing one fresh group id; a *copy* of placed elements has to
+  // mint a new id per source group, or the copy would be a second handle on
+  // the original instance and selecting either would select both.
   const ids = [];
+  const regroup = new Map();
+  let fromTile = "";
+  let lit = false;
+  let shapes = false;
+  // Every piece is placed silently and the whole drop announced at the end.
+  // Announcing the first one as it lands - which is what `placeAt` does for an
+  // ordinary drop - tells the rest of the tool a compound exists while only its
+  // first member does: the Runtime view rebuilt itself there and dressed one
+  // wall out of four, and the other three stayed in editor materials until
+  // something unrelated made it look again.
+  pushUndo();
   for (const l of landed) {
     const node = new TransformNode("TMP", state.scene);
     node.rotationQuaternion = l.rot.clone();
     const euler = eulerOf(node);
     node.dispose();
+    const src = l.originId ? entryOf(l.originId) : null;
+    let group = "";
+    if (src?.group) {
+      if (!regroup.has(src.group)) regroup.set(src.group, nextGroupId());
+      group = regroup.get(src.group);
+    } else if (l.compound) {
+      if (!fromTile) fromTile = nextGroupId();
+      group = fromTile;
+    }
     const p = l.collider
       ? hooks.addCollider(l.collider, {
         position: l.pos.asArray(), rotation: euler, scale: l.scl.asArray(),
-        silent: ids.length > 0,
+        silent: true,
       })
       : await placeAt(l.module, l.pos, {
-        rotation: euler, scale: l.scl.asArray(), silent: ids.length > 0,
-        // On the collision bench a dropped module is a stand-in, not ship
-        // geometry - and it arrives carrying whatever hull it already has.
-        stage: state.collisionMode,
+        rotation: euler, scale: l.scl.asArray(), silent: true,
+        name: l.name || src?.name || "",
+        group, compound: l.compound || src?.compound || "",
+        // On a bench a dropped module is a stand-in, not ship geometry - and on
+        // the collision bench it arrives carrying whatever hull it already has.
+        stage: state.mode !== "ship",
+        stageChunk: state.mode === "compound" ? COMPOUND_CHUNK : STAGE_CHUNK,
+        // A copy and a compound member both bring their own lamps; seeding the
+        // kit's defaults on top would double them up.
+        noLights: !!(src || l.lights),
       });
-    if (p && state.collisionMode && !l.collider) hooks.attachModuleShapes(p);
-    if (p) { ids.push(p.id); made = p; }
+    if (p && src) { if (hooks.copyLightsTo(src.id, p.id)?.length) lit = true; }
+    else if (p && l.lights?.length) {
+      for (const light of l.lights) addLight(p.id, { ...light, silent: true });
+      lit = true;
+    }
+    if (p && state.mode === "collision" && !l.collider) hooks.attachModuleShapes(p);
+    if (p) { ids.push(p.id); made = p; if (l.collider) shapes = true; }
   }
-  if (ids.length > 1) select(ids);
+  // One announcement for the whole drop, now that all of it exists. The lamps
+  // matter as much as the meshes: the Runtime view rebuilds its real lights
+  // from this, and a compound's lamp used to sit in `state.lights` doing
+  // nothing until some unrelated edit happened to mention it.
+  if (ids.length) {
+    applyVisibility();
+    emit("placements");
+    if (shapes) emit("colliders");
+    if (lit) emit("lights");
+    select(ids);
+  }
   // A duplicate is done once dropped; a palette module stays armed so a run of
   // tiles is just repeated clicks. Not on the collision bench: a module goes
   // there once, to have a hull fitted to it, and staging the same one twice is
   // refused anyway - so staying armed only ever produced a second stand-in
   // nobody asked for. Collision primitives still repeat, because a hull really
   // is a run of boxes.
-  const oneShot = state.collisionMode && landed.some((l) => !l.collider);
+  const oneShot = state.mode === "collision" && landed.some((l) => !l.collider);
   if (g.mode === "copy" || oneShot) {
     cancelGhost();
     if (oneShot) hooks.clearBrush();
@@ -851,7 +934,10 @@ function endMarquee(commit) {
   if (!commit || !moved) return false;      // that was a click, not a rectangle
 
   const hits = elementsInRect(rect);
-  select(additive ? [...new Set([...state.selection, ...hits])] : hits);
+  // A marquee that catches any member of a compound catches the whole of it:
+  // a compound is one object to everything except a deliberate drill-in.
+  const all = groupExpand(hits);
+  select(additive ? [...new Set([...state.selection, ...all])] : all);
   emit("current");
   return true;
 }
@@ -877,7 +963,10 @@ export function dragMode() { return drag?.mode || null; }
 
 function beginDragCandidate(id, ev, pickedPoint) {
   const alreadySelected = state.selection.includes(id);
-  const ids = alreadySelected ? [...state.selection] : [id];
+  // Dragging one member of a compound drags all of it. That is the whole of
+  // "a compound behaves as one object" during a transform: with every member
+  // in the selection, the existing multi-select machinery does the rest.
+  const ids = alreadySelected ? [...state.selection] : groupExpand([id]);
 
   // Some elements have no centre of their own to write - a probe's inner blend
   // box rides the outer one's. Grabbing one is therefore never a drag, and any
@@ -1199,7 +1288,12 @@ function refreshOutlines() {
   // A selected element is never also hovered (see setHover), so these two can
   // no longer disagree about the same mesh.
   if (hoverId) {
-    for (const m of edgeMeshes(entryOf(hoverId))) wanted.set(m.uniqueId, [m, HOVER_COLOR]);
+    // Hovering one member of a compound outlines all of it, so what a click
+    // would select is what lights up.
+    for (const id of groupExpand([hoverId])) {
+      if (state.selection.includes(id)) continue;
+      for (const m of edgeMeshes(entryOf(id))) wanted.set(m.uniqueId, [m, HOVER_COLOR]);
+    }
   }
   for (const id of state.selection) {
     for (const m of edgeMeshes(entryOf(id))) wanted.set(m.uniqueId, [m, SELECT_COLOR]);
@@ -1341,6 +1435,11 @@ async function onClick(ev) {
 
   const hit = pickUnderCursor();
   if (hit.kind === "entry") {
+    // Ctrl+Alt-click drills into a compound: it selects the one member under
+    // the cursor rather than the whole object, which is how a single wall or
+    // lamp is deleted out of an instance. Checked before the eyedropper, which
+    // is plain Alt.
+    if (ev.altKey && (ev.ctrlKey || ev.metaKey)) { select([hit.id]); return; }
     // Alt-click is an eyedropper: arm the module you are pointing at.
     if (ev.altKey && hit.entry.module) {
       emit("pickmodule", hit.entry.module);
@@ -1348,8 +1447,8 @@ async function onClick(ev) {
     }
     // Both modifiers add. Shift lost that job for a while to mean "see through
     // the door portals"; Shift+H replaced that, so it has it back.
-    if (ev.ctrlKey || ev.metaKey || ev.shiftKey) { toggleSelect(hit.id); return; }
-    select([hit.id]);                       // double-click picks it up instead
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey) { toggleSelect(groupExpand([hit.id])); return; }
+    select(groupExpand([hit.id]));           // double-click picks it up instead
     return;
   }
 
@@ -1371,7 +1470,7 @@ async function onClick(ev) {
 async function onDoubleClick(ev) {
   if (isBusy() || ghost || ev.altKey || ev.ctrlKey || ev.metaKey) return;
   const hit = pickUnderCursor();
-  if (hit.kind === "entry") { select([hit.id]); emit("focus"); }
+  if (hit.kind === "entry") { select(groupExpand([hit.id])); emit("focus"); }
 }
 
 /**
@@ -1481,9 +1580,19 @@ export function rotateCurrent(dir, aboutPivot = false) {
   }
   if (beginWheelEdit()) pushUndo();
 
-  if (aboutPivot) {
-    const pivot = sharedPivot(targets);
-    const unit = unitFor(targets[0].node);
+  // A compound turns as one piece whether or not you asked for a group turn.
+  // The ordinary rule - every element spins about its own origin - is right for
+  // a row of props, where each one wants to face its own way, and wrong for a
+  // compound, where the lamp is *on* the wall: spinning both in place leaves the
+  // lamp hanging in the air where the wall used to be. So a whole compound is
+  // always rigid, about its anchor member, which is the same point its position
+  // is measured from.
+  const anchorEntry = groupAnchor(targets);
+  if (aboutPivot || anchorEntry) {
+    const pivot = anchorEntry
+      ? anchorEntry.node.position.clone()
+      : sharedPivot(targets);
+    const unit = unitFor((anchorEntry || targets[0]).node);
     const q = Quaternion.RotationAxis(unit, rad);
     const m = Matrix.Identity();
     q.toRotationMatrix(m);

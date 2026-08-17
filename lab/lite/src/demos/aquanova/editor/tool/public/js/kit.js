@@ -62,6 +62,32 @@ export async function loadCatalogue() {
 }
 
 /**
+ * Re-read the catalogue in place, after the compound list has changed.
+ *
+ * The server rebuilds it per request and folds the saved compounds in, so
+ * saving or deleting one is only visible once the catalogue is fetched again.
+ * The object is *mutated* rather than replaced because `getCatalogue()` hands
+ * it out and the palette holds on to what it was given; swapping the reference
+ * would leave the palette rendering the old list forever.
+ *
+ * The kit textures are deliberately not re-installed: the redirect is a loader
+ * rule keyed on kit names that cannot have changed, and re-adding it would
+ * stack a second copy on the loader.
+ */
+export async function reloadCatalogue() {
+  if (!catalogue) return loadCatalogue();
+  const fresh = await getJson("/api/modules");
+  assertCatalogueShape(fresh);
+  catalogue.categories = fresh.categories;
+  catalogue.kits = fresh.kits;
+  catalogue.byId = new Map();
+  for (const c of catalogue.categories) {
+    for (const m of c.modules) catalogue.byId.set(m.id, m);
+  }
+  return catalogue;
+}
+
+/**
  * Refuse a catalogue this page cannot read, and say why.
  *
  * The editor server is long-lived - it is started once and left running for

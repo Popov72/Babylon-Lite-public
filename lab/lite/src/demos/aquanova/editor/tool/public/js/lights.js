@@ -20,7 +20,7 @@
 // every lamp in the kit points, and -Y is the only axis that needs no rotation
 // to get there - which is why it was chosen over the more obvious -Z.
 
-import { state, emit, pushUndo, hooks, eulerOf, setEuler } from "./editor.js";
+import { state, emit, pushUndo, hooks, eulerOf, setEuler, benchOf } from "./editor.js";
 import { getKitLights } from "./kit.js";
 
 const { Vector3, Quaternion, Color3, TransformNode, MeshBuilder, StandardMaterial } = BABYLON;
@@ -48,6 +48,50 @@ export const DEFAULT_LIGHT = {
     castsShadows: false,
   },
 };
+
+/**
+ * What each kind of lamp starts at, where that differs from the panel above.
+ *
+ * Intensity does not mean the same thing from kind to kind - a point light
+ * fills a small room from the inside, where 1 is already bright, while a spot
+ * is aimed at a surface metres away through a cone and needs two orders of
+ * magnitude more before the wall it is pointed at looks lit at all. Carrying
+ * one number across a type change is how a spot ends up looking broken.
+ *
+ * Only the fields a kind actually disagrees about are listed; everything else
+ * comes from DEFAULT_LIGHT, so there is still one place a colour or the
+ * clustering default is written down.
+ */
+export const LIGHT_TYPE_DEFAULTS = {
+  spot: { intensity: 80, range: 6, angle: 120 },
+};
+
+/** The starting runtime record for one kind of lamp. */
+export function defaultsFor(type) {
+  return { ...DEFAULT_LIGHT.runtime, ...(LIGHT_TYPE_DEFAULTS[type] || {}), type };
+}
+
+/** The fields whose meaning changes with the kind of lamp. */
+const TYPED_FIELDS = ["intensity", "range", "angle"];
+
+/**
+ * The values a lamp should take on when its kind changes.
+ *
+ * A field still sitting at the *outgoing* kind's default was never chosen, so
+ * it follows the lamp to its new kind; a number that was typed in is kept,
+ * whichever kind it was typed for. That is what makes "add a light, choose
+ * spot" land on a usable spot while leaving a tuned one alone across a switch
+ * to `none` and back.
+ */
+function retypeDefaults(runtime, type) {
+  const was = defaultsFor(runtime.type);
+  const now = defaultsFor(type);
+  const out = {};
+  for (const key of TYPED_FIELDS) {
+    if (runtime[key] === was[key] && now[key] !== was[key]) out[key] = now[key];
+  }
+  return out;
+}
 
 function nextLightId() {
   let n = 1;
@@ -84,10 +128,14 @@ export function normalizeLight(light) {
   const r = light.runtime;
 
   if (!LIGHT_TYPES.includes(r.type)) r.type = DEFAULT_LIGHT.runtime.type;
-  r.intensity = num(r.intensity, DEFAULT_LIGHT.runtime.intensity, 0, 1e4);
-  r.range = num(r.range, DEFAULT_LIGHT.runtime.range, 1e-3, 1e4);
-  r.angle = num(r.angle, DEFAULT_LIGHT.runtime.angle, 1, 179);
-  r.color = colorOf(r.color, DEFAULT_LIGHT.runtime.color);
+  // Per kind, so a record that arrives without a cone - a kit seed, or a
+  // manifest written before the field existed - gets the cone its kind wants
+  // rather than the one a point light would have had.
+  const d = defaultsFor(r.type);
+  r.intensity = num(r.intensity, d.intensity, 0, 1e4);
+  r.range = num(r.range, d.range, 1e-3, 1e4);
+  r.angle = num(r.angle, d.angle, 1, 179);
+  r.color = colorOf(r.color, d.color);
   // A directional light has no position to cluster and no falloff to bin, so
   // the cluster cannot hold one.
   r.clustered = !!r.clustered && (r.type === "point" || r.type === "spot");
@@ -110,13 +158,16 @@ export function normalizeLight(light) {
  * serializeMarkers does for a door.
  */
 function makeLight(id, owner, opts = {}) {
+  const wanted = opts.runtime || {};
   return normalizeLight({
     id,
     owner,
     // What the inspector keys off to know it is not looking at a placement -
     // the same field a marker and a collision primitive carry.
     type: "light",
-    runtime: { ...DEFAULT_LIGHT.runtime, ...(opts.runtime || {}) },
+    // The kind is settled before its defaults are read, so a kit seed that asks
+    // for a spot and nothing else gets a spot's numbers, not a point's.
+    runtime: { ...defaultsFor(wanted.type ?? DEFAULT_LIGHT.runtime.type), ...wanted },
   });
 }
 
@@ -137,7 +188,11 @@ export function lightRotation(light) {
  */
 export function addLight(placementId, opts = {}) {
   const owner = state.placements.get(placementId);
-  if (!owner || owner.stage) return null;
+  // The collision bench holds stand-ins whose only purpose is to have a hull
+  // fitted to them, and a lamp on one would be authored into nothing. The
+  // compound bench is the opposite case - a wall *with* its lamp is the thing
+  // being built - so only the collision bench refuses.
+  if (!owner || benchOf(owner) === "collision") return null;
   if (!opts.silent) pushUndo();
 
   const light = makeLight(opts.id || nextLightId(), placementId, opts);
@@ -181,14 +236,19 @@ export function lightsOf(placementId) {
 
 /** Give a copied element the same lights as the one it was copied from. */
 export function copyLightsTo(fromPlacementId, toPlacementId) {
+  const made = [];
   for (const l of lightsOf(fromPlacementId)) {
-    addLight(toPlacementId, {
+    const copy = addLight(toPlacementId, {
       offset: lightOffset(l),
       rotation: lightRotation(l),
       runtime: { ...l.runtime, color: [...l.runtime.color] },
       silent: true,
     });
+    if (copy) made.push(copy);
   }
+  // Returned so a caller that copied silently knows whether it has anything to
+  // announce - the Runtime view rebuilds its lights off that announcement.
+  return made;
 }
 
 /** Duplicate one authored light beside its source in the owner's local X. */
@@ -284,12 +344,19 @@ export function setLightTransform(id, patch) {
  * The patch goes back through normalizeLight rather than being assigned and
  * trusted: switching the type to "point" has to clear `castsShadows`, and
  * clustering one has to clear it too.
+ *
+ * A change of kind also brings that kind's defaults with it, for the fields
+ * that were never chosen - see retypeDefaults. The patch is applied last, so a
+ * caller that names a value in the same breath as the type still wins.
  */
 export function setLightPart(id, part, patch) {
   const light = state.lights.get(id);
   if (!light || part !== "runtime") return null;
   const wasLive = light.runtime.type !== "none";
-  Object.assign(light[part], patch);
+  const retyped = patch.type && patch.type !== light.runtime.type
+    ? retypeDefaults(light.runtime, patch.type)
+    : null;
+  Object.assign(light[part], retyped, patch);
   normalizeLight(light);
   // The gizmo carries the on/off colour, so switching a lamp off - or back on -
   // has to rebuild it rather than nudge it. Nothing else on the record reaches
@@ -300,14 +367,25 @@ export function setLightPart(id, part, patch) {
   return light;
 }
 
+/**
+ * Every authored light in the ship, as plain data.
+ *
+ * A bench lamp is skipped: the compound bench builds real lights on real
+ * placements, and this feeds `serialize()`, which is the ship's undo snapshot
+ * and the manifest's `lights` block. A lamp being fitted to a compound has no
+ * business in either, and a snapshot carrying one would restore it onto an
+ * owner the ship has never heard of.
+ */
 export function serializeLights() {
-  return [...state.lights.values()].map((l) => ({
-    id: l.id,
-    owner: l.owner,
-    offset: lightOffset(l),
-    rotation: lightRotation(l),
-    runtime: { ...l.runtime, color: round(l.runtime.color) },
-  }));
+  return [...state.lights.values()]
+    .filter((l) => !state.placements.get(l.owner)?.stage)
+    .map((l) => ({
+      id: l.id,
+      owner: l.owner,
+      offset: lightOffset(l),
+      rotation: lightRotation(l),
+      runtime: { ...l.runtime, color: round(l.runtime.color) },
+    }));
 }
 
 export function deserializeLights(list) {

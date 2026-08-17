@@ -67,6 +67,13 @@ const LAYOUT_DIR = path.join(HERE, "layouts");
 
 const MANIFEST = path.join(EXPORT_DIR, "ship_manifest.json");
 const COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
+// Compound definitions - the recipes the compound editor saves. Beside the
+// collision file and for the same reason: it is authoring data that has to
+// travel with the project, is reusable across ships, and is emphatically not
+// something to write into a kit folder. Kit folders are re-scanned from disk on
+// every catalogue request and are replaced wholesale when a kit is downloaded
+// again, so anything the editor wrote there would vanish without a trace.
+const COMPOUNDS = path.join(EXPORT_DIR, "ship_compounds.json");
 const AUTOSAVE = path.join(EXPORT_DIR, "ship_autosave.json");
 const GLB = path.join(EXPORT_DIR, "ship.glb");
 
@@ -385,6 +392,80 @@ async function scanKit(kit) {
   };
 }
 
+/**
+ * The saved compound definitions, or an empty list when there are none.
+ *
+ * Read from disk per request rather than cached, exactly like the kit scan
+ * above: the catalogue is rebuilt on every `/api/modules`, so saving a compound
+ * and refreshing is all it takes to see it, and two editor tabs cannot disagree
+ * about what exists.
+ */
+function readCompounds() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(COMPOUNDS, "utf8"));
+    return Array.isArray(parsed?.compounds) ? parsed.compounds : [];
+  } catch {
+    return [];                          // no file yet is the normal first run
+  }
+}
+
+/**
+ * Is this a compound definition we are willing to write?
+ *
+ * Checked on the way in rather than trusted, because the file is read straight
+ * back into the palette: a member naming no module would become a tile that
+ * throws when clicked, and a name with a slash in it would collide with the
+ * `@compound/<name>` id space.
+ */
+function validCompound(c) {
+  if (!c || typeof c.name !== "string" || !c.name.trim()) return false;
+  if (/[/\\]/.test(c.name)) return false;
+  if (typeof c.kit !== "string" || !c.kit.trim()) return false;
+  if (typeof c.category !== "string" || !c.category.trim()) return false;
+  if (!Array.isArray(c.members) || !c.members.length) return false;
+  return c.members.every((m) => m && typeof m.module === "string" && m.module.includes("/"));
+}
+
+/**
+ * Fold the saved compounds into the catalogue as ordinary-looking modules.
+ *
+ * A compound tile has no `url`: it is a recipe, and the palette expands it into
+ * real placements rather than loading a file. `compound: true` is what tells
+ * every consumer that - the thumbnailer builds its preview from the members,
+ * and the palette arms a multi-item ghost instead of a single one.
+ *
+ * They are filed under the kit and category chosen when saving, so a compound
+ * built from a kit's walls sits with that kit's walls rather than in a bin of
+ * its own. The kit's own tab list is extended where it has to be: a category
+ * that exists only because a compound was filed there still needs a tab, or the
+ * tile would be unreachable.
+ */
+function mergeCompounds(categories, seen, kits) {
+  for (const c of readCompounds()) {
+    if (!validCompound(c)) continue;
+    const entry = seen.get(c.category) || { name: c.category, count: 0, modules: [] };
+    if (!seen.has(c.category)) {
+      seen.set(c.category, entry);
+      categories.push(entry);
+    }
+    entry.modules.push({
+      id: `@compound/${c.name}`,
+      name: c.name,
+      kit: c.kit,
+      category: c.category,
+      compound: true,
+      members: c.members,
+    });
+    const kit = kits.find((k) => k.name === c.kit);
+    if (kit) {
+      if (!kit.categories.includes(c.category)) {
+        kit.categories = orderCategories([...kit.categories, c.category]);
+      }
+      kit.count++;
+    }
+  }
+}
+
 async function buildCatalogue() {
   const names = await kitFolders();
   const categories = [];
@@ -414,6 +495,7 @@ async function buildCatalogue() {
       entry.modules.push(...modules);
     }
   }
+  mergeCompounds(categories, seen, kits);
   for (const c of categories) {
     c.modules.sort((a, b) => a.kit.localeCompare(b.kit) || a.name.localeCompare(b.name));
     c.count = c.modules.length;
@@ -760,6 +842,49 @@ async function handle(req, res) {
       await fsp.writeFile(COLLISION, body);
       return sendJson(res, 200, {
         ok: true, path: COLLISION, bytes: body.length,
+        previous: previous ? path.basename(previous) : null,
+      });
+    }
+    return send(res, 405, "method not allowed");
+  }
+
+  if (p === "/api/compounds") {
+    // The whole list, written in one go. A compound is small and there are
+    // never many, so read-modify-write in the client and post the result is
+    // simpler and less racy than per-name routes - and it makes "delete" the
+    // same operation as "save", which is one code path to get right instead of
+    // three.
+    if (req.method === "GET") {
+      return sendJson(res, 200, { compounds: readCompounds() });
+    }
+    if (req.method === "POST") {
+      let list;
+      try {
+        const body = await readBody(req, 8 * 1024 * 1024);
+        list = JSON.parse(body.toString("utf8"))?.compounds;
+      } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
+      if (!Array.isArray(list)) {
+        return sendJson(res, 400, { ok: false, error: "compounds must be an array" });
+      }
+      const bad = list.find((c) => !validCompound(c));
+      if (bad) {
+        return sendJson(res, 400, {
+          ok: false,
+          error: `invalid compound: ${JSON.stringify(bad?.name ?? null)}`,
+        });
+      }
+      const names = list.map((c) => c.name);
+      if (new Set(names).size !== names.length) {
+        return sendJson(res, 400, { ok: false, error: "two compounds share a name" });
+      }
+      const text = `${JSON.stringify({ schema: 1, compounds: list }, null, 2)}\n`;
+      await fsp.mkdir(path.dirname(COMPOUNDS), { recursive: true });
+      // Rotated for the same reason the collision file is: these are hand-built
+      // and there is no second copy of them anywhere.
+      const previous = await rotatePrevious(COMPOUNDS);
+      await fsp.writeFile(COMPOUNDS, text);
+      return sendJson(res, 200, {
+        ok: true, path: COMPOUNDS, count: list.length, bytes: Buffer.byteLength(text),
         previous: previous ? path.basename(previous) : null,
       });
     }

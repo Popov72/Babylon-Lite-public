@@ -15,7 +15,7 @@ import {
 } from "./colliders.js";
 // Side-effect import for the hooks; the named ones drive the inspector.
 import {
-  LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart,
+  LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart, lightsOf,
 } from "./lights.js";
 import {
   initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
@@ -27,11 +27,11 @@ import {
 import {
   state, on, emit, initScene, setGridVisible, setGridElevation,
   nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
-  shipPlacements, loadModuleCollision,
+  shipPlacements, modePlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
   renameChunk, removeChunk, chunkUsers,
   environmentProbeIds, environmentProbeOf, nextEnvironmentProbeId,
-  setEnvironmentProbe, removeEnvironmentProbe, syncEnvironmentProbeTransform,
+  setEnvironmentProbe, setEnvironmentProbeView, removeEnvironmentProbe, syncEnvironmentProbeTransform,
   syncEnvironmentProbeInfluence, syncEnvironmentProbeInnerSize,
   environmentProbePartOf, environmentProbePartId,
   validEnvironmentProbeId, environmentProbeIdAvailable,
@@ -42,19 +42,25 @@ import {
   isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
-  eulerOf, setEuler, worldBounds, entryOf, nudgeSelection,
+  eulerOf, setEuler, worldBounds, entryOf, nudgeSelection, strayChunkMembers,
   noteKey, releaseAllKeys, setUnlit, EXPOSURE_DEFAULT,
   setConfig, resetConfig, CONFIG_DEFAULTS,
   setWalk, EYE_HEIGHT, ENV_INTENSITY_DEFAULT, setSelectMode,
   setLightSetting, viewMode, viewModeFlags, VIEW_MODES,
   TONE_MAPPING_DEFAULT, RUNTIME_SPECULAR_AA_DEFAULT, RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
-  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT,
+  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT, STRAY_CHUNK_CHECK_DEFAULT,
   setShowLayer, SHOW_LAYERS,
   resolveToneMapping, setRuntimeSpecularAA, setRuntimeRoughnessFactor,
+  breakApart, groupAnchor, groupMembers,
 } from "./editor.js";
 import {
+  enterCompoundMode, exitCompoundMode, newCompound, saveCompound, deleteCompound,
+  benchMembers, editingCompound, persistBench, quickSaveCompound, editCompound,
+  compoundTile, compoundInstances,
+} from "./compounds.js";
+import {
   setRuntimePreview, runtimePreview,
-  localEnvironmentProbeOf, showEnvironmentProbe, refreshEnvironmentProbeAssets,
+  localEnvironmentProbeOf, showEnvironmentProbes, hideEnvironmentProbes, refreshEnvironmentProbeAssets,
 } from "./runtime.js";
 import { generateLocalEnvironments } from "./local-environments.js";
 
@@ -98,6 +104,9 @@ function refreshInspector() {
   const n = state.selection.length;
   $("insp-empty").hidden = n > 0;
   $("insp-body").hidden = n === 0;
+  // Only offered when there is something to break: a button that is always
+  // there and usually does nothing teaches you to ignore it.
+  $("btn-break-apart").hidden = !state.selection.some((id) => entryOf(id)?.group);
   if (!n) return;
 
   const e = entryOf(state.selection[0]);
@@ -123,10 +132,14 @@ function refreshInspector() {
   setField($("insp-name"), n === 1 && !isMarker ? (e.name || "") : "");
   // A module's primitive belongs to a kit prototype, not a room, so the chunk
   // row is meaningless for it - and letting it be set would silently re-home
-  // the shape into a room where its local-space transform means nothing.
+  // the shape into a room where its local-space transform means nothing. The
+  // same goes for anything sitting on a bench: bench members carry a private
+  // pseudo-chunk that is never written to the ship, so the row could only ever
+  // show a lie or accept an edit that goes nowhere.
   const isModuleCollider = e.type === "collider" && !!e.stage;
-  $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider;
-  if (!isMarker && !isModuleCollider) $("insp-chunk").value = e.chunk;
+  const benched = state.mode !== "ship";
+  $("insp-chunk").parentElement.hidden = isMarker || isModuleCollider || benched;
+  if (!isMarker && !isModuleCollider && !benched) $("insp-chunk").value = e.chunk;
   // A light's node hangs off the element it rides, so its "position" is really
   // an offset within that element - and a lamp has no size of its own: an engine
   // light is a point, a direction and a falloff.
@@ -194,7 +207,10 @@ function refreshLight(light) {
   if (!light) return;
   const ownerSelect = $("lgt-owner");
   ownerSelect.replaceChildren();
-  for (const owner of shipPlacements()) {
+  // The world on screen, not the ship: a lamp being fitted on the compound
+  // bench rides a bench member, and offering the ship's list instead would name
+  // every possible owner except the right one.
+  for (const owner of modePlacements()) {
     const option = document.createElement("option");
     option.value = owner.id;
     option.textContent = `${owner.id} — ${owner.module}`;
@@ -276,7 +292,7 @@ function refreshBehavior() {
   const name = (placement.name || "").trim();
   const count = nodesNamed(name);
   const applied = name ? entityBehaviors(name) : [];
-  const library = behaviorNames();
+  const library = libraryNames();
 
   $("bhv-count").textContent = name
     ? `"${name}" — ${count} element${count === 1 ? "" : "s"}`
@@ -449,13 +465,26 @@ $("btn-bhv-add").addEventListener("click", () => {
   refreshBehavior();
 });
 
-// ------------------------------------------------- behaviour library dialog
+// ------------------------------------------------- behaviour library window
 
 let libSelected = null;
 
+/**
+ * The library in the order it is read in, not the order it was written in.
+ *
+ * Definitions accumulate as the ship is built, so insertion order is the
+ * history of the project rather than anything you could look something up by.
+ * Sorted here and not in the model: `behaviorNames()` is what the manifest and
+ * the undo stack see, and the file should keep saying what it has always said.
+ */
+const libraryNames = () => alphabetical(behaviorNames());
+
+const keepLibraryWindowOnScreen = makeToolWindow("bhv-modal", "bhv-window-handle");
+
 function openLibrary() {
   $("bhv-modal").hidden = false;
-  refreshLibrary(libSelected || behaviorNames()[0] || null);
+  refreshLibrary(libSelected || libraryNames()[0] || null);
+  requestAnimationFrame(keepLibraryWindowOnScreen);
 }
 
 function closeLibrary() {
@@ -464,7 +493,7 @@ function closeLibrary() {
 }
 
 function refreshLibrary(pick) {
-  const names = behaviorNames();
+  const names = libraryNames();
   libSelected = pick && names.includes(pick) ? pick : null;
   $("bhv-list").innerHTML = names
     .map((n) => `<option value="${esc(n)}"${n === libSelected ? " selected" : ""}>${esc(n)}</option>`)
@@ -517,7 +546,7 @@ $("btn-bhv-delete").addEventListener("click", () => {
   if (!libSelected) return;
   const gone = libSelected;
   deleteBehaviorDef(gone);
-  refreshLibrary(behaviorNames()[0] || null);
+  refreshLibrary(libraryNames()[0] || null);
   setStatus(`deleted behaviour "${gone}" and every use of it`);
 });
 
@@ -630,6 +659,35 @@ function fillChunkSelect(sel, value, { skybox = false } = {}) {
  */
 let inspectorPushed = false;
 
+/**
+ * Carry the rest of a compound along with the member the inspector edited.
+ *
+ * The inspector has always written to `state.selection[0]` and left the rest of
+ * a multi-selection alone, which is right for three props selected together and
+ * wrong for a compound: typing a Y turn there spun the wall and left its lamp
+ * hanging in the air. A compound moves and turns as one piece, about its anchor
+ * - the same rule the wheel follows, and the same anchor its offsets are
+ * measured from.
+ *
+ * Scale is deliberately not carried: the wheel scales every selected element
+ * about its own origin and this matches it, whereas scaling the offsets too
+ * would be a different operation that nothing else in the tool performs.
+ */
+function carryCompound(anchor, before) {
+  const { Quaternion, Matrix, Vector3 } = BABYLON;
+  const quatOf = (node) => (node.rotationQuaternion
+    || Quaternion.FromEulerVector(node.rotation)).clone();
+  const now = anchor.node.position.clone();
+  const spin = quatOf(anchor.node).multiply(Quaternion.Inverse(before.quat));
+  const m = spin.toRotationMatrix(Matrix.Identity());
+  for (const other of groupMembers(anchor.group)) {
+    if (other.id === anchor.id) continue;
+    const rel = other.node.position.subtract(before.pos);
+    other.node.position.copyFrom(now.add(Vector3.TransformCoordinates(rel, m)));
+    other.node.rotationQuaternion = spin.multiply(quatOf(other.node));
+  }
+}
+
 function applyInspector(source) {
   if (syncing || !state.selection.length) return;
   const e = entryOf(state.selection[0]);
@@ -646,6 +704,17 @@ function applyInspector(source) {
     }
   }
   const p = e.node.position, s = e.node.scaling, r = eulerOf(e.node);
+  // Whether this element speaks for a whole compound, and where it stood before
+  // the edit - the rest of the group is carried by the difference.
+  const anchor = groupAnchor(state.selection);
+  const rigid = anchor && anchor.id === e.id ? anchor : null;
+  const before = rigid
+    ? {
+      pos: p.clone(),
+      quat: (e.node.rotationQuaternion
+        || BABYLON.Quaternion.FromEulerVector(e.node.rotation)).clone(),
+    }
+    : null;
   if (e.canMove !== false) {
     e.node.position.set(
       num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
@@ -663,7 +732,11 @@ function applyInspector(source) {
     : scale));
   // A collider's kind decides what scales are representable at all.
   if (e.type === "collider" && reconcileCollider(e)) syncScaleFields(e);
-  select([e.id]);                       // keeps the outline in step
+  if (rigid) carryCompound(rigid, before);
+  // Keeps the outline in step. A rigid edit re-asserts the whole group rather
+  // than the one element, or a single keystroke would collapse the selection
+  // and the next keystroke would tear the compound apart.
+  select(rigid ? [...state.selection] : [e.id]);
   emit("transform");
 }
 
@@ -774,6 +847,12 @@ $("btn-add-light").addEventListener("click", () => {
 });
 
 $("btn-duplicate").addEventListener("click", () => duplicateCurrent());
+$("btn-break-apart").addEventListener("click", () => {
+  const r = breakApart();
+  if (!r.groups) { setStatus("nothing in the selection came from a compound"); return; }
+  setStatus(`broke ${r.groups} compound(s) into ${r.members} ordinary element(s)`
+    + " — Ctrl+Z puts them back together");
+});
 $("btn-delete").addEventListener("click", () => removeSelected());
 $("btn-focus").addEventListener("click", () => focusSelection());
 $("btn-ground").addEventListener("click", () => {
@@ -932,6 +1011,73 @@ $("chunk-select").addEventListener("change", (ev) => {
 });
 $("btn-chunk-assign").addEventListener("click", () => assignSelectionToChunk(state.activeChunk));
 
+// ------------------------------------------------------------ tool windows
+//
+// Chunks, Probes and Behaviours are floating windows rather than modal
+// dialogs: every one of them is a place you edit the ship *while looking at
+// it*, so a scrim over the viewport would hide the only thing that tells you
+// whether the edit was right. What they cost instead is the two affordances a
+// window has to have - somewhere to grab it, and somewhere to pull it bigger.
+
+/**
+ * Make a floating pane draggable by its titlebar, and keep it on screen.
+ *
+ * Resizing is the browser's own `resize: both` grip on the panel: the platform
+ * already draws it, already tracks the pointer and already respects min/max,
+ * and a hand-rolled one would only be a worse copy of it. Which is also why the
+ * *window* element is the bare positioned box and the panel inside it carries
+ * the size - `resize` needs a clipping box, and clipping the window would take
+ * the panel's drop shadow off with it.
+ *
+ * Position is clamped rather than merely started from a sane place, because
+ * both ends move: a drag can push a window off the edge, and shrinking the
+ * browser can leave one stranded outside it. `window.resize` re-clamps.
+ *
+ * @param {string} winId    id of the positioned window element
+ * @param {string} handleId id of the titlebar inside it
+ * @returns {() => void} re-clamp the window into the viewport
+ */
+function makeToolWindow(winId, handleId) {
+  const win = $(winId);
+  const handle = $(handleId);
+  const edge = 8;
+
+  const place = (left, top) => {
+    const rect = win.getBoundingClientRect();
+    const maxLeft = Math.max(edge, window.innerWidth - rect.width - edge);
+    const maxTop = Math.max(edge, window.innerHeight - rect.height - edge);
+    win.style.left = `${Math.min(Math.max(edge, left), maxLeft)}px`;
+    win.style.top = `${Math.min(Math.max(edge, top), maxTop)}px`;
+  };
+  const keepOnScreen = () => {
+    if (win.hidden) return;
+    const rect = win.getBoundingClientRect();
+    place(rect.left, rect.top);
+  };
+
+  let drag = null;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    const rect = win.getBoundingClientRect();
+    drag = { pointerId: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    place(e.clientX - drag.dx, e.clientY - drag.dy);
+  });
+  const finishDrag = (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+    drag = null;
+  };
+  handle.addEventListener("pointerup", finishDrag);
+  handle.addEventListener("pointercancel", finishDrag);
+  window.addEventListener("resize", keepOnScreen);
+  return keepOnScreen;
+}
+
 // ----------------------------------------------------------- chunks window
 //
 // A window rather than a toolbar button, because renaming a room, seeing what
@@ -943,47 +1089,7 @@ $("btn-chunk-assign").addEventListener("click", () => assignSelectionToChunk(sta
  *  list to look at a far room should not move where new placements land. */
 let chunkSelected = null;
 
-function placeChunkWindow(left, top) {
-  const win = $("chunk-modal");
-  const rect = win.getBoundingClientRect();
-  const edge = 8;
-  const maxLeft = Math.max(edge, window.innerWidth - rect.width - edge);
-  const maxTop = Math.max(edge, window.innerHeight - rect.height - edge);
-  win.style.left = `${Math.min(Math.max(edge, left), maxLeft)}px`;
-  win.style.top = `${Math.min(Math.max(edge, top), maxTop)}px`;
-}
-
-function keepChunkWindowOnScreen() {
-  const win = $("chunk-modal");
-  if (win.hidden) return;
-  const rect = win.getBoundingClientRect();
-  placeChunkWindow(rect.left, rect.top);
-}
-
-{
-  const win = $("chunk-modal");
-  const handle = $("chunk-window-handle");
-  let drag = null;
-  handle.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target.closest("button")) return;
-    const rect = win.getBoundingClientRect();
-    drag = { pointerId: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-    handle.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  handle.addEventListener("pointermove", (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    placeChunkWindow(e.clientX - drag.dx, e.clientY - drag.dy);
-  });
-  const finishDrag = (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
-    drag = null;
-  };
-  handle.addEventListener("pointerup", finishDrag);
-  handle.addEventListener("pointercancel", finishDrag);
-  window.addEventListener("resize", keepChunkWindowOnScreen);
-}
+const keepChunkWindowOnScreen = makeToolWindow("chunk-modal", "chunk-window-handle");
 
 function openChunks() {
   $("chunk-modal").hidden = false;
@@ -1085,49 +1191,16 @@ const PROBE_VALUE_FIELDS = [
   ...PROBE_BOX_FIELDS, ...PROBE_SIZE_FIELDS, ...PROBE_CAMERA_FIELDS,
   ...PROBE_INFLUENCE_FIELDS, ...PROBE_INFLUENCE_SIZE_FIELDS, ...PROBE_INNER_SIZE_FIELDS,
 ];
+// The three volumes a probe is made of, in pane order. Each owns a heading, the
+// eye that shows and hides it, and - for the two blend volumes - the part id its
+// gizmo is selected under.
+const PROBE_SECTIONS = [
+  { part: "box", label: "probe box", head: "probe-head-box", eye: "btn-probe-eye-box" },
+  { part: "influence", label: "influence box", head: "probe-head-influence", eye: "btn-probe-eye-influence" },
+  { part: "inner", label: "inner box", head: "probe-head-inner", eye: "btn-probe-eye-inner" },
+];
 
-function placeProbeWindow(left, top) {
-  const win = $("probe-modal");
-  const rect = win.getBoundingClientRect();
-  const edge = 8;
-  const maxLeft = Math.max(edge, window.innerWidth - rect.width - edge);
-  const maxTop = Math.max(edge, window.innerHeight - rect.height - edge);
-  win.style.left = `${Math.min(Math.max(edge, left), maxLeft)}px`;
-  win.style.top = `${Math.min(Math.max(edge, top), maxTop)}px`;
-}
-
-function keepProbeWindowOnScreen() {
-  const win = $("probe-modal");
-  if (win.hidden) return;
-  const rect = win.getBoundingClientRect();
-  placeProbeWindow(rect.left, rect.top);
-}
-
-{
-  const win = $("probe-modal");
-  const handle = $("probe-window-handle");
-  let drag = null;
-  handle.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || e.target.closest("button")) return;
-    const rect = win.getBoundingClientRect();
-    drag = { pointerId: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
-    handle.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  handle.addEventListener("pointermove", (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    placeProbeWindow(e.clientX - drag.dx, e.clientY - drag.dy);
-  });
-  const finishDrag = (e) => {
-    if (!drag || e.pointerId !== drag.pointerId) return;
-    if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
-    drag = null;
-  };
-  handle.addEventListener("pointerup", finishDrag);
-  handle.addEventListener("pointercancel", finishDrag);
-  window.addEventListener("resize", keepProbeWindowOnScreen);
-}
-
+const keepProbeWindowOnScreen = makeToolWindow("probe-modal", "probe-window-handle");
 function defaultProbeVolume() {
   let min = null;
   let max = null;
@@ -1180,34 +1253,94 @@ function probeDraft() {
   };
 }
 
+/** The selection id the gizmo of one probe section is picked under. */
+function probeSectionId(part) {
+  if (!probeSelected) return null;
+  return part === "box" ? probeSelected : environmentProbePartId(probeSelected, part);
+}
+
+/**
+ * Whether the selected probe draws one of its volumes.
+ *
+ * A view choice rather than part of the ship, but a *per probe* one: the boxes
+ * are nested and often a metre apart, and which of them you need out of the way
+ * depends on the room you are working in - pulling the influence boxes off one
+ * probe has no business taking its neighbour's down as well.
+ */
+function probeShows(part, probe = probeSelected ? environmentProbeOf(probeSelected) : null) {
+  return probe ? probe.visibleParts[part] !== false : true;
+}
+
+/**
+ * Put the three section headings in step with the eyes and the selection.
+ *
+ * Which box a drag or a Ctrl+wheel is about to move is decided in the viewport,
+ * but the numbers it changes are here - so the pane has to say which of three
+ * near-identical vector triples is the live one.
+ */
+function refreshProbeSections() {
+  const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
+  for (const { part, head, eye } of PROBE_SECTIONS) {
+    const shown = probeShows(part, probe);
+    $(eye).setAttribute("aria-pressed", shown ? "true" : "false");
+    $(eye).disabled = !probe;
+    const id = probeSectionId(part);
+    const selected = !!id && shown && state.selection.includes(id);
+    $(head).classList.toggle("selected", selected);
+    $(head).querySelector(".sel").hidden = !selected;
+  }
+}
+
+/**
+ * Write a probe field unless it is the one being typed into.
+ *
+ * Every keystroke now writes straight to the record, and the record announces
+ * itself - so without this the pane would rewrite the field under the caret on
+ * every character, making "1.5" impossible to type and a leading "-" worse.
+ * Only the focused field needs sparing: every other one is being handed back
+ * the value it just produced.
+ */
+function setProbeField(id, value) {
+  const field = $(id);
+  if (field !== document.activeElement) field.value = value;
+}
+
 async function refreshProbeWindow(pick = probeSelected) {
   const request = ++probeRefreshRequest;
   const ids = alphabetical(environmentProbeIds());
-  probeSelected = pick && ids.includes(pick) ? pick : (ids[0] || null);
+  // A restore - an undo, a reload - empties the map before it refills it, and
+  // the pane is refreshed in between. Reading that instant as "the probe you
+  // were editing is gone" would bring the pane back on whichever probe sorts
+  // first, so an empty map keeps the choice instead of replacing it.
+  if (ids.length) probeSelected = pick && ids.includes(pick) ? pick : ids[0];
+  else probeSelected = pick || probeSelected;
   $("probe-list").innerHTML = ids.map((id) => {
     const probe = environmentProbeOf(id);
     return `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
       + `${esc(id)} · ${probe.resolution}px</option>`;
   }).join("");
   const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
-  $("probe-id").value = probe?.id || "";
+  setProbeField("probe-id", probe?.id || "");
   const values = probe
     ? [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition,
       ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
       ...probe.influenceInnerBoxSize] : [];
-  PROBE_VALUE_FIELDS.forEach((id, index) => { $(id).value = values[index] ?? ""; });
-  $("probe-resolution").value = probe?.resolution ?? "";
+  PROBE_VALUE_FIELDS.forEach((id, index) => { setProbeField(id, values[index] ?? ""); });
+  setProbeField("probe-resolution", probe?.resolution ?? "");
+  $("probe-show").checked = !!probe?.alwaysVisible;
+  $("probe-env").checked = !!probe?.envFaces;
+  $("probe-show").disabled = !probe;
+  $("probe-env").disabled = !probe;
   $("btn-probe-delete").disabled = !probe;
-  $("btn-probe-apply").disabled = !probe;
-  // Capture takes the selected probe, so it goes with Delete and Apply rather
-  // than with Capture all, which never needs one.
+  // Capture takes the selected probe, so it goes with Delete rather than with
+  // Capture all, which never needs one.
   $("btn-capture-one").disabled = !probe;
-  $("probe-error").textContent = "";
+  refreshProbeSections();
   if (!probe) {
     $("probe-resolved").textContent = "No probe volumes. Press New to create one.";
-    $("probe-show").checked = false;
-    $("probe-env").checked = false;
-    await showEnvironmentProbe(null, false, null, false);
+    // Not a hide: other probes may be held on screen by Always visible, and
+    // having no probe selected is no reason to take those down.
+    await showEnvironmentProbes(null);
     return;
   }
   const info = await localEnvironmentProbeOf(probe.id);
@@ -1216,17 +1349,17 @@ async function refreshProbeWindow(pick = probeSelected) {
     `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`
     + ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}`
     + ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
-  if ($("probe-show").checked) {
-    await showEnvironmentProbe(
-      probe.id, true, probe, $("probe-env").checked);
-  }
+  await showEnvironmentProbes(probe.id);
 }
 
 async function showAndSelectProbe(id) {
   if (!id) return;
-  $("probe-show").checked = true;
+  // A complaint is about the probe that was on screen when it was made, so it
+  // goes when that probe does.
+  $("probe-error").textContent = "";
   await refreshProbeWindow(id);
-  select([id]);
+  if (probeShows("box")) select([id]);
+  refreshProbeSections();
 }
 
 function openProbes() {
@@ -1241,24 +1374,22 @@ function openProbes() {
 
 function closeProbes() {
   $("probe-modal").hidden = true;
-  $("probe-show").checked = false;
-  $("probe-env").checked = false;
   dropProbeSelection();
-  void showEnvironmentProbe(null, false, null, false);
+  // Always visible means "while I am working on the probes", not "for ever":
+  // every gizmo goes down with the window, whatever the flags say.
+  hideEnvironmentProbes();
 }
 
 /**
- * Drop every gizmo of `id` - or of all probes - from the selection.
+ * Drop every probe gizmo from the selection.
  *
  * The gizmos go with the window, and a selection holding an element that no
  * longer exists is a selection whose inspector, wheel and arrow keys all point
- * at nothing. `probe` names the capture box; its two blend volumes are parts of
- * the same id and have to go with it.
+ * at nothing. A probe's two blend volumes are parts of its id and have to go
+ * with it.
  */
-function dropProbeSelection(id = null) {
-  const doomed = (sel) => (id
-    ? sel === id || environmentProbePartOf(sel)?.probe === id
-    : state.environmentProbes.has(sel) || !!environmentProbePartOf(sel));
+function dropProbeSelection() {
+  const doomed = (sel) => state.environmentProbes.has(sel) || !!environmentProbePartOf(sel);
   if (!state.selection.some(doomed)) return;
   select(state.selection.filter((sel) => !doomed(sel)));
 }
@@ -1270,35 +1401,110 @@ $("probe-list").addEventListener("change", (e) => {
   void showAndSelectProbe(probeSelected);
 });
 
+let probePushed = false;
+
 for (const id of [...PROBE_VALUE_FIELDS, "probe-resolution"]) {
-  $(id).addEventListener("input", () => {
-    if (!$("probe-show").checked || !probeSelected) return;
-    const draft = probeDraft();
-    if (draft) {
-      void showEnvironmentProbe(
-        probeSelected, true, draft, $("probe-env").checked);
-    }
+  // One undo entry per visit to a field, the same rule the inspector follows:
+  // armed on focus, spent on the first character.
+  $(id).addEventListener("focus", () => { probePushed = false; });
+  // Quiet while typing: "0.5" and "-3" are both unusable for a moment on their
+  // way in, and a paragraph of complaint flashing under the caret at every
+  // half-typed number would be worse than the half-typed number.
+  $(id).addEventListener("input", () => commitProbe({ quiet: true }));
+  // Leaving the field is where a value that never became a probe is called
+  // out - and put back to what the record still holds, or the pane would keep
+  // showing a number nothing agrees with.
+  $(id).addEventListener("blur", () => {
+    commitProbe();
+    void refreshProbeWindow(probeSelected);
   });
 }
 
-$("probe-show").addEventListener("change", (e) => {
-  if (!e.target.checked) $("probe-env").checked = false;
-  if (!e.target.checked) {
-    dropProbeSelection(probeSelected);
-    void showEnvironmentProbe(null, false, null, false);
-    return;
+// An id is a name, and half a typed name is not one: renaming on every
+// character would leave a trail of probes called E, EN, ENV... So the id alone
+// commits when the field is left, not as it is typed.
+$("probe-id").addEventListener("focus", () => { probePushed = false; });
+$("probe-id").addEventListener("change", () => commitProbe({ rename: true }));
+$("probe-id").addEventListener("blur", () => {
+  void refreshProbeWindow(probeSelected);
+});
+
+/**
+ * Write what the fields say straight onto the record.
+ *
+ * There is no Apply: a probe is edited the way an element is, by typing into
+ * the pane and watching the viewport follow. A value that cannot be a probe -
+ * an empty field mid-edit, a negative size, an inner box bigger than the outer
+ * one - simply does not commit; the last good record stands until the field
+ * says something sensible again, and leaving the field says why it snapped back.
+ */
+function commitProbe({ rename = false, quiet = false } = {}) {
+  if (!probeSelected) return false;
+  const refuse = (message) => {
+    if (!quiet) $("probe-error").textContent = message;
+    return false;
+  };
+  const nextId = rename ? validEnvironmentProbeId($("probe-id").value) : probeSelected;
+  if (rename && !nextId) {
+    return refuse("ID must be 1–128 letters, digits, dots, underscores, or hyphens.");
   }
-  void showEnvironmentProbe(
-    probeSelected, true, probeDraft(), $("probe-env").checked).then(() => {
-    if (probeSelected) select([probeSelected]);
-  });
+  if (rename && !environmentProbeIdAvailable(nextId, probeSelected)) {
+    return refuse(`ID "${nextId}" is already used by another editor entry.`);
+  }
+  const draft = probeDraft();
+  if (!draft) {
+    return refuse("Enter numeric box/camera positions, positive box sizes, an inner size from"
+      + " 0 up to the influence size, and a texture size from 16 to 4096.");
+  }
+  $("probe-error").textContent = "";
+  const previousId = probeSelected;
+  if (!probePushed) { pushUndo(); probePushed = true; }
+  probeSelected = nextId;
+  const changed = setEnvironmentProbe(nextId, draft, previousId, { history: false });
+  if (rename && changed && previousId !== nextId) {
+    setStatus(`${previousId} → ${nextId}: environment probe renamed`);
+  }
+  return changed;
+}
+
+$("probe-show").addEventListener("change", (e) => {
+  if (!probeSelected) return;
+  // Per probe, and only while the window is open: it is how you place one
+  // room's fade region against its neighbour's rather than from memory.
+  setEnvironmentProbeView(probeSelected, { alwaysVisible: e.target.checked });
+  setStatus(`${probeSelected}: ${e.target.checked ? "kept visible" : "shown only when selected"}`);
 });
 
 $("probe-env").addEventListener("change", (e) => {
-  if (e.target.checked) $("probe-show").checked = true;
-  void showEnvironmentProbe(
-    probeSelected, $("probe-show").checked, probeDraft(), e.target.checked);
+  if (!probeSelected) return;
+  // Faces are drawn on the capture box, so a probe with no boxes on screen has
+  // nowhere to draw them: an unselected probe shows them only if it is also
+  // being kept visible.
+  setEnvironmentProbeView(probeSelected, { envFaces: e.target.checked });
+  setStatus(`${probeSelected}: env faces ${e.target.checked ? "shown" : "hidden"}`);
 });
+
+// One eye per section, acting on the probe the pane has open. Hiding a volume
+// is how you read the two it is nested with, so it is a view choice and nothing
+// else: no undo entry, and nothing reaches `environmentProbes[]`. It belongs to
+// one probe all the same - which box is in your way depends on the room you are
+// working in - so it rides the record beside Always visible and Env faces, and
+// is saved in `editorPrefs`.
+for (const { part, label, eye } of PROBE_SECTIONS) {
+  $(eye).addEventListener("click", () => {
+    if (!probeSelected) return;
+    const shown = !probeShows(part);
+    if (!setEnvironmentProbeView(probeSelected, { visibleParts: { [part]: shown } })) return;
+    // A gizmo that is not drawn cannot be dragged, framed or outlined, so
+    // leaving it selected would leave the wheel and the arrow keys pointing at
+    // something the viewport no longer shows.
+    const id = probeSectionId(part);
+    if (!shown && id && state.selection.includes(id)) {
+      select(state.selection.filter((sel) => sel !== id));
+    }
+    setStatus(`${probeSelected}: ${label} ${shown ? "shown" : "hidden"}`);
+  });
+}
 
 $("btn-probe-new").addEventListener("click", () => {
   const id = nextEnvironmentProbeId();
@@ -1308,40 +1514,12 @@ $("btn-probe-new").addEventListener("click", () => {
   setStatus(`created environment probe ${id}`);
 });
 
-$("btn-probe-apply").addEventListener("click", () => {
-  if (!probeSelected) return;
-  const draft = probeDraft();
-  const nextId = validEnvironmentProbeId($("probe-id").value);
-  if (!nextId) {
-    $("probe-error").textContent =
-      "ID must be 1–128 letters, digits, dots, underscores, or hyphens.";
-    return;
-  }
-  if (!environmentProbeIdAvailable(nextId, probeSelected)) {
-    $("probe-error").textContent = `ID "${nextId}" is already used by another editor entry.`;
-    return;
-  }
-  if (!draft) {
-    $("probe-error").textContent =
-      "Enter numeric box/camera positions, positive box sizes, an inner size from"
-      + " 0 up to the influence size, and a texture size from 16 to 4096.";
-    return;
-  }
-  const previousId = probeSelected;
-  probeSelected = nextId;
-  const changed = setEnvironmentProbe(nextId, draft, previousId);
-  $("probe-error").textContent = "";
-  void showAndSelectProbe(probeSelected);
-  setStatus(changed
-    ? `${previousId === probeSelected ? probeSelected : `${previousId} → ${probeSelected}`}: environment probe updated`
-    : `${probeSelected}: environment probe unchanged`);
-});
-
 $("btn-probe-delete").addEventListener("click", () => {
   if (!probeSelected) return;
   const gone = probeSelected;
   if (!removeEnvironmentProbe(gone)) return;
   probeSelected = null;
+  $("probe-error").textContent = "";
   void refreshProbeWindow();
   setStatus(`deleted environment probe ${gone}`);
 });
@@ -1352,15 +1530,19 @@ on("environment-probes", () => {
 });
 
 on("selection", () => {
+  if ($("probe-modal").hidden) return;
   // A blend volume is part of its probe: clicking one in the viewport should
   // bring that probe up in the window, exactly as clicking its capture box does.
   const selectedProbe = state.selection
     .map((id) => (state.environmentProbes.has(id) ? id : environmentProbePartOf(id)?.probe))
     .find(Boolean);
-  if (!selectedProbe || $("probe-modal").hidden || selectedProbe === probeSelected) return;
-  probeSelected = selectedProbe;
-  $("probe-show").checked = true;
-  void refreshProbeWindow(selectedProbe);
+  if (selectedProbe && selectedProbe !== probeSelected) {
+    probeSelected = selectedProbe;
+    void refreshProbeWindow(selectedProbe);
+    return;
+  }
+  // Same probe, different box - or nothing at all. Only the headings move.
+  refreshProbeSections();
 });
 
 $("insp-name").addEventListener("change", (e) => {
@@ -1422,6 +1604,14 @@ $("scale-axis").addEventListener("change", (e) => { state.scaleAxis = e.target.v
 
 $("big-palette").addEventListener("change", (e) => setBigPalette(e.target.checked));
 
+$("stray-chunk-check").addEventListener("change", (e) => {
+  state.strayChunkCheck = e.target.checked;
+  validate();
+  setStatus(e.target.checked
+    ? "stray-chunk check on"
+    : "stray-chunk check off — wrong chunk assignments will not be reported");
+});
+
 // Keyboard shortcuts are ignored while a form control has focus, so a toolbar
 // control that keeps focus after being changed silently kills the numpad keys.
 for (const el of document.querySelectorAll("#toolbar select, #toolbar input")) {
@@ -1458,6 +1648,8 @@ function refreshEditorPrefs() {
   showVeilAlpha(state.veilAlpha);
   localStorage.setItem("veilAlpha", String(state.veilAlpha));
   setBigPalette(state.bigPalette);
+  $("stray-chunk-check").checked = !!state.strayChunkCheck;
+  validate();                         // the check it governs is a live one
   refreshStats();                     // the status bar quotes the ghost percentage
 }
 on("prefs", refreshEditorPrefs);
@@ -1968,11 +2160,20 @@ addEventListener("beforeunload", (e) => {
  */
 async function doSave() {
   let saved;
+  // Read before writing. A save is the moment a mistake becomes the file
+  // everyone else reads, and a piece left in the wrong chunk is invisible until
+  // it pops in and out with the wrong room in the game. Reported, never
+  // blocking: it is a suspicion, and a ship half-built is full of them.
+  const strays = strayChunkWarnings();
   try {
     setStatus("saving…");
     // The staging area is a working copy: read it back before writing, or
     // whatever is on it right now would not be in the file.
-    if (state.collisionMode) harvestStage();
+    if (state.mode === "collision") harvestStage();
+    // The compound bench is not ship data and is filtered out of the file, but
+    // a save is also the moment you would expect nothing to be lost - so what
+    // is on it goes to its own store now rather than only on the way out.
+    persistBench();
     const r = await saveLayout();
     markSaved();
     const coll = r.collisionError
@@ -1982,13 +2183,16 @@ async function doSave() {
       ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}`
       : `saved ${r.bytes} bytes → ${r.path}${coll}`;
   } catch (e) { setStatus("save failed: " + e.message); return; }
+  const warning = strays.length
+    ? ` — check chunks: ${strays.join("; ")}`
+    : "";
   try {
     setStatus(`${saved} — exporting glb…`);
     const r = await exportGlb();
-    setStatus(`${saved}, ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}`);
+    setStatus(`${saved}, ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}${warning}`);
   } catch (e) {
     console.error(e);
-    setStatus(`${saved} — glb NOT written: ${e.message}`);
+    setStatus(`${saved} — glb NOT written: ${e.message}${warning}`);
   }
 }
 
@@ -2121,12 +2325,6 @@ window.addEventListener("keydown", async (e) => {
     if (!isBrowserKey(e)) e.preventDefault();
     return;
   }
-  // The behaviour library is modal: nothing behind it should be editable, and
-  // a stray X or Del while a button in it holds focus would act on the ship.
-  if (!$("bhv-modal").hidden) {
-    if (e.key === "Escape") { e.preventDefault(); closeLibrary(); }
-    return;
-  }
   const t = e.target;
   if (isFormControl(t)) {
     // Escape abandons a field and Enter says "done with it" - both hand the
@@ -2139,8 +2337,16 @@ window.addEventListener("keydown", async (e) => {
     }
     if (fieldKeepsKey(t, e)) return;
   }
+  // A floating window is not modal - the ship behind it stays live, which is
+  // the point of it floating - so keys are only claimed while the focus is
+  // inside one. Without that, a stray X or Del pressed while a button in the
+  // window holds focus would act on the ship instead.
   if (t && !$("chunk-modal").hidden && $("chunk-modal").contains(t)) {
     if (e.key === "Escape") { e.preventDefault(); closeChunks(); }
+    return;
+  }
+  if (t && !$("bhv-modal").hidden && $("bhv-modal").contains(t)) {
+    if (e.key === "Escape") { e.preventDefault(); closeLibrary(); }
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
@@ -2355,9 +2561,11 @@ function cancelEverything({ closeModes = true } = {}) {
   if (cancelMarquee()) return;     // an in-flight rectangle goes first
   if (cancelDrag()) return;        // then an in-flight drag
   if (ghostActive() || state.brush) { cancelGhost(); setBrush(null); clearMarkerBrush(); select([]); return; }
-  // Only once there is nothing in hand does Escape close the collision area -
-  // otherwise cancelling an armed shape would throw you back to the ship.
-  if (closeModes && state.collisionMode) { closeCollisionArea(); return; }
+  // Only once there is nothing in hand does Escape close a bench - otherwise
+  // cancelling an armed shape would throw you back to the ship.
+  if (closeModes && !$("compound-modal").hidden) { closeCompoundDialog(); return; }
+  if (closeModes && state.mode === "collision") { closeCollisionArea(); return; }
+  if (closeModes && state.mode === "compound") { closeCompoundBench(); return; }
   cancelGhost();
   setBrush(null);
   clearMarkerBrush();
@@ -2397,7 +2605,7 @@ function duplicateCurrent() {
     // A *module* can only be on the bench once - the association rule needs one
     // answer to "which element is this shape on", and two instances give two.
     // Shapes are a different matter: a hull is often several boxes.
-    .filter((e) => !(state.collisionMode && e.stage && e.type !== "collider"));
+    .filter((e) => !(state.mode === "collision" && e.stage && e.type !== "collider"));
   if (!many.length
       && cur.ids.some((id) => { const e = entryOf(id); return e?.stage && e.type !== "collider"; })) {
     setStatus("a module can only be on the bench once — copy its shapes instead");
@@ -2452,6 +2660,12 @@ function duplicateCurrent() {
     // to it. Moving the plane was the old way, and it meant Ctrl+D silently
     // changed where *everything placed afterwards* would land.
     baseY: y,
+    // What makes this a duplicate of the *element* and not of its mesh: the
+    // drop reads the source off this id and copies its lights - the tuned ones
+    // it is wearing now, not the kit's defaults - along with its name and its
+    // compound. The multi-selection path above has always done it; this one
+    // goes through the palette brush and used to arrive as a bare placement.
+    originId: entry.id,
   });
   setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place${axisNote}`);
 }
@@ -2577,6 +2791,35 @@ function short(s) {
 
 // ------------------------------------------------------------- validation
 
+/**
+ * The stray-chunk check, phrased for a human, or nothing at all when it is off.
+ *
+ * One producer for both consumers: the Live checks list reads it continuously
+ * and the save reads it once, so a warning cannot say one thing in the panel
+ * and another on the status bar.
+ */
+function strayChunkWarnings() {
+  if (!state.strayChunkCheck) return [];
+  const strays = strayChunkMembers();
+  if (!strays.length) return [];
+  // Grouped by the pair of chunks involved: assigning a whole room to the wrong
+  // chunk is the common mistake, and thirty identical lines say no more than
+  // one does.
+  const groups = new Map();
+  for (const stray of strays) {
+    const key = `${stray.chunk}\u0000${stray.host || ""}`;
+    if (!groups.has(key)) groups.set(key, { chunk: stray.chunk, host: stray.host, names: [] });
+    groups.get(key).names.push(stray.name);
+  }
+  return [...groups.values()].map(({ chunk, host, names }) => {
+    const shown = names.slice(0, 3).join(", ");
+    const rest = names.length > 3 ? `, +${names.length - 3} more` : "";
+    return host
+      ? `${names.length} element(s) assigned to ${chunk} sit in ${host}: ${shown}${rest}`
+      : `${names.length} element(s) assigned to ${chunk} touch nothing else in it: ${shown}${rest}`;
+  });
+}
+
 function validate() {
   const out = [];
   const boxes = [];
@@ -2616,6 +2859,12 @@ function validate() {
     return ["x", "z"].some((k) => Math.abs(p.node.position[k] / s - Math.round(p.node.position[k] / s)) > 1e-3);
   });
   if (offGrid.length) out.push(["warn", `${offGrid.length} object(s) off the ${state.snap.pos} m grid`]);
+
+  // A mis-assigned element is invisible in the viewport - it sits exactly where
+  // it was put - and only shows up much later as a piece that pops in and out
+  // with the wrong room. Naming the first few is what makes the warning
+  // actionable, so it lists them rather than only counting them.
+  for (const stray of strayChunkWarnings()) out.push(["warn", stray]);
 
   // A portal is only usable if both of its sides are known, so an unresolved
   // door is an error rather than a warning. Check the *resolved* sides: most
@@ -2722,7 +2971,7 @@ function refreshBusy() {
   $("busy").hidden = !busy;
   $("busy-msg").textContent = busyLabel() || "working…";
   for (const id of ["toolbar", "palette", "viewport", "inspector",
-    "probe-modal", "chunk-modal", "bhv-modal"]) {
+    "probe-modal", "chunk-modal", "bhv-modal", "compound-modal"]) {
     const el = $(id);
     if (el) el.inert = busy;
   }
@@ -2734,7 +2983,7 @@ on("pickmodule", (moduleId) => {
   const axisNote = axisNoteForGhost();
   // On the collision area the palette *stages* modules: arming a brush there
   // would drop real kit geometry into the ship you cannot see.
-  if (state.collisionMode) { stageFromPalette(moduleId, axisNote); return; }
+  if (state.mode === "collision") { stageFromPalette(moduleId, axisNote); return; }
   setBrush(moduleId); setStatus(`armed ${moduleId}${axisNote}`);
 });
 on("stagemodule", (moduleId) => stageFromPalette(moduleId, axisNoteForGhost()));
@@ -2813,7 +3062,7 @@ function closeCollisionArea() {
 }
 
 $("btn-edit-module").addEventListener("click", async () => {
-  if (state.collisionMode) closeCollisionArea(); else await openCollisionArea();
+  if (state.mode === "collision") closeCollisionArea(); else await openCollisionArea();
 });
 $("btn-module-done").addEventListener("click", closeCollisionArea);
 
@@ -2860,7 +3109,7 @@ $("btn-module-fit-hull").addEventListener("click", async () => {
 });
 
 function refreshModuleBanner() {
-  const on = state.collisionMode;
+  const on = state.mode === "collision";
   $("module-banner").hidden = !on;
   if (on) {
     const staged = [...state.placements.values()].filter((p) => p.stage).length;
@@ -2871,10 +3120,228 @@ function refreshModuleBanner() {
   }
   $("btn-edit-module").textContent = on ? "Back to the ship" : "Edit collision";
   $("btn-edit-module").classList.toggle("active", on);
+  // One bench at a time: each closes by putting its own contents away, and the
+  // way to say that is to make the other door plainly shut rather than to
+  // refuse the click after it has been made.
+  $("btn-edit-module").disabled = state.mode === "compound";
 }
-on("collisionMode", refreshModuleBanner);
+on("mode", refreshModuleBanner);
 on("colliders", refreshModuleBanner);
 on("placements", refreshModuleBanner);
+
+// ------------------------------------------------- the compound bench
+//
+// The third mode, built the same way as the collision area: the ship is hidden,
+// what you assemble lives on a bench of its own, and closing puts the ship back
+// untouched. What comes off this bench is a *recipe* in the palette rather than
+// shapes on a module - see compounds.js for why that is the right shape.
+
+async function openCompoundBench() {
+  cancelGhost();
+  setBrush(null);
+  await whileBusy("opening the compound bench…", async () => {
+    const restored = await enterCompoundMode();
+    setGridElevation(0);
+    // Only frame the bench when there is no viewpoint to come back to -
+    // otherwise the focus throws away the view the mode just restored.
+    const back = benchMembers();
+    if (back.length && !restored?.viewRestored) focusNodes(back.map((p) => p.node));
+  });
+  const n = benchMembers().length;
+  const name = editingCompound();
+  setStatus(n
+    ? `compound bench — ${n} piece(s) back on the bench${name ? ` · editing "${name}"` : ""}`
+    : "compound bench — place modules from the left, then Save as… to make one object of them");
+}
+
+function closeCompoundBench() {
+  closeCompoundDialog();
+  cancelGhost();
+  setBrush(null);
+  const n = benchMembers().length;
+  exitCompoundMode();
+  setStatus(n
+    ? `back to the ship — ${n} piece(s) left on the bench for next time`
+    : "back to the ship");
+}
+
+$("btn-edit-compound").addEventListener("click", async () => {
+  if (state.mode === "compound") closeCompoundBench(); else await openCompoundBench();
+});
+$("btn-compound-done").addEventListener("click", closeCompoundBench);
+$("btn-compound-new").addEventListener("click", async () => {
+  if (!benchMembers().length) { setStatus("the bench is already empty"); return; }
+  await newCompound();
+  setStatus("bench cleared — Ctrl+Z brings it back");
+});
+
+function refreshCompoundBanner() {
+  const open = state.mode === "compound";
+  $("compound-banner").hidden = !open;
+  if (open) {
+    const n = benchMembers().length;
+    const name = editingCompound();
+    // The name is on the banner rather than only in a status line, because it
+    // is the answer to "what am I about to overwrite" and that question is
+    // asked at the moment of saving, long after any message has scrolled away.
+    $("compound-banner-text").textContent = name
+      ? `Compound bench — "${name}" — ${n} piece(s)`
+      : `Compound bench — unnamed — ${n} piece(s)`;
+    const quick = $("btn-compound-quicksave");
+    quick.disabled = !name || !n;
+    quick.title = name
+      ? `Re-save "${name}" with what is on the bench, no questions asked`
+      : "Nothing to re-save: this bench has no name yet — use Save as… to give it one";
+  }
+  $("btn-edit-compound").textContent = open ? "Back to the ship" : "Edit compounds";
+  $("btn-edit-compound").classList.toggle("active", open);
+  $("btn-edit-compound").disabled = state.mode === "collision";
+}
+on("mode", refreshCompoundBanner);
+on("placements", refreshCompoundBanner);
+on("compound", refreshCompoundBanner);
+
+/**
+ * The save dialog.
+ *
+ * A compound needs three things a bench cannot infer: what to call it, and
+ * which kit and category to file it under so it turns up beside the modules it
+ * is made of rather than in a bin of its own.
+ */
+// Remembered between saves, not between sessions: it is a convenience inside
+// one run of work, and guessing wrong across a restart files things silently.
+const compoundFiling = { kit: "", category: "Compounds", sync: false };
+
+function openCompoundDialog() {
+  if (!benchMembers().length) { setStatus("nothing on the bench to save"); return; }
+  const kits = (getCatalogue().kits || []).map((k) => k.name);
+  const kitEl = $("compound-kit");
+  kitEl.innerHTML = "";
+  for (const name of kits) {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = name;
+    kitEl.appendChild(o);
+  }
+  // Re-opening offers what you chose last time: compounds arrive in runs, and
+  // they nearly always belong in the same drawer as the one before.
+  const editingName = editingCompound();
+  const tile = editingName ? compoundTile(editingName) : null;
+  kitEl.value = kits.includes(tile?.kit || compoundFiling.kit)
+    ? (tile?.kit || compoundFiling.kit) : (kits[0] || "");
+  $("compound-name").value = editingName || "";
+  $("compound-category").value = tile?.category || compoundFiling.category;
+  $("compound-error").textContent = "";
+  $("compound-sync").checked = compoundFiling.sync;
+  refreshCompoundCategories();
+  $("compound-summary").textContent =
+    `${benchMembers().length} piece(s) on the bench, `
+    + `${benchMembers().reduce((a, e) => a + lightsOf(e.id).length, 0)} lamp(s) among them`;
+  refreshCompoundWarning();
+  $("compound-modal").hidden = false;
+  $("compound-name").focus();
+  $("compound-name").select();
+}
+
+/**
+ * Say what saving under this name will do, as the name is typed.
+ *
+ * A warning rather than a refusal: saving over a compound is how one is
+ * edited. What makes it worth saying is that the two cases look identical at
+ * the keyboard and are not remotely the same afterwards - one files a new
+ * recipe, the other replaces a recipe the ship may already be full of.
+ */
+function refreshCompoundWarning() {
+  const name = $("compound-name").value.trim();
+  const tile = name ? compoundTile(name) : null;
+  const el = $("compound-warn");
+  if (!tile) { el.textContent = ""; return; }
+  const copies = [...compoundInstances(name).keys()].length;
+  const one = copies === 1;
+  el.textContent = `"${name}" already exists (${(tile.members || []).length} piece(s))`
+    + " — saving replaces it"
+    + (copies
+      ? `. ${copies} cop${one ? "y" : "ies"} in the ship`
+      + `${$("compound-sync").checked
+        ? " will be rebuilt"
+        : ` ${one ? "is" : "are"} left alone`}`
+      : "");
+}
+
+function closeCompoundDialog() { $("compound-modal").hidden = true; }
+
+/** The categories the chosen kit already has, as suggestions rather than a list. */
+function refreshCompoundCategories() {
+  const kit = (getCatalogue().kits || []).find((k) => k.name === $("compound-kit").value);
+  const list = $("compound-categories");
+  list.innerHTML = "";
+  for (const name of kit?.categories || []) {
+    const o = document.createElement("option");
+    o.value = name;
+    list.appendChild(o);
+  }
+}
+
+$("btn-compound-save").addEventListener("click", openCompoundDialog);
+$("btn-compound-cancel").addEventListener("click", closeCompoundDialog);
+$("compound-kit").addEventListener("change", refreshCompoundCategories);
+$("compound-name").addEventListener("input", refreshCompoundWarning);
+$("compound-sync").addEventListener("change", refreshCompoundWarning);
+$("compound-name").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); $("btn-compound-store").click(); }
+});
+
+/** What a save reports, whichever button started it. */
+function reportSave(r, kit, category) {
+  setStatus(`${r.replaced ? "replaced" : "saved"} "${r.name}" — ${r.members} piece(s)`
+    + (kit ? `, filed under ${kit} › ${category}` : "")
+    + (r.instances
+      ? `. ${r.instances} cop${r.instances === 1 ? "y" : "ies"} in the ship rebuilt`
+      : (r.replaced ? ". Copies already in the ship are untouched" : "")));
+}
+
+$("btn-compound-store").addEventListener("click", async () => {
+  const name = $("compound-name").value.trim();
+  const kit = $("compound-kit").value;
+  const category = $("compound-category").value.trim() || "Compounds";
+  const updateInstances = $("compound-sync").checked;
+  $("compound-error").textContent = "";
+  const r = await whileBusy(`saving "${name}"…`,
+    () => saveCompound({ name, kit, category, updateInstances }));
+  if (!r.ok) { $("compound-error").textContent = r.error; return; }
+  compoundFiling.kit = kit;
+  compoundFiling.category = category;
+  compoundFiling.sync = updateInstances;
+  closeCompoundDialog();
+  reportSave(r, kit, category);
+});
+
+$("btn-compound-quicksave").addEventListener("click", async () => {
+  const r = await whileBusy(`saving "${editingCompound()}"…`,
+    () => quickSaveCompound({ updateInstances: compoundFiling.sync }));
+  if (!r.ok) { setStatus(r.error); return; }
+  reportSave(r, "", "");
+});
+
+// Clicking a compound tile while the bench is open loads it, rather than arming
+// a brush to place one compound inside another. Editing is what you are there
+// for, and it is the only way back to a saved recipe.
+on("editcompound", async (name) => {
+  const n = benchMembers().length;
+  if (n && !confirm(`Put "${name}" on the bench?\n\n`
+    + `The ${n} piece(s) on it now are cleared - Ctrl+Z brings them back.`)) return;
+  const r = await whileBusy(`loading "${name}"…`, () => editCompound(name));
+  setStatus(r.ok
+    ? `"${r.name}" on the bench — ${r.members} piece(s). Save re-saves it under that name`
+    : r.error);
+});
+
+on("deletecompound", async (name) => {
+  if (!confirm(`Delete the compound "${name}"?\n\n`
+    + "Copies already placed in the ship are ordinary elements and are left alone.")) return;
+  const r = await whileBusy(`deleting "${name}"…`, () => deleteCompound(name));
+  setStatus(r.ok ? `deleted the "${name}" compound` : r.error);
+});
 
 $("show-layer").addEventListener("change", (ev) => {
   setShowLayer(ev.target.value);
@@ -3009,9 +3476,11 @@ $("btn-cfg-reset").addEventListener("click", () => {
   }
   // The editor's own view preferences stay off the stack, the same rule their
   // rows follow when you move them by hand.
-  if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT) {
+  if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT
+    || state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT) {
     setVeilAlpha(VEIL_ALPHA_DEFAULT);
     state.bigPalette = BIG_PALETTE_DEFAULT;
+    state.strayChunkCheck = STRAY_CHUNK_CHECK_DEFAULT;
     changed = true;
   }
   refreshEditorPrefs();

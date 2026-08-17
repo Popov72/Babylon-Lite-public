@@ -779,8 +779,10 @@ const probes = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const runtime = await import("/js/runtime.js");
   const $ = (id) => document.getElementById(id);
+  // Probe gizmos are per probe now, so their nodes carry the id they belong to.
+  const gizmo = (part, probeId) => `LOCAL_ENVIRONMENT_${part}#${probeId}`;
   // The probe window's buttons kick off their own async re-show, and
-  // showEnvironmentProbe is last-request-wins: a call made from here right
+  // showEnvironmentProbes is last-request-wins: a call made from here right
   // after a click is cancelled by the one already in flight. So wait for the
   // window to finish dressing the gizmo rather than racing it.
   const settle = async (probeId) => {
@@ -788,6 +790,12 @@ const probes = await page.evaluate(async () => {
       await new Promise((r) => setTimeout(r, 25));
     }
     return ed.entryOf(probeId)?.node || null;
+  };
+  // Typing is what commits now: there is no Apply, so a test types the way a
+  // user does and lets the pane write the record.
+  const type = (field, value, event = "input") => {
+    $(field).value = value;
+    $(field).dispatchEvent(new Event(event));
   };
   ed.state.environmentProbes.clear();
 
@@ -821,30 +829,18 @@ const probes = await page.evaluate(async () => {
     "probe-inner-size-x": "4", "probe-inner-size-y": "1", "probe-inner-size-z": "8",
     "probe-resolution": "1024",
   };
-  for (const [field, value] of Object.entries(values)) {
-    $(field).value = value;
-    $(field).dispatchEvent(new Event("input"));
-  }
+  for (const [field, value] of Object.entries(values)) type(field, value);
   await settle(id);
-  await runtime.showEnvironmentProbe(id, true, {
-    id,
-    boxPosition: [1, 2, 3],
-    boxSize: [8, 5, 12],
-    capturePosition: [7, 8, 9],
-    influenceBoxPosition: [1.5, 2, 3],
-    influenceBoxSize: [12, 9, 16],
-    influenceInnerBoxSize: [4, 1, 8],
-    resolution: 1024,
-  }, false);
+  await runtime.showEnvironmentProbes(id);
 
-  const centre = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_BOX_CENTRE");
-  const camera = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_CAMERA");
+  const centre = ed.state.scene.getMeshByName(gizmo("BOX_CENTRE", id));
+  const camera = ed.state.scene.getMeshByName(gizmo("CAMERA", id));
   // The volumes are a root plus a box, like the capture volume: the root is
   // what carries the transform, the box is what is picked and outlined.
-  const outerRoot = ed.state.scene.getTransformNodeByName("LOCAL_ENVIRONMENT_INFLUENCE_BOX_ROOT");
-  const innerRoot = ed.state.scene.getTransformNodeByName("LOCAL_ENVIRONMENT_INNER_BOX_ROOT");
-  const outerBox = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_INFLUENCE_BOX");
-  const innerBox = ed.state.scene.getMeshByName("LOCAL_ENVIRONMENT_INNER_BOX");
+  const outerRoot = ed.state.scene.getTransformNodeByName(gizmo("INFLUENCE_BOX_ROOT", id));
+  const innerRoot = ed.state.scene.getTransformNodeByName(gizmo("INNER_BOX_ROOT", id));
+  const outerBox = ed.state.scene.getMeshByName(gizmo("INFLUENCE_BOX", id));
+  const innerBox = ed.state.scene.getMeshByName(gizmo("INNER_BOX", id));
   const live = {
     centre: centre?.position.asArray(),
     camera: camera?.position.asArray(),
@@ -864,20 +860,23 @@ const probes = await page.evaluate(async () => {
 
   // An inner box outside its outer one would make the runtime's normalized
   // distance field run backwards, so the pane refuses it rather than storing it.
-  $("probe-inner-size-x").value = "99";
-  $("btn-probe-apply").click();
-  const innerRefused = /inner size/i.test($("probe-error").textContent)
-    && ed.environmentProbeOf(id).influenceInnerBoxSize.join()
-      === created.influenceInnerBoxSize.join();
-  $("probe-inner-size-x").value = "4";
+  // Typing is quiet - "0.5" is unusable for a moment on its way in - so the
+  // complaint arrives when the field is left, along with the good value back.
+  type("probe-inner-size-x", "99");
+  const innerHeldWhileTyped =
+    ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
+  type("probe-inner-size-x", "99", "blur");
+  const innerRefused = innerHeldWhileTyped
+    && /inner size/i.test($("probe-error").textContent)
+    && ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
+  await new Promise((r) => setTimeout(r, 200));
+  const innerFieldRestored = $("probe-inner-size-x").value === "4";
 
-  $("btn-probe-apply").click();
   ed.setEnvironmentProbe("ENV_OTHER", {
     boxPosition: [30, 2, 0], boxSize: [2, 2, 2],
     capturePosition: [30, 2, 0], resolution: 64,
   });
-  $("probe-id").value = "ENV_OTHER";
-  $("btn-probe-apply").click();
+  type("probe-id", "ENV_OTHER", "change");
   const duplicateRefused = /already used/i.test($("probe-error").textContent)
     && !!ed.environmentProbeOf(id);
 
@@ -889,16 +888,14 @@ const probes = await page.evaluate(async () => {
   const colliders = await import("/js/colliders.js");
   const sceneId = colliders.addCollider(
     "box", new BABYLON.Vector3(40, 1, 40), { silent: true })?.id;
-  $("probe-id").value = sceneId;
-  $("btn-probe-apply").click();
+  type("probe-id", sceneId, "change");
   const sceneConflictRefused = !!sceneId
     && /already used/i.test($("probe-error").textContent)
     && !!ed.environmentProbeOf(id);
   colliders.removeCollider(sceneId, true);
 
   const renamedId = "storage_main";
-  $("probe-id").value = renamedId;
-  $("btn-probe-apply").click();
+  type("probe-id", renamedId, "change");
   await settle(renamedId);
   ed.select([renamedId]);
   const renamed = !ed.environmentProbeOf(id) && !!ed.environmentProbeOf(renamedId);
@@ -925,7 +922,7 @@ const probes = await page.evaluate(async () => {
   for (let i = 0; i < 400 && !$("probe-list").querySelector(`option[value="${renamedId}"]`); i++) {
     await new Promise((r) => setTimeout(r, 25));
   }
-  await runtime.showEnvironmentProbe(renamedId, true, survived, false);
+  await runtime.showEnvironmentProbes(renamedId);
 
   // ---- direct manipulation of the two blend volumes ---------------------
   // They are parts of the probe rather than entries of their own, so the same
@@ -943,7 +940,7 @@ const probes = await page.evaluate(async () => {
   ed.emit("transform");
   const influenceDragged = ed.environmentProbeOf(renamedId);
 
-  await runtime.showEnvironmentProbe(renamedId, true, influenceDragged, false);
+  await runtime.showEnvironmentProbes(renamedId);
   ed.select([innerId]);
   const innerEntry = ed.entryOf(innerId);
   const innerCanMove = innerEntry?.canMove;
@@ -971,7 +968,7 @@ const probes = await page.evaluate(async () => {
     opened, id, renamedId, live, authored, inManifest, survived, deleted,
     renamed, duplicateRefused, sceneConflictRefused, sceneId,
     transformed, beforeRotation, afterRotation, axes, captureButtons,
-    derivedInfluence, innerRefused,
+    derivedInfluence, innerRefused, innerFieldRestored,
     influenceDragged, innerResized, innerCanMove, innerPositionRow,
     innerMoveRefused: innerBefore.join() === innerAfterNudge.join(),
     closed: $("probe-modal").hidden,
@@ -1006,8 +1003,9 @@ check("the influence volumes are authored, drawn, and selectable in their own ri
     && probes.live.influenceOwners?.join() === probes.live.influencePartIds?.join(),
   `${JSON.stringify(probes.live.outer)} / ${JSON.stringify(probes.live.inner)} @ ${JSON.stringify(probes.live.influenceCentre)}`
   + ` owners ${JSON.stringify(probes.live.influenceOwners)}`);
-check("an inner influence box larger than its outer one is refused",
-  probes.innerRefused === true, JSON.stringify(probes.innerRefused));
+check("an inner influence box larger than its outer one is refused, and the field put back",
+  probes.innerRefused === true && probes.innerFieldRestored === true,
+  `refused=${probes.innerRefused}, field restored=${probes.innerFieldRestored}`);
 check("the outer influence volume is moved and resized with the mouse, and takes the inner one down with it",
   probes.influenceDragged?.influenceBoxPosition?.join() === "4,6,8"
     && probes.influenceDragged?.influenceBoxSize?.join() === "9,8,7"
@@ -1053,6 +1051,349 @@ check("Capture follows the selected probe, Capture all never needs one",
     && probes.captureButtons.emptiedDisabled === true
     && probes.captureButtons.allDisabled === false,
   JSON.stringify(probes.captureButtons));
+
+// ---- 1d-quinquies-quater. the probe pane's three sections ------------------
+// Three near-identical vector triples read as one block of numbers, so each
+// volume gets a heading, an eye that shows and hides it on its own, and a mark
+// when it is the box the viewport has selected.
+const probeSections = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const $ = (id) => document.getElementById(id);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const enabled = (name) => {
+    const s = ed.state.scene;
+    const node = s.getTransformNodeByName(name) || s.getMeshByName(name);
+    return !!node?.isEnabled();
+  };
+  const gizmos = (probeId) => ({
+    box: enabled(`LOCAL_ENVIRONMENT_BOX#${probeId}`),
+    centre: enabled(`LOCAL_ENVIRONMENT_BOX_CENTRE#${probeId}`),
+    camera: enabled(`LOCAL_ENVIRONMENT_CAMERA#${probeId}`),
+    influence: enabled(`LOCAL_ENVIRONMENT_INFLUENCE_BOX#${probeId}`),
+    inner: enabled(`LOCAL_ENVIRONMENT_INNER_BOX#${probeId}`),
+  });
+  const heads = () => [...document.querySelectorAll("#probe-modal .probe-head")].map((h) => ({
+    id: h.id,
+    title: h.querySelector("span").textContent,
+    eye: h.querySelector(".eye").getAttribute("aria-pressed"),
+    selected: h.classList.contains("selected"),
+    badge: !h.querySelector(".sel").hidden,
+  }));
+
+  ed.state.environmentProbes.clear();
+  $("btn-probes").click();
+  $("btn-probe-new").click();
+  const id = $("probe-list").value;
+  for (let i = 0; i < 400 && !ed.entryOf(id)?.node; i++) await wait(25);
+  await wait(150);
+
+  // Reading order: the pane's own children, so a row moved in the markup shows
+  // up here rather than in a screenshot nobody looks at.
+  const order = [...document.querySelectorAll("#probe-modal .editor > *")].map((el) =>
+    (el.tagName === "H3"
+      ? `H3:${el.querySelector("span").textContent}`
+      : (el.querySelector("label")?.textContent?.trim() || el.id)));
+
+  const opening = { heads: heads(), gizmos: gizmos(id) };
+
+  $("btn-probe-eye-influence").click();
+  await wait(150);
+  const influenceHidden = { heads: heads(), gizmos: gizmos(id) };
+
+  // Hiding the capture box has to take the selection with it: a gizmo that is
+  // not drawn cannot be dragged, framed or outlined.
+  $("btn-probe-eye-box").click();
+  await wait(150);
+  const boxHidden = { gizmos: gizmos(id), selection: ed.state.selection.slice() };
+
+  // A view choice, so it stays out of the ship the game reads - but it is still
+  // worth keeping, so it is written beside it.
+  const mf = await import("/js/manifest.js");
+  const manifest = mf.buildManifest();
+  const inShip = JSON.stringify(manifest.environmentProbes[0] || {});
+  const inPrefs = JSON.stringify(manifest.editorPrefs?.probes?.[id] || {});
+
+  $("btn-probe-eye-box").click();
+  $("btn-probe-eye-influence").click();
+  await wait(250);
+  const restored = gizmos(id);
+
+  ed.select([ed.environmentProbePartId(id, "inner")]);
+  await wait(150);
+  const innerSelected = heads();
+  ed.select([ed.environmentProbePartId(id, "influence")]);
+  await wait(150);
+  const influenceSelected = heads();
+
+  // What the manifest was written with is what it puts back.
+  ed.applyEditorPrefs(manifest.editorPrefs);
+  await wait(250);
+  const reloaded = gizmos(id);
+
+  ed.removeEnvironmentProbe(id);
+  $("btn-probe-close").click();
+  return {
+    order, opening, influenceHidden, boxHidden, restored,
+    innerSelected, influenceSelected, inShip, inPrefs, reloaded,
+  };
+});
+check("the probe pane is split into Probe box, Influence box and Inner box",
+  probeSections.order.join("|") === [
+    "ID", "Always visible", "Env faces", "Texture size",
+    "H3:Probe box", "Centre", "Size", "Camera",
+    "H3:Influence box", "Centre", "Size",
+    "H3:Inner box", "Size", "probe-resolved",
+  ].join("|"),
+  probeSections.order.join(" · "));
+check("each probe section owns an eye that shows and hides only its own volume",
+  probeSections.opening.heads.every((h) => h.eye === "true")
+    && Object.values(probeSections.opening.gizmos).every(Boolean)
+    && probeSections.influenceHidden.gizmos.influence === false
+    && probeSections.influenceHidden.gizmos.box === true
+    && probeSections.influenceHidden.gizmos.inner === true
+    && probeSections.influenceHidden.heads[1].eye === "false"
+    && probeSections.influenceHidden.heads[0].eye === "true"
+    && Object.values(probeSections.restored).every(Boolean),
+  `${JSON.stringify(probeSections.influenceHidden.gizmos)} → ${JSON.stringify(probeSections.restored)}`);
+check("hiding the probe box takes its centre, camera and selection with it",
+  probeSections.boxHidden.gizmos.box === false
+    && probeSections.boxHidden.gizmos.centre === false
+    && probeSections.boxHidden.gizmos.camera === false
+    && probeSections.boxHidden.gizmos.inner === true
+    && probeSections.boxHidden.selection.length === 0,
+  `${JSON.stringify(probeSections.boxHidden.gizmos)}, selection ${JSON.stringify(probeSections.boxHidden.selection)}`);
+check("the pane marks whichever box the viewport has selected",
+  probeSections.opening.heads[0].selected === true
+    && probeSections.opening.heads[0].badge === true
+    && probeSections.innerSelected.map((h) => h.selected).join() === "false,false,true"
+    && probeSections.innerSelected[2].badge === true
+    && probeSections.influenceSelected.map((h) => h.selected).join() === "false,true,false"
+    && probeSections.influenceSelected[1].badge === true,
+  `open=${JSON.stringify(probeSections.opening.heads.map((h) => h.selected))},`
+  + ` inner=${JSON.stringify(probeSections.innerSelected.map((h) => h.selected))},`
+  + ` influence=${JSON.stringify(probeSections.influenceSelected.map((h) => h.selected))}`);
+check("per-box visibility stays out of the ship and is saved beside it",
+  /"box":false/.test(probeSections.inPrefs)
+    && /"influence":false/.test(probeSections.inPrefs)
+    && /"inner":true/.test(probeSections.inPrefs)
+    && !/visibleParts/.test(probeSections.inShip)
+    && probeSections.reloaded.box === false
+    && probeSections.reloaded.influence === false
+    && probeSections.reloaded.inner === true,
+  `prefs ${probeSections.inPrefs} · ship ${probeSections.inShip}`
+  + ` · reloaded ${JSON.stringify(probeSections.reloaded)}`);
+
+// ---- 1d-quinquies-quinquies. per-probe visibility and live editing ---------
+// Reading one probe against its neighbours means holding several on screen at
+// once, so which probes are drawn is a per-probe choice rather than one switch
+// for the pane - and the one being worked on has to stay legible among them.
+const probeView = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  const $ = (id) => document.getElementById(id);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const node = (part, probeId) => {
+    const s = ed.state.scene;
+    const name = `LOCAL_ENVIRONMENT_${part}#${probeId}`;
+    return s.getMeshByName(name) || s.getTransformNodeByName(name);
+  };
+  const material = (part, probeId) => node(part, probeId)?.material?.name || null;
+  const drawn = (probeId) => !!node("BOX", probeId)?.isEnabled();
+  // A lit face needs a captured cubemap, and nothing has been captured in a
+  // suite that builds its ship from nothing - so what is checked is that the
+  // faces were asked for, which is the per-probe choice under test: the mesh
+  // exists as soon as a probe wants them and goes with the gizmos when that
+  // probe stops being drawn.
+  const faces = (probeId) => !!node("BOX_SURFACE", probeId);
+  const settle = async (probeId) => {
+    for (let i = 0; i < 400 && !drawn(probeId); i++) await wait(25);
+    await wait(100);
+  };
+
+  ed.state.environmentProbes.clear();
+  const near = {
+    boxPosition: [0, 2, 0], boxSize: [6, 4, 6], capturePosition: [0, 2, 0], resolution: 128,
+  };
+  const far = {
+    boxPosition: [20, 2, 0], boxSize: [6, 4, 6], capturePosition: [20, 2, 0], resolution: 128,
+  };
+  ed.setEnvironmentProbe("ENV_NEAR", near);
+  ed.setEnvironmentProbe("ENV_FAR", far);
+  $("btn-probes").click();
+  $("probe-list").value = "ENV_NEAR";
+  $("probe-list").dispatchEvent(new Event("change"));
+  await settle("ENV_NEAR");
+  // Nothing is asked to stay, so only the probe being worked on is drawn.
+  const selectedOnly = { near: drawn("ENV_NEAR"), far: drawn("ENV_FAR") };
+
+  // Always visible is per probe: ticking it for the far one has to leave it on
+  // screen after the near one takes the selection back.
+  $("probe-list").value = "ENV_FAR";
+  $("probe-list").dispatchEvent(new Event("change"));
+  await settle("ENV_FAR");
+  $("probe-show").checked = true;
+  $("probe-show").dispatchEvent(new Event("change"));
+  $("probe-env").checked = true;
+  $("probe-env").dispatchEvent(new Event("change"));
+  await wait(300);
+  const farFlags = { ...ed.environmentProbeOf("ENV_FAR") };
+  const nearFlags = { ...ed.environmentProbeOf("ENV_NEAR") };
+
+  $("probe-list").value = "ENV_NEAR";
+  $("probe-list").dispatchEvent(new Event("change"));
+  await settle("ENV_NEAR");
+  await wait(300);
+  const together = {
+    near: drawn("ENV_NEAR"), far: drawn("ENV_FAR"),
+    nearBox: material("BOX", "ENV_NEAR"), farBox: material("BOX", "ENV_FAR"),
+    nearInner: material("INNER_BOX", "ENV_NEAR"), farInner: material("INNER_BOX", "ENV_FAR"),
+    // Env faces is per probe too, and a probe that is on screen without the
+    // selection is exactly the one worth putting its own cubemap on.
+    nearFaces: faces("ENV_NEAR"), farFaces: faces("ENV_FAR"),
+    // The checkboxes follow the probe, not the pane.
+    showTicked: $("probe-show").checked, envTicked: $("probe-env").checked,
+  };
+
+  // Picking a probe that is only on screen because it was asked to stay has to
+  // resolve to that probe, not to the selected one.
+  const dimEntry = ed.entryOf("ENV_FAR");
+  const dimPickable = !!node("BOX", "ENV_FAR")?.isPickable && !!dimEntry?.node;
+
+  // An eye belongs to a probe too: pulling one room's influence box out of the
+  // way is about that room, and must leave the neighbour it is being placed
+  // against exactly as it was.
+  const influenceOn = (probeId) => !!node("INFLUENCE_BOX", probeId)?.isEnabled();
+  $("btn-probe-eye-influence").click();
+  await wait(300);
+  const eyes = {
+    nearInfluence: influenceOn("ENV_NEAR"), farInfluence: influenceOn("ENV_FAR"),
+    nearEye: $("btn-probe-eye-influence").getAttribute("aria-pressed"),
+  };
+  // And the eye follows the probe the pane moves to, rather than staying where
+  // the last probe left it.
+  $("probe-list").value = "ENV_FAR";
+  $("probe-list").dispatchEvent(new Event("change"));
+  await settle("ENV_FAR");
+  await wait(200);
+  eyes.farEye = $("btn-probe-eye-influence").getAttribute("aria-pressed");
+  $("probe-list").value = "ENV_NEAR";
+  $("probe-list").dispatchEvent(new Event("change"));
+  await settle("ENV_NEAR");
+  await wait(200);
+  eyes.backOnNear = $("btn-probe-eye-influence").getAttribute("aria-pressed");
+  $("btn-probe-eye-influence").click();
+  await wait(200);
+
+  // No Apply: a keystroke is the commit, and one visit to a field is one undo
+  // entry however many characters it took.
+  const before = ed.historyDepth().undo;
+  $("probe-size-x").dispatchEvent(new Event("focus"));
+  for (const value of ["1", "1.", "1.2", "1.25"]) {
+    $("probe-size-x").value = value;
+    $("probe-size-x").dispatchEvent(new Event("input"));
+  }
+  await wait(200);
+  const typed = {
+    size: ed.environmentProbeOf("ENV_NEAR").boxSize.join(),
+    entries: ed.historyDepth().undo - before,
+  };
+  await ed.undo();
+  await wait(300);
+  const undone = ed.environmentProbeOf("ENV_NEAR").boxSize.join();
+  // A restore empties the probe map before it refills it: the pane must not
+  // take that instant as "your probe is gone" and come back on another one,
+  // with the caret still in a field about to edit it.
+  const undoKeptPick = $("probe-list").value;
+  // Undo restores the whole record, so a probe asked to stay on screen must not
+  // come down with it.
+  const undoKeptFlags = ed.environmentProbeOf("ENV_FAR").alwaysVisible === true
+    && drawn("ENV_FAR");
+
+  const manifest = mf.buildManifest();
+  const inProbes = JSON.stringify(manifest.environmentProbes);
+  const prefs = JSON.stringify(manifest.editorPrefs?.probes || {});
+  // A round-trip through the manifest has to put the same probes back up.
+  ed.setEnvironmentProbeView("ENV_FAR", { alwaysVisible: false, envFaces: false });
+  await wait(200);
+  const cleared = drawn("ENV_FAR");
+  ed.applyEditorPrefs(manifest.editorPrefs);
+  await wait(300);
+  const restored = { drawn: drawn("ENV_FAR"), faces: faces("ENV_FAR") };
+
+  // The list is the tall thing in the pane, so it is what a taller window is
+  // for: it has to take the room the window gains and give it back.
+  const panel = document.querySelector("#probe-modal .panel");
+  const listHeight = () => Math.round($("probe-list").getBoundingClientRect().height);
+  const savedHeight = panel.style.height;
+  panel.style.height = "460px";
+  await wait(120);
+  const shortList = listHeight();
+  panel.style.height = "860px";
+  await wait(120);
+  const tallList = listHeight();
+  panel.style.height = savedHeight;
+
+  // Always visible means "while I am working on the probes", not "for ever".
+  $("btn-probe-close").click();
+  await wait(300);
+  const left = ed.state.scene.meshes.filter((m) => m.name.startsWith("LOCAL_ENVIRONMENT_")).length
+    + ed.state.scene.transformNodes.filter((n) => n.name.startsWith("LOCAL_ENVIRONMENT_")).length;
+  ed.removeEnvironmentProbe("ENV_NEAR");
+  ed.removeEnvironmentProbe("ENV_FAR");
+  return {
+    selectedOnly, farFlags, nearFlags, together, dimPickable, eyes,
+    typed, undone, undoKeptFlags, undoKeptPick, inProbes, prefs, cleared, restored, left,
+    shortList, tallList,
+  };
+});
+check("only the selected probe is drawn until another is asked to stay",
+  probeView.selectedOnly.near === true && probeView.selectedOnly.far === false
+    && probeView.together.near === true && probeView.together.far === true,
+  `${JSON.stringify(probeView.selectedOnly)} → ${JSON.stringify(probeView.together)}`);
+check("Always visible and Env faces belong to a probe, not to the pane",
+  probeView.farFlags.alwaysVisible === true && probeView.farFlags.envFaces === true
+    && probeView.nearFlags.alwaysVisible !== true && probeView.nearFlags.envFaces !== true
+    && probeView.together.showTicked === false && probeView.together.envTicked === false,
+  `far=${JSON.stringify([probeView.farFlags.alwaysVisible, probeView.farFlags.envFaces])},`
+  + ` near=${JSON.stringify([probeView.nearFlags.alwaysVisible, probeView.nearFlags.envFaces])},`
+  + ` ticks=${JSON.stringify([probeView.together.showTicked, probeView.together.envTicked])}`);
+check("the selected probe stays bright while the probes kept beside it go dim",
+  /_BRIGHT_/.test(probeView.together.nearBox) && /_DIM_/.test(probeView.together.farBox)
+    && /_BRIGHT_/.test(probeView.together.nearInner) && /_DIM_/.test(probeView.together.farInner)
+    && probeView.dimPickable === true,
+  `near=${probeView.together.nearBox}/${probeView.together.nearInner},`
+  + ` far=${probeView.together.farBox}/${probeView.together.farInner},`
+  + ` pickable=${probeView.dimPickable}`);
+check("env faces are asked for per probe, including one kept on screen without the selection",
+  probeView.together.farFaces === true && probeView.together.nearFaces === false,
+  `far=${probeView.together.farFaces}, near=${probeView.together.nearFaces}`);
+check("hiding one probe's influence box leaves the probe beside it alone",
+  probeView.eyes.nearInfluence === false && probeView.eyes.farInfluence === true
+    && probeView.eyes.nearEye === "false" && probeView.eyes.farEye === "true"
+    && probeView.eyes.backOnNear === "false",
+  `near=${probeView.eyes.nearInfluence}/${probeView.eyes.nearEye},`
+  + ` far=${probeView.eyes.farInfluence}/${probeView.eyes.farEye},`
+  + ` back on near=${probeView.eyes.backOnNear}`);
+check("typing into a probe field commits, and one visit to it is one undo entry",
+  probeView.typed.size === "1.25,4,6" && probeView.typed.entries === 1
+    && probeView.undone === "6,4,6",
+  `${JSON.stringify(probeView.typed)} → ${probeView.undone}`);
+check("undo puts a probe record back without taking its boxes off screen",
+  probeView.undoKeptFlags === true && probeView.undoKeptPick === "ENV_NEAR",
+  `flags=${probeView.undoKeptFlags}, pane on ${probeView.undoKeptPick}`);
+check("which probes are held on screen is saved beside the ship, not inside it",
+  /"ENV_FAR":\{"alwaysVisible":true,"envFaces":true,"visibleParts":\{"box":true,"influence":true,"inner":true\}\}/
+    .test(probeView.prefs)
+    && !/alwaysVisible|envFaces|visibleParts/.test(probeView.inProbes)
+    && probeView.cleared === false
+    && probeView.restored.drawn === true && probeView.restored.faces === true,
+  `prefs=${probeView.prefs}, cleared=${probeView.cleared},`
+  + ` restored=${JSON.stringify(probeView.restored)}`);
+check("closing the probes window takes every probe gizmo down with it",
+  probeView.left === 0, `${probeView.left} nodes left`);
+check("the probe list takes the room a taller window gains and gives it back",
+  probeView.tallList - probeView.shortList >= 350 && probeView.shortList > 0,
+  `${probeView.shortList}px at 460 → ${probeView.tallList}px at 860`);
 
 // ---- 1d-sexies. names carry into the .glb ----------------------------------
 // glTF node names come straight off the Babylon nodes, so the export renames
@@ -1729,7 +2070,7 @@ const areaOpen = await page.evaluate(async (a) => {
   co.addCollider("box", new V(-6, 0.5, 0), { silent: true });
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   return {
-    mode: ed.state.collisionMode,
+    mode: ed.state.mode === "collision",
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
     shipShown: [...ed.state.placements.values()].filter((p) => !p.stage && p.node.isEnabled()).length,
     roomShapesShown: [...ed.state.colliders.values()].filter((c) => !c.stage && c.node.isEnabled()).length,
@@ -2122,7 +2463,7 @@ const benchUndo = await page.evaluate(async (prop) => {
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
     shapes: co.stageColliders().length,
     ship: ed.state.placements.size,
-    mode: ed.state.collisionMode,
+    mode: ed.state.mode === "collision",
   };
   await ed.redo();
   return { shipBefore, shapesBefore, fitted, afterUndo,
@@ -2319,7 +2660,7 @@ await page.waitForTimeout(400);
 const benchAfterRmb = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return {
-    mode: ed.state.collisionMode,
+    mode: ed.state.mode === "collision",
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
   };
 });
@@ -2337,7 +2678,7 @@ await page.waitForTimeout(400);
 const benchAfterCancel = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  return { ghost: i.ghostActive(), mode: ed.state.collisionMode };
+  return { ghost: i.ghostActive(), mode: ed.state.mode === "collision" };
 });
 check("the right button still puts down an armed shape",
   wasArmed === true && benchAfterCancel.ghost === false && benchAfterCancel.mode === true,
@@ -2353,7 +2694,7 @@ const closed = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   co.exitCollisionMode();
   const after = {
-    mode: ed.state.collisionMode,
+    mode: ed.state.mode === "collision",
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
     stageShapes: co.stageColliders().length,
     shipShown: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
@@ -3057,6 +3398,69 @@ check("a body that is not JSON is refused, with the parser's own complaint",
 await page.fill("#bhv-json", '{ "dynamic": true }');
 await page.click("#btn-bhv-save");
 await page.waitForTimeout(150);
+
+// The library is a window, not a modal: definitions pile up in the order the
+// ship was built, so the list has to sort them to be a list you can look
+// something up in - and the window has to get out of the way of the ship it is
+// describing, which means a titlebar to drag and a corner to pull.
+const libBefore = await page.evaluate(() => {
+  const win = document.getElementById("bhv-modal");
+  const rect = win.getBoundingClientRect();
+  return {
+    listed: [...document.getElementById("bhv-list").options].map((o) => o.value),
+    offered: [...document.getElementById("bhv-add").options].map((o) => o.value),
+    resize: getComputedStyle(win.querySelector(".panel")).resize,
+    left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+    json: document.getElementById("bhv-json").getBoundingClientRect().height,
+    covers: rect.width >= window.innerWidth - 8,
+  };
+});
+check("the library lists its definitions alphabetically, whatever order they were written in",
+  libBefore.listed.join() === "heavy,meltable"
+    && libBefore.offered.join() === "heavy,meltable",
+  `list=[${libBefore.listed}], add=[${libBefore.offered}]`);
+
+const bhvBar = await page.locator("#bhv-window-handle").boundingBox();
+await page.mouse.move(bhvBar.x + 40, bhvBar.y + bhvBar.height / 2);
+await page.mouse.down();
+await page.mouse.move(bhvBar.x + 170, bhvBar.y + bhvBar.height / 2 + 70, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(100);
+const libMoved = await page.evaluate(() => {
+  const rect = document.getElementById("bhv-modal").getBoundingClientRect();
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+});
+check("the library window is dragged by its titlebar, and does not cover the ship",
+  !libBefore.covers
+    && Math.abs(libMoved.left - libBefore.left - 130) < 2
+    && Math.abs(libMoved.top - libBefore.top - 70) < 2
+    && libMoved.width === libBefore.width,
+  `(${libBefore.left},${libBefore.top}) -> (${libMoved.left},${libMoved.top})`);
+
+// The grip is the browser's own, so this is also the check that the panel is
+// the element carrying the size: pulling it has to take the window with it.
+const bhvPanel = await page.locator("#bhv-modal .panel").boundingBox();
+await page.mouse.move(bhvPanel.x + bhvPanel.width - 4, bhvPanel.y + bhvPanel.height - 4);
+await page.mouse.down();
+await page.mouse.move(bhvPanel.x + bhvPanel.width + 76, bhvPanel.y + bhvPanel.height + 54,
+  { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(100);
+const libResized = await page.evaluate(() => {
+  const rect = document.getElementById("bhv-modal").getBoundingClientRect();
+  return {
+    width: rect.width, height: rect.height,
+    json: document.getElementById("bhv-json").getBoundingClientRect().height,
+  };
+});
+check("and pulled bigger from its corner, with the height going to the JSON box",
+  libBefore.resize === "both"
+    && libResized.width > libMoved.width + 60
+    && libResized.height > libMoved.height + 40
+    && libResized.json > libBefore.json + 40,
+  `resize=${libBefore.resize}, ${libMoved.width}x${libMoved.height}`
+  + ` -> ${libResized.width}x${libResized.height}, json ${libBefore.json} -> ${libResized.json}`);
+
 await page.click("#btn-bhv-close");
 await page.waitForTimeout(200);
 const defined = await page.evaluate(async () =>
@@ -4655,6 +5059,7 @@ const settingsRoundTrip = await page.evaluate(async () => {
   ed.setRuntimeRoughnessFactor(1.35);
   ed.setVeilAlpha(0.25);
   ed.state.bigPalette = false;
+  ed.state.strayChunkCheck = false;
 
   const man = mf.buildManifest();
   const written = { environment: man.environment, editorPrefs: man.editorPrefs };
@@ -4664,6 +5069,7 @@ const settingsRoundTrip = await page.evaluate(async () => {
   ed.setRuntimeRoughnessFactor(2);
   ed.setVeilAlpha(0.9);
   ed.state.bigPalette = true;
+  ed.state.strayChunkCheck = true;
   ed.applyEnvironment(written.environment, man.editorEnvironment);
   ed.applyEditorPrefs(written.editorPrefs);
   const restored = {
@@ -4671,6 +5077,7 @@ const settingsRoundTrip = await page.evaluate(async () => {
     roughness: ed.state.runtimeRoughnessFactor,
     veilAlpha: ed.state.veilAlpha,
     bigPalette: ed.state.bigPalette,
+    strayChunkCheck: ed.state.strayChunkCheck,
   };
 
   // a manifest from before the blocks existed must not reset what is on screen
@@ -4681,12 +5088,17 @@ const settingsRoundTrip = await page.evaluate(async () => {
     roughness: ed.state.runtimeRoughnessFactor,
     veilAlpha: ed.state.veilAlpha,
     bigPalette: ed.state.bigPalette,
+    strayChunkCheck: ed.state.strayChunkCheck,
   };
 
   ed.setRuntimeSpecularAA(ed.RUNTIME_SPECULAR_AA_DEFAULT);
   ed.setRuntimeRoughnessFactor(ed.RUNTIME_ROUGHNESS_FACTOR_DEFAULT);
   // through applyEditorPrefs, so the palette and the slider follow state back
-  ed.applyEditorPrefs({ veilAlpha: ed.VEIL_ALPHA_DEFAULT, bigPalette: ed.BIG_PALETTE_DEFAULT });
+  ed.applyEditorPrefs({
+    veilAlpha: ed.VEIL_ALPHA_DEFAULT,
+    bigPalette: ed.BIG_PALETTE_DEFAULT,
+    strayChunkCheck: ed.STRAY_CHUNK_CHECK_DEFAULT,
+  });
   ed.state.runtime = false; ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
@@ -4698,20 +5110,111 @@ check("the material dials are written where the game reads them",
   JSON.stringify(settingsRoundTrip.written.environment));
 check("the editor's view preferences are written apart from the ship's",
   settingsRoundTrip.written.editorPrefs.veilAlpha === 0.25
-    && settingsRoundTrip.written.editorPrefs.bigPalette === false,
+    && settingsRoundTrip.written.editorPrefs.bigPalette === false
+    && settingsRoundTrip.written.editorPrefs.strayChunkCheck === false,
   JSON.stringify(settingsRoundTrip.written.editorPrefs));
 check("every one of them comes back on load",
   settingsRoundTrip.restored.specularAA === false
     && settingsRoundTrip.restored.roughness === 1.35
     && settingsRoundTrip.restored.veilAlpha === 0.25
-    && settingsRoundTrip.restored.bigPalette === false,
+    && settingsRoundTrip.restored.bigPalette === false
+    && settingsRoundTrip.restored.strayChunkCheck === false,
   JSON.stringify(settingsRoundTrip.restored));
 check("a manifest without the blocks leaves them where they are",
   settingsRoundTrip.legacy.specularAA === false
     && settingsRoundTrip.legacy.roughness === 1.35
     && settingsRoundTrip.legacy.veilAlpha === 0.25
-    && settingsRoundTrip.legacy.bigPalette === false,
+    && settingsRoundTrip.legacy.bigPalette === false
+    && settingsRoundTrip.legacy.strayChunkCheck === false,
   JSON.stringify(settingsRoundTrip.legacy));
+
+// ---- 1d-duovicies-bis. elements left in the wrong chunk --------------------
+// A chunk has no authored volume - its box is the union of what is assigned to
+// it - so "is this inside its chunk?" is true by construction. The question the
+// check actually asks is the same one with the element taken out of that union.
+const strays = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  // The panel runs 4 m along z and is a few millimetres thick along x, so a
+  // run of them 4 m apart in z is stuck together the way a real wall is.
+  const wall = (x, z, chunk) => ed.placeAt(W, new V(x, 0, z), { silent: true, chunk });
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.addChunk("CH_SA"); ed.addChunk("CH_SB");
+
+  // Two rooms, a long way apart.
+  for (const z of [0, 4, 8]) await wall(0, z, "CH_SA");
+  for (const z of [40, 44, 48]) await wall(0, z, "CH_SB");
+  const quiet = ed.strayChunkMembers();
+
+  // A piece left in CH_SA while building CH_SB's wall: the classic slip of
+  // carrying on without moving the active chunk on.
+  const misplaced = await wall(0, 52, "CH_SA");
+  const caught = ed.strayChunkMembers();
+
+  // Something out on its own belongs to no chunk at all and has to say so
+  // rather than naming one at random. Two strays in the same chunk also have
+  // to be reported separately rather than vouching for each other.
+  const lost = await wall(300, 300, "CH_SA");
+  const both = ed.strayChunkMembers();
+  const stillMine = both.every((s) => s.chunk === "CH_SA");
+  ed.removePlacement(lost.id);
+
+  // Mounting offsets are not mistakes: trim and decals sit a hand's breadth
+  // proud of the surface they belong to.
+  const proud = await wall(0.4, 44, "CH_SB");
+  const withProud = ed.strayChunkMembers().length;
+  ed.removePlacement(proud.id);
+
+  // A chunk that has only just been started has nothing to be outside of, and
+  // one split evenly has no room to call the odd one out from.
+  ed.addChunk("CH_SOLO");
+  const first = await wall(0, -200, "CH_SOLO");
+  const solo = ed.strayChunkMembers().length;
+  const second = await wall(0, -100, "CH_SOLO");
+  const even = ed.strayChunkMembers().length;
+  ed.removePlacement(first.id); ed.removePlacement(second.id);
+
+  // The setting silences it everywhere, including the Live checks panel.
+  document.getElementById("stray-chunk-check").click();
+  await new Promise((r) => setTimeout(r, 50));
+  const panelOff = document.getElementById("validation").textContent;
+  const stateOff = ed.state.strayChunkCheck;
+  document.getElementById("stray-chunk-check").click();
+  await new Promise((r) => setTimeout(r, 50));
+  const panelOn = document.getElementById("validation").textContent;
+
+  ed.clearAll(); ed.select([]);
+  return {
+    quiet, caught, both, stillMine, misplaced: misplaced.id,
+    proud: withProud, solo, even,
+    panelOff, panelOn, stateOff, stateOn: ed.state.strayChunkCheck,
+  };
+});
+check("a chunk whose members touch reports no strays",
+  strays.quiet.length === 0, JSON.stringify(strays.quiet));
+check("an element left in the wrong chunk is caught and the right chunk named",
+  strays.caught.length === 1
+    && strays.caught[0].id === strays.misplaced
+    && strays.caught[0].chunk === "CH_SA"
+    && strays.caught[0].host === "CH_SB",
+  JSON.stringify(strays.caught));
+check("two strays in one chunk are both reported, and one clear of every chunk names none",
+  strays.both.length === 2 && strays.stillMine
+    && strays.both.filter((s) => s.host === "CH_SB").length === 1
+    && strays.both.filter((s) => s.host === null).length === 1,
+  JSON.stringify(strays.both));
+check("a mounting offset is not a stray",
+  strays.proud === 1, `${strays.proud} stray(s), expected only the misplaced one`);
+check("a chunk just started, or split evenly, is left alone",
+  strays.solo === 1 && strays.even === 1,
+  `solo=${strays.solo} even=${strays.even}, expected only the misplaced one in both`);
+check("the stray-chunk setting silences the check and the Live checks panel",
+  strays.stateOff === false && strays.stateOn === true
+    && !/wrong chunk|touch nothing|sit in/i.test(strays.panelOff)
+    && /sit in CH_SB/.test(strays.panelOn),
+  `off="${strays.panelOff}" on="${strays.panelOn}"`);
 
 // a negative exposure can only be the old stops format - the slider has never
 // gone below 0.15 - so it is converted rather than clamped up to the floor
@@ -7393,6 +7896,69 @@ check("clicking places the duplicate with its transform intact",
     && dupPlaced.scale[0] === -1,
   `${dupPlaced.count} placements, rotY=${dupPlaced.rotY}, scale=[${dupPlaced.scale}]`);
 
+// ---- ... and the lamps riding it -------------------------------------------
+// A light is part of what an element IS, so a duplicate has to bring the lamps
+// the source is wearing *now*. The ghost carries the id it came from for
+// exactly this: without it the drop was an ordinary placement, so a lit panel
+// came back with the kit's default lamp - every tuned intensity lost - and a
+// lamp added by hand to something the kit does not light came back with none.
+const dupLitSetup = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  // deliberately no clearAll: the axis section below still needs the wall the
+  // block above placed
+  i.cancelGhost(); ed.select([]);
+  // a module the kit lights on its own, so a re-seed would show up as a lamp
+  // back at its default numbers
+  const src = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(12, 0, 0),
+    { silent: true, name: "port lamp" });
+  const seeded = lt.lightsOf(src.id);
+  lt.setLightPart(seeded[0].id, "runtime", { intensity: 7, range: 3, color: [1, 0, 0] });
+  lt.setLightTransform(seeded[0].id, { offset: [0, 1.25, 0] });
+  // and a second the kit would never have put there
+  lt.addLight(src.id, {
+    offset: [0, -1, 0], rotation: [0, 0, 180],
+    runtime: { type: "spot", intensity: 42, angle: 33 }, silent: true,
+  });
+  ed.select([src.id]);
+  ed.state.camera.position = new V(0, 14, -10);
+  ed.state.camera.setTarget(new V(0, 0, 0));
+  const record = (l) => ({ offset: lt.lightOffset(l), rotation: lt.lightRotation(l), runtime: l.runtime });
+  return { id: src.id, ids: lt.lightsOf(src.id).map((l) => l.id), lamps: lt.lightsOf(src.id).map(record) };
+});
+await page.waitForTimeout(600);
+await page.mouse.move(1150, 520, { steps: 3 });
+await page.keyboard.press("Control+d");
+await page.waitForTimeout(900);
+await page.mouse.down(); await page.mouse.up();
+await page.waitForTimeout(900);
+const dupLit = await page.evaluate(async ({ srcId, srcLampIds }) => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const copyId = ed.state.selection[0];
+  const copy = ed.entryOf(copyId);
+  const record = (l) => ({ offset: lt.lightOffset(l), rotation: lt.lightRotation(l), runtime: l.runtime });
+  const lamps = lt.lightsOf(copyId);
+  return {
+    fresh: copyId !== srcId,
+    name: copy?.name,
+    lamps: lamps.map(record),
+    // entries of the copy's own, not a second handle on the source's
+    distinct: lamps.length > 0 && lamps.every((l) => l.owner === copyId && !srcLampIds.includes(l.id)),
+    source: lt.lightsOf(srcId).map(record),
+  };
+}, { srcId: dupLitSetup.id, srcLampIds: dupLitSetup.ids });
+check("Ctrl+D copies the lamps the source is wearing, not the kit's defaults",
+  dupLit.fresh && dupLit.lamps.length === 2 && dupLit.distinct
+    && JSON.stringify(dupLit.lamps) === JSON.stringify(dupLitSetup.lamps),
+  JSON.stringify({ carried: dupLit.lamps, wanted: dupLitSetup.lamps }));
+check("the copy carries the source's name, and leaves the source alone",
+  dupLit.name === "port lamp"
+    && JSON.stringify(dupLit.source) === JSON.stringify(dupLitSetup.lamps),
+  `name=${dupLit.name}, source=${JSON.stringify(dupLit.source)}`);
+
 // ---- Ctrl+D always arms on the floor plane ----------------------------------
 // In Y mode the cursor drives the *build plane* rather than the ghost's own
 // height, and clears `baseY` to take it over - which is the very height the copy
@@ -9890,7 +10456,7 @@ const benchShot = await (async () => {
   await page.evaluate(async () => {
     const co = await import("/js/colliders.js");
     const kit = await import("/js/kit.js");
-    if (!co.isCollisionMode?.() && !(await import("/js/editor.js")).state.collisionMode) {
+    if (!co.isCollisionMode?.() && (await import("/js/editor.js")).state.mode !== "collision") {
       await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
     }
   });
@@ -9995,10 +10561,533 @@ check("and copying shapes alone is untouched",
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
-  if (ed.state.collisionMode) co.exitCollisionMode();
+  if (ed.state.mode === "collision") co.exitCollisionMode();
   ed.clearAll();
 });
 await page.waitForTimeout(500);
+
+// ---- 1y. compound objects --------------------------------------------------
+//
+// The third editing mode. A compound is a *recipe*: saving one records its
+// members and their lamps, and placing one expands that into ordinary
+// placements sharing a `group` id. These follow the whole round trip - bench,
+// save, palette, place, select, copy, break apart, delete - and check the two
+// boundaries a bench must never cross: the ship file and the ship's undo stack.
+
+const CNAME = "ZZ Test Compound";
+const CID = `@compound/${CNAME}`;
+const PLATE = "Modular SciFi MegaKit/Platforms/Platform_3Plates";
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const co = await import("/js/colliders.js");
+  i.cancelGhost();
+  if (ed.state.mode === "collision") co.exitCollisionMode();
+  ed.clearAll(); ed.select([]);
+  localStorage.removeItem("compoundBench");
+});
+await page.waitForTimeout(200);
+
+// A ship element first, so "the bench never reaches the ship" has something to
+// be true *about*: an empty serialize() would pass that check by accident.
+const benchOpen = await page.evaluate(async ([M, P]) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const lg = await import("/js/lights.js");
+  const V = BABYLON.Vector3;
+  const ship = await ed.placeAt(M, new V(-20, 0, -20), { silent: true, noLights: true });
+
+  await cp.enterCompoundMode();
+  const a = await ed.placeAt(M, new V(-2, 0, 0), { silent: true, noLights: true });
+  const b = await ed.placeAt(P, new V(4, 0, 0), { silent: true, noLights: true });
+  const lamp = lg.addLight(a.id, { silent: true });
+  return {
+    mode: ed.state.mode,
+    members: cp.benchMembers().length,
+    staged: cp.benchMembers().every((p) => p.stage && p.chunk === "__compound_bench"),
+    shipHidden: !ship.node.isEnabled(),
+    benchShown: a.node.isEnabled() && b.node.isEnabled(),
+    lamp: !!lamp,
+    inShip: ed.serialize().instances.length,
+    shipLights: ed.serialize().lights?.length ?? 0,
+  };
+}, [MODULE, PLATE]);
+check("the compound bench is a third mode of its own",
+  benchOpen.mode === "compound" && benchOpen.members === 2 && benchOpen.staged,
+  `mode ${benchOpen.mode}, ${benchOpen.members} member(s) staged ${benchOpen.staged}`);
+check("it hides the ship and shows only what is on it",
+  benchOpen.shipHidden && benchOpen.benchShown,
+  `ship hidden ${benchOpen.shipHidden}, bench shown ${benchOpen.benchShown}`);
+check("a bench piece and its lamp are absent from the ship file",
+  benchOpen.lamp && benchOpen.inShip === 1 && benchOpen.shipLights === 0,
+  `${benchOpen.inShip} instance(s), ${benchOpen.shipLights} light(s) in serialize()`);
+
+// The bench keeps its own undo stack. A ship snapshot taken here would restore
+// as "no bench at all", which is exactly how Ctrl+Z used to wipe a staging area.
+const benchStack = await page.evaluate(async ([M]) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const V = BABYLON.Vector3;
+  const before = cp.benchMembers().length;
+  await ed.placeAt(M, new V(0, 0, 6), {});     // not silent: pushes undo
+  const after = cp.benchMembers().length;
+  await ed.undo();
+  return { before, after, undone: cp.benchMembers().length, ship: ed.state.placements.size };
+}, [MODULE]);
+check("the bench has its own undo stack",
+  benchStack.after === benchStack.before + 1 && benchStack.undone === benchStack.before,
+  `${benchStack.before} -> ${benchStack.after} -> ${benchStack.undone}`);
+
+const cpSaved = await page.evaluate(async (name) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const kit = await import("/js/kit.js");
+  // What the origin is *supposed* to be: the first member's own origin, the
+  // piece the compound was started from. Read off the bench before it is saved
+  // rather than written down as a number, so the check is the rule and not a
+  // copy of the arithmetic.
+  const before = cp.benchMembers().map((p) => ({ id: p.id, at: p.node.position.asArray() }));
+  const origin = before[0].at;
+  const r = await cp.saveCompound({ name, kit: "Modular SciFi MegaKit", category: "Compounds" });
+  const tile = kit.getModule(`@compound/${name}`);
+  const server = await (await fetch("/api/compounds")).json();
+  return {
+    r, origin,
+    tile: tile ? { compound: !!tile.compound, url: tile.url ?? null, members: tile.members.length } : null,
+    onDisk: (server.compounds || []).filter((c) => c.name === name).length,
+    // Measured from the first member, so the recipe's coordinates say where the
+    // rest sit relative to it rather than where it was built on the bench.
+    offsets: (tile?.members || []).map((m) => m.position.map((v) => +v.toFixed(3))),
+    want: before.map((m) => m.at.map((v, k) => +(v - origin[k]).toFixed(3))),
+    lamps: (tile?.members || []).map((m) => (m.lights || []).length),
+  };
+}, CNAME);
+check("saving files a tile with no model file of its own",
+  cpSaved.r.ok && cpSaved.tile?.compound === true && cpSaved.tile.url === null
+    && cpSaved.tile.members === 2 && cpSaved.onDisk === 1,
+  `${JSON.stringify(cpSaved.r)}, tile ${JSON.stringify(cpSaved.tile)}`);
+check("its members are measured from the first one, which sits at the origin",
+  cpSaved.offsets.length === 2
+    && JSON.stringify(cpSaved.offsets) === JSON.stringify(cpSaved.want)
+    && JSON.stringify(cpSaved.offsets[0]) === JSON.stringify([0, 0, 0])
+    // and that really is a rebase, not the world coordinates left alone
+    && cpSaved.origin.some((v) => v !== 0),
+  `offsets ${JSON.stringify(cpSaved.offsets)} about ${JSON.stringify(cpSaved.origin)},`
+  + ` expected ${JSON.stringify(cpSaved.want)}`);
+check("and a member's lamps travel in the recipe",
+  cpSaved.lamps.reduce((a, b) => a + b, 0) === 1, `lamps per member ${JSON.stringify(cpSaved.lamps)}`);
+
+const benchClosed = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  cp.exitCompoundMode();
+  const kept = JSON.parse(localStorage.getItem("compoundBench") || "{}");
+  return {
+    mode: ed.state.mode,
+    left: cp.benchMembers().length,
+    ship: ed.state.placements.size,
+    remembered: (kept.members || []).length,
+  };
+});
+check("closing the bench puts the ship back and remembers what was on it",
+  benchClosed.mode === "ship" && benchClosed.left === 0 && benchClosed.ship === 1
+    && benchClosed.remembered === 2,
+  `mode ${benchClosed.mode}, ${benchClosed.left} left, ship ${benchClosed.ship},`
+  + ` ${benchClosed.remembered} remembered`);
+
+const cpPlaced = await page.evaluate(async (id) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const lg = await import("/js/lights.js");
+  await i.armGhost(id);
+  const carried = i.ghostActive();
+  await i.dropGhost();
+  const mine = [...ed.state.placements.values()].filter((p) => p.compound);
+  const groups = new Set(mine.map((p) => p.group));
+  return {
+    carried, n: mine.length, groups: groups.size,
+    group: mine[0]?.group || "",
+    lamps: mine.reduce((a, p) => a + lg.lightsOf(p.id).length, 0),
+    selected: ed.state.selection.length,
+    inShip: ed.serialize().instances.filter((x) => x.compound).length,
+  };
+}, CID);
+check("placing a compound expands it into ordinary elements sharing one group",
+  cpPlaced.carried && cpPlaced.n === 2 && cpPlaced.groups === 1 && /^G\d{4}$/.test(cpPlaced.group),
+  `${cpPlaced.n} element(s) in ${cpPlaced.groups} group(s), id ${cpPlaced.group}`);
+check("its lamps come with it, exactly once",
+  cpPlaced.lamps === 1, `${cpPlaced.lamps} lamp(s)`);
+check("the whole compound is selected on landing, and it is ship data",
+  cpPlaced.selected === 2 && cpPlaced.inShip === 2,
+  `${cpPlaced.selected} selected, ${cpPlaced.inShip} written`);
+
+// Dropping keeps the brush armed, the same as any other tile, so that a run of
+// them can be laid down in one go. Put it away before the clicking checks, or
+// every click below would place another compound instead of selecting one.
+const cpStillArmed = await page.evaluate(async () => {
+  const i = await import("/js/interact.js");
+  const armed = i.ghostActive();
+  i.cancelGhost();
+  return { armed, after: i.ghostActive() };
+});
+check("a compound brush stays armed for a run, and Esc puts it away",
+  cpStillArmed.armed && !cpStillArmed.after,
+  `armed ${cpStillArmed.armed} -> ${cpStillArmed.after}`);
+
+// Clicking. Selection is the only place a compound is expanded - once every
+// member is selected, every transform path the editor already has moves it as
+// one - so this is the check that matters most.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.select([]);
+  ed.focusSelection();
+});
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mine = [...ed.state.placements.values()].filter((p) => p.compound);
+  ed.focusNodes(mine.map((p) => p.node));
+});
+await page.waitForTimeout(400);
+const memberAt = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mine = [...ed.state.placements.values()].filter((p) => p.compound);
+  return mine.map((p) => {
+    const b = ed.worldBounds(p.node);
+    return { id: p.id, at: b.min.add(b.max).scale(0.5).asArray() };
+  });
+});
+const firstPt = await screenOf(memberAt[0].at);
+await page.mouse.click(firstPt.x, firstPt.y);
+await page.waitForTimeout(200);
+const wholeClick = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { sel: [...ed.state.selection].sort() };
+});
+await page.keyboard.down("Control");
+await page.keyboard.down("Alt");
+await page.mouse.click(firstPt.x, firstPt.y);
+await page.keyboard.up("Alt");
+await page.keyboard.up("Control");
+await page.waitForTimeout(200);
+const drillClick = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  return { sel: [...ed.state.selection] };
+});
+check("clicking one member selects the whole compound",
+  wholeClick.sel.length === 2, `selected ${JSON.stringify(wholeClick.sel)}`);
+check("Ctrl+Alt+click drills in to the single member under the cursor",
+  drillClick.sel.length === 1 && drillClick.sel[0] === memberAt[0].id,
+  `selected ${JSON.stringify(drillClick.sel)}, aimed at ${memberAt[0].id}`);
+
+const cpCopied = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const lg = await import("/js/lights.js");
+  const mine = [...ed.state.placements.values()].filter((p) => p.compound);
+  ed.select(mine.map((p) => p.id));
+  await i.grabSelection({ copy: true });
+  await i.dropGhost();
+  const all = [...ed.state.placements.values()].filter((p) => p.compound);
+  const groups = [...new Set(all.map((p) => p.group))];
+  return {
+    n: all.length, groups: groups.length,
+    lamps: all.reduce((a, p) => a + lg.lightsOf(p.id).length, 0),
+    named: all.every((p) => p.compound),
+  };
+});
+check("copying a compound mints a new instance rather than a second handle",
+  cpCopied.n === 4 && cpCopied.groups === 2 && cpCopied.named,
+  `${cpCopied.n} element(s) in ${cpCopied.groups} group(s)`);
+check("and the copy brings the lamps with it",
+  cpCopied.lamps === 2, `${cpCopied.lamps} lamp(s) across both`);
+
+const cpBroken = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const all = [...ed.state.placements.values()].filter((p) => p.group);
+  const one = all[0].group;
+  ed.select(ed.groupMembers(one).map((p) => p.id));
+  const r = ed.breakApart();
+  const left = [...ed.state.placements.values()].filter((p) => p.group).length;
+  const still = ed.state.placements.size;
+  await ed.undo();
+  return {
+    r, left, still,
+    back: [...ed.state.placements.values()].filter((p) => p.group).length,
+  };
+});
+check("break apart dissolves the group and leaves the pieces where they are",
+  cpBroken.r.groups === 1 && cpBroken.r.members === 2 && cpBroken.left === 2 && cpBroken.still === 5,
+  `${JSON.stringify(cpBroken.r)}, ${cpBroken.left} still grouped of ${cpBroken.still} elements`);
+check("and it is undoable",
+  cpBroken.back === 4, `${cpBroken.back} grouped again`);
+
+const cpRound = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const layout = ed.serialize();
+  const groups = layout.instances.filter((x) => x.group).length;
+  await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+  const after = [...ed.state.placements.values()].filter((p) => p.group);
+  const distinct = new Set(after.map((p) => p.group)).size;
+  const next = ed.state.nextGroup;
+  return { groups, after: after.length, distinct, next };
+});
+check("group and compound survive a save and load",
+  cpRound.groups === 4 && cpRound.after === 4 && cpRound.distinct === 2
+    && cpRound.next > 2,
+  `${cpRound.groups} written, ${cpRound.after} read back in ${cpRound.distinct}`
+  + ` group(s), counter at ${cpRound.next}`);
+
+const cpDeleted = await page.evaluate(async (name) => {
+  const cp = await import("/js/compounds.js");
+  const ed = await import("/js/editor.js");
+  const kit = await import("/js/kit.js");
+  const r = await cp.deleteCompound(name);
+  const server = await (await fetch("/api/compounds")).json();
+  return {
+    r,
+    tile: !!kit.getModule(`@compound/${name}`),
+    onDisk: (server.compounds || []).filter((c) => c.name === name).length,
+    survivors: [...ed.state.placements.values()].filter((p) => p.compound === name).length,
+  };
+}, CNAME);
+check("deleting a compound forgets the recipe, not the copies already placed",
+  cpDeleted.r.ok && !cpDeleted.tile && cpDeleted.onDisk === 0 && cpDeleted.survivors === 4,
+  `${JSON.stringify(cpDeleted.r)}, tile ${cpDeleted.tile}, ${cpDeleted.survivors} still in the ship`);
+
+// ---- the follow-ups: rigid turns, whole-drop announcements, instance updates
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost();
+  ed.clearAll(); ed.select([]);
+  localStorage.removeItem("compoundBench");
+});
+await page.waitForTimeout(200);
+
+// Built at whole-metre positions on purpose: the offsets a compound records are
+// what decides whether a copy of it lands on the grid or half a metre off it.
+// The bounding-box origin it used to record centred a 4 m wall against a 12 m
+// platform at 5, so every member came out half a metre off the grid.
+const cpBuilt = await page.evaluate(async ([M, P, name]) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const i = await import("/js/interact.js");
+  const lg = await import("/js/lights.js");
+  const V = BABYLON.Vector3;
+  ed.state.rotAxis = "y";
+  ed.state.axisSpace = "world";
+  ed.state.snap.pos = 1;
+  await cp.enterCompoundMode();
+  const wall = await ed.placeAt(M, new V(-2, 0, 0), { silent: true, noLights: true });
+  await ed.placeAt(P, new V(-2, 0, 4), { silent: true, noLights: true });
+  lg.addLight(wall.id, { silent: true });
+  const saved = await cp.saveCompound({
+    name, kit: "Modular SciFi MegaKit", category: "Compounds",
+  });
+  const tile = (await import("/js/kit.js")).getModule(`@compound/${name}`);
+  cp.exitCompoundMode();
+  await i.armGhost(`@compound/${name}`);
+  i.bringToCamera();                    // snapped exactly as a cursor drop is
+  return {
+    saved, armed: i.ghostActive(),
+    offsets: (tile?.members || []).map((m) => m.position),
+  };
+}, [MODULE, PLATE, `${CNAME} rigid`]);
+
+const cpRigid = await page.evaluate(async (name) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const lg = await import("/js/lights.js");
+  await i.dropGhost();
+  i.cancelGhost();
+  const mine = () => [...ed.state.placements.values()].filter((p) => p.compound === name);
+  const placed = mine();
+  const at = (p) => p.node.position.asArray().map((v) => +v.toFixed(4));
+  const before = placed.map(at);
+  if (placed.length < 2) return { n: placed.length, where: before };
+  ed.select(placed.map((p) => p.id));
+  const anchorBefore = before[0];
+  i.rotateCurrent(1);                    // one snap step about the current axis
+  const after = mine().map(at);
+  // The anchor stays put and the other member swings about it, at the same
+  // distance - which is what "rigid" means and what per-element spinning broke.
+  const span = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  return {
+    n: placed.length,
+    // Move is at 1 m, so the grid coordinates a drop snaps - X and Z - come out
+    // whole unless the recipe itself carried a fraction.
+    onGrid: Number.isInteger(before[0][0]) && Number.isInteger(before[0][2]),
+    spaced: before.every((p, k) => [0, 1, 2].every((c) =>
+      Number.isInteger(+(p[c] - before[0][c]).toFixed(4)))),
+    anchorHeld: JSON.stringify(after[0]) === JSON.stringify(anchorBefore),
+    moved: span(before[1], after[1]) > 0.5,
+    keptRadius: Math.abs(span(before[0], before[1]) - span(after[0], after[1])) < 1e-3,
+    lamps: mine().reduce((a, p) => a + lg.lightsOf(p.id).length, 0),
+    where: before,
+  };
+}, `${CNAME} rigid`);
+check("a compound records its members from the first one, at the origin",
+  cpBuilt.saved.ok && cpBuilt.armed
+    && JSON.stringify(cpBuilt.offsets[0]) === JSON.stringify([0, 0, 0])
+    && cpBuilt.offsets.every((o) => o.every((v) => Number.isInteger(v))),
+  `${JSON.stringify(cpBuilt.saved)}, offsets ${JSON.stringify(cpBuilt.offsets)}`);
+check("so dropping one with Move at 1 m lands it on whole numbers",
+  cpRigid.n === 2 && cpRigid.onGrid && cpRigid.spaced,
+  `at ${JSON.stringify(cpRigid.where)}`);
+check("turning a whole compound turns it rigidly about its first member",
+  cpRigid.anchorHeld && cpRigid.moved && cpRigid.keptRadius,
+  `anchor held ${cpRigid.anchorHeld}, other moved ${cpRigid.moved},`
+  + ` distance kept ${cpRigid.keptRadius}`);
+
+// The inspector used to write to state.selection[0] alone, which tore a
+// compound apart one keystroke at a time.
+const cpInspector = await page.evaluate(async (name) => {
+  const ed = await import("/js/editor.js");
+  const mine = [...ed.state.placements.values()].filter((p) => p.compound === name);
+  if (mine.length < 2) return { n: mine.length };
+  ed.select(mine.map((p) => p.id));
+  await new Promise((r) => setTimeout(r, 80));
+  const at = (p) => p.node.position.asArray().map((v) => +v.toFixed(3));
+  const before = mine.map(at);
+  const field = document.getElementById("pos-x");
+  field.focus();
+  field.value = String(+before[0][0] + 3);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 80));
+  const after = mine.map(at);
+  return {
+    n: mine.length,
+    anchorMoved: +(after[0][0] - before[0][0]).toFixed(3),
+    otherMoved: +(after[1][0] - before[1][0]).toFixed(3),
+    stillSelected: ed.state.selection.length,
+  };
+}, `${CNAME} rigid`);
+check("the inspector moves a whole compound, not just the element it shows",
+  cpInspector.anchorMoved === 3 && cpInspector.otherMoved === 3
+    && cpInspector.stillSelected === 2,
+  `anchor +${cpInspector.anchorMoved}, other +${cpInspector.otherMoved},`
+  + ` ${cpInspector.stillSelected} still selected`);
+
+// The Runtime view rebuilds its meshes on "placements" and its lamps on
+// "lights". A drop that announced itself after the first member left the rest
+// undressed and the compound's lamp doing nothing.
+const cpAnnounced = await page.evaluate(async (name) => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const seen = { placements: 0, lights: 0, atPlacements: 0 };
+  ed.on("placements", () => {
+    seen.placements++;
+    seen.atPlacements = [...ed.state.placements.values()].filter((p) => p.compound === name).length;
+  });
+  ed.on("lights", () => seen.lights++);
+  const was = [...ed.state.placements.values()].filter((p) => p.compound === name).length;
+  await i.armGhost(`@compound/${name}`);
+  await i.dropGhost();
+  i.cancelGhost();
+  const now = [...ed.state.placements.values()].filter((p) => p.compound === name).length;
+  return { ...seen, was, now };
+}, `${CNAME} rigid`);
+check("a compound drop is announced once, with all of it in place",
+  cpAnnounced.placements === 1 && cpAnnounced.lights === 1
+    && cpAnnounced.atPlacements === cpAnnounced.now && cpAnnounced.now === cpAnnounced.was + 2,
+  `${cpAnnounced.placements} placement event(s), ${cpAnnounced.lights} light event(s),`
+  + ` ${cpAnnounced.atPlacements} of ${cpAnnounced.now} present when announced`);
+
+// Pushing a bench edit out to the copies. Asked for rather than assumed: a
+// compound is a macro, and this is the one action that treats it as a prefab.
+const cpSync = await page.evaluate(async ([name, P]) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const lg = await import("/js/lights.js");
+  const V = BABYLON.Vector3;
+  const mine = () => [...ed.state.placements.values()].filter((p) => p.compound === name);
+  const copies = new Set(mine().map((p) => p.group)).size;
+  const anchors = () => [...cp.compoundInstances(name).entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([g, list]) => [g, list[0].node.position.asArray().map((v) => +v.toFixed(3))]);
+  const anchorsBefore = anchors();
+
+  // Edit the recipe: a third piece, and a brighter lamp.
+  await cp.editCompound(name);
+  const extra = await ed.placeAt(P, new V(-2, 0, -4), { silent: true, noLights: true });
+  const lamp = lg.lightsOf(cp.benchMembers()[0]?.id || "")[0];
+  if (!lamp) { cp.exitCompoundMode(); return { copies, members: cp.benchMembers().length }; }
+  lg.setLightPart(lamp.id, "runtime", { intensity: 9 });
+  const r = await cp.quickSaveCompound({ updateInstances: true });
+  cp.exitCompoundMode();
+
+  const after = mine();
+  const bright = after.reduce((a, p) => a
+    + lg.lightsOf(p.id).filter((l) => l.runtime.intensity === 9).length, 0);
+  const anchorsAfter = anchors();
+  await ed.undo();
+  return {
+    r, copies, extra: !!extra,
+    n: after.length,
+    groups: new Set(after.map((p) => p.group)).size,
+    anchorsHeld: JSON.stringify(anchorsBefore) === JSON.stringify(anchorsAfter),
+    bright,
+    undone: [...ed.state.placements.values()].filter((p) => p.compound === name).length,
+  };
+}, [`${CNAME} rigid`, PLATE]);
+check("updating copies rebuilds every instance from the bench",
+  cpSync.r.ok && cpSync.r.instances === cpSync.copies && cpSync.n === cpSync.copies * 3
+    && cpSync.groups === cpSync.copies,
+  `${JSON.stringify(cpSync.r)}, ${cpSync.n} element(s) in ${cpSync.groups} group(s)`);
+check("each copy keeps its place, and the edit reaches its lamps",
+  cpSync.anchorsHeld && cpSync.bright === cpSync.copies,
+  `anchors held ${cpSync.anchorsHeld}, ${cpSync.bright} brightened lamp(s)`);
+check("and the push is one undo step, on the ship's stack",
+  cpSync.undone === cpSync.copies * 2,
+  `${cpSync.undone} element(s) after undo, was ${cpSync.copies * 2} before the push`);
+
+// A bench member's chunk is a private fiction, and a lamp being fitted to one
+// has to be able to name it as its owner.
+const cpBenchPanel = await page.evaluate(async (name) => {
+  const ed = await import("/js/editor.js");
+  const cp = await import("/js/compounds.js");
+  const lg = await import("/js/lights.js");
+  await cp.editCompound(name);
+  const member = cp.benchMembers()[0];
+  const lamp = member ? lg.lightsOf(member.id)[0] : null;
+  if (!lamp) { cp.exitCompoundMode(); return { members: cp.benchMembers().length }; }
+  ed.select([member.id]);
+  await new Promise((r) => setTimeout(r, 80));
+  const chunkRow = document.getElementById("insp-chunk").parentElement.hidden;
+  ed.select([lamp.id]);
+  await new Promise((r) => setTimeout(r, 80));
+  const owners = [...document.getElementById("lgt-owner").options].map((o) => o.value);
+  const benchIds = cp.benchMembers().map((p) => p.id);
+  cp.exitCompoundMode();
+  ed.select([]);
+  return {
+    chunkRow,
+    listsBench: benchIds.every((id) => owners.includes(id)),
+    listsShip: owners.some((id) => !benchIds.includes(id)),
+    owners: owners.length,
+  };
+}, `${CNAME} rigid`);
+check("the Chunk row is hidden on a bench, where a chunk means nothing",
+  cpBenchPanel.chunkRow === true, `hidden ${cpBenchPanel.chunkRow}`);
+check("and a lamp on the bench is offered the bench's pieces as owners",
+  cpBenchPanel.listsBench && !cpBenchPanel.listsShip,
+  `${cpBenchPanel.owners} owner(s) offered, ship pieces among them ${cpBenchPanel.listsShip}`);
+
+await page.evaluate(async (name) => {
+  const cp = await import("/js/compounds.js");
+  await cp.deleteCompound(name);
+}, `${CNAME} rigid`);
+
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  i.cancelGhost();
+  ed.clearAll(); ed.select([]);
+  localStorage.removeItem("compoundBench");
+});
+await page.waitForTimeout(300);
 
 // ---- 1z. the palette panes fold, and the brush label survives a short window
 //
@@ -10020,8 +11109,8 @@ const paneFold = await page.evaluate(() => {
     open: [...document.querySelectorAll("#palette-panes details")].map((d) => d.open),
     onTop: hit === label || !!hit?.contains(label) };
 });
-check("both palette panes start open, with the brush label under them",
-  paneFold.open.length === 2 && paneFold.open.every(Boolean)
+check("all palette panes start open, with the brush label under them",
+  paneFold.open.length === 3 && paneFold.open.every(Boolean)
     && paneFold.foot.bottom <= paneFold.palette.bottom + 1 && paneFold.onTop,
   `${JSON.stringify(paneFold.open)}, foot ends ${paneFold.foot.bottom},`
   + ` palette ends ${paneFold.palette.bottom}, painted on top ${paneFold.onTop}`);
@@ -10568,6 +11657,68 @@ check("neither reaches the ship: not its meshes, not its size, not the export",
   `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`);
 check("and selecting the element it rides puts the light panel away",
   !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
+
+// ---- a lamp starts at the numbers its own kind needs ------------------------
+// Intensity, range and cone mean different things per kind: 1 is bright for a
+// point light filling a small room and invisible for a spot throwing a cone at
+// a wall six metres away. Choosing "spot" and getting a point light's numbers
+// is what made spots look like they did not work at all.
+const spotDefaults = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const lt = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+    new V(0, 0, 0), { silent: true, noLights: true });
+  const take = (l) => [l.runtime.intensity, l.runtime.range, l.runtime.angle];
+
+  // asked for outright, the way a kit seed asks
+  const born = lt.addLight(owner.id, { runtime: { type: "spot" }, silent: true });
+  const asked = take(born);
+
+  // ...and arrived at through the panel, which is how one is really made
+  const lamp = lt.addLight(owner.id, { silent: true });
+  const fresh = take(lamp);
+  ed.select([lamp.id]);
+  await new Promise((r) => setTimeout(r, 60));
+  const typeEl = document.getElementById("lgt-type");
+  const pick = async (kind) => {
+    typeEl.value = kind;
+    typeEl.dispatchEvent(new Event("change", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 60));
+  };
+  await pick("spot");
+  const spot = take(lamp);
+  const fields = ["lgt-intensity", "lgt-range", "lgt-angle"]
+    .map((id) => document.getElementById(id).value);
+
+  // a number typed by hand is an opinion, and survives the next change of kind
+  const intensityEl = document.getElementById("lgt-intensity");
+  intensityEl.value = "50";
+  intensityEl.dispatchEvent(new Event("input", { bubbles: true }));
+  await pick("none");
+  await pick("spot");
+  const tuned = take(lamp);
+
+  // and going back the other way hands the untouched fields to the new kind
+  await pick("point");
+  const back = take(lamp);
+  return { asked, fresh, spot, fields, tuned, back };
+});
+check("a lamp asked for as a spot is born with a spot's numbers",
+  JSON.stringify(spotDefaults.asked) === JSON.stringify([80, 6, 120]),
+  JSON.stringify(spotDefaults.asked));
+check("choosing spot in the panel moves an untouched lamp onto them too",
+  JSON.stringify(spotDefaults.fresh) === JSON.stringify([1, 8, 90])
+    && JSON.stringify(spotDefaults.spot) === JSON.stringify([80, 6, 120])
+    && JSON.stringify(spotDefaults.fields) === JSON.stringify(["80", "6", "120"]),
+  `${JSON.stringify(spotDefaults.fresh)} -> ${JSON.stringify(spotDefaults.spot)},`
+  + ` fields ${JSON.stringify(spotDefaults.fields)}`);
+check("a number typed by hand outlives a change of kind, and the rest follow it",
+  JSON.stringify(spotDefaults.tuned) === JSON.stringify([50, 6, 120])
+    && JSON.stringify(spotDefaults.back) === JSON.stringify([50, 8, 90]),
+  `tuned ${JSON.stringify(spotDefaults.tuned)}, back on point ${JSON.stringify(spotDefaults.back)}`);
 
 // ---- a field keeps only the keys it can use ---------------------------------
 // Standing aside for a focused control is what typing is - but a number field

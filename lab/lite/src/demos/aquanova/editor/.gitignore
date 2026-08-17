@@ -22,10 +22,12 @@ tool/test/shot-*.png
 # are ignored here but are NOT expendable on disk - they are the recovery path,
 # and they have already been the only thing that got work back. The live
 # manifest itself is NOT ignored (it is the ship), and neither is
-# ship_collision.json, which is the kit's hulls and is meant to travel.
+# ship_collision.json, which is the kit's hulls and is meant to travel, nor
+# ship_compounds.json, which is the compound library and travels with them.
 export/*.glb
 export/ship_manifest.*-*.json
 export/ship_collision.*-*.json
+export/ship_compounds.*-*.json
 export/ship_autosave.*-*.json
 
 # The captured environment probes: .env cubemaps the editor renders on demand,
@@ -44,8 +46,9 @@ export/ship_autosave.json
 # and point ENV_HDRI (tool/public/js/editor.js) at it.
 env/*.hdr
 
-# Deliberately NOT ignored: export/ship_manifest.json and
-# export/ship_collision.json. Those two ARE the ship.
+# Deliberately NOT ignored: export/ship_manifest.json,
+# export/ship_collision.json and export/ship_compounds.json. Those three ARE
+# the ship, its hulls and the pieces it is assembled from.
 #
 # The kit is no longer here at all. The modules are read from BabylonAssets -
 # a local checkout of it, or https://assets.babylonjs.com, whichever

@@ -59,7 +59,7 @@ as a module id plus a transform, so a layout reloads exactly:
   "view":     { "position": [...], "rotation": [...], "target": [...] },
   "environment": { "strength", "toneMapping", "exposure", "specularAA", "reflectionRoughness" },
   "editorEnvironment": { "strength", "toneMapping", "exposure" },
-  "editorPrefs": { "veilAlpha", "bigPalette" },
+  "editorPrefs": { "veilAlpha", "bigPalette", "strayChunkCheck", "probes" },
   "fluidSim": [ "viscosity-inplace", "liquid-slow.json" ],
   "behaviors": { "door_liquefiable": { "liquefiable": true } },
   "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ] } }
@@ -144,13 +144,16 @@ An undo snapshot carries no list, so undoing never disturbs the one in force.
 **Definition bodies are free-form JSON, written through untouched.** The runtime
 owns which flags exist; a tool that normalised the ones it happened to know
 about today would quietly drop the rest, and would need editing every time one
-was added. So the dialog is a name and a textarea, and the only thing checked is
+was added. So the window is a name and a textarea, and the only thing checked is
 that the text parses to a JSON _object_ — an array or a bare number there would
 be silently ignored by the runtime rather than rejected.
 
 **Edit behaviours…** in the inspector opens the library: pick from the list,
-edit, `New`, `Save`, `Delete`. Two operations keep the file consistent by
-themselves:
+edit, `New`, `Save`, `Delete`. The list is **alphabetical**, sorted for display
+only — definitions accumulate as the ship is built, so the order they were
+written in is the history of the project rather than anything you could look a
+name up by, and the manifest keeps saying what it always said. Two operations
+keep the file consistent by themselves:
 
 - **Renaming** a definition rewrites every entity that referenced it. A rename
   that left them pointing at the old name would silently drop their behaviour.
@@ -256,6 +259,36 @@ in the game alike.
 position, colour and settings survive, which is what makes trying a room with one
 fewer light a two-click experiment rather than an edit you have to undo.
 
+#### Each kind of lamp starts at its own numbers
+
+`intensity`, `range` and `angle` do not mean the same thing from kind to kind. A
+point light fills a small room from the inside, where `1` is already bright; a
+spot is aimed at a surface metres away through a cone, and needs two orders of
+magnitude more before the wall it points at looks lit at all. Carrying one
+number across a change of kind is how a spot ends up looking broken, and how you
+end up assuming spot lights "do not work".
+
+So `DEFAULT_LIGHT` is the shared starting point and `LIGHT_TYPE_DEFAULTS` holds
+only what a kind disagrees about — today, just the spot:
+
+| kind        | intensity | range | cone |
+| ----------- | --------- | ----- | ---- |
+| point       | 1         | 8 m   | —    |
+| spot        | **80**    | **6 m** | **120°** |
+| directional | 1         | —     | —    |
+
+`defaultsFor(type)` is the one place those are combined, and all three paths go
+through it: creating a light, seeding one from `kit_lights.json`, and filling a
+gap in a loaded record.
+
+**Changing the kind brings the new kind's numbers with it, for the fields you
+never chose.** A field still sitting at the *outgoing* kind's default was never
+an opinion, so it follows the lamp; a number you typed is kept, whichever kind
+you typed it for. That is what makes "add a light, choose spot" land on a usable
+spot, while a spot tuned to `50` stays at `50` across a switch to `none` and
+back. It also means a kind change is never destructive: nothing you entered by
+hand is overwritten.
+
 **A light emits along its own local −Y**, so the default rotation `[0,0,0]` is a
 ceiling panel shining at the floor. Down is where almost every lamp in the kit
 points, and −Y is the only axis that needs no rotation to get there — which is
@@ -272,8 +305,10 @@ their own — the same treatment `sealed` gets on a skybox door:
 | a directional light is never clustered | it has no position to bin and no falloff to cluster |
 
 A light is part of what an element **is**, so it is copied with `Ctrl+D` and
-deleted with its owner, exactly like that element's collision shapes. A light
-whose owner is missing on load is dropped rather than stranded at the origin.
+deleted with its owner, exactly like that element's collision shapes — and what
+is copied is the lamp as it stands, tuned intensity and all, not the kit's
+default for that module. A light whose owner is missing on load is dropped
+rather than stranded at the origin.
 
 #### Modules arrive lit — `public/data/kit_lights.json`
 
@@ -293,9 +328,10 @@ remove. `kit_lights.json` keys a list of light partials by module id, and
 
 The values were **measured off each module's `M_Light` primitive** — the
 emissive strip _is_ the lamp, so the lamp is seeded on its face and pointed the
-way it faces. Anything left out falls back to `DEFAULT_LIGHT`, and the whole
-record goes through `normalizeLight()`, so the file cannot author an impossible
-light.
+way it faces. Anything left out falls back to the defaults **for the kind the
+seed asks for**, so a seed that says `"type": "spot"` and nothing else gets a
+spot's 80 / 6 m / 120°, and the whole record goes through `normalizeLight()`, so
+the file cannot author an impossible light.
 
 A **list**, because one strip is not always one lamp: `Prop_Light_Corner` is a
 quarter-circle arc that one lamp cannot light evenly, so it is served by three
@@ -447,7 +483,15 @@ without re-exporting 38 MB of geometry.
 },
 "editorPrefs": {                // this tool only, and not lighting at all
   "veilAlpha": 0.5,             // how see-through Shift+H makes an element
-  "bigPalette": true            // double-width palette with double-size tiles
+  "bigPalette": true,           // double-width palette with double-size tiles
+  "strayChunkCheck": true,      // warn about elements that look mis-chunked
+  "probes": {                   // which probe boxes the window puts back up
+    "CH01_Corridor1": {
+      "alwaysVisible": true, "envFaces": true,
+      // which of the probe's three volumes are drawn — its section eyes
+      "visibleParts": { "box": true, "influence": true, "inner": false }
+    }
+  }
 }
 ```
 
@@ -737,6 +781,7 @@ the same thing.
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Behaviour        | inspector panel — attach library behaviours to the element's node name (the same one may be attached more than once; repeats are numbered), edit each one's parameters as **raw JSON**, and pick the `linked` nodes a liquefiable one melts with · **Edit behaviours…** opens the library (name + free-form JSON body)                                                                                                                                                                                                                                                                                                                                                                      |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Steps            | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard _step sizes_, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns                                                                                                                                                                                                                                                                                                                                                   |
 | Camera           | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -744,7 +789,7 @@ the same thing.
 | View mode        | toolbar combo — **Editor** (the authoring rig) · **Editor unlit** (raw albedo, no lighting) · **Runtime** (the authoring rig off, the authored lamps rebuilt as real lights and each room reflecting its own environment probe — the lights the game actually has). See [The three view modes](#the-three-view-modes)                                                                                                                                                                                                                                                                                                                                                                       |
 | Walk             | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Undo             | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by _memory_ rather than a fixed count (1000 steps on this ship, fewer as it grows), so _anything_ that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the **Runtime** lighting sliders, every inspector field and every behaviour edit. The **Editor** lighting sliders are deliberately not on the stack — see [Lighting is an edit](#lighting-is-an-edit-the-editors-own-view-is-not)                                                                                                                                                                     |
-| Edit             | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact)                                                                                                                                                                                                                                                                               |
+| Edit             | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, bringing the source's lights, name and compound with it, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact)                                                                                                                                                                                                                                                                               |
 | Grid             | `G` · **Editor unlit** shows raw albedo with no lighting · **Settings ▸ Editor ▸ Exposure** — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Palette          | hover a tile to spin the module through a full 360° turn · **drag the grip** between the palette and the viewport to resize it, double-click the grip to restore the default width                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Save             | `Ctrl+S` — writes `ship_manifest.json` **and** `ship.glb`, and stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -875,6 +920,18 @@ duplicate silently changed where _everything placed afterwards_ would land.
 **A multi-selection is carried too**: the ghost holds a
 list of items, each with its own offset, turn and mirroring, so `Ctrl+D` on
 twelve walls hands you twelve walls.
+
+**The ghost also remembers _which element_ it came from**, as an `originId` on
+each of its items, and the drop reads that element to finish the copy: its
+[lights](#lights) come across as they are tuned right now, along with its name
+and its [compound](#compound-objects) — a fresh group id per source group, so
+the copy is its own instance. Without it a duplicate was a copy of the mesh
+rather than of the element: a lit panel came back wearing the **kit's default
+lamp** instead of the one you had dimmed, and a lamp you had added by hand to
+something the kit does not light came back as nothing at all. The
+multi-selection path always did this; the single-element one went through the
+palette brush, which had no way to carry it. A compound _tile_ has no source
+element in the scene, so it brings its lamps in its recipe instead.
 
 **It also sets the drag axis back to `X/Z` first**, and says so. In `Y` mode the
 cursor drives the _build plane_ rather than the ghost's own height, and it clears
@@ -2346,6 +2403,166 @@ and a _turned_ capsule as something with no relation to the radius it is
 actually built from — and the whole point of constraining the scale is that
 those numbers are the truth.
 
+## Compound objects
+
+A **compound** is several modules saved as one reusable object: a wall with its
+lamp, a doorway with its frame, a bank of crates you keep rebuilding. It exists
+because the ship is mostly repetition, and the repetition is not one module —
+placing a lit wall is a wall, a light prop and an authored lamp, three times per
+corridor.
+
+**A compound is a recipe, not a mesh.** Saving one records what its members are
+and where they sit relative to its origin; placing one **expands** that into
+ordinary placements, one per member, sharing a `group` id. Nothing is baked, and
+there is no compound object at runtime — the manifest and the `.glb` see exactly
+the elements they would have seen had you placed each piece by hand.
+
+That is a deliberate choice over baking the members into a single `.glb`:
+
+- **A lamp is not geometry.** It is a `state.lights` entry riding a placement,
+  and no mesh file could carry one. _Wall plus lamp_ is the case the feature
+  exists for, so a model-file compound would have missed it entirely.
+- **Collision is authored per module**, in the module's own local space, and
+  every placement inherits it. Members keep theirs; a baked mesh would have been
+  a new module with no hull, needing a fresh trip through the staging area.
+- **Deleting one piece has to work.** A crate stack you place and then thin out
+  is the ordinary case, not an edge case — and with a recipe it is just `Del`
+  on one element.
+
+### The bench
+
+**Edit compounds** in the Compounds pane opens the **compound bench**. Like the
+collision staging area it is a _mode_, not a property of the selection: the ship
+is hidden, the bench is shown, and what is on it is not ship data. Members are
+real placements carrying `stage: true` in the `__compound_bench` chunk, which is
+what makes every tool work on them unchanged — the palette, `X`, `H`, `Del`,
+`Ctrl+D`, dragging, the marquee, the inspector, **Add light**. They are filtered
+out of the manifest and the `.glb` by `shipPlacements()`, and their chunk id is
+never in `state.chunks`, so nothing can reach them from the ship side.
+
+The two benches are separate chunks rather than one, because each has to be able
+to tell its own contents apart from the other's — and they disable each other,
+so only one is ever open.
+
+The inspector's **Chunk** row is hidden on either bench. A bench member carries
+a private pseudo-chunk that is never written to the ship, so the row could only
+ever show a lie or take an edit that goes nowhere. The **Owner** row on a lamp,
+by contrast, lists the _bench's_ members while a bench is open: fitting a lamp
+to a bench piece and being offered every element in the ship except the right
+one is no help at all.
+
+**The bench keeps its own undo stack**, and its own viewpoint. A `Ctrl+Z` on the
+bench undoes a bench edit; it can never reach past the moment the bench opened
+and start undoing the ship behind it. The stack is emptied on the way in _and_
+on the way out, so re-opening never offers to undo edits to pieces that are no
+longer there.
+
+**Closing keeps the bench.** What is on it is written to `localStorage` and
+restored next time, the same way the collision area remembers its layout — a
+compound is usually built over more than one sitting.
+
+### Saving one
+
+**Save as…** files what is on the bench under a name, in a kit and category of
+your choosing. Filing it into a kit is what makes it findable: it appears as an
+ordinary palette tile, in that kit's list, under that category, and is searched
+and thumbnailed like any other. A compound tile carries a **blue dot** so you
+can tell it is a recipe, and its thumbnail and turntable are rendered from the
+members rather than loaded from a file — it has no `url`, because it has no
+model of its own.
+
+**Save** re-saves under the name the bench already has, with no dialog. After
+the first save the name, kit and category are settled, and asking all three
+again on every tweak turns _adjust the lamp, save, look_ into a five-click loop
+whose one expensive misclick — the name field — silently forks the compound in
+two. The bench banner says which compound is on it, so what **Save** will
+overwrite is always on screen. It is greyed out until the bench has a name.
+
+**Its origin is its first member's origin** — the piece you started with. That
+piece is what you are really placing: a wall with a lamp on it is a wall, and it
+should land where a wall lands. This began as the bottom centre of the bench's
+bounding box, on the reasoning that a compound should meet the build plane the
+way a module does, and that was wrong. A module's origin is on the grid because
+the artist put it there; a bounding-box centre lands wherever the arithmetic of
+two differently sized pieces puts it. A 4 m wall beside a 12 m platform centres
+at 5, so every member came out half a metre off and a compound dropped with
+`Move` at 1 m produced positions like `-0.5` and `3.5`. Anchoring on a real
+module's origin gives integer offsets in, integer positions out — and gives a
+group turn a pivot that is a real thing rather than an average. Recipes saved
+under the old rule are shifted onto the new one as they are read, so they place
+and turn like the rest.
+
+**Clicking a compound tile while the bench is open loads it** rather than
+placing it. It is the way back to a saved recipe — and placing a compound inside
+a compound would fold a whole recipe into the next save as loose members, which
+is what **Break apart** is for.
+
+Recipes live in `ship_compounds.json` in the export directory — **not** inside a
+kit folder, which holds bought art that the editor has no business writing to.
+The server folds them into the catalogue as it builds it, so a compound is in
+the palette from the next catalogue read onwards.
+
+**Saving over a name replaces the recipe, and by default leaves the ship alone.**
+Copies already placed are ordinary elements; they were expanded the moment they
+landed and have no link back. The dialog says so as you type — it names what
+already exists and how many copies are in the ship — as a warning rather than a
+refusal, because saving over a compound is how one is edited. The same is true
+of the **red ×** on a compound tile, which forgets the recipe: nothing already
+in the ship changes. That is what being a macro rather than an instance means,
+and it is the trade — you cannot edit every lit wall at once, and in exchange
+you can edit any one of them.
+
+**Update copies in the ship**, in the save dialog, is the way to break that
+trade when you want to. Tick it and every copy of the compound is rebuilt from
+what is on the bench: fit a lamp to a wall, place forty, find the lamp a foot
+too low, fix it once. Each copy is re-laid **around its own anchor** — its first
+member keeps its exact world transform and the rest are rebuilt around it — so a
+fleet of walls does not shift by a millimetre when the lamp above them moves,
+and each copy keeps its group id and its chunk. It is one undo step for the
+whole push, and it is undoable **in the ship**, not on the bench whose history
+is thrown away on the way out. What it costs is anything done to a copy _as a
+copy_: a deleted component comes back, a renamed member goes back to its recipe
+name, and a behaviour hung on one of its pieces goes with the piece. The choice
+is remembered between saves, so **Save** pushes updates too once you have asked
+for them.
+
+### Placing, selecting, breaking apart
+
+Placing a compound arms a ghost showing all its members and, on the drop, mints
+**one fresh group id** and creates the elements under it — with their lamps.
+Like any other tile the brush **stays armed** for a run of them.
+
+**Selection is the only place a group is expanded.** Click any member and the
+whole compound is selected; once every member is in `state.selection`, every
+transform the editor already has — drag, `X`, rotate, scale, `Ctrl+D`, `Del` —
+moves it as one, with no compound-aware code in any of them. The marquee, the
+double-click and the hover outline expand the same way, so hovering a member
+outlines the whole thing.
+
+**`Ctrl+Alt+click` drills in** to the single member under the cursor, for when
+you want to delete one crate off the stack or nudge a lamp. It is _not_ `Alt` on
+its own: that is the eyedropper. Drilling in is simply not expanding the group,
+so there is no second selection model to keep in step.
+
+**`Ctrl+D` on a compound mints a new group.** Sharing the original's id would
+have made selecting either select both, and moving one move the other.
+
+**A compound turns as one piece, about its anchor.** The ordinary rule is that
+every selected element spins about its own origin, which is right for a row of
+props each facing its own way and wrong for a compound: the lamp is _on_ the
+wall, and spinning both in place leaves it hanging in the air where the wall
+used to be. So a selection that is exactly one whole compound always turns
+rigidly about its first member — with `Shift+wheel`, and in the inspector's
+rotation fields, which likewise carry the rest of the group along instead of
+editing the first element alone. Scale is not carried: the wheel resizes every
+selected element about its own origin, and the inspector matches it.
+
+**Break apart** — in the inspector, shown only when the selection is grouped —
+dissolves the group and leaves the pieces exactly where they are. From then on
+each is selected, moved and deleted on its own. It is one undo step, and it is
+the escape hatch: a compound that is _nearly_ right is placed, broken and
+edited, rather than being a reason to go back to the bench.
+
 ## Settings
 
 Ship-wide constants live in `state.config`, are edited in the **Settings** pane,
@@ -2404,6 +2621,7 @@ their own place in the manifest:
 | Tone                 | Editor  | `Khronos PBR Neutral`  | `editorEnvironment` | view transform of the editor views                                               |
 | Ghost                | Editor  | `0.5`                  | `editorPrefs`       | how see-through `Shift+H` makes an element                                       |
 | Big icons            | Editor  | on                     | `editorPrefs`       | double-width palette with double-size tiles                                      |
+| Stray-chunk check    | Editor  | on                     | `editorPrefs`       | report elements that look like they were left in the wrong chunk                 |
 | Env                  | Runtime | `1.5`                  | `environment`       | IBL strength in the game                                                         |
 | Exposure             | Runtime | `0.55`                 | `environment`       | linear exposure in the game                                                      |
 | Tone                 | Runtime | `Khronos PBR Neutral`  | `environment`       | view transform in the game                                                       |
@@ -2461,6 +2679,32 @@ monitor cannot come back on a laptop with no viewport left in the middle.
 > the html element is shadowed by that for every descendant, so the inline
 > style has to sit on the same element to win.
 
+### The floating tool windows
+
+**Chunks…**, **Probes…** and **Edit behaviours…** open windows rather than
+modal dialogs. Each one is a place you edit the ship _while looking at it_ — a
+probe box you are dragging, a room you are renaming, the JSON of a behaviour
+you are watching take effect — so a scrim over the viewport would hide the only
+thing that says whether the edit was right. They are not modal in the keyboard
+either: shortcuts are claimed only while the focus is _inside_ a window, where
+`Escape` closes it, and the ship stays live behind.
+
+Which means each of them owes you the two affordances a window has to have:
+
+- **Drag** it by the titlebar. The position is clamped into the viewport on
+  every move, on open, and on every browser resize — a window can be pushed at
+  the edge but not over it, and shrinking the browser cannot strand one outside.
+- **Resize** it from the bottom-right grip. That grip is the browser's own
+  `resize: both`: the platform already draws it, tracks the pointer and honours
+  `min-*`/`max-*`, and a hand-rolled one would be a worse copy. It is why the
+  window element is a bare positioned box and the **panel inside it** carries
+  the size — `resize` needs a clipping box, and clipping the window would take
+  the panel's drop shadow with it.
+
+In the behaviours window the height a bigger window buys goes to the JSON box,
+which is the field that needed it; the other two are rows of controls and stay
+content-tall.
+
 ## Live checks
 
 The inspector re-runs these on every change (they replace `build_ship.py`'s
@@ -2470,6 +2714,66 @@ batch validators):
 - objects below `y = 0`, or off the current move-snap grid
 - doors whose two sides resolve to the same chunk, or that have no leaves
 - chunks no door reaches
+- elements that look like they were left in the wrong chunk (below)
+
+### Elements left in the wrong chunk
+
+The easiest mistake to make and the hardest to see: you build on into the next
+room and forget to move the active chunk on with you. Nothing looks wrong — the
+piece is where you put it — but at runtime it belongs to a room the player is
+not in, so it vanishes through the portal or hangs in the air beyond it.
+
+The obvious test does not work. **A chunk has no authored volume**: its box is
+the union of whatever is assigned to it, computed after the fact by
+`buildManifest`. Ask "is this element inside its chunk?" and the answer is
+always yes, because the element is one of the things that decided where the
+chunk is.
+
+What a chunk does have is a shape. The pieces that make up a room are stuck to
+one another — tile against tile, trim against wall — so the question worth
+asking is which of a chunk's members hang together and which hang off on their
+own. `strayChunkMembers()` groups each chunk's members by what touches what and
+keeps the largest group; anything outside it is reported. When some _other_
+chunk's group does reach the piece, that chunk is named, because that is the one
+it was meant for:
+
+```
+2 element(s) assigned to CH00_Storage sit in CH03_StorageC2: P0040, P0041
+1 element(s) assigned to CH02_StorageCTL touch nothing else in it: P0210
+```
+
+> **Grouping, not measuring each piece against the rest of its chunk in turn.**
+> That is the obvious implementation and it is wrong: two pieces left behind in
+> the same chunk hide each other, because the "rest" that each is measured
+> against contains the other and stretches over all the ground between them.
+> Group them instead and each is on its own.
+
+Touching is generous — half a metre (`STRAY_CHUNK_SLACK`). Trim, decals and
+door frames are all mounted a few centimetres proud of the surface they belong
+to, and on this ship the widest such gap measured 25 cm, so anything tighter
+reports honest work as a mistake. A piece genuinely in the wrong room is a kit
+tile away at the very least, and the kit's grid is 4 m. Half a metre clears
+every mounting offset and is still eight times inside the smallest real
+mistake. Measured on the finished ship: 135 placements, four rooms, zero
+reports — and moving one real placement to the wrong chunk is caught, with the
+right chunk named.
+
+It is a **warning, never an error**, and it never blocks a save. Ships are
+built outwards, and a chunk being filled in right now legitimately holds a piece
+or two that reach nothing yet. For the same reason a chunk with one member is
+left alone — there is nothing for it to be outside of — as is one that splits
+evenly, where there is no larger group to call the odd one out from.
+
+Besides the Live checks panel it is repeated in the status bar on every save,
+appended to the usual message, because the panel is easy to build past:
+
+```
+saved · 135 objects · 5 chunks — check chunks: 1 element(s) assigned to CH00_Storage sit in CH03_StorageC2: P0040
+```
+
+Turn it off with **Stray-chunk check** in Settings ▸ Editor if you are working
+in a way it cannot follow — it lives on `editorPrefs`, so the choice is
+remembered.
 
 ---
 
@@ -2967,6 +3271,74 @@ volume is exactly zero against every probe.
 An element in no probe box at all reflects **nothing**, which is exactly what
 the runtime does with it.
 
+### Reading the probe pane
+
+Three near-identical triples of numbers stacked in one list read as a wall of
+digits, and the boxes they describe are nested inside one another in the
+viewport, so it is easy to drag the wrong one. The pane is therefore split by
+volume, each with its own heading:
+
+| section | rows |
+| --- | --- |
+| **Probe box** | Centre, Size, Camera |
+| **Influence box** | Centre, Size |
+| **Inner box** | Size |
+
+**ID**, **Always visible**, **Env faces** and **Texture size** sit above all
+three, because they belong to the probe rather than to any one of its boxes.
+Texture size follows Env faces directly: both are about the cubemap, and
+separating them put a dozen coordinates between two rows that are read together.
+
+There is **no Apply**. A probe is edited the way an element is: type into a
+field and the viewport follows, keystroke by keystroke. One visit to a field is
+one **undo entry**, however many characters it took — the rule the inspector
+already follows — so `Ctrl`+`Z` takes back the value you typed, not the last
+digit of it. Typing is deliberately quiet about refusals, because `0.5` and `-3`
+are both unusable on their way in; a value that never became a probe is called
+out when you **leave** the field, and the field snaps back to what the record
+still holds. The **ID** is the one exception: it commits when the field is left
+rather than as it is typed, because renaming per character would leave a trail
+of probes called `E`, `EN`, `ENV`…
+
+**Always visible** keeps this probe's boxes on screen while another one is being
+edited, and it is **per probe** — it is how you place a room's fade region
+against its neighbour's rather than from memory. The probe being edited is drawn
+in the **bright** palette; every probe held beside it is drawn in a **dim** one,
+about a third as saturated and half as opaque, so the one your keystrokes reach
+is never in doubt. Dim boxes stay pickable: clicking one selects that probe,
+which then turns bright and takes the pane with it. **Env faces** is per probe
+too, and follows the same rule — a probe shows its captured cubemap when it is
+selected, or when it is being held on screen.
+
+Both flags last as long as the **window** does: closing **Probes…** takes every
+gizmo down whatever they say, because "always" means "while I am working on the
+probes", not "for ever". They are saved beside the ship in `editorPrefs`, never
+inside `environmentProbes[]` — the runtime has no business reading two booleans
+about the editor's viewport — and they survive an undo, so `Ctrl`+`Z` on a typo
+does not also put the probes you had on screen back down.
+
+The probe **list** takes whatever height the window is given and gives it back,
+so a tall window is a long list rather than a short list with grey space under
+it.
+
+Each heading carries an **eye** that shows and hides that volume on its own, so
+you can pull the influence boxes out of the way while placing the capture box,
+or hide the capture box to see the fade region against the room unobstructed.
+Hiding a volume also **drops it from the selection** — a gizmo that is not drawn
+cannot be dragged, framed or outlined, and leaving it selected would leave the
+arrow keys moving something invisible. The eyes are **per probe**, like the two
+flags above them: which box is in your way depends on the room you are working
+in, and pulling one probe's influence box aside has no business taking its
+neighbour's down at the same time — least of all when the neighbour is on screen
+precisely so the two can be read against each other. So the choice follows the
+probe the pane moves to, and lands in `editorPrefs` beside Always visible and
+Env faces rather than in `environmentProbes[]`.
+
+Selecting a box in the viewport marks its heading in the pane — accent colour
+and a **selected** badge — which is the other half of the same problem: with
+three boxes drawn one inside another, the pane otherwise gives no clue which of
+them `Ctrl`+wheel is about to resize.
+
 ### The influence volumes
 
 The box above answers "what does this cubemap *show*, and onto what does it get
@@ -2994,11 +3366,12 @@ capture box is.
 An inner size may be **zero** on an axis — a corridor narrower than the fade
 simply has no full-strength core — but never larger than the influence size on
 that axis, because the runtime divides by `outer − inner` per axis and a
-negative width is a gradient pointing the wrong way. **Apply** refuses that pair
-rather than storing it; direct manipulation **clamps** instead, shrinking the
-inner box as the outer one closes in on it. The difference is deliberate: a
-typed number is a claim to be checked, while a drag that silently stopped
-halfway would be a tool fighting the hand.
+negative width is a gradient pointing the wrong way. A typed pair like that is
+**refused** — the pane says so when you leave the field and puts the good value
+back — while direct manipulation **clamps** instead, shrinking the inner box as
+the outer one closes in on it. The difference is deliberate: a typed number is a
+claim to be checked, while a drag that silently stopped halfway would be a tool
+fighting the hand.
 
 A probe that has never had them typed derives them from its box: **1.5 m out on
 every face, and 1.5 m in**, which is exactly what the runtime falls back to on
@@ -3552,8 +3925,9 @@ checkout, so nothing extra is downloaded. Between them they cover boot, palette
 population, material/texture de-duplication, placement, the ghost workflow
 (arm, snap, rotate, scale, place), dragging (single, multi-selection, snapped
 delta, cancel), the hover outline, camera navigation, grid elevation and axis
-cycling, door markers, portal and adjacency derivation, manifest
-round-trip, save rotation and .glb export.
+cycling, door markers, portal and adjacency derivation, the collision staging
+area, the compound bench (save, place, group selection, drill-in, break apart,
+delete), manifest round-trip, save rotation and .glb export.
 
 > `page.mouse.move()` in a single jump can be coalesced away and never reach the
 > hover path — the tests pass `{ steps: 4 }`, which is also what a real mouse

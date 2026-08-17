@@ -525,7 +525,7 @@ export async function saveCollision() {
 
 /** Write a recovery copy, apart from the ship you last chose to save. */
 export async function saveAutosave() {
-  if (state.collisionMode) hooks.harvestStage?.();
+  if (state.mode === "collision") hooks.harvestStage?.();
   const body = JSON.stringify({
     ...buildManifest(),
     generator: "SciFiShip layout tool (auto-save)",

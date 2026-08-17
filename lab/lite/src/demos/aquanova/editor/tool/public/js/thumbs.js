@@ -4,7 +4,7 @@
 // produced when its tile scrolls into view, and the result is pushed to the
 // server's disk cache so later sessions load it straight from /api/thumb.
 
-import { materialKey, applyKitTransparency, loadModuleContainer } from "./kit.js";
+import { materialKey, applyKitTransparency, loadModuleContainer, getModule } from "./kit.js";
 
 const {
   Engine, Scene, ArcRotateCamera, HemisphericLight, DirectionalLight,
@@ -156,6 +156,47 @@ export function cachedTurnUrl(moduleId) {
   return turnCached.has(keyOf(moduleId)) ? `/api/turn/${keyOf(moduleId)}` : null;
 }
 
+// Cache writes are fire-and-forget - a tile has its picture the moment it is
+// rendered, and whether the server also kept a copy is next session's problem.
+// They are still tracked, because "render it now" (see warm) has to be able to
+// promise that the copy is actually on disk before it says it is done.
+const uploads = [];
+
+function cacheOnServer(kind, key, dataUrl) {
+  const job = (async () => {
+    const blob = await (await fetch(dataUrl)).blob();
+    await fetch(`/api/${kind}/${key}`, {
+      method: "PUT", headers: { "Content-Type": "image/png" }, body: blob,
+    });
+  })().catch(() => { /* cache is best-effort */ });
+  uploads.push(job);
+  return job;
+}
+
+/** Wait for every cache write issued so far. */
+export function uploadsSettled() {
+  return Promise.allSettled(uploads.splice(0));
+}
+
+/**
+ * Render a tile's still *and* its turntable now, instead of waiting for it to
+ * be scrolled to and then hovered.
+ *
+ * The one case where the lazy pipeline has nothing to be lazy about: a compound
+ * is built in the editor, and the moment it is saved is exactly when its
+ * members are known to be loadable and when its author wants to see what it
+ * became. Any previous pictures under the same name are dropped first, so
+ * re-saving a compound under a name that already existed does not leave the
+ * palette showing the old one.
+ */
+export async function warm(mod) {
+  forgetCached(mod.id);
+  await request(mod, document.createElement("img"));
+  await requestTurntable(mod);
+  await uploadsSettled();
+  return { thumb: cachedUrl(mod.id), turn: cachedTurnUrl(mod.id) };
+}
+
 /**
  * Drop a module from the local "already have it" sets so the next request
  * re-renders it. Used by the tests to exercise the render path itself rather
@@ -174,10 +215,7 @@ export function requestTurntable(mod) {
   const job = (async () => {
     const dataUrl = await renderTurntable(mod);
     turnCached.add(keyOf(mod.id));
-    const blob = await (await fetch(dataUrl)).blob();
-    fetch(`/api/turn/${keyOf(mod.id)}`, {
-      method: "PUT", headers: { "Content-Type": "image/png" }, body: blob,
-    }).catch(() => { /* cache is best-effort */ });
+    cacheOnServer("turn", keyOf(mod.id), dataUrl);
     return dataUrl;
   })().finally(() => turnInflight.delete(mod.id));
 
@@ -217,11 +255,7 @@ async function pump() {
       dataUrl = await renderThumb(mod);
       for (const el of job?.els || []) el.src = dataUrl;
       cached.add(keyOf(mod.id));
-      fetch(`/api/thumb/${keyOf(mod.id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "image/png" },
-        body: await (await fetch(dataUrl)).blob(),
-      }).catch(() => { /* cache is best-effort */ });
+      cacheOnServer("thumb", keyOf(mod.id), dataUrl);
     } catch (e) {
       console.warn("thumbnail failed", mod.id, e);
     }
@@ -302,17 +336,61 @@ function exclusive(job) {
 /** How many renders are in flight, and the worst ever seen - for tests. */
 export function thumbConcurrency() { return { active, peak: peakActive }; }
 
+/**
+ * The model files one tile needs, each with the transform to load it at.
+ *
+ * An ordinary module is one file at the origin. A compound has no file of its
+ * own - it is a recipe - so its tile is photographed by loading every member
+ * where the recipe puts it, which is the only way a picture of it can agree
+ * with what dropping it actually produces. A member naming a module the library
+ * no longer has is skipped rather than fatal: a tile missing one piece is worth
+ * more than no tile at all.
+ */
+function partsOf(mod) {
+  if (!mod.compound) return [{ mod, position: null, rotation: null, scale: null }];
+  const parts = [];
+  for (const m of mod.members || []) {
+    const found = getModule(m.module);
+    if (found?.url) parts.push({ mod: found, position: m.position, rotation: m.rotation, scale: m.scale });
+  }
+  return parts;
+}
+
 async function loadFrameAndRun(mod, fn) {
   // Belt and braces: anything left over from an earlier render would be
   // photographed along with this module. Safe here because the lock guarantees
   // nothing else is using the scene.
   for (const m of [...scene.meshes]) m.dispose(false, false);
 
-  const container = await loadModuleContainer(mod, scene);
-
-  const meshes = container.meshes.filter((m) => m.getTotalVertices() > 0);
-  shareMaterials(meshes);
-  container.addAllToScene();
+  const containers = [];
+  const holders = [];
+  const meshes = [];
+  for (const part of partsOf(mod)) {
+    const container = await loadModuleContainer(part.mod, scene);
+    containers.push(container);
+    const mine = container.meshes.filter((m) => m.getTotalVertices() > 0);
+    shareMaterials(mine);
+    container.addAllToScene();
+    // A compound's members each sit at their own authored transform inside it.
+    // They are parented to a holder rather than moved directly, because a
+    // loaded container's meshes may already hang off a `__root__` of their own.
+    if (part.position || part.rotation || part.scale) {
+      const holder = new BABYLON.TransformNode("THUMB_PART", scene);
+      holders.push(holder);
+      if (part.position) holder.position.set(...part.position);
+      if (part.rotation) {
+        holder.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(
+          part.rotation[0] * Math.PI / 180,
+          part.rotation[1] * Math.PI / 180,
+          part.rotation[2] * Math.PI / 180);
+      }
+      if (part.scale) holder.scaling.set(...part.scale);
+      for (const node of [...container.meshes, ...container.transformNodes]) {
+        if (!node.parent) node.parent = holder;
+      }
+    }
+    meshes.push(...mine);
+  }
 
   let min = null, max = null;
   for (const m of meshes) {
@@ -354,11 +432,14 @@ async function loadFrameAndRun(mod, fn) {
     return fn();
   } finally {
     // Dispose the geometry only: the materials and textures are shared.
-    for (const m of container.meshes) m.dispose(false, false);
-    for (const t of container.transformNodes) t.dispose();
-    container.meshes.length = 0;
-    container.transformNodes.length = 0;
-    container.materials.length = 0;
-    container.textures.length = 0;
+    for (const container of containers) {
+      for (const m of container.meshes) m.dispose(false, false);
+      for (const t of container.transformNodes) t.dispose();
+      container.meshes.length = 0;
+      container.transformNodes.length = 0;
+      container.materials.length = 0;
+      container.textures.length = 0;
+    }
+    for (const h of holders) h.dispose();
   }
 }

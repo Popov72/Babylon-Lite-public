@@ -241,6 +241,32 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   pointer-events: none;
 }
 
+/* A compound is the only tile the editor made, so it is the only one it can
+   throw away. The cross stays out of the way until the tile is under the
+   cursor - a delete control that is always lit invites the accident. */
+.item .tile-del {
+  position: absolute; top: 2px; left: 2px; z-index: 3;
+  width: 16px; height: 16px; padding: 0; line-height: 14px;
+  border-radius: 3px; font-size: 13px;
+  background: rgba(0, 0, 0, 0.55); color: #ff6b6b;
+  border: 1px solid rgba(255, 107, 107, 0.5);
+  opacity: 0; transition: opacity 90ms;
+}
+.item:hover .tile-del, .item .tile-del:focus-visible { opacity: 1; }
+.item .tile-del:hover { background: #b3261e; color: #fff; }
+/* Second dot, in the banner's blue, so "this tile is a compound" reads at a
+   glance the way the green collision dot does. On `::after` beside the
+   collision dot rather than `::before`, which the "generating preview" holding
+   text already owns - and a compound never carries collision of its own, so
+   the two can never want the same corner. */
+.item.compound::after {
+  content: ""; position: absolute; top: 4px; right: 4px; z-index: 2;
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #6f9dff; border: 1px solid rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 5px rgba(111, 157, 255, 0.8);
+  pointer-events: none;
+}
+
 .palette-foot {
   padding: 6px 8px; border-top: 1px solid var(--line);
   font-size: 11px; color: var(--accent);
@@ -391,32 +417,43 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 
 /* ------------------------------------------- modal / floating editor panes */
 
-#bhv-modal {
-  position: fixed; inset: 0; z-index: 90;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(10, 12, 16, 0.6);
-}
-#chunk-modal, #probe-modal {
+#bhv-modal, #chunk-modal, #probe-modal {
   position: fixed; z-index: 90; left: 24px; top: 72px;
-  width: min(620px, calc(100vw - 24px));
 }
+/* The window element is a bare positioned box and the panel inside it carries
+   the size, because `resize` needs a clipping box: put it on the window and
+   the panel's drop shadow gets clipped away with the overflow. Shrink-to-fit
+   then keeps the two the same size, which is what the drag code measures. */
 #bhv-modal .panel, #chunk-modal .panel, #probe-modal .panel {
-  width: 620px; max-width: 92vw;
+  width: min(620px, calc(100vw - 24px));
+  min-width: 340px; min-height: 180px;
+  max-width: calc(100vw - 16px); max-height: calc(100vh - 16px);
   padding: 14px 16px; border-radius: 6px;
   background: var(--panel); border: 1px solid var(--line);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
-}
-#chunk-modal .panel, #probe-modal .panel {
-  width: auto; max-width: none; max-height: min(720px, calc(100vh - 48px));
-  box-sizing: border-box; overflow: hidden;
+  box-sizing: border-box; overflow: hidden; resize: both;
   display: flex; flex-direction: column;
 }
-#chunk-modal .panel > p, #probe-modal .panel > p { flex: 0 0 auto; }
+#bhv-modal .panel > p, #chunk-modal .panel > p, #probe-modal .panel > p { flex: 0 0 auto; }
+#bhv-modal .tool-window-scroll,
 #chunk-modal .tool-window-scroll, #probe-modal .tool-window-scroll {
   flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px;
 }
+/* The library is one long field, so the height a taller window buys goes to it
+   rather than to white space: the split fills the pane and the JSON box fills
+   the split. The chunk window is rows, and stays content-tall. */
+#bhv-modal .tool-window-scroll { display: flex; }
+#bhv-modal .split { flex: 1 1 auto; min-height: 0; }
+/* The probe window does the same for its list: a ship with a dozen probes
+   should get a dozen visible rows out of a taller window, not a 12-row box with
+   white space under it. `1 0 auto` rather than `1 1 auto` because the editor
+   column beside the list is fields, not a field: squashing those to fit a short
+   window helps nobody, so below its natural height the pane scrolls instead. */
+#probe-modal .tool-window-scroll { display: flex; }
+#probe-modal .split { flex: 1 0 auto; min-height: 0; }
+#probe-list { align-self: stretch; height: auto; }
 .tool-window-footer {
-  flex: 0 0 auto; margin: 8px -10px -8px; padding: 8px 10px 0;
+  flex: 0 0 auto; margin: 8px -10px -8px; padding: 8px 16px 0 10px;
   border-top: 1px solid var(--line); background: var(--panel);
 }
 .tool-window-footer .group { justify-content: flex-end; }
@@ -433,26 +470,98 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   font-size: 17px; line-height: 18px;
 }
 #bhv-modal h2, #chunk-modal h2, #probe-modal h2 { margin: 0 0 4px; font-size: 13px; }
-#chunk-window-title, #probe-window-title { margin: 0; }
+#chunk-window-title, #probe-window-title, #bhv-window-title { margin: 0; }
 #bhv-modal p, #chunk-modal p, #probe-modal p { margin: 0 0 10px; }
 #bhv-modal .split, #chunk-modal .split, #probe-modal .split { display: flex; gap: 12px; align-items: stretch; }
 #bhv-list, #chunk-list, #probe-list { flex: 0 0 180px; }
 #bhv-modal .editor, #chunk-modal .editor, #probe-modal .editor {
-  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; gap: 6px;
 }
 #chunk-modal .editor h2 { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+/* Section headings in the probe editor. Three near-identical vector triples
+   read as one undifferentiated block without a rule between them, and the eye
+   rides the heading rather than a row because what it shows and hides is the
+   whole volume the section describes. */
+#probe-modal .editor h3.probe-head {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  margin: 4px 0 0; padding-top: 8px; border-top: 1px solid var(--line);
+  font-size: 10px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+}
+#probe-modal .editor h3.probe-head > span:first-child { flex: 1 1 auto; }
+/* Selected in the viewport. The pane is where the numbers are, so it has to
+   say which of the three boxes a drag or a Ctrl+wheel is about to move. */
+#probe-modal .editor h3.probe-head.selected { color: var(--accent); }
+#probe-modal .editor h3.probe-head .sel {
+  flex: 0 0 auto; color: var(--accent); font-weight: 400; text-transform: none;
+  letter-spacing: 0; border: 1px solid var(--accent-dim); border-radius: 3px;
+  padding: 0 4px;
+}
+/* Pressed-in means shown, which is the reverse of the usual convention for a
+   toggle button - so the hidden state is the loud one: a struck-through eye,
+   dimmed, on the flat background the rest of the heading sits on. */
+#probe-modal .editor h3.probe-head .eye {
+  flex: 0 0 auto; width: 22px; height: 18px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text);
+}
+#probe-modal .editor h3.probe-head .eye svg { width: 15px; height: 15px; }
+#probe-modal .editor h3.probe-head .eye .eye-off { display: none; }
+#probe-modal .editor h3.probe-head .eye[aria-pressed="false"] { color: var(--muted); }
+#probe-modal .editor h3.probe-head .eye[aria-pressed="false"] .eye-on { display: none; }
+#probe-modal .editor h3.probe-head .eye[aria-pressed="false"] .eye-off { display: inline; }
+/* The eyes belong to the selected probe, so with no probe there is nothing for
+   them to show or hide. Explicit, because the colour above would otherwise keep
+   them looking live while they did nothing. */
+#probe-modal .editor h3.probe-head .eye:disabled { color: var(--muted); opacity: 0.4; }
 #chunk-modal .row input[type="number"], #probe-modal .row input[type="number"] { width: 72px; }
 #chunk-modal .row input[type="text"] { flex: 1 1 auto; min-width: 0; }
 #chunk-resolved { font-size: 11px; min-height: 14px; }
+
+/* The compound save dialog. Centred over the view rather than dropped in a
+   corner like the tool windows: it is a question with an answer, not a pane
+   you keep open and work beside. */
+#compound-modal {
+  position: fixed; inset: 0; z-index: 95;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 16, 0.45);
+}
+/* `display: flex` above beats the `hidden` attribute's own `display: none`. */
+#compound-modal[hidden] { display: none; }
+#compound-modal .panel {
+  width: min(460px, calc(100vw - 24px)); max-height: calc(100vh - 32px);
+  padding: 14px 16px; border-radius: 6px;
+  background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.55);
+  box-sizing: border-box; display: flex; flex-direction: column;
+}
+#compound-modal .panel > p { flex: 0 0 auto; }
+#compound-modal h2 { margin: 0; font-size: 13px; }
+#compound-modal p { margin: 0 0 10px; }
+#compound-modal .tool-window-titlebar { cursor: default; }
+#compound-modal .tool-window-scroll {
+  flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px;
+}
+#compound-summary { font-size: 11px; min-height: 14px; margin-top: 6px; }
+/* Amber rather than red: overwriting a compound is a legitimate thing to do -
+   it is how one is edited - so the dialog says what will happen rather than
+   refusing. */
+#compound-warn { font-size: 11px; min-height: 14px; margin-top: 4px; color: var(--accent); }
+/* The one row whose label is the text of a checkbox rather than a caption for
+   the field beside it, so it wants the whole width instead of the 52px column. */
+#compound-modal .row.check label { flex: 1 1 auto; display: flex; align-items: center; gap: 6px; }
+#compound-modal input[type="checkbox"] { margin: 0; flex: 0 0 auto; }
 #probe-resolved { font-size: 11px; min-height: 14px; }
-#chunk-error, #probe-error { min-height: 14px; color: var(--danger); font-size: 11px; }
+#chunk-error, #probe-error, #bhv-error { min-height: 14px; color: var(--danger); font-size: 11px; }
+/* The window resizes now, so the box has no grip of its own to argue with. */
 #bhv-json {
-  width: 100%; box-sizing: border-box; resize: vertical;
+  flex: 1 1 auto; min-height: 96px;
+  width: 100%; box-sizing: border-box; resize: none;
   font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 3px; padding: 6px;
 }
-#bhv-error { min-height: 14px; color: var(--danger); font-size: 11px; }
 
 /* the applied list in the inspector */
 #bhv-applied .item {
@@ -584,3 +693,20 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #module-banner button:hover { background: rgba(0, 0, 0, 0.45); }
 #module-banner-text { font-weight: 600; }
 #module-banner-text.warn::after { content: ' \2014 they will be lost'; font-weight: 400; opacity: 0.85; }
+
+/* The compound bench says the same thing in a different colour, so a glance
+   tells the two benches apart without reading the words. */
+#compound-banner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 6; display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 4px;
+  background: rgba(70, 110, 200, 0.92); color: #fff;
+  font-size: 12px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+}
+#compound-banner[hidden] { display: none; }
+#compound-banner button {
+  background: rgba(0, 0, 0, 0.28); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+#compound-banner button:hover { background: rgba(0, 0, 0, 0.45); }
+#compound-banner-text { font-weight: 600; }

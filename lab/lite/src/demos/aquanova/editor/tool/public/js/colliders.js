@@ -17,8 +17,8 @@
 
 import {
   state, emit, pushUndo, hooks, applyVisibility, select,
-  placeAt, removePlacement, worldBounds, shipPlacements, resetStageHistory,
-  serializeView, applyView, isRuntimeStandIn,
+  placeAt, removePlacement, worldBounds, shipPlacements, resetModeHistory,
+  serializeView, applyView, isRuntimeStandIn, STAGE_CHUNK,
 } from "./editor.js";
 
 const {
@@ -381,7 +381,10 @@ export const ASSOCIATION_MARGIN = 0.5;
 const STAGE_GAP = ASSOCIATION_MARGIN * 2 + 1;
 
 function stagedElements() {
-  return [...state.placements.values()].filter((p) => p.stage);
+  // The collision area's own stand-ins, not the compound bench's members: both
+  // carry `stage`, and a harvest that swept in the wrong bench would fit hulls
+  // to pieces that were never being given one.
+  return [...state.placements.values()].filter((p) => p.stage && p.chunk === STAGE_CHUNK);
 }
 
 export function stageColliders() {
@@ -516,7 +519,7 @@ function visibleIgnoringLayer(p) {
 
 function buildPreview() {
   disposePreview();
-  if (state.collisionMode) return;              // the bench draws its own
+  if (state.mode === "collision") return;              // the bench draws its own
   if (state.showLayer === "geometry") return;   // collision is off screen
   if (!state.moduleCollision.size) return;
 
@@ -600,7 +603,7 @@ const shipSeen = new Map();
 function watchShipPlacements() {
   if (shipWatch || !state.scene) return;
   shipWatch = state.scene.onBeforeRenderObservable.add(() => {
-    if (state.collisionMode || !state.moduleCollision.size) return;
+    if (state.mode === "collision" || !state.moduleCollision.size) return;
     if (state.showLayer === "geometry") return;
     let changed = false;
     const live = new Set();
@@ -651,7 +654,7 @@ export async function stageModule(moduleId, instantiate, boundsOf, at = null) {
   if (existing) return { entry: existing, added: false };
 
   const spot = at ? Vector3.FromArray(at) : await nextStageSpot(moduleId, boundsOf);
-  const entry = await placeAt(moduleId, spot, { stage: true, silent: true });
+  const entry = await placeAt(moduleId, spot, { stage: true, stageChunk: STAGE_CHUNK, silent: true });
   attachModuleShapes(entry);
   harvestStage();            // the new shapes need to know their host
   applyVisibility();
@@ -738,7 +741,7 @@ function watchStagedElements() {
   const seen = new Map();
   const shapeSeen = new Map();
   stageWatch = state.scene.onBeforeRenderObservable.add(() => {
-    if (!state.collisionMode) return;
+    if (state.mode !== "collision") return;
     let moved = false;
     for (const e of stagedElements()) {
       e.node.computeWorldMatrix(true);
@@ -829,7 +832,7 @@ export async function restoreStage(data, instantiate) {
   for (const e of data?.elements || []) {
     if (!e?.module) continue;
     await placeAt(e.module, Vector3.FromArray(e.position), {
-      stage: true, silent: true, id: e.id,
+      stage: true, stageChunk: STAGE_CHUNK, silent: true, id: e.id,
       rotation: e.rotation, scale: e.scale,
     });
   }
@@ -857,16 +860,19 @@ let stageInstantiate = null;
  * on it. The roster travels in the collision file, so it survives a reload too.
  */
 export async function enterCollisionMode(instantiate, boundsOf) {
-  if (state.collisionMode) return false;
+  // From the ship only. Each bench closes by putting its own contents away, and
+  // stepping straight from one to the other would run those two teardowns into
+  // each other - the sort of thing that works until the day it silently does not.
+  if (state.mode !== "ship") return false;
   // Each side keeps its own viewpoint. Coming back to the ship from the bench
   // pointing at a barrel, or to the bench pointing across the ship, means
   // finding your bearings again on every switch.
   shipView = serializeView();
   stageInstantiate = instantiate;
-  state.collisionMode = true;
+  state.mode = "collision";
   select([]);
   applyVisibility();
-  emit("collisionMode");
+  emit("mode");
 
   for (const s of state.stageLayout) {
     if (!s?.module) continue;
@@ -874,7 +880,7 @@ export async function enterCollisionMode(instantiate, boundsOf) {
   }
   harvestStage();            // so every shape knows its host before anything moves
   watchStagedElements();
-  resetStageHistory();       // the bench's history starts here, not in the ship's
+  resetModeHistory("collision");   // the bench's history starts here, not in the ship's
   const viewRestored = !!stageView;
   if (stageView) applyView(stageView);
   applyVisibility();
@@ -901,12 +907,12 @@ let stageView = null;
  * screen.
  */
 export function shipViewpoint() {
-  return state.collisionMode ? (shipView && { ...shipView }) : serializeView();
+  return state.mode === "collision" ? (shipView && { ...shipView }) : serializeView();
 }
 
 /** The bench's own viewpoint, so it rides in the collision file. */
 export function stageViewpoint() {
-  if (state.collisionMode) return serializeView();
+  if (state.mode === "collision") return serializeView();
   return stageView ? { ...stageView } : null;
 }
 export function setStageViewpoint(v) {
@@ -921,7 +927,7 @@ export function setStageViewpoint(v) {
  * roster from the *previous* session and quietly lost everything staged since.
  */
 export function stageLayoutNow() {
-  if (!state.collisionMode) return state.stageLayout;
+  if (state.mode !== "collision") return state.stageLayout;
   return stagedElements().map((e) => ({
     module: e.module,
     position: round(e.node.position.asArray()),
@@ -940,7 +946,7 @@ export function stageLayoutNow() {
 
 /** Close it, keeping everything that was fitted and where it all stood. */
 export function exitCollisionMode() {
-  if (!state.collisionMode) return false;
+  if (state.mode !== "collision") return false;
   unwatchStagedElements();
   harvestStage();
   stageView = serializeView();
@@ -949,12 +955,15 @@ export function exitCollisionMode() {
   state.stageLayout = stageLayoutNow();
   for (const c of stageColliders()) removeCollider(c.id, true);
   for (const e of stagedElements()) removePlacement(e.id);
-  state.collisionMode = false;
+  state.mode = "ship";
   select([]);
-  resetStageHistory();       // the bench's history does not outlive the bench
+  // Named rather than defaulted: state.mode is already back to "ship" here, and
+  // resetModeHistory() with no argument would clear the *ship's* undo stack -
+  // silently throwing away every step the author took before opening the bench.
+  resetModeHistory("collision");   // the bench's history does not outlive the bench
   if (shipView) applyView(shipView);
   applyVisibility();
-  emit("collisionMode");
+  emit("mode");
   emit("placements");
   emit("colliders");
   return true;
@@ -968,7 +977,7 @@ export function exitCollisionMode() {
  * could hold more than one.
  */
 export async function fitBoxToSelection(boundsOf) {
-  if (!state.collisionMode) return { ok: false, error: "open the collision area first" };
+  if (state.mode !== "collision") return { ok: false, error: "open the collision area first" };
   if (state.selection.length !== 1) {
     return { ok: false,
       error: state.selection.length
@@ -1035,7 +1044,7 @@ export async function fitBoxToSelection(boundsOf) {
  * person, and saying so is more use than a hull that looks plausible and leaks.
  */
 export async function fitHullToSelection() {
-  if (!state.collisionMode) return { ok: false, error: "open the collision area first" };
+  if (state.mode !== "collision") return { ok: false, error: "open the collision area first" };
   if (state.selection.length !== 1) {
     return { ok: false,
       error: state.selection.length
@@ -1149,7 +1158,7 @@ hooks.buildColliderMesh = (kind, id) => {
 hooks.addCollider = (kind, opts) => {
   // a shape dropped while the staging area is open is a staged shape
   const c = addCollider(kind, Vector3.FromArray(opts.position),
-    { ...opts, stage: opts.stage !== undefined ? opts.stage : state.collisionMode });
+    { ...opts, stage: opts.stage !== undefined ? opts.stage : state.mode === "collision" });
   // and needs a host straight away, or the element it was dropped on would
   // move out from under it the first time anything nudged that element
   if (c?.stage) harvestStage();
@@ -1160,7 +1169,7 @@ hooks.addCollider = (kind, opts) => {
 hooks.unstageModule = (id) => unstageModule(id);
 // Any change to a staged shape re-reads the area into the per-module record,
 // so leaving, saving or removing an element need no special handling.
-hooks.harvestStage = () => { if (state.collisionMode) harvestStage(); };
+hooks.harvestStage = () => { if (state.mode === "collision") harvestStage(); };
 // Inherited collision is drawn from the record rather than stored as elements,
 // so applyVisibility - the one place that decides what is on screen - asks for
 // it to be rebuilt whenever anything it depends on has moved.

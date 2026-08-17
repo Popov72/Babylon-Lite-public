@@ -2,7 +2,7 @@
 
 import { getCatalogue } from "./kit.js";
 import { request as requestThumb, cachedUrl, requestTurntable, TURN_FRAMES } from "./thumbs.js";
-import { state, emit, hooks } from "./editor.js";
+import { state, emit, on, hooks } from "./editor.js";
 import { armGhost, cancelGhost } from "./interact.js";
 
 const listEl = document.getElementById("palette-list");
@@ -44,6 +44,11 @@ export function initPalette() {
 
   buildTabs();
   searchEl.addEventListener("input", render);
+
+  // Saving or deleting a compound rewrites the catalogue in place, and the
+  // palette is the thing that shows it. Re-tabbing as well as re-rendering:
+  // the first compound filed under a category creates that category.
+  on("catalogue", () => { buildTabs(); render(); });
 
   observer = new IntersectionObserver((entries) => {
     for (const e of entries) {
@@ -142,10 +147,37 @@ function render() {
 
     el.append(img, cap);
     markCollision(el, m.id);
+    // A compound is the only kind of tile the editor itself made, so it is the
+    // only kind it can throw away. The cross lives on the tile rather than
+    // behind a menu because that is where you are when you decide.
+    if (m.compound) {
+      el.classList.add("compound");
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "tile-del";
+      del.textContent = "\u00d7";
+      del.title = `Delete the "${m.name}" compound`;
+      del.addEventListener("click", (ev) => {
+        ev.stopPropagation();          // not also a click on the tile beneath
+        emit("deletecompound", m.name);
+      });
+      el.appendChild(del);
+    }
     el.addEventListener("click", () => {
       // On the collision staging area the palette *stages* modules: there is no
       // ship on screen to arm a brush against, and staging is what you came for.
-      if (state.collisionMode) { emit("stagemodule", m.id); return; }
+      // A compound has no model of its own to fit a hull to - its members carry
+      // their own - so there is nothing there to stage.
+      if (state.mode === "collision") {
+        if (!m.compound) emit("stagemodule", m.id);
+        return;
+      }
+      // On the compound bench a compound tile *opens* rather than places. It is
+      // the only way back to a saved recipe, and placing one inside another
+      // would fold a whole compound into the next save as loose members - which
+      // is what "break apart" is for and not what a click on its own tile
+      // should ever mean.
+      if (state.mode === "compound" && m.compound) { emit("editcompound", m.name); return; }
       setBrush(state.brush === m.id ? null : m.id);
     });
     el.addEventListener("pointerenter", () => startTurntable(el, m));
@@ -190,7 +222,7 @@ export function setBrush(id, opts = {}) {
   // Transient guidance only, and no idle text: the old string named keys that
   // have since moved, which is exactly how it went stale.
   document.getElementById("hint").textContent = id
-    ? (state.collisionMode
+    ? (state.mode === "collision"
       ? "Click to put it on the bench · Shift+wheel turns · Ctrl+wheel scales · Esc to stop"
       : "Click to place · B brings it to you · Shift+wheel turns · Ctrl+wheel scales · Esc or right-click to stop")
     : "";

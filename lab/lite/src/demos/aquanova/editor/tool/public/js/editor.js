@@ -39,9 +39,63 @@ export const CLICK_MS = 300;
  */
 export const STAGE_CHUNK = "__collision_stage";
 
-/** Every placement that is part of the ship, excluding the staging area. */
+/**
+ * The chunk the compound bench parks its members in.
+ *
+ * Same trick, second bench: not in `state.chunks`, and carrying `stage: true`
+ * so `shipPlacements()` filters it out. A chunk of its own rather than sharing
+ * STAGE_CHUNK because the two benches must be able to tell their own contents
+ * apart - `stagedElements()` in colliders.js walks by chunk for exactly that
+ * reason.
+ */
+export const COMPOUND_CHUNK = "__compound_bench";
+
+/**
+ * The editing modes, and the world each one edits.
+ *
+ * `ship` is the ship itself. The other two are benches: their contents are
+ * deliberately absent from serialize() and can never reach the ship. Adding a
+ * mode means adding it here and giving it a history entry - see `histories`.
+ */
+export const EDITOR_MODES = ["ship", "collision", "compound"];
+
+/** Every placement that is part of the ship, excluding either bench. */
 export function shipPlacements() {
   return [...state.placements.values()].filter((p) => !p.stage);
+}
+
+/**
+ * The placements of the world currently on screen - the ship, or whichever
+ * bench is open.
+ *
+ * Anything the inspector offers as a *choice* has to come from here rather than
+ * from `shipPlacements()`, or a bench asks you to pick from a list of things
+ * you cannot see. The light panel's Owner row was the case that found it:
+ * fitting a lamp to a bench member listed the whole ship and not the piece the
+ * lamp was actually on.
+ */
+export function modePlacements() {
+  if (state.mode === "ship") return shipPlacements();
+  const chunk = state.mode === "compound" ? COMPOUND_CHUNK : STAGE_CHUNK;
+  return [...state.placements.values()].filter((p) => p.stage && p.chunk === chunk);
+}
+
+/**
+ * Which bench a placement is parked on - "" for ship geometry.
+ *
+ * The two benches want opposite answers in a few places, and `stage` alone
+ * cannot tell them apart. Lights are the sharpest case: a lamp on the collision
+ * bench is meaningless and is refused, while a lamp on the compound bench is
+ * the entire reason the feature exists.
+ */
+export function benchOf(entry) {
+  if (!entry?.stage) return "";
+  return entry.chunk === COMPOUND_CHUNK ? "compound" : "collision";
+}
+
+/** The chunk a bench parks things in, for whichever bench is open. */
+function defaultBenchChunk() {
+  return state.mode === "compound" ? COMPOUND_CHUNK : STAGE_CHUNK;
 }
 
 /**
@@ -114,6 +168,10 @@ export const state = {
   hidden: new Map(),       // id -> "ghost" | "hidden", see hideSelected
   veilAlpha: 0.5,          // how see-through a ghosted element is, see VEIL_ALPHA_DEFAULT
   bigPalette: true,        // double-width palette with double-size tiles, see BIG_PALETTE_DEFAULT
+  // Warn about elements that look like they were left in the wrong chunk. On by
+  // default: a mis-assigned piece is invisible in the viewport and only shows up
+  // as a hole in the portal graph much later. See strayChunkMembers.
+  strayChunkCheck: true,
   behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
   entities: new Map(),     // node name -> [{ name, linked: [] }]
   fluidSim: [],            // the global sim list from config.json
@@ -140,7 +198,11 @@ export const state = {
   moveSpeed: 42,           // m/s; right button + wheel adjusts it
   dragAxis: "xz",          // "xz" | "y" | "x" | "z" - which axis a move runs on (V)
   axisSpace: "world",      // "world" | "local" - whose axes a move or turn uses (Y)
-  collisionMode: false,    // the collision staging area is open, see colliders.js
+  // Which world the editor is currently editing - see EDITOR_MODES. One string
+  // rather than a flag per bench: the modes are mutually exclusive by nature
+  // (there is one camera and one viewport), and a flag apiece would let two of
+  // them be true at once, which nothing downstream could make sense of.
+  mode: "ship",
   // module id -> shapes authored on it, in the module's own local space. The
   // one authoritative record: what is on the staging area is a working copy.
   moduleCollision: new Map(),
@@ -150,6 +212,7 @@ export const state = {
   showLayer: "geometry",   // "both" | "geometry" | "collision", see setShowLayer
   config: { ...CONFIG_DEFAULTS },
   nextId: 1,
+  nextGroup: 1,            // compound instance ids, see nextGroupId
 };
 
 /** Selection holds ids from any store; resolve without caring which. */
@@ -177,6 +240,113 @@ export function ownerIdOf(mesh, placementsOnly = false) {
   return id || null;
 }
 
+// ------------------------------------------------------------- compounds
+//
+// A compound is a *recipe*, not a mesh. Placing one expands it into ordinary
+// placements that share a `group` id and remember the `compound` they came
+// from, and nothing downstream - the manifest, the .glb exporter, the runtime -
+// ever learns that compounds exist.
+//
+// That is deliberate and load-bearing. The case the feature was asked for is a
+// wall *with its lamp*, and a lamp is a `state.lights` entry rather than
+// geometry, so a compound could never have been a baked .glb in the first
+// place. Recipes also keep each member's own authored collision hull, which
+// baking would have thrown away, and they make "delete one component" and
+// "break apart" fall out for free rather than needing a rebuild path each.
+
+/** Which compound instance a placement belongs to, if any. */
+export function groupOf(id) {
+  return state.placements.get(id)?.group || "";
+}
+
+/** Every placement in one compound instance. */
+export function groupMembers(group) {
+  if (!group) return [];
+  return [...state.placements.values()].filter((p) => p.group === group);
+}
+
+/**
+ * Grow a set of ids so that touching one member of a compound touches all of it.
+ *
+ * Selection is where this happens, and it is the only place it happens: once
+ * the whole compound is in `state.selection`, every multi-selection path the
+ * editor already has - drag, grab, rotate, scale, mirror, arrow nudge, Ctrl+D -
+ * moves it as one piece without knowing what a compound is. Drilling into a
+ * single member is then simply *not* calling this.
+ */
+export function groupExpand(ids) {
+  const out = new Set();
+  for (const id of ids) {
+    out.add(id);
+    for (const m of groupMembers(groupOf(id))) out.add(m.id);
+  }
+  return [...out];
+}
+
+/**
+ * The member a compound turns about, when the whole of one is selected.
+ *
+ * A compound is placed relative to its **first** member - that is the piece the
+ * recipe's coordinates are measured from - so that is the piece it should turn
+ * about too. Anything else and a compound would come back from a quarter turn
+ * somewhere other than where it was dropped, and four quarter turns would not
+ * be the identity.
+ *
+ * Null unless the selection is exactly one whole compound: a mixed bag, or half
+ * of one, has no anchor and falls back to the ordinary rules.
+ */
+export function groupAnchor(entries) {
+  const list = entries.map((e) => (typeof e === "string" ? state.placements.get(e) : e))
+    .filter(Boolean);
+  if (list.length < 2) return null;
+  const group = list[0].group;
+  if (!group || list.some((e) => e.group !== group)) return null;
+  const members = groupMembers(group);
+  if (members.length !== list.length) return null;
+  return members[0];
+}
+
+/**
+ * Compound instances are numbered like placements, and for the same reason: an
+ * id reading `G0007` in a diff is worth far more than a random token on the day
+ * a member turns up in the wrong group.
+ */
+export function nextGroupId() {
+  return `G${String(state.nextGroup++).padStart(4, "0")}`;
+}
+
+/** Keep the counter ahead of any id a file brought with it. */
+function noteGroupId(group) {
+  const n = parseInt(String(group).replace(/\D/g, ""), 10);
+  if (Number.isFinite(n) && n >= state.nextGroup) state.nextGroup = n + 1;
+}
+
+/**
+ * Dissolve every compound the given ids touch into ordinary placements.
+ *
+ * Only the two fields are cleared: the members are already independent
+ * placements with their own transform, chunk, lights and collision, so from
+ * here on they behave exactly as if they had been dropped one by one. Undoable
+ * like any other edit, because rebuilding a compound by hand is the only way
+ * back otherwise.
+ */
+export function breakApart(ids = state.selection) {
+  const groups = new Set(ids.map(groupOf).filter(Boolean));
+  if (!groups.size) return { groups: 0, members: 0 };
+  pushUndo();
+  let members = 0;
+  for (const g of groups) {
+    for (const m of groupMembers(g)) {
+      m.group = "";
+      m.compound = "";
+      members++;
+    }
+  }
+  emit("placements");
+  emit("selection");
+  return { groups: groups.size, members };
+}
+
 const listeners = new Map();
 export function on(evt, fn) {
   if (!listeners.has(evt)) listeners.set(evt, []);
@@ -187,12 +357,6 @@ export function emit(evt, payload) {
 }
 
 let gridNode = null;
-let undoStack = [];
-let redoStack = [];
-// The staging area's own history, so undoing a box there does not restore a
-// ship snapshot that knows nothing about the bench - see pushUndo.
-let stageUndo = [];
-let stageRedo = [];
 
 // ------------------------------------------------------------------ setup
 
@@ -339,6 +503,8 @@ export const RUNTIME_ROUGHNESS_FACTOR_DEFAULT = 1;
 export const TONE_MAPPING_DEFAULT = "Khronos PBR Neutral";
 export const VEIL_ALPHA_DEFAULT = 0.5;
 export const BIG_PALETTE_DEFAULT = true;
+/** See `state.strayChunkCheck` and `strayChunkMembers`. */
+export const STRAY_CHUNK_CHECK_DEFAULT = true;
 
 /**
  * The three ways of looking at the ship.
@@ -1795,6 +1961,13 @@ export function snapPoint(p) {
 
 export async function placeAt(moduleId, position, opts = {}) {
   if (!opts.silent) pushUndo();
+  // Which world this lands in. A caller that says nothing gets the world it is
+  // looking at: placing while a bench is open has to land on the bench, or it
+  // would quietly add an element to the ship hidden behind it - in a chunk the
+  // author never chose, and invisible until they closed the bench. The two
+  // callers that mean the *other* world say so outright: a ship load is ship
+  // data by definition, and the bench restores name their own bench.
+  const benched = opts.stage === undefined ? state.mode !== "ship" : !!opts.stage;
   let id = opts.id;
   if (!id) {
     do {
@@ -1805,6 +1978,7 @@ export async function placeAt(moduleId, position, opts = {}) {
     const n = parseInt(String(opts.id).replace(/\D/g, ""), 10);
     if (Number.isFinite(n) && n >= state.nextId) state.nextId = n + 1;
   }
+  if (opts.group) noteGroupId(opts.group);
   const node = await instantiate(moduleId, id);
   node.position.copyFrom(position);
   if (opts.rotation) {
@@ -1818,13 +1992,19 @@ export async function placeAt(moduleId, position, opts = {}) {
   const entry = {
     id,
     module: moduleId,
-    chunk: opts.stage ? STAGE_CHUNK : (opts.chunk || state.activeChunk),
+    chunk: benched ? (opts.stageChunk || defaultBenchChunk()) : (opts.chunk || state.activeChunk),
     name: opts.name || "",        // optional label, see renamePlacement
-    // A stand-in on the collision staging area rather than part of the ship.
-    // It is a real placement so that selection, the gizmo, hiding, dragging and
+    // A stand-in on one of the two benches rather than part of the ship. It is
+    // a real placement so that selection, the gizmo, hiding, dragging and
     // Ctrl+D all work on it unchanged - and filtered out at the two boundaries
     // that walk every placement, so it can never reach the ship.
-    stage: !!opts.stage,
+    stage: benched,
+    // Which compound instance this placement is a member of, and which
+    // definition it was expanded from. Both empty for an ordinary placement.
+    // A member is an ordinary placement in every other respect - see
+    // groupMembers() for what the pair buys.
+    group: opts.group || "",
+    compound: opts.compound || "",
     node,
   };
   node.metadata = { placement: entry };
@@ -1849,10 +2029,11 @@ export function removeSelected() {
   pushUndo();
   for (const id of state.selection) {
     const p = state.placements.get(id);
-    // Taking a staged element off the area must not lose what was fitted to
-    // it: unstageModule reads its shapes into the per-module record first, so
-    // staging the module again brings them straight back.
-    if (p?.stage) hooks.unstageModule(id);
+    // Taking a staged element off the collision area must not lose what was
+    // fitted to it: unstageModule reads its shapes into the per-module record
+    // first, so staging the module again brings them straight back. A compound
+    // bench member has no such record - it is only ever an ordinary placement.
+    if (p && benchOf(p) === "collision") hooks.unstageModule(id);
     else if (p) removePlacement(id);
     else if (state.colliders.has(id)) hooks.removeCollider(id);
     else if (state.lights.has(id)) hooks.removeLight(id);
@@ -1891,13 +2072,24 @@ export async function duplicateSelected() {
   if (!state.selection.length) return;
   pushUndo();
   const made = [];
+  // One fresh group id per source compound, minted on first sight. A copy has
+  // to be its own instance - sharing the original's id would make selecting
+  // either one select both, and moving one move the other.
+  const regroup = new Map();
   for (const id of state.selection) {
     const e = state.placements.get(id);
     if (!e) continue;
+    if (e.group && !regroup.has(e.group)) regroup.set(e.group, nextGroupId());
     const rot = eulerOf(e.node);
     const copy = await placeAt(e.module,
       e.node.position.add(new Vector3(state.snap.pos || 1, 0, 0)),
-      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: e.name, silent: true, noLights: true });
+      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: e.name,
+        group: regroup.get(e.group) || "", compound: e.compound,
+        // A copy belongs wherever its original does. Read off the source rather
+        // than off the mode so that a bench member cannot be duplicated into a
+        // ship element sitting in a chunk that does not exist.
+        stage: e.stage, stageChunk: e.chunk,
+        silent: true, noLights: true });
     // A copied ceiling panel that arrived dark would be a trap: the light is
     // part of what the element IS, the same way its collision shapes are.
     hooks.copyLightsTo(id, copy.id);
@@ -1918,6 +2110,7 @@ export function clearAll() {
   state.lights.clear();
   state.selection = [];
   state.nextId = 1;
+  state.nextGroup = 1;
   // ids restart at P0001, so a leftover entry would hide a brand new element
   state.hidden.clear();
   // keyed by name rather than id, but a load must not merge the old ship's
@@ -1950,10 +2143,18 @@ export function select(ids) {
   emit("selection");
 }
 
-export function toggleSelect(id) {
-  const i = state.selection.indexOf(id);
-  if (i >= 0) state.selection.splice(i, 1);
-  else state.selection.push(id);
+export function toggleSelect(ids) {
+  // A list toggles as a unit. A compound is either in the selection or out of
+  // it - never half in - so every member follows whichever way the one under
+  // the cursor would have gone on its own.
+  const list = Array.isArray(ids) ? ids : [ids];
+  if (!list.length) return;
+  const removing = state.selection.includes(list[0]);
+  for (const id of list) {
+    const i = state.selection.indexOf(id);
+    if (removing) { if (i >= 0) state.selection.splice(i, 1); }
+    else if (i < 0) state.selection.push(id);
+  }
   emit("selection");
 }
 
@@ -2182,6 +2383,15 @@ export function validEnvironmentProbeId(value) {
  */
 export const PROBE_PARTS = ["influence", "inner"];
 
+/**
+ * The three volumes a probe draws, in pane order.
+ *
+ * Wider than PROBE_PARTS on purpose: the capture box is drawn and hidden like
+ * the other two, but it is selected under the probe's own id rather than a part
+ * id, so it has no place in the list above.
+ */
+export const PROBE_VOLUMES = ["box", "influence", "inner"];
+
 export function environmentProbePartId(id, part) { return `${id}#${part}`; }
 
 export function environmentProbePartOf(id) {
@@ -2229,6 +2439,24 @@ function defaultProbeInfluence(boxPosition, boxSize) {
   };
 }
 
+/**
+ * Which of a probe's three volumes the viewport draws.
+ *
+ * `asked` wins where it says a boolean, `standing` is what the probe already
+ * had, and a volume neither of them mentions is shown - so a record written
+ * before these existed, or a caller that only edited the numbers, draws all
+ * three. Built through PROBE_VOLUMES so the key order is fixed: the no-op check
+ * in setEnvironmentProbe compares serialized records.
+ */
+function probeVisibleParts(asked, standing) {
+  const parts = {};
+  for (const volume of PROBE_VOLUMES) {
+    parts[volume] = typeof asked?.[volume] === "boolean"
+      ? asked[volume] : standing?.[volume] !== false;
+  }
+  return parts;
+}
+
 function cloneEnvironmentProbe(probe) {
   return probe ? {
     id: probe.id,
@@ -2239,6 +2467,13 @@ function cloneEnvironmentProbe(probe) {
     influenceBoxSize: [...probe.influenceBoxSize],
     influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
     resolution: probe.resolution,
+    // View state, not ship data - see setEnvironmentProbeView. Carried here all
+    // the same, because serialize() writes probes through this function and an
+    // undo rebuilds the whole map: leaving them out would make every Ctrl+Z put
+    // the probes you had on screen back down.
+    alwaysVisible: !!probe.alwaysVisible,
+    envFaces: !!probe.envFaces,
+    visibleParts: probeVisibleParts(probe.visibleParts),
   } : null;
 }
 
@@ -2258,8 +2493,14 @@ export function nextEnvironmentProbeId() {
   }
 }
 
-/** Add, update, or rename an explicit local-environment volume. */
-export function setEnvironmentProbe(id, probe, previousId = id) {
+/**
+ * Add, update, or rename an explicit local-environment volume.
+ *
+ * `history` is the escape hatch for the pane, which commits on every keystroke:
+ * one snapshot per visit to a field is the rule everywhere in the tool, so the
+ * caller pushes its own and asks this not to push a second.
+ */
+export function setEnvironmentProbe(id, probe, previousId = id, { history = true } = {}) {
   const key = validEnvironmentProbeId(id);
   const previous = String(previousId || "").trim();
   const boxPosition = validProbeVector(probe?.boxPosition);
@@ -2271,12 +2512,20 @@ export function setEnvironmentProbe(id, probe, previousId = id) {
   if (!environmentProbeIdAvailable(key, previous)) return false;
   const influence = probeInfluence(probe, boxPosition, boxSize);
   if (!influence) return false;
-  const next = { id: key, boxPosition, boxSize, capturePosition, ...influence, resolution };
+  // A caller editing the numbers says nothing about the view flags, and must
+  // not silently put the probe's boxes away: they stay as the record has them.
+  const standing = state.environmentProbes.get(previous) || state.environmentProbes.get(key);
+  const next = {
+    id: key, boxPosition, boxSize, capturePosition, ...influence, resolution,
+    alwaysVisible: !!(probe?.alwaysVisible ?? standing?.alwaysVisible),
+    envFaces: !!(probe?.envFaces ?? standing?.envFaces),
+    visibleParts: probeVisibleParts(probe?.visibleParts, standing?.visibleParts),
+  };
   if (previous === key
     && JSON.stringify(state.environmentProbes.get(key) || null) === JSON.stringify(next)) {
     return false;
   }
-  pushUndo();
+  if (history) pushUndo();
   if (previous && previous !== key) state.environmentProbes.delete(previous);
   state.environmentProbes.set(key, next);
   if (previous && previous !== key) {
@@ -2284,6 +2533,32 @@ export function setEnvironmentProbe(id, probe, previousId = id) {
   }
   emit("environment-probes");
   if (previous && previous !== key) emit("selection");
+  return true;
+}
+
+/**
+ * Turn one probe's view flags on or off.
+ *
+ * `alwaysVisible` keeps a probe's boxes on screen while another one is being
+ * edited, `envFaces` draws its captured cubemap on the box instead of a
+ * wireframe, and `visibleParts` says which of its three volumes are drawn at
+ * all - a partial patch, so an eye names only the volume it toggles. None of
+ * them changes the ship, so none pushes an undo entry: they are the probe
+ * window's equivalent of parking an element out of the way.
+ */
+export function setEnvironmentProbeView(id, patch) {
+  const probe = state.environmentProbes.get(id);
+  if (!probe || !patch || typeof patch !== "object") return false;
+  const next = {
+    ...probe,
+    alwaysVisible: typeof patch.alwaysVisible === "boolean" ? patch.alwaysVisible : probe.alwaysVisible,
+    envFaces: typeof patch.envFaces === "boolean" ? patch.envFaces : probe.envFaces,
+    visibleParts: probeVisibleParts(patch.visibleParts, probe.visibleParts),
+  };
+  if (next.alwaysVisible === probe.alwaysVisible && next.envFaces === probe.envFaces
+    && JSON.stringify(next.visibleParts) === JSON.stringify(probe.visibleParts)) return false;
+  state.environmentProbes.set(id, next);
+  emit("environment-probes");
   return true;
 }
 
@@ -2845,10 +3120,12 @@ function setVeil(entry, on) {
 
 export function applyVisibility() {
   const veilOf = (id) => (veilSuspended ? undefined : state.hidden.get(id));
-  // The staging area is a separate world: while it is open the ship is hidden,
-  // never touched, so closing it puts everything back. Hiding and the veil work
-  // on both, which is what makes H behave the same in either place.
-  const staging = state.collisionMode;
+  // A bench is a separate world: while one is open the ship is hidden, never
+  // touched, so closing it puts everything back. Hiding and the veil work on
+  // both, which is what makes H behave the same in either place. The mode name
+  // doubles as the bench name, so only the bench that is actually open shows -
+  // the other one's leftovers, if any, stay dark.
+  const bench = state.mode === "ship" ? "" : state.mode;
   // The layer switch composes with everything else rather than fighting it: it
   // can only ever take things *off* screen, so chunk isolation and the Shift+H
   // veil keep the last word on what is left.
@@ -2857,7 +3134,7 @@ export function applyVisibility() {
 
   for (const e of state.placements.values()) {
     const veil = veilOf(e.id);
-    const on = (e.stage ? staging : !staging && geometryOn
+    const on = (e.stage ? benchOf(e) === bench : !bench && geometryOn
       && (!state.isolate || e.chunk === state.activeChunk)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
@@ -2879,7 +3156,7 @@ export function applyVisibility() {
     const veil = veilOf(mk.id);
     const joins = mk.type !== "door" || !state.isolate
       || sidesOf(mk).includes(state.activeChunk);
-    mk.node.setEnabled(!staging && geometryOn && joins && veil !== "hidden");
+    mk.node.setEnabled(!bench && geometryOn && joins && veil !== "hidden");
     setVeil(mk, veil === "ghost");
     for (const m of realMeshes(mk.node)) m.isPickable = veil !== "ghost";
   }
@@ -2888,7 +3165,7 @@ export function applyVisibility() {
   // exist while it is open.
   for (const c of state.colliders.values()) {
     const veil = veilOf(c.id);
-    const on = (c.stage ? staging : collisionOn && !staging
+    const on = (c.stage ? bench === "collision" : collisionOn && !bench
       && (!state.isolate || c.chunk === state.activeChunk)) && veil !== "hidden";
     c.node.setEnabled(on);
     if (c.mesh) c.mesh.isPickable = veil !== "ghost";
@@ -3106,6 +3383,10 @@ export const hooks = {
   // runtime.js registers this: the probe volume gizmo is its own, and the
   // inspector needs to be able to select and edit it like any other entry.
   environmentProbeEntry: () => null,
+  // compounds.js registers these: the compound bench keeps its own history, and
+  // the registry above has to be able to snapshot it without importing it back.
+  serializeBench: () => ({ members: [] }),
+  restoreBench: () => {},
 };
 
 /**
@@ -3197,9 +3478,27 @@ export function serializeEditorEnvironment() {
  * the fallback for a ship whose manifest predates the block.
  */
 export function serializeEditorPrefs() {
+  // How each probe was being looked at: whether it stays on screen, whether it
+  // draws its captured faces, and which of its three volumes are drawn at all.
+  // Written here rather than in `environmentProbes` because they are how you
+  // were *looking* at the ship, not part of it: the game reads that array, and
+  // the editor's viewport has no business in it. Only probes with something to
+  // say are listed, so a ship nobody has fiddled with writes an empty object.
+  const probes = {};
+  for (const [id, probe] of state.environmentProbes) {
+    const hiding = PROBE_VOLUMES.some((volume) => probe.visibleParts?.[volume] === false);
+    if (!probe.alwaysVisible && !probe.envFaces && !hiding) continue;
+    probes[id] = {
+      alwaysVisible: !!probe.alwaysVisible,
+      envFaces: !!probe.envFaces,
+      visibleParts: probeVisibleParts(probe.visibleParts),
+    };
+  }
   return {
     veilAlpha: round3([state.veilAlpha])[0],
     bigPalette: !!state.bigPalette,
+    strayChunkCheck: !!state.strayChunkCheck,
+    probes,
   };
 }
 
@@ -3252,6 +3551,21 @@ export function applyEditorPrefs(prefs) {
   if (!prefs || typeof prefs !== "object") return false;
   if (Number.isFinite(prefs.veilAlpha)) setVeilAlpha(prefs.veilAlpha);
   if (typeof prefs.bigPalette === "boolean") state.bigPalette = prefs.bigPalette;
+  if (typeof prefs.strayChunkCheck === "boolean") state.strayChunkCheck = prefs.strayChunkCheck;
+  // Probes are already in by the time this runs; an id the block names but the
+  // ship no longer has is simply ignored, which is how a deleted probe stops
+  // being mentioned without anybody having to prune the block.
+  if (prefs.probes && typeof prefs.probes === "object") {
+    for (const [id, view] of Object.entries(prefs.probes)) {
+      setEnvironmentProbeView(id, {
+        alwaysVisible: !!view?.alwaysVisible,
+        envFaces: !!view?.envFaces,
+        // A block written before the eyes were per probe names no volumes, and
+        // leaving them alone is what draws all three.
+        visibleParts: view?.visibleParts,
+      });
+    }
+  }
   emit("prefs");
   return true;
 }
@@ -3305,6 +3619,10 @@ export function serialize() {
       module: e.module,
       chunk: e.chunk,
       ...(e.name ? { name: e.name } : {}),
+      // Only written when they are set, so an ordinary ship reads exactly as it
+      // did before compounds existed and its diffs stay legible.
+      ...(e.group ? { group: e.group } : {}),
+      ...(e.compound ? { compound: e.compound } : {}),
       position: round3(e.node.position.asArray()),
       rotation: round3(eulerOf(e.node)),
       scale: round3(e.node.scaling.asArray()),
@@ -3533,6 +3851,11 @@ async function restoreFrom(data) {
       || defaultProbeInfluence(boxPosition, boxSize);
     state.environmentProbes.set(id, {
       id, boxPosition, boxSize, capturePosition, ...influence, resolution,
+      // Only an undo snapshot carries these; a manifest keeps them in
+      // `editorPrefs`, which loadLayout() applies once the probes exist.
+      alwaysVisible: !!probe?.alwaysVisible,
+      envFaces: !!probe?.envFaces,
+      visibleParts: probeVisibleParts(probe?.visibleParts),
     });
   }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
@@ -3566,7 +3889,9 @@ async function restoreFrom(data) {
     }
     await placeAt(inst.module, Vector3.FromArray(inst.position), {
       id: inst.id, rotation: inst.rotation, scale: inst.scale,
-      chunk: inst.chunk, name: inst.name, silent: true, noLights: true,
+      chunk: inst.chunk, name: inst.name, group: inst.group, compound: inst.compound,
+      // A layout is ship data whatever mode the editor happens to be in.
+      stage: false, silent: true, noLights: true,
     });
   }
   applyVisibility();
@@ -3834,63 +4159,104 @@ export function historyLimits() {
   return { entries: HISTORY_MAX_ENTRIES, chars: HISTORY_MAX_CHARS };
 }
 
+/**
+ * One pair of stacks per editing mode, and how each mode snapshots itself.
+ *
+ * A mode edits a different world, and a snapshot of one is meaningless in
+ * another: both benches are deliberately absent from serialize() - they must
+ * never reach the ship - so a ship snapshot taken on a bench restores as "no
+ * bench at all", which is precisely how Ctrl+Z used to wipe the collision
+ * staging area. A stack apiece also means a bench edit does not rebuild 116
+ * placements to undo one box.
+ *
+ * A registry rather than a branch: this began as `if (state.collisionMode)`
+ * repeated in pushUndo, undo, redo and historyDepth, and a second bench would
+ * have doubled every one of those into a three-way ladder. Now a new mode is
+ * one entry here and nothing else.
+ */
+const histories = {
+  ship: {
+    undo: [], redo: [],
+    snapshot: () => serialize(),
+    restore: (data) => deserialize(data),
+  },
+  collision: {
+    undo: [], redo: [],
+    snapshot: () => hooks.serializeStage(),
+    restore: (data) => hooks.restoreStage(data),
+  },
+  compound: {
+    undo: [], redo: [],
+    snapshot: () => hooks.serializeBench(),
+    restore: (data) => hooks.restoreBench(data),
+  },
+};
+
+/** The stacks the active mode writes to. */
+function history() {
+  return histories[state.mode] || histories.ship;
+}
+
 export function pushUndo() {
+  pushUndoFor(state.mode);
+}
+
+/**
+ * Push a snapshot onto a named mode's stack, whatever mode is active.
+ *
+ * Nearly every edit belongs to the world you are looking at, which is what
+ * `pushUndo` assumes. Pushing an update from the compound bench out to the
+ * copies in the ship is the exception: the change lands in the ship, so it has
+ * to be undoable *there*. Recorded on the bench's stack instead it would be
+ * lost the moment the bench closed - the bench's history does not outlive it -
+ * and a later ship undo would revert the sync as a side effect of undoing
+ * something else entirely.
+ */
+export function pushUndoFor(mode) {
   if (restoring) return;
-  // The staging area keeps its own history. Its contents are deliberately not
-  // in serialize() - they must never reach the ship - so a ship snapshot taken
-  // there restores as "no bench at all", which is precisely how Ctrl+Z used to
-  // wipe it. A separate stack also means a bench edit does not rebuild 116
-  // placements to undo one box.
-  if (state.collisionMode) {
-    stageUndo.push(JSON.stringify(hooks.serializeStage()));
-    trimHistory(stageUndo);
-    stageRedo.length = 0;
-    return;
-  }
-  undoStack.push(JSON.stringify(serialize()));
-  trimHistory(undoStack);
-  redoStack.length = 0;
+  const h = histories[mode] || histories.ship;
+  h.undo.push(JSON.stringify(h.snapshot()));
+  trimHistory(h.undo);
+  h.redo.length = 0;
 }
 
-/** Depth of each history stack - for tests and diagnostics. */
+/** Depth of the active mode's history stacks - for tests and diagnostics. */
 export function historyDepth() {
-  return state.collisionMode
-    ? { undo: stageUndo.length, redo: stageRedo.length }
-    : { undo: undoStack.length, redo: redoStack.length };
+  const h = history();
+  return { undo: h.undo.length, redo: h.redo.length };
 }
 
-export async function undo() {
-  if (state.collisionMode) {
-    if (!stageUndo.length) return;
-    stageRedo.push(JSON.stringify(hooks.serializeStage()));
-    trimHistory(stageRedo);
-    await hooks.restoreStage(JSON.parse(stageUndo.pop()));
-    return;
-  }
-  if (!undoStack.length) return;
-  redoStack.push(JSON.stringify(serialize()));
-  trimHistory(redoStack);
-  await deserialize(JSON.parse(undoStack.pop()));
+export async function undo() { await stepHistory("undo", "redo"); }
+export async function redo() { await stepHistory("redo", "undo"); }
+
+/**
+ * Move one step between the active mode's two stacks.
+ *
+ * Undo and redo are the same operation with the stacks swapped, and writing it
+ * once is what keeps them symmetrical: the pair used to be two near-identical
+ * bodies per mode, and the trimHistory call on the receiving stack was easy to
+ * leave out of one of the four.
+ */
+async function stepHistory(from, to) {
+  const h = history();
+  if (!h[from].length) return;
+  h[to].push(JSON.stringify(h.snapshot()));
+  trimHistory(h[to]);
+  await h.restore(JSON.parse(h[from].pop()));
 }
 
-export async function redo() {
-  if (state.collisionMode) {
-    if (!stageRedo.length) return;
-    stageUndo.push(JSON.stringify(hooks.serializeStage()));
-    trimHistory(stageUndo);
-    await hooks.restoreStage(JSON.parse(stageRedo.pop()));
-    return;
-  }
-  if (!redoStack.length) return;
-  undoStack.push(JSON.stringify(serialize()));
-  trimHistory(undoStack);
-  await deserialize(JSON.parse(redoStack.pop()));
-}
-
-/** Start the staging area's history clean, so it cannot reach past itself. */
-export function resetStageHistory() {
-  stageUndo.length = 0;
-  stageRedo.length = 0;
+/**
+ * Start a mode's history clean, so it cannot reach past its own opening.
+ *
+ * Called on the way into a bench and again on the way out: a bench's history
+ * must not outlive the bench, or re-opening it would offer to undo edits to
+ * contents that are no longer there.
+ */
+export function resetModeHistory(mode = state.mode) {
+  const h = histories[mode];
+  if (!h) return;
+  h.undo.length = 0;
+  h.redo.length = 0;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -3926,4 +4292,127 @@ export function worldBounds(node) {
     max = max ? Vector3.Maximize(max, bb.maximumWorld) : bb.maximumWorld.clone();
   }
   return min ? { min, max } : null;
+}
+
+/**
+ * How far a piece has to stand clear of its chunk before that counts as a
+ * mistake.
+ *
+ * Wide on purpose. The question is not "does this touch?" - decals, trim and
+ * door frames are all mounted a few centimetres proud of the surface they
+ * belong to, and on this ship the widest such gap measured 25 cm. The question
+ * is "was this left in the wrong room?", and a piece in the wrong room is a
+ * kit tile away at the very least: the kit's grid is 4 m. Half a metre clears
+ * every mounting offset and is still eight times inside the smallest real
+ * mistake.
+ */
+const STRAY_CHUNK_SLACK = 0.5;
+
+function boxesTouch(a, b, slack = STRAY_CHUNK_SLACK) {
+  return ["x", "y", "z"].every((k) =>
+    Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]) >= -slack);
+}
+
+function growBounds(into, bounds) {
+  if (!into) return { min: bounds.min.clone(), max: bounds.max.clone() };
+  return {
+    min: Vector3.Minimize(into.min, bounds.min),
+    max: Vector3.Maximize(into.max, bounds.max),
+  };
+}
+
+/**
+ * A chunk's members grouped by what touches what, largest group first.
+ *
+ * Breadth-first over the touch relation rather than a straight pass, because a
+ * corridor is one room even though its two ends are nowhere near each other:
+ * what makes it one thing is the unbroken run of tiles between them.
+ */
+function touchingGroups(list) {
+  const taken = new Array(list.length).fill(false);
+  const groups = [];
+  for (let i = 0; i < list.length; i++) {
+    if (taken[i]) continue;
+    taken[i] = true;
+    const group = [list[i]];
+    for (let head = 0; head < group.length; head++) {
+      for (let j = 0; j < list.length; j++) {
+        if (taken[j] || !boxesTouch(group[head].bounds, list[j].bounds)) continue;
+        taken[j] = true;
+        group.push(list[j]);
+      }
+    }
+    groups.push(group);
+  }
+  return groups.sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Elements that look like they were left in the wrong chunk.
+ *
+ * A chunk has no authored volume - its box is the union of whatever is assigned
+ * to it - so asking "is this element inside its chunk?" is true by construction
+ * and worth nothing. What the chunk does have is a shape: the pieces that make
+ * up a room are stuck to one another, tile against tile. So the question worth
+ * asking is which of a chunk's members hang together and which hang off on
+ * their own, and the answer is the largest group of them that touch. Anything
+ * outside it was almost certainly placed while the wrong chunk was active. When
+ * some *other* chunk's volume does reach the piece, that chunk is named,
+ * because that is the one it was meant for.
+ *
+ * Grouping rather than measuring each piece against the rest of its chunk in
+ * turn, which is the obvious way and is wrong: two pieces left behind in the
+ * same chunk hide each other, since the "rest" that each is measured against
+ * contains the other and stretches over the ground between them.
+ *
+ * Deliberately not an error. Ships are built outwards, and a chunk being filled
+ * in right now legitimately holds a piece or two that reach nothing yet.
+ *
+ * @returns [{ id, name, chunk, host }] - `host` is the chunk whose volume the
+ *   element does fall in, or null when it stands clear of every chunk.
+ */
+export function strayChunkMembers() {
+  const members = new Map();
+  for (const placement of shipPlacements()) {
+    const bounds = worldBounds(placement.node);
+    if (!bounds) continue;
+    if (!members.has(placement.chunk)) members.set(placement.chunk, []);
+    members.get(placement.chunk).push({ placement, bounds });
+  }
+  const strays = [];
+  const settled = new Map();
+  for (const [chunk, list] of members) {
+    const groups = touchingGroups(list);
+    // Nothing to say about a chunk that has only just been started, or one
+    // split evenly: with no group bigger than the rest there is no telling
+    // which of them is the room and which was left behind.
+    if (groups.length > 1 && groups[1].length === groups[0].length) {
+      settled.set(chunk, list);
+      continue;
+    }
+    settled.set(chunk, groups[0]);
+    for (let g = 1; g < groups.length; g++) {
+      for (const entry of groups[g]) strays.push({ chunk, entry });
+    }
+  }
+  if (!strays.length) return [];
+  // Volumes for naming the chunk a stray was meant for, built from what stayed
+  // put. Including the strays would let one piece dropped across the ship
+  // stretch its chunk over every other room and be reported as belonging to
+  // all of them.
+  const volumes = new Map();
+  for (const [chunk, list] of settled) {
+    let box = null;
+    for (const entry of list) box = growBounds(box, entry.bounds);
+    if (box) volumes.set(chunk, box);
+  }
+  return strays.map(({ chunk, entry }) => {
+    const host = [...volumes].find(([id, box]) => id !== chunk && boxesTouch(entry.bounds, box));
+    return {
+      id: entry.placement.id,
+      name: entry.placement.name || entry.placement.id,
+      chunk,
+      host: host ? host[0] : null,
+    };
+  });
 }

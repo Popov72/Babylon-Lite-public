@@ -124,6 +124,15 @@
       <button id="btn-edit-module"
               title="Open the collision staging area: a separate space where you stage kit modules and fit collision shapes to them, once each, inherited by every placement of that module. No shortcut">Edit collision</button>
     </details>
+    <details id="compound-pane" open>
+      <summary>Compounds</summary>
+      <p class="muted">One reusable object made of several modules — a wall with
+        its lamp, a doorway with its frame. Saved as a recipe, not a mesh: placing
+        one expands it into ordinary elements that move together. A red × on a
+        tile forgets the recipe; copies already in the ship are left alone.</p>
+      <button id="btn-edit-compound"
+              title="Open the compound bench: a separate space where you assemble modules and their lamps into one reusable object. No shortcut">Edit compounds</button>
+    </details>
     <details id="settings-pane" open>
       <summary>Settings</summary>
       <p class="muted">Global authoring, lighting, probe and collision defaults.</p>
@@ -163,6 +172,12 @@
         <span>Big icons</span>
         <input type="checkbox" id="big-palette" checked
                title="Double the palette width and tile size. No shortcut">
+        <span class="unit"></span>
+      </label>
+      <label class="cfg-row" title="Warn when an element does not touch the rest of the chunk it is assigned to — the usual sign of a piece placed while the wrong chunk was active. Reported in Live checks, and again on the status bar at save time. It never blocks a save. Saved in the manifest's editorPrefs block; it never reaches the .glb or the game.">
+        <span>Stray-chunk check</span>
+        <input type="checkbox" id="stray-chunk-check" checked
+               title="Warn about elements that look like they are in the wrong chunk. No shortcut">
         <span class="unit"></span>
       </label>
       <label class="cfg-row" title="How often the editor writes a recovery copy to ship_autosave.json, in minutes. It writes only when something has changed since the last save or auto-save, never over ship_manifest.json, and never clears the unsaved-work warning. 0 turns it off.">
@@ -254,6 +269,13 @@
       <button id="btn-module-fit" title="Replace the selected staged element's shapes with one box fitted to its bounding volume, no thinner than the collision shell. Select exactly one element, not a shape. Undoable">Fit a box</button>
       <button id="btn-module-fit-hull" title="Replace the selected staged element's shapes with a hull fitted to its actual triangles — one box, a slab per face, or a recursive split, whichever scores best. Says so when the shape is one you had better draw yourself. Select exactly one element, not a shape. Undoable">Fit a hull</button>
       <button id="btn-module-done" title="Close the staging area. Everything fitted is kept — it is read back into the per-module record on the way out. Esc also leaves">Back to the ship</button>
+    </div>
+    <div id="compound-banner" hidden>
+      <span id="compound-banner-text"></span>
+      <button id="btn-compound-new" title="Clear the bench and start a new compound. Undoable">New</button>
+      <button id="btn-compound-quicksave" title="Re-save the compound the bench is editing, under the name it already has and with no questions asked. Greyed out until the bench has a name — use Save as… for that">Save</button>
+      <button id="btn-compound-save" title="Save what is on the bench as a reusable object, filed in a kit and category of your choosing. Saving over an existing name replaces the recipe; copies already placed in the ship are only rewritten if you ask for it">Save as…</button>
+      <button id="btn-compound-done" title="Close the bench. Whatever is on it is kept for next time. Esc also leaves">Back to the ship</button>
     </div>
     <div id="hud">
       <div><span class="k" title="Height of the build plane new modules land on — not a property of any element. Numpad + / - raises and lowers it; numpad . jumps it to the top of whatever the cursor is over, for stacking">Build plane</span><span id="hud-elev" class="v">0.00 m</span></div>
@@ -360,6 +382,7 @@
       <div class="group vertical">
         <button id="btn-add-light" title="Attach a light to the selected element. It rides that element, so moving or turning it carries the light along. Undoable">Add light</button>
         <button id="btn-duplicate">Duplicate (Ctrl+D)</button>
+        <button id="btn-break-apart" title="Turn the selected compound back into the ordinary elements it is made of. They stay exactly where they are; from then on each one is selected, moved and deleted on its own. Undoable" hidden>Break apart</button>
         <button id="btn-focus" title="Frame the selection — or just double-click an element">Focus</button>
         <button id="btn-ground" title="Rest the selection on the build plane">Drop to plane</button>
         <button id="btn-delete" class="danger">Delete (Del)</button>
@@ -380,6 +403,33 @@
 
 <div id="busy">
   <div class="card"><span class="spinner"></span><span id="busy-msg">loading…</span></div>
+</div>
+
+<div id="compound-modal" role="dialog" aria-modal="false" aria-labelledby="compound-window-title" hidden>
+  <div class="panel">
+    <div class="tool-window-titlebar">
+      <h2 id="compound-window-title">Save compound</h2>
+      <button id="btn-compound-cancel" type="button" title="Close without saving" aria-label="Close without saving">×</button>
+    </div>
+    <p class="muted">Files what is on the bench in the palette as one reusable
+      object. Saving over a name that already exists replaces the recipe —
+      copies already placed in the ship are ordinary elements and are left
+      exactly as they are unless you ask for them to be rebuilt.</p>
+    <div class="tool-window-scroll">
+      <div class="row"><label>Name</label><input type="text" id="compound-name" placeholder="Wall with lamp" autocomplete="off"></div>
+      <div class="row"><label>Kit</label><select id="compound-kit"></select></div>
+      <div class="row"><label>Category</label><input type="text" id="compound-category" list="compound-categories" placeholder="Compounds" autocomplete="off"><datalist id="compound-categories"></datalist></div>
+      <div class="row check"><label title="Rebuild every copy of this compound already in the ship from what is on the bench. Each copy keeps its place — its first piece does not move — and the rest are re-laid around it. Anything done to a copy as a copy is lost: a deleted component comes back, a renamed member goes back to its recipe name, and behaviours hung on its pieces go with them"><input type="checkbox" id="compound-sync"> Update copies in the ship</label></div>
+      <div id="compound-summary" class="muted"></div>
+      <div id="compound-warn" class="warn"></div>
+    </div>
+    <div class="tool-window-footer">
+      <div id="compound-error" class="err"></div>
+      <div class="group">
+        <button id="btn-compound-store">Save</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="chunk-modal" role="dialog" aria-modal="false" aria-labelledby="chunk-window-title" hidden>
@@ -427,13 +477,24 @@
       <select id="probe-list" size="12"></select>
       <div class="editor">
         <div class="row"><label>ID</label><input type="text" id="probe-id" maxlength="128"></div>
-        <div class="row"><label>Show</label><input type="checkbox" id="probe-show"></div>
-        <div class="row"><label>Env faces</label><input type="checkbox" id="probe-env"></div>
-        <div class="row"><label>Box centre</label>
+        <div class="row"><label title="Keep this probe's boxes on screen while another one is selected, drawn in dimmer colours.">Always visible</label><input type="checkbox" id="probe-show"></div>
+        <div class="row"><label title="Draw this probe's captured cubemap on its box instead of a wireframe.">Env faces</label><input type="checkbox" id="probe-env"></div>
+        <div class="row"><label title="Cubemap face width and height in pixels.">Texture size</label>
+          <input type="number" id="probe-resolution" min="16" max="4096" step="1">
+          <span class="muted">px per face</span></div>
+        <h3 id="probe-head-box" class="probe-head"><span>Probe box</span>
+          <span class="sel" hidden>selected</span>
+          <button type="button" id="btn-probe-eye-box" class="eye" aria-pressed="true"
+                  title="Show or hide this probe's capture box, its centre and its camera in the viewport. No shortcut"
+                  aria-label="Show or hide the probe box">
+            <svg class="eye-on" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>
+            <svg class="eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/><path d="M2.6 13.4 13.4 2.6"/></svg>
+          </button></h3>
+        <div class="row"><label title="Centre of the box the cubemap is projected onto.">Centre</label>
           <input type="number" id="probe-box-x" step="0.01">
           <input type="number" id="probe-box-y" step="0.01">
           <input type="number" id="probe-box-z" step="0.01"></div>
-        <div class="row"><label>Box size</label>
+        <div class="row"><label title="Full size of the projection box. Only geometry intersecting it is rendered into the cubemap.">Size</label>
           <input type="number" id="probe-size-x" min="0.01" step="0.01">
           <input type="number" id="probe-size-y" min="0.01" step="0.01">
           <input type="number" id="probe-size-z" min="0.01" step="0.01"></div>
@@ -441,21 +502,34 @@
           <input type="number" id="probe-camera-x" step="0.01">
           <input type="number" id="probe-camera-y" step="0.01">
           <input type="number" id="probe-camera-z" step="0.01"></div>
-        <div class="row"><label title="Centre of the volume this probe is blended over. Shared by both influence boxes, and independent of the projection box above.">Influence centre</label>
+        <h3 id="probe-head-influence" class="probe-head"><span>Influence box</span>
+          <span class="sel" hidden>selected</span>
+          <button type="button" id="btn-probe-eye-influence" class="eye" aria-pressed="true"
+                  title="Show or hide this probe's outer influence box in the viewport. No shortcut"
+                  aria-label="Show or hide the influence box">
+            <svg class="eye-on" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>
+            <svg class="eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/><path d="M2.6 13.4 13.4 2.6"/></svg>
+          </button></h3>
+        <div class="row"><label title="Centre of the volume this probe is blended over. Shared by both influence boxes, and independent of the projection box above.">Centre</label>
           <input type="number" id="probe-influence-x" step="0.01">
           <input type="number" id="probe-influence-y" step="0.01">
           <input type="number" id="probe-influence-z" step="0.01"></div>
-        <div class="row"><label title="Full size of the outer influence box: this probe has faded to nothing at its faces.">Influence size</label>
+        <div class="row"><label title="Full size of the outer influence box: this probe has faded to nothing at its faces.">Size</label>
           <input type="number" id="probe-influence-size-x" min="0.01" step="0.01">
           <input type="number" id="probe-influence-size-y" min="0.01" step="0.01">
           <input type="number" id="probe-influence-size-z" min="0.01" step="0.01"></div>
-        <div class="row"><label title="Full size of the inner box, inside which this probe is at full strength. Zero on an axis means no full-strength core. Never larger than the influence size.">Inner size</label>
+        <h3 id="probe-head-inner" class="probe-head"><span>Inner box</span>
+          <span class="sel" hidden>selected</span>
+          <button type="button" id="btn-probe-eye-inner" class="eye" aria-pressed="true"
+                  title="Show or hide this probe's inner full-strength box in the viewport. No shortcut"
+                  aria-label="Show or hide the inner box">
+            <svg class="eye-on" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>
+            <svg class="eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/><path d="M2.6 13.4 13.4 2.6"/></svg>
+          </button></h3>
+        <div class="row"><label title="Full size of the inner box, inside which this probe is at full strength. Zero on an axis means no full-strength core. Never larger than the influence size. It has no centre of its own — it is always concentric with the influence box.">Size</label>
           <input type="number" id="probe-inner-size-x" min="0" step="0.01">
           <input type="number" id="probe-inner-size-y" min="0" step="0.01">
           <input type="number" id="probe-inner-size-z" min="0" step="0.01"></div>
-        <div class="row"><label title="Cubemap face width and height in pixels.">Texture size</label>
-          <input type="number" id="probe-resolution" min="16" max="4096" step="1">
-          <span class="muted">px per face</span></div>
         <div id="probe-resolved" class="muted"></div>
       </div>
     </div></div>
@@ -463,7 +537,6 @@
       <div id="probe-error" class="err"></div>
       <div class="group">
         <button id="btn-probe-new">New</button>
-        <button id="btn-probe-apply">Apply</button>
         <button id="btn-probe-delete" class="danger">Delete</button>
         <button id="btn-capture-one" title="Re-capture the selected probe only, whether or not its room has changed, and write it to export/environments/. Every other probe is left as it is. No shortcut">Capture</button>
         <button id="btn-capture-all" title="Capture the environment probes whose room has changed since they were last taken, and write them to export/environments/. Shift-click re-captures every probe. No shortcut">Capture all</button>
@@ -472,24 +545,28 @@
   </div>
 </div>
 
-<div id="bhv-modal" hidden>
+<div id="bhv-modal" role="dialog" aria-modal="false" aria-labelledby="bhv-window-title" hidden>
   <div class="panel">
-    <h2>Behaviours</h2>
-    <p class="muted">A library of named definitions. The body is free-form JSON —
-      the runtime decides which flags mean anything.</p>
-    <div class="split">
+    <div id="bhv-window-handle" class="tool-window-titlebar">
+      <h2 id="bhv-window-title">Behaviours</h2>
+      <button id="btn-bhv-close" type="button" title="Close behaviours window" aria-label="Close behaviours window">×</button>
+    </div>
+    <p class="muted">A library of named definitions, listed alphabetically. The
+      body is free-form JSON — the runtime decides which flags mean anything.</p>
+    <div class="tool-window-scroll"><div class="split">
       <select id="bhv-list" size="10"></select>
       <div class="editor">
         <div class="row"><label>Name</label><input type="text" id="bhv-name" placeholder="door_liquefiable"></div>
         <textarea id="bhv-json" spellcheck="false" rows="9"
                   placeholder='{ "liquefiable": true, "fluidSim": ["viscosity-inplace"] }'></textarea>
-        <div id="bhv-error" class="err"></div>
-        <div class="group">
-          <button id="btn-bhv-new">New</button>
-          <button id="btn-bhv-save">Save</button>
-          <button id="btn-bhv-delete" class="danger">Delete</button>
-          <button id="btn-bhv-close">Close</button>
-        </div>
+      </div>
+    </div></div>
+    <div class="tool-window-footer">
+      <div id="bhv-error" class="err"></div>
+      <div class="group">
+        <button id="btn-bhv-new">New</button>
+        <button id="btn-bhv-save">Save</button>
+        <button id="btn-bhv-delete" class="danger">Delete</button>
       </div>
     </div>
   </div>
