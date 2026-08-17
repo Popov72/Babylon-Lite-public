@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-15T00:19:14.670Z",
+  "savedAt": "2026-08-16T23:53:51.945Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -137,8 +137,8 @@
       "node": "CHUNK_CH03_StorageC2",
       "aabb": {
         "min": [
-          7.226,
-          -0.013,
+          5.226,
+          -3.0065,
           -20.774
         ],
         "max": [
@@ -147,8 +147,8 @@
           -3.3814
         ]
       },
-      "instanceCount": 43,
-      "meshCount": 110
+      "instanceCount": 45,
+      "meshCount": 120
     },
     {
       "id": "Test",
@@ -167,6 +167,24 @@
       },
       "instanceCount": 10,
       "meshCount": 21
+    },
+    {
+      "id": "CH03_StorageC2Escape",
+      "node": "CHUNK_CH03_StorageC2Escape",
+      "aabb": {
+        "min": [
+          1.349,
+          0.64,
+          -13.341
+        ],
+        "max": [
+          7.871,
+          2.3557,
+          -6.598
+        ]
+      },
+      "instanceCount": 26,
+      "meshCount": 44
     }
   ],
   "environmentProbes": [
@@ -188,19 +206,19 @@
         2
       ],
       "influenceBoxPosition": [
-        2,
+        0.6317955041629171,
         2.5,
         2
       ],
       "influenceBoxSize": [
-        16,
+        16.2,
         8,
-        7.5
+        5.2
       ],
       "influenceInnerBoxSize": [
-        8.6,
+        2,
         3.5,
-        1.5
+        5
       ],
       "resolution": 1024
     },
@@ -232,9 +250,9 @@
         27.648
       ],
       "influenceInnerBoxSize": [
-        1.7035,
+        5,
         3.5,
-        16
+        18
       ],
       "resolution": 1024
     },
@@ -261,14 +279,14 @@
         0.03219
       ],
       "influenceBoxSize": [
-        14,
+        8.1,
         5,
         8
       ],
       "influenceInnerBoxSize": [
-        5.0972,
-        2,
-        5.0644
+        2.1972,
+        2.5,
+        5.5644
       ],
       "resolution": 512
     },
@@ -303,6 +321,108 @@
         1.1035,
         2.011,
         1.648
+      ],
+      "resolution": 512
+    },
+    {
+      "id": "CH01_Escape1",
+      "boxPosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
+      "boxSize": [
+        6.5,
+        1.68,
+        1
+      ],
+      "capturePosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
+      "influenceBoxPosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
+      "influenceBoxSize": [
+        6.6,
+        1.8,
+        1.2
+      ],
+      "influenceInnerBoxSize": [
+        6,
+        1.5,
+        0.4
+      ],
+      "resolution": 512
+    },
+    {
+      "id": "CH01_Escape2",
+      "boxPosition": [
+        4.6,
+        1.5,
+        -12.85
+      ],
+      "boxSize": [
+        6.5,
+        1.68,
+        1
+      ],
+      "capturePosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
+      "influenceBoxPosition": [
+        4.6,
+        1.5,
+        -12.85
+      ],
+      "influenceBoxSize": [
+        6.6,
+        1.8,
+        1.2
+      ],
+      "influenceInnerBoxSize": [
+        6,
+        1.5,
+        0.4
+      ],
+      "resolution": 512
+    },
+    {
+      "id": "CH01_Escape3",
+      "boxPosition": [
+        1.8089687753009538,
+        1.4978633255374065,
+        -9.969499588012695
+      ],
+      "boxSize": [
+        1.102,
+        1.7157,
+        4.713
+      ],
+      "capturePosition": [
+        1.8089687753009538,
+        1.4978633255374065,
+        -9.969499588012695
+      ],
+      "influenceBoxPosition": [
+        1.8089687753009538,
+        1.4978633255374065,
+        -9.969499588012695
+      ],
+      "influenceBoxSize": [
+        1.3,
+        1.6,
+        6
+      ],
+      "influenceInnerBoxSize": [
+        0.72,
+        1.2,
+        1.713
       ],
       "resolution": 512
     }
@@ -587,8 +707,8 @@
       "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
-        -10,
-        0,
+        -8,
+        -3,
         -14
       ],
       "rotation": [
@@ -608,9 +728,9 @@
       "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
       "position": [
-        -10,
-        0,
-        -6
+        -8,
+        -3,
+        -7
       ],
       "rotation": [
         0,
@@ -3159,6 +3279,596 @@
         2.1
       ],
       "node": "itemLiquefactor"
+    },
+    {
+      "id": "P0363",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.887,
+        1.008,
+        -5.594
+      ],
+      "rotation": [
+        10.5,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0363"
+    },
+    {
+      "id": "P0364",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.887,
+        1.008,
+        -8.602
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0364"
+    },
+    {
+      "id": "P0365",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -6.06,
+        0.02,
+        -6.6
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0365"
+    },
+    {
+      "id": "P0370",
+      "module": "Modular SciFi MegaKit/Props/Prop_Fan_Small",
+      "chunk": "CH03_StorageC2",
+      "name": "CH01_CorridorFan1",
+      "position": [
+        -7.845,
+        1.799,
+        -7.105
+      ],
+      "rotation": [
+        0,
+        0,
+        79.5
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "CH01_CorridorFan1"
+    },
+    {
+      "id": "P0371",
+      "module": "Modular SciFi MegaKit/Props/Prop_Fan_Small",
+      "chunk": "CH03_StorageC2",
+      "name": "CH01_CorridorFan2",
+      "position": [
+        -7.835,
+        1.799,
+        -12.93
+      ],
+      "rotation": [
+        0,
+        0,
+        79.5
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "CH01_CorridorFan2"
+    },
+    {
+      "id": "P0373",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.54,
+        2.977,
+        -7.6
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        -90
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0373"
+    },
+    {
+      "id": "P0376",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -1.354,
+        -0.36,
+        -9.967
+      ],
+      "rotation": [
+        0,
+        0,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        1.684
+      ],
+      "node": "P0376"
+    },
+    {
+      "id": "P0377",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -0.348,
+        0.64,
+        -9.974
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1.188
+      ],
+      "node": "P0377"
+    },
+    {
+      "id": "P0378",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -2.349,
+        2.64,
+        -9.973
+      ],
+      "rotation": [
+        0,
+        0,
+        -90
+      ],
+      "scale": [
+        1,
+        1,
+        1.684
+      ],
+      "node": "P0378"
+    },
+    {
+      "id": "P0379",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.358,
+        0.64,
+        -9.966
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1.684
+      ],
+      "node": "P0379"
+    },
+    {
+      "id": "P0384",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.153,
+        -0.36,
+        -6.599
+      ],
+      "rotation": [
+        0,
+        -90,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0384"
+    },
+    {
+      "id": "P0385",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.147,
+        0.642,
+        -5.599
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0385"
+    },
+    {
+      "id": "P0386",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.153,
+        2.642,
+        -7.6
+      ],
+      "rotation": [
+        0,
+        -90,
+        -90
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0386"
+    },
+    {
+      "id": "P0387",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -2.656,
+        0.642,
+        -8.611
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        0.65
+      ],
+      "node": "P0387"
+    },
+    {
+      "id": "P0392",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.153,
+        -0.36,
+        -12.335
+      ],
+      "rotation": [
+        0,
+        -90,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0392"
+    },
+    {
+      "id": "P0393",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -2.662,
+        0.642,
+        -11.335
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        0.65
+      ],
+      "node": "P0393"
+    },
+    {
+      "id": "P0394",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.153,
+        2.642,
+        -13.336
+      ],
+      "rotation": [
+        0,
+        -90,
+        -90
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0394"
+    },
+    {
+      "id": "P0395",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.147,
+        0.642,
+        -14.347
+      ],
+      "rotation": [
+        0,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0395"
+    },
+    {
+      "id": "P0396",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.887,
+        1.008,
+        -11.332
+      ],
+      "rotation": [
+        10.5,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0396"
+    },
+    {
+      "id": "P0397",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.887,
+        1.008,
+        -14.34
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0397"
+    },
+    {
+      "id": "P0398",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -6.06,
+        0.02,
+        -12.338
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0398"
+    },
+    {
+      "id": "P0399",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.54,
+        2.977,
+        -13.338
+      ],
+      "rotation": [
+        -10.5,
+        -90,
+        -90
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0399"
+    },
+    {
+      "id": "P0400",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.781,
+        1.866,
+        -6.607
+      ],
+      "rotation": [
+        -79.5,
+        90,
+        -90
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0400"
+    },
+    {
+      "id": "P0401",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.028,
+        1.485,
+        -7.596
+      ],
+      "rotation": [
+        -90,
+        180,
+        0
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0401"
+    },
+    {
+      "id": "P0402",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -1.36,
+        1.488,
+        -8.374
+      ],
+      "rotation": [
+        -90,
+        90,
+        0
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0402"
+    },
+    {
+      "id": "P0403",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -1.36,
+        1.488,
+        -11.509
+      ],
+      "rotation": [
+        -90,
+        90,
+        0
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0403"
+    },
+    {
+      "id": "P0404",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -3.158,
+        1.491,
+        -12.349
+      ],
+      "rotation": [
+        -90,
+        360,
+        0
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0404"
+    },
+    {
+      "id": "P0405",
+      "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -5.781,
+        1.832,
+        -13.33
+      ],
+      "rotation": [
+        -78.5,
+        90,
+        90
+      ],
+      "scale": [
+        0.57,
+        0.57,
+        0.57
+      ],
+      "node": "P0405"
     }
   ],
   "markers": [
@@ -3312,6 +4022,66 @@
       "leaves": [
         "P0209"
       ]
+    },
+    {
+      "id": "Door_D05",
+      "type": "door",
+      "position": [
+        -8.0031,
+        0.9834,
+        -7.1229
+      ],
+      "rotation": [
+        11,
+        90,
+        0
+      ],
+      "scale": [
+        0.42,
+        0.55,
+        1.01
+      ],
+      "width": 4.0000011920928955,
+      "height": 3.0279611945152283,
+      "chunkA": "CH03_StorageC2",
+      "chunkB": "CH03_StorageC2Escape",
+      "triggerRadius": 3.5,
+      "slideDistance": 1.51,
+      "enabled": true,
+      "sealed": false,
+      "leaves": [
+        "P0069"
+      ]
+    },
+    {
+      "id": "Door_D06",
+      "type": "door",
+      "position": [
+        -8.003,
+        0.983,
+        -12.9244
+      ],
+      "rotation": [
+        11,
+        90,
+        0
+      ],
+      "scale": [
+        0.42,
+        0.55,
+        1.01
+      ],
+      "width": 4.0000011920928955,
+      "height": 3.0279611945152283,
+      "chunkA": "",
+      "chunkB": "",
+      "triggerRadius": 3.5,
+      "slideDistance": 1.51,
+      "enabled": true,
+      "sealed": false,
+      "leaves": [
+        "P0068"
+      ]
     }
   ],
   "colliders": [],
@@ -3364,7 +4134,7 @@
           1,
           1
         ],
-        "intensity": 25,
+        "intensity": 93,
         "range": 6,
         "angle": 160,
         "castsShadows": false
@@ -3445,7 +4215,7 @@
           1,
           1
         ],
-        "intensity": 2,
+        "intensity": 70,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3472,7 +4242,7 @@
           1,
           1
         ],
-        "intensity": 25,
+        "intensity": 93,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3499,7 +4269,7 @@
           1,
           1
         ],
-        "intensity": 25,
+        "intensity": 93,
         "range": 8,
         "angle": 160,
         "castsShadows": false
@@ -3852,6 +4622,168 @@
         ],
         "intensity": 30,
         "range": 1.5,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0021",
+      "owner": "P0400",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        53,
+        -180,
+        -180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 50,
+        "range": 3,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0022",
+      "owner": "P0401",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        53,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 50,
+        "range": 3,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0023",
+      "owner": "P0402",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        53,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 3,
+        "angle": 170,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0024",
+      "owner": "P0403",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        57,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 90,
+        "range": 3,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0025",
+      "owner": "P0404",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        57,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 50,
+        "range": 3,
+        "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0026",
+      "owner": "P0405",
+      "offset": [
+        0,
+        0.16,
+        -0.07
+      ],
+      "rotation": [
+        57,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "spot",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 50,
+        "range": 3,
         "angle": 160,
         "castsShadows": false
       }
@@ -8121,6 +9053,50 @@
           -1
         ]
       }
+    ],
+    "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight": [
+      {
+        "id": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight:0",
+        "kind": "box",
+        "centre": [
+          -2.1149,
+          0.501,
+          0
+        ],
+        "halfExtents": [
+          0.125,
+          0.5,
+          2
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
+    ],
+    "Modular SciFi MegaKit/Props/Prop_Fan_Small": [
+      {
+        "id": "Modular SciFi MegaKit/Props/Prop_Fan_Small:0",
+        "kind": "box",
+        "centre": [
+          0,
+          0.0915,
+          0
+        ],
+        "halfExtents": [
+          0.8385,
+          0.3,
+          0.8385
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
     ]
   },
   "moduleShapes": {
@@ -11985,6 +12961,46 @@
           0.5068
         ]
       }
+    ],
+    "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight": [
+      {
+        "kind": "box",
+        "position": [
+          2.1149,
+          0.501,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.25,
+          1,
+          4
+        ]
+      }
+    ],
+    "Modular SciFi MegaKit/Props/Prop_Fan_Small": [
+      {
+        "kind": "box",
+        "position": [
+          0,
+          0.0915,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.677,
+          0.6,
+          1.677
+        ]
+      }
     ]
   },
   "stageLayout": [
@@ -12227,9 +13243,25 @@
         -0.164,
         60
       ]
+    },
+    {
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "position": [
+        -10,
+        0,
+        66
+      ]
+    },
+    {
+      "module": "Modular SciFi MegaKit/Props/Prop_Fan_Small",
+      "position": [
+        -5,
+        0,
+        68
+      ]
     }
   ],
-  "activeChunk": "CH00_Storage",
+  "activeChunk": "CH03_StorageC2Escape",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -12495,23 +13527,37 @@
           }
         }
       ]
+    },
+    "CH01_CorridorFan1": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "CH01_CorridorFan2": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      10.07,
-      2.533,
-      0.249
+      -1.781,
+      3.799,
+      -16.311
     ],
     "rotation": [
-      0.121,
-      513.87,
+      0.233,
+      633.276,
       0
     ],
     "target": [
-      0.382,
-      1.326,
-      2.414
+      -11.22,
+      1.49,
+      -13.95
     ]
   },
   "environment": {
@@ -12528,7 +13574,37 @@
   },
   "editorPrefs": {
     "veilAlpha": 0.5,
-    "bigPalette": true
+    "bigPalette": true,
+    "strayChunkCheck": true,
+    "probes": {
+      "CH01_Escape1": {
+        "alwaysVisible": true,
+        "envFaces": true,
+        "visibleParts": {
+          "box": true,
+          "influence": false,
+          "inner": false
+        }
+      },
+      "CH01_Escape2": {
+        "alwaysVisible": true,
+        "envFaces": true,
+        "visibleParts": {
+          "box": true,
+          "influence": false,
+          "inner": false
+        }
+      },
+      "CH01_Escape3": {
+        "alwaysVisible": false,
+        "envFaces": true,
+        "visibleParts": {
+          "box": true,
+          "influence": false,
+          "inner": false
+        }
+      }
+    }
   },
   "portals": [
     {
@@ -12725,6 +13801,84 @@
           -4
         ]
       ]
+    },
+    {
+      "id": "Portal_Door_D05",
+      "chunkA": "CH03_StorageC2",
+      "chunkB": "CH03_StorageC2Escape",
+      "door": "Door_D05",
+      "enabled": true,
+      "centre": [
+        7.8442,
+        1.8008,
+        -7.1229
+      ],
+      "normal": [
+        -0.9816,
+        -0.1908,
+        0
+      ],
+      "corners": [
+        [
+          8.0031,
+          0.9834,
+          -6.2829
+        ],
+        [
+          8.0031,
+          0.9834,
+          -7.9629
+        ],
+        [
+          7.6853,
+          2.6182,
+          -7.9629
+        ],
+        [
+          7.6853,
+          2.6182,
+          -6.2829
+        ]
+      ]
+    },
+    {
+      "id": "Portal_Door_D06",
+      "chunkA": "CH03_StorageC2",
+      "chunkB": "CH03_StorageC2Escape",
+      "door": "Door_D06",
+      "enabled": true,
+      "centre": [
+        7.8441,
+        1.8004,
+        -12.9244
+      ],
+      "normal": [
+        -0.9816,
+        -0.1908,
+        0
+      ],
+      "corners": [
+        [
+          8.003,
+          0.983,
+          -12.0844
+        ],
+        [
+          8.003,
+          0.983,
+          -13.7644
+        ],
+        [
+          7.6852,
+          2.6178,
+          -13.7644
+        ],
+        [
+          7.6852,
+          2.6178,
+          -12.0844
+        ]
+      ]
     }
   ],
   "doors": [
@@ -12832,6 +13986,50 @@
           "openDistance": 1.51
         }
       ]
+    },
+    {
+      "id": "Door_D05",
+      "node": "Door_D05",
+      "chunkA": "CH03_StorageC2",
+      "chunkB": "CH03_StorageC2Escape",
+      "position": [
+        8.0031,
+        0.9834,
+        -7.1229
+      ],
+      "width": 1.68,
+      "height": 1.6654,
+      "triggerRadius": 3.5,
+      "enabled": true,
+      "sealed": false,
+      "leaves": [
+        {
+          "node": "P0069",
+          "openDistance": 1.51
+        }
+      ]
+    },
+    {
+      "id": "Door_D06",
+      "node": "Door_D06",
+      "chunkA": "CH03_StorageC2",
+      "chunkB": "CH03_StorageC2Escape",
+      "position": [
+        8.003,
+        0.983,
+        -12.9244
+      ],
+      "width": 1.68,
+      "height": 1.6654,
+      "triggerRadius": 3.5,
+      "enabled": true,
+      "sealed": false,
+      "leaves": [
+        {
+          "node": "P0068",
+          "openDistance": 1.51
+        }
+      ]
     }
   ],
   "adjacency": {
@@ -12873,8 +14071,26 @@
       {
         "to": "CH02_StorageCTL",
         "portal": "Portal_Door_D04"
+      },
+      {
+        "to": "CH03_StorageC2Escape",
+        "portal": "Portal_Door_D05"
+      },
+      {
+        "to": "CH03_StorageC2Escape",
+        "portal": "Portal_Door_D06"
       }
     ],
-    "Test": []
+    "Test": [],
+    "CH03_StorageC2Escape": [
+      {
+        "to": "CH03_StorageC2",
+        "portal": "Portal_Door_D05"
+      },
+      {
+        "to": "CH03_StorageC2",
+        "portal": "Portal_Door_D06"
+      }
+    ]
   }
 }

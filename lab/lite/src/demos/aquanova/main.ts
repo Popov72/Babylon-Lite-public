@@ -216,6 +216,7 @@ export async function main(): Promise<void> {
     Object.assign(weaponLayer.scene.imageProcessing, scene.imageProcessing);
     const weaponViewmodel = await createLiquefactorViewmodel(engine, cam);
     weaponViewmodel.select(graphics.liquefactorModel);
+    weaponViewmodel.setSwayEnabled(graphics.weaponSway);
     canvas.dataset.liquefactorModel = graphics.liquefactorModel;
     addToScene(weaponLayer.scene, weaponViewmodel.root);
     const weaponGizmoLayer = createUtilityLayer(engine, scene);
@@ -261,17 +262,19 @@ export async function main(): Promise<void> {
         weaponCrosshair.style.left = `${rect.left + (ndcX * 0.5 + 0.5) * rect.width}px`;
         weaponCrosshair.style.top = `${rect.top + (0.5 - ndcY * 0.5) * rect.height}px`;
     };
-    let weaponEnabled = true;
-    const setWeaponEnabled = (enabled: boolean): void => {
+    let weaponEnabled = false;
+    let playerBehavior: PlayerBehavior | null = null;
+    const setWeaponEnabled = (enabled: boolean, animated = true): void => {
         weaponEnabled = enabled;
         canvas.dataset.weaponEnabled = String(enabled);
         if (enabled) {
             weaponViewmodel.select(weaponViewmodel.model);
+            weaponViewmodel.setPresented(true, animated);
             return;
         }
+        weaponViewmodel.setPresented(false, animated);
         weaponLaser.stop();
         weaponAimRay = null;
-        for (const mesh of weaponViewmodel.meshes) setMeshVisible(mesh, false);
         weaponCrosshair ??= document.getElementById("aq-crosshair");
         if (weaponCrosshair) {
             weaponCrosshair.style.display = "none";
@@ -282,14 +285,21 @@ export async function main(): Promise<void> {
         setTargetDistance: (distance: number | null, restart = false): void => {
             weaponLaser.setTargetDistance(distance, restart);
         },
+        isReady: (): boolean => weaponEnabled && weaponViewmodel.ready,
         stop: (): void => {
             weaponLaser.stop();
         },
         update: (deltaMs: number): boolean => {
-            if (!weaponEnabled) {
+            weaponViewmodel.update(
+                cam,
+                engine.canvas.width / Math.max(1, engine.canvas.height),
+                deltaMs,
+                playerBehavior?.weaponSwayMultiplier ?? 1,
+                playerBehavior?.isWeaponTriggerHeld ?? false
+            );
+            if (!weaponEnabled || !weaponViewmodel.ready) {
                 return false;
             }
-            weaponViewmodel.update(cam, engine.canvas.width / Math.max(1, engine.canvas.height));
             updateWeaponCrosshair();
             return weaponLaser.update(deltaMs, weaponAimRay, weaponViewmodel.localGuideOrigin.worldMatrix);
         },
@@ -513,6 +523,7 @@ export async function main(): Promise<void> {
         meshesByEntityName: meshesByNodeName,
         entityNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
     });
+    behaviorManager.setSoundsEnabled(graphics.soundsEnabled);
     // Portal meshes ("Portal_*") are doorway markers the exporter emits for culling / door pairing —
     // NOT real geometry. They render as a visible pane spanning the doorway (seen from the corridor)
     // AND sit coplanar with the door leaves, so the weapon pick can hit the portal instead of the door
@@ -656,6 +667,9 @@ export async function main(): Promise<void> {
         if (mesh.material && isPbrMaterial(mesh.material)) mesh.material.environmentIntensity = environmentIntensity;
     }
     const lights = buildRuntimeLights(scene, shipRoot, runtimeLitMeshes, chunkOfMesh, manifest?.lights);
+    // The held weapon renders in a separate utility scene with a fresh depth buffer. Attach the same
+    // clustered container there so its world-space materials receive the authored ship lamps too.
+    lights.attachClusteredScene(weaponLayer.scene);
     canvas.dataset.clusteredLightCount = String(lights.clusteredPoint + lights.clusteredSpot);
     if (lights.overflow) console.warn(`[aquanova] ${lights.overflow} non-clustered light(s) dropped: the shared lights UBO is full`);
     // Full mode blends two box-projected probes at the camera/player POI. With blending disabled,
@@ -1049,7 +1063,6 @@ export async function main(): Promise<void> {
         return out;
     };
 
-    let playerBehavior: PlayerBehavior | null = null;
     const livePlayerPrimitive = (): FluidPrimitive => {
         const p = character.getPosition();
         const velocity = character.getVelocity();
@@ -1287,13 +1300,24 @@ export async function main(): Promise<void> {
     let controlPanel: AquanovaControlPanel | null = null;
     const setLiquefactorModel = (model: LiquefactorModel): void => {
         weaponViewmodel.select(model);
-        if (!weaponEnabled) {
-            for (const mesh of weaponViewmodel.meshes) setMeshVisible(mesh, false);
-        }
         graphics.liquefactorModel = model;
         saveGraphicsSettings(graphics);
         canvas.dataset.liquefactorModel = model;
     };
+    const setWeaponSwayEnabled = (enabled: boolean): void => {
+        graphics.weaponSway = enabled;
+        saveGraphicsSettings(graphics);
+        weaponViewmodel.setSwayEnabled(enabled);
+        canvas.dataset.weaponSway = String(enabled);
+    };
+    const setSoundsEnabled = (enabled: boolean): void => {
+        graphics.soundsEnabled = enabled;
+        saveGraphicsSettings(graphics);
+        behaviorManager.setSoundsEnabled(enabled);
+        canvas.dataset.soundsEnabled = String(enabled);
+    };
+    canvas.dataset.weaponSway = String(graphics.weaponSway);
+    canvas.dataset.soundsEnabled = String(graphics.soundsEnabled);
 
     await behaviorManager.start({
         canvas,
@@ -3512,6 +3536,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 },
                 options: LIQUEFACTOR_MODELS,
             },
+            sway: {
+                label: "Weapon sway",
+                get: () => graphics.weaponSway,
+                set: setWeaponSwayEnabled,
+            },
             positionGizmo: {
                 label: "Position gizmo",
                 get: () => weaponPositionGizmoOn,
@@ -3549,6 +3578,13 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 set: (degrees) => {
                     weaponViewmodel.localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
                 },
+            },
+        },
+        audio: {
+            sounds: {
+                label: "Sounds",
+                get: () => graphics.soundsEnabled,
+                set: setSoundsEnabled,
             },
         },
         environment: {
@@ -3603,7 +3639,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     });
     window.addEventListener("keydown", (event) => {
         if (event.repeat) return;
-        if (event.code === "KeyH") toggleNearestLight();
+        if (event.code === "Digit1") behaviorManager.events.emit("weaponSlotSelected", { slot: 1 });
+        else if (event.code === "Digit2") behaviorManager.events.emit("weaponSlotSelected", { slot: 2 });
+        else if (event.code === "KeyH") toggleNearestLight();
         else if (event.code === "KeyP") perfOverlay.toggle();
         else if (event.code === "KeyB") toggleLocalCubemapBlending();
         else if (event.code === "KeyV") probeOverlay?.toggle();

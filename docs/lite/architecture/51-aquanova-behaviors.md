@@ -105,18 +105,39 @@ the event directly.
 primitive under that entity. At each physics step it intersects the live player
 capsule's world AABB with the entity's initial world AABB. Optional
 `boundingBoxScale: [x, y, z]` scales that box's half-extents around its centre
-before intersection testing and defaults to `[1, 1, 1]`. The first
-intersection hides all owned primitives, optionally plays its preloaded MP3,
-optionally emits `entityEvent`, and unregisters the intersection check.
+before intersection testing and defaults to `[1, 1, 1]`. Until pickup, every
+authored node represented by the manifest entity rotates around its local Y axis.
+The default angular speed is one full revolution every 3 seconds. Optional
+`speed` must be finite and positive and multiplies that angular speed, so the
+revolution duration is `3 / speed` seconds. The first intersection hides all
+owned primitives, optionally plays its preloaded MP3, optionally emits
+`entityEvent`, and unregisters both the intersection check and rotation.
 `sound` is an MP3 file name without extension under `/aquanova/sounds/` and
 defaults to `pickItem`. The resolved sound for every pickup is loaded once by
 `PickEntityBehavior.init()` before behavior instances start.
 
-`weaponLiquefactor` starts disabled. Disabled means the selected viewmodel is
-hidden, frame/aim updates are skipped, and trigger events cannot start a shot.
-The behavior listens for `entityEvent` addressed to the manifest entity on
-which it was instantiated. The `enable` event reveals the currently selected
-viewmodel and permanently enables firing for that behavior instance.
+`weaponLiquefactor` starts unowned and hidden. The behavior listens for
+`entityEvent` addressed to the manifest entity on which it was instantiated.
+The `enable` event grants ownership and equips the weapon by animating it from a
+lowered, muzzle-down pose to its horizontal firing pose. `Digit1` then toggles
+the owned Liquefactor between equipped and holstered; `Digit2` holsters it and
+leaves the player unarmed until the pistol behavior is implemented. Holstering
+reverses the same presentation animation. Trigger events are ignored while the
+weapon is unowned, holstered, or still moving into position.
+
+The held weapon can apply a subtle procedural balancing motion made from
+layered low-frequency translation and rotation. This motion is cosmetic: the
+aim guide, laser, and crosshair remain stable. The `Weapon sway` control-panel
+checkbox persists the preference and blends the motion in or out smoothly.
+Walking scales both its amplitude and pace to 2× the idle motion; running with
+Shift scales them to 4×. Holding the weapon trigger suppresses sway immediately
+so the rendered muzzle remains aligned with the laser origin, then sway blends
+back after the trigger is released.
+
+The `Sounds` control-panel checkbox persists a global gameplay-audio
+preference. Disabling it immediately stops active Liquefactor loops and
+suppresses subsequent pickup, firing, liquefaction, and splash sounds.
+
 When liquefaction starts it raises `startLiquefaction` once for every unique
 entity in the target's linked liquefaction group. If reversal restores the
 group completely, it raises `cancelLiquefaction` for those same entities.

@@ -44,6 +44,7 @@ export interface AquanovaControlPanelOptions {
             readonly set: (index: number) => MaybePromise;
             readonly options: readonly string[];
         };
+        readonly sway: ToggleOption;
         readonly positionGizmo: ToggleOption;
         readonly rotationGizmo: ToggleOption;
         readonly scaleGizmo: ToggleOption;
@@ -52,6 +53,9 @@ export interface AquanovaControlPanelOptions {
             readonly get: () => number;
             readonly set: (degrees: number) => void;
         };
+    };
+    readonly audio: {
+        readonly sounds: ToggleOption;
     };
     readonly environment: {
         readonly localCubemapBlending: ToggleOption;
@@ -241,6 +245,7 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
 
     const weapon = addSection("Weapon");
     addSelect(weapon, "Model detail", options.weapon.model.options, options.weapon.model.get, options.weapon.model.set);
+    addToggle(weapon, options.weapon.sway);
     addToggle(weapon, options.weapon.positionGizmo);
     addToggle(weapon, options.weapon.rotationGizmo);
     addToggle(weapon, options.weapon.scaleGizmo);
@@ -251,6 +256,9 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
     const weaponScale = addVectorReadout(weapon, "Scale");
     const localGuidePosition = addVectorReadout(weapon, "Aim origin position");
     const localGuideRotation = addVectorReadout(weapon, "Aim rotation (deg)");
+
+    const audio = addSection("Audio");
+    addToggle(audio, options.audio.sounds);
 
     const environment = addSection("Environment");
     addToggle(environment, options.environment.localCubemapBlending);

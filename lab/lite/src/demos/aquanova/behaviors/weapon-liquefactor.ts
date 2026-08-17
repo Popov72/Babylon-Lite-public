@@ -25,6 +25,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     private static startShotSound: StreamingSound | null = null;
     private static liquefySound: StreamingSound | null = null;
     private static soundCategories: Map<string, readonly StreamingSound[]> | null = null;
+    private static soundEnabled = true;
     public readonly name = "weaponLiquefactor";
     public readonly mesh: Mesh;
     public readonly config: WeaponLiquefactorBehaviorConfig;
@@ -39,7 +40,8 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     private currentAimMesh: Mesh | null = null;
     private laserStarted = false;
     private beamDistance: number;
-    private enabled = false;
+    private owned = false;
+    private equipped = false;
 
     public constructor(entityName: string, mesh: Mesh, config: WeaponLiquefactorBehaviorConfig, context: WeaponLiquefactorContext) {
         this.entityName = entityName;
@@ -68,7 +70,15 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         this.startShotSound = null;
         this.liquefySound = null;
         this.soundCategories = null;
+        this.soundEnabled = true;
         this.initialization = null;
+    }
+
+    public static setSoundEnabled(enabled: boolean): void {
+        this.soundEnabled = enabled;
+        if (!enabled) {
+            this.stopActionSounds();
+        }
     }
 
     private static async initialize(config: WeaponLiquefactorBehaviorConfig): Promise<void> {
@@ -123,35 +133,34 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     }
 
     public start(): void {
-        this.context.weaponLiquefactor.setEnabled(false);
+        this.context.weaponLiquefactor.setEnabled(false, false);
         this.disposers.push(
             this.context.events.on("entityEvent", ({ name, event }) => {
                 if (name === this.entityName && event === "enable") {
-                    this.enable();
+                    this.acquire();
                 }
             }),
+            this.context.events.on("weaponSlotSelected", ({ slot }) => this.selectSlot(slot)),
             this.context.events.on("weaponTriggerPressed", ({ held }) => this.pressTrigger(held)),
             this.context.events.on("weaponAimUpdated", (aim) => this.updateAim(aim.mesh, aim.point, aim.distance)),
             this.context.events.on("weaponTriggerReleased", () => this.releaseTrigger()),
             this.context.events.on("liquefactionStarted", ({ meshes }) => {
-                if (this.enabled) {
+                if (this.equipped) {
                     WeaponLiquefactorBehavior.playLiquefySound();
-                    this.emitEntityEventForTargets(meshes, "startLiquefaction");
                 }
+                this.emitEntityEventForTargets(meshes, "startLiquefaction");
             }),
             this.context.events.on("liquefactionReversed", () => {
-                if (this.enabled) {
+                if (this.equipped) {
                     WeaponLiquefactorBehavior.stopLiquefySound();
                 }
             }),
             this.context.events.on("liquefactionCancelled", ({ meshes }) => {
-                if (this.enabled) {
-                    this.emitEntityEventForTargets(meshes, "cancelLiquefaction");
-                }
+                this.emitEntityEventForTargets(meshes, "cancelLiquefaction");
             }),
             this.context.events.on("liquefactionCompleted", ({ sound }) => this.completeLiquefaction(sound)),
             this.context.events.on("frameEnd", ({ deltaMs }) => {
-                if (this.enabled) {
+                if (this.owned) {
                     this.update(deltaMs);
                 }
             })
@@ -162,16 +171,43 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         for (const dispose of this.disposers.splice(0)) dispose();
         WeaponLiquefactorBehavior.stopActionSounds();
         this.reset();
-        this.enabled = false;
-        this.context.weaponLiquefactor.setEnabled(false);
+        this.owned = false;
+        this.equipped = false;
+        this.context.weaponLiquefactor.setEnabled(false, false);
     }
 
-    private enable(): void {
-        if (this.enabled) {
+    private acquire(): void {
+        if (this.owned) {
             return;
         }
-        this.enabled = true;
-        this.context.weaponLiquefactor.setEnabled(true);
+        this.owned = true;
+        this.setEquipped(true);
+    }
+
+    private selectSlot(slot: number): void {
+        if (!this.owned) {
+            return;
+        }
+        if (slot === 1) {
+            this.setEquipped(!this.equipped);
+        } else if (slot === 2) {
+            this.setEquipped(false);
+        }
+    }
+
+    private setEquipped(equipped: boolean): void {
+        if (this.equipped === equipped) {
+            return;
+        }
+        if (!equipped) {
+            WeaponLiquefactorBehavior.stopActionSounds();
+            if (this.triggerActive) {
+                this.context.reverseFusion();
+            }
+            this.reset();
+        }
+        this.equipped = equipped;
+        this.context.weaponLiquefactor.setEnabled(equipped, true);
     }
 
     private emitEntityEventForTargets(meshes: readonly Mesh[], event: string): void {
@@ -182,7 +218,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     }
 
     private pressTrigger(held: boolean): void {
-        if (!this.enabled) {
+        if (!this.equipped || !this.context.weaponLiquefactor.isReady()) {
             return;
         }
         this.triggerActive = true;
@@ -195,15 +231,14 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         this.context.weaponLiquefactor.stop();
         this.resumeToken = this.context.requestFusionResume();
         if (this.resumeToken === 0) {
-            this.triggerActive = false;
-            this.resumeToken = null;
+            this.reset();
             return;
         }
         WeaponLiquefactorBehavior.playStartShotSound();
     }
 
     private updateAim(mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null): void {
-        if (!this.enabled || !this.triggerActive) {
+        if (!this.equipped || !this.triggerActive) {
             return;
         }
         const targetMesh = this.context.resolveFusionTarget(mesh, point);
@@ -223,7 +258,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     }
 
     private releaseTrigger(): void {
-        if (!this.enabled) {
+        if (!this.equipped) {
             return;
         }
         WeaponLiquefactorBehavior.stopActionSounds();
@@ -232,7 +267,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     }
 
     private completeLiquefaction(soundCategory: string): void {
-        if (!this.enabled) {
+        if (!this.equipped) {
             return;
         }
         WeaponLiquefactorBehavior.stopActionSounds();
@@ -278,6 +313,9 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     }
 
     private static playSound(sound: StreamingSound, loop = false): void {
+        if (!this.soundEnabled) {
+            return;
+        }
         if (loop) playStreamingSound(sound, { loop: true });
         else playStreamingSound(sound);
         void preloadStreamingInstanceAsync(sound).catch((error: unknown) => {
@@ -288,7 +326,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
 
     private update(deltaMs: number): void {
         const reachedTarget = this.context.weaponLiquefactor.update(deltaMs);
-        if (!reachedTarget || !this.triggerActive || this.hitDelivered || !this.pendingHit) return;
+        if (!this.equipped || !reachedTarget || !this.triggerActive || this.hitDelivered || !this.pendingHit) return;
         const hit = this.pendingHit;
         this.pendingHit = null;
         this.hitDelivered = true;

@@ -16,6 +16,21 @@ const JUMP_BUFFER_SECONDS = 0.3;
 const DEFAULT_CHARACTER_STRENGTH = 100;
 const DOWN = { x: 0, y: -1, z: 0 };
 
+export function playerWeaponSwayMultiplier(keys: ReadonlySet<string>, frozen = false): 1 | 2 | 4 {
+    if (frozen) return 1;
+    const moving =
+        keys.has("KeyW") ||
+        keys.has("KeyS") ||
+        keys.has("KeyA") ||
+        keys.has("KeyD") ||
+        keys.has("ArrowUp") ||
+        keys.has("ArrowDown") ||
+        keys.has("ArrowLeft") ||
+        keys.has("ArrowRight");
+    if (!moving) return 1;
+    return keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 2;
+}
+
 export class PlayerBehavior implements Behavior<"player"> {
     public readonly name = "player";
     public readonly mesh: Mesh;
@@ -89,6 +104,14 @@ export class PlayerBehavior implements Behavior<"player"> {
 
     public get isCrouched(): boolean {
         return this.crouchTarget || !this.isFullyStanding();
+    }
+
+    public get weaponSwayMultiplier(): 1 | 2 | 4 {
+        return playerWeaponSwayMultiplier(this.keys, this.frozen);
+    }
+
+    public get isWeaponTriggerHeld(): boolean {
+        return this.weaponTriggerHeld;
     }
 
     public getPosition(): { x: number; y: number; z: number } {

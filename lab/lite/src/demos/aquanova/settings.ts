@@ -27,6 +27,10 @@ export interface GraphicsSettings {
     ssaa: number;
     /** Geometry detail used by the first-person Liquefactor viewmodel. */
     liquefactorModel: LiquefactorModel;
+    /** Cosmetic low-frequency balancing motion on the held weapon. */
+    weaponSway: boolean;
+    /** Gameplay sound effects for pickups and the Liquefactor. */
+    soundsEnabled: boolean;
     /** Blend the two nearest local cubemaps. Disabled uses one dominant box-projected probe. */
     localCubemapBlending: boolean;
     /** Render through an sRGB swapchain view so the GPU encodes linear→sRGB on store.
@@ -64,6 +68,8 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
     ssaa: 1,
     // The middle tier is visually smooth in first person while keeping startup and GPU cost modest.
     liquefactorModel: "80k",
+    weaponSway: true,
+    soundsEnabled: true,
     // On by default for smooth room transitions. Older devices can use one dominant probe, retaining
     // box projection while avoiding the second cubemap sample.
     localCubemapBlending: true,
@@ -112,6 +118,8 @@ export const GRAPHICS_SETTING_DEFS: readonly GraphicsSettingDef[] = [
         help: "Selects the first-person weapon geometry detail.",
         options: LIQUEFACTOR_MODELS,
     },
+    { key: "weaponSway", kind: "toggle", label: "Weapon sway", help: "Adds subtle idle balancing motion to the held weapon without moving the crosshair." },
+    { key: "soundsEnabled", kind: "toggle", label: "Sounds", help: "Enables pickup and Liquefactor sound effects." },
     {
         key: "localCubemapBlending",
         kind: "toggle",

@@ -1,5 +1,5 @@
 import { createAudioEngineAsync, createStreamingSoundAsync, disposeAudioEngine, playStreamingSound, preloadStreamingInstanceAsync, setMeshVisible } from "babylon-lite";
-import type { AudioEngine, Mesh, StreamingSound } from "babylon-lite";
+import type { AudioEngine, Mesh, SceneNode, StreamingSound } from "babylon-lite";
 import { meshGroupBounds, type MeshGroupBounds } from "../mesh-bounds.js";
 import type { Behavior, BehaviorContext, PickEntityBehaviorConfig } from "./types.js";
 
@@ -7,6 +7,7 @@ const SOUND_ROOT = "/aquanova/sounds";
 const SOUND_ASSET_VERSION = "20260813-1";
 const DEFAULT_SOUND = "pickItem";
 const DEFAULT_BOUNDING_BOX_SCALE = [1, 1, 1] as const;
+const DEFAULT_ROTATION_SPEED = (Math.PI * 2) / 3;
 
 type PickEntityContext = Pick<BehaviorContext, "character" | "events">;
 type BoundingBoxScale = readonly [number, number, number];
@@ -15,26 +16,31 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     private static initialization: Promise<void> | null = null;
     private static audioEngine: AudioEngine | null = null;
     private static sounds: Map<string, StreamingSound> | null = null;
+    private static soundEnabled = true;
     public readonly name = "pickEntity";
     public readonly mesh: Mesh;
     public readonly config: PickEntityBehaviorConfig;
     private readonly meshes: readonly Mesh[];
+    private readonly rotationNodes: readonly SceneNode[];
     private readonly context: PickEntityContext;
     private readonly boundingBoxScale: BoundingBoxScale;
+    private readonly rotationSpeed: number;
     private bounds: MeshGroupBounds | null = null;
     private stopPhysicsStep: (() => void) | null = null;
     private picked = false;
 
-    public constructor(meshes: readonly Mesh[], config: PickEntityBehaviorConfig, context: PickEntityContext) {
+    public constructor(meshes: readonly Mesh[], config: PickEntityBehaviorConfig, context: PickEntityContext, entityName = meshes[0]?.name ?? "") {
         if (!meshes.length) {
             throw new Error("[aquanova] pickEntity requires at least one mesh");
         }
         validateEvent(config.raiseEvent);
         this.mesh = meshes[0]!;
         this.meshes = meshes;
+        this.rotationNodes = resolveRotationNodes(meshes, entityName);
         this.config = config;
         this.context = context;
         this.boundingBoxScale = resolveBoundingBoxScale(config.boundingBoxScale);
+        this.rotationSpeed = DEFAULT_ROTATION_SPEED * resolveSpeed(config.speed);
     }
 
     public static init(configs: readonly PickEntityBehaviorConfig[]): Promise<void> {
@@ -53,7 +59,12 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         }
         this.audioEngine = null;
         this.sounds = null;
+        this.soundEnabled = true;
         this.initialization = null;
+    }
+
+    public static setSoundEnabled(enabled: boolean): void {
+        this.soundEnabled = enabled;
     }
 
     private static async initialize(configs: readonly PickEntityBehaviorConfig[]): Promise<void> {
@@ -93,7 +104,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
             throw new Error("[aquanova] pickEntity target has no readable mesh geometry");
         }
         this.bounds = scaleBounds(bounds, this.boundingBoxScale);
-        this.stopPhysicsStep = this.context.events.on("physicsStep", () => this.update());
+        this.stopPhysicsStep = this.context.events.on("physicsStep", ({ deltaSeconds }) => this.update(deltaSeconds));
     }
 
     public dispose(): void {
@@ -101,8 +112,14 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         this.stopPhysicsStep = null;
     }
 
-    private update(): void {
-        if (this.picked || !this.bounds || !playerIntersectsBounds(this.context, this.bounds)) {
+    private update(deltaSeconds: number): void {
+        if (this.picked || !this.bounds) {
+            return;
+        }
+        if (!playerIntersectsBounds(this.context, this.bounds)) {
+            for (const node of this.rotationNodes) {
+                node.rotation.y += this.rotationSpeed * deltaSeconds;
+            }
             return;
         }
         this.picked = true;
@@ -118,6 +135,9 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     }
 
     private static playSound(soundName: string): void {
+        if (!this.soundEnabled) {
+            return;
+        }
         const sound = this.sounds?.get(soundName);
         if (!sound) {
             throw new Error(`[aquanova] pickEntity sound "${soundName}" was not preloaded`);
@@ -146,6 +166,37 @@ function resolveBoundingBoxScale(scale: PickEntityBehaviorConfig["boundingBoxSca
         throw new Error(`[aquanova] pickEntity.boundingBoxScale must contain three finite non-negative values, received ${JSON.stringify(scale)}`);
     }
     return [scale[0]!, scale[1]!, scale[2]!];
+}
+
+function resolveSpeed(speed: PickEntityBehaviorConfig["speed"]): number {
+    if (speed === undefined) {
+        return 1;
+    }
+    if (!Number.isFinite(speed) || speed <= 0) {
+        throw new Error(`[aquanova] pickEntity.speed must be a finite positive value, received ${String(speed)}`);
+    }
+    return speed;
+}
+
+function resolveRotationNodes(meshes: readonly Mesh[], entityName: string): SceneNode[] {
+    const nodes = new Set<SceneNode>();
+    for (const mesh of meshes) {
+        let node: SceneNode | null = mesh;
+        let entityNode: SceneNode | null = null;
+        while (node) {
+            if (node.name === entityName) {
+                entityNode = node;
+                break;
+            }
+            node = isSceneNode(node.parent) ? node.parent : null;
+        }
+        nodes.add(entityNode ?? mesh);
+    }
+    return [...nodes];
+}
+
+function isSceneNode(value: Mesh["parent"]): value is SceneNode {
+    return value !== null && "name" in value && "rotation" in value;
 }
 
 function scaleBounds(bounds: MeshGroupBounds, scale: BoundingBoxScale): MeshGroupBounds {

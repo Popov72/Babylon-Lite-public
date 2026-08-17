@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+    advanceLiquefactorPresentation,
+    advanceLiquefactorSwayBlend,
+    advanceLiquefactorSwayScale,
     computeLiquefactorPose,
+    liquefactorPresentationPose,
+    liquefactorSwayPose,
     LIQUEFACTOR_ADJUSTMENT_MUZZLE,
     LIQUEFACTOR_BARREL_DIRECTION,
     LIQUEFACTOR_MODEL_SCALE,
@@ -44,5 +49,45 @@ describe("Aquanova Liquefactor viewmodel", () => {
         expect(barrel[0]).toBeCloseTo(tx * inv, 5);
         expect(barrel[1]).toBeCloseTo(ty * inv, 5);
         expect(barrel[2]).toBeCloseTo(tz * inv, 5);
+    });
+
+    it("animates reversibly between a lowered hidden pose and the horizontal firing pose", () => {
+        const raised = liquefactorPresentationPose(1);
+        const lowered = liquefactorPresentationPose(0);
+        const halfway = advanceLiquefactorPresentation(0, 1, 210);
+
+        expect(lowered.rotationX).toBeGreaterThan(1);
+        expect(lowered.positionY).toBeLessThan(-0.5);
+        expect(raised.positionY).toBeCloseTo(0);
+        expect(raised.rotationX).toBeCloseTo(0);
+        expect(halfway).toBeCloseTo(0.5);
+        expect(advanceLiquefactorPresentation(halfway, 0, 210)).toBe(0);
+    });
+
+    it("adds subtle reversible cosmetic balancing without shifting the aim guide", () => {
+        const pose = liquefactorSwayPose(1.25);
+        const disabled = liquefactorSwayPose(1.25, 0);
+
+        expect(Math.abs(pose.position[0])).toBeLessThan(0.02);
+        expect(Math.abs(pose.position[1])).toBeLessThan(0.011);
+        expect(Math.abs(pose.rotation[1])).toBeLessThan(0.019);
+        for (const value of [...disabled.position, ...disabled.rotation]) {
+            expect(value).toBeCloseTo(0);
+        }
+        expect(advanceLiquefactorSwayBlend(1, false, 130)).toBeCloseTo(0.5);
+        expect(advanceLiquefactorSwayBlend(0, true, 260)).toBe(1);
+        expect(advanceLiquefactorSwayBlend(1, true, 0, true)).toBe(0);
+        expect(advanceLiquefactorSwayBlend(0, true, 130)).toBeCloseTo(0.5);
+    });
+
+    it("scales both sway amplitude and pace for walking and running", () => {
+        const idle = liquefactorSwayPose(0.75, 1);
+        const walking = liquefactorSwayPose(0.75, 2);
+        const running = liquefactorSwayPose(0.75, 4);
+
+        expect(walking.position[0]).toBeCloseTo(idle.position[0] * 2);
+        expect(running.rotation[2]).toBeCloseTo(idle.rotation[2] * 4);
+        expect(advanceLiquefactorSwayScale(1, 2, 1000)).toBeCloseTo(2, 4);
+        expect(advanceLiquefactorSwayScale(2, 4, 1000)).toBeCloseTo(4, 4);
     });
 });

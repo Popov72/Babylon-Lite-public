@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 1,
-  "savedAt": "2026-08-15T00:19:14.684Z",
+  "savedAt": "2026-08-16T23:53:51.953Z",
   "units": "metres",
   "note": "Collision authored per kit module, in each module's local space. Editor space: the manifest's own collision block is the mirrored, runtime-facing copy.",
   "moduleShapes": {
@@ -3866,6 +3866,46 @@
           0.5068
         ]
       }
+    ],
+    "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight": [
+      {
+        "kind": "box",
+        "position": [
+          2.1149,
+          0.501,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.25,
+          1,
+          4
+        ]
+      }
+    ],
+    "Modular SciFi MegaKit/Props/Prop_Fan_Small": [
+      {
+        "kind": "box",
+        "position": [
+          0,
+          0.0915,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.677,
+          0.6,
+          1.677
+        ]
+      }
     ]
   },
   "stageLayout": [
@@ -4108,23 +4148,39 @@
         -0.164,
         60
       ]
+    },
+    {
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "position": [
+        -10,
+        0,
+        66
+      ]
+    },
+    {
+      "module": "Modular SciFi MegaKit/Props/Prop_Fan_Small",
+      "position": [
+        -5,
+        0,
+        68
+      ]
     }
   ],
   "stageView": {
     "position": [
-      -7.087,
-      3.538,
-      70.354
+      -5.467,
+      0.998,
+      72.52
     ],
     "rotation": [
-      0.103,
-      -3.089,
+      0.137,
+      -3.237,
       0
     ],
     "target": [
-      -7.607,
-      2.514,
-      60.421
+      -4.525,
+      -0.37,
+      62.659
     ]
   }
 }

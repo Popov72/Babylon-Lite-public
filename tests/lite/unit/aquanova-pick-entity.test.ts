@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mesh } from "../../../packages/babylon-lite/src";
+import type { Mesh, SceneNode } from "../../../packages/babylon-lite/src";
 import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
 import { PickEntityBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/pick-entity";
 
@@ -20,7 +20,25 @@ const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 
 function mesh(name: string, x = 0): Mesh {
     const worldMatrix = IDENTITY.slice();
     worldMatrix[12] = x;
-    return { name, worldMatrix } as unknown as Mesh;
+    return {
+        name,
+        parent: null,
+        rotation: {
+            x: 0,
+            y: 0,
+            z: 0,
+            set(xValue: number, yValue: number, zValue: number) {
+                this.x = xValue;
+                this.y = yValue;
+                this.z = zValue;
+            },
+        },
+        worldMatrix,
+    } as unknown as Mesh;
+}
+
+function entityNode(name: string): SceneNode {
+    return mesh(name) as unknown as SceneNode;
 }
 
 function createHarness(position = { x: 4, y: 0, z: 0 }) {
@@ -135,6 +153,60 @@ describe("Aquanova pickEntity behavior", () => {
         expect(runtime.setMeshVisible).toHaveBeenCalledWith(target, false);
     });
 
+    it("rotates the authored entity node around Y once every three seconds by default", async () => {
+        await PickEntityBehavior.init([{}]);
+        const events = new EventManager();
+        const owner = entityNode("itemLiquefactor");
+        const meshes = [mesh("pickup-a"), mesh("pickup-b")];
+        meshes[0]!.parent = owner;
+        meshes[1]!.parent = owner;
+        const behavior = new PickEntityBehavior(
+            meshes,
+            {},
+            {
+                events,
+                character: {
+                    getPosition: () => ({ x: 10, y: 0, z: 0 }),
+                    shapeOptions: {
+                        capsuleHeight: 1.8,
+                        capsuleRadius: 0.4,
+                    },
+                },
+            } as never,
+            "itemLiquefactor"
+        );
+        behavior.start();
+
+        events.emit("physicsStep", { deltaSeconds: 1 });
+        expect(owner.rotation.y).toBeCloseTo((Math.PI * 2) / 3);
+        expect(meshes[0]!.rotation.y).toBe(0);
+        expect(meshes[1]!.rotation.y).toBe(0);
+
+        events.emit("physicsStep", { deltaSeconds: 2 });
+        expect(owner.rotation.y).toBeCloseTo(Math.PI * 2);
+    });
+
+    it("scales the rotation rate with speed", async () => {
+        await PickEntityBehavior.init([{ speed: 2 }]);
+        const events = new EventManager();
+        const target = mesh("pickup");
+        const behavior = new PickEntityBehavior([target], { speed: 2 }, {
+            events,
+            character: {
+                getPosition: () => ({ x: 10, y: 0, z: 0 }),
+                shapeOptions: {
+                    capsuleHeight: 1.8,
+                    capsuleRadius: 0.4,
+                },
+            },
+        } as never);
+        behavior.start();
+
+        events.emit("physicsStep", { deltaSeconds: 0.75 });
+
+        expect(target.rotation.y).toBeCloseTo(Math.PI);
+    });
+
     it("uses the default pickItem sound when sound is omitted", async () => {
         await PickEntityBehavior.init([{}]);
         const events = new EventManager();
@@ -159,6 +231,36 @@ describe("Aquanova pickEntity behavior", () => {
         expect(runtime.playStreamingSound).toHaveBeenCalledWith("/aquanova/sounds/pickItem.mp3?v=20260813-1");
     });
 
+    it("still collects the entity without playing audio when sounds are disabled", async () => {
+        await PickEntityBehavior.init([{ sound: "click" }]);
+        PickEntityBehavior.setSoundEnabled(false);
+        const events = new EventManager();
+        const target = mesh("pickup");
+        const raised = vi.fn();
+        events.on("entityEvent", raised);
+        const behavior = new PickEntityBehavior(
+            [target],
+            { sound: "click", raiseEvent: { name: "itemLiquefactor", event: "enable" } },
+            {
+                events,
+                character: {
+                    getPosition: () => ({ x: 0, y: 0, z: 0 }),
+                    shapeOptions: {
+                        capsuleHeight: 1.8,
+                        capsuleRadius: 0.4,
+                    },
+                },
+            } as never
+        );
+        behavior.start();
+
+        events.emit("physicsStep", { deltaSeconds: 1 / 60 });
+
+        expect(runtime.setMeshVisible).toHaveBeenCalledWith(target, false);
+        expect(runtime.playStreamingSound).not.toHaveBeenCalled();
+        expect(raised).toHaveBeenCalledWith({ name: "itemLiquefactor", event: "enable" });
+    });
+
     it("rejects incomplete event configuration and invalid sound paths", async () => {
         expect(() => new PickEntityBehavior([mesh("pickup")], { raiseEvent: { name: "", event: "enable" } }, minimalContext())).toThrow(
             "pickEntity.raiseEvent requires non-empty name and event values"
@@ -166,6 +268,7 @@ describe("Aquanova pickEntity behavior", () => {
         expect(() => new PickEntityBehavior([mesh("pickup")], { boundingBoxScale: [1, -1, 1] }, minimalContext())).toThrow(
             "pickEntity.boundingBoxScale must contain three finite non-negative values"
         );
+        expect(() => new PickEntityBehavior([mesh("pickup")], { speed: 0 }, minimalContext())).toThrow("pickEntity.speed must be a finite positive value");
         await expect(PickEntityBehavior.init([{ sound: "folder/click" }])).rejects.toThrow('pickEntity sound "folder/click" must be an MP3 file name without its extension');
     });
 });

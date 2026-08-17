@@ -35,9 +35,11 @@ function createHarness(
 ) {
     const events = new EventManager();
     let reachedTarget = false;
+    let ready = true;
     const runtime: WeaponLiquefactorRuntime = {
         setEnabled: vi.fn(),
         setTargetDistance: vi.fn(),
+        isReady: vi.fn(() => ready),
         stop: vi.fn(),
         update: vi.fn(() => reachedTarget),
     };
@@ -63,6 +65,9 @@ function createHarness(
         runtime,
         setReachedTarget: (reached: boolean): void => {
             reachedTarget = reached;
+        },
+        setReady: (value: boolean): void => {
+            ready = value;
         },
     };
 }
@@ -120,7 +125,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
     it("starts hidden and ignores firing until its entity receives enable", () => {
         const harness = createHarness({ enabled: false });
 
-        expect(harness.runtime.setEnabled).toHaveBeenCalledWith(false);
+        expect(harness.runtime.setEnabled).toHaveBeenCalledWith(false, false);
         harness.events.emit("weaponTriggerPressed", { held: true });
         harness.events.emit("weaponAimUpdated", { mesh: mesh("target"), point: null, distance: 5 });
         harness.events.emit("frameEnd", { deltaMs: 16 });
@@ -131,10 +136,59 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         expect(harness.runtime.setEnabled).not.toHaveBeenCalledWith(true);
 
         harness.events.emit("entityEvent", { name: "itemLiquefactor", event: "enable" });
-        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(true);
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(true, true);
         harness.events.emit("weaponTriggerPressed", { held: true });
         harness.events.emit("weaponAimUpdated", { mesh: null, point: null, distance: null });
         expect(harness.runtime.setTargetDistance).toHaveBeenLastCalledWith(100, true);
+    });
+
+    it("raises on pickup, toggles with slot 1, and holsters with slot 2", () => {
+        const harness = createHarness({ enabled: false });
+
+        harness.events.emit("entityEvent", { name: "itemLiquefactor", event: "enable" });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(true, true);
+
+        harness.events.emit("weaponSlotSelected", { slot: 1 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, true);
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        expect(harness.context.requestFusionResume).not.toHaveBeenCalled();
+
+        harness.events.emit("weaponSlotSelected", { slot: 1 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(true, true);
+
+        harness.events.emit("weaponSlotSelected", { slot: 2 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, true);
+    });
+
+    it("ignores firing until the raise animation reaches its ready pose", () => {
+        const harness = createHarness();
+        harness.setReady(false);
+
+        harness.events.emit("weaponTriggerPressed", { held: true });
+
+        expect(harness.context.requestFusionResume).not.toHaveBeenCalled();
+
+        harness.setReady(true);
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        expect(harness.context.requestFusionResume).toHaveBeenCalledOnce();
+    });
+
+    it("still forwards cancellation after holstering an active liquefaction", () => {
+        const harness = createHarness();
+        const target = mesh("storageDoorLF");
+        const entityEvents: Array<{ name: string; event: string }> = [];
+        harness.events.on("entityEvent", (event) => entityEvents.push(event));
+
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        harness.events.emit("liquefactionStarted", { meshes: [target] });
+        harness.events.emit("weaponSlotSelected", { slot: 2 });
+        harness.events.emit("liquefactionCancelled", { meshes: [target] });
+
+        expect(harness.context.reverseFusion).toHaveBeenCalledOnce();
+        expect(entityEvents).toEqual([
+            { name: "storageDoorLF", event: "startLiquefaction" },
+            { name: "storageDoorLF", event: "cancelLiquefaction" },
+        ]);
     });
 
     it("stops action loops at transitions and restarts the shot loop after completion while held", async () => {
@@ -167,6 +221,33 @@ describe("Aquanova Liquefactor weapon behavior", () => {
             ["/aquanova/sounds/quick.mp3?v=20260813-1"],
             ["/aquanova/sounds/liquefactorStartShot.mp3?v=20260813-1", { loop: true }],
         ]);
+    });
+
+    it("suppresses weapon sounds and stops active loops while sounds are disabled", async () => {
+        await WeaponLiquefactorBehavior.init({
+            sounds: {
+                quickSplash: ["quick"],
+            },
+        });
+        const harness = createHarness();
+        audio.playStreamingSound.mockClear();
+        audio.stopStreamingSound.mockClear();
+
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        expect(audio.playStreamingSound).toHaveBeenCalledOnce();
+
+        WeaponLiquefactorBehavior.setSoundEnabled(false);
+        expect(audio.stopStreamingSound).toHaveBeenCalled();
+        audio.playStreamingSound.mockClear();
+
+        harness.events.emit("liquefactionStarted", { meshes: [mesh("target")] });
+        harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
+        expect(audio.playStreamingSound).not.toHaveBeenCalled();
+
+        WeaponLiquefactorBehavior.setSoundEnabled(true);
+        harness.events.emit("weaponTriggerReleased", {});
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        expect(audio.playStreamingSound).toHaveBeenCalledOnce();
     });
 
     it("raises lifecycle events once for every entity in the linked liquefaction group", () => {

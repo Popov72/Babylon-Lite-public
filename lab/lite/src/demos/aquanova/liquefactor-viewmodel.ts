@@ -29,6 +29,11 @@ export const LIQUEFACTOR_MODEL_SCALE = 0.35;
 const ADJUSTMENT_POSITION = [-0.009, -0.7394, 0.517] as const;
 const ADJUSTMENT_ROTATION_Y = (8.44 * Math.PI) / 180;
 const ADJUSTMENT_SCALE = 2.74;
+const PRESENTATION_DURATION_MS = 420;
+const LOWERED_ROTATION_X = 1.05;
+const LOWERED_POSITION_Y = -0.72;
+const SWAY_BLEND_DURATION_MS = 260;
+const SWAY_SCALE_RESPONSE = 12;
 // Coordinates are in the adjustment node's space, after the glTF root's X mirror.
 export const LIQUEFACTOR_MUZZLE = { x: 0.115, y: 0.292, z: 0.49 };
 const GIZMO_PIVOT = { x: 0, y: 0.215, z: 0 };
@@ -44,6 +49,11 @@ export interface LiquefactorPose {
     rotation: [number, number, number, number];
 }
 
+export interface LiquefactorSwayPose {
+    position: [number, number, number];
+    rotation: [number, number, number];
+}
+
 export interface LiquefactorViewmodel {
     readonly root: TransformNode;
     readonly adjustment: TransformNode;
@@ -52,8 +62,11 @@ export interface LiquefactorViewmodel {
     readonly localGuideYaw: TransformNode;
     readonly meshes: readonly Mesh[];
     readonly model: LiquefactorModel;
+    readonly ready: boolean;
     select(model: LiquefactorModel): void;
-    update(camera: FreeCamera, aspectRatio: number): void;
+    setPresented(presented: boolean, animated?: boolean): void;
+    setSwayEnabled(enabled: boolean): void;
+    update(camera: FreeCamera, aspectRatio: number, deltaMs: number, swayMultiplier?: number, swaySuppressed?: boolean): void;
 }
 
 interface ModelEntry {
@@ -74,6 +87,49 @@ function setLocalParent(child: SceneNode, parent: SceneNode | FreeCamera): void 
 function collectMeshes(node: SceneNode, out: Mesh[]): void {
     if ("_gpu" in node && "material" in node) out.push(node as Mesh);
     for (const child of node.children) collectMeshes(child as SceneNode, out);
+}
+
+export function advanceLiquefactorPresentation(progress: number, target: 0 | 1, deltaMs: number): number {
+    const step = Math.max(0, deltaMs) / PRESENTATION_DURATION_MS;
+    return target === 1 ? Math.min(1, progress + step) : Math.max(0, progress - step);
+}
+
+export function liquefactorPresentationPose(progress: number): { positionY: number; rotationX: number } {
+    const t = Math.max(0, Math.min(1, progress));
+    const eased = t * t * (3 - 2 * t);
+    const lowered = 1 - eased;
+    return {
+        positionY: LOWERED_POSITION_Y * lowered,
+        rotationX: LOWERED_ROTATION_X * lowered,
+    };
+}
+
+export function advanceLiquefactorSwayBlend(blend: number, enabled: boolean, deltaMs: number, suppressed = false): number {
+    if (suppressed) return 0;
+    const step = Math.max(0, deltaMs) / SWAY_BLEND_DURATION_MS;
+    return enabled ? Math.min(1, blend + step) : Math.max(0, blend - step);
+}
+
+export function advanceLiquefactorSwayScale(scale: number, target: number, deltaMs: number): number {
+    const factor = 1 - Math.exp((-Math.max(0, deltaMs) * SWAY_SCALE_RESPONSE) / 1000);
+    return scale + (Math.max(1, target) - scale) * factor;
+}
+
+export function liquefactorSwayPose(elapsedSeconds: number, blend = 1): LiquefactorSwayPose {
+    const t = Math.max(0, elapsedSeconds);
+    const amount = Math.max(0, blend);
+    return {
+        position: [
+            (Math.sin(t * 1.75) * 0.012 + Math.sin(t * 0.63 + 1.1) * 0.005) * amount,
+            (Math.sin(t * 3.5 + 0.35) * 0.007 + Math.sin(t * 1.05) * 0.003) * amount,
+            Math.sin(t * 1.35 + 2.2) * 0.004 * amount,
+        ],
+        rotation: [
+            (Math.sin(t * 1.45 + 0.4) * 0.012 + Math.sin(t * 0.57) * 0.005) * amount,
+            Math.sin(t * 1.1 + 1.7) * 0.018 * amount,
+            (Math.sin(t * 1.75 + 0.8) * 0.015 + Math.sin(t * 0.71 + 2.4) * 0.005) * amount,
+        ],
+    };
 }
 
 function normalize(x: number, y: number, z: number): [number, number, number] {
@@ -160,11 +216,15 @@ export async function createLiquefactorViewmodel(engine: EngineContext, camera: 
     const root = createTransformNode("liquefactor-viewmodel");
     root.scaling.set(LIQUEFACTOR_MODEL_SCALE, LIQUEFACTOR_MODEL_SCALE, LIQUEFACTOR_MODEL_SCALE);
     setLocalParent(root, camera);
+    const presentation = createTransformNode("liquefactor-presentation");
+    setLocalParent(presentation, root);
+    const sway = createTransformNode("liquefactor-sway");
+    setLocalParent(sway, presentation);
     const adjustment = createTransformNode("liquefactor-adjustment");
     adjustment.position.set(...ADJUSTMENT_POSITION);
     adjustment.rotation.y = ADJUSTMENT_ROTATION_Y;
     adjustment.scaling.set(ADJUSTMENT_SCALE, ADJUSTMENT_SCALE, ADJUSTMENT_SCALE);
-    setLocalParent(adjustment, root);
+    setLocalParent(adjustment, sway);
     const content = createTransformNode("liquefactor-content");
     content.position.set(-GIZMO_PIVOT.x, -GIZMO_PIVOT.y, -GIZMO_PIVOT.z);
     setLocalParent(content, adjustment);
@@ -202,14 +262,40 @@ export async function createLiquefactorViewmodel(engine: EngineContext, camera: 
     );
 
     let selected: LiquefactorModel = "80k";
-    const select = (model: LiquefactorModel): void => {
-        selected = model;
+    let presentationProgress = 0;
+    let presentationTarget: 0 | 1 = 0;
+    let swayEnabled = true;
+    let swayBlend = 1;
+    let swayElapsedSeconds = 0;
+    let swayScale = 1;
+    const syncSelectedVisibility = (): void => {
+        const presented = presentationProgress > 0 || presentationTarget === 1;
         for (const [entryModel, entry] of entries) {
-            const visible = entryModel === model;
+            const visible = presented && entryModel === selected;
             for (const mesh of entry.meshes) setMeshVisible(mesh, visible);
         }
     };
-    select(selected);
+    const applyPresentationPose = (): void => {
+        const pose = liquefactorPresentationPose(presentationProgress);
+        presentation.position.y = pose.positionY;
+        presentation.rotation.x = pose.rotationX;
+    };
+    const select = (model: LiquefactorModel): void => {
+        selected = model;
+        syncSelectedVisibility();
+    };
+    const setPresented = (presented: boolean, animated = true): void => {
+        presentationTarget = presented ? 1 : 0;
+        if (!animated) {
+            presentationProgress = presentationTarget;
+            applyPresentationPose();
+        }
+        syncSelectedVisibility();
+    };
+    const setSwayEnabled = (enabled: boolean): void => {
+        swayEnabled = enabled;
+    };
+    setPresented(false, false);
 
     return {
         root,
@@ -221,13 +307,34 @@ export async function createLiquefactorViewmodel(engine: EngineContext, camera: 
         get model() {
             return selected;
         },
+        get ready() {
+            return presentationTarget === 1 && presentationProgress === 1;
+        },
         select,
-        update(camera, aspectRatio) {
+        setPresented,
+        setSwayEnabled,
+        update(camera, aspectRatio, deltaMs, swayMultiplier = 1, swaySuppressed = false) {
             // The root is a camera child, so its transform is camera-local and only the
             // projection changes when the viewport aspect ratio changes.
             const pose = computeLiquefactorPose(CAMERA_LOCAL_WORLD, getProjectionMatrix(camera, aspectRatio));
             root.position.set(pose.position[0], pose.position[1], pose.position[2]);
             root.rotationQuaternion.set(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
+            const previousProgress = presentationProgress;
+            presentationProgress = advanceLiquefactorPresentation(presentationProgress, presentationTarget, deltaMs);
+            if (presentationProgress !== previousProgress) {
+                applyPresentationPose();
+                if (presentationProgress === 0) {
+                    syncSelectedVisibility();
+                }
+            }
+            swayScale = advanceLiquefactorSwayScale(swayScale, swayMultiplier, deltaMs);
+            if (!swaySuppressed) {
+                swayElapsedSeconds += (Math.max(0, deltaMs) * swayScale) / 1000;
+            }
+            swayBlend = advanceLiquefactorSwayBlend(swayBlend, swayEnabled && presentationTarget === 1, deltaMs, swaySuppressed);
+            const swayPose = liquefactorSwayPose(swayElapsedSeconds, swayBlend * swayScale);
+            sway.position.set(...swayPose.position);
+            sway.rotation.set(...swayPose.rotation);
             localGuideRoot.position.set(root.position.x, root.position.y, root.position.z);
             localGuideRoot.rotationQuaternion.set(root.rotationQuaternion.x, root.rotationQuaternion.y, root.rotationQuaternion.z, root.rotationQuaternion.w);
             localGuideRoot.scaling.set(root.scaling.x, root.scaling.y, root.scaling.z);

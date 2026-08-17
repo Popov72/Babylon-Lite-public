@@ -6,6 +6,7 @@ export interface EventMap {
     physicsStep: { deltaSeconds: number };
     frameEnd: { deltaMs: number };
     entityEvent: { name: string; event: string };
+    weaponSlotSelected: { slot: number };
     weaponTriggerPressed: { held: boolean };
     hitWithWeapon: {
         mesh: Mesh;

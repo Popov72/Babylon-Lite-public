@@ -37,6 +37,8 @@ export interface PickEntityBehaviorConfig {
     raiseEvent?: EntityEventConfig;
     /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `pickItem`. */
     sound?: string;
+    /** Multiplier for the default one-revolution-per-3-seconds Y rotation. Defaults to `1`. */
+    speed?: number;
 }
 
 export interface WeaponLiquefactorBehaviorConfig {
@@ -58,6 +60,7 @@ export interface BehaviorConfig {
     range?: number;
     sound?: string;
     sounds?: Record<string, string[]>;
+    speed?: number;
     boundingBoxScale?: number[];
     entity?: string;
     onEvent?: string;
@@ -86,8 +89,9 @@ export type BehaviorLibrary = Record<string, BehaviorConfig>;
 export type Entities = Record<string, { behaviors?: BehaviorReference[] }>;
 
 export interface WeaponLiquefactorRuntime {
-    setEnabled(enabled: boolean): void;
+    setEnabled(enabled: boolean, animated?: boolean): void;
     setTargetDistance(distance: number | null, restart?: boolean): void;
+    isReady(): boolean;
     stop(): void;
     update(deltaMs: number): boolean;
 }

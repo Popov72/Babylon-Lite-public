@@ -114,7 +114,7 @@ export class BehaviorManager {
                     }
                     if (isPickEntityBehaviorConfig(assignment)) {
                         if (meshes.length) {
-                            this.instances.push(new PickEntityBehavior(meshes, assignment, behaviorContext));
+                            this.instances.push(new PickEntityBehavior(meshes, assignment, behaviorContext, entityName));
                         }
                         continue;
                     }
@@ -132,6 +132,11 @@ export class BehaviorManager {
             this.started = false;
             throw error;
         }
+    }
+
+    public setSoundsEnabled(enabled: boolean): void {
+        PickEntityBehavior.setSoundEnabled(enabled);
+        WeaponLiquefactorBehavior.setSoundEnabled(enabled);
     }
 
     public bindSystemEvents(scene: SceneContext, world: PhysicsWorld): void {

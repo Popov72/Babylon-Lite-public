@@ -1,7 +1,8 @@
 // Runtime lights for the Aquanova ship.
 //
 // Every enabled ship mesh receives the authored runtime lights. Clustered lights cover the whole
-// ship, while regular lights are scoped to the chunk where they were authored.
+// ship and can also be attached to the first-person weapon scene, while regular lights are scoped
+// to the chunk where they were authored.
 //
 // ── Where the records come from ───────────────────────────────────────────────────────────────
 // The editor authors one record per lamp and the exporter writes it BOTH into `ship_manifest.json`
@@ -73,6 +74,8 @@ export interface RuntimeLightStats {
     overflow: number;
     /** The effective runtime records, including manifest overrides, used by the debug overlay. */
     lights: RuntimeLightDebug[];
+    /** Attach the shared clustered lights to another scene, such as the weapon utility layer. */
+    attachClusteredScene(scene: SceneContext): void;
     /** Toggle the closest point/spot light to a world-space position. Directional lights are ignored. */
     toggleNearest(position: readonly [number, number, number]): RuntimeLightToggleResult | null;
 }
@@ -158,6 +161,8 @@ export function buildRuntimeLights(
     authoredLights?: readonly ShipLight[]
 ): RuntimeLightStats {
     const controls: RuntimeLightControl[] = [];
+    const container = createClusteredLightContainer();
+    const clusteredScenes = new Set<SceneContext>();
     const stats: RuntimeLightStats = {
         clusteredPoint: 0,
         clusteredSpot: 0,
@@ -165,6 +170,13 @@ export function buildRuntimeLights(
         disabled: 0,
         overflow: 0,
         lights: [],
+        attachClusteredScene(targetScene) {
+            if (clusteredScenes.has(targetScene) || (!container.pointLights.length && !container.spotLights.length)) {
+                return;
+            }
+            addClusteredLightContainer(targetScene, container);
+            clusteredScenes.add(targetScene);
+        },
         toggleNearest(position) {
             let nearest: RuntimeLightControl | null = null;
             let nearestDistanceSquared = Number.POSITIVE_INFINITY;
@@ -244,7 +256,6 @@ export function buildRuntimeLights(
         ...record,
         runtime: runtimeById.has(record.extras.id) ? runtimeById.get(record.extras.id) : record.extras.runtime,
     }));
-    const container = createClusteredLightContainer();
 
     // The shared lights UBO is a fixed-size array whose length is compiled into the WGSL, so the
     // non-clustered lights have to be counted before any of them is created.
@@ -344,7 +355,7 @@ export function buildRuntimeLights(
     }
 
     if (container.pointLights.length || container.spotLights.length) {
-        addClusteredLightContainer(scene, container);
+        stats.attachClusteredScene(scene);
         // `addClusteredLightContainer` initially stamps every material already in the scene. Remove
         // that state everywhere except the isolated runtime-lit ship clones.
         for (const mesh of scene.meshes) {
