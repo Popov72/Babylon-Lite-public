@@ -46,6 +46,8 @@ export/ship_autosave.json
 # and point ENV_HDRI (tool/public/js/editor.js) at it.
 env/*.hdr
 
+temp/
+
 # Deliberately NOT ignored: export/ship_manifest.json,
 # export/ship_collision.json and export/ship_compounds.json. Those three ARE
 # the ship, its hulls and the pieces it is assembled from.

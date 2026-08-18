@@ -131,19 +131,19 @@ const built = await page.evaluate(async () => {
     silent: true,
   });
 
-  // Reflection probes are independent from the two chunks. Keep the fixture
-  // deliberately tiny so the capture below renders real cubemaps quickly.
+  // Reflection probes are independent from the two chunks. The face size is a
+  // ship-wide setting rather than a probe field - the runtime keeps them in one
+  // cube texture array - so it is set below, at the smallest size offered, to
+  // keep the real capture quick.
   ed.setEnvironmentProbe("ENV0001", {
     boxPosition: [2, 2, 0],
     boxSize: [12, 6, 12],
     capturePosition: [2, 2, 0],
-    resolution: 16,
   });
   ed.setEnvironmentProbe("ENV0002", {
     boxPosition: [16, 2, 0],
     boxSize: [12, 6, 12],
     capturePosition: [15, 2.5, 0],
-    resolution: 16,
   });
 
   // A non-default ship-wide constant, so the round-trip check below has teeth:
@@ -151,6 +151,7 @@ const built = await page.evaluate(async () => {
   // so anything it forgets to copy is lost on save and silently comes back on
   // its default. Leaving this at 0.008 would not have caught that.
   ed.setConfig("shellThickness", 0.0075);
+  ed.setConfig("probeResolution", 128);
 
   return {
     placements: ed.state.placements.size,
@@ -454,9 +455,9 @@ const spaceFailures = [];
 
 // ---- the probes are captured from the editor, not from a terminal ----------
 // Six renders and a prefilter per probe, driven from the page: what is under
-// test is the whole round trip - declare, render, upload, serve - at a
-// deliberately tiny resolution, because it is the wiring that rots, not the
-// filtering.
+// test is the whole round trip - declare, render, upload, serve - at the
+// smallest cubemap size the editor offers, because it is the wiring that rots,
+// not the filtering.
 const probeFailures = [];
 {
   const capture = await page.evaluate(async () => {

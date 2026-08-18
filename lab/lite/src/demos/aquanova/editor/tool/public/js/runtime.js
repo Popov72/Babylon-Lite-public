@@ -36,6 +36,7 @@ const {
 import {
   state, emit, on, hooks, syncLightingMode, applyVisibility, environmentProbeOf, ownerIdOf,
   isProbeExcludedNode, withDeadline, environmentProbePartId, environmentProbePartOf,
+  shipPlacements, entityBehaviors, PLAY_ANIMATION_BEHAVIOR,
 } from "./editor.js";
 
 const ROOT_NAME = "RUNTIME_PREVIEW";
@@ -215,7 +216,6 @@ export async function localEnvironmentProbeOf(id) {
             boxPosition: editorPoint(generated.boxPosition),
             boxSize: generated.boxSize?.map(Number),
             capturePosition: editorPoint(generated.position),
-            resolution: Number(generated.resolution) || 512,
           }
         : null),
     generated,
@@ -1423,8 +1423,8 @@ function nearestChunkTo(position, bounds) {
  * so that every panel already written for a probe - no rotation row, sizes
  * floored, no behaviours - covers them without a second case to keep in step.
  *
- * None of them rotate: a projection box and a blend region are both
- * axis-aligned by construction, and the runtime has nowhere to put an angle.
+ * None of them rotate yet: the exported probe yaw is preserved for the Lite
+ * runtime, but the editor preview does not expose oriented probe manipulation.
  * The inner box does not move either - it has no centre of its own, it rides
  * the outer one's - so it is marked immovable rather than left to drift and be
  * corrected afterwards.
@@ -1683,7 +1683,138 @@ function redressPreview() {
 
 // An element added, removed or re-kitted while the runtime view is up has
 // meshes that have never been dressed. See redressPreview.
-on("placements", () => redressPreview());
+on("placements", () => { redressPreview(); syncBehaviorAnimations(); });
+
+// ------------------------------------------------- behaviour animations
+//
+// The runtime view claims to be what the game draws, and the game plays the
+// animation of anything carrying `playAnimation`. So this does too - the same
+// clip, chosen the same way, looping by the same rule.
+//
+// Only skinned modules have anything to play. `kit.js` gives a placement its
+// own skeletons, targets and animation groups only when the module has BOTH
+// skeletons and clips; everything else is a hardware instance sharing one
+// prototype, and hardware instances cannot be animated apart. A placement with
+// no `_shipAnimationGroups` is therefore not a failure, it is a static module.
+
+/**
+ * The groups this module has started, and the `loop` each was started with.
+ *
+ * Keyed by group rather than by placement because the group is what has to be
+ * stopped, and remembering the loop flag is what tells a re-sync that a running
+ * clip is already running *as asked* - without which a non-looping clip that
+ * had finished would be restarted by every unrelated edit.
+ */
+const playingBehaviorAnimations = new Map();
+
+/**
+ * The clip each `playAnimation` placement wants running, and whether it loops.
+ *
+ * Mirrors `behaviors/play-animation.ts` deliberately: the assignment's
+ * `animation` names the clip, no name means the entity's first one, and `loop`
+ * defaults to true. A preview that chose differently from the game would be
+ * worse than no preview at all.
+ *
+ * The one difference is that this walks PLACEMENTS where the runtime walks
+ * entity names - so two fans sharing a name both spin here, while the game
+ * builds one behaviour for the name and spins one of them. The editor is asked
+ * to show the ship, not the object graph, and a stopped fan next to a spinning
+ * twin reads as a broken model rather than as a naming clash.
+ */
+function wantedBehaviorAnimations() {
+  const wanted = new Map();
+  const missing = [];
+  // A bench hides every ship placement, and animated bones would still be
+  // moving the geometry that worldBounds, the stray-chunk check and the
+  // collision fitter all measure. Same rule Capture all follows.
+  if (!state.runtime || !state.runBehaviors || state.mode !== "ship") return { wanted, missing };
+  for (const placement of shipPlacements()) {
+    const groups = placement.node?._shipAnimationGroups;
+    if (!groups?.length) continue;
+    for (const assignment of entityBehaviors(placement.name)) {
+      if (assignment.name !== PLAY_ANIMATION_BEHAVIOR) continue;
+      const named = typeof assignment.animation === "string" && assignment.animation
+        ? assignment.animation
+        : null;
+      const group = named ? groups.find((g) => g.name === named) : groups[0];
+      // Named-but-absent is an authoring mistake the game turns into a thrown
+      // error at load; reported here rather than thrown, because the editor has
+      // to keep drawing the rest of the ship while you go and fix it.
+      if (!group) {
+        missing.push(`${placement.name}: "${named}"`);
+        continue;
+      }
+      wanted.set(group, assignment.loop === undefined ? true : !!assignment.loop);
+    }
+  }
+  return { wanted, missing };
+}
+
+/**
+ * Stop a clip and put its targets back at its first frame.
+ *
+ * The same place the game's own `stopAnimation` leaves them, so the editor and
+ * the runtime agree about what a stopped animation looks like - and for the
+ * kit's clips, which all start at rest, that is the authored pose.
+ *
+ * `goToFrame` has to come first: `stop()` drops the animatables it works
+ * through, so the pair the other way round leaves the bones frozen mid-clip -
+ * which is then what an export would bake in as the rest pose. Both calls are
+ * no-ops on a group that was never started or has since been disposed with its
+ * placement, which is what makes this safe to call over a stale set.
+ */
+function rewindBehaviorAnimation(group) {
+  group.goToFrame(group.from);
+  group.stop();
+}
+
+/**
+ * Bring playback in line with what the ship and the setting now say.
+ *
+ * Called on every entry to and exit from the runtime view, on every change to
+ * the element set or to a behaviour, and when the setting itself moves. Groups
+ * already running as asked are left strictly alone - restarting them would jerk
+ * every fan in the ship back to frame 0 each time an unrelated element moved.
+ */
+export function syncBehaviorAnimations() {
+  const { wanted, missing } = wantedBehaviorAnimations();
+  for (const group of [...playingBehaviorAnimations.keys()]) {
+    if (wanted.has(group)) continue;
+    playingBehaviorAnimations.delete(group);
+    rewindBehaviorAnimation(group);
+  }
+  for (const [group, loop] of wanted) {
+    if (playingBehaviorAnimations.get(group) === loop) continue;
+    rewindBehaviorAnimation(group);
+    group.loopAnimation = loop;
+    group.play(loop);
+    playingBehaviorAnimations.set(group, loop);
+  }
+  if (missing.length) console.warn("[aquanova] playAnimation clip not found —", missing.join(", "));
+  return { playing: playingBehaviorAnimations.size, missing };
+}
+
+// An assignment gained, lost, re-parameterised or renamed onto another element.
+on("behaviors", () => syncBehaviorAnimations());
+// A bench opened or closed. See wantedBehaviorAnimations.
+on("mode", () => syncBehaviorAnimations());
+
+/**
+ * Hold playback still while something reads the ship's transforms.
+ *
+ * The GLB exporter writes each node's TRS as it stands, so a ship exported
+ * mid-clip records a fan halfway round as its rest pose. Rewinding first costs
+ * nothing and makes the file say what the ship was authored to be.
+ */
+hooks.pauseBehaviorAnimations = () => {
+  if (!playingBehaviorAnimations.size) return () => {};
+  for (const group of [...playingBehaviorAnimations.keys()]) rewindBehaviorAnimation(group);
+  playingBehaviorAnimations.clear();
+  // Re-derived rather than replayed from a saved list: whatever ran the export
+  // may well have changed the ship, and the live state is the only honest
+  // answer to what should be playing afterwards.
+  return () => { syncBehaviorAnimations(); };
+};
 
 /**
  * Switch the game's lighting on over the live ship, or put the editor's back.
@@ -1705,6 +1836,9 @@ export async function setRuntimePreview(on) {
     // The rig, and the Env/Exposure pair that goes with it, follow the flag.
     syncLightingMode();
     applyVisibility();
+    // After the flag, which is what wantedBehaviorAnimations reads: this is
+    // what puts the animated bones back where the ship was authored.
+    syncBehaviorAnimations();
     emit("modes");
     return false;
   }
@@ -1735,6 +1869,7 @@ export async function setRuntimePreview(on) {
   state.runtime = true;
   syncLightingMode();
   applyVisibility();
+  syncBehaviorAnimations();
   emit("modes");
   if (probeWindowOpen) await showEnvironmentProbes(probeSelectedId);
   return true;

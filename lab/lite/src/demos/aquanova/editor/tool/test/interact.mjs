@@ -806,9 +806,14 @@ const probes = await page.evaluate(async () => {
   const captureButtons = {
     labels: [$("btn-capture-one").textContent.trim(), $("btn-capture-all").textContent.trim()],
     emptyDisabled: $("btn-capture-one").disabled,
-    allDisabled: $("btn-capture-all").disabled,
-  };
-  $("btn-probe-new").click();
+        allDisabled: $("btn-capture-all").disabled,
+        // Capture all takes no selection, so it does not belong to a probe and is
+        // not in the window: it is a ship-wide action, filed with the ship-wide
+        // cubemap size it is the answer to.
+        allInSettings: !!$("btn-capture-all").closest("#settings-pane .settings-section") && !$("btn-capture-all").closest("#probe-modal"),
+        oneInWindow: !!$("btn-capture-one").closest("#probe-modal"),
+    };
+    $("btn-probe-new").click();
   captureButtons.pickedDisabled = $("btn-capture-one").disabled;
   const id = $("probe-list").value;
   // A brand-new probe never had influence volumes typed for it, so they are
@@ -826,10 +831,10 @@ const probes = await page.evaluate(async () => {
     "probe-camera-x": "7", "probe-camera-y": "8", "probe-camera-z": "9",
     "probe-influence-x": "1.5", "probe-influence-y": "2", "probe-influence-z": "3",
     "probe-influence-size-x": "12", "probe-influence-size-y": "9", "probe-influence-size-z": "16",
-    "probe-inner-size-x": "4", "probe-inner-size-y": "1", "probe-inner-size-z": "8",
-    "probe-resolution": "1024",
-  };
-  for (const [field, value] of Object.entries(values)) type(field, value);
+    "probe-inner-size-x": "4", "probe-inner-size-y": "1",
+        "probe-inner-size-z": "8",
+    };
+    for (const [field, value] of Object.entries(values)) type(field, value);
   await settle(id);
   await runtime.showEnvironmentProbes(id);
 
@@ -874,9 +879,9 @@ const probes = await page.evaluate(async () => {
 
   ed.setEnvironmentProbe("ENV_OTHER", {
     boxPosition: [30, 2, 0], boxSize: [2, 2, 2],
-    capturePosition: [30, 2, 0], resolution: 64,
-  });
-  type("probe-id", "ENV_OTHER", "change");
+        capturePosition: [30, 2, 0],
+    });
+    type("probe-id", "ENV_OTHER", "change");
   const duplicateRefused = /already used/i.test($("probe-error").textContent)
     && !!ed.environmentProbeOf(id);
 
@@ -1029,28 +1034,135 @@ check("a probe drag carries its influence volumes and a resize keeps their margi
 check("environment probe boxes remain axis-aligned when rotation is requested",
   JSON.stringify(probes.beforeRotation) === JSON.stringify(probes.afterRotation),
   `${JSON.stringify(probes.beforeRotation)} -> ${JSON.stringify(probes.afterRotation)}`);
-check("probe size, camera and resolution survive an editor round-trip",
-  probes.authored?.boxSize?.join() === "10,6,14"
-    && probes.authored?.capturePosition?.join() === "9,11,13"
-    && probes.authored?.resolution === 1024
-    && JSON.stringify(probes.authored) === JSON.stringify(probes.survived),
-  `${JSON.stringify(probes.authored)} / ${JSON.stringify(probes.survived)}`);
+check(
+    "probe size and camera survive an editor round-trip",
+    probes.authored?.boxSize?.join() === "10,6,14" && probes.authored?.capturePosition?.join() === "9,11,13" && JSON.stringify(probes.authored) === JSON.stringify(probes.survived),
+    `${JSON.stringify(probes.authored)} / ${JSON.stringify(probes.survived)}`
+);
 check("the manifest stores probes at the root and converts both positions to glTF space",
   probes.inManifest?.boxPosition?.join() === "-3,5,7"
     && probes.inManifest?.capturePosition?.join() === "-9,11,13"
     && probes.inManifest?.influenceBoxPosition?.join() === "-3.5,5,7"
     && probes.inManifest?.boxSize?.join() === "10,6,14"
-    && probes.inManifest?.influenceBoxSize?.join() === "14,10,18"
-    && probes.inManifest?.influenceInnerBoxSize?.join() === "6,2,10"
-    && probes.inManifest?.resolution === 1024,
-  JSON.stringify(probes.inManifest));
+    && probes.inManifest?.influenceBoxSize?.join() === "14,10,18" &&
+        probes.inManifest?.influenceInnerBoxSize?.join() === "6,2,10" &&
+        probes.inManifest?.angle === 0,
+    JSON.stringify(probes.inManifest)
+);
 check("Capture follows the selected probe, Capture all never needs one",
   probes.captureButtons?.labels.join("|") === "Capture|Capture all"
     && probes.captureButtons.emptyDisabled === true
     && probes.captureButtons.pickedDisabled === false
     && probes.captureButtons.emptiedDisabled === true
     && probes.captureButtons.allDisabled === false,
-  JSON.stringify(probes.captureButtons));
+  JSON.stringify(probes.captureButtons)
+);
+check(
+    "so Capture all sits with the settings and Capture with the probe list",
+    probes.captureButtons?.allInSettings === true && probes.captureButtons.oneInWindow === true,
+    JSON.stringify({
+        all: probes.captureButtons?.allInSettings,
+        one: probes.captureButtons?.oneInWindow,
+    })
+);
+
+// ---- 1d-quinquies-ter-bis. one cubemap size for the whole ship -------------
+// The runtime holds the captured environments in a cube texture ARRAY, and
+// every slice of an array shares one dimension - so the face size cannot be a
+// per-probe field. It is a ship-wide setting on the Settings pane, saved in
+// `config`, and a ship authored before it existed adopts the largest size its
+// probes were carrying.
+const cubemapSize = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const mf = await import("/js/manifest.js");
+    const $ = (id) => document.getElementById(id);
+    ed.state.environmentProbes.clear();
+    ed.setEnvironmentProbe("ENV_SIZE", {
+        boxPosition: [0, 2, 0],
+        boxSize: [6, 4, 6],
+        capturePosition: [0, 2, 0],
+    });
+
+    const row = $("cfg-probe-res");
+    const offered = [...row.options].map((o) => o.value).join(",");
+    const fromRange = offered === ed.PROBE_RESOLUTIONS.join(",");
+    row.value = "1024";
+    row.dispatchEvent(new Event("change"));
+    const applied = ed.state.config.probeResolution;
+    const manifest = mf.buildManifest();
+    const inConfig = manifest.config?.probeResolution;
+    const onProbe = Object.prototype.hasOwnProperty.call(manifest.environmentProbes[0] || {}, "resolution");
+    // A size the array cannot be built at is refused, whatever asks for it.
+    const oddRefused = ed.setConfig("probeResolution", 300) === false;
+
+    await ed.undo(); // undo() restores asynchronously
+    const undone = ed.state.config.probeResolution;
+
+    ed.setConfig("probeResolution", 1024);
+    const layout = ed.serialize();
+    await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+    const roundTrip = ed.state.config.probeResolution;
+
+    // What an older ship looks like: no setting, and a size on every probe. The
+    // largest wins, so no room is quietly downsampled by the migration.
+    const legacyOf = (sizes) => {
+        const older = JSON.parse(JSON.stringify(layout));
+        delete older.config.probeResolution;
+        older.probeVolumes = sizes.map((resolution, index) => ({
+            ...older.probeVolumes[0],
+            id: `ENV_OLD_${index}`,
+            resolution,
+        }));
+        return older;
+    };
+    await ed.deserialize(legacyOf([1024, 256]));
+    const legacyLargest = ed.state.config.probeResolution;
+    // Those old values were free-form, so one that is not on the list is rounded
+    // up rather than refused - the ship still has to load.
+    await ed.deserialize(legacyOf([300]));
+    const legacySnapped = ed.state.config.probeResolution;
+    await ed.deserialize(legacyOf([]));
+    const legacyEmpty = ed.state.config.probeResolution;
+
+    await ed.deserialize(JSON.parse(JSON.stringify(layout)));
+    ed.setConfig("probeResolution", 512);
+    ed.state.environmentProbes.clear();
+    return {
+        offered,
+        fromRange,
+        applied,
+        inConfig,
+        onProbe,
+        oddRefused,
+        undone,
+        roundTrip,
+        legacyLargest,
+        legacySnapped,
+        legacyEmpty,
+    };
+});
+check(
+    "the cubemap size is a ship-wide setting, not a probe field",
+    cubemapSize.offered === "128,256,512,1024,2048" &&
+        cubemapSize.fromRange === true &&
+        cubemapSize.applied === 1024 &&
+        cubemapSize.inConfig === 1024 &&
+        cubemapSize.onProbe === false &&
+        cubemapSize.oddRefused === true,
+    `offered ${cubemapSize.offered}, applied ${cubemapSize.applied},` +
+        ` config ${cubemapSize.inConfig}, on probe ${cubemapSize.onProbe},` +
+        ` 300 refused ${cubemapSize.oddRefused}`
+);
+check(
+    "changing the cubemap size is undoable and survives a round-trip",
+    cubemapSize.undone === 512 && cubemapSize.roundTrip === 1024,
+    `undone ${cubemapSize.undone}, round-trip ${cubemapSize.roundTrip}`
+);
+check(
+    "a ship authored per probe adopts the largest size it was built at",
+    cubemapSize.legacyLargest === 1024 && cubemapSize.legacySnapped === 512 && cubemapSize.legacyEmpty === 512,
+    `largest ${cubemapSize.legacyLargest}, snapped ${cubemapSize.legacySnapped},` + ` empty ${cubemapSize.legacyEmpty}`
+);
 
 // ---- 1d-quinquies-quater. the probe pane's three sections ------------------
 // Three near-identical vector triples read as one block of numbers, so each
@@ -1138,13 +1250,10 @@ const probeSections = await page.evaluate(async () => {
   };
 });
 check("the probe pane is split into Probe box, Influence box and Inner box",
-  probeSections.order.join("|") === [
-    "ID", "Always visible", "Env faces", "Texture size",
-    "H3:Probe box", "Centre", "Size", "Camera",
-    "H3:Influence box", "Centre", "Size",
-    "H3:Inner box", "Size", "probe-resolved",
-  ].join("|"),
-  probeSections.order.join(" · "));
+    probeSections.order.join("|") ===
+        ["ID", "Always visible", "Env faces", "H3:Probe box", "Centre", "Size", "Camera", "H3:Influence box", "Centre", "Size", "H3:Inner box", "Size", "probe-resolved"].join("|"),
+    probeSections.order.join(" · ")
+);
 check("each probe section owns an eye that shows and hides only its own volume",
   probeSections.opening.heads.every((h) => h.eye === "true")
     && Object.values(probeSections.opening.gizmos).every(Boolean)
@@ -1212,12 +1321,14 @@ const probeView = await page.evaluate(async () => {
 
   ed.state.environmentProbes.clear();
   const near = {
-    boxPosition: [0, 2, 0], boxSize: [6, 4, 6], capturePosition: [0, 2, 0], resolution: 128,
-  };
-  const far = {
-    boxPosition: [20, 2, 0], boxSize: [6, 4, 6], capturePosition: [20, 2, 0], resolution: 128,
-  };
-  ed.setEnvironmentProbe("ENV_NEAR", near);
+    boxPosition: [0, 2, 0], boxSize: [6, 4, 6],
+        capturePosition: [0, 2, 0],
+    };
+    const far = {
+    boxPosition: [20, 2, 0], boxSize: [6, 4, 6],
+        capturePosition: [20, 2, 0],
+    };
+    ed.setEnvironmentProbe("ENV_NEAR", near);
   ed.setEnvironmentProbe("ENV_FAR", far);
   $("btn-probes").click();
   $("probe-list").value = "ENV_NEAR";
@@ -2073,12 +2184,26 @@ const areaOpen = await page.evaluate(async (a) => {
     mode: ed.state.mode === "collision",
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
     shipShown: [...ed.state.placements.values()].filter((p) => !p.stage && p.node.isEnabled()).length,
-    roomShapesShown: [...ed.state.colliders.values()].filter((c) => !c.stage && c.node.isEnabled()).length,
-  };
+        roomShapesShown: [...ed.state.colliders.values()].filter((c) => !c.stage && c.node.isEnabled()).length,
+        // Capture all lives on the palette now, which is on screen in here too -
+        // and the ship it would photograph is not. Disabled is only half of it:
+        // the pane paints its own colours over the browser's greying, so a button
+        // that is off has to be *seen* to be off or it reads as a dead editor.
+        captureAll: document.getElementById("btn-capture-all").disabled,
+        captureAllPaint: getComputedStyle(document.getElementById("btn-capture-all")).color,
+        livePaint: getComputedStyle(document.getElementById("btn-cfg-reset")).color,
+        captureAllCursor: getComputedStyle(document.getElementById("btn-capture-all")).cursor,
+    };
 }, PROP_A);
 check("the collision area opens empty, with the ship off screen",
   areaOpen.mode && areaOpen.staged === 0 && areaOpen.shipShown === 0
-    && areaOpen.roomShapesShown === 0, JSON.stringify(areaOpen));
+    && areaOpen.roomShapesShown === 0, JSON.stringify(areaOpen)
+);
+check(
+    "and Capture all is inert in here, and looks it, since a capture would photograph nothing",
+    areaOpen.captureAll === true && areaOpen.captureAllPaint !== areaOpen.livePaint && areaOpen.captureAllCursor === "not-allowed",
+    `disabled ${areaOpen.captureAll}, ${areaOpen.captureAllPaint} against a live ${areaOpen.livePaint},` + ` cursor ${areaOpen.captureAllCursor}`
+);
 
 const stagedTwo = await page.evaluate(async ([a, b]) => {
   const ed = await import("/js/editor.js");
@@ -3694,42 +3819,325 @@ check("Remove takes the row it was pressed on, not the first one with that name"
     && twiceRemoved.ordinals.length === 0,
   JSON.stringify(twiceRemoved));
 
-// isProbeExcludedNode: what an environment probe must not photograph. Four
-// separate reasons, because they are four separate facts about an element -
+// isProbeExcludedNode: what an environment probe must not photograph. Five
+// separate reasons, because they are five separate facts about an element -
 // and one of them is matched by name, since the weapon behaviour's contract
 // with the runtime is its name, not a flag in its body.
 const probeOut = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   ed.setBehaviorDef("probeExcluded", { reflectionProbe: "exclude" });
-  ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: "zap" } });
-  ed.setBehaviorDef("rigid", { dynamic: true });
-  ed.setBehaviorDef("melts", { liquefiable: true });
+    ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: "zap" } });
+    ed.setBehaviorDef("weaponAntiGravityGun", {});
+    ed.setBehaviorDef("playAnimation", {});
+    ed.setBehaviorDef("rigid", { dynamic: true });
+    ed.setBehaviorDef("melts", { liquefiable: true });
   ed.setBehaviorDef("sealedDoor", { sealed: true });
   ed.addEntityBehavior("optedOut", "probeExcluded");
-  ed.addEntityBehavior("gun", "weaponLiquefactor");
-  ed.addEntityBehavior("barrel", "rigid");
-  ed.addEntityBehavior("icicle", "melts");
+    ed.addEntityBehavior("gun", "weaponLiquefactor");
+    ed.addEntityBehavior("gravityGun", "weaponAntiGravityGun");
+    ed.addEntityBehavior("fan", "playAnimation");
+    ed.addEntityBehavior("barrel", "rigid");
+    ed.addEntityBehavior("icicle", "melts");
   ed.addEntityBehavior("plainDoor", "sealedDoor");
   // the last one carries a harmless behaviour first, so this also proves the
   // test is over the whole list rather than just the first entry
   ed.addEntityBehavior("plainDoor", "probeExcluded");
   return {
     optedOut: ed.isProbeExcludedNode("optedOut"),
-    gun: ed.isProbeExcludedNode("gun"),
-    barrel: ed.isProbeExcludedNode("barrel"),
-    icicle: ed.isProbeExcludedNode("icicle"),
+        gun: ed.isProbeExcludedNode("gun"),
+        gravityGun: ed.isProbeExcludedNode("gravityGun"),
+        fan: ed.isProbeExcludedNode("fan"),
+        barrel: ed.isProbeExcludedNode("barrel"),
+        icicle: ed.isProbeExcludedNode("icicle"),
     second: ed.isProbeExcludedNode("plainDoor"),
     plain: ed.isProbeExcludedNode("crateB2"),
     unnamed: ed.isProbeExcludedNode(""),
   };
 });
-check("a probe leaves out opt-outs, weapons, dynamics and liquefiables",
-  probeOut.optedOut && probeOut.gun && probeOut.barrel && probeOut.icicle,
-  JSON.stringify(probeOut));
-check("any behaviour in the list is enough, not just the first",
-  probeOut.second, JSON.stringify(probeOut));
-check("everything else stays in the probe",
-  !probeOut.plain && !probeOut.unnamed, JSON.stringify(probeOut));
+check(
+    "a probe leaves out opt-outs, weapons, animations, dynamics and liquefiables",
+    probeOut.optedOut && probeOut.gun && probeOut.gravityGun && probeOut.fan && probeOut.barrel && probeOut.icicle,
+    JSON.stringify(probeOut)
+);
+check("any behaviour in the list is enough, not just the first", probeOut.second, JSON.stringify(probeOut));
+check("everything else stays in the probe", !probeOut.plain && !probeOut.unnamed, JSON.stringify(probeOut));
+
+// ---- Run behaviours: the runtime view plays what the game would play -------
+// A `playAnimation` element is animated on screen the way `play-animation.ts`
+// animates it - same clip, same loop rule - but only in the Runtime view, and
+// only while the setting is on. Everything below drives the real controls.
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.clearAll();
+    ed.select([]);
+    await ed.deserialize({
+        chunks: ["CH00_Storage"],
+        activeChunk: "CH00_Storage",
+        markers: [],
+        instances: [
+            { id: "F1", module: "Modular SciFi MegaKit/Props/Prop_Fan_Small", chunk: "CH00_Storage", name: "fanA", position: [0, 2, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+            { id: "F2", module: "Modular SciFi MegaKit/Props/Prop_Fan_Small", chunk: "CH00_Storage", name: "fanB", position: [4, 2, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+            {
+                id: "W9",
+                module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+                chunk: "CH00_Storage",
+                name: "stillWall",
+                position: [8, 0, 0],
+                rotation: [0, 0, 0],
+                scale: [1, 1, 1],
+            },
+        ],
+        behaviors: { playAnimation: {} },
+        entities: {
+            fanA: { behaviors: [{ name: "playAnimation" }] },
+            fanB: { behaviors: [{ name: "playAnimation" }] },
+            stillWall: { behaviors: [{ name: "playAnimation" }] },
+        },
+    });
+});
+await page.waitForTimeout(3000);
+
+// One reader for the whole block: which clips exist, whether they are running,
+// and where the animated bones are standing right now.
+const readAnims = () =>
+    page.evaluate(async () => {
+        const ed = await import("/js/editor.js");
+        const out = {};
+        for (const p of ed.shipPlacements()) {
+            out[p.name] = {
+                clips: (p.node._shipAnimationGroups || []).map((g) => ({
+                    name: g.name,
+                    playing: !!g.isPlaying,
+                    loop: !!g.loopAnimation,
+                })),
+                pose: (p.node._shipAnimationNodes || []).map((n) =>
+                    (n.rotationQuaternion || n.rotation)
+                        .asArray()
+                        .map((v) => +v.toFixed(4))
+                        .join(",")
+                ),
+            };
+        }
+        return out;
+    });
+
+const animIdle = await readAnims();
+check(
+    "an animated module gets one clip, a static one none",
+    animIdle.fanA.clips.length === 1 && animIdle.fanA.clips[0].name === "Fan_Idle" && animIdle.stillWall.clips.length === 0,
+    JSON.stringify(animIdle.fanA.clips) + " / " + JSON.stringify(animIdle.stillWall.clips)
+);
+check("nothing plays while the editor view is up", !animIdle.fanA.clips[0].playing && !animIdle.fanB.clips[0].playing, JSON.stringify(animIdle.fanA.clips));
+
+await page.selectOption("#view-mode", "runtime");
+await page.waitForFunction(
+    async () => {
+        const ed = await import("/js/editor.js");
+        return ed.state.runtime === true && !document.getElementById("view-mode").disabled;
+    },
+    null,
+    { timeout: 60000 }
+);
+await page.waitForTimeout(500);
+
+const animRun = await readAnims();
+check(
+    "the runtime view spins every fan, looping",
+    animRun.fanA.clips[0].playing && animRun.fanB.clips[0].playing && animRun.fanA.clips[0].loop && animRun.fanB.clips[0].loop,
+    JSON.stringify(animRun.fanA.clips) + " / " + JSON.stringify(animRun.fanB.clips)
+);
+
+await page.waitForTimeout(900);
+const animMoved = await readAnims();
+check(
+    "the bones actually turn, not merely report as playing",
+    animMoved.fanA.pose.join() !== animIdle.fanA.pose.join(),
+    `${animIdle.fanA.pose.join(" ")} → ${animMoved.fanA.pose.join(" ")}`
+);
+
+// Held still while the exporter reads the ship: the GLB records each node's
+// transform as it stands, so a fan caught halfway round would be written out
+// as the authored rest pose.
+const animExport = await page.evaluate(async () => {
+    const mf = await import("/js/manifest.js");
+    const ed = await import("/js/editor.js");
+    const realExport = BABYLON.GLTF2Export.GLBAsync;
+    const realFetch = window.fetch;
+    let sawPlaying = null;
+    let sawPose = null;
+    BABYLON.GLTF2Export.GLBAsync = async () => {
+        const fan = ed.shipPlacements().find((p) => p.name === "fanA");
+        sawPlaying = fan.node._shipAnimationGroups.some((g) => g.isPlaying);
+        sawPose = fan.node._shipAnimationNodes.map((n) =>
+            (n.rotationQuaternion || n.rotation)
+                .asArray()
+                .map((v) => +v.toFixed(4))
+                .join(",")
+        );
+        return { glTFFiles: { "ship.glb": new Blob([new Uint8Array(4)]) } };
+    };
+    window.fetch = async (url, opts) => {
+        if (opts?.method === "POST" && String(url).includes("/api/export")) {
+            return new Response(JSON.stringify({ ok: true, bytes: 4 }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return realFetch(url, opts);
+    };
+    try {
+        await mf.exportGlb();
+    } finally {
+        BABYLON.GLTF2Export.GLBAsync = realExport;
+        window.fetch = realFetch;
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    const fan = ed.shipPlacements().find((p) => p.name === "fanA");
+    return { sawPlaying, sawPose, after: fan.node._shipAnimationGroups.some((g) => g.isPlaying) };
+});
+check(
+    "an export is taken with the animations held at their first frame",
+    animExport.sawPlaying === false && animExport.sawPose.join() === animIdle.fanA.pose.join(),
+    `${JSON.stringify(animExport.sawPlaying)} — ${animExport.sawPose?.join(" ")}`
+);
+check("and playback comes back once the export is done", animExport.after === true, JSON.stringify(animExport));
+
+await page.uncheck("#run-behaviors");
+await page.waitForTimeout(400);
+const animOff = await readAnims();
+const animOffStatus = await page.textContent("#status-text");
+await page.waitForTimeout(600);
+const animSettled = await readAnims();
+check(
+    "unchecking Run behaviours stops them and rewinds the bones",
+    !animOff.fanA.clips[0].playing &&
+        !animOff.fanB.clips[0].playing &&
+        animOff.fanA.pose.join() === animIdle.fanA.pose.join() &&
+        animSettled.fanA.pose.join() === animOff.fanA.pose.join(),
+    `${animOff.fanA.pose.join(" ")} vs authored ${animIdle.fanA.pose.join(" ")}`
+);
+check("and says so on the status line", /behaviours off/.test(animOffStatus), animOffStatus);
+
+await page.check("#run-behaviors");
+await page.waitForTimeout(400);
+const animOnStatus = await page.textContent("#status-text");
+check("checking it starts them again, and counts them", (await readAnims()).fanA.clips[0].playing && /2 animation\(s\) playing/.test(animOnStatus), animOnStatus);
+
+// The assignment's own JSON is the config, exactly as the runtime reads it.
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.setEntityParams("fanA", 0, { loop: false });
+    ed.setEntityParams("fanB", 0, { animation: "Fan_Idle" });
+});
+await page.waitForTimeout(400);
+const animParams = await readAnims();
+check(
+    "loop and animation come from the assignment",
+    animParams.fanA.clips[0].loop === false && animParams.fanB.clips[0].playing && animParams.fanB.clips[0].loop === true,
+    JSON.stringify(animParams.fanA.clips) + " / " + JSON.stringify(animParams.fanB.clips)
+);
+
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.setEntityParams("fanB", 0, { animation: "NoSuchClip" });
+});
+await page.waitForTimeout(400);
+const animMissing = await readAnims();
+check(
+    "a clip that does not exist stops that one and leaves the rest running",
+    !animMissing.fanB.clips[0].playing && animMissing.fanA.clips[0].playing,
+    JSON.stringify(animMissing.fanB.clips)
+);
+
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.setEntityParams("fanA", 0, {});
+    ed.setEntityParams("fanB", 0, {});
+    ed.state.mode = "collision";
+    ed.emit("mode");
+});
+await page.waitForTimeout(400);
+const animBench = await readAnims();
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.state.mode = "ship";
+    ed.emit("mode");
+});
+await page.waitForTimeout(400);
+const animShip = await readAnims();
+check(
+    "a bench holds them still, and coming back to the ship releases them",
+    !animBench.fanA.clips[0].playing && animShip.fanA.clips[0].playing,
+    JSON.stringify(animBench.fanA.clips) + " → " + JSON.stringify(animShip.fanA.clips)
+);
+
+await page.selectOption("#view-mode", "editor");
+await page.waitForFunction(
+    async () => {
+        const ed = await import("/js/editor.js");
+        return ed.state.runtime === false && !document.getElementById("view-mode").disabled;
+    },
+    null,
+    { timeout: 60000 }
+);
+await page.waitForTimeout(400);
+const animExit = await readAnims();
+check(
+    "leaving the runtime view stops them, setting or no setting",
+    !animExit.fanA.clips[0].playing && !animExit.fanB.clips[0].playing && (await page.isChecked("#run-behaviors")),
+    JSON.stringify(animExit.fanA.clips)
+);
+
+// An editor preference: saved with the ship, restored on load, and reset by
+// the Settings pane's Reset like the two beside it.
+const animPrefs = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const on = ed.serializeEditorPrefs().runBehaviors;
+    ed.state.runBehaviors = false;
+    const off = ed.serializeEditorPrefs().runBehaviors;
+    ed.applyEditorPrefs({ runBehaviors: true });
+    const restored = ed.state.runBehaviors;
+    ed.state.runBehaviors = false;
+    document.getElementById("btn-cfg-reset").click();
+    await new Promise((r) => setTimeout(r, 200));
+    return {
+        on,
+        off,
+        restored,
+        afterReset: ed.state.runBehaviors,
+        box: document.getElementById("run-behaviors").checked,
+        default: ed.RUN_BEHAVIORS_DEFAULT,
+    };
+});
+check(
+    "Run behaviours is saved, restored and reset like the settings beside it",
+    animPrefs.on === true && animPrefs.off === false && animPrefs.restored === true && animPrefs.afterReset === true && animPrefs.box === true && animPrefs.default === true,
+    JSON.stringify(animPrefs)
+);
+
+// The library button moved out of the inspector, where it only appeared when
+// exactly one element was selected, into the pane that is always on screen.
+const animButton = await page.evaluate(() => {
+    const btn = document.getElementById("btn-bhv-library");
+    return {
+        inInspector: !!btn.closest("#behavior-fields"),
+        section: btn.closest("#settings-pane .settings-section")?.querySelector("h3")?.textContent,
+    };
+});
+await page.click("#btn-bhv-library");
+await page.waitForTimeout(300);
+const animLibraryOpen = await page.isVisible("#bhv-modal");
+await page.click("#btn-bhv-close");
+await page.waitForTimeout(200);
+check(
+    "Edit behaviours… sits in Settings → Runtime and still opens the library",
+    !animButton.inInspector && animButton.section === "Runtime" && animLibraryOpen,
+    JSON.stringify(animButton) + ` open=${animLibraryOpen}`
+);
+
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.clearAll();
+    ed.select([]);
+});
+await page.waitForTimeout(300);
 
 // a hand-edit that split `direction` into a sibling entry of its own
 const merged = await page.evaluate(async () => {
@@ -3984,6 +4392,204 @@ check("hiding them says nothing about which space you want",
   axesSetSpace.afterHide.shown === null
     && axesSetSpace.afterHide.space === axesSetSpace.beforeHide,
   `${axesSetSpace.beforeHide} -> ${axesSetSpace.afterHide.space}`);
+
+// ---- the gizmo hangs on the middle of the mesh; Ctrl asks for the origin ----
+// A kit's authors put the node origin wherever suited the export, and on this
+// kit that is regularly nowhere near the piece: a short wall's visible mesh is
+// centred 2.2 m from its own origin, so the arrows floated clear of the thing
+// they describe - "some meshes are quite off-centred from the origin, making it
+// difficult to see the axis". The bare keys now measure what you can see and
+// hang the gizmo on the middle of it. The origin stays reachable on Ctrl: it is
+// the number the inspector's Position field writes and the point a snap lands
+// on, so it is still worth being able to look at.
+const anchorKeys = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const i = await import("/js/interact.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(3, 0, 0), { silent: true });
+    ed.select([a.id]);
+    ed.state.camera.position = new V(8, 8, -12);
+    ed.state.camera.setTarget(new V(3, 0.5, 0));
+
+    const b = ed.worldBounds(a.node);
+    const centre = b.min.add(b.max).scale(0.5);
+    const origin = a.node.getWorldMatrix().getRow(3).toVector3();
+    const key = (opts) => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyX", bubbles: true, ...opts }));
+        ed.state.scene.render();
+        const n = ed.state.scene.getTransformNodeByName("AXES");
+        return {
+            anchor: ed.axesAnchor(),
+            space: ed.axesSpace(),
+            shown: ed.axesTarget(),
+            offCentre: n ? +n.position.subtract(centre).length().toFixed(3) : null,
+            offOrigin: n ? +n.position.subtract(origin).length().toFixed(3) : null,
+        };
+    };
+
+    const plain = key({ key: "x" });
+    const ctrl = key({ key: "x", ctrlKey: true });
+    const shift = key({ key: "X", shiftKey: true });
+    const ctrlShift = key({ key: "X", shiftKey: true, ctrlKey: true });
+    const again = key({ key: "X", shiftKey: true, ctrlKey: true });
+
+    // and the anchor is rigid: it is held as an offset in the element's own
+    // frame, so a turn carries it round with the model rather than letting it
+    // swim across the mesh while the world-aligned box grows and shrinks
+    ed.showAxes(a.id, "world", "centre");
+    ed.state.scene.render();
+    const at = () => ed.state.scene.getTransformNodeByName("AXES").position.subtract(a.node.getWorldMatrix().getRow(3).toVector3());
+    const rel = at();
+    a.node.rotationQuaternion = (a.node.rotationQuaternion || BABYLON.Quaternion.Identity()).multiply(BABYLON.Quaternion.RotationAxis(BABYLON.Axis.Y, Math.PI / 2));
+    a.node.computeWorldMatrix(true);
+    ed.state.scene.render();
+    // a 90-degree Y turn sends (x, z) to (z, -x)
+    const drift = +at()
+        .subtract(new V(rel.z, rel.y, -rel.x))
+        .length()
+        .toFixed(3);
+
+    ed.hideAxes();
+    ed.clearAll();
+    ed.select([]);
+    i.setAxisSpace("world");
+    return { apart: +centre.subtract(origin).length().toFixed(3), plain, ctrl, shift, ctrlShift, again, drift };
+});
+check("the module used here really does have its origin off the mesh", anchorKeys.apart > 1, `${anchorKeys.apart} m apart`);
+check(
+    "X hangs the gizmo on the middle of the visible mesh",
+    anchorKeys.plain.anchor === "centre" && anchorKeys.plain.space === "world" && anchorKeys.plain.offCentre < 0.01,
+    `${anchorKeys.plain.anchor}, ${anchorKeys.plain.offCentre} m off the centre`
+);
+check(
+    "Ctrl+X moves it to the node's own origin rather than hiding it",
+    anchorKeys.ctrl.anchor === "origin" && anchorKeys.ctrl.space === "world" && anchorKeys.ctrl.shown !== null && anchorKeys.ctrl.offOrigin < 0.01,
+    `${anchorKeys.ctrl.anchor}, ${anchorKeys.ctrl.offOrigin} m off the origin`
+);
+check(
+    "Shift+X and Ctrl+Shift+X are the same pair in local space",
+    anchorKeys.shift.anchor === "centre" &&
+        anchorKeys.shift.space === "local" &&
+        anchorKeys.shift.offCentre < 0.01 &&
+        anchorKeys.ctrlShift.anchor === "origin" &&
+        anchorKeys.ctrlShift.space === "local" &&
+        anchorKeys.ctrlShift.offOrigin < 0.01,
+    `Shift+X ${anchorKeys.shift.anchor}/${anchorKeys.shift.space},` + ` Ctrl+Shift+X ${anchorKeys.ctrlShift.anchor}/${anchorKeys.ctrlShift.space}`
+);
+check("and the same key twice still hides them", anchorKeys.again.shown === null, `${anchorKeys.again.shown}`);
+check("the centre anchor turns with the element instead of swimming across it", anchorKeys.drift < 0.01, `${anchorKeys.drift} m adrift after a 90-degree turn`);
+
+// ---- and the arms are the same length on every element ----------------------
+// The length used to be taken from the element's own bounding span, clamped
+// between 1.5 m and 8 m, so a prop and a platform got gizmos several times
+// apart: "it looks like the size of the axis coordinates depends on the mesh
+// size: please use a fixed size for all meshes". An arm is a direction
+// indicator, and the ruler for the snap step printed along it, so it has to
+// mean the same thing wherever it is hung.
+const gizmoSize = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const i = await import("/js/interact.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+
+    // every length on the gizmo is a fixed multiple of the arm length, so the
+    // tip cube's local z reads it straight back out
+    const armLength = () => +(ed.state.scene.getMeshByName("AXES_x_scale").position.z / 1.04).toFixed(3);
+
+    const on = async (module, at) => {
+        const e = await ed.placeAt(module, at, { silent: true });
+        const b = ed.worldBounds(e.node);
+        ed.showAxes(e.id, "world", "centre");
+        ed.state.scene.render();
+        return {
+            span: +Math.max(b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z).toFixed(2),
+            arm: armLength(),
+        };
+    };
+
+    const small = await on("Modular SciFi MegaKit/Props/Prop_Light_Corner", new V(0, 0, 0));
+    const big = await on("Modular SciFi MegaKit/Platforms/Platform_3Plates", new V(24, 0, 0));
+
+    // and growing one does not grow its arms either - the very span that used to
+    // drive the length, multiplied by five on a single element
+    const huge = [...ed.state.placements.values()].find((p) => p.id === ed.axesTarget());
+    huge.node.scaling.setAll(5);
+    huge.node.computeWorldMatrix(true);
+    ed.showAxes(huge.id, "world", "centre");
+    ed.state.scene.render();
+    const hb = ed.worldBounds(huge.node);
+    const scaled = {
+        span: +Math.max(hb.max.x - hb.min.x, hb.max.y - hb.min.y, hb.max.z - hb.min.z).toFixed(2),
+        arm: armLength(),
+    };
+
+    ed.hideAxes();
+    ed.clearAll();
+    ed.select([]);
+    return { small, big, scaled };
+});
+check(
+    "scaling the element 5x really does change the span that used to size them",
+    gizmoSize.scaled.span > gizmoSize.big.span * 4,
+    `${gizmoSize.big.span} m -> ${gizmoSize.scaled.span} m`
+);
+check(
+    "the axis arms are the same fixed length on both modules and when 5x scaled",
+    gizmoSize.small.arm === gizmoSize.big.arm && gizmoSize.scaled.arm === gizmoSize.small.arm && Math.abs(gizmoSize.small.arm - 2) < 1e-6,
+    `${gizmoSize.small.span} m module ${gizmoSize.small.arm} m, ${gizmoSize.big.span} m module ` +
+        `${gizmoSize.big.arm} m, ${gizmoSize.scaled.span} m element ${gizmoSize.scaled.arm} m`
+);
+
+// ---- except right up close, where they halve ---------------------------------
+// The arms are world geometry, so leaning in to seat something against a wall
+// puts 2 m of arrow across the whole viewport and buries the detail being
+// aimed. Inside 5 m of the point the gizmo hangs on they drop to half length -
+// a step, not a ramp, so an arm is still a ruler you can read the snap step off.
+const gizmoNear = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const i = await import("/js/interact.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const a = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(0, 0, 0), { silent: true });
+    ed.select([a.id]);
+    ed.showAxes(a.id, "world", "centre");
+    ed.state.scene.render();
+    const root = ed.state.scene.getTransformNodeByName("AXES");
+
+    // the arm's length *in the world* this time, not as built: the tip cube sits
+    // at a fixed multiple of it, so its distance from the root reads it back out
+    const armWorld = () => +(ed.state.scene.getMeshByName("AXES_x_scale").getAbsolutePosition().subtract(root.position).length() / 1.04).toFixed(3);
+
+    const from = (metres) => {
+        const at = root.position.clone();
+        ed.state.camera.position = at.add(new V(0, metres * 0.6, -metres * 0.8));
+        ed.state.camera.setTarget(at);
+        ed.state.scene.render();
+        ed.state.scene.render();
+        return { dist: +V.Distance(ed.state.camera.position, root.position).toFixed(2), arm: armWorld() };
+    };
+    const far = from(12);
+    const close = from(3);
+    const back = from(12); // and it comes back when you pull away again
+
+    ed.hideAxes();
+    ed.clearAll();
+    ed.select([]);
+    return { far, close, back };
+});
+check("the camera really did move either side of the 5 m mark", gizmoNear.far.dist > 5 && gizmoNear.close.dist < 5, `${gizmoNear.far.dist} m then ${gizmoNear.close.dist} m`);
+check(
+    "the arms halve inside 5 m and come back when you pull away",
+    Math.abs(gizmoNear.far.arm - 2) < 1e-3 && Math.abs(gizmoNear.close.arm - 1) < 1e-3 && Math.abs(gizmoNear.back.arm - 2) < 1e-3,
+    `${gizmoNear.far.dist} m -> ${gizmoNear.far.arm} m arms, ` + `${gizmoNear.close.dist} m -> ${gizmoNear.close.arm} m, back at ${gizmoNear.back.arm} m`
+);
 
 // ---- 1d-octodecies. no target hides, and the ghost counts as a target -------
 const axesNoTarget = await page.evaluate(async () => {
@@ -4380,9 +4986,14 @@ const follows = await page.evaluate(async () => {
   const localTwice = ed.axesSpace();
   ed.showAxes(a.id, "world");
   ed.select([b.id]);
-  const worldKept = ed.axesSpace();
-  // and X/Shift+X still say which flavour outright, whatever is on screen
-  ed.showAxes(a.id, "local");
+    const worldKept = ed.axesSpace();
+    // the anchor rides along with the flavour, for the same reason: having asked
+    // for the middle of the mesh you did not ask to be sent back to the origin
+    ed.showAxes(a.id, "world", "centre");
+    ed.select([c.id]);
+    const anchorKept = { on: ed.axesTarget(), anchor: ed.axesAnchor() };
+    // and X/Shift+X still say which flavour outright, whatever is on screen
+    ed.showAxes(a.id, "local");
   ed.toggleAxes(a.id, "world");
   const xForcesWorld = ed.axesSpace();
   ed.toggleAxes(a.id, "local");
@@ -4391,13 +5002,11 @@ const follows = await page.evaluate(async () => {
   ed.hideAxes();
   ed.select([a.id]);
   const whenHidden = ed.axesTarget();      // hidden stays hidden
-  ed.clearAll(); ed.select([]);
-  return { started, followed, onMulti, onNone, whenHidden, a: a.id, b: b.id,
-    localStart, localKept, localTwice, worldKept, xForcesWorld, shiftXForcesLocal };
+  ed.clearAll();
+    ed.select([]);
+    return { started, followed, onMulti, onNone, whenHidden, a: a.id, b: b.id, c: c.id, localStart, localKept, localTwice, worldKept, anchorKept, xForcesWorld, shiftXForcesLocal };
 });
-check("visible axes follow a single click to the new element",
-  follows.started === follows.a && follows.followed === follows.b,
-  `${follows.started} -> ${follows.followed}`);
+check("visible axes follow a single click to the new element", follows.started === follows.a && follows.followed === follows.b, `${follows.started} -> ${follows.followed}`);
 check("a multi-selection or an empty one leaves them where they are",
   follows.onMulti === follows.b && follows.onNone === follows.b,
   `multi=${follows.onMulti}, none=${follows.onNone}`);
@@ -4407,9 +5016,14 @@ check("a local gizmo is still local on the element you click next",
   follows.localStart === "local" && follows.localKept.on === follows.b
     && follows.localKept.space === "local" && follows.localTwice === "local",
   `${follows.localStart} -> ${follows.localKept.space} -> ${follows.localTwice}`);
-check("and a world one is still world",
-  follows.worldKept === "world", follows.worldKept);
-check("X and Shift+X still name the flavour outright",
+check("and a world one is still world", follows.worldKept === "world", follows.worldKept);
+check(
+    "and a centre-hung one is still hung on the centre",
+    follows.anchorKept.on === follows.c && follows.anchorKept.anchor === "centre",
+    `${follows.anchorKept.on} / ${follows.anchorKept.anchor}`
+);
+check(
+    "X and Shift+X still name the flavour outright",
   follows.xForcesWorld === "world" && follows.shiftXForcesLocal === "local",
   `X -> ${follows.xForcesWorld}, Shift+X -> ${follows.shiftXForcesLocal}`);
 
@@ -7282,20 +7896,29 @@ const kitPicker = await page.evaluate(async () => {
     beforeSearch: [...head.children].indexOf(sel)
       < [...head.children].indexOf(document.getElementById("palette-search")),
     options: [...sel.options].map((o) => o.value),
-    value: sel.value,
-    tabs: [...document.getElementById("palette-tabs").children].map((b) => b.textContent),
-    tiles: document.querySelectorAll("#palette-list .item").length,
+        value: sel.value,
+        fallback: kit.defaultKit(),
+        tabs: [...document.getElementById("palette-tabs").children].map((b) => b.textContent),
+        tiles: document.querySelectorAll("#palette-list .item").length,
     expected: kit.getCatalogue().kits.find((k) => k.name === sel.value)?.count,
     tip: sel.title,
   };
 });
-check("the palette has a kit picker, above the search box",
-  kitPicker.exists && kitPicker.beforeSearch, JSON.stringify(kitPicker.exists));
-check("it offers every kit on disk and starts on the first",
-  kitPicker.options.length >= 2
-  && kitPicker.options[0] === "Modular SciFi MegaKit"
-  && kitPicker.value === "Modular SciFi MegaKit",
-  `[${kitPicker.options}] on "${kitPicker.value}"`);
+check("the palette has a kit picker, above the search box", kitPicker.exists && kitPicker.beforeSearch, JSON.stringify(kitPicker.exists));
+// Alphabetical, not config order: the picker is read to find a kit, and an
+// order decided in config.json is one nobody at the keyboard can predict.
+check(
+    "it offers every kit on disk, by name",
+    kitPicker.options.length >= 2 && String(kitPicker.options) === String([...kitPicker.options].sort((a, b) => a.localeCompare(b))),
+    `[${kitPicker.options}]`
+);
+// What config.json still decides: which of them to land in. "Aquanova" sorts
+// first, and is not the pack the ship is built from.
+check(
+    "and starts on the kit the config names, not the first letter",
+    kitPicker.value === "Modular SciFi MegaKit" && kitPicker.fallback === "Modular SciFi MegaKit",
+    `on "${kitPicker.value}", catalogue says "${kitPicker.fallback}"`
+);
 check("the tabs are the chosen kit's categories, not every kit's",
   kitPicker.tabs[0] === "All" && kitPicker.tabs.includes("Walls")
   && !kitPicker.tabs.includes("Enemies") && !kitPicker.tabs.includes("Rocks"),
@@ -7307,16 +7930,23 @@ check("and every tile shown belongs to that kit",
 // A category belongs to the kit it came from: leaving "Walls" selected while
 // showing a pack that has none would empty the palette with no clue why.
 const kitSwitch = await page.evaluate(async () => {
-  const pal = await import("/js/palette.js");
-  const sel = document.getElementById("palette-kit");
-  const tabs = () => [...document.getElementById("palette-tabs").children].map((b) => b.textContent);
+    const pal = await import("/js/palette.js");
+    const cat = (await import("/js/kit.js")).getCatalogue();
+    const sel = document.getElementById("palette-kit");
+    const tabs = () => [...document.getElementById("palette-tabs").children].map((b) => b.textContent);
   const pick = (name) => {
     sel.value = name;
     sel.dispatchEvent(new Event("change", { bubbles: true }));
-  };
-  const other = [...sel.options].map((o) => o.value).find((n) => n !== "Modular SciFi MegaKit");
+    };
+    // Deliberately a kit with no Walls of its own, since what is being watched
+    // is a tab the new kit has no answer for. Which kit that is depends on what
+    // is installed - the picker is alphabetical, and the name next to the
+    // MegaKit's is an accident of spelling - so it is looked up rather than
+    // taken to be the one after it.
+    const info = (n) => cat.kits.find((k) => k.name === n);
+    const other = [...sel.options].map((o) => o.value).find((n) => n !== "Modular SciFi MegaKit" && info(n)?.count > 0 && !info(n).categories.includes("Walls"));
 
-  [...document.getElementById("palette-tabs").children].find((b) => b.textContent === "Walls").click();
+    [...document.getElementById("palette-tabs").children].find((b) => b.textContent === "Walls").click();
   const narrowed = document.querySelectorAll("#palette-list .item").length;
 
   pick(other);
@@ -7454,6 +8084,98 @@ const foldered = await page.evaluate(async () => {
 check("a module from another kit finds the atlas its kit keeps at the root",
   Object.values(foldered).length > 0 && Object.values(foldered).every((m) => m.ready),
   JSON.stringify(foldered));
+
+// A module built for this ship out of parts of a bought pack wears that pack's
+// trim, and Blender writes the path from the .gltf to the image: a URI that
+// climbs. Babylon rejects any ".." outright, so kit.js resolves those itself,
+// under one rule - the reference has to land inside a kit. Checked as a
+// function first, because the interesting cases are the ones that must be
+// refused and none of them can be authored into a real pack.
+const crossKit = await page.evaluate(async () => {
+    const kit = await import("/js/kit.js");
+    const bases = ["/assets/kits/Aquanova/", "/assets/kits/Modular%20SciFi%20MegaKit/"];
+    const from = (uri) => kit.resolveKitUri("/assets/kits/Aquanova/Walls/", uri, bases);
+    const mega = kit.getCatalogue().kits.find((k) => k.name === "Modular SciFi MegaKit");
+    return {
+        climb: from("../../Modular SciFi MegaKit/T_Trim_03_Normal.png"),
+        up: from("../T.png"),
+        beside: from("T.png"),
+        escape: from("../../../../index.html"),
+        offsite: from("https://example.com/T.png"),
+        // Off the live catalogue, whose bases are already encoded, and in the
+        // shape the app uses: a path locally, a full URL against the CDN.
+        live: kit.resolveKitUri(`${mega.base}Walls/`, "../T_Trim_01_ORM.png"),
+        want: `${mega.base}T_Trim_01_ORM.png`,
+    };
+});
+check(
+    "a texture reference may climb into another kit, and no further",
+    crossKit.climb === "/assets/kits/Modular%20SciFi%20MegaKit/T_Trim_03_Normal.png" &&
+        crossKit.up === "/assets/kits/Aquanova/T.png" &&
+        crossKit.beside === "/assets/kits/Aquanova/Walls/T.png" &&
+        crossKit.escape === null &&
+        crossKit.offsite === null &&
+        crossKit.live === crossKit.want,
+    JSON.stringify(crossKit)
+);
+
+// And end to end, because the loader hook is `_loadUriAsync` and an extension
+// that spells it `loadUriAsync` registers, lists, and is never consulted - a
+// mistake nothing but a real load can catch. The file is built here rather
+// than kept in a kit: it is the loader that is under test, and a fixture in
+// BabylonAssets would be one more thing to keep in step.
+const crossKitLoad = await page.evaluate(async () => {
+    const kit = await import("/js/kit.js");
+    const mega = kit.getCatalogue().kits.find((k) => k.name === "Modular SciFi MegaKit");
+    const data = new Uint8Array(60);
+    new Float32Array(data.buffer, 0, 9).set([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    new Float32Array(data.buffer, 36, 6).set([0, 0, 1, 0, 0, 1]);
+    const b64 = btoa(String.fromCharCode(...data));
+    const build = (uri) =>
+        JSON.stringify({
+            asset: { version: "2.0" },
+            scene: 0,
+            scenes: [{ nodes: [0] }],
+            nodes: [{ mesh: 0 }],
+            meshes: [{ primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, material: 0 }] }],
+            materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+            textures: [{ source: 0 }],
+            images: [{ mimeType: "image/png", uri }],
+            buffers: [{ byteLength: 60, uri: `data:application/octet-stream;base64,${b64}` }],
+            bufferViews: [
+                { buffer: 0, byteOffset: 0, byteLength: 36 },
+                { buffer: 0, byteOffset: 36, byteLength: 24 },
+            ],
+            accessors: [
+                { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
+                { bufferView: 1, componentType: 5126, count: 3, type: "VEC2" },
+            ],
+        });
+    const load = (uri) => BABYLON.SceneLoader.LoadAssetContainerAsync(`${mega.base}Walls/`, new File([build(uri)], "probe.gltf"), window.__scene);
+
+    const out = {};
+    const box = await load("../T_Trim_01_ORM.png");
+    const tex = box.materials[0]?.albedoTexture || null;
+    for (let i = 0; i < 40 && tex && !tex.isReady(); i++) {
+        await new Promise((done) => setTimeout(done, 100));
+    }
+    out.size = tex?.isReady() ? tex.getSize() : null;
+    box.dispose();
+
+    // Same file, one folder too far: the message has to name what it refused.
+    try {
+        (await load("../../../../index.html")).dispose();
+        out.refused = "loaded anyway";
+    } catch (e) {
+        out.refused = e.message;
+    }
+    return out;
+});
+check(
+    "a climbing reference loads the other kit's atlas, and a wilder one is refused",
+    crossKitLoad.size && crossKitLoad.size.width >= 1024 && crossKitLoad.size.width === crossKitLoad.size.height && /points outside the kits/.test(crossKitLoad.refused),
+    `${JSON.stringify(crossKitLoad.size)}, refused with "${String(crossKitLoad.refused).slice(-90)}"`
+);
 
 // The editor server is started once and left running for days, and it serves
 // public/ off disk - so the page can end up newer than the process answering
@@ -11115,6 +11837,31 @@ check("all palette panes start open, with the brush label under them",
   `${JSON.stringify(paneFold.open)}, foot ends ${paneFold.foot.bottom},`
   + ` palette ends ${paneFold.palette.bottom}, painted on top ${paneFold.onTop}`);
 
+// A pane wider than the palette hangs a scrollbar along the bottom of the
+// menu, which is never anything but a mistake: every row down here is built to
+// the palette's width, whatever that width is. The read-outs in the last
+// column do lean into the pane's right padding on purpose - "1.00x" was never
+// going to fit a 16 px track - so what is checked is that nothing spills past
+// the padding, not that each label sits inside its own column.
+const paneWide = await page.evaluate(() => {
+    const read = (sel) => {
+        const el = document.querySelector(sel);
+        return { over: el.scrollWidth - el.clientWidth, w: el.clientWidth };
+    };
+    const worst = [...document.querySelectorAll("#palette-panes .cfg-row")]
+        .map((el) => ({
+            row: (el.textContent || "").trim().split("\n")[0].slice(0, 24),
+            over: el.scrollWidth - el.clientWidth,
+        }))
+        .sort((a, b) => b.over - a.over)[0];
+    return { panes: read("#palette-panes"), list: read("#palette-list"), worst };
+});
+check(
+    "no pane outgrows the palette, so the menu never scrolls sideways",
+    paneWide.panes.over <= 0 && paneWide.list.over <= 0,
+    `panes ${paneWide.panes.over} px past ${paneWide.panes.w}, list ${paneWide.list.over} px,` + ` widest row "${paneWide.worst?.row}" +${paneWide.worst?.over} px`
+);
+
 await page.click("#settings-pane > summary");
 await page.waitForTimeout(250);
 const paneShut = await page.evaluate(() => ({
@@ -11655,8 +12402,63 @@ check("the light has a plate and a stub in the viewport, both hung off its node"
 check("neither reaches the ship: not its meshes, not its size, not the export",
   lightUi.shipMeshes > 0 && lightUi.boundsUnchanged,
   `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`);
-check("and selecting the element it rides puts the light panel away",
-  !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
+check("and selecting the element it rides puts the light panel away", !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
+
+// ---- L steps between an element and the lamps riding it ---------------------
+// A lamp sits inside the thing it lights, so its gizmo and the element's surface
+// are the same few pixels and clicking either means missing the other. L walks
+// the element and everything riding it, then returns - so every press lands
+// somewhere and a single-lamp element is simply a toggle.
+const lightKey = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const lt = await import("/js/lights.js");
+    const i = await import("/js/interact.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+    const lit = await ed.placeAt(M, new V(40, 0, 0), { silent: true });
+    const dark = await ed.placeAt(M, new V(48, 0, 0), { silent: true });
+    const one = lt.addLight(lit.id, { silent: true });
+    const two = lt.addLight(lit.id, { silent: true });
+
+    const press = () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "l", code: "KeyL", bubbles: true }));
+        return { sel: [...ed.state.selection], status: (document.getElementById("status-text")?.textContent || "").trim() };
+    };
+
+    ed.select([lit.id]);
+    const walk = [press(), press(), press(), press()];
+
+    // an element with no lamp says so and leaves the selection alone
+    ed.select([dark.id]);
+    const none = press();
+
+    // and so does nothing at all selected
+    ed.select([]);
+    const empty = press();
+
+    ed.clearAll();
+    ed.select([]);
+    return { owner: lit.id, dark: dark.id, one: one.id, two: two.id, walk, none, empty };
+});
+check("L steps from the element onto its first lamp", lightKey.walk[0].sel.join() === lightKey.one, `${JSON.stringify(lightKey.walk[0].sel)} — "${lightKey.walk[0].status}"`);
+check(
+    "L again visits the second lamp, then returns to the element and round again",
+    lightKey.walk[1].sel.join() === lightKey.two && lightKey.walk[2].sel.join() === lightKey.owner && lightKey.walk[3].sel.join() === lightKey.one,
+    lightKey.walk.map((w) => w.sel.join() || "-").join(" -> ")
+);
+check(
+    "on an element with no lamp it says so and leaves the selection alone",
+    lightKey.none.sel.join() === lightKey.dark && /no light on /.test(lightKey.none.status),
+    `${JSON.stringify(lightKey.none.sel)} — "${lightKey.none.status}"`
+);
+check(
+    "and with nothing selected it asks for something to step from",
+    lightKey.empty.sel.length === 0 && /select an element/.test(lightKey.empty.status),
+    `"${lightKey.empty.status}"`
+);
 
 // ---- a lamp starts at the numbers its own kind needs ------------------------
 // Intensity, range and cone mean different things per kind: 1 is bright for a

@@ -20,6 +20,11 @@ let kitReading = {};
 const protoCache = new Map();
 const protoPending = new Map();
 
+/** Kit URL prefixes, and whether the loader has been taught to use them. */
+const KIT_URI_EXTENSION = "AQUANOVA_kit_relative_uri";
+let kitBases = [];
+let uriResolverInstalled = false;
+
 /**
  * Fetch JSON, or fail with something that names the fault.
  *
@@ -57,6 +62,7 @@ export async function loadCatalogue() {
       for (const m of c.modules) catalogue.byId.set(m.id, m);
     }
     installTextureRedirect(catalogue.kits);
+    installKitUriResolver(catalogue.kits);
   }
   return catalogue;
 }
@@ -72,7 +78,10 @@ export async function loadCatalogue() {
  *
  * The kit textures are deliberately not re-installed: the redirect is a loader
  * rule keyed on kit names that cannot have changed, and re-adding it would
- * stack a second copy on the loader.
+ * stack a second copy on the loader. The URI resolver is re-called, because
+ * the one thing that *can* change here is the list of kits - saving the first
+ * compound makes one - and it is the list that says which references are
+ * allowed. It registers itself once and only refreshes that list.
  */
 export async function reloadCatalogue() {
   if (!catalogue) return loadCatalogue();
@@ -80,10 +89,12 @@ export async function reloadCatalogue() {
   assertCatalogueShape(fresh);
   catalogue.categories = fresh.categories;
   catalogue.kits = fresh.kits;
+  catalogue.defaultKit = fresh.defaultKit;
   catalogue.byId = new Map();
   for (const c of catalogue.categories) {
     for (const m of c.modules) catalogue.byId.set(m.id, m);
   }
+  installKitUriResolver(catalogue.kits);
   return catalogue;
 }
 
@@ -132,11 +143,11 @@ export function assertCatalogueShape(cat) {
  * bare URI next to the .gltf, so it asks for `Walls/T_Trim_01_ORM.png`, which
  * is not there.
  *
- * The obvious repair - rewriting the URI to `../T_Trim_01_ORM.png` - is not
- * available: glTF forbids a URI from leaving the file's own directory, and
- * Babylon enforces it (`_ValidateUri` rejects any ".."), so such a file fails
- * to load outright. Copying the 27 MB atlas set into each of the six folders
- * would work, and would put 99 MB on the CDN to say the same thing six times.
+ * Rewriting the URI to `../T_Trim_01_ORM.png` would say it properly, but it
+ * would mean editing every file of a pack on the way in, and a re-import from
+ * Quaternius would undo the lot. Copying the 27 MB atlas set into each of the
+ * six folders is the other way out, and it would put 99 MB on the CDN to say
+ * the same thing six times.
  *
  * So the textures are left exactly where Quaternius puts them - which keeps
  * refreshing a kit a straight copy - and the *loader* is told the convention.
@@ -177,9 +188,123 @@ function installTextureRedirect(kits) {
   });
 }
 
+/**
+ * Resolve a texture reference that climbs out of the model's own folder.
+ *
+ * Returns the URL to fetch, in the same shape the rest of the app uses - a
+ * path when the assets are served from here, a full URL when they come from
+ * the CDN - or null when the reference lands outside every kit.
+ *
+ * The resolution is the browser's own: `new URL` implements RFC 3986, so a
+ * reference behaves exactly as it would in an `<img src>` next to the model,
+ * which is what whoever wrote the file was picturing.
+ */
+export function resolveKitUri(rootUrl, uri, bases = kitBases) {
+  let target;
+  try {
+    target = new URL(uri, new URL(rootUrl || "", document.baseURI));
+  } catch {
+    return null;
+  }
+  const url = target.origin === location.origin
+    ? target.pathname + target.search
+    : target.href;
+  // Decoded on both sides: the catalogue encodes a kit name with
+  // `encodeURIComponent` and the URL parser encodes a path with its own,
+  // slightly shorter, list, so "Modular SciFi MegaKit" is the only spelling
+  // the two are certain to agree on.
+  const plain = decodeURI(url);
+  return bases.some((base) => plain.startsWith(decodeURI(base))) ? url : null;
+}
+
+/**
+ * Let one kit borrow another kit's textures.
+ *
+ * A module built for this ship out of parts of the Quaternius packs - a wall
+ * of ours wearing their trim - has its textures one kit over, and Blender
+ * writes exactly that when it exports: `../../Modular SciFi MegaKit/
+ * T_Trim_03_Normal.png`, the path from the .gltf to the image. That is a
+ * perfectly good glTF URI. RFC 3986 relative references may climb, and the
+ * spec only asks that they be normalised.
+ *
+ * Babylon refuses it anyway: `_ValidateUri` rejects any URI containing "..",
+ * so the file fails to load outright, with `'…' is invalid` and no textures.
+ * The guard is there so an asset downloaded from anywhere cannot walk back up
+ * the server and read what is above it - which is worth keeping, and costs
+ * nothing here as long as a reference stays inside the kits.
+ *
+ * So the loader is handed an extension that resolves those references itself.
+ * Extensions are consulted *before* the check, which is the whole reason this
+ * works, and the check is then never reached for the URIs it takes over. What
+ * replaces it is narrower: the reference has to land inside a kit the
+ * catalogue lists, so it can reach another kit's atlas and nothing else - not
+ * the export folder, not the editor's own source, nothing off this origin.
+ *
+ * Everything without a ".." is left alone, so the loader's usual path, and the
+ * bare-filename redirect above it, are untouched.
+ */
+function installKitUriResolver(kits) {
+  // Refreshed on every catalogue read rather than frozen at the first one: a
+  // saved compound adds a kit, and a rule that had not heard of it would turn
+  // a legitimate reference into a refusal.
+  kitBases = kits.map((k) => k.base).filter(Boolean);
+  if (uriResolverInstalled) return;
+
+  const gltf2 = BABYLON.GLTF2;
+  const register = gltf2.registerGLTFExtension
+    // `false`: not a glTF extension a file has to ask for by name in
+    // `extensionsUsed`, but one that applies to every file loaded.
+    ? (name, factory) => gltf2.registerGLTFExtension(name, false, factory)
+    : (name, factory) => gltf2.GLTFLoader.RegisterExtension(name, factory);
+
+  register(KIT_URI_EXTENSION, (loader) => ({
+    name: KIT_URI_EXTENSION,
+    enabled: true,
+    dispose() {},
+    // `_loadUriAsync`, not `loadUriAsync`: the loader calls the underscored
+    // name (`_applyExtensions(property, "loadUri", …)`), and an extension that
+    // spells it the tidier way is simply never consulted - it fails exactly as
+    // if it had not been registered at all.
+    _loadUriAsync(context, property, uri) {
+      // null hands the URI back to the loader, which is what should happen to
+      // all but the handful that climb.
+      if (!uri.includes("..")) return null;
+      const url = resolveKitUri(loader.rootUrl || "", uri);
+      if (!url) {
+        throw new Error(
+          `${context}: '${uri}' points outside the kits, from ${loader.rootUrl || "the page"}`,
+        );
+      }
+      // Through the same preprocess hook as every other URI, so a redirect
+      // installed for a kit still applies to what is fetched here.
+      return loader.parent.preprocessUrlAsync(url).then(async (final) => {
+        const r = await fetch(final);
+        if (!r.ok) throw new Error(`${context}: GET ${final} → ${r.status} ${r.statusText}`.trimEnd());
+        return new Uint8Array(await r.arrayBuffer());
+      });
+    },
+  }));
+  uriResolverInstalled = true;
+}
+
 export function getCatalogue() { return catalogue; }
 export function getModule(id) { return catalogue?.byId.get(id) || null; }
 export function getKitMaterials() { return kitMaterials; }
+
+/**
+ * The kit to start on, when nothing has been chosen yet.
+ *
+ * The catalogue's kit list is alphabetical, because it is read in a combo box
+ * and a list nobody can predict the order of has to be read end to end. That
+ * makes its first entry an accident of spelling, which is no way to pick the
+ * pack a ship is mostly built from - so the server names one, out of the
+ * `kits.folders` config. An older server that names none leaves the first kit,
+ * which is exactly what this did before.
+ */
+export function defaultKit() {
+  const names = (catalogue?.kits || []).map((k) => k.name);
+  return names.includes(catalogue?.defaultKit) ? catalogue.defaultKit : (names[0] || null);
+}
 
 /**
  * How many metres one unit of an FBX file is.
@@ -623,11 +748,149 @@ export async function getProto(moduleId) {
   return job;
 }
 
-/** Create a placement node holding instances of every part of `moduleId`. */
+/**
+ * The world matrix of a node whose ancestors may be stale.
+ *
+ * Proto containers are parked disabled once loaded, and a disabled node is not
+ * re-evaluated by the render loop, so its cached world matrix - and every one
+ * above it - can be left over from load time. Forcing the chain top-down is
+ * the only order that is right: `computeWorldMatrix(true)` on a node reads its
+ * parent's *cached* matrix, so forcing a child first would compose a fresh
+ * local against a stale parent.
+ */
+function worldMatrixOf(node) {
+  const chain = [];
+  for (let n = node; n; n = n.parent) chain.push(n);
+  for (let i = chain.length - 1; i >= 0; i--) chain[i].computeWorldMatrix(true);
+  return node.getWorldMatrix();
+}
+
+/**
+ * The node an orphan joint hangs from, carrying the basis its meshes were baked
+ * into.
+ *
+ * `getProto` bakes each mesh's **world** matrix into its part, and that world
+ * matrix runs through the loader's `__root__` - the node Babylon gives every
+ * glTF to turn the file's right-handed data into our left-handed scene. It is a
+ * mirror, so the baked scaling holds a -1 and the mesh clones inherit it.
+ *
+ * A joint cannot be baked the same way: animation channels drive a joint's
+ * *local* TRS, so anything written there is overwritten on the first frame. The
+ * basis has to arrive from above instead - which is how the asset itself is
+ * built, the joints and the meshes sharing an armature under `__root__`.
+ *
+ * Parenting orphan joints straight to the placement root is what dropped it,
+ * and the two halves of one fan then disagreed about which way round the world
+ * is. Babylon hides the disagreement: `Skeleton.prepare` copies only a linked
+ * node's local TRS into its bone, so an ancestor is invisible to it and the
+ * mesh's own world matrix supplies the mirror at draw time. glTF resolves a
+ * skin the other way round - the mesh node's transform is ignored and the
+ * joint's *global* transform is what counts - so the exported ship lost the
+ * mirror, and with it the winding: every skinned normal came out inverted and
+ * the fans were lit from the wrong side. Nothing looked broken in the editor,
+ * which is exactly why it survived to the runtime.
+ *
+ * So the fix belongs here rather than in the export: it is not a serialisation
+ * quirk to paper over, it is a placement that was only half converted.
+ */
+function basisFor(sourceParent, root, nodeName, basisNodes, animationNodes) {
+  if (!sourceParent) return root;
+  const existing = basisNodes.get(sourceParent);
+  if (existing) return existing;
+
+  // Named for the job, not for `sourceParent`: the node it stands in for is
+  // usually the loader's `__root__`, and a node called `__root__` in a ship
+  // .glb invites a loader to treat it as one of its own.
+  const suffix = basisNodes.size === 0 ? "Basis" : `Basis${basisNodes.size + 1}`;
+  const basis = new TransformNode(`${nodeName}_${suffix}`, window.__scene);
+  const pos = new Vector3();
+  const rot = new Quaternion();
+  const scl = new Vector3();
+  worldMatrixOf(sourceParent).decompose(scl, rot, pos);
+  basis.position.copyFrom(pos);
+  basis.rotationQuaternion = rot;
+  basis.scaling.copyFrom(scl);
+  basis.parent = root;
+  // Rides `_shipAnimationNodes` so the export whitelists and renames it with
+  // the joints it carries; left out, the joints would reach the file parented
+  // to the placement root and the mirror would be lost all over again.
+  basis._shipAnimationSourceName = suffix;
+  basisNodes.set(sourceParent, basis);
+  animationNodes.push(basis);
+  return basis;
+}
+
+/**
+ * Create a placement of `moduleId`.
+ *
+ * Static modules use hardware instances. Animated modules need private mesh
+ * clones, skeletons, linked transform nodes, and animation groups so every
+ * placement can be exported and played independently.
+ */
 export async function instantiate(moduleId, nodeName) {
   const proto = await getProto(moduleId);
   const root = new TransformNode(nodeName, window.__scene);
   root.rotationQuaternion = Quaternion.Identity();
+
+  const sourceSkeletons = proto.container.skeletons;
+  if (sourceSkeletons.length && proto.container.animationGroups.length) {
+    const targetMap = new Map();
+    const animationNodes = [];
+    for (const sourceSkeleton of sourceSkeletons) {
+      for (const sourceBone of sourceSkeleton.bones) {
+        const sourceTarget = sourceBone.getTransformNode();
+        if (!sourceTarget || targetMap.has(sourceTarget)) continue;
+        const target = new TransformNode(`${nodeName}_${sourceTarget.name}`, window.__scene);
+        target.position.copyFrom(sourceTarget.position);
+        target.rotationQuaternion = sourceTarget.rotationQuaternion?.clone() ?? Quaternion.FromEulerAngles(sourceTarget.rotation.x, sourceTarget.rotation.y, sourceTarget.rotation.z);
+        target.scaling.copyFrom(sourceTarget.scaling);
+        target._shipAnimationSourceName = sourceTarget.name;
+        targetMap.set(sourceTarget, target);
+        animationNodes.push(target);
+      }
+    }
+    const basisNodes = new Map();
+    for (const [sourceTarget, target] of targetMap) {
+      target.parent = targetMap.get(sourceTarget.parent)
+        ?? basisFor(sourceTarget.parent, root, nodeName, basisNodes, animationNodes);
+    }
+    const skeletonMap = new Map();
+    for (const sourceSkeleton of sourceSkeletons) {
+      const skeleton = sourceSkeleton.clone(`${nodeName}_${sourceSkeleton.name}`);
+      for (let i = 0; i < sourceSkeleton.bones.length; i++) {
+        const sourceTarget = sourceSkeleton.bones[i].getTransformNode();
+        if (sourceTarget) skeleton.bones[i].linkTransformNode(targetMap.get(sourceTarget));
+      }
+      skeletonMap.set(sourceSkeleton, skeleton);
+    }
+
+    for (let i = 0; i < proto.parts.length; i++) {
+      const part = proto.parts[i];
+      const clone = part.mesh.clone(`${nodeName}#${i}`, root, true);
+      if (!clone) throw new Error(`could not clone animated module part ${part.mesh.name}`);
+      clone.position.copyFrom(part.position);
+      clone.rotationQuaternion = part.rotationQuaternion.clone();
+      clone.scaling.copyFrom(part.scaling);
+      clone.skeleton = skeletonMap.get(part.mesh.skeleton) ?? null;
+      clone.isPickable = true;
+      clone.metadata = { placementRoot: root };
+    }
+    const animationGroups = proto.container.animationGroups.map((group) =>
+      group.clone(group.name, (target) => {
+        const mapped = targetMap.get(target);
+        if (!mapped) throw new Error(`animation "${group.name}" targets unsupported node "${target?.name ?? "?"}"`);
+        return mapped;
+      }, true, true));
+    const skeletons = [...skeletonMap.values()];
+    root._shipAnimationGroups = animationGroups;
+    root._shipSkeletons = skeletons;
+    root._shipAnimationNodes = animationNodes;
+    root.onDisposeObservable.add(() => {
+      for (const group of animationGroups) group.dispose();
+      for (const skeleton of skeletons) skeleton.dispose();
+    });
+    return root;
+  }
 
   for (let i = 0; i < proto.parts.length; i++) {
     const part = proto.parts[i];

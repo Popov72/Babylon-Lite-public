@@ -58,7 +58,7 @@ let failures = 0;
 try {
   await waitForServer();
   console.log(`\nscratch export dir: ${scratch}\n`);
-  for (const script of ["smoke.mjs", "interact.mjs", "e2e.mjs"]) {
+  for (const script of ["smoke.mjs", "animation-export.mjs", "interact.mjs", "e2e.mjs"]) {
     console.log(`\n=== ${script} ${"=".repeat(60 - script.length)}`);
     const code = await run(script);
     if (code !== 0) failures++;

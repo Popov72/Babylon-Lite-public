@@ -1,6 +1,6 @@
 // Module palette: kit picker, category tabs, search, lazy thumbnails, brush arming.
 
-import { getCatalogue } from "./kit.js";
+import { getCatalogue, defaultKit } from "./kit.js";
 import { request as requestThumb, cachedUrl, requestTurntable, TURN_FRAMES } from "./thumbs.js";
 import { state, emit, on, hooks } from "./editor.js";
 import { armGhost, cancelGhost } from "./interact.js";
@@ -23,9 +23,12 @@ let activeCategory = "All";
 let observer = null;
 
 export function initPalette() {
+  // The catalogue lists its kits alphabetically, which is the order to offer
+  // them in; which one to *start* on is a different question, and the server
+  // answers it from the config rather than from the first letter of a name.
   const kits = (getCatalogue().kits || []).map((k) => k.name);
   const saved = localStorage.getItem(KIT_STORE);
-  activeKit = kits.includes(saved) ? saved : (kits[0] || null);
+  activeKit = kits.includes(saved) ? saved : (defaultKit() || null);
 
   kitEl.innerHTML = "";
   for (const name of kits) {

@@ -49,7 +49,8 @@ const ONLINE_BASE = String(KITS.onlineBase || "https://assets.babylonjs.com/").r
 // cannot drift apart.
 const KITS_PREFIX = String(KITS.prefix || "kits").replace(/^\/+|\/+$/g, "");
 const KITS_DIR = path.join(ASSETS_DIR, KITS_PREFIX);
-// Which kits to offer, in palette order. Empty means "every folder in kits/".
+// Which kit the palette opens on, first installed name wins. The list itself
+// is alphabetical; this only picks the one to start on.
 const KIT_FOLDERS = Array.isArray(KITS.folders) ? KITS.folders : [];
 const EXPORT_DIR = path.resolve(HERE,
   // Overridable so the test suite can point at a scratch directory instead of
@@ -249,7 +250,14 @@ function orderCategories(names) {
   });
 }
 
-/** The kits to offer, in palette order: config order first, then any others. */
+/**
+ * The kits to offer, by name.
+ *
+ * Alphabetical rather than config order, because the list is read in a combo
+ * box: an order somebody chose in a file the reader cannot see is an order
+ * they have to scan the whole list to search. A kit dropped into `kits/` shows
+ * up without a config edit, in its place among the rest.
+ */
 async function kitFolders() {
   let present;
   try {
@@ -257,11 +265,19 @@ async function kitFolders() {
   } catch {
     return [];
   }
-  const wanted = KIT_FOLDERS.filter((k) => present.includes(k));
-  const rest = present.filter((k) => !wanted.includes(k)).sort((a, b) => a.localeCompare(b));
-  // A kit dropped into kits/ shows up without a config edit; the config only
-  // decides what comes first.
-  return [...wanted, ...rest];
+  return present.sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The kit the palette opens on, when nothing is remembered yet.
+ *
+ * This is what `kits.folders` in the config is for now that the list itself is
+ * sorted: the ship is built out of one pack with a second for trimmings, and
+ * which one that is cannot be read off an alphabetical list. First name in the
+ * config that is actually installed; failing that, the first kit there is.
+ */
+function defaultKit(names) {
+  return KIT_FOLDERS.find((k) => names.includes(k)) || names[0] || null;
 }
 
 /**
@@ -507,7 +523,16 @@ async function buildCatalogue() {
   // the catalogue so the app needs no extra round trip on boot. Re-read per
   // request rather than taken from the boot-time CONFIG, so adding a sim to
   // config.json only needs a page refresh.
-  return { kitsSource: KITS_SOURCE, kitsBase: KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/` : KITS_DIR, kits, categories, fluidSim: readFluidSim() };
+  return {
+    kitsSource: KITS_SOURCE,
+    kitsBase: KITS_SOURCE === "online" ? `${ONLINE_BASE}${KITS_PREFIX}/` : KITS_DIR,
+    kits,
+    // Computed from the kits that survived scanning, not from the folder
+    // listing: a kit that could not be read is not one to open on.
+    defaultKit: defaultKit(kits.map((k) => k.name)),
+    categories,
+    fluidSim: readFluidSim(),
+  };
 }
 
 function readFluidSim() {
@@ -623,6 +648,7 @@ function localEnvironmentStatus() {
         position: entry?.position,
         boxPosition: entry?.boxPosition,
         boxSize: entry?.boxSize,
+        angle: entry?.angle,
         resolution: entry?.resolution,
         hash: entry?.hash,
       });
@@ -673,6 +699,7 @@ async function declareLocalEnvironments(declared, force = false) {
       position: probe.position,
       boxPosition: probe.boxPosition,
       boxSize: probe.boxSize,
+      angle: probe.angle,
       resolution: probe.resolution,
       hash: probe.hash,
       // Carried over so an untouched probe stays byte-identical in the index

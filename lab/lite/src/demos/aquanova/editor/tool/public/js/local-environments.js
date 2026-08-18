@@ -25,7 +25,7 @@
 // The editor's exposure and tone mapping are held off for the same reason: a
 // probe is scene-referred radiance, and the runtime exposes it itself.
 
-import { state, whileBusy, setBusyMessage, withDeadline } from "./editor.js";
+import { state, whileBusy, setBusyMessage, withDeadline, CONFIG_DEFAULTS } from "./editor.js";
 import { meshesInProbeBox, renderListFor, setCaptureViewpoint, withRuntimeCapture, authoredMaterialOf } from "./runtime.js";
 
 /**
@@ -44,8 +44,17 @@ import { meshesInProbeBox, renderListFor, setCaptureViewpoint, withRuntimeCaptur
  */
 const CAPTURE_TIMEOUT_MS = 120000;
 
-/** Face size when a probe does not state one. 256 is the kit's own texel density. */
-const DEFAULT_RESOLUTION = 256;
+/**
+ * Face size every probe is captured at, in pixels.
+ *
+ * A ship-wide setting rather than a per-probe one: the runtime holds the
+ * captures in a cube texture array, whose slices all share one dimension. It
+ * is part of the digest as well as of the render, so raising it is what makes
+ * every probe stale at once.
+ */
+function probeResolution() {
+  return Math.max(16, Number(state.config.probeResolution) || CONFIG_DEFAULTS.probeResolution);
+}
 
 /**
  * Sample count for the GGX prefilter.
@@ -196,7 +205,8 @@ function probeDigestSource(probe, meshes) {
     `box:${probe.boxPosition.map(round).join(",")}`,
     `size:${probe.boxSize.map(round).join(",")}`,
     `at:${probe.capturePosition.map(round).join(",")}`,
-    `res:${probe.resolution || DEFAULT_RESOLUTION}`,
+    `angle:${round(probe.angle || 0)}`,
+    `res:${probeResolution()}`,
   ];
 
   const rows = [];
@@ -277,7 +287,7 @@ async function digest(source) {
 async function captureProbe(probe, meshes) {
   const scene = state.scene;
   const engine = scene.getEngine();
-  const size = Math.max(16, Number(probe.resolution) || DEFAULT_RESOLUTION);
+  const size = probeResolution();
   const at = new BABYLON.Vector3(probe.capturePosition[0], probe.capturePosition[1], probe.capturePosition[2]);
   const type = engine.getCaps().textureHalfFloatRender
     ? BABYLON.Constants.TEXTURETYPE_HALF_FLOAT
@@ -429,7 +439,8 @@ export async function generateLocalEnvironments(onProgress = () => {}, { force =
           position: probe.capturePosition,
           boxPosition: probe.boxPosition,
           boxSize: probe.boxSize,
-          resolution: probe.resolution || DEFAULT_RESOLUTION,
+          angle: probe.angle || 0,
+          resolution: probeResolution(),
           hash: await digest(probeDigestSource(probe, meshes)),
         },
       });

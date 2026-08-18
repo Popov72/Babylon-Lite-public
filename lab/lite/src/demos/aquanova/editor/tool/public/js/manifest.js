@@ -279,6 +279,7 @@ export function buildManifest() {  const layout = serialize();
       boxPosition: toGltf(probe.boxPosition),
       boxSize: r(probe.boxSize),
       capturePosition: toGltf(probe.capturePosition),
+      angle: -probe.angle,
       // The volume the runtime blends this probe over, which is a different
       // question from the volume it projects onto: the box above is the room's
       // walls, these two are where the cubemap starts and stops being the one
@@ -287,7 +288,6 @@ export function buildManifest() {  const layout = serialize();
       influenceBoxPosition: toGltf(probe.influenceBoxPosition),
       influenceBoxSize: r(probe.influenceBoxSize),
       influenceInnerBoxSize: r(probe.influenceInnerBoxSize),
-      resolution: probe.resolution,
     };
   });
 
@@ -370,18 +370,20 @@ export function buildManifest() {  const layout = serialize();
     space: {
       gltf: ["chunks[].aabb", "environmentProbes[].boxPosition",
         "environmentProbes[].capturePosition",
+        "environmentProbes[].angle",
         "environmentProbes[].influenceBoxPosition",
         "collision", "moduleCollision", "portals", "doors"],
       editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
       none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kits",
         "activeChunk", "fluidSim", "behaviors", "entities", "environment",
         "editorEnvironment", "editorPrefs", "adjacency", "space",
-        "environmentProbes[].boxSize", "environmentProbes[].resolution",
+        "environmentProbes[].boxSize",
         "environmentProbes[].influenceBoxSize",
         "environmentProbes[].influenceInnerBoxSize"],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",
+        yaw: "-angle",
         quaternion: "[-x, y, z, -w] — mirroring flips the handedness of the turn as well",
         aabb: "min.x and max.x swap as well as negate",
         // The one that bites. moduleCollision is a *local* transform written in
@@ -629,6 +631,10 @@ async function exportGlbInner() {
       renamed.push([m, m.name]);
       m.name = `${name}_primitive${i}`;
     });
+    for (const animationNode of p.node._shipAnimationNodes ?? []) {
+      renamed.push([animationNode, animationNode.name]);
+      animationNode.name = `${name}_${animationNode._shipAnimationSourceName}`;
+    }
 
     // Who this node is, written into the glTF node's `extras`.
     //
@@ -674,25 +680,27 @@ async function exportGlbInner() {
   for (const p of shipPlacements()) {
     exportable.add(p.node);
     for (const m of artMeshes(p.node)) exportable.add(m);
+    for (const animationNode of p.node._shipAnimationNodes ?? []) exportable.add(animationNode);
   }
   for (const l of lights) exportable.add(l.node);
 
-  // The ship is static geometry, and the exporter's skins are the one thing it
-  // reads off the whole scene rather than off `shouldExportNode`: it walks
-  // `scene.skeletons` and warns once per bone whose joint node is not being
-  // exported. Every kit skeleton in the scene qualifies - a module is loaded as
-  // a hidden prototype whose nodes are disabled and never exported, and a
-  // placement is an INSTANCE of that prototype, so the joints belong to the
-  // prototype and the joint transforms are shared by every copy.
-  //
-  // Which is also why exporting them would be wrong rather than merely noisy:
-  // glTF ignores a skinned node's own transform, so six instances of one
-  // character sharing one skin would all land on top of each other. They are
-  // exported as what they are on screen, static meshes in bind pose. Hiding the
-  // skeletons for the duration is what stops the exporter reporting, a hundred
-  // lines at a time, that it cannot do a thing nobody asked it to do.
+  // The exporter reads skins and animation groups from the whole scene rather
+  // than through `shouldExportNode`. Hidden kit prototypes must stay out: their
+  // joints are disabled, not exportable, and shared by every placement.
+  // Animated placements instead own private skeletons, targets, and groups;
+  // expose only those for the duration so each exported clip targets its own
+  // entity and static modules remain ordinary hardware instances.
   const skeletons = state.scene.skeletons;
   const hiddenSkeletons = skeletons.splice(0, skeletons.length);
+  skeletons.push(...shipPlacements().flatMap((placement) => placement.node._shipSkeletons ?? []));
+  const animationGroups = state.scene.animationGroups;
+  const hiddenAnimationGroups = animationGroups.splice(0, animationGroups.length);
+  animationGroups.push(...shipPlacements().flatMap((placement) => placement.node._shipAnimationGroups ?? []));
+
+  // The exporter writes each node's transform as it stands. A ship exported
+  // while the behaviour preview is running would record a fan halfway round as
+  // its rest pose, so playback is held at frame 0 for the duration.
+  const resumeBehaviorAnimations = hooks.pauseBehaviorAnimations();
 
   try {
     const glb = await withAuthoredMaterials(() =>
@@ -709,7 +717,8 @@ async function exportGlbInner() {
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   } finally {
-    skeletons.push(...hiddenSkeletons);
+    animationGroups.splice(0, animationGroups.length, ...hiddenAnimationGroups);
+    skeletons.splice(0, skeletons.length, ...hiddenSkeletons);
     for (const [node, parent] of restore) node.parent = parent;
     for (const [node, name] of renamed) node.name = name;
     // Put the metadata back exactly, undefined included: the editor's own
@@ -717,6 +726,7 @@ async function exportGlbInner() {
     // quiet lie about what the node is.
     for (const [node, meta] of tagged) node.metadata = meta;
     for (const t of holders.values()) t.dispose();
+    resumeBehaviorAnimations();
   }
 }
 

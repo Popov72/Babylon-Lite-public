@@ -188,9 +188,10 @@
       </section>
       <section class="settings-section">
       <h3>Runtime</h3>
-      <p class="muted">The ship's own lighting and material settings, saved in
-        the manifest and read by the game. Set them in the Runtime view — that is
-        the only place they show.</p>
+      <p class="muted">What the game does with the ship: its lighting and
+        material settings, saved in the manifest and read by the runtime, and
+        the behaviours its elements carry. The lighting rows only take effect
+        in the Runtime view — that is the rig they belong to.</p>
       <label class="cfg-row" title="Strength of the image-based lighting in the game. Metals get almost all their brightness from this. Saved in the manifest and read by the runtime.">
         <span>Env</span>
         <input type="range" id="runtime-env" min="0" max="4" step="0.1" value="1.5"
@@ -225,6 +226,22 @@
                title="Multiplier over authored roughness on the ship's materials. No shortcut">
         <span id="runtime-roughness-val" class="unit">1.00×</span>
       </label>
+      <label class="cfg-row" title="Play the animation of every element carrying the playAnimation behaviour, the way the game does: the clip named by the assignment, or the element's first one, looping unless the assignment says otherwise. Runtime view only — animated bones move the geometry the chunk check and the collision fitter measure, so they are held still while you build. An editor preference, saved with the ship and never on the undo stack.">
+        <span>Run behaviours</span>
+        <input type="checkbox" id="run-behaviors" checked
+               title="Play playAnimation clips in the Runtime view. No shortcut">
+        <span class="unit"></span>
+      </label>
+      <button id="btn-bhv-library" title="Open the behaviour library: the definitions every element's Behaviour panel picks from. Ship-wide, so it opens from anywhere. No shortcut">Edit behaviours…</button>
+      </section>
+      <section class="settings-section">
+      <h3>Probes</h3>
+      <label class="cfg-row" title="Face width and height of every local cubemap, in pixels. One size for the whole ship, not one per probe: the game keeps the captured environments in a cube texture array, and every slice of an array has the same dimension. Changing it makes every probe stale — press Capture all to retake them. Saved in the manifest's config block.">
+        <span>Cubemap size</span>
+        <select id="cfg-probe-res" title="Face size of every local cubemap. No shortcut"></select>
+        <span class="unit">px</span>
+      </label>
+      <button id="btn-capture-all" title="Capture the environment probes whose room has changed since they were last taken, and write them to export/environments/. Shift-click re-captures every probe. Only from the ship: a bench hides the ship, and a capture taken there would photograph empty rooms. No shortcut">Capture all</button>
       </section>
       <section class="settings-section">      <h3>Collision</h3>
       <label class="cfg-row" title="Thickness given to a module that has no depth of its own when fitting collision. The kit models its floors and ceilings as single planes, and its walls measure 8 mm, so this is what keeps a fitted room the same thickness all the way round.">
@@ -305,7 +322,6 @@
           <button id="btn-bhv-add" title="Attach this behaviour to the selected element">Add</button>
         </div>
         <div id="bhv-hint" class="muted"></div>
-        <button id="btn-bhv-library">Edit behaviours…</button>
       </div>
 
       <div id="position-fields">
@@ -380,7 +396,7 @@
       </div>
 
       <div class="group vertical">
-        <button id="btn-add-light" title="Attach a light to the selected element. It rides that element, so moving or turning it carries the light along. Undoable">Add light</button>
+        <button id="btn-add-light" title="Attach a light to the selected element. It rides that element, so moving or turning it carries the light along. Undoable. L steps between an element and the lights riding it">Add light</button>
         <button id="btn-duplicate">Duplicate (Ctrl+D)</button>
         <button id="btn-break-apart" title="Turn the selected compound back into the ordinary elements it is made of. They stay exactly where they are; from then on each one is selected, moved and deleted on its own. Undoable" hidden>Break apart</button>
         <button id="btn-focus" title="Frame the selection — or just double-click an element">Focus</button>
@@ -468,20 +484,19 @@
       Cyan marks the box centre; orange marks the point it is captured from.
       Only geometry intersecting the box is rendered into the cubemap, and
       elements carrying a probeExcluded, dynamic, liquefiable or weapon
-      behaviour are left out of it. The influence boxes are a separate
-      question: violet marks where this cubemap fades out, and the red box
-      inside it where it is used at full strength. All three are pickable:
-      drag to move, Ctrl+wheel to resize. The red box has no centre of its own
-      — it is always concentric with the violet one — so it only resizes.</p>
+      behaviour are left out of it. Every probe is captured at the cubemap size
+      set in Settings, which is one size for the whole ship. The influence
+      boxes are a separate question: violet marks where this cubemap fades out,
+      and the red box inside it where it is used at full strength. All three
+      are pickable: drag to move, Ctrl+wheel to resize. The red box has no
+      centre of its own — it is always concentric with the violet one — so it
+      only resizes.</p>
     <div class="tool-window-scroll"><div class="split">
       <select id="probe-list" size="12"></select>
       <div class="editor">
         <div class="row"><label>ID</label><input type="text" id="probe-id" maxlength="128"></div>
         <div class="row"><label title="Keep this probe's boxes on screen while another one is selected, drawn in dimmer colours.">Always visible</label><input type="checkbox" id="probe-show"></div>
         <div class="row"><label title="Draw this probe's captured cubemap on its box instead of a wireframe.">Env faces</label><input type="checkbox" id="probe-env"></div>
-        <div class="row"><label title="Cubemap face width and height in pixels.">Texture size</label>
-          <input type="number" id="probe-resolution" min="16" max="4096" step="1">
-          <span class="muted">px per face</span></div>
         <h3 id="probe-head-box" class="probe-head"><span>Probe box</span>
           <span class="sel" hidden>selected</span>
           <button type="button" id="btn-probe-eye-box" class="eye" aria-pressed="true"
@@ -539,7 +554,6 @@
         <button id="btn-probe-new">New</button>
         <button id="btn-probe-delete" class="danger">Delete</button>
         <button id="btn-capture-one" title="Re-capture the selected probe only, whether or not its room has changed, and write it to export/environments/. Every other probe is left as it is. No shortcut">Capture</button>
-        <button id="btn-capture-all" title="Capture the environment probes whose room has changed since they were last taken, and write them to export/environments/. Shift-click re-captures every probe. No shortcut">Capture all</button>
       </div>
     </div>
   </div>

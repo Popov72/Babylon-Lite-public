@@ -68,6 +68,25 @@ button.toggle[aria-pressed="true"]:hover { background: #ff9d5c; border-color: #f
 button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 /*
+ * A button that cannot be pressed has to look it.
+ *
+ * Nothing said so before. The browser greys a disabled button by painting its
+ * own colours over it, and every button here is already painted - so a button
+ * the code had turned off was pixel-for-pixel a button that worked, and
+ * `button:hover` above went further and lit it up under a pointer that could
+ * never press it. The only clue was that clicking did nothing, which reads as a
+ * broken editor rather than as a button that is off on purpose.
+ *
+ * The eyes in the probe window keep their own, quieter version - they are icons
+ * rather than boxes - and win on specificity.
+ */
+button:disabled {
+  color: var(--muted); background: var(--panel);
+  border-color: var(--line); cursor: not-allowed;
+}
+button:disabled:hover { background: var(--panel); border-color: var(--line); }
+
+/*
  * "Yes, that press landed."
  *
  * Save, Load and Export glb all do their work somewhere else - a file on disk,
@@ -613,26 +632,27 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 }
 #bhv-applied .bhv-err:not(:empty) { margin-top: 3px; color: var(--danger); font-size: 11px; }
 
-/* ------------------------------------------------------- collision pane */
+/* -------------------------------------------------------- palette panes */
 /*
- * Sits under the module list rather than behind a tab: collision shapes are
- * placed *while* looking at the room they wrap, so hiding them behind a tab
- * switch would mean losing the palette every time one is dropped.
+ * The folding panes under the module list: collision, compounds, settings.
+ * They sit under the list rather than behind a tab because their contents are
+ * used *while* looking at the room they belong to, so hiding them behind a tab
+ * switch would mean losing the palette every time a shape is dropped.
+ *
+ * One rule dresses all three. They are the same kind of thing and must line up
+ * with each other, so the next pane someone adds is inset and ruled off from
+ * its neighbour without their having to remember to say so.
  */
-#collision-pane {
+#palette-panes > details {
   flex: 0 0 auto; padding: 8px 10px;
   border-top: 1px solid var(--line); background: var(--panel);
 }
-#collision-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
+#palette-panes > details p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
+#palette-panes > details > button { width: 100%; }
+
 #collider-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
 #collider-buttons button { width: 100%; }
-#collision-pane > button { width: 100%; }
 
-#settings-pane {
-  flex: 0 0 auto; padding: 8px 10px;
-  border-top: 1px solid var(--line); background: var(--panel);
-}
-#settings-pane p { margin: 0 0 6px; font-size: 10px; line-height: 1.4; }
 #settings-pane .settings-section {
   margin: 8px 0 0; padding: 7px 0 0; border-top: 1px solid var(--line);
 }
@@ -640,6 +660,9 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   margin: 0 0 6px; color: var(--accent); font-size: 10px;
   text-transform: uppercase; letter-spacing: 0.04em;
 }
+/* A section may end in an action rather than a dial - Capture all closes the
+ * probe settings. Full width, like the button that ends a pane. */
+#settings-pane .settings-section > button { width: 100%; margin-top: 6px; }
 
 /*
  * Folding headers.

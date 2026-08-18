@@ -1,6 +1,6 @@
 // Wiring: toolbar, inspector, keyboard, autoload.
 
-import { loadCatalogue, getCatalogue, moduleBounds, instantiate } from "./kit.js";
+import { loadCatalogue, getCatalogue, defaultKit, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
@@ -44,11 +44,11 @@ import {
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection, strayChunkMembers,
   noteKey, releaseAllKeys, setUnlit, EXPOSURE_DEFAULT,
-  setConfig, resetConfig, CONFIG_DEFAULTS,
+  setConfig, resetConfig, CONFIG_DEFAULTS, PROBE_RESOLUTIONS,
   setWalk, EYE_HEIGHT, ENV_INTENSITY_DEFAULT, setSelectMode,
   setLightSetting, viewMode, viewModeFlags, VIEW_MODES,
   TONE_MAPPING_DEFAULT, RUNTIME_SPECULAR_AA_DEFAULT, RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
-  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT, STRAY_CHUNK_CHECK_DEFAULT,
+  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT, STRAY_CHUNK_CHECK_DEFAULT, RUN_BEHAVIORS_DEFAULT,
   setShowLayer, SHOW_LAYERS,
   resolveToneMapping, setRuntimeSpecularAA, setRuntimeRoughnessFactor,
   breakApart, groupAnchor, groupMembers,
@@ -59,7 +59,7 @@ import {
   compoundTile, compoundInstances,
 } from "./compounds.js";
 import {
-  setRuntimePreview, runtimePreview,
+  setRuntimePreview, runtimePreview, syncBehaviorAnimations,
   localEnvironmentProbeOf, showEnvironmentProbes, hideEnvironmentProbes, refreshEnvironmentProbeAssets,
 } from "./runtime.js";
 import { generateLocalEnvironments } from "./local-environments.js";
@@ -1222,13 +1222,12 @@ function defaultProbeVolume() {
     boxPosition: centre.asArray(),
     boxSize: size.asArray().map((n) => Math.max(0.01, n)),
     capturePosition: centre.asArray(),
-    resolution: 512,
+    angle: 0,
   };
 }
 
 function probeDraft() {
   const raw = PROBE_VALUE_FIELDS.map((id) => $(id).value.trim());
-  const resolution = Number($("probe-resolution").value);
   if (raw.some((value) => value === "")) return null;
   const values = raw.map(Number);
   const boxPosition = values.slice(0, 3);
@@ -1239,8 +1238,7 @@ function probeDraft() {
   const influenceInnerBoxSize = values.slice(15, 18);
   if (!values.every(Number.isFinite) || !boxSize.every((n) => n > 0)
     || !influenceBoxSize.every((n) => n > 0)
-    || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])
-    || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return null;
+    || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
   return {
     id: validEnvironmentProbeId($("probe-id").value),
     boxPosition,
@@ -1249,7 +1247,6 @@ function probeDraft() {
     influenceBoxPosition,
     influenceBoxSize,
     influenceInnerBoxSize,
-    resolution: Math.round(resolution),
   };
 }
 
@@ -1314,11 +1311,9 @@ async function refreshProbeWindow(pick = probeSelected) {
   // first, so an empty map keeps the choice instead of replacing it.
   if (ids.length) probeSelected = pick && ids.includes(pick) ? pick : ids[0];
   else probeSelected = pick || probeSelected;
-  $("probe-list").innerHTML = ids.map((id) => {
-    const probe = environmentProbeOf(id);
-    return `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
-      + `${esc(id)} · ${probe.resolution}px</option>`;
-  }).join("");
+  $("probe-list").innerHTML = ids.map((id) =>
+    `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
+      + `${esc(id)}</option>`).join("");
   const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
   setProbeField("probe-id", probe?.id || "");
   const values = probe
@@ -1326,14 +1321,14 @@ async function refreshProbeWindow(pick = probeSelected) {
       ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
       ...probe.influenceInnerBoxSize] : [];
   PROBE_VALUE_FIELDS.forEach((id, index) => { setProbeField(id, values[index] ?? ""); });
-  setProbeField("probe-resolution", probe?.resolution ?? "");
   $("probe-show").checked = !!probe?.alwaysVisible;
   $("probe-env").checked = !!probe?.envFaces;
   $("probe-show").disabled = !probe;
   $("probe-env").disabled = !probe;
   $("btn-probe-delete").disabled = !probe;
-  // Capture takes the selected probe, so it goes with Delete rather than with
-  // Capture all, which never needs one.
+  // Capture takes the selected probe, so it lives with Delete and follows the
+  // list. Capture all needs no selection at all, which is why it sits on the
+  // Settings pane instead of in here.
   $("btn-capture-one").disabled = !probe;
   refreshProbeSections();
   if (!probe) {
@@ -1348,6 +1343,7 @@ async function refreshProbeWindow(pick = probeSelected) {
   $("probe-resolved").textContent =
     `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`
     + ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}`
+    + ` · ${state.config.probeResolution}px cubemap`
     + ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
   await showEnvironmentProbes(probe.id);
 }
@@ -1403,7 +1399,7 @@ $("probe-list").addEventListener("change", (e) => {
 
 let probePushed = false;
 
-for (const id of [...PROBE_VALUE_FIELDS, "probe-resolution"]) {
+for (const id of PROBE_VALUE_FIELDS) {
   // One undo entry per visit to a field, the same rule the inspector follows:
   // armed on focus, spent on the first character.
   $(id).addEventListener("focus", () => { probePushed = false; });
@@ -1453,8 +1449,8 @@ function commitProbe({ rename = false, quiet = false } = {}) {
   }
   const draft = probeDraft();
   if (!draft) {
-    return refuse("Enter numeric box/camera positions, positive box sizes, an inner size from"
-      + " 0 up to the influence size, and a texture size from 16 to 4096.");
+    return refuse("Enter numeric box/camera positions, positive box sizes, and an inner size"
+      + " from 0 up to the influence size.");
   }
   $("probe-error").textContent = "";
   const previousId = probeSelected;
@@ -1612,6 +1608,25 @@ $("stray-chunk-check").addEventListener("change", (e) => {
     : "stray-chunk check off — wrong chunk assignments will not be reported");
 });
 
+/**
+ * Play the ship's authored animations, the way the game does.
+ *
+ * An editor preference like the two above it, so it is saved with the ship and
+ * stays off the undo stack. What it governs is described where it is done - see
+ * syncBehaviorAnimations in runtime.js - and the status line quotes the count
+ * back because "nothing moved" has two innocent explanations: nothing carries
+ * the behaviour, and nothing that does is a skinned module.
+ */
+$("run-behaviors").addEventListener("change", (e) => {
+  state.runBehaviors = e.target.checked;
+  const { playing, missing } = syncBehaviorAnimations();
+  if (!e.target.checked) setStatus("behaviours off — the ship's animations are held at their first frame");
+  else if (missing.length) setStatus(`behaviours on — ${playing} animation(s) playing, ${missing.length} clip(s) not found: ${missing.join(", ")}`);
+  else if (playing) setStatus(`behaviours on — ${playing} animation(s) playing`);
+  else if (!state.runtime) setStatus("behaviours on — they play in the Runtime view");
+  else setStatus("behaviours on — nothing in the ship has an animation to play");
+});
+
 // Keyboard shortcuts are ignored while a form control has focus, so a toolbar
 // control that keeps focus after being changed silently kills the numpad keys.
 for (const el of document.querySelectorAll("#toolbar select, #toolbar input")) {
@@ -1649,6 +1664,8 @@ function refreshEditorPrefs() {
   localStorage.setItem("veilAlpha", String(state.veilAlpha));
   setBigPalette(state.bigPalette);
   $("stray-chunk-check").checked = !!state.strayChunkCheck;
+  $("run-behaviors").checked = !!state.runBehaviors;
+  syncBehaviorAnimations();           // the preference it reads has just moved
   validate();                         // the check it governs is a live one
   refreshStats();                     // the status bar quotes the ghost percentage
 }
@@ -2227,9 +2244,9 @@ async function doLoad() {
  *
  * `only` names a single probe and is what the Probes window's **Capture**
  * sends; without it the whole ship is checked and the stale rooms are taken,
- * which is **Capture all**. Both buttons go inert for the duration: the capture
- * owns the scene, and a second one started on top of it would be photographing
- * a viewport the first has already taken over.
+ * which is **Capture all**, on the Settings pane. Both buttons go inert for the
+ * duration: the capture owns the scene, and a second one started on top of it
+ * would be photographing a viewport the first has already taken over.
  */
 async function doProbes({ force = false, only = null } = {}) {
   const buttons = [$("btn-capture-all"), $("btn-capture-one")];
@@ -2251,12 +2268,30 @@ async function doProbes({ force = false, only = null } = {}) {
     console.error(e);
     setStatus("probe capture failed: " + e.message);
   } finally {
-    // The selected-probe button follows the list, not the lock: with no probe
-    // to point at there is nothing for it to capture.
+    // Neither button simply comes back: one follows the probe list and the
+    // other follows the mode, and the lock lifting says nothing about either.
     for (const b of buttons) b.disabled = false;
     $("btn-capture-one").disabled = !probeSelected;
+    refreshCaptureAll();
   }
 }
+
+/**
+ * Capture all is for the ship, and only the ship.
+ *
+ * It sits on the Settings pane, which is on screen in every mode - while the
+ * Probes window it used to live in had at least to be opened on purpose. A
+ * bench hides every ship placement (`applyVisibility`), so a capture started
+ * from one photographs empty rooms, writes them over the real `.env` files and
+ * stamps them fresh: nothing complains, and the ship is dark until somebody
+ * thinks to shift-click. So the button follows the mode rather than trusting
+ * whoever pressed it.
+ */
+function refreshCaptureAll() {
+  $("btn-capture-all").disabled = state.mode !== "ship";
+}
+on("mode", refreshCaptureAll);
+refreshCaptureAll();
 
 // Shift-click re-captures everything, for when a probe has to be re-taken after
 // a change the digest cannot see - a texture edited on disk, say.
@@ -2314,6 +2349,106 @@ function fieldKeepsKey(t, e) {
   if (!BLIND_INPUTS.has((t.type || "text").toLowerCase())) return true;
   const letter = e.key.length === 1 && /[a-z]/i.test(e.key) && !/^e$/i.test(e.key);
   return !letter || e.ctrlKey || e.metaKey;
+}
+
+/**
+ * X shows one element's axes in world space; Shift+X in its own local space,
+ * which is the one that matters for scaling - scaling is local, so on anything
+ * that has been turned a world gizmo cannot say which way X grows.
+ *
+ * `anchor` is where the gizmo hangs. The bare keys put it on the middle of the
+ * visible mesh, because a kit's authors put the node origin wherever suited the
+ * export and on this kit that is regularly metres from the piece - arrows
+ * floating in the next room describe nothing. Ctrl asks for the origin itself,
+ * which is still the number the inspector's Position field writes and the point
+ * a snap lands on, so it has to stay reachable.
+ *
+ * The armed ghost counts as an element: you set its rotation and mirroring
+ * before dropping it, which is exactly when you need to see them. With several
+ * selected the nearest to the cursor wins - "the one I am looking at" is the
+ * only reading of a multi-selection that does not need a second key to
+ * disambiguate.
+ */
+function axesFromKey(e, anchor) {
+  e.preventDefault();
+  const space = e.shiftKey ? "local" : "world";
+  const ids = state.selection.filter((id) => entryOf(id));
+  const target = ghostActive() ? GHOST_AXES
+    : ids.length ? nearestToCursor(ids) : hoveredId();
+  if (!target) {
+    // Nothing to point at means nothing to show. Leaving the previous
+    // element's gizmo up would leave it hanging off something you are no
+    // longer working on, with no key that clears it.
+    setStatus(hideAxes()
+      ? "axes hidden — nothing selected or hovered"
+      : "no element to show axes for — select or point at one");
+    return;
+  }
+  const shown = toggleAxes(target, space, anchor);
+  // Showing the axes says which space you are thinking in, so the move and
+  // turn axes follow. It is what you meant 99 times in 100 - you press
+  // Shift+X to see which way the element's own X grows *because* you are
+  // about to work along it - and Y still overrides it either way.
+  // Only on the way up: hiding a gizmo says nothing about intent.
+  if (shown && state.axisSpace !== space) {
+    setAxisSpace(space);
+    refreshAxisSpace();
+  }
+  const label = target === GHOST_AXES
+    ? (ghostModule() || "ghost")
+    : (entryOf(target)?.name || entryOf(target)?.module || target);
+  const key = `${anchor === "origin" ? "Ctrl+" : ""}${space === "local" ? "Shift+X" : "X"}`;
+  setStatus(shown
+    ? `${space} axes on ${label}, at its ${anchor} — moving and turning in`
+      + ` ${space} space too, Y switches · ${key} hides them`
+    : "axes hidden");
+}
+
+/**
+ * `L` steps from an element onto the lights riding it, and back off again.
+ *
+ * A lamp is a child of the element it lights, and once it has been seated the
+ * two occupy the same few pixels: picking the light means hitting a small gizmo
+ * half-buried in the model it lights, and picking the element back means
+ * finding a patch of wall the gizmo is not covering. Tuning a lamp is a
+ * back-and-forth between the two - move the wall, re-aim the light, move it
+ * again - so the pair needs a key rather than a steady hand.
+ *
+ * The walk runs off the end back onto the owner, so every press lands somewhere
+ * and nothing needs a second key to undo it. On the usual element with one lamp
+ * that makes it a straight toggle; on one carrying several it visits each in
+ * turn before returning.
+ *
+ * Selection only, never what happens to be under the cursor. `X` reads the
+ * hover because it only *shows* something and leaves the selection alone;
+ * changing what is selected from a mouse position the user is not thinking
+ * about is a different matter entirely.
+ */
+function selectLightFromKey() {
+  const ids = state.selection.filter((id) => entryOf(id));
+  const from = ids.length === 1 ? ids[0] : nearestToCursor(ids);
+  const entry = from ? entryOf(from) : null;
+  if (!entry) { setStatus("select an element to step onto its light"); return; }
+
+  // Only a placement can carry a lamp, so a marker, a collision primitive or a
+  // probe has nothing to step to. A light steps back to its own owner.
+  const ownerId = entry.type === "light" ? entry.owner : (entry.type ? null : entry.id);
+  const owner = ownerId ? entryOf(ownerId) : null;
+  if (!owner) { setStatus("only a module or prop can carry a light"); return; }
+
+  const ring = lightsOf(ownerId).map((l) => l.id);
+  const label = owner.name || owner.module || ownerId;
+  if (!ring.length) {
+    setStatus(`no light on ${label} — Add light puts one on it`);
+    return;
+  }
+
+  const next = entry.type === "light" ? (ring[ring.indexOf(from) + 1] ?? ownerId) : ring[0];
+  select([next]);
+  if (next === ownerId) { setStatus(`back on ${label} · L returns to its light`); return; }
+  setStatus(`${next} on ${label}`
+    + (ring.length > 1 ? ` (${ring.indexOf(next) + 1} of ${ring.length})` : "")
+    + " · L steps on");
 }
 
 window.addEventListener("keydown", async (e) => {
@@ -2386,6 +2521,15 @@ window.addEventListener("keydown", async (e) => {
     e.preventDefault();
     return cycleMoveSnap(-1);
   }
+  // Ctrl+X is the axis gizmo hung on the node's own origin, the way the bare
+  // key used to be. Not a *setting* behind a modifier like the three above -
+  // there is no third state to walk to - but the same shape: the plain key is
+  // the answer you want almost always, and Ctrl is the raw one underneath.
+  //
+  // Claimed from the browser's Cut, which does nothing on a page with no
+  // editable selection. A field keeps it: fieldKeepsKey hands every Ctrl+letter
+  // back to an input, so Ctrl+X in a coordinate box still cuts the text.
+  if (mod && e.key.toLowerCase() === "x") return axesFromKey(e, "origin");
   if (mod) return;
 
   // WASD drives the orbit camera; the fly camera binds them itself. Shift is
@@ -2457,48 +2601,9 @@ window.addEventListener("keydown", async (e) => {
       setAxisSpaceFromKey();
       break;
     }
-    // X shows one element's axes in world space; Shift+X in its own local
-    // space, which is the one that matters for scaling - scaling is local, so
-    // on anything that has been turned a world gizmo cannot say which way X
-    // grows. The armed ghost counts as an element: you set its rotation and
-    // mirroring before dropping it, which is exactly when you need to see them.
-    // With several selected the nearest to the cursor wins - "the one I am
-    // looking at" is the only reading of a multi-selection that does not need a
-    // second key to disambiguate.
-    case "x": case "X": {
-      e.preventDefault();
-      const space = e.shiftKey ? "local" : "world";
-      const ids = state.selection.filter((id) => entryOf(id));
-      const target = ghostActive() ? GHOST_AXES
-        : ids.length ? nearestToCursor(ids) : hoveredId();
-      if (!target) {
-        // Nothing to point at means nothing to show. Leaving the previous
-        // element's gizmo up would leave it hanging off something you are no
-        // longer working on, with no key that clears it.
-        setStatus(hideAxes()
-          ? "axes hidden — nothing selected or hovered"
-          : "no element to show axes for — select or point at one");
-        break;
-      }
-      const shown = toggleAxes(target, space);
-      // Showing the axes says which space you are thinking in, so the move and
-      // turn axes follow. It is what you meant 99 times in 100 - you press
-      // Shift+X to see which way the element's own X grows *because* you are
-      // about to work along it - and Y still overrides it either way.
-      // Only on the way up: hiding a gizmo says nothing about intent.
-      if (shown && state.axisSpace !== space) {
-        setAxisSpace(space);
-        refreshAxisSpace();
-      }
-      const label = target === GHOST_AXES
-        ? (ghostModule() || "ghost")
-        : (entryOf(target)?.name || entryOf(target)?.module || target);
-      setStatus(shown
-        ? `${space} axes on ${label} — moving and turning in ${space} space too,`
-          + ` Y switches · ${space === "local" ? "Shift+X" : "X"} hides them`
-        : "axes hidden");
+    case "x": case "X":
+      axesFromKey(e, "centre");
       break;
-    }
     // Shift+H parks the selection out of sight so you can reach what is behind
     // it; plain H is the way back. That way round because an accidental H on a
     // large selection is expensive and an accidental unhide costs nothing.
@@ -2522,6 +2627,10 @@ window.addEventListener("keydown", async (e) => {
     // M picks the selection up onto the cursor (see grabCurrent). G was the
     // Blender-idiomatic key for this, but it already toggles the grid here.
     case "m": case "M": e.preventDefault(); grabCurrent(); break;
+    // L steps between an element and the lights riding it. Next to K and J on
+    // both layouts and nowhere near the movement keys, so it is safe to press
+    // while the other hand is on the mouse.
+    case "l": case "L": e.preventDefault(); selectLightFromKey(); break;
     // B brings whatever is in hand to your feet. The physical key is KeyB on
     // both QWERTY and AZERTY, so matching the label costs nothing here.
     case "b": case "B": e.preventDefault(); bringCurrentToCamera(); break;
@@ -2822,6 +2931,9 @@ function strayChunkWarnings() {
 
 function validate() {
   const out = [];
+  // The chunk volumes. A chunk has no authored box - it is the union of
+  // whatever is assigned to it - and these exist for the door check further
+  // down, which has to know which two of them a doorway joins.
   const boxes = [];
   for (const c of state.chunks) {
     const members = shipPlacements().filter((p) => p.chunk === c);
@@ -2835,30 +2947,6 @@ function validate() {
     }
     if (min) boxes.push({ id: c, min, max });
   }
-
-  // Portal rendering needs unambiguous chunk membership, so overlapping chunk
-  // volumes are a real defect rather than a cosmetic one.
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i], b = boxes[j];
-      const ov = ["x", "y", "z"].every((k) =>
-        Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]) > 0.05);
-      if (ov) out.push(["warn", `${a.id} overlaps ${b.id}`]);
-    }
-  }
-
-  const sunk = shipPlacements().filter((p) => {
-    const b = worldBounds(p.node);
-    return b && b.min.y < -0.05;
-  });
-  if (sunk.length) out.push(["warn", `${sunk.length} object(s) below y = 0`]);
-
-  const offGrid = shipPlacements().filter((p) => {
-    const s = state.snap.pos || 0;
-    if (!s) return false;
-    return ["x", "z"].some((k) => Math.abs(p.node.position[k] / s - Math.round(p.node.position[k] / s)) > 1e-3);
-  });
-  if (offGrid.length) out.push(["warn", `${offGrid.length} object(s) off the ${state.snap.pos} m grid`]);
 
   // A mis-assigned element is invisible in the viewport - it sits exactly where
   // it was put - and only shows up much later as a piece that pops in and out
@@ -3228,7 +3316,7 @@ function openCompoundDialog() {
   const editingName = editingCompound();
   const tile = editingName ? compoundTile(editingName) : null;
   kitEl.value = kits.includes(tile?.kit || compoundFiling.kit)
-    ? (tile?.kit || compoundFiling.kit) : (kits[0] || "");
+    ? (tile?.kit || compoundFiling.kit) : (defaultKit() || "");
   $("compound-name").value = editingName || "";
   $("compound-category").value = tile?.category || compoundFiling.category;
   $("compound-error").textContent = "";
@@ -3368,6 +3456,7 @@ function refreshSettings() {
   const thick = $("cfg-hull-thick");
   if (document.activeElement !== thick) thick.value = state.config.hullThickness;
   $("cfg-hull-offset").value = state.config.hullOffset;
+  $("cfg-probe-res").value = String(state.config.probeResolution);
   $("runtime-specular-aa").checked = state.runtimeSpecularAA;
   const roughness = $("runtime-roughness");
   if (document.activeElement !== roughness) roughness.value = state.runtimeRoughnessFactor;
@@ -3441,6 +3530,24 @@ $("cfg-autosave").addEventListener("change", () => {
   refreshSettings();
 });
 
+// One size for the whole ship, because the runtime keeps the captures in a cube
+// texture array. Changing it changes every probe's digest, so the next Capture
+// finds them all stale without anything having to say so here.
+//
+// The sizes on offer are built from the constant setConfig checks a chosen one
+// against, rather than written out again in the markup, where the two copies
+// could disagree and a row on the pane would silently refuse to move.
+$("cfg-probe-res").innerHTML = PROBE_RESOLUTIONS
+  .map((n) => `<option value="${n}">${n}</option>`).join("");
+
+$("cfg-probe-res").addEventListener("change", () => {
+  if (setConfig("probeResolution", $("cfg-probe-res").value)) {
+    setStatus(`cubemaps ${state.config.probeResolution}px per face`
+      + " — capture the probes to apply it");
+  }
+  refreshSettings();
+});
+
 /**
  * Every row on the pane back to the value the editor ships with.
  *
@@ -3477,10 +3584,12 @@ $("btn-cfg-reset").addEventListener("click", () => {
   // The editor's own view preferences stay off the stack, the same rule their
   // rows follow when you move them by hand.
   if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT
-    || state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT) {
+    || state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT
+    || state.runBehaviors !== RUN_BEHAVIORS_DEFAULT) {
     setVeilAlpha(VEIL_ALPHA_DEFAULT);
     state.bigPalette = BIG_PALETTE_DEFAULT;
     state.strayChunkCheck = STRAY_CHUNK_CHECK_DEFAULT;
+    state.runBehaviors = RUN_BEHAVIORS_DEFAULT;
     changed = true;
   }
   refreshEditorPrefs();
@@ -3490,7 +3599,12 @@ $("btn-cfg-reset").addEventListener("click", () => {
   setStatus(changed ? "settings back to defaults" : "settings were already default");
 });
 
-on("config", refreshSettings);
+on("config", () => {
+  refreshSettings();
+  // The probe pane quotes the cubemap size, which is now a setting: an undo of
+  // one, or a Reset to defaults, has to reach the sentence that reports it.
+  if (!$("probe-modal").hidden) void refreshProbeWindow(probeSelected);
+});
 on("placements", refreshSettings);      // a load or an undo can change them
 
 // The overlay is up in the markup already, so there is never a frame in which

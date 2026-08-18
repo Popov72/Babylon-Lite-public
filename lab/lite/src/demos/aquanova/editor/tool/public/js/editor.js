@@ -126,7 +126,17 @@ export const CONFIG_DEFAULTS = {
   // side, "negative" tucks it behind the visible surface (the convention this
   // ship uses), "positive" stands it in front.
   hullOffset: "centered",
+    // Face width and height of every local cubemap, in pixels. One number for
+    // the whole ship rather than one per probe: the runtime keeps the captured
+    // environments in a cube texture ARRAY, and an array has a single dimension
+    // for all of its slices - a probe captured at another size could not be put
+    // in it. So it is a ship-wide constant, and changing it makes every probe
+    // stale at once.
+    probeResolution: 512,
 };
+
+/** The cubemap sizes the Settings pane offers, smallest first. */
+export const PROBE_RESOLUTIONS = [128, 256, 512, 1024, 2048];
 
 /**
  * What each setting will accept.
@@ -134,7 +144,8 @@ export const CONFIG_DEFAULTS = {
  * A thickness of zero is a shape with no shape; an auto-save interval of zero
  * is a perfectly reasonable "don't". One rule for both would have to be wrong
  * for one of them. A setting with `choices` is a word rather than a number,
- * and is checked against the list instead of a range.
+ * and is checked against the list instead of a range; one with `values` is a
+ * number off a list, for a dial that has no meaningful values in between.
  */
 const CONFIG_RANGE = {
   shellThickness: { min: 1e-4, max: 10 },
@@ -142,6 +153,7 @@ const CONFIG_RANGE = {
   hullTolerance: { min: 0.01, max: 1 },
   hullThickness: { min: 0.01, max: 5 },
   hullOffset: { choices: ["centered", "negative", "positive"] },
+    probeResolution: { values: PROBE_RESOLUTIONS },
 };
 
 export const state = {
@@ -172,6 +184,11 @@ export const state = {
   // default: a mis-assigned piece is invisible in the viewport and only shows up
   // as a hole in the portal graph much later. See strayChunkMembers.
   strayChunkCheck: true,
+  // Play the authored animations of elements carrying `playAnimation`, in the
+  // runtime view only. On by default: the runtime view claims to be what the
+  // game draws, and a game whose fans are stopped is not that. See
+  // syncBehaviorAnimations in runtime.js and RUN_BEHAVIORS_DEFAULT.
+  runBehaviors: true,
   behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
   entities: new Map(),     // node name -> [{ name, linked: [] }]
   fluidSim: [],            // the global sim list from config.json
@@ -235,8 +252,8 @@ export function ownerIdOf(mesh, placementsOnly = false) {
   if (!md) return null;
   const id = md.placementRoot?.name
     || (placementsOnly ? null
-      : (md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name
-        || md.environmentProbeRoot?.metadata?.probe));
+      :md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name
+        || md.environmentProbeRoot?.metadata?.probe);
   return id || null;
 }
 
@@ -404,7 +421,7 @@ export async function initScene(canvas) {
   // not authorable - the real lighting lives in the render/runtime pipeline.
   const hemi = new HemisphericLight("hemi", new Vector3(0.3, 1, 0.2), scene);
   hemi.intensity = 0.75;
-  hemi.groundColor = new Color3(0.20, 0.23, 0.28);
+  hemi.groundColor = new Color3(0.2, 0.23, 0.28);
   // A hemisphere aimed the other way, to light what the first one cannot.
   // Babylon's hemi direction points at its "sky", so the main one only ever
   // gives a downward-facing surface its (dark) ground colour - which is every
@@ -505,6 +522,8 @@ export const VEIL_ALPHA_DEFAULT = 0.5;
 export const BIG_PALETTE_DEFAULT = true;
 /** See `state.strayChunkCheck` and `strayChunkMembers`. */
 export const STRAY_CHUNK_CHECK_DEFAULT = true;
+/** See `state.runBehaviors` and `syncBehaviorAnimations` in runtime.js. */
+export const RUN_BEHAVIORS_DEFAULT = true;
 
 /**
  * The three ways of looking at the ship.
@@ -524,9 +543,9 @@ export const STRAY_CHUNK_CHECK_DEFAULT = true;
  *   * `runtime`      - what the game renders.
  */
 export const VIEW_MODES = {
-  "editor": { runtime: false, unlit: false },
+    editor: { runtime: false, unlit: false },
   "editor-unlit": { runtime: false, unlit: true },
-  "runtime": { runtime: true, unlit: false },
+    runtime: { runtime: true, unlit: false },
 };
 
 export const VIEW_MODE_DEFAULT = "editor";
@@ -993,7 +1012,7 @@ export function screenHullOf(node) {
   if (pts.length < 3) return pts.length ? pts : null;
 
   // monotone chain; a handful of points, so the sort costs nothing worth saving
-  pts.sort((u, v) => (u[0] - v[0]) || (u[1] - v[1]));
+  pts.sort((u, v) =>u[0] - v[0] ||u[1] - v[1]);
   const cross = (o, a, c) =>
     (a[0] - o[0]) * (c[1] - o[1]) - (a[1] - o[1]) * (c[0] - o[0]);
   const half = (src) => {
@@ -1028,7 +1047,7 @@ function hullMeetsRect(hull, rect) {
 
   // and one per hull edge
   const corners = [[rect.x0, rect.y0], [rect.x1, rect.y0],
-    [rect.x1, rect.y1], [rect.x0, rect.y1]];
+    [rect.x1, rect.y1], [rect.x0, rect.y1],];
   for (let i = 0; i < hull.length; i++) {
     const a = hull[i], b = hull[(i + 1) % hull.length];
     const ax = -(b[1] - a[1]), ay = b[0] - a[0];
@@ -1126,7 +1145,7 @@ function groundCamera(entering = false) {
 function buildGrid(scene) {
   const minor = [], major = [], axis = [];
   for (let i = -GRID_EXTENT; i <= GRID_EXTENT; i += GRID_MINOR) {
-    const bucket = i === 0 ? axis : (i % GRID_MAJOR === 0 ? major : minor);
+    const bucket = i === 0 ? axis :i % GRID_MAJOR === 0 ? major : minor;
     bucket.push([new Vector3(i, 0, -GRID_EXTENT), new Vector3(i, 0, GRID_EXTENT)]);
     bucket.push([new Vector3(-GRID_EXTENT, 0, i), new Vector3(GRID_EXTENT, 0, i)]);
   }
@@ -1140,7 +1159,7 @@ function buildGrid(scene) {
     return ls;
   };
   mk("grid_minor", minor, new Color3(0.13, 0.15, 0.18));
-  mk("grid_major", major, new Color3(0.26, 0.30, 0.36));
+  mk("grid_major", major, new Color3(0.26, 0.3, 0.36));
   mk("grid_axis", axis, new Color3(0.55, 0.36, 0.18));
 }
 
@@ -1164,10 +1183,48 @@ export function setGridVisible(v) { gridNode.setEnabled(v); }
 // angle inside the curved arrow.
 
 export const AXIS_COLOR = {
-  x: new Color3(0.90, 0.22, 0.27),
+  x: new Color3(0.9, 0.22, 0.27),
   y: new Color3(0.36, 0.78, 0.34),
   z: new Color3(0.26, 0.52, 0.96),
 };
+
+/**
+ * How far the axis gizmo's arms reach, in metres. One number for every element.
+ *
+ * The length used to be taken from the element's own bounding span, clamped
+ * between 1.5 m and 8 m. The intent was that the arrows should suit the thing
+ * they describe, but the effect was that they never meant the same thing twice:
+ * a crate and a corridor got gizmos more than five times apart, so the arrows
+ * could not be read as a measure of anything, and stepping between two selected
+ * elements resized the whole gizmo under the cursor.
+ *
+ * A fixed length makes it an instrument instead - the same ruler held up to
+ * whatever is selected, and a constant reference for how far a snap step moves
+ * something. Every thickness in `buildAxes` is a multiple of this, so the whole
+ * gizmo is retuned by this one number.
+ */
+const AXIS_GIZMO_LENGTH = 2;
+
+/**
+ * How close the camera has to get, in metres, before the gizmo is drawn at
+ * `AXIS_GIZMO_NEAR_SCALE` of that length — measured to the point the gizmo
+ * hangs on, which is the thing you are looking at.
+ *
+ * A fixed length is right across the working range, but the arms are world
+ * geometry and the camera is not held at a polite distance: leaning in to seat
+ * a light against a wall puts the eye a couple of metres off the model, where
+ * 2 m of arrow fills the viewport and buries the very detail being aimed. Close
+ * in there is also less need for reach — nothing else is on screen to measure
+ * against — so the arms give way rather than the model.
+ *
+ * A step rather than a ramp, deliberately: at any distance the gizmo is either
+ * its stated length or exactly half of it, so the arms stay a ruler you can
+ * read the snap step off. A continuous falloff would make every arm a
+ * different, unknowable length again, which is the problem this pair of
+ * constants exists to avoid.
+ */
+const AXIS_GIZMO_NEAR_DISTANCE = 5;
+const AXIS_GIZMO_NEAR_SCALE = 0.5;
 
 /** Which axes a drag currently moves along. */
 export function liveAxes(mode = state.dragAxis) {
@@ -1205,7 +1262,7 @@ export function axisBasis(node) {
   // rotation before it. That put the axes one turn behind.
   const m = node.computeWorldMatrix(true);
   const out = {};
-  for (const [a, row] of [["x", 0], ["y", 1], ["z", 2]]) {
+  for (const [a, row] of [["x", 0], ["y", 1], ["z", 2],]) {
     const r = m.getRow(row);
     const v = new Vector3(r.x, r.y, r.z);
     if (v.lengthSquared() < 1e-12) return null;    // degenerate, fall back to world
@@ -1236,13 +1293,16 @@ export function scaleAxes(mode = state.scaleAxis) {
   return mode === "all" ? ["x", "y", "z"] : [mode];
 }
 
-let axes = null;      // { root, id, space, arms, mats, marks, observer }
+let axes = null;      // { root, id, space, anchor, arms, mats, marks, observer }
 
 /** The element currently showing its axes, or null. */
 export function axesTarget() { return axes?.id || null; }
 
 /** Which space the axes are drawn in - "world" or "local". */
 export function axesSpace() { return axes?.space || null; }
+
+/** Where the gizmo sits - "centre" of the visible mesh, or the node "origin". */
+export function axesAnchor() { return axes?.anchor || null; }
 
 /** The id used for the armed ghost, which is not a placement and has no id. */
 export const GHOST_AXES = "__ghost__";
@@ -1454,14 +1514,91 @@ function orientAxes(node) {
   }
 }
 
-export function showAxes(id, space = "world") {
+/**
+ * Where on the element the gizmo hangs, as an offset in the element's *own*
+ * coordinates.
+ *
+ * The node's origin is wherever the kit's author left it, and on this kit that
+ * is regularly nowhere near the piece: a corridor section modelled off to one
+ * side puts its arrows metres away from the wall they describe, or inside the
+ * next room. So the gizmo is anchored on the middle of what you can actually
+ * see, and the node origin becomes the *other* reading, on Ctrl.
+ *
+ * Measured once and kept as a local offset rather than re-derived each frame,
+ * for two reasons. It is a bounding box, so it is axis-aligned to the *world*,
+ * and re-measuring it every frame would make the anchor swim across the mesh
+ * while the element turns - the box grows and shrinks under rotation even
+ * though nothing about the element has moved. Held as a local offset it stays
+ * pinned to the same point of the model through turns, drags, scales and
+ * mirrors, and costs one matrix multiply a frame instead of a walk over every
+ * child mesh.
+ *
+ * `worldBounds` does the choosing of what counts as visible - it already skips
+ * Runtime stand-ins and other elements' light gizmos - so "the centre" here
+ * means the same thing as it does everywhere else in the editor.
+ */
+function centreOffset(node, bounds) {
+  const b = bounds ?? worldBounds(node);
+  if (!b) return null;
+  const world = node.getWorldMatrix();
+  // A flattened element (a zero scale on some axis) has no invertible frame and
+  // no thickness to centre on either; the origin is the only honest answer.
+  if (Math.abs(world.determinant()) < 1e-12) return null;
+  return Vector3.TransformCoordinates(b.min.add(b.max).scale(0.5),
+    Matrix.Invert(world));
+}
+
+/**
+ * The world point the gizmo root belongs on this frame.
+ *
+ * The offset is keyed to the node it was measured on, because the observer
+ * re-resolves the id every frame and nothing about an id guarantees the same
+ * object behind it: an undo rebuilds every placement from its snapshot, and
+ * arming a different module builds a new ghost. Measured, both of those blank
+ * the node for a frame first and so take the whole gizmo with them - the
+ * re-measure has no observable effect today. It costs one reference compare a
+ * frame, and it is what keeps "this offset belongs to that node" a fact rather
+ * than an assumption about code somewhere else.
+ */
+function anchorPoint(node) {
+  const world = node.getWorldMatrix();
+  if (axes.anchor !== "centre") return world.getRow(3).toVector3();
+  if (node !== axes.anchorNode) {
+    axes.anchorNode = node;
+    axes.anchorLocal = centreOffset(node);
+  }
+  return axes.anchorLocal
+    ? Vector3.TransformCoordinates(axes.anchorLocal, world)
+    : world.getRow(3).toVector3();
+}
+
+/**
+ * Halve the gizmo when the camera is right on top of it.
+ *
+ * Applied to the root as a uniform scale, so one number governs shafts, heads,
+ * turn rings, scale cubes and the gaps between them together, and the arms keep
+ * their directions — the labels ride the meshes' own absolute positions, so
+ * they follow without being told.
+ */
+function sizeAxes() {
+  // An unparented camera's `position` is already world space, and the editor's
+  // never has a parent. `globalPosition` is a cache a camera only fills in once
+  // its view matrix has been recomputed, so it still reads as the origin on the
+  // first frame after a saved view is restored - which is exactly the frame a
+  // gizmo restored with it would be sized on.
+  const eye = state.camera?.position;
+  const near = !!eye
+    && Vector3.Distance(eye, axes.root.position) < AXIS_GIZMO_NEAR_DISTANCE;
+  axes.root.scaling.setAll(near ? AXIS_GIZMO_NEAR_SCALE : 1);
+}
+
+export function showAxes(id, space = "world", anchor = "origin") {
   const node = axesNode(id);
   if (!node) return false;
   hideAxes();
 
-  const b = worldBounds(node);
-  const span = b ? Math.max(b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z) : 2;
-  const built = buildAxes(state.scene, Math.min(8, Math.max(1.5, span * 0.9)));
+  const bounds = anchor === "centre" ? worldBounds(node) : null;
+  const built = buildAxes(state.scene, AXIS_GIZMO_LENGTH);
 
   // The move step decides how far every nudge and drag of this element will
   // jump, the turn angle how far one R will swing it, and the scale step how
@@ -1478,7 +1615,8 @@ export function showAxes(id, space = "world") {
   const scaleLabels = { x: chip("axis-snap axis-scale"), y: chip("axis-snap axis-scale"),
                         z: chip("axis-snap axis-scale") };
 
-  axes = { ...built, id, space, label, rotLabel, scaleLabels, observer: null };
+  axes = { ...built, id, space, anchor, label, rotLabel, scaleLabels, observer: null,
+           anchorNode: node, anchorLocal: anchor === "centre" ? centreOffset(node, bounds) : null };
   paintAxes();
   orientAxes(node);
   // Position is re-read every frame rather than parented: parenting would
@@ -1488,7 +1626,8 @@ export function showAxes(id, space = "world") {
   axes.observer = state.scene.onBeforeRenderObservable.add(() => {
     const cur = axesNode(id);
     if (!cur) { hideAxes(); return; }
-    axes.root.position.copyFrom(cur.getWorldMatrix().getRow(3).toVector3());
+    axes.root.position.copyFrom(anchorPoint(cur));
+    sizeAxes();
     orientAxes(cur);
     paintAxes();
     placeAxisLabel();
@@ -1528,7 +1667,7 @@ function placeChip(el, at, text) {
 }
 
 /**
- * The move step at the origin, the turn angle in the curved arrow, and the
+ * The move step at the gizmo root, the turn angle in the curved arrow, and the
  * scale step on each cube.
  *
  * Every one of these decides how far the *next* keystroke will move this
@@ -1591,12 +1730,19 @@ export function hideAxes() {
 /**
  * X toggles the axes; Shift+X toggles them in local space.
  *
- * The same element in the same space turns them off; a different element, or
- * the same one in the other space, moves or re-aims them.
+ * The same element in the same space *at the same anchor* turns them off;
+ * anything else about the request differing - a different element, the other
+ * space, or the other anchor - moves, re-aims or re-hangs them instead. So
+ * `X` followed by `Ctrl+X` walks the gizmo from the element's centre to its
+ * origin rather than blinking it off, which is the only reading that lets you
+ * compare the two.
  */
-export function toggleAxes(id, space = "world") {
-  if (axes && axes.id === id && axes.space === space) { hideAxes(); return null; }
-  return showAxes(id, space) ? id : null;
+export function toggleAxes(id, space = "world", anchor = "origin") {
+  if (axes && axes.id === id && axes.space === space && axes.anchor === anchor) {
+    hideAxes();
+    return null;
+  }
+  return showAxes(id, space, anchor) ? id : null;
 }
 
 /**
@@ -1982,17 +2128,17 @@ export async function placeAt(moduleId, position, opts = {}) {
   const node = await instantiate(moduleId, id);
   node.position.copyFrom(position);
   if (opts.rotation) {
-    node.rotationQuaternion = Quaternion.FromEulerAngles(
-      opts.rotation[0] * Math.PI / 180,
-      opts.rotation[1] * Math.PI / 180,
-      opts.rotation[2] * Math.PI / 180);
+    node.rotationQuaternion = Quaternion.FromEulerAngles((
+      opts.rotation[0] * Math.PI) / 180, (
+      opts.rotation[1] * Math.PI) / 180, (
+      opts.rotation[2] * Math.PI) / 180);
   }
   if (opts.scale) node.scaling.set(opts.scale[0], opts.scale[1], opts.scale[2]);
 
   const entry = {
     id,
     module: moduleId,
-    chunk: benched ? (opts.stageChunk || defaultBenchChunk()) : (opts.chunk || state.activeChunk),
+    chunk: benched ?opts.stageChunk || defaultBenchChunk() :opts.chunk || state.activeChunk,
     name: opts.name || "",        // optional label, see renamePlacement
     // A stand-in on one of the two benches rather than part of the ship. It is
     // a real placement so that selection, the gizmo, hiding, dragging and
@@ -2089,7 +2235,7 @@ export async function duplicateSelected() {
         // than off the mode so that a bench member cannot be duplicated into a
         // ship element sitting in a chunk that does not exist.
         stage: e.stage, stageChunk: e.chunk,
-        silent: true, noLights: true });
+        silent: true, noLights: true, });
     // A copied ceiling panel that arrived dark would be a trap: the light is
     // part of what the element IS, the same way its collision shapes are.
     hooks.copyLightsTo(id, copy.id);
@@ -2136,9 +2282,9 @@ export function select(ids) {
   // the default, so a local gizmo - the one that matters, since scaling is
   // local and a turned piece has its own idea of which way X grows - silently
   // reverted to world on the next click, and `Shift+X` had to be pressed again
-  // for every element.
+  // for every element. The anchor rides along for the same reason.
   if (axes && state.selection.length === 1 && state.selection[0] !== axes.id) {
-    showAxes(state.selection[0], axes.space);
+    showAxes(state.selection[0], axes.space, axes.anchor);
   }
   emit("selection");
 }
@@ -2463,10 +2609,10 @@ function cloneEnvironmentProbe(probe) {
     boxPosition: [...probe.boxPosition],
     boxSize: [...probe.boxSize],
     capturePosition: [...probe.capturePosition],
+              angle: probe.angle,
     influenceBoxPosition: [...probe.influenceBoxPosition],
     influenceBoxSize: [...probe.influenceBoxSize],
     influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
-    resolution: probe.resolution,
     // View state, not ship data - see setEnvironmentProbeView. Carried here all
     // the same, because serialize() writes probes through this function and an
     // undo rebuilds the whole map: leaving them out would make every Ctrl+Z put
@@ -2506,9 +2652,9 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
   const boxPosition = validProbeVector(probe?.boxPosition);
   const boxSize = validProbeVector(probe?.boxSize, true);
   const capturePosition = validProbeVector(probe?.capturePosition);
-  const resolution = Math.round(Number(probe?.resolution));
+  const angle =Number(probe?.angle ?? state.environmentProbes.get(previous)?.angle ?? 0);
   if (!key || !boxPosition || !boxSize || !capturePosition
-    || !Number.isFinite(resolution) || resolution < 16 || resolution > 4096) return false;
+    || !Number.isFinite(angle)) return false;
   if (!environmentProbeIdAvailable(key, previous)) return false;
   const influence = probeInfluence(probe, boxPosition, boxSize);
   if (!influence) return false;
@@ -2516,7 +2662,8 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
   // not silently put the probe's boxes away: they stay as the record has them.
   const standing = state.environmentProbes.get(previous) || state.environmentProbes.get(key);
   const next = {
-    id: key, boxPosition, boxSize, capturePosition, ...influence, resolution,
+    id: key, boxPosition, boxSize, capturePosition,
+        angle, ...influence,
     alwaysVisible: !!(probe?.alwaysVisible ?? standing?.alwaysVisible),
     envFaces: !!(probe?.envFaces ?? standing?.envFaces),
     visibleParts: probeVisibleParts(probe?.visibleParts, standing?.visibleParts),
@@ -2529,7 +2676,7 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
   if (previous && previous !== key) state.environmentProbes.delete(previous);
   state.environmentProbes.set(key, next);
   if (previous && previous !== key) {
-    state.selection = state.selection.map((selected) => selected === previous ? key : selected);
+    state.selection = state.selection.map((selected) => ( selected === previous ? key : selected));
   }
   emit("environment-probes");
   if (previous && previous !== key) emit("selection");
@@ -2896,7 +3043,8 @@ export function isDynamicNode(nodeName) {
  * the thing that decides, and a definition body invented here to mirror it
  * would be a second source of truth that nothing enforces.
  */
-const WEAPON_BEHAVIOR = "weaponLiquefactor";
+const WEAPON_BEHAVIORS = ["weaponLiquefactor", "weaponAntiGravityGun"];
+export const PLAY_ANIMATION_BEHAVIOR = "playAnimation";
 
 /**
  * Whether a node's geometry must be kept OUT of an environment probe.
@@ -2906,12 +3054,13 @@ const WEAPON_BEHAVIOR = "weaponLiquefactor";
  * the life of the level has to be left out, or the room reflects a crate that
  * has since been pushed over and a weapon that is really in the player's hands.
  *
- * Three ways to earn it, and all three say the same thing:
+ * Four ways to earn it, and all four say the same thing:
  *
  *  - `dynamic: true` — a rigid body. Its authored pose is a starting position,
  *    not a fact about the room.
  *  - `liquefiable: true` — it is going to melt. What the probe would record is
  *    its shape before the game begins.
+ *  - `playAnimation` — its exported transform changes at runtime.
  *  - the weapon behaviour — a first-person viewmodel rides the camera, so it is
  *    never in the room at all; the placement is only where it is picked up.
  *
@@ -2924,7 +3073,7 @@ const WEAPON_BEHAVIOR = "weaponLiquefactor";
  */
 export function isProbeExcludedNode(nodeName) {
   return entityBehaviors(nodeName).some((b) => {
-    if (b.name === WEAPON_BEHAVIOR) return true;
+    if (WEAPON_BEHAVIORS.includes(b.name) || b.name === PLAY_ANIMATION_BEHAVIOR) return true;
     const def = getBehaviorDef(b.name);
     return def?.reflectionProbe === "exclude" || def?.dynamic === true || def?.liquefiable === true;
   });
@@ -3267,6 +3416,13 @@ export function setConfig(key, value) {
     return true;
   }
   const v = Number(value);
+    if (range.values) {
+        if (!range.values.includes(v) || state.config[key] === v) return false;
+        pushUndo();
+        state.config = { ...state.config, [key]: v };
+        emit("config");
+        return true;
+    }
   if (!Number.isFinite(v) || v < range.min || v > range.max) return false;
   if (Math.abs(state.config[key] - v) < 1e-9) return false;
   pushUndo();
@@ -3383,6 +3539,10 @@ export const hooks = {
   // runtime.js registers this: the probe volume gizmo is its own, and the
   // inspector needs to be able to select and edit it like any other entry.
   environmentProbeEntry: () => null,
+  // runtime.js registers this too. The behaviour preview drives the skinned
+  // props' bones, and a GLB taken mid-clip would bake that pose in as the
+  // exported rest transform. Returns the function that puts playback back.
+  pauseBehaviorAnimations: () => () => {},
   // compounds.js registers these: the compound bench keeps its own history, and
   // the registry above has to be able to snapshot it without importing it back.
   serializeBench: () => ({ members: [] }),
@@ -3498,6 +3658,7 @@ export function serializeEditorPrefs() {
     veilAlpha: round3([state.veilAlpha])[0],
     bigPalette: !!state.bigPalette,
     strayChunkCheck: !!state.strayChunkCheck,
+    runBehaviors: !!state.runBehaviors,
     probes,
   };
 }
@@ -3552,6 +3713,7 @@ export function applyEditorPrefs(prefs) {
   if (Number.isFinite(prefs.veilAlpha)) setVeilAlpha(prefs.veilAlpha);
   if (typeof prefs.bigPalette === "boolean") state.bigPalette = prefs.bigPalette;
   if (typeof prefs.strayChunkCheck === "boolean") state.strayChunkCheck = prefs.strayChunkCheck;
+  if (typeof prefs.runBehaviors === "boolean") state.runBehaviors = prefs.runBehaviors;
   // Probes are already in by the time this runs; an id the block names but the
   // ship no longer has is simply ignored, which is how a deleted probe stops
   // being mentioned without anybody having to prune the block.
@@ -3708,7 +3870,7 @@ export function moduleShapesFromRuntime(block) {
         made.push({
           kind: "box",
           position,
-          rotation: [e.x, e.y, e.z].map((r) => r * 180 / Math.PI),
+          rotation: [e.x, e.y, e.z].map((r) => ( r * 180) / Math.PI),
           scale: (s.halfExtents || [0.5, 0.5, 0.5]).map((v) => v * 2),
         });
       } else if (s.kind === "sphere") {
@@ -3732,7 +3894,7 @@ export function moduleShapesFromRuntime(block) {
             else if (dot < -1 + 1e-6) q = Quaternion.RotationAxis(Vector3.Right(), Math.PI);
             else q = Quaternion.RotationAxis(Vector3.Cross(up, axis).normalize(), Math.acos(dot));
             const e = q.toEulerAngles();
-            rotation = [e.x, e.y, e.z].map((r) => r * 180 / Math.PI);
+            rotation = [e.x, e.y, e.z].map((r) => ( r * 180) / Math.PI);
           }
         }
         made.push({ kind: s.kind, position, rotation, scale: [d, h, d] });
@@ -3756,6 +3918,26 @@ export async function deserialize(data) {
   }
 }
 
+/**
+ * The cubemap size a ship authored before the setting existed was built at.
+ *
+ * Every probe used to carry its own, and the runtime now holds the captures in
+ * one cube texture array - a single dimension for every slice. Taking the
+ * LARGEST of what was authored is the only answer that does not depend on the
+ * order the probes happen to be written in and never quietly downsamples a
+ * room; those old values were free-form, so it is rounded up to the nearest
+ * size the setting offers. Null when nothing readable was written.
+ */
+function legacyProbeResolution(probes) {
+    let largest = 0;
+    for (const probe of probes) {
+        const n = Math.round(Number(probe?.resolution));
+        if (Number.isFinite(n)) largest = Math.max(largest, n);
+    }
+    if (largest <= 0) return null;
+    return PROBE_RESOLUTIONS.find((n) => n >= largest) ?? PROBE_RESOLUTIONS.at(-1);
+}
+
 async function restoreFrom(data) {
   clearAll();
   // Defaults first, so a layout saved before a setting existed comes back with
@@ -3777,7 +3959,7 @@ async function restoreFrom(data) {
     || Array.isArray(data.environmentProbes);
   let probes = Array.isArray(data.probeVolumes)
     ? data.probeVolumes
-    : (Array.isArray(data.environmentProbes)
+    :Array.isArray(data.environmentProbes)
       ? data.environmentProbes.map((probe) => ({
         id: probe.id,
         boxPosition: Array.isArray(probe.boxPosition)
@@ -3787,6 +3969,7 @@ async function restoreFrom(data) {
         capturePosition: Array.isArray(probe.capturePosition)
           ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]),
             Number(probe.capturePosition[2])] : null,
+                angle: Number.isFinite(Number(probe.angle)) ? -Number(probe.angle) : 0,
         // Absent on anything written before influence volumes were authored,
         // where the record takes the defaults instead - which are what that
         // ship was already blending with.
@@ -3795,9 +3978,11 @@ async function restoreFrom(data) {
             Number(probe.influenceBoxPosition[2])] : null,
         influenceBoxSize: probe.influenceBoxSize,
         influenceInnerBoxSize: probe.influenceInnerBoxSize,
+                // Not a probe field any more - see legacyProbeResolution, which is the
+                // only thing that still reads it.
         resolution: probe.resolution,
       }))
-      : []);
+      : [];
   // Manifests written before explicit volumes stored one projection override
   // on each chunk. Promote those records instead of dropping authored work.
   if (!hasExplicitProbes) {
@@ -3819,10 +4004,9 @@ async function restoreFrom(data) {
         const bounds = chunk.aabb;
         const automatic = Array.isArray(generatedPosition)
           ? generatedPosition
-          : (Array.isArray(bounds?.min) && Array.isArray(bounds?.max)
-            ? bounds.min.map((value, axis) => (
-              (Number(value) + Number(bounds.max[axis])) * 0.5))
-            : null);
+          :Array.isArray(bounds?.min) && Array.isArray(bounds?.max)
+            ? bounds.min.map((value, axis) => (Number(value) + Number(bounds.max[axis])) * 0.5)
+            : null;
         const capturePosition = Array.isArray(automatic)
           ? [-Number(automatic[0]), Number(automatic[1]), Number(automatic[2])]
           : position;
@@ -3831,9 +4015,21 @@ async function restoreFrom(data) {
           boxPosition: position,
           boxSize: legacy.boxSize,
           capturePosition,
+                    angle: Number(generated[chunk.id]?.angle) || 0,
           resolution: Number(generated[chunk.id]?.resolution) || 512,
         };
       });
+    }
+    // A ship authored before the cubemap size became a ship-wide setting carries
+    // it on every probe instead, so read the setting back out of them. The test
+    // is on what the FILE said rather than on the merged config, which has
+    // already taken the default; and it also catches a hand-edited value the
+    // texture array could not hold.
+    if (!PROBE_RESOLUTIONS.includes(Number(data.config?.probeResolution))) {
+        state.config = {
+            ...state.config,
+            probeResolution: legacyProbeResolution(probes) ?? CONFIG_DEFAULTS.probeResolution,
+        };
   }
   for (const probe of probes) {
     const id = validEnvironmentProbeId(probe?.id);
@@ -3841,16 +4037,17 @@ async function restoreFrom(data) {
     const boxSize = validProbeVector(probe?.boxSize, true);
     const capturePosition = validProbeVector(
       probe?.capturePosition || probe?.boxPosition);
-    const resolution = Math.round(Number(probe?.resolution || 512));
+    const angle =Number(probe?.angle ?? 0);
     if (!environmentProbeIdAvailable(id) || !boxPosition || !boxSize || !capturePosition
-      || resolution < 16 || resolution > 4096) continue;
+      || !Number.isFinite(angle)) continue;
     // A file is allowed to be wrong about its influence volumes without losing
     // the probe: a refused pair falls back to the defaults, the same as one
     // that was never written.
     const influence = probeInfluence(probe, boxPosition, boxSize)
       || defaultProbeInfluence(boxPosition, boxSize);
     state.environmentProbes.set(id, {
-      id, boxPosition, boxSize, capturePosition, ...influence, resolution,
+      id, boxPosition, boxSize, capturePosition,
+            angle, ...influence,
       // Only an undo snapshot carries these; a manifest keeps them in
       // `editorPrefs`, which loadLayout() applies once the probes exist.
       alwaysVisible: !!probe?.alwaysVisible,
@@ -4264,12 +4461,12 @@ export function resetModeHistory(mode = state.mode) {
 export function eulerOf(node) {
   const q = node.rotationQuaternion || Quaternion.FromEulerVector(node.rotation);
   const e = q.toEulerAngles();
-  return [e.x * 180 / Math.PI, e.y * 180 / Math.PI, e.z * 180 / Math.PI];
+  return [(e.x * 180) / Math.PI, ( e.y * 180) / Math.PI, ( e.z * 180) / Math.PI];
 }
 
 export function setEuler(node, deg) {
-  node.rotationQuaternion = Quaternion.FromEulerAngles(
-    deg[0] * Math.PI / 180, deg[1] * Math.PI / 180, deg[2] * Math.PI / 180);
+  node.rotationQuaternion = Quaternion.FromEulerAngles((
+    deg[0] * Math.PI) / 180, ( deg[1] * Math.PI) / 180, ( deg[2] * Math.PI) / 180);
 }
 
 function round3(a) { return a.map((v) => Math.round(v * 1000) / 1000); }
