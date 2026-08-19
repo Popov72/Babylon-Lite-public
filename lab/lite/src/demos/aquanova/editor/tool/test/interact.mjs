@@ -3470,8 +3470,9 @@ check("a snapshot without a list leaves the one in force alone",
   simList.afterUndo.join() === "ship-only.json,thick.json", `[${simList.afterUndo}]`);
 
 // ---- 1d-quaterdecies. the behaviour panel and the library dialog ----------
-// The panel edits the *name* in the field, not the element, so giving a second
-// element the same name has to bring the first one's behaviours up on blur.
+// The panel edits the *node name* - the one in the field, or the element's id
+// when the field is empty - not the element itself, so giving a second element
+// the same name has to bring the first one's behaviours up on blur.
 const bhvIds = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
@@ -3497,9 +3498,10 @@ const readPanel = () => page.evaluate(() => ({
 }));
 
 const unnamed = await readPanel();
-check("an unnamed element cannot be given a behaviour",
-  unnamed.shown && unnamed.addOff && /Name the element first/.test(unnamed.hint),
-  `add disabled=${unnamed.addOff}, hint="${unnamed.hint}"`);
+check("an unnamed element carries behaviours under its id, and the panel says so",
+  unnamed.shown && /unnamed, so it stands alone under its id/.test(unnamed.count)
+    && new RegExp(`^${bhvIds.a} —`).test(unnamed.count),
+  `count="${unnamed.count}", hint="${unnamed.hint}"`);
 
 // define two behaviours through the dialog, exactly as a user would
 await page.fill("#insp-name", "crate");
@@ -8689,10 +8691,10 @@ check("Ctrl+D copies the lamps the source is wearing, not the kit's defaults",
   dupLit.fresh && dupLit.lamps.length === 2 && dupLit.distinct
     && JSON.stringify(dupLit.lamps) === JSON.stringify(dupLitSetup.lamps),
   JSON.stringify({ carried: dupLit.lamps, wanted: dupLitSetup.lamps }));
-check("the copy carries the source's name, and leaves the source alone",
-  dupLit.name === "port lamp"
+check("the copy is nameless, so it is its own node, and leaves the source alone",
+  dupLit.name === ""
     && JSON.stringify(dupLit.source) === JSON.stringify(dupLitSetup.lamps),
-  `name=${dupLit.name}, source=${JSON.stringify(dupLit.source)}`);
+  `name=${JSON.stringify(dupLit.name)}, source=${JSON.stringify(dupLit.source)}`);
 
 // ---- Ctrl+D always arms on the floor plane ----------------------------------
 // In Y mode the cursor drives the *build plane* rather than the ghost's own
@@ -10221,6 +10223,88 @@ check("H brings everything back",
   unhid.enabled.every(Boolean) && unhid.count === 0 && !/hidden/.test(unhid.counts),
   `enabled=${JSON.stringify(unhid.enabled)}, ${unhid.count} hidden`);
 
+// ---- a copy is its own node ------------------------------------------------
+// Behaviours hang off a node NAME, and names are shared on purpose - naming six
+// crates "crate" is how one entry governs all six. A copy that kept its
+// source's name therefore inherited the source's identity rather than its
+// properties: one entry for both, `linked` unable to name one without the
+// other, and no way to give the copy a behaviour of its own. So a copy arrives
+// nameless, under its id, carrying its own deep copy of what the source had -
+// unless Ctrl+Shift+D asks for the bare shape.
+const dupBhv = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const mf = await import("/js/manifest.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  ed.setBehaviorDef("spin", { });
+  const fan = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Fan_Small", new V(0, 2, 0), { silent: true });
+  ed.renamePlacement(fan.id, "fanA");
+  ed.addEntityBehavior("fanA", "spin");
+  ed.setEntityParams("fanA", 0, { animation: "Fan_Idle", loop: false });
+
+  ed.select([fan.id]);
+  await ed.duplicateSelected();
+  const copyId = ed.state.selection[0];
+  const copy = ed.entryOf(copyId);
+  const carried = ed.entityBehaviors(copyId);
+  // its own copy, not a second handle: editing the copy must not reach back
+  ed.setEntityParams(copyId, 0, { animation: "Fan_Fast" });
+  const sourceStill = ed.entityBehaviors("fanA")[0]?.animation;
+
+  // the manifest names both nodes, and the .glb names the copy after its id
+  const written = JSON.parse(JSON.stringify(mf.buildManifest().entities));
+  const exported = mf.nodeNameOf(copy);
+
+  // Ctrl+Shift+D is the same copy without them
+  ed.select([fan.id]);
+  await ed.duplicateSelected({ behaviors: false });
+  const bareId = ed.state.selection[0];
+  const bare = ed.entityBehaviors(bareId).length;
+
+  // naming the copy carries its behaviours over, or they would be orphaned the
+  // moment you gave it the name that makes it findable
+  ed.renamePlacement(copyId, "fanB");
+  const afterName = { byId: ed.entityBehaviors(copyId).length, byName: ed.entityBehaviors("fanB").length };
+  // and joining a name that already governs others hands it over to that entry
+  ed.renamePlacement(bareId, "fanA");
+  const joined = { onFanA: ed.entityBehaviors("fanA").length, strays: ed.entityBehaviors(bareId).length };
+
+  // an id entry cannot be re-adopted, so deleting its element takes it with it
+  ed.renamePlacement(copyId, "");
+  const backOnId = ed.entityBehaviors(copyId).length;
+  ed.removePlacement(copyId);
+  const afterDelete = ed.entityBehaviors(copyId).length;
+  // a NAMED entry survives its last element: it is authored, not derived
+  ed.removePlacement(fan.id);
+  const namedSurvives = ed.entityBehaviors("fanA").length;
+
+  ed.clearAll(); ed.select([]);
+  return { name: copy?.name, carried, sourceStill, written, exported, copyId,
+    bare, afterName, joined, backOnId, afterDelete, namedSurvives };
+});
+check("a copy is nameless, so the manifest sees two nodes rather than one",
+  dupBhv.name === "" && dupBhv.exported === dupBhv.copyId
+    && !!dupBhv.written.fanA && !!dupBhv.written[dupBhv.copyId],
+  `name=${JSON.stringify(dupBhv.name)}, exported as ${dupBhv.exported}, entities [${Object.keys(dupBhv.written)}]`);
+check("and it brings the source's behaviours, parameters and all",
+  dupBhv.carried.length === 1 && dupBhv.carried[0].name === "spin"
+    && dupBhv.carried[0].animation === "Fan_Idle" && dupBhv.carried[0].loop === false,
+  JSON.stringify(dupBhv.carried));
+check("as a copy, not a second handle on the source's",
+  dupBhv.sourceStill === "Fan_Idle", `source now says ${JSON.stringify(dupBhv.sourceStill)}`);
+check("Ctrl+Shift+D copies the element without them",
+  dupBhv.bare === 0, `${dupBhv.bare} carried`);
+check("naming a copy carries its behaviours onto the name",
+  dupBhv.afterName.byId === 0 && dupBhv.afterName.byName === 1,
+  JSON.stringify(dupBhv.afterName));
+check("but joining a name that already governs others defers to that entry",
+  dupBhv.joined.onFanA === 1 && dupBhv.joined.strays === 0,
+  JSON.stringify(dupBhv.joined));
+check("an id entry dies with its element, where a named one outlives its last",
+  dupBhv.backOnId === 1 && dupBhv.afterDelete === 0 && dupBhv.namedSurvives === 1,
+  `back on id ${dupBhv.backOnId}, after delete ${dupBhv.afterDelete}, named ${dupBhv.namedSurvives}`);
 
 // A scale runs along the world's axes when the tools are in world space. It
 // used to be local whatever the setting said, so "grow this along world X" grew

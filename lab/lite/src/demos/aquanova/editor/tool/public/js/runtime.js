@@ -36,7 +36,7 @@ const {
 import {
   state, emit, on, hooks, syncLightingMode, applyVisibility, environmentProbeOf, ownerIdOf,
   isProbeExcludedNode, withDeadline, environmentProbePartId, environmentProbePartOf,
-  shipPlacements, entityBehaviors, PLAY_ANIMATION_BEHAVIOR,
+  shipPlacements, entityBehaviors, PLAY_ANIMATION_BEHAVIOR, nodeNameOf,
 } from "./editor.js";
 
 const ROOT_NAME = "RUNTIME_PREVIEW";
@@ -1491,17 +1491,17 @@ export function meshesInProbeBox(boxPosition, boxSize) {
 /**
  * Whether an element's authored behaviours keep it out of every probe.
  *
- * Behaviours hang off an element's NAME, not off its id - naming six crates
- * "crate" is how one entry comes to govern all six - so the chain is mesh to
- * owning placement to that placement's name. An element with no name carries
- * no behaviours and is therefore never excluded.
+ * Behaviours hang off an element's NODE NAME - its own name, or its id when it
+ * has none - so the chain is mesh to owning placement to that node name. Naming
+ * six crates "crate" is how one entry comes to govern all six; leaving one
+ * unnamed is how it comes to have an entry of its own.
  *
  * Every mesh in a group belongs to the same placement (see elementOf), so the
  * first one answers for all of them.
  */
 function probeExcluded(group) {
   const id = ownerIdOf(group[0], true);
-  const name = id ? state.placements.get(id)?.name : "";
+  const name = id ? nodeNameOf(state.placements.get(id)) : "";
   return !!name && isProbeExcludedNode(name);
 }
 
@@ -1731,7 +1731,8 @@ function wantedBehaviorAnimations() {
   for (const placement of shipPlacements()) {
     const groups = placement.node?._shipAnimationGroups;
     if (!groups?.length) continue;
-    for (const assignment of entityBehaviors(placement.name)) {
+    const node = nodeNameOf(placement);
+    for (const assignment of entityBehaviors(node)) {
       if (assignment.name !== PLAY_ANIMATION_BEHAVIOR) continue;
       const named = typeof assignment.animation === "string" && assignment.animation
         ? assignment.animation
@@ -1741,7 +1742,7 @@ function wantedBehaviorAnimations() {
       // error at load; reported here rather than thrown, because the editor has
       // to keep drawing the rest of the ship while you go and fix it.
       if (!group) {
-        missing.push(`${placement.name}: "${named}"`);
+        missing.push(`${node}: "${named}"`);
         continue;
       }
       wanted.set(group, assignment.loop === undefined ? true : !!assignment.loop);

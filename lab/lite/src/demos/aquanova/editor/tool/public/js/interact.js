@@ -17,6 +17,7 @@ import {
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
   constrainMove, axisBasis, nodeBasis, cameraDropPoint, isGizmoMesh, ownerIdOf, setShowLayer,
   isRuntimeStandIn, groupExpand, groupOf, groupAnchor, nextGroupId,
+  copyBehaviorsTo,
   COMPOUND_CHUNK, STAGE_CHUNK,
 } from "./editor.js";
 
@@ -253,6 +254,12 @@ async function buildGhost(specs, opts = {}) {
     root, items, meshes,
     centre: min ? min.add(max).scale(0.5) : Vector3.Zero(),
     mode: opts.mode || "place",
+    // Whether a copy brings its source's behaviours across. One decision for
+    // the whole gesture rather than per item, because it is one keystroke:
+    // Ctrl+D copies them, Ctrl+Shift+D leaves them behind. Kept on the ghost so
+    // the answer survives the arming - the copy is not made until the drop, by
+    // which time the modifier keys are long gone.
+    behaviors: opts.behaviors !== false,
     // A copy keeps its source's height without the build plane being dragged
     // up to it - which used to change where everything placed afterwards went.
     baseY: Number.isFinite(opts.baseY) ? opts.baseY : null,
@@ -288,9 +295,11 @@ hooks.ghostNode = () => (ghost && !ghost.root.isDisposed() ? ghost.root : null);
  *
  * `opts.originId` names that element, and is what makes the copy a copy of the
  * whole of it rather than of its mesh: the drop reads the source and brings its
- * lamps, its name and its compound across. Without it a duplicate of a lit
- * panel came back with the *kit's* default lamp - or with none at all, when the
- * light had been added by hand - and every tuned intensity was lost on the way.
+ * lamps, its behaviours and its compound across. Without it a duplicate of a
+ * lit panel came back with the *kit's* default lamp - or with none at all, when
+ * the light had been added by hand - and every tuned intensity was lost on the
+ * way. `opts.behaviors: false` is the one part of that a copy can be asked to
+ * leave behind.
  */
 export async function armGhost(moduleId, opts = {}) {
   cancelGhost();
@@ -423,7 +432,10 @@ export async function grabSelection(opts = {}) {
     // to inherit its source's lamps and its compound, and that needs the id.
     originId: e.id,
   }));
-  const built = await buildGhost(specs, { mode: opts.copy ? "copy" : "move" });
+  const built = await buildGhost(specs, {
+    mode: opts.copy ? "copy" : "move",
+    behaviors: opts.behaviors,
+  });
   if (token !== ghostToken) { disposeGhost(built); return null; }
 
   ghost = built;
@@ -796,6 +808,7 @@ export async function dropGhost() {
   const regroup = new Map();
   let fromTile = "";
   let lit = false;
+  let behaved = false;
   let shapes = false;
   // Every piece is placed silently and the whole drop announced at the end.
   // Announcing the first one as it lands - which is what `placeAt` does for an
@@ -825,7 +838,13 @@ export async function dropGhost() {
       })
       : await placeAt(l.module, l.pos, {
         rotation: euler, scale: l.scl.asArray(), silent: true,
-        name: l.name || src?.name || "",
+        // A copy is deliberately nameless. A name is shared identity - one
+        // behaviour entry governing every element carrying it - so handing the
+        // copy its source's would make the two one node as far as the manifest,
+        // `linked` and the runtime are concerned. It exports under its id until
+        // it is given a name of its own. A compound member keeps the name its
+        // recipe gives it: that is authored, not inherited.
+        name: src ? "" : (l.name || ""),
         group, compound: l.compound || src?.compound || "",
         // On a bench a dropped module is a stand-in, not ship geometry - and on
         // the collision bench it arrives carrying whatever hull it already has.
@@ -835,7 +854,12 @@ export async function dropGhost() {
         // kit's defaults on top would double them up.
         noLights: !!(src || l.lights),
       });
-    if (p && src) { if (hooks.copyLightsTo(src.id, p.id)?.length) lit = true; }
+    if (p && src) {
+      if (hooks.copyLightsTo(src.id, p.id)?.length) lit = true;
+      // Under the copy's own id, since it has no name to hang them off - which
+      // is what makes a duplicated fan a fan rather than a still model.
+      if (copyBehaviorsTo(src.id, p.id, { copy: g.behaviors })) behaved = true;
+    }
     else if (p && l.lights?.length) {
       for (const light of l.lights) addLight(p.id, { ...light, silent: true });
       lit = true;
@@ -852,6 +876,10 @@ export async function dropGhost() {
     emit("placements");
     if (shapes) emit("colliders");
     if (lit) emit("lights");
+    // The Runtime view starts a copied fan's clip off this, and the behaviour
+    // panel is drawn from it - without it a duplicate arrived with its
+    // behaviours in the manifest but nothing on screen acting on them.
+    if (behaved) emit("behaviors");
     select(ids);
   }
   // A duplicate is done once dropped; a palette module stays armed so a run of

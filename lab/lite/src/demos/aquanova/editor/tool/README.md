@@ -166,8 +166,23 @@ operations keep the file consistent by themselves:
 **Attaching** happens on the selected element, keyed by its **node name** — so
 the panel shows how many elements that name governs (`"crate" — 4 elements`).
 Attaching one can be affecting one crate or thirty, and there is no other way to
-tell. A name is required first: a behaviour with nothing to key on could never
-be matched to an element.
+tell.
+
+**An element with no `Name` still has a node name — its id** — and behaviours
+attach to that just as well. Nothing else can ever carry `P0042`, so leaving
+something unnamed is how it comes to have behaviours **of its own** rather than
+a share in someone else's; the panel says so instead of a count
+(`P0042 — unnamed, so it stands alone under its id`). This is what makes a
+`Ctrl+D` copy work: a copy is nameless by design, and hangs its inherited
+behaviours off its id. Give it a name later and they follow — see
+[Controls](#controls).
+
+> Node names used to have to be typed before anything could be attached, which
+> was a rule about the panel rather than about the ship: `nodeNameOf` — the one
+> function the manifest, the exporter and the runtime all resolve through — has
+> always fallen back to the id. The panel was the only part of the tool that did
+> not, so the only way to give a duplicate its own behaviour was to invent a
+> name for it.
 
 **The same behaviour may be attached more than once.** An entity's behaviours
 are a _list_ of assignments, not a set keyed by name: the runtime walks the list
@@ -901,7 +916,7 @@ the same thing.
 | Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Behaviour        | inspector panel — attach library behaviours to the element's node name (the same one may be attached more than once; repeats are numbered), edit each one's parameters as **raw JSON**, and pick the `linked` nodes a liquefiable one melts with · the library itself (name + free-form JSON body) opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Behaviour        | inspector panel — attach library behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each one's parameters as **raw JSON**, and pick the `linked` nodes a liquefiable one melts with · the library itself (name + free-form JSON body) opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -911,7 +926,7 @@ the same thing.
 | View mode        | toolbar combo — **Editor** (the authoring rig) · **Editor unlit** (raw albedo, no lighting) · **Runtime** (the authoring rig off, the authored lamps rebuilt as real lights and each room reflecting its own environment probe — the lights the game actually has). See [The three view modes](#the-three-view-modes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Walk             | toolbar checkbox — walk at the player's eye height (1.8 m) instead of flying. `WASD` moves horizontally at the usual speed, the height follows whatever floor is underfoot, and `Space`/`C` are off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Undo             | `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) — whole-layout snapshots, capped by _memory_ rather than a fixed count (1000 steps on this ship, fewer as it grows), so _anything_ that pushes an entry is undoable: placing, deleting, dragging, turning, scaling, flipping, nudging, hiding, the **Runtime** lighting sliders, every inspector field and every behaviour edit. The **Editor** lighting sliders are deliberately not on the stack — see [Lighting is an edit](#lighting-is-an-edit-the-editors-own-view-is-not)                                                                                                                                                                                                                                                                                                                                                                                           |
-| Edit             | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, bringing the source's lights, name and compound with it, and setting the drag axis back to `X/Z` so the copy arms where you can see it · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Edit             | **`Ctrl+D` puts a copy of the current element — or of the whole selection — on the cursor** as a ghost, keeping every rotation and mirroring, bringing the source's lights, behaviours and compound with it, and setting the drag axis back to `X/Z` so the copy arms where you can see it · the copy is deliberately **nameless**, since a name is shared identity and the copy is its own node · **`Ctrl+Shift+D`** is the same copy with the behaviours left behind · **`Del`, or the middle mouse button, deletes the hovered element, or the selection if nothing is hovered** (deleting a hovered element leaves the rest of the selection intact)                                                                                                                                                                                                                                                                                                                                                                                             |
 | Grid             | `G` · **Editor unlit** shows raw albedo with no lighting · **Settings ▸ Editor ▸ Exposure** — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Palette          | hover a tile to spin the module through a full 360° turn · **drag the grip** between the palette and the viewport to resize it, double-click the grip to restore the default width                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Save             | `Ctrl+S` — writes `ship_manifest.json` **and** `ship.glb`, and stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -1045,15 +1060,42 @@ twelve walls hands you twelve walls.
 
 **The ghost also remembers _which element_ it came from**, as an `originId` on
 each of its items, and the drop reads that element to finish the copy: its
-[lights](#lights) come across as they are tuned right now, along with its name
-and its [compound](#compound-objects) — a fresh group id per source group, so
-the copy is its own instance. Without it a duplicate was a copy of the mesh
-rather than of the element: a lit panel came back wearing the **kit's default
-lamp** instead of the one you had dimmed, and a lamp you had added by hand to
-something the kit does not light came back as nothing at all. The
-multi-selection path always did this; the single-element one went through the
+[lights](#lights) come across as they are tuned right now, along with its
+[behaviours](#behaviours) and its [compound](#compound-objects) — a fresh group
+id per source group, so the copy is its own instance. Without it a duplicate was
+a copy of the mesh rather than of the element: a lit panel came back wearing the
+**kit's default lamp** instead of the one you had dimmed, and a lamp you had
+added by hand to something the kit does not light came back as nothing at all.
+The multi-selection path always did this; the single-element one went through the
 palette brush, which had no way to carry it. A compound _tile_ has no source
 element in the scene, so it brings its lamps in its recipe instead.
+
+**The one thing a copy does not take is the name.** A name is _shared identity_,
+not a label: behaviours key off it, `linked` names its neighbours by it and the
+manifest counts one node per name, so handing the copy its source's name would
+make the two one node — one behaviour entry governing both, and no way to give
+either its own. The copy therefore arrives nameless and exports under its id,
+with **its own deep copy** of whatever the source carried, hung off that id.
+Edit the copy's parameters and the original is untouched.
+
+> **`Ctrl+Shift+D` is the same copy without the behaviours**, for when what you
+> want is the shape of a fan rather than another working one. Everything else —
+> lights, compound, rotation, mirroring, height — comes across either way. The
+> status line names the count in both directions (`· bringing 2 behaviours`,
+> `· leaving 2 behaviours behind`) and stays quiet when there are none, which is
+> most elements: a wall that announced `0 behaviours` on every `Ctrl+D` would
+> train you to stop reading the line.
+>
+> Give the copy a name afterwards and its behaviours **follow it onto that
+> name** — nothing else was carrying its id, so following along is the only
+> reading that loses nothing. Give it a name that already governs other
+> elements and it joins _them_ instead, because that is what sharing a name
+> means; its own entry is dropped rather than left behind. Clear a name that
+> only one element was using and the entry comes back down onto its id. And an
+> entry under an id **dies with its element**, since no other element can ever
+> carry that id, where an entry under a name outlives its last element — a name
+> is something you authored, and deleting the last crate to put down a better
+> one should not throw away how crates behave.
 
 **It also sets the drag axis back to `X/Z` first**, and says so. In `Y` mode the
 cursor drives the _build plane_ rather than the ghost's own height, and it clears
@@ -1093,7 +1135,8 @@ your hand is doing:
 - **Ctrl+D** — a copy of the current element comes up on the cursor. It keeps
   the source's height **without moving the build plane**: moving the plane was
   the old behaviour, and it meant a duplicate silently changed where everything
-  placed afterwards would land.
+  placed afterwards would land. The copy is nameless and brings its own copy of
+  the source's behaviours; **Ctrl+Shift+D** leaves those behind.
 - **Carry** (`M`) — the selection lifts onto the cursor as a **translucent**
   ghost. No button held: move the mouse, turn with `R`, mirror with `F`, fly the
   camera, then click to drop. `Esc` puts everything back where it was.

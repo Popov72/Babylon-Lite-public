@@ -11,7 +11,7 @@ import {
   serializeEditorPrefs, applyEditorPrefs,
   applyEnvironment, whileBusy, withVeilSuspended,
   isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
-  environmentProbeIds, environmentProbeOf, writeBehaviorExtras,
+  environmentProbeIds, environmentProbeOf, writeBehaviorExtras, nodeNameOf,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -72,10 +72,12 @@ function boxToGltf(min, max) {
  * none. Everything the runtime resolves - behaviours, door leaves - goes
  * through this one function, so the manifest can never name a node the export
  * does not.
+ *
+ * It lives in editor.js, next to the behaviour store that keys off it, and is
+ * re-exported here because this is the module the rest of the tool has always
+ * asked for it by.
  */
-export function nodeNameOf(placement) {
-  return String(placement?.name || "").trim() || placement?.id || "";
-}
+export { nodeNameOf };
 
 /**
  * The `behaviors` library and the `entities` that carry them.

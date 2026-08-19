@@ -2242,9 +2242,35 @@ export function removePlacement(id) {
   entry.node.getChildMeshes().forEach((m) => m.dispose());
   entry.node.dispose();
   state.placements.delete(id);
+  // An entry under a *name* is left alone even when nothing carries it any
+  // more: a name is a thing you author, and deleting the last crate to put a
+  // better one down should not throw away how crates behave. An entry under an
+  // id cannot be re-adopted - no other element will ever carry that id - so
+  // leaving it would only put a node the .glb has never heard of in the
+  // manifest.
+  if (!String(entry.name || "").trim()) state.entities.delete(id);
 }
 
-export async function duplicateSelected() {
+/**
+ * Copy the selection one snap step along X.
+ *
+ * A copy is a new element, not a second handle on the old one, so everything
+ * that says *which* element this is is minted fresh and everything that says
+ * what it is like is brought across:
+ *
+ *  - **The name is dropped.** Names are shared on purpose, so keeping it would
+ *    hand the copy the original's identity - one behaviour entry governing
+ *    both, `linked` unable to name one without the other, and the Live checks
+ *    counting two elements where the manifest sees one node. The copy exports
+ *    under its id until it is given a name of its own.
+ *  - **The behaviours come with it**, under that id, unless `behaviors: false`
+ *    asks for a bare copy. Dropping the name would otherwise quietly strip a
+ *    duplicated fan of the very thing that makes it a fan.
+ *  - **Lights come across** for the same reason: a copied ceiling panel that
+ *    arrived dark would be a trap, since the light is part of what the element
+ *    IS, the same way its collision shapes are.
+ */
+export async function duplicateSelected({ behaviors = true } = {}) {
   if (!state.selection.length) return;
   pushUndo();
   const made = [];
@@ -2259,20 +2285,20 @@ export async function duplicateSelected() {
     const rot = eulerOf(e.node);
     const copy = await placeAt(e.module,
       e.node.position.add(new Vector3(state.snap.pos || 1, 0, 0)),
-      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: e.name,
+      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: "",
         group: regroup.get(e.group) || "", compound: e.compound,
         // A copy belongs wherever its original does. Read off the source rather
         // than off the mode so that a bench member cannot be duplicated into a
         // ship element sitting in a chunk that does not exist.
         stage: e.stage, stageChunk: e.chunk,
         silent: true, noLights: true, });
-    // A copied ceiling panel that arrived dark would be a trap: the light is
-    // part of what the element IS, the same way its collision shapes are.
     hooks.copyLightsTo(id, copy.id);
+    copyBehaviorsTo(id, copy.id, { copy: behaviors });
     made.push(copy.id);
   }
   emit("placements");
   emit("lights");
+  emit("behaviors");
   select(made);
 }
 
@@ -2871,17 +2897,49 @@ export function removeEnvironmentProbe(id, history = true) {
 }
 
 /**
- * Give a placement a name.
+ * What an element is called in ship.glb: its own name, or its id when it has
+ * none.
  *
- * The name is the element's *node* name in ship.glb - the parent node, with its
- * primitives numbered off it - and the runtime keys its `behaviors` map off
- * exactly that. Deliberately by name and not by id, so that naming six crates
- * "crate" makes one behaviour entry govern all six. Names are therefore **not**
- * unique, and must not be made unique.
+ * The single answer to "which node is this", and the key everything the runtime
+ * resolves goes through - behaviours, door leaves, the manifest's node
+ * references - so the tool can never name a node the export does not.
  *
- * Ids stay machine-generated and stable, and are the editor's own handle. An
- * unnamed element falls back to its id in the .glb, for want of anything
- * better to call it.
+ * Every element therefore always has a node name. A *given* name is the way to
+ * make several elements share one: naming six crates "crate" makes one
+ * behaviour entry govern all six, which is the whole point of names and is why
+ * they are **not** unique and must not be made unique. An element left unnamed
+ * falls back to its id, which no other element can ever carry - so "no name"
+ * means "on its own", not "nothing to attach to".
+ */
+export function nodeNameOf(placement) {
+  return String(placement?.name || "").trim() || placement?.id || "";
+}
+
+/** The elements carrying a node name - several for a shared one, 1 for an id. */
+function placementsCarrying(nodeName) {
+  const key = String(nodeName || "").trim();
+  if (!key) return [];
+  return [...state.placements.values()].filter((e) => nodeNameOf(e) === key);
+}
+
+/**
+ * Give a placement a name, or take its name away.
+ *
+ * Behaviours hang off the node name, and renaming changes which one this
+ * element carries - so they are carried over when, and only when, doing so
+ * cannot contradict what a name means:
+ *
+ *  - **Nothing else carries the old name.** Then the entry belongs to this
+ *    element alone and following it along is the only reading that loses
+ *    nothing. This is the case that matters for a fresh copy, whose behaviours
+ *    sit under its id until it is given a name.
+ *  - **The new name is free.** Otherwise the element is joining a name that
+ *    already governs others, and the entry it joins is the one that wins -
+ *    sharing is what a name is for. Its old entry is dropped rather than left
+ *    behind, since by the first rule nothing is carrying it any more.
+ *
+ * Rename one of six crates and the other five stay governed, exactly as before:
+ * the old entry stays put because five elements still carry it.
  */
 export function renamePlacement(id, name) {
   const e = state.placements.get(id);
@@ -2889,9 +2947,14 @@ export function renamePlacement(id, name) {
   const next = String(name || "").trim();
   if (e.name === next) return false;
   pushUndo();
+  const before = nodeNameOf(e);
   e.name = next;
-  // Behaviours are keyed by name and stay with the NAME, which is the whole
-  // point of them - renaming one of six crates leaves the other five governed.
+  const after = nodeNameOf(e);
+  const carried = state.entities.get(before);
+  if (carried && before !== after && !placementsCarrying(before).length) {
+    if (!state.entities.has(after)) state.entities.set(after, carried);
+    state.entities.delete(before);
+  }
   emit("placements");
   emit("current");
   emit("behaviors");
@@ -2910,8 +2973,10 @@ export function renamePlacement(id, name) {
 //   entities    which of those a node name carries, plus the `linked` node
 //               names some of them need - a door half links to its other half.
 //
-// Both are keyed by node name, and node names are shared on purpose, so one
-// entry can govern every element carrying it.
+// Both are keyed by NODE NAME - `nodeNameOf`, so a named element by its name
+// and an unnamed one by its id. Names are shared on purpose, so one entry can
+// govern every element carrying it; an id is carried by exactly one element, so
+// leaving something unnamed is how it comes to have behaviours of its own.
 
 /** Definition body for a behaviour name, or null. */
 export function getBehaviorDef(name) {
@@ -2986,6 +3051,40 @@ export function entityBehaviors(nodeName) {
     name: b.name,
     linked: [...(b.linked || [])],
   }));
+}
+
+/**
+ * Give one element the behaviours another carries, as its own.
+ *
+ * What a duplicate needs. Behaviours hang off the node name, so a copy that
+ * kept its source's name would *share* the source's entry rather than have one
+ * - move the original's fan out of the room and the copy's would follow, and
+ * `linked` could no longer tell the two apart. A copy is therefore made
+ * nameless and given its own entry under its id, which nothing else can carry.
+ *
+ * The target's list is replaced rather than added to, so this says exactly what
+ * the copy ends up with: pass `copy: false` and it ends up with nothing. Either
+ * way an entry already sitting under that key is cleared, which also sweeps up
+ * the one an element deleted before a reload could have left behind.
+ *
+ * `linked` comes across as written. The copy of a door leaf therefore still
+ * names the original's twin, which is the only honest answer - the leaf it
+ * ought to pair with does not exist yet - and the panel shows it plainly.
+ */
+export function copyBehaviorsTo(fromId, toId, { copy = true } = {}) {
+  const to = state.placements.get(toId);
+  if (!to) return false;
+  const toKey = nodeNameOf(to);
+  const from = state.placements.get(fromId);
+  const fromKey = from ? nodeNameOf(from) : "";
+  // Sharing a name is the one case with nothing to do: the entry already
+  // governs both, and writing a second copy under the same key is a no-op at
+  // best and a way to lose the source's edits at worst.
+  if (fromKey && fromKey === toKey) return false;
+  const carried = copy ? state.entities.get(fromKey) : null;
+  if (!carried?.length) return state.entities.delete(toKey);
+  state.entities.set(toKey, JSON.parse(JSON.stringify(carried)));
+  return true;
 }
 
 /**
@@ -3163,13 +3262,19 @@ function isVector3(v) {
  *
  * The current room, not the whole ship: linking is for pieces that behave as
  * one, which in practice are neighbours, and a ship-wide list would be hundreds
- * of entries long. Unnamed elements are left out, having nothing to link by.
+ * of entries long.
+ *
+ * Named elements, plus unnamed ones that carry behaviours of their own. An
+ * unnamed element has a node name - its id - so it *can* be linked to, but
+ * offering every one of them would bury the handful worth linking under a room
+ * full of `P0042`s. Carrying a behaviour is what makes one a participant.
  */
 export function nodeNamesInChunk(chunk, exclude = "") {
   const names = new Set();
   for (const e of state.placements.values()) {
     if (e.chunk !== chunk) continue;
-    const n = String(e.name || "").trim();
+    const named = String(e.name || "").trim();
+    const n = named || (state.entities.has(e.id) ? e.id : "");
     if (n && n !== exclude) names.add(n);
   }
   return [...names].sort((a, b) => a.localeCompare(b));
@@ -3179,9 +3284,7 @@ export function nodeNamesInChunk(chunk, exclude = "") {
 export function nodesNamed(name) {
   const key = String(name || "").trim();
   if (!key) return 0;
-  let n = 0;
-  for (const e of state.placements.values()) if (e.name === key) n++;
-  return n;
+  return placementsCarrying(key).length;
 }
 
 export function assignSelectionToChunk(chunk) {  if (!state.selection.length) return;

@@ -273,15 +273,17 @@ function editLight(part, patch) {
 }
 
 /**
- * The behaviour panel, driven by the selected element's *name*.
+ * The behaviour panel, driven by the selected element's *node name*.
  *
  * Behaviours attach to a node name, not to an element, so this panel is really
- * an editor for the name currently in the Name field - which is why the element
- * count is shown: attaching one here can be governing one crate or thirty, and
- * there is no other way to tell. Zero means the entry is orphaned.
+ * an editor for that name - which is why the element count is shown: attaching
+ * one here can be governing one crate or thirty, and there is no other way to
+ * tell. Zero means the entry is orphaned.
  *
- * A behaviour with no name could never be matched to an element, so nothing can
- * be attached until it has one.
+ * An element with no name in the Name field still has a node name - its id -
+ * and behaviours attach to that just as well. The count is then always one, and
+ * the panel says so plainly, because "P0042" is not something anybody typed and
+ * would otherwise read as a bug.
  */
 function refreshBehavior() {
   const single = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
@@ -289,14 +291,15 @@ function refreshBehavior() {
   $("behavior-fields").hidden = !placement;
   if (!placement) return;
 
-  const name = (placement.name || "").trim();
+  const name = nodeNameOf(placement);
+  const named = !!String(placement.name || "").trim();
   const count = nodesNamed(name);
-  const applied = name ? entityBehaviors(name) : [];
+  const applied = entityBehaviors(name);
   const library = libraryNames();
 
-  $("bhv-count").textContent = name
+  $("bhv-count").textContent = named
     ? `"${name}" — ${count} element${count === 1 ? "" : "s"}`
-    : "";
+    : `${name} — unnamed, so it stands alone under its id`;
   renderApplied(name, applied);
 
   // The whole library, every time: a behaviour may be attached more than once,
@@ -307,9 +310,7 @@ function refreshBehavior() {
   $("bhv-add").disabled = !name || !library.length;
   $("btn-bhv-add").disabled = !name || !library.length;
 
-  $("bhv-hint").textContent = !name
-    ? "Name the element first — behaviours attach to the node name."
-    : library.length ? "" : "No behaviours defined yet.";
+  $("bhv-hint").textContent = library.length ? "" : "No behaviours defined yet.";
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g,
@@ -454,7 +455,7 @@ function behaviorParamsHint(behaviorName) {
 
 function selectedName() {
   const e = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
-  return e && !e.type ? (e.name || "").trim() : "";
+  return e && !e.type ? nodeNameOf(e) : "";
 }
 
 $("btn-bhv-add").addEventListener("click", () => {
@@ -846,7 +847,9 @@ $("btn-add-light").addEventListener("click", () => {
   setStatus(`added ${light.id} to ${owner}`);
 });
 
-$("btn-duplicate").addEventListener("click", () => duplicateCurrent());
+// Shift on the button too, so the modifier means the same thing wherever the
+// gesture is started from.
+$("btn-duplicate").addEventListener("click", (e) => duplicateCurrent({ behaviors: !e.shiftKey }));
 $("btn-break-apart").addEventListener("click", () => {
   const r = breakApart();
   if (!r.groups) { setStatus("nothing in the selection came from a compound"); return; }
@@ -2493,7 +2496,10 @@ window.addEventListener("keydown", async (e) => {
   if (e.key === "Alt") { e.preventDefault(); noteKey(e.code, true, e); return; }
 
   if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); return doSave(); }
-  if (mod && e.key.toLowerCase() === "d") { e.preventDefault(); return duplicateCurrent(); }
+  if (mod && e.key.toLowerCase() === "d") {
+    e.preventDefault();
+    return duplicateCurrent({ behaviors: !e.shiftKey });
+  }
   if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
   if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); return redo(); }
   // The bare letter picks the *axis*, Shift walks that setting's value and Ctrl
@@ -2702,8 +2708,13 @@ function axisNoteForGhost() {
  *
  * A ghost can only hold one module, so a multi-selection still duplicates in
  * place - there is nothing sensible to attach to the cursor.
+ *
+ * The copy arrives **nameless**, because a name is shared identity rather than
+ * a label - see duplicateSelected - and with **its own copy of the source's
+ * behaviours**, hung off its id. `Ctrl+Shift+D` is the same gesture without
+ * them, for when the copy is scenery rather than another working fan.
  */
-function duplicateCurrent() {
+function duplicateCurrent({ behaviors = true } = {}) {
   if (ghostActive() || isDragging()) return;
   const cur = currentElement();
   if (!cur) return;
@@ -2735,14 +2746,15 @@ function duplicateCurrent() {
   }
   if (many.length > 1) {
     const axisNote = axisNoteForGhost();
-    grabSelection({ copy: true }).then((g) => {
-      if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place${axisNote}`);
+    const note = behaviorNote(many, behaviors);
+    grabSelection({ copy: true, behaviors }).then((g) => {
+      if (g) setStatus(`copy of ${many.length} elements on the cursor — click to place${note}${axisNote}`);
     });
     return;
   }
 
   const entry = many[0];
-  if (!entry) return duplicateSelected();          // markers have no module
+  if (!entry) return duplicateSelected({ behaviors });   // markers have no module
   const axisNote = axisNoteForGhost();
 
   // The ghost sits on the build plane, so without this the copy of something on
@@ -2772,12 +2784,31 @@ function duplicateCurrent() {
     baseY: y,
     // What makes this a duplicate of the *element* and not of its mesh: the
     // drop reads the source off this id and copies its lights - the tuned ones
-    // it is wearing now, not the kit's defaults - along with its name and its
-    // compound. The multi-selection path above has always done it; this one
+    // it is wearing now, not the kit's defaults - along with its behaviours and
+    // its compound. The multi-selection path above has always done it; this one
     // goes through the palette brush and used to arrive as a bare placement.
     originId: entry.id,
+    behaviors,
   });
-  setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m — click to place${axisNote}`);
+  setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m`
+    + ` — click to place${behaviorNote([entry], behaviors)}${axisNote}`);
+}
+
+/**
+ * What a copy's status line says about the behaviours it is or is not bringing.
+ *
+ * Silent when there are none to speak of, which is most elements: a wall that
+ * announced "0 behaviours" on every Ctrl+D would train you to stop reading the
+ * line. It has to be said when there ARE some, in both directions - the copy is
+ * nameless either way, so nothing on screen would otherwise tell you whether
+ * this one is another working fan or just the shape of one.
+ */
+function behaviorNote(entries, copying) {
+  const n = entries.reduce(
+    (sum, e) => sum + (e?.module ? entityBehaviors(nodeNameOf(e)).length : 0), 0);
+  if (!n) return "";
+  const what = `${n} behaviour${n === 1 ? "" : "s"}`;
+  return copying ? ` · bringing ${what}` : ` · leaving ${what} behind`;
 }
 
 /**
