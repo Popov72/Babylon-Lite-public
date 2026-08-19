@@ -905,7 +905,7 @@ the same thing.
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Steps            | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). Move can be **off** (free positioning while dragging). Rot and Scale are keyboard _step sizes_, so instead of "off" they carry **`free`** — a fine step, `±0.5°` and `0.01`. Rot runs `-90°` to `90°`, the sign being which way `R` turns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Steps            | toolbar dropdowns — Move defaults to **1 m**, and **`Shift+V`** cycles it (`Ctrl+V` backwards). All three lists call their loosest setting **`free`**, but it means two things: on Move it is a real zero and gives free positioning while dragging, and on Rot and Scale — which are keyboard _step sizes_, where a zero would simply do nothing — it is the finest step there is, `±0.5°` and `0.01`. The Rot list is magnitudes only — which way a turn goes comes from the wheel                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Camera           | `WASD` flies, `Space`/`C` rise and descend · **right-drag looks** · **right button + wheel sets the fly speed** · `Shift` for 2× · wheel dollies · `F` frames the selection. The left button never moves the camera                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Lighting         | **Settings ▸ Editor** and **Settings ▸ Runtime** each carry their own **Env** slider — strength of the image-based lighting, which is where metals get nearly all their brightness — plus **Exposure** and **Tone**. The runtime rig is saved in the manifest as `environment`, alongside **Specular AA** and **Reflection roughness**, and the game reads all five; the editor's follows it as `editorEnvironment`, which the game must not read, and is also seeded from `localStorage`                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | View mode        | toolbar combo — **Editor** (the authoring rig) · **Editor unlit** (raw albedo, no lighting) · **Runtime** (the authoring rig off, the authored lamps rebuilt as real lights and each room reflecting its own environment probe — the lights the game actually has). See [The three view modes](#the-three-view-modes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -1247,6 +1247,40 @@ wrong later.
 > to serve a group swinging about a shared pivot, so it comes from the element
 > the gesture is aimed at, the same rule the drag uses.
 
+**And scaling, with one limit the other two do not have.** A node is scaled
+_before_ it is turned, so its three scale numbers always act along its **own**
+axes: `scaling.x` stretches it along whichever way its local X currently points.
+Scaling therefore used to ignore `Y` altogether — `Ctrl+wheel` on `X` grew a wall
+turned 90° along world Z while a drag on `X only` slid it along world X, and the
+two disagreed about what "X" meant. In world space the world axis is now matched
+against the element's own three, and the one that lines up is the one bumped: on
+that wall, growing it along world X bumps its local Z. Exact for anything laid
+out on the grid, which is most of a ship built from a modular kit.
+
+> **A piece turned to an odd angle declines instead.** Stretching a 45° wall
+> along world X _shears_ it, and a shear is not a scale: Babylon stores a
+> position, a rotation and a scale, the manifest stores the same three, and no
+> triple of those describes a sheared box. Blender manages it only because it
+> keeps a full matrix. So rather than stretch the piece along some nearby axis
+> and call it what was asked for, the gesture says why and points at `Y`. The
+> tolerance is 0.999, about 2.5° — far wider than the 1e-15 of drift a chain of
+> quarter turns accumulates, far tighter than any angle a piece is deliberately
+> set at. A **uniform** scale is the same in every space, so `all` never
+> declines. A mixed selection scales the pieces that can and reports the rest,
+> rather than refusing the lot because one prop in it sits at an angle.
+
+**`Alt+F` mirrors in world space too, and never declines.** A flip is a scale by
+−1 on the same axis, so it had the same bug — it mirrored about the element's
+own plane whatever `Y` said. A mirror, though, is exact at _any_ angle, and the
+reason is worth keeping: reflecting `S*R` in world space gives `S*R*F`, which
+splits back into a scale and a rotation as `S' = N_k*S` and `R' = N_k*R*F`. Both
+`N_k` and `F` are reflections, so their determinants multiply to +1 and `R'` is a
+genuine rotation Babylon can hold. A stretch has no such escape, because what it
+leaves over is a shear and a shear is not diagonal. Any `k` works, so the axis
+nearest the world one is taken — it moves the rotation least, and when it lines
+up exactly it does not move it at all, which keeps a grid-aligned piece on its
+exact right angles instead of walking it off them one rounding at a time.
+
 Both spaces run one expression for moving. The travel is projected onto each
 live axis, the distance snapped, and the axis added back scaled by it — with the
 world's own axes, that is exactly the old "drop the other component", so world
@@ -1466,12 +1500,14 @@ which sign that gave. The wheel carries the direction now: one way turns, the
 other turns back. So the sign went back out of the list, and the arrow the gizmo
 draws lost the mirroring it had grown to keep up with it.
 
-**`free` is a fine step, not no step.** Both lists carry one — `0.5°` on `Rot`,
-`0.01` on `Scale` — for dialling in a value with the wheel. It is deliberately
-_not_ zero: `Move` can be switched off because a drag is a continuous gesture
-that then goes unsnapped, but a wheel notch is discrete, so a step of zero would
-simply do nothing. That is exactly why a literal "off" was taken off these two
-lists earlier, and a test still fails if `0` reappears in either.
+**`free` is a fine step on two lists and a real zero on the third.** All three
+call their loosest setting `free`, because from the keys it is the same idea —
+the setting that stops the tool rounding you. What it does underneath differs:
+`Move` really is zero, because a drag is a continuous gesture that then goes
+unsnapped. A wheel notch is discrete, so a step of zero there would simply do
+nothing, and `Rot` and `Scale` carry the finest step instead — `0.5°` and `0.01`.
+That is exactly why a literal "off" was taken off those two lists earlier, and a
+test still fails if `0` reappears in either.
 
 > The scale floor came down with it. `scaleCurrent` clamped the magnitude at
 > 5 cm so the wheel could never take something down to nothing — harmless when
@@ -1743,10 +1779,12 @@ the _left_ to act in world space — the other order gives a local-axis turn.
 Euler is now produced only at the boundary, when a placement is written to the
 manifest.
 
-**`Rot` and `Scale` have no "off".** They are keyboard _step sizes_, and a step
-of nothing is meaningless — the old `off` option silently fell back to a hidden
-default (15° / 0.05) rather than doing anything. Only `Move` has a real "off",
-which means free positioning while dragging.
+**`Rot` and `Scale` have no zero step.** They are keyboard _step sizes_, and a
+step of nothing is meaningless — the old `off` option silently fell back to a
+hidden default (15° / 0.05) rather than doing anything. All three lists now call
+their loosest setting **`free`**, but it means two different things: on `Move` it
+is a real zero and gives free positioning while dragging, and on the other two it
+is the finest step there is, `±0.5°` and `0.01`.
 
 **A restore is not itself an edit.** `deserialize()` sets a `restoring` flag and
 `pushUndo()` no-ops while it is set. Without that, a single stray `pushUndo()`

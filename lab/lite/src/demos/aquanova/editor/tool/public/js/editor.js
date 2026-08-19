@@ -1255,7 +1255,22 @@ export function liveAxes(mode = state.dragAxis) {
  * already turns each about its own origin.
  */
 export function axisBasis(node) {
-  if (state.axisSpace !== "local" || !node || node.isDisposed()) return null;
+  return state.axisSpace === "local" ? nodeBasis(node) : null;
+}
+
+/**
+ * An element's own three axes, in world space, whatever space the tools are in.
+ *
+ * Separate from `axisBasis` because the two answer different questions.
+ * `axisBasis` asks "whose axes should this gesture use?", and in world space the
+ * answer is nobody's - hence the null. This asks "which way does this element's
+ * own X point?", and that has an answer in either mode. A world-space *scale*
+ * needs both at once: the axis comes from the world, but a node can only be
+ * scaled along its own axes, so the world axis has to be matched against these
+ * to find which of the element's three numbers to touch.
+ */
+export function nodeBasis(node) {
+  if (!node || node.isDisposed()) return null;
   // Forced, not read from the cache: the frame is taken once at the start of a
   // gesture, and a turn earlier in the same frame - R, the inspector, a load -
   // has not been through a render yet, so the cached matrix still holds the
@@ -1483,12 +1498,15 @@ function paintAxes() {
 /**
  * Point the arms down the element's own axes.
  *
- * Scaling is **local**, so a world-aligned gizmo cannot answer "which way does
- * X grow?" for anything that has been turned - which is most of a ship built
- * from a modular kit. The arms are aimed individually from the world matrix's
- * basis rows rather than by rotating the whole gizmo, because a mirrored
- * element (negative scale) has no rotation that expresses it: its local +X
- * genuinely points the other way, and each arm can simply be turned round.
+ * A node's scale numbers act along its own axes whatever space the tools are
+ * in, so a local gizmo is what says which way `scaling.x` will actually grow a
+ * piece that has been turned - which is most of a ship built from a modular
+ * kit. (A world-space scale reaches the same place by matching the world axis
+ * against these; the gizmo is where you see why it picked the one it did.) The
+ * arms are aimed individually from the world matrix's basis rows rather than by
+ * rotating the whole gizmo, because a mirrored element (negative scale) has no
+ * rotation that expresses it: its local +X genuinely points the other way, and
+ * each arm can simply be turned round.
  *
  * Length is normalised out - the gizmo is a direction indicator, and a 3x
  * scaled element should not get 3x arrows.
@@ -2279,10 +2297,11 @@ export function select(ids) {
   // Only for a single pick - a multi-selection has no one element to sit on.
   //
   // And they follow in the flavour they were already in. Re-showing them took
-  // the default, so a local gizmo - the one that matters, since scaling is
-  // local and a turned piece has its own idea of which way X grows - silently
-  // reverted to world on the next click, and `Shift+X` had to be pressed again
-  // for every element. The anchor rides along for the same reason.
+  // the default, so a local gizmo - the one that matters, since a node's scale
+  // numbers act along its own axes and a turned piece has its own idea of which
+  // way X grows - silently reverted to world on the next click, and `Shift+X`
+  // had to be pressed again for every element. The anchor rides along for the
+  // same reason.
   if (axes && state.selection.length === 1 && state.selection[0] !== axes.id) {
     showAxes(state.selection[0], axes.space, axes.anchor);
   }

@@ -15,7 +15,7 @@ import {
   pickUnderCursor, setGridElevation, eulerOf, setEuler, cursorOnGrid, cursorOnPlane,
   worldBounds, dollyCamera, isRmbDown, nudgeMoveSpeed, cursorOnVerticalPlane,
   elementsInRect, isBusy, ghostMaterialFor, hooks, nearestToCursor, applyVisibility,
-  constrainMove, axisBasis, cameraDropPoint, isGizmoMesh, ownerIdOf, setShowLayer,
+  constrainMove, axisBasis, nodeBasis, cameraDropPoint, isGizmoMesh, ownerIdOf, setShowLayer,
   isRuntimeStandIn, groupExpand, groupOf, groupAnchor, nextGroupId,
   COMPOUND_CHUNK, STAGE_CHUNK,
 } from "./editor.js";
@@ -1609,6 +1609,85 @@ export function rotateCurrent(dir, aboutPivot = false) {
   emit("current");
 }
 
+/**
+ * How nearly a local axis has to line up with the world axis asked for before
+ * the two count as the same axis. 0.999 is about 2.5 degrees - far wider than
+ * the 1e-15 of drift a chain of 90 degree turns accumulates, and far tighter
+ * than any angle a piece is deliberately set at.
+ */
+const SCALE_AXIS_ALIGNMENT = 0.999;
+
+/**
+ * An element's own axes, but only when a gesture has a world axis to map onto
+ * them. Null in local space, where the axis named *is* the element's own and
+ * there is nothing to match.
+ */
+const worldMapBasis = (node) => (state.axisSpace === "world" ? nodeBasis(node) : null);
+
+/**
+ * Which of `basis`'s three axes lies most nearly along world axis `want`, and
+ * whether it lies along it closely enough to be called the same axis.
+ *
+ * Absolute dots, because both callers act along a *line*: it makes no
+ * difference whether the element's own axis runs with the world's or against
+ * it, and a mirrored element has one that runs against it.
+ */
+function alignedAxis(basis, want) {
+  const unit = AXIS_UNITS[want];
+  let index = -1;
+  let best = 0;
+  for (let i = 0; i < 3; i++) {
+    const dot = Math.abs(Vector3.Dot(basis["xyz"[i]], unit));
+    if (dot > best) { best = dot; index = i; }
+  }
+  return { index, aligned: index >= 0 && best >= SCALE_AXIS_ALIGNMENT };
+}
+
+/**
+ * Which of an element's own three scale numbers stretches it along the axis the
+ * scale tool is set to, or -1 when nothing does.
+ *
+ * A node is scaled before it is turned, so its scale numbers always act along
+ * its **own** axes: `scaling.x` stretches it along whichever world direction its
+ * local X currently points. In local space that is the question already asked,
+ * and the component is just the named one. In world space it is not, and this is
+ * where scaling used to quietly disagree with moving and turning - both of those
+ * take a world axis and honour it, while a scale went on stretching the element
+ * along its own X no matter which space the tools were in.
+ *
+ * Matching the world axis against the element's own is the whole fix, and it is
+ * exact for anything laid out on the grid: a wall turned 90 degrees has its
+ * local Z lying along world X, so growing it along world X means bumping
+ * `scaling.z`. That is most of a ship built from a modular kit.
+ *
+ * An element turned to an odd angle has **no** answer, hence the -1. Stretching
+ * a 45 degree wall along world X shears it, and a shear is not a scale: Babylon
+ * stores position, rotation and scale, and so does the manifest, and no triple
+ * of those describes a sheared box. Blender can do it because it keeps a full
+ * matrix. Rather than stretch the element along some nearby axis and call it
+ * what was asked for, the gesture declines and says which key does work.
+ *
+ * A *mirror* on the same axis has no such limit - see `mirrorPlan`.
+ */
+function scaleComponentFor(node) {
+  const named = "xyz".indexOf(state.scaleAxis);
+  // A degenerate frame - a zero scale on some axis - has no directions to match
+  // against, so the named component is the only answer left.
+  const basis = worldMapBasis(node);
+  if (!basis) return named;
+  const match = alignedAxis(basis, named);
+  if (match.index < 0) return named;
+  return match.aligned ? match.index : -1;
+}
+
+/** Why a world-space scale could not act, and what to press instead. */
+function shearMessage(count) {
+  const name = state.scaleAxis.toUpperCase();
+  const which = count === 1 ? "it is" : `${count} are`;
+  return `world ${name} is not an axis of its own — ${which} turned off-axis, and`
+    + ` growing that way would shear it · Y scales in local space instead`;
+}
+
 export function scaleCurrent(dir) {
   const step = (state.snap.scale || 0.1) * dir;
   // Work on the magnitude and keep the sign, so a mirrored (negative) element
@@ -1625,18 +1704,25 @@ export function scaleCurrent(dir) {
     const sign = v < 0 ? -1 : 1;
     return sign * Math.max(floor, Math.abs(v) + step);
   };
-  const apply = (arr) => {
-    if (state.scaleAxis === "all") {
+  // "all" is a uniform scale, and a uniform scale is the same in every space -
+  // there is no axis to map, so it never has to decline.
+  const uniform = state.scaleAxis === "all";
+  const componentFor = (node) => (uniform ? "all" : scaleComponentFor(node));
+  const apply = (arr, component) => {
+    if (component === "all") {
       for (let i = 0; i < 3; i++) arr[i] = bump(arr[i]);
     } else {
-      const i = "xyz".indexOf(state.scaleAxis);
-      arr[i] = bump(arr[i]);
+      arr[component] = bump(arr[component]);
     }
     return arr;
   };
 
   if (ghost) {
-    ghost.scaling = apply(ghost.scaling.slice());
+    // The ghost root already wears the turn and the mirroring, so its own axes
+    // are read from it exactly as a placed element's are.
+    const component = componentFor(ghost.root);
+    if (component === -1) { emit("status", shearMessage(1)); return; }
+    ghost.scaling = apply(ghost.scaling.slice(), component);
     applyGhostTransform();
     moveGhostToCursor();
     emit("current");
@@ -1645,15 +1731,24 @@ export function scaleCurrent(dir) {
 
   const targets = wheelTargets();
   if (!targets.length) return;
+  // Resolved before anything is written, so a mixed selection scales the pieces
+  // that can and reports the ones that cannot, rather than refusing the lot
+  // because one prop in it sits at an angle.
+  const parts = targets
+    .map((e) => ({ e, component: componentFor(e.node) }))
+    .filter((part) => part.component !== -1);
+  if (!parts.length) { emit("status", shearMessage(targets.length)); return; }
   if (beginWheelEdit()) pushUndo();
-  for (const e of targets) {
-    e.node.scaling.set(...apply(e.node.scaling.asArray()));
+  for (const { e, component } of parts) {
+    e.node.scaling.set(...apply(e.node.scaling.asArray(), component));
     // A sphere has one radius and a capsule one too: pull any shape Havok
     // cannot build back onto something it can, as it is being made.
     if (e.type === "collider") hooks.reconcileCollider(e);
   }
   emit("transform");
   emit("current");
+  const skipped = targets.length - parts.length;
+  if (skipped) emit("status", shearMessage(skipped));
 }
 
 // ------------------------------------------------------------------ lamps
@@ -1797,13 +1892,60 @@ function tuneLights(targets, key, dir) {
  * mirror, so it is treated as X - the horizontal flip a modular kit almost
  * always wants. Returns the axis actually used, for the status line.
  */
+/**
+ * How to mirror an element about the world plane through its origin, square to
+ * world axis `want`: which scale number to negate, and what its rotation
+ * becomes.
+ *
+ * Unlike a stretch, a mirror is exact at **any** angle, and the reason is worth
+ * writing down. A node's transform is `S*R`. Reflecting it in world space gives
+ * `S*R*F`, with `F` the reflection - a diagonal of 1s and a single -1. Split
+ * that back into a scale and a rotation by negating scale component k, so
+ * `S' = N_k*S`, and the rotation left over is `R' = N_k*R*F`. Both `N_k` and `F`
+ * are reflections, so their determinants multiply to +1: `R'` is a genuine
+ * rotation, not a mirror, and Babylon can hold it. A stretch has no such
+ * escape, because the leftover is a shear and a shear is not diagonal.
+ *
+ * Any k gives a correct mirror, so the one nearest the world axis is used: it
+ * moves the rotation least, and when it lines up exactly it does not move it at
+ * all.
+ *
+ * `S*R` is the whole world transform because a placement root is top-level -
+ * `instantiate()` builds it straight into the scene, and a chunk is a string on
+ * the entry rather than a node to hang it from. A rotating parent would put a
+ * change of basis round `F` that this does not apply. (The aligned branch below
+ * would survive one; the rebuild would not.)
+ */
+function mirrorPlan(quat, basis, want) {
+  if (!basis) return { component: want, quat };
+  const match = alignedAxis(basis, want);
+  if (match.index < 0) return { component: want, quat };
+  // An axis already lying along the world's needs no new rotation: negating its
+  // own scale number mirrors about exactly the plane asked for. Provable -
+  // `R*F` and `N_k*R` are the same matrix when row k of R is +/-the world axis,
+  // so `R'` comes back to `R` - and worth its own branch, because rebuilding
+  // the quaternion through a matrix on every flip would walk a grid-aligned
+  // piece off its exact right angles one rounding at a time.
+  if (match.aligned) return { component: match.index, quat };
+  const rot = Matrix.Identity();
+  quat.toRotationMatrix(rot);
+  const reflect = (i) => Matrix.Scaling(i === 0 ? -1 : 1, i === 1 ? -1 : 1, i === 2 ? -1 : 1);
+  const rebuilt = reflect(match.index).multiply(rot).multiply(reflect(want));
+  return { component: match.index, quat: Quaternion.FromRotationMatrix(rebuilt) };
+}
+
 export function flipCurrent() {
   const axis = state.scaleAxis === "all" ? "x" : state.scaleAxis;
-  const i = "xyz".indexOf(axis);
-  if (i < 0) return null;
+  const want = "xyz".indexOf(axis);
+  if (want < 0) return null;
 
   if (ghost) {
-    ghost.scaling[i] = -ghost.scaling[i];
+    // The ghost root already wears the turn and the mirroring, so its own axes
+    // are read from it exactly as a placed element's are - but the rotation
+    // itself comes from `ghost.quat`, which is what the root was built from.
+    const plan = mirrorPlan(ghost.quat, worldMapBasis(ghost.root), want);
+    ghost.quat = plan.quat;
+    ghost.scaling[plan.component] = -ghost.scaling[plan.component];
     applyGhostTransform();
     moveGhostToCursor();
     emit("current");
@@ -1816,8 +1958,11 @@ export function flipCurrent() {
   if (!targets.length) return null;
   pushUndo();
   for (const e of targets) {
+    const quat = e.node.rotationQuaternion || Quaternion.Identity();
+    const plan = mirrorPlan(quat, worldMapBasis(e.node), want);
+    e.node.rotationQuaternion = plan.quat;
     const s = e.node.scaling.asArray();
-    s[i] = -s[i];
+    s[plan.component] = -s[plan.component];
     e.node.scaling.set(...s);
   }
   emit("transform");

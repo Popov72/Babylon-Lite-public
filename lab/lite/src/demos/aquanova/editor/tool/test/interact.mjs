@@ -349,7 +349,9 @@ const knobs = await page.evaluate(async () => {
            rotOptions: [...document.getElementById("snap-rot").options].map((o) => o.value),
            rotLabels: [...document.getElementById("snap-rot").options].map((o) => o.text),
            scaleOptions: [...document.getElementById("snap-scale").options].map((o) => o.value),
-           scaleLabels: [...document.getElementById("snap-scale").options].map((o) => o.text) };
+           scaleLabels: [...document.getElementById("snap-scale").options].map((o) => o.text),
+           posOptions: [...document.getElementById("snap-pos").options].map((o) => o.value),
+           posLabels: [...document.getElementById("snap-pos").options].map((o) => o.text) };
 });
 check("the Env slider drives the scene's IBL strength",
   knobs.raised.state === 3.2 && knobs.raised.scene === 3.2,
@@ -359,11 +361,12 @@ check("Env intensity is clamped", knobs.high === 6 && knobs.low === 0,
 check("the inertia slider is gone and the camera is fixed at 0.75",
   !knobs.inertiaSlider && knobs.camInertia === 0.75,
   `slider=${knobs.inertiaSlider}, inertia=${knobs.camInertia}`);
-// "off" is a real option for Move (free positioning while dragging) but
+// A zero step is real for Move (free positioning while dragging) but
 // meaningless for a keyboard step: a step of zero simply does nothing, and it
 // fell back to a hidden default instead. `free` is the useful reading of the
 // same idea - a step small enough to dial in any value with the keys you
-// already use, rather than no step at all.
+// already use, rather than no step at all. All three lists say `free`; only
+// Move's is actually zero.
 check("Rot and Scale no longer offer a meaningless 'off'",
   !knobs.rotOptions.includes("0") && !knobs.scaleOptions.includes("0"),
   `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`);
@@ -375,10 +378,12 @@ check("the rotation step runs from a fine step up to a quarter turn",
   `[${knobs.rotOptions}]`);
 check("and the scale step starts at a fine one",
   knobs.scaleOptions.join() === "0.01,0.05,0.1,0.25", `[${knobs.scaleOptions}]`);
-check("both are labelled 'free', the way the Move step's 'off' is",
+check("all three step lists call their loosest setting 'free'",
   knobs.rotLabels.filter((t) => /free/.test(t)).length === 1
-    && knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1,
-  `rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`);
+    && knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1
+    && knobs.posLabels.filter((t) => /free/.test(t)).length === 1
+    && knobs.posLabels[0] === "free" && knobs.posOptions[0] === "0",
+  `move [${knobs.posLabels}], rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`);
 
 const rotSign = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -10207,6 +10212,151 @@ const unhid = await page.evaluate(async (ids) => {
 check("H brings everything back",
   unhid.enabled.every(Boolean) && unhid.count === 0 && !/hidden/.test(unhid.counts),
   `enabled=${JSON.stringify(unhid.enabled)}, ${unhid.count} hidden`);
+
+
+// A scale runs along the world's axes when the tools are in world space. It
+// used to be local whatever the setting said, so "grow this along world X" grew
+// a wall turned 90 degrees along world Z instead - the one gesture of the three
+// that ignored Y.
+const worldScale = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis,
+                  scale: ed.state.snap.scale, rot: ed.state.rotAxis, step: ed.state.snap.rot };
+  ed.state.snap.scale = 0.1;
+  ed.state.scaleAxis = "x";
+  ed.state.rotAxis = "y";
+  ed.state.snap.rot = 90;
+
+  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+    new V(0, 0, 0), { silent: true });
+  ed.select([a.id]);
+  // a quarter turn about Y puts the wall's own Z along world X
+  ed.state.axisSpace = "world";
+  i.rotateCurrent(1);
+
+  i.scaleCurrent(1);
+  const world = a.node.scaling.asArray().map((v) => +v.toFixed(3));
+
+  a.node.scaling.set(1, 1, 1);
+  ed.state.axisSpace = "local";
+  i.scaleCurrent(1);
+  const local = a.node.scaling.asArray().map((v) => +v.toFixed(3));
+
+  // turned to an odd angle there is no axis to act on: stretching it along a
+  // world axis would shear it, and no position/rotation/scale triple says that
+  a.node.scaling.set(1, 1, 1);
+  ed.state.axisSpace = "world";
+  ed.state.snap.rot = 45;
+  i.rotateCurrent(1);
+  i.scaleCurrent(1);
+  const offAxis = a.node.scaling.asArray().map((v) => +v.toFixed(3));
+  const said = document.getElementById("status-text").textContent;
+
+  // but a uniform scale is the same in every space, so it never declines
+  ed.state.scaleAxis = "all";
+  i.scaleCurrent(1);
+  const uniform = a.node.scaling.asArray().map((v) => +v.toFixed(3));
+
+  ed.state.axisSpace = saved.space; ed.state.scaleAxis = saved.axis;
+  ed.state.snap.scale = saved.scale; ed.state.rotAxis = saved.rot;
+  ed.state.snap.rot = saved.step;
+  ed.clearAll(); ed.select([]);
+  return { world, local, offAxis, said, uniform };
+});
+check("a world-space scale grows the element along the world's axis",
+  worldScale.world[0] === 1 && worldScale.world[1] === 1 && worldScale.world[2] === 1.1,
+  `world X on a quarter-turned wall gave ${JSON.stringify(worldScale.world)}`);
+check("a local-space scale still grows it along its own",
+  worldScale.local[0] === 1.1 && worldScale.local[1] === 1 && worldScale.local[2] === 1,
+  `local X gave ${JSON.stringify(worldScale.local)}`);
+check("an off-axis element declines a world-space scale",
+  JSON.stringify(worldScale.offAxis) === JSON.stringify([1, 1, 1])
+    && /shear/.test(worldScale.said) && /\bY\b/.test(worldScale.said),
+  `${JSON.stringify(worldScale.offAxis)}, said "${worldScale.said}"`);
+check("a uniform scale needs no axis and acts anyway",
+  JSON.stringify(worldScale.uniform) === JSON.stringify([1.1, 1.1, 1.1]),
+  `${JSON.stringify(worldScale.uniform)}`);
+
+// A flip is a scale by -1, so it asked the same question and gave the same wrong
+// answer: Alt+F mirrored about the element's *own* plane whatever Y said. Unlike
+// a stretch, a mirror is exact at any angle - the rotation absorbs the
+// difference - so this one never has to decline.
+const worldFlip = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis,
+                  rot: ed.state.rotAxis, step: ed.state.snap.rot };
+  const WALL = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  ed.state.scaleAxis = "x";
+  ed.state.rotAxis = "y";
+
+  // an element's own axes as the world sees them
+  const rows = (n) => {
+    const m = n.computeWorldMatrix(true);
+    return [0, 1, 2].map((r) => {
+      const v = m.getRow(r);
+      return new V(v.x, v.y, v.z).normalize().asArray().map((c) => +c.toFixed(4));
+    });
+  };
+
+  // ---- turned to an odd angle: no axis lines up, and it mirrors anyway
+  const a = await ed.placeAt(WALL, new V(0, 0, 0), { silent: true });
+  ed.select([a.id]);
+  ed.state.axisSpace = "world";
+  ed.state.snap.rot = 45;
+  i.rotateCurrent(1);
+  const parented = !!a.node.parent;
+  const before = rows(a.node);
+  i.flipCurrent();
+  const after = rows(a.node);
+  // mirrored about the world YZ plane: every direction's X negates, Y and Z hold
+  const mirrored = before.every((row, r) =>
+    Math.abs(after[r][0] + row[0]) < 1e-3
+    && Math.abs(after[r][1] - row[1]) < 1e-3
+    && Math.abs(after[r][2] - row[2]) < 1e-3);
+
+  // ---- on the grid: the wall's own Z is what lies along world X
+  const b = await ed.placeAt(WALL, new V(8, 0, 0), { silent: true });
+  ed.select([b.id]);
+  ed.state.snap.rot = 90;
+  i.rotateCurrent(1);
+  const quatBefore = b.node.rotationQuaternion.asArray();
+  i.flipCurrent();
+  const gridScale = b.node.scaling.asArray();
+  // and it keeps its exact right angles - the rotation is not rebuilt at all
+  const untouched = quatBefore.every((v, n) => v === b.node.rotationQuaternion.asArray()[n]);
+
+  // ---- local space still mirrors about the element's own plane
+  const c = await ed.placeAt(WALL, new V(16, 0, 0), { silent: true });
+  ed.select([c.id]);
+  i.rotateCurrent(1);
+  ed.state.axisSpace = "local";
+  i.flipCurrent();
+  const localScale = c.node.scaling.asArray();
+
+  ed.state.axisSpace = saved.space; ed.state.scaleAxis = saved.axis;
+  ed.state.rotAxis = saved.rot; ed.state.snap.rot = saved.step;
+  ed.clearAll(); ed.select([]);
+  return { parented, mirrored, before, after, gridScale, untouched, localScale };
+});
+check("a placement root is top-level, which the mirror rebuild relies on",
+  worldFlip.parented === false, `parent=${worldFlip.parented}`);
+check("a world-space flip mirrors an off-axis element about the world plane",
+  worldFlip.mirrored,
+  `${JSON.stringify(worldFlip.before)} -> ${JSON.stringify(worldFlip.after)}`);
+check("on the grid it flips the axis that lies along the world's",
+  JSON.stringify(worldFlip.gridScale) === JSON.stringify([1, 1, -1]),
+  `world X on a quarter-turned wall gave ${JSON.stringify(worldFlip.gridScale)}`);
+check("and leaves an aligned element's rotation untouched to the bit",
+  worldFlip.untouched, `quaternion was rebuilt`);
+check("a local-space flip still mirrors about the element's own plane",
+  JSON.stringify(worldFlip.localScale) === JSON.stringify([-1, 1, 1]),
+  `local X gave ${JSON.stringify(worldFlip.localScale)}`);
 
 // Doors were excluded from both scale paths: scaleCurrent() filtered markers
 // out, and applyInspector() guarded the scale write with `if (!e.type)`.

@@ -1583,7 +1583,7 @@ function cycleRotOrScaleAxis(which) {
 
 function cycleMoveSnap(dir) {
   const v = cycleSnap("snap-pos", "pos", dir);
-  setStatus(v ? `move step ${v} m` : "move step off — free positioning");
+  setStatus(v ? `move step ${v} m` : "move step free — no snapping while dragging");
 }
 
 function cycleRotSnap(dir) {
@@ -2353,8 +2353,9 @@ function fieldKeepsKey(t, e) {
 
 /**
  * X shows one element's axes in world space; Shift+X in its own local space,
- * which is the one that matters for scaling - scaling is local, so on anything
- * that has been turned a world gizmo cannot say which way X grows.
+ * which is the one that says which way its own `scaling.x` grows it - a node's
+ * scale numbers act along its own axes, so on anything that has been turned the
+ * two gizmos point different ways.
  *
  * `anchor` is where the gizmo hangs. The bare keys put it on the middle of the
  * visible mesh, because a kit's authors put the node origin wherever suited the
