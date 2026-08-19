@@ -1,72 +1,37 @@
-"""Blender add-on exporting live Babylon Lite fluid setups as .blitefluid bundles."""
+"""Blender add-on exporting native Mantaflow liquid setups as Babylon Lite JSON."""
 
 bl_info = {
-    "name": "Babylon Lite Fluid Bundle",
+    "name": "Babylon Lite Fluid JSON",
     "author": "Babylon Lite contributors",
-    "version": (1, 2, 0),
+    "version": (2, 9, 2),
     "blender": (4, 0, 0),
     "location": "Properties > Scene > Babylon Lite Fluid; File > Export",
-    "description": "Export a liquid domain, flows, visuals, and collision SDF",
+    "description": "Export a native Mantaflow liquid setup to Babylon Lite JSON",
     "category": "Import-Export",
 }
 
+import base64
 import json
 import math
 import os
 import re
 import struct
 import tempfile
-import zipfile
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
+from bpy.props import IntProperty
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Quaternion, Vector
 from mathutils.bvhtree import BVHTree
 
-PHYSICS_SCHEMAS = {
-    "PBF": (
-        ("gravity", "Gravity", 0, 200, 0.1, 9.8, "FLOAT"),
-        ("viscosity", "Viscosity (XSPH)", 0, 3, 0.005, 0.08, "FLOAT"),
-        ("relaxation", "Relaxation", 1, 1000, 1, 50, "INT"),
-        ("scorr", "Artificial pressure", 0, 0.5, 0.001, 0.02, "FLOAT"),
-        ("iterations", "Solver iterations", 1, 8, 1, 3, "INT"),
-        ("restDensity", "Rest density", 100, 2000, 10, 341, "INT"),
-        ("boundaryDensity", "Boundary density", 0, 1, 0.05, 0, "FLOAT"),
-    ),
-    "MLS-MPM": (
-        ("gravity", "Gravity", 0, 200, 0.1, 9.8, "FLOAT"),
-        ("stiffness", "Stiffness (EOS)", 10, 5000, 10, 350, "INT"),
-        ("viscosity", "Viscosity", 0, 1, 0.01, 0.3, "FLOAT"),
-        ("restDensity", "Rest density (/cell)", 1, 100, 0.5, 3, "FLOAT"),
-        ("damping", "Velocity damping", 0.9, 1, 0.001, 0.995, "FLOAT"),
-        ("affineDamping", "Affine damping", 0.1, 1, 0.005, 0.9, "FLOAT"),
-        ("groundDamp", "Ground damping", 0.7, 1, 0.01, 0.85, "FLOAT"),
-        ("groundDampHeight", "Ground damp height", 0, 10, 0.1, 1.5, "FLOAT"),
-        ("restitution", "Restitution", 0, 1, 0.05, 0.3, "FLOAT"),
-        ("substeps", "Substeps / frame", 1, 8, 1, 3, "INT"),
-        ("maxSubDtMs", "Max sub-step (ms)", 2, 20, 0.1, 8.4, "FLOAT"),
-    ),
-    "PB-MPM": (
-        ("gravity", "Gravity", 0, 200, 0.1, 9.8, "FLOAT"),
-        ("iterations", "PB iterations", 1, 12, 1, 5, "INT"),
-        ("liquidRelaxation", "Liquid relaxation", 0.1, 3, 0.05, 1.5, "FLOAT"),
-        ("liquidViscosity", "Liquid viscosity", 0, 0.2, 0.005, 0.01, "FLOAT"),
-        ("elasticityRatio", "Elasticity ratio", 0, 1, 0.01, 0.3, "FLOAT"),
-        ("elasticRelaxation", "Elastic relaxation", 0.05, 1, 0.01, 0.3, "FLOAT"),
-        ("frictionAngle", "Sand friction angle", 0, 60, 1, 35, "INT"),
-        ("plasticity", "Visco plasticity", 0, 1, 0.01, 0.8, "FLOAT"),
-        ("restitution", "Restitution", 0, 1, 0.05, 0, "FLOAT"),
-        ("substeps", "Substeps / frame", 1, 8, 1, 3, "INT"),
-        ("maxSubDtMs", "Max sub-step (ms)", 2, 20, 0.1, 8.4, "FLOAT"),
-    ),
-}
-METHOD_PROPERTY_PREFIX = {"PBF": "pbf", "MLS-MPM": "mlsmpm", "PB-MPM": "pbmpm"}
 MAX_FLUID_EMITTERS = 16
 MAX_FLUID_SINKS = 16
 MAX_FLUID_POLYGON_POINTS = 256
 MAX_SDF_VOXELS = 16 * 1024 * 1024
+PBF_BASE_CELL_SIZE = 0.4
+PBF_PARTICLE_SIZE_CALIBRATION = 2.1333333333333333
+BLITE_INFLOW_VOLUME_RATE = 20.0
 
 
 def blite_vec(value):
@@ -81,14 +46,6 @@ def object_id(obj):
     return re.sub(r"[^a-z0-9_-]+", "-", obj.name.lower()).strip("-") or "flow"
 
 
-def physics_property_name(method, key):
-    return f"blitefluid_{METHOD_PROPERTY_PREFIX[method]}_{key}"
-
-
-def physics_values(scene, method):
-    return {key: getattr(scene, physics_property_name(method, key)) for key, _, _, _, _, _, _ in PHYSICS_SCHEMAS[method]}
-
-
 def fluid_modifier(obj, fluid_type):
     for modifier in obj.modifiers:
         if modifier.type == "FLUID" and modifier.fluid_type == fluid_type:
@@ -101,24 +58,14 @@ def flow_settings(obj):
     return modifier.flow_settings if modifier is not None else None
 
 
-def authored_property(obj, name, default):
-    try:
-        if obj.is_property_set(name):
-            return getattr(obj, name)
-    except TypeError:
-        pass
-    if name in obj:
-        return obj[name]
-    return getattr(obj, name, default)
-
-
 def is_collision_object(obj):
-    return bool(authored_property(obj, "blite_collision", False)) or fluid_modifier(obj, "EFFECTOR") is not None
+    modifier = fluid_modifier(obj, "EFFECTOR")
+    settings = modifier.effector_settings if modifier is not None else None
+    return settings is not None and settings.effector_type == "COLLISION" and settings.use_effector
 
 
-def volume_rate(obj):
-    value = float(authored_property(obj, "blite_volume_rate", 0))
-    return value if value > 0 else None
+def is_flow_object(obj):
+    return flow_settings(obj) is not None and not is_collision_object(obj)
 
 
 def local_size(obj):
@@ -128,10 +75,11 @@ def local_size(obj):
     return maximum - minimum
 
 
-def world_bounds(obj):
+def world_bounds(obj, transform=None):
     # A liquid DOMAIN modifier evaluates to the current liquid surface, so obj.bound_box can
     # collapse around the flow. The authored domain cage is the original mesh data.
-    points = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices] if obj.type == "MESH" else [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    transform = transform if transform is not None else obj.matrix_world
+    points = [transform @ vertex.co for vertex in obj.data.vertices] if obj.type == "MESH" else [transform @ Vector(corner) for corner in obj.bound_box]
     if not points:
         raise ValueError(f"{obj.name}: mesh has no vertices")
     minimum = Vector((min(v.x for v in points), min(v.y for v in points), min(v.z for v in points)))
@@ -139,31 +87,15 @@ def world_bounds(obj):
     return minimum, maximum
 
 
+def authored_domain_bounds(domain):
+    # Some saved Mantaflow domains expose a stale identity matrix_world while their
+    # unparented authored transform remains valid in matrix_basis.
+    transform = domain.matrix_basis if domain.parent is None and not domain.constraints else domain.matrix_world
+    return world_bounds(domain, transform)
+
+
 def shape_for(obj):
     size = local_size(obj)
-    kind = str(authored_property(obj, "blite_shape", "box"))
-    if kind == "sphere":
-        return {"type": kind, "radius": float(max(size) * 0.5)}
-    if kind == "cylinder":
-        shape = {"type": kind, "radius": float(max(size.x, size.y) * 0.5), "height": float(size.z)}
-        inner = float(authored_property(obj, "blite_inner_radius", 0))
-        if inner > 0:
-            shape["innerRadius"] = inner
-        return shape
-    if kind == "cone":
-        return {
-            "type": kind,
-            "bottomRadius": float(max(size.x, size.y) * 0.5),
-            "topRadius": float(authored_property(obj, "blite_top_radius", 0)),
-            "height": float(size.z),
-        }
-    if kind == "capsule":
-        return {"type": kind, "radius": float(max(size.x, size.y) * 0.5), "height": float(size.z)}
-    if kind == "polygonPrism":
-        points = json.loads(str(authored_property(obj, "blite_points", "[]")))
-        if len(points) < 3:
-            raise ValueError(f"{obj.name}: polygonPrism requires blite_points=[[x,z], ...]")
-        return {"type": kind, "points": points, "thickness": float(size.z)}
     return {"type": "box", "size": [float(size.x), float(size.z), float(size.y)]}
 
 
@@ -194,14 +126,63 @@ def find_domain(scene):
     raise ValueError("No liquid Fluid Domain object was found")
 
 
+def clamp(value, minimum, maximum):
+    return min(maximum, max(minimum, value))
+
+
+def derived_domain_values(scene, domain, grid_size):
+    modifier = fluid_modifier(domain, "DOMAIN")
+    settings = modifier.domain_settings if modifier is not None else None
+    if settings is None:
+        raise ValueError("Liquid domain settings are unavailable")
+
+    resolution = max(1, int(settings.resolution_max))
+    cell_size = max(grid_size) / resolution
+    raw_particle_size = (cell_size / PBF_BASE_CELL_SIZE) * PBF_PARTICLE_SIZE_CALIBRATION
+    particle_size = clamp(raw_particle_size, 0.7, 8)
+    cells = [max(1, int(math.ceil(axis / cell_size))) for axis in grid_size]
+    explicit_limit = max(0, int(settings.sys_particle_maximum))
+    raw_particle_count = explicit_limit or cells[0] * cells[1] * cells[2] * max(1, int(settings.particle_max))
+    particle_count = int(clamp(raw_particle_count, 1, 1000000))
+
+    viscosity = 0.08
+    if settings.use_diffusion:
+        physical_viscosity = max(1e-8, float(settings.viscosity_base) * (10 ** -int(settings.viscosity_exponent)))
+        viscosity = clamp(0.08 + 0.35 * max(0, math.log10(physical_viscosity / 1e-6)), 0, 1.9)
+    physics = {
+        "gravity": clamp(float(-settings.gravity.z), 0, 200),
+        "viscosity": viscosity,
+        "relaxation": clamp(100 / max(float(settings.cfl_condition), 0.1), 1, 1000),
+        "scorr": clamp(float(settings.surface_tension) / 120, 0, 0.5) if settings.use_diffusion else 0.02,
+        "iterations": int(clamp(int(settings.timesteps_max), 1, 8)),
+        "restDensity": 341,
+        "boundaryDensity": 0,
+    }
+
+    return {
+        "particle_count": particle_count,
+        "raw_particle_count": raw_particle_count,
+        "particle_size": particle_size,
+        "raw_particle_size": raw_particle_size,
+        "cell_size": cell_size,
+        "cells": cells,
+        "physics": physics,
+    }
+
+
 def extract_flows(scene, grid_position):
     emitters = []
     pending_sinks = []
     object_ids = {}
-    for obj in scene.objects:
+    domain = find_domain(scene)
+    domain_bounds = authored_domain_bounds(domain)
+    domain_size = domain_bounds[1] - domain_bounds[0]
+    grid_size = [float(domain_size.x), float(domain_size.z), float(domain_size.y)]
+    domain_settings = fluid_modifier(domain, "DOMAIN").domain_settings
+    mantaflow_cell_size = max(grid_size) / max(1, int(domain_settings.resolution_max))
+    flow_objects = [obj for obj in scene.objects if not is_collision_object(obj) and flow_settings(obj) is not None and flow_settings(obj).flow_type == "LIQUID"]
+    for obj in flow_objects:
         settings = flow_settings(obj)
-        if settings is None or getattr(settings, "flow_type", "") != "LIQUID":
-            continue
         flow_id = object_id(obj)
         suffix = 2
         base_id = flow_id
@@ -213,40 +194,50 @@ def extract_flows(scene, grid_position):
         if behavior == "OUTFLOW":
             pending_sinks.append((obj, settings))
             continue
-        velocity = Vector(settings.velocity_coord) if getattr(settings, "use_initial_velocity", False) else Vector((0, 0, 0))
+        use_initial_velocity = bool(settings.use_initial_velocity)
+        velocity = Vector(settings.velocity_coord) if use_initial_velocity else Vector((0, 0, 0))
+        transform = transform_for(obj, grid_position)
+        shape = shape_for(obj)
         emitter = {
             "id": flow_id,
             "name": obj.name,
             "enabled": behavior == "GEOMETRY" or bool(getattr(settings, "use_inflow", True)),
             "behavior": "initial" if behavior == "GEOMETRY" else "inflow",
-            "transform": transform_for(obj, grid_position),
-            "shape": shape_for(obj),
-            "sampling": "surface" if getattr(settings, "use_plane_init", False) else "volume",
+            "transform": transform,
+            "shape": shape,
+            "sampling": "surface" if settings.use_plane_init else "volume",
             "velocity": blite_vec(velocity),
             "velocitySpace": "world",
-            "spread": float(authored_property(obj, "blite_spread", 0)),
+            "sourceNode": obj.name,
+            "spread": 0,
         }
-        rate = volume_rate(obj)
-        if behavior != "GEOMETRY" and rate is not None:
-            emitter["volumeRate"] = rate
+        if use_initial_velocity:
+            emitter["sourceVelocityFactor"] = float(settings.velocity_factor)
+            emitter["normalVelocity"] = float(settings.velocity_normal)
+        if behavior != "GEOMETRY":
+            emitter["volumeRate"] = BLITE_INFLOW_VOLUME_RATE
         emitters.append(emitter)
 
-    inflow_ids = [emitter["id"] for emitter in emitters if emitter["behavior"] == "inflow"]
+    inflow_ids = [emitter["id"] for emitter in emitters if emitter["behavior"] == "inflow" and emitter["enabled"]]
     sinks = []
     for obj, settings in pending_sinks:
-        names = [name.strip() for name in str(authored_property(obj, "blite_targets", "")).split(",") if name.strip()]
-        targets = [object_ids[name] for name in names if name in object_ids] or inflow_ids
+        transform = transform_for(obj, grid_position)
+        shape = shape_for(obj)
+        surface_margin = max(0.0, float(settings.surface_distance)) * mantaflow_cell_size
+        if surface_margin > 0:
+            shape["size"] = [
+                size + 2 * surface_margin / max(abs(transform["scale"][index]), 1e-6)
+                for index, size in enumerate(shape["size"])
+            ]
         sink = {
             "id": object_ids[obj.name],
             "name": obj.name,
             "enabled": bool(getattr(settings, "use_inflow", True)),
-            "transform": transform_for(obj, grid_position),
-            "shape": shape_for(obj),
-            "targets": targets,
+            "transform": transform,
+            "shape": shape,
+            "mode": "delete",
+            "targets": [],
         }
-        rate = volume_rate(obj)
-        if rate is not None:
-            sink["volumeRate"] = rate
         sinks.append(sink)
     return emitters, sinks
 
@@ -279,6 +270,15 @@ def grid_metrics(grid_size, resolution):
     dims = [max(2, int(math.ceil(axis / cell_size)) + 1) for axis in grid_size]
     voxel_count = dims[0] * dims[1] * dims[2]
     return cell_size, dims, voxel_count
+
+
+def collision_texture_metrics(scene):
+    domain = find_domain(scene)
+    domain_bounds = authored_domain_bounds(domain)
+    domain_size = domain_bounds[1] - domain_bounds[0]
+    grid_size = [float(domain_size.x), float(domain_size.z), float(domain_size.y)]
+    _, dims, voxel_count = grid_metrics(grid_size, int(scene.blitefluid_sdf_resolution))
+    return dims, voxel_count * 4
 
 
 def bake_collision(objects, grid_position, grid_size, resolution, window_manager):
@@ -330,14 +330,18 @@ def bake_collision(objects, grid_position, grid_size, resolution, window_manager
     return bytes(output)
 
 
-def scene_meshes(scene, domain):
-    flow_objects = {obj for obj in scene.objects if flow_settings(obj) is not None}
-    visual_objects = [
+def scene_objects(scene, domain):
+    presentation_objects = [
         obj
         for obj in scene.objects
-        if obj.type == "MESH" and obj != domain and obj not in flow_objects and not obj.hide_render and obj.visible_get()
+        if obj != domain
+        and (obj.type == "MESH" or (obj.type == "LIGHT" and obj.data.type in {"POINT", "SUN", "SPOT"}))
+        and not obj.hide_render
+        and obj.visible_get()
     ]
-    return visual_objects, [obj for obj in visual_objects if is_collision_object(obj)]
+    visual_objects = [obj for obj in presentation_objects if obj.type == "MESH"]
+    collision_objects = [obj for obj in scene.objects if obj != domain and obj.type == "MESH" and is_collision_object(obj)]
+    return presentation_objects, visual_objects, collision_objects
 
 
 def bounds_overlap(first, second):
@@ -364,13 +368,14 @@ def validate_setup(context):
     summary = {}
     try:
         domain = find_domain(scene)
-        domain_bounds = world_bounds(domain)
+        domain_bounds = authored_domain_bounds(domain)
         domain_size = domain_bounds[1] - domain_bounds[0]
         grid_size = [float(domain_size.x), float(domain_size.z), float(domain_size.y)]
         if min(grid_size) <= 0:
             errors.append("Fluid domain must have a positive size on every axis")
         else:
-            cell_size, dims, voxel_count = grid_metrics(grid_size, scene.blitefluid_sdf_resolution)
+            sdf_resolution = int(scene.blitefluid_sdf_resolution)
+            cell_size, dims, voxel_count = grid_metrics(grid_size, sdf_resolution)
             summary.update(
                 domain=domain,
                 domain_bounds=domain_bounds,
@@ -378,6 +383,8 @@ def validate_setup(context):
                 cell_size=cell_size,
                 dims=dims,
                 voxel_count=voxel_count,
+                sdf_resolution=sdf_resolution,
+                derived=derived_domain_values(scene, domain, grid_size),
             )
             if voxel_count > MAX_SDF_VOXELS:
                 errors.append(f"Collision grid has {voxel_count:,} voxels; lower SDF resolution")
@@ -388,14 +395,9 @@ def validate_setup(context):
     liquid_flows = []
     emitter_count = 0
     sink_count = 0
-    inflow_names = {
-        obj.name
-        for obj in scene.objects
-        if (settings := flow_settings(obj)) is not None
-        and getattr(settings, "flow_type", "") == "LIQUID"
-        and settings.flow_behavior == "INFLOW"
-    }
     for obj in scene.objects:
+        if is_collision_object(obj):
+            continue
         settings = flow_settings(obj)
         if settings is None or getattr(settings, "flow_type", "") != "LIQUID":
             continue
@@ -405,21 +407,21 @@ def validate_setup(context):
         else:
             emitter_count += 1
         try:
-            shape = shape_for(obj)
-            if shape["type"] == "polygonPrism" and len(shape["points"]) > MAX_FLUID_POLYGON_POINTS:
-                errors.append(f"{obj.name}: polygonPrism exceeds {MAX_FLUID_POLYGON_POINTS} points")
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            shape_for(obj)
+        except (TypeError, ValueError) as error:
             errors.append(str(error))
         try:
-            if not bounds_overlap(world_bounds(obj), summary["domain_bounds"]):
-                warnings.append(f"{obj.name}: flow object is outside the liquid domain")
+            flow_bounds = world_bounds(obj)
+            if not bounds_overlap(flow_bounds, summary["domain_bounds"]):
+                errors.append(f"{obj.name}: flow object is outside the liquid domain")
+            elif (
+                settings.flow_behavior == "OUTFLOW"
+                and flow_bounds[1].z + max(0.0, float(settings.surface_distance)) * summary["derived"]["cell_size"]
+                <= summary["domain_bounds"][0].z + summary["derived"]["cell_size"] * 2
+            ):
+                warnings.append(f"{obj.name}: floor-level outflow reaches less than two Mantaflow cells into the domain and may miss resting liquid")
         except ValueError as error:
             errors.append(str(error))
-        if settings.flow_behavior == "OUTFLOW":
-            targets = [name.strip() for name in str(authored_property(obj, "blite_targets", "")).split(",") if name.strip()]
-            missing = [name for name in targets if name not in inflow_names]
-            if missing:
-                warnings.append(f"{obj.name}: unresolved sink targets: {', '.join(missing)}")
 
     if emitter_count > MAX_FLUID_EMITTERS:
         errors.append(f"Fluid flow supports at most {MAX_FLUID_EMITTERS} emitters")
@@ -427,9 +429,30 @@ def validate_setup(context):
         errors.append(f"Fluid flow supports at most {MAX_FLUID_SINKS} sinks")
     if emitter_count == 0:
         warnings.append("No liquid initial-volume or inflow objects were found")
+    domain_settings = fluid_modifier(summary["domain"], "DOMAIN").domain_settings
+    derived = summary["derived"]
+    if derived["particle_count"] != derived["raw_particle_count"]:
+        warnings.append(f"Derived particle capacity {derived['raw_particle_count']:,} will be clamped to {derived['particle_count']:,}")
+    if abs(derived["particle_size"] - derived["raw_particle_size"]) > 1e-8:
+        warnings.append(f"Derived physics particle size {derived['raw_particle_size']:.3g} will be clamped to {derived['particle_size']:.3g}")
+    if abs(domain_settings.gravity.x) > 1e-5 or abs(domain_settings.gravity.y) > 1e-5 or domain_settings.gravity.z > 1e-5:
+        warnings.append("Babylon Lite currently uses only the downward Blender Z gravity component")
+    unsupported_lights = [
+        obj.name
+        for obj in scene.objects
+        if obj.type == "LIGHT" and obj.data.type not in {"POINT", "SUN", "SPOT"} and not obj.hide_render and obj.visible_get()
+    ]
+    if unsupported_lights:
+        warnings.append(f"glTF cannot export non-punctual lights; skipped: {', '.join(unsupported_lights)}")
 
-    visual_objects, collision_objects = scene_meshes(scene, summary["domain"])
-    summary.update(visual_objects=visual_objects, collision_objects=collision_objects, emitter_count=emitter_count, sink_count=sink_count)
+    presentation_objects, visual_objects, collision_objects = scene_objects(scene, summary["domain"])
+    summary.update(
+        presentation_objects=presentation_objects,
+        visual_objects=visual_objects,
+        collision_objects=collision_objects,
+        emitter_count=emitter_count,
+        sink_count=sink_count,
+    )
     if not visual_objects:
         errors.append("No visible presentation meshes are available for scene.glb")
     if not collision_objects:
@@ -448,13 +471,72 @@ def validate_setup(context):
     return errors, warnings, summary
 
 
-def default_preset(scene, grid_position, grid_size, emitters, sinks):
+def json_setting_value(value):
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "to_tuple"):
+        return list(value.to_tuple())
+    return None
+
+
+def settings_snapshot(settings):
+    output = {}
+    for prop in settings.bl_rna.properties:
+        if prop.identifier == "rna_type" or prop.is_readonly:
+            continue
+        try:
+            value = json_setting_value(getattr(settings, prop.identifier))
+        except Exception:
+            continue
+        if value is not None:
+            output[prop.identifier] = value
+    return output
+
+
+def source_snapshot(scene, domain):
+    flows = {}
+    effectors = {}
+    for obj in scene.objects:
+        flow = flow_settings(obj)
+        if flow is not None and flow.flow_type == "LIQUID":
+            flows[obj.name] = settings_snapshot(flow)
+        modifier = fluid_modifier(obj, "EFFECTOR")
+        if modifier is not None and modifier.effector_settings is not None:
+            effectors[obj.name] = settings_snapshot(modifier.effector_settings)
     return {
-        "formatVersion": 5,
-        "meta": {"demo": "blender", "method": scene.blitefluid_method},
-        "physics": physics_values(scene, scene.blitefluid_method),
+        "application": "Blender",
+        "version": bpy.app.version_string,
+        "settings": {
+            "timeline": {
+                "frameStart": scene.frame_start,
+                "frameEnd": scene.frame_end,
+                "fps": scene.render.fps,
+                "fpsBase": scene.render.fps_base,
+            },
+            "collisionSdfResolution": scene.blitefluid_sdf_resolution,
+            "domain": settings_snapshot(fluid_modifier(domain, "DOMAIN").domain_settings),
+            "flows": flows,
+            "effectors": effectors,
+        },
+    }
+
+
+def default_preset(scene, grid_position, grid_size, emitters, sinks):
+    domain = find_domain(scene)
+    settings = fluid_modifier(domain, "DOMAIN").domain_settings
+    derived = derived_domain_values(scene, domain, grid_size)
+    foam_enabled = bool(settings.use_spray_particles or settings.use_bubble_particles or settings.use_foam_particles)
+    bubbles_enabled = bool(settings.use_bubble_particles)
+    preset = {
+        "formatVersion": 9,
+        "meta": {"demo": "blender", "method": "PBF"},
+        "source": source_snapshot(scene, domain),
+        "physics": derived["physics"],
         "demoParams": {},
         "demoState": {},
+        "simulationDuration": 0,
+        "alphaDecay": 0,
+        "simulationTimeScale": clamp(float(settings.time_scale), 0.01, 100),
         "emitters": emitters,
         "sinks": sinks,
         "showContainer": False,
@@ -463,56 +545,57 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks):
         "activeBlocks": False,
         "pagedGrid": False,
         "fusedBlockDiscovery": False,
-        "physicsParticleSize": scene.blitefluid_particle_size,
+        "physicsParticleSize": derived["particle_size"],
         "gridPosition": grid_position,
         "gridSize": grid_size,
         "showGridBounds": False,
-        "particleCount": scene.blitefluid_particle_count,
+        "particleCount": derived["particle_count"],
         "material": 0,
         "render": {
             "renderAsSpheres": False,
             "waterColor": "#16a3c3",
             "absorption": 1,
-            "particleSize": 0.7,
+            "particleSize": 0.6,
             "refractionStrength": 0.1,
             "specularPower": 250,
             "reflectionExposure": 2,
             "reflectionContrast": 0.6,
             "waterReflectivity": 0.02,
-            "surfaceDepthBlur": 3,
+            "surfaceDepthBlur": 17,
             "depthBlurEdgeThreshold": 0.05,
-            "surfaceThicknessBlur": 1,
-            "halfRendering": False,
-            "thicknessDownscale": 1,
-            "surfaceFilter": "bilateral",
-            "narrowRangeDelta": 1,
+            "surfaceThicknessBlur": 2,
+            "halfRendering": True,
+            "thicknessDownscale": 8,
+            "surfaceFilter": "narrowRange",
+            "narrowRangeDelta": 2,
             "narrowRangeMu": 1,
             "anisotropicSurface": False,
             "anisoRadiusDamping": 0.2,
         },
         "foam": {
-            "enableFoam": False,
+            "enableFoam": foam_enabled,
             "activeParticles": False,
-            "trappedAirRate": 40,
-            "waveCrestRate": 40,
-            "foamLifetime": 2,
-            "foamLifetimeMin": 0.3,
-            "bubbleBuoyancy": 0.8,
-            "bubbleDrag": 0.5,
-            "poolSize": 3,
-            "foamSoftness": 1,
-            "foamDensity": 1,
-            "subsurfaceBubbleStrength": 0,
-            "subsurfaceBubbleColor": "#ffffff",
-            "foamBlurRadius": 2,
+            "trappedAirRate": 51,
+            "waveCrestRate": 48,
+            "foamLifetime": 1.0416666666666667,
+            "foamLifetimeMin": 0.4166666666666667,
+            "bubbleBuoyancy": 4.2,
+            "bubbleDrag": 0.45,
+            "poolSize": 3.5,
+            "foamSoftness": 0,
+            "foamDensity": 8.25,
+            "subsurfaceBubbleStrength": 0.2 if bubbles_enabled else 0,
+            "subsurfaceBubbleColor": "#5380ea",
+            "foamBlurRadius": 1,
             "foamLightIntensity": 1,
-            "foamAmbient": 0.2,
+            "foamAmbient": 1,
             "foamAO": 0,
             "foamNormalStrength": 1,
-            "foamDebug": "none",
-            "foamSize": 1,
+            "foamDebug": "off",
+            "foamSize": 0.15,
         },
     }
+    return preset
 
 
 def export_glb(path, objects):
@@ -532,6 +615,7 @@ def export_glb(path, objects):
             use_selection=True,
             export_apply=True,
             export_yup=True,
+            export_lights=True,
         )
     finally:
         bpy.ops.object.select_all(action="DESELECT")
@@ -539,13 +623,6 @@ def export_glb(path, objects):
             if obj.name in view_layer.objects:
                 obj.select_set(True)
         view_layer.objects.active = previous_active
-
-
-def zip_entry(name, data):
-    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-    info.compress_type = zipfile.ZIP_STORED
-    info.external_attr = 0o600 << 16
-    return info, data
 
 
 def export_bundle(context, filepath):
@@ -564,138 +641,83 @@ def export_bundle(context, filepath):
     grid_size = [float(size_blender.x), float(size_blender.z), float(size_blender.y)]
 
     emitters, sinks = extract_flows(scene, grid_position)
-    visual_objects = summary["visual_objects"]
+    presentation_objects = summary["presentation_objects"]
     collision_objects = summary["collision_objects"]
     collision = bake_collision(
         collision_objects,
         grid_position,
         grid_size,
-        scene.blitefluid_sdf_resolution,
+        summary["sdf_resolution"],
         context.window_manager,
     )
     preset = default_preset(scene, grid_position, grid_size, emitters, sinks)
-    manifest = {
-        "bundleVersion": 1,
-        "generator": {"name": "Babylon Lite Blender add-on", "version": "1.2.0"},
-        "preset": preset,
-        "scene": {"glb": "scene.glb", "collision": "collision.blsdf"},
-    }
 
     with tempfile.TemporaryDirectory(prefix="blitefluid-") as temporary:
         glb_path = os.path.join(temporary, "scene.glb")
-        export_glb(glb_path, visual_objects)
+        export_glb(glb_path, presentation_objects)
         with open(glb_path, "rb") as stream:
             glb = stream.read()
-        with zipfile.ZipFile(filepath, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
-            for name, payload in (
-                ("manifest.json", json.dumps(manifest, indent=2).encode("utf-8") + b"\n"),
-                ("scene.glb", glb),
-                ("collision.blsdf", collision),
-            ):
-                info, data = zip_entry(name, payload)
-                archive.writestr(info, data)
-    return len(emitters), len(sinks), len(collision_objects)
-
-
-ROLE_ITEMS = (
-    ("DOMAIN", "Domain", "Use the selected mesh as the liquid simulation domain"),
-    ("INITIAL", "Initial volume", "Seed fluid from the selected mesh when the simulation starts"),
-    ("INFLOW", "Inflow", "Continuously emit fluid from the selected mesh"),
-    ("SINK", "Sink", "Recycle particles entering the selected mesh"),
-    ("COLLIDER", "Collider", "Use the selected mesh as a visible static collision object"),
-)
+        preset["scene"] = {
+            "encoding": "base64",
+            "glb": base64.b64encode(glb).decode("ascii"),
+            "collision": base64.b64encode(collision).decode("ascii"),
+            "anchorPosition": grid_position,
+        }
+        with open(filepath, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(preset, stream, indent=2)
+            stream.write("\n")
+    return len(emitters), len(sinks), len(collision_objects), summary["dims"]
 
 
 def ensure_fluid_role(context, obj, role):
-    modifier = next((candidate for candidate in obj.modifiers if candidate.type == "FLUID"), None)
+    fluid_type = "DOMAIN" if role == "DOMAIN" else "EFFECTOR" if role == "COLLIDER" else "FLOW"
+    fluid_modifiers = [candidate for candidate in obj.modifiers if candidate.type == "FLUID"]
+    modifier = next((candidate for candidate in fluid_modifiers if candidate.fluid_type == fluid_type), None)
+    for stale_modifier in fluid_modifiers:
+        if stale_modifier != modifier:
+            obj.modifiers.remove(stale_modifier)
     if modifier is None:
         modifier = obj.modifiers.new("Babylon Lite Fluid", "FLUID")
-    fluid_type = "DOMAIN" if role == "DOMAIN" else "EFFECTOR" if role == "COLLIDER" else "FLOW"
-    modifier.fluid_type = fluid_type
+        modifier.fluid_type = fluid_type
+    obj["blite_collision"] = role == "COLLIDER"
     context.view_layer.update()
     if role == "DOMAIN":
         if modifier.domain_settings is None:
             raise ValueError("Blender did not initialize liquid domain settings")
         modifier.domain_settings.domain_type = "LIQUID"
     elif role == "COLLIDER":
-        obj.blite_collision = True
-    else:
+        if modifier.effector_settings is None:
+            raise ValueError("Blender did not initialize fluid effector settings")
+        modifier.effector_settings.effector_type = "COLLISION"
+        if modifier.effector_settings.surface_distance <= 0:
+            modifier.effector_settings.surface_distance = 1.5
+    elif role != "COLLIDER":
         if modifier.flow_settings is None:
             raise ValueError("Blender did not initialize liquid flow settings")
         modifier.flow_settings.flow_type = "LIQUID"
         modifier.flow_settings.flow_behavior = {"INITIAL": "GEOMETRY", "INFLOW": "INFLOW", "SINK": "OUTFLOW"}[role]
         if role in {"INFLOW", "SINK"}:
             modifier.flow_settings.use_inflow = True
+        if role == "SINK":
+            modifier.flow_settings.surface_distance = 1.0
     context.view_layer.update()
-
-
-class BLITEFLUID_OT_set_role(bpy.types.Operator):
-    bl_idname = "object.blitefluid_set_role"
-    bl_label = "Set Babylon Lite Fluid Role"
-    bl_options = {"REGISTER", "UNDO"}
-
-    role: EnumProperty(items=ROLE_ITEMS)
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == "MESH"
-
-    def execute(self, context):
-        try:
-            ensure_fluid_role(context, context.active_object, self.role)
-        except ValueError as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        self.report({"INFO"}, f"{context.active_object.name}: {dict((value, label) for value, label, _ in ROLE_ITEMS)[self.role]}")
-        return {"FINISHED"}
-
-
-class BLITEFLUID_OT_validate(bpy.types.Operator):
-    bl_idname = "scene.blitefluid_validate"
-    bl_label = "Validate Babylon Lite Fluid"
-    bl_options = {"REGISTER"}
-
-    def execute(self, context):
-        try:
-            errors, warnings, summary = validate_setup(context)
-        except Exception as error:
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        for error in errors:
-            print(f"[blitefluid] error: {error}")
-        for warning in warnings:
-            print(f"[blitefluid] warning: {warning}")
-        if errors:
-            context.scene.blitefluid_status = f"{len(errors)} error(s), {len(warnings)} warning(s)"
-            self.report({"ERROR"}, f"Validation failed: {errors[0]}")
-            return {"CANCELLED"}
-        context.scene.blitefluid_status = (
-            f"{summary['emitter_count']} emitter(s), {summary['sink_count']} sink(s), "
-            f"{len(summary['collision_objects'])} collider(s); {len(warnings)} warning(s)"
-        )
-        if warnings:
-            self.report({"WARNING"}, f"Valid with {len(warnings)} warning(s); see the system console")
-        else:
-            self.report({"INFO"}, "Babylon Lite fluid setup is valid")
-        return {"FINISHED"}
 
 
 class BLITEFLUID_OT_export(bpy.types.Operator, ExportHelper):
     bl_idname = "export_scene.blitefluid"
-    bl_label = "Export Babylon Lite Fluid"
+    bl_label = "Export Babylon Lite Fluid JSON"
     bl_options = {"REGISTER"}
 
-    filename_ext = ".blitefluid"
-    filter_glob: bpy.props.StringProperty(default="*.blitefluid", options={"HIDDEN"})
+    filename_ext = ".json"
+    filter_glob: bpy.props.StringProperty(default="*.json", options={"HIDDEN"})
 
     def execute(self, context):
         try:
-            emitters, sinks, colliders = export_bundle(context, self.filepath)
+            emitters, sinks, colliders, dims = export_bundle(context, self.filepath)
         except Exception as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
-        context.scene.blitefluid_status = f"Exported {emitters} emitter(s), {sinks} sink(s), {colliders} collider(s)"
-        self.report({"INFO"}, f"Exported {emitters} emitters, {sinks} sinks, and {colliders} colliders")
+        self.report({"INFO"}, f"Exported {emitters} emitters, {sinks} sinks, {colliders} colliders; SDF {dims[0]} x {dims[1]} x {dims[2]}")
         return {"FINISHED"}
 
 
@@ -707,154 +729,37 @@ class BLITEFLUID_PT_export(bpy.types.Panel):
     bl_context = "scene"
 
     def draw(self, context):
-        layout = self.layout
-        scene = context.scene
-
-        domain_box = layout.box()
-        domain_box.label(text="Simulation Domain", icon="MOD_FLUIDSIM")
+        self.layout.prop(context.scene, "blitefluid_sdf_resolution")
         try:
-            domain = find_domain(scene)
-            minimum, maximum = world_bounds(domain)
-            center = blite_vec((minimum + maximum) * 0.5)
-            size_blender = maximum - minimum
-            size = [float(size_blender.x), float(size_blender.z), float(size_blender.y)]
-            _, dims, voxel_count = grid_metrics(size, scene.blitefluid_sdf_resolution)
-            domain_box.label(text=domain.name)
-            domain_box.label(text=f"Center: {center[0]:.2f}, {center[1]:.2f}, {center[2]:.2f}")
-            domain_box.label(text=f"Size: {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f}")
-            domain_box.label(text=f"SDF: {dims[0]} x {dims[1]} x {dims[2]} ({voxel_count * 4 / (1024 * 1024):.1f} MiB)")
-        except ValueError:
-            domain_box.label(text="No liquid domain found", icon="ERROR")
-
-        settings_box = layout.box()
-        settings_box.label(text="Babylon Lite Simulation")
-        settings_box.prop(scene, "blitefluid_method")
-        settings_box.prop(scene, "blitefluid_particle_count")
-        settings_box.prop(scene, "blitefluid_particle_size")
-        settings_box.prop(scene, "blitefluid_sdf_resolution")
-        physics_box = settings_box.box()
-        physics_box.label(text=f"{scene.blitefluid_method} Physics")
-        for key, _, _, _, _, _, _ in PHYSICS_SCHEMAS[scene.blitefluid_method]:
-            physics_box.prop(scene, physics_property_name(scene.blitefluid_method, key))
-
-        object_box = layout.box()
-        object_box.label(text="Selected Mesh Authoring", icon="OBJECT_DATA")
-        obj = context.active_object
-        if obj is None or obj.type != "MESH":
-            object_box.label(text="Select a mesh object")
-        else:
-            object_box.label(text=obj.name)
-            first_row = object_box.row(align=True)
-            for role, label, _ in ROLE_ITEMS[:3]:
-                operator = first_row.operator(BLITEFLUID_OT_set_role.bl_idname, text=label)
-                operator.role = role
-            second_row = object_box.row(align=True)
-            for role, label, _ in ROLE_ITEMS[3:]:
-                operator = second_row.operator(BLITEFLUID_OT_set_role.bl_idname, text=label)
-                operator.role = role
-            settings = flow_settings(obj)
-            if settings is None and fluid_modifier(obj, "DOMAIN") is None:
-                object_box.prop(obj, "blite_collision")
-            if settings is not None:
-                object_box.prop(settings, "flow_behavior")
-                object_box.prop(obj, "blite_shape")
-                if obj.blite_shape == "cylinder":
-                    object_box.prop(obj, "blite_inner_radius")
-                elif obj.blite_shape == "cone":
-                    object_box.prop(obj, "blite_top_radius")
-                elif obj.blite_shape == "polygonPrism":
-                    object_box.prop(obj, "blite_points")
-                if settings.flow_behavior != "GEOMETRY":
-                    object_box.prop(obj, "blite_volume_rate")
-                if settings.flow_behavior == "OUTFLOW":
-                    object_box.prop(obj, "blite_targets")
-                else:
-                    object_box.prop(obj, "blite_spread")
-                    object_box.prop(settings, "use_plane_init")
-                    object_box.prop(settings, "use_initial_velocity")
-                    if settings.use_initial_velocity:
-                        object_box.prop(settings, "velocity_coord")
-
-        layout.operator(BLITEFLUID_OT_validate.bl_idname, icon="CHECKMARK")
-        layout.operator(BLITEFLUID_OT_export.bl_idname, icon="EXPORT")
-        if scene.blitefluid_status:
-            layout.label(text=scene.blitefluid_status)
+            dims, texture_bytes = collision_texture_metrics(context.scene)
+            self.layout.label(text=f"Texture: {dims[0]} x {dims[1]} x {dims[2]} R32Float, {texture_bytes / (1024 * 1024):.2f} MiB")
+        except (AttributeError, TypeError, ValueError):
+            self.layout.label(text="Texture size unavailable until a valid liquid domain exists")
+        self.layout.operator(BLITEFLUID_OT_export.bl_idname, icon="EXPORT")
 
 
-CLASSES = (BLITEFLUID_OT_set_role, BLITEFLUID_OT_validate, BLITEFLUID_OT_export, BLITEFLUID_PT_export)
+CLASSES = (BLITEFLUID_OT_export, BLITEFLUID_PT_export)
 
 
 def menu_func_export(self, context):
-    self.layout.operator(BLITEFLUID_OT_export.bl_idname, text="Babylon Lite Fluid (.blitefluid)")
+    self.layout.operator(BLITEFLUID_OT_export.bl_idname, text="Babylon Lite Fluid JSON (.json)")
 
 
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
-    bpy.types.Scene.blitefluid_method = EnumProperty(
-        name="Simulation method",
-        items=(("PBF", "PBF", ""), ("MLS-MPM", "MLS-MPM", ""), ("PB-MPM", "PB-MPM", "")),
-        default="PBF",
+    bpy.types.Scene.blitefluid_sdf_resolution = IntProperty(
+        name="Collision SDF resolution",
+        description="Grid points on the longest collision-SDF axis; independent from Mantaflow Resolution Divisions",
+        default=64,
+        min=8,
+        max=192,
     )
-    bpy.types.Scene.blitefluid_particle_count = IntProperty(name="Particle capacity", default=100000, min=1000, max=1000000)
-    bpy.types.Scene.blitefluid_particle_size = FloatProperty(name="Physics particle size", default=1, min=0.1, max=8, step=1)
-    bpy.types.Scene.blitefluid_sdf_resolution = IntProperty(name="Collision SDF resolution", default=64, min=8, max=192)
-    bpy.types.Scene.blitefluid_status = StringProperty(name="Validation status", default="")
-    for method, schema in PHYSICS_SCHEMAS.items():
-        for key, label, minimum, maximum, step, default, kind in schema:
-            property_name = physics_property_name(method, key)
-            if kind == "INT":
-                property_value = IntProperty(name=label, default=int(default), min=int(minimum), max=int(maximum), step=max(1, int(step)))
-            else:
-                precision = max(2, min(4, int(math.ceil(-math.log10(step))) if step < 1 else 2))
-                property_value = FloatProperty(
-                    name=label,
-                    default=float(default),
-                    min=float(minimum),
-                    max=float(maximum),
-                    step=max(1, min(100, int(round(step * 100)))),
-                    precision=precision,
-                )
-            setattr(bpy.types.Scene, property_name, property_value)
-    bpy.types.Object.blite_shape = EnumProperty(
-        name="Emitter / sink shape",
-        items=(
-            ("box", "Box", ""),
-            ("sphere", "Sphere", ""),
-            ("cylinder", "Cylinder", ""),
-            ("cone", "Cone", ""),
-            ("capsule", "Capsule", ""),
-            ("polygonPrism", "Polygon prism", ""),
-        ),
-        default="box",
-    )
-    bpy.types.Object.blite_volume_rate = FloatProperty(name="Volume rate (0 = unlimited)", default=0, min=0, soft_max=100)
-    bpy.types.Object.blite_targets = StringProperty(name="Sink targets", description="Comma-separated inflow object names", default="")
-    bpy.types.Object.blite_inner_radius = FloatProperty(name="Inner radius", default=0, min=0)
-    bpy.types.Object.blite_top_radius = FloatProperty(name="Top radius", default=0, min=0)
-    bpy.types.Object.blite_points = StringProperty(name="Polygon points", description='JSON array such as [[-1,-1],[1,-1],[1,1],[-1,1]]', default="[]")
-    bpy.types.Object.blite_spread = FloatProperty(name="Velocity spread", default=0, min=0, max=1)
-    bpy.types.Object.blite_collision = BoolProperty(name="Babylon Lite collider", default=False)
 
 
 def unregister():
-    del bpy.types.Object.blite_collision
-    del bpy.types.Object.blite_spread
-    del bpy.types.Object.blite_points
-    del bpy.types.Object.blite_top_radius
-    del bpy.types.Object.blite_inner_radius
-    del bpy.types.Object.blite_targets
-    del bpy.types.Object.blite_volume_rate
-    del bpy.types.Object.blite_shape
-    for method, schema in PHYSICS_SCHEMAS.items():
-        for key, _, _, _, _, _, _ in schema:
-            delattr(bpy.types.Scene, physics_property_name(method, key))
-    del bpy.types.Scene.blitefluid_status
     del bpy.types.Scene.blitefluid_sdf_resolution
-    del bpy.types.Scene.blitefluid_particle_size
-    del bpy.types.Scene.blitefluid_particle_count
-    del bpy.types.Scene.blitefluid_method
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

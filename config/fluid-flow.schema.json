@@ -1,11 +1,33 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://babylon-lite.dev/schema/fluid-flow-v5.json",
+    "$id": "https://babylon-lite.dev/schema/fluid-flow-v9.json",
     "title": "Babylon Lite fluid flow objects",
     "type": "object",
     "required": ["formatVersion", "emitters", "sinks"],
     "properties": {
-        "formatVersion": { "const": 5 },
+        "formatVersion": { "enum": [5, 6, 7, 8, 9] },
+        "simulationTimeScale": { "type": "number", "minimum": 0.01, "maximum": 100 },
+        "source": {
+            "type": "object",
+            "required": ["application"],
+            "properties": {
+                "application": { "type": "string", "minLength": 1 },
+                "version": { "type": "string" },
+                "settings": { "type": "object" }
+            },
+            "additionalProperties": false
+        },
+        "scene": {
+            "type": "object",
+            "required": ["encoding", "glb", "collision"],
+            "properties": {
+                "encoding": { "const": "base64" },
+                "glb": { "type": "string", "minLength": 1, "contentEncoding": "base64" },
+                "collision": { "type": "string", "minLength": 1, "contentEncoding": "base64" },
+                "anchorPosition": { "$ref": "#/$defs/vec3" }
+            },
+            "additionalProperties": false
+        },
         "gridPosition": { "$ref": "#/$defs/vec3" },
         "gridSize": {
             "type": "array",
@@ -136,8 +158,17 @@
                 "sampling": { "enum": ["volume", "surface"] },
                 "velocity": { "$ref": "#/$defs/vec3" },
                 "velocitySpace": { "enum": ["local", "world"] },
+                "sourceNode": { "type": "string", "minLength": 1 },
+                "sourceVelocity": { "$ref": "#/$defs/vec3" },
+                "sourceVelocityFactor": { "type": "number" },
+                "normalVelocity": { "type": "number" },
                 "spread": { "type": "number", "minimum": 0 },
-                "volumeRate": { "type": "number", "minimum": 0 }
+                "volumeRate": { "type": "number", "minimum": 0 },
+                "delayBeforeStart": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Simulation-time seconds before an Inflow begins emitting or accepting recycle launches."
+                }
             },
             "additionalProperties": false
         },
@@ -150,6 +181,10 @@
                 "enabled": { "type": "boolean" },
                 "transform": { "$ref": "#/$defs/transform" },
                 "shape": { "$ref": "#/$defs/shape" },
+                "mode": {
+                    "enum": ["delete", "recycle"],
+                    "description": "Delete frees captured particle slots. Recycle immediately relaunches captured particles through targets."
+                },
                 "targets": { "type": "array", "items": { "type": "string" } },
                 "volumeRate": { "type": "number", "minimum": 0 },
                 "perParticleRecycleRate": {

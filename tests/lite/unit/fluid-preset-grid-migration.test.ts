@@ -48,14 +48,14 @@ describe("fluid preset grid migration", () => {
         }
     });
 
-    it("round-trips format-5 world position and size", () => {
+    it("round-trips current-format world position and size", () => {
         const state = pairState();
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
-        expect(exported.formatVersion).toBe(5);
+        expect(exported.formatVersion).toBe(9);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
         expect(exported.simulationDuration).toBe(12);
@@ -73,6 +73,21 @@ describe("fluid preset grid migration", () => {
         const imported = presetFromExportJson(legacy);
         expect(imported.simulationDuration).toBe(0);
         expect(imported.alphaDecay).toBe(2);
+    });
+
+    it("truncates imported gravity and artificial pressure to three decimal places", () => {
+        const json = exportJsonFromPairState("box", "PBF", pairState());
+        json.physics = {
+            gravity: 9.810999,
+            scorr: 0.123999,
+            viscosity: 0.087654,
+        };
+
+        expect(presetFromExportJson(json).schema).toEqual({
+            gravity: 9.81,
+            scorr: 0.123,
+            viscosity: 0.087654,
+        });
     });
 
     it("round-trips config-level initial allocation and structured sink recycle semantics", () => {
@@ -97,6 +112,7 @@ describe("fluid preset grid migration", () => {
                 id: "sink",
                 name: "sink",
                 enabled: true,
+                mode: "recycle",
                 transform: { position: [4, 5, 6], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
                 shape: { type: "box", size: [8, 1, 8] },
                 targets: ["source"],

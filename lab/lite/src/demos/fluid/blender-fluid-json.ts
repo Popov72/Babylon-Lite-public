@@ -11,14 +11,11 @@ import {
 } from "babylon-lite";
 import { PHYS_MAX_SCALE, PHYS_MIN_SCALE, cellSizeForPhysicsScale, gridCellsForSize } from "./grid-settings.js";
 
-const ZIP_LOCAL_FILE = 0x04034b50;
-const ZIP_CENTRAL_FILE = 0x02014b50;
-const ZIP_END = 0x06054b50;
 const SDF_MAGIC = 0x46534c42;
 const SDF_HEADER_BYTES = 64;
 const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const MAX_SDF_VOXELS = 16 * 1024 * 1024;
-const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_JSON_BYTES = 768 * 1024 * 1024;
 const MAX_PARTICLE_COUNT = 2_000_000;
 const MAX_GRID_AXIS_CELLS = 2048;
 const MAX_GRID_CELL_COUNT = 8 * 1024 * 1024;
@@ -26,6 +23,7 @@ const MAX_ABS_POSITION = 1_000_000;
 const MAX_EXTENT = 10_000;
 const MAX_VELOCITY = 100_000;
 const MAX_RATE = 1_000_000_000_000;
+const MAX_DELAY = 86_400;
 const MAX_TEXT_LENGTH = 256;
 const MAX_TARGETS = MAX_FLUID_EMITTERS;
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
@@ -68,114 +66,34 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
     },
 };
 
-export interface BliteFluidManifest {
-    bundleVersion: 1;
+export interface BlenderFluidScene {
     preset: FluidExportJson;
-    scene: {
-        glb: "scene.glb";
-        collision: "collision.blsdf";
-    };
+    sceneGlb: ArrayBuffer;
+    collision: BlenderFluidCollision;
 }
 
-export interface BliteFluidCollision {
+export interface BlenderFluidCollision {
     dims: [number, number, number];
     origin: [number, number, number];
     cellSize: number;
     distances: Float32Array;
 }
 
-export interface BliteFluidBundle {
-    manifest: BliteFluidManifest;
-    sceneGlb: ArrayBuffer;
-    collision: BliteFluidCollision;
+export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene): NonNullable<FluidExportJson["scene"]> {
+    const payload = scene.preset.scene;
+    if (!payload) {
+        fail("self-contained Blender JSON is missing scene data");
+    }
+    return {
+        encoding: "base64",
+        glb: payload.glb,
+        collision: payload.collision,
+        ...(payload.anchorPosition ? { anchorPosition: [...payload.anchorPosition] as [number, number, number] } : {}),
+    };
 }
 
 function fail(message: string): never {
-    throw new Error(`Invalid .blitefluid bundle: ${message}`);
-}
-
-function crc32(bytes: Uint8Array): number {
-    let crc = 0xffffffff;
-    for (const byte of bytes) {
-        crc ^= byte;
-        for (let bit = 0; bit < 8; bit++) {
-            crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-        }
-    }
-    return (crc ^ 0xffffffff) >>> 0;
-}
-
-function parseStoredZip(data: ArrayBuffer): Map<string, Uint8Array> {
-    const bytes = new Uint8Array(data);
-    const view = new DataView(data);
-    const decoder = new TextDecoder();
-    const entries = new Map<string, Uint8Array>();
-    let offset = 0;
-
-    while (offset + 4 <= bytes.byteLength) {
-        const signature = view.getUint32(offset, true);
-        if (signature === ZIP_CENTRAL_FILE || signature === ZIP_END) {
-            break;
-        }
-        if (signature !== ZIP_LOCAL_FILE || offset + 30 > bytes.byteLength) {
-            fail(`invalid ZIP record at byte ${offset}`);
-        }
-
-        const flags = view.getUint16(offset + 6, true);
-        const compression = view.getUint16(offset + 8, true);
-        const expectedCrc = view.getUint32(offset + 14, true);
-        const compressedSize = view.getUint32(offset + 18, true);
-        const uncompressedSize = view.getUint32(offset + 22, true);
-        const nameLength = view.getUint16(offset + 26, true);
-        const extraLength = view.getUint16(offset + 28, true);
-        if ((flags & 1) !== 0) {
-            fail("encrypted ZIP entries are not supported");
-        }
-        if ((flags & 8) !== 0) {
-            fail("ZIP data descriptors are not supported");
-        }
-        if (compression !== 0) {
-            fail("ZIP entries must use STORE compression");
-        }
-        if (compressedSize !== uncompressedSize) {
-            fail("stored ZIP entry size mismatch");
-        }
-        if (uncompressedSize > MAX_ENTRY_BYTES) {
-            fail("ZIP entry exceeds the 512 MiB limit");
-        }
-
-        const nameStart = offset + 30;
-        const payloadStart = nameStart + nameLength + extraLength;
-        const payloadEnd = payloadStart + uncompressedSize;
-        if (payloadStart > bytes.byteLength || payloadEnd > bytes.byteLength) {
-            fail("truncated ZIP entry");
-        }
-
-        const name = decoder.decode(bytes.subarray(nameStart, nameStart + nameLength));
-        if (!name || name.includes("\\") || name.startsWith("/") || name.split("/").includes("..")) {
-            fail(`unsafe ZIP entry name "${name}"`);
-        }
-        if (entries.has(name)) {
-            fail(`duplicate ZIP entry "${name}"`);
-        }
-
-        const payload = bytes.subarray(payloadStart, payloadEnd);
-        if (crc32(payload) !== expectedCrc) {
-            fail(`CRC mismatch for "${name}"`);
-        }
-        entries.set(name, payload);
-        offset = payloadEnd;
-    }
-
-    return entries;
-}
-
-function requiredEntry(entries: Map<string, Uint8Array>, name: string): Uint8Array {
-    const entry = entries.get(name);
-    if (!entry) {
-        fail(`missing "${name}"`);
-    }
-    return entry;
+    throw new Error(`Invalid fluid export: ${message}`);
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {
@@ -369,14 +287,33 @@ function validateEmitter(value: unknown, path: string): FluidEmitter {
         velocitySpace,
         spread: finiteNumber(emitter.spread, `${path}.spread`, 0, MAX_VELOCITY),
     };
+    if (emitter.sourceNode !== undefined) {
+        result.sourceNode = text(emitter.sourceNode, `${path}.sourceNode`);
+    }
+    if (emitter.sourceVelocity !== undefined) {
+        result.sourceVelocity = vector(emitter.sourceVelocity, `${path}.sourceVelocity`, 3, -MAX_VELOCITY, MAX_VELOCITY) as [number, number, number];
+    }
+    if (emitter.sourceVelocityFactor !== undefined) {
+        result.sourceVelocityFactor = finiteNumber(emitter.sourceVelocityFactor, `${path}.sourceVelocityFactor`, -MAX_VELOCITY, MAX_VELOCITY);
+    }
+    if (emitter.normalVelocity !== undefined) {
+        result.normalVelocity = finiteNumber(emitter.normalVelocity, `${path}.normalVelocity`, -MAX_VELOCITY, MAX_VELOCITY);
+    }
     if (emitter.volumeRate !== undefined) {
         result.volumeRate = finiteNumber(emitter.volumeRate, `${path}.volumeRate`, Number.MIN_VALUE, MAX_RATE);
+    }
+    if (emitter.delayBeforeStart !== undefined) {
+        result.delayBeforeStart = finiteNumber(emitter.delayBeforeStart, `${path}.delayBeforeStart`, 0, MAX_DELAY);
     }
     return result;
 }
 
-function validateSink(value: unknown, path: string): FluidSink {
+function validateSink(value: unknown, path: string, formatVersion: number): FluidSink {
     const sink = record(value, path);
+    const mode = sink.mode === undefined && formatVersion <= 6 ? "recycle" : sink.mode;
+    if (mode !== "delete" && mode !== "recycle") {
+        fail(`${path}.mode must be "delete" or "recycle"`);
+    }
     const targets = array(sink.targets, `${path}.targets`);
     if (targets.length > MAX_TARGETS) {
         fail(`${path}.targets supports at most ${MAX_TARGETS} entries`);
@@ -387,6 +324,7 @@ function validateSink(value: unknown, path: string): FluidSink {
         enabled: bool(sink.enabled, `${path}.enabled`),
         transform: validateTransform(sink.transform, `${path}.transform`),
         shape: validateShape(sink.shape, `${path}.shape`),
+        mode,
         targets: targets.map((target, index) => text(target, `${path}.targets[${index}]`)),
     };
     if (new Set(result.targets).size !== result.targets.length) {
@@ -508,13 +446,27 @@ function validateFoam(value: unknown): void {
     if (!HEX_COLOR.test(bubbleColor)) {
         fail("manifest.preset.foam.subsurfaceBubbleColor must be a #RRGGBB color");
     }
-    text(foam.foamDebug, "manifest.preset.foam.foamDebug");
+    const foamDebug = text(foam.foamDebug, "manifest.preset.foam.foamDebug", true);
+    if (foamDebug === "" || foamDebug === "none") {
+        foam.foamDebug = "off";
+    } else if (
+        foamDebug !== "off" &&
+        foamDebug !== "accum" &&
+        foamDebug !== "foamR" &&
+        foamDebug !== "bubbleG" &&
+        foamDebug !== "sprayB" &&
+        foamDebug !== "blurred" &&
+        foamDebug !== "foamAlpha" &&
+        foamDebug !== "normals"
+    ) {
+        fail("manifest.preset.foam.foamDebug is not supported");
+    }
 }
 
 function validatePreset(value: unknown): FluidExportJson {
     const preset = record(value, "manifest.preset");
-    if (preset.formatVersion !== 5) {
-        fail("manifest preset must use formatVersion 5");
+    if (preset.formatVersion !== 5 && preset.formatVersion !== 6 && preset.formatVersion !== 7 && preset.formatVersion !== 8 && preset.formatVersion !== 9) {
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, or 9");
     }
     const meta = record(preset.meta, "manifest.preset.meta");
     if (meta.demo !== "blender") {
@@ -544,7 +496,9 @@ function validatePreset(value: unknown): FluidExportJson {
         fail(`manifest.preset.sinks supports at most ${MAX_FLUID_SINKS} entries`);
     }
     const emitters = emitterValues.map((emitter, index) => validateEmitter(emitter, `manifest.preset.emitters[${index}]`));
-    const sinks = sinkValues.map((sink, index) => validateSink(sink, `manifest.preset.sinks[${index}]`));
+    const sinks = sinkValues.map((sink, index) => validateSink(sink, `manifest.preset.sinks[${index}]`, preset.formatVersion as number));
+    preset.emitters = emitters;
+    preset.sinks = sinks;
     const ids = new Set<string>();
     for (const object of [...emitters, ...sinks]) {
         if (ids.has(object.id)) {
@@ -554,7 +508,7 @@ function validatePreset(value: unknown): FluidExportJson {
     }
     const emitterIds = new Set(emitters.filter((emitter) => emitter.behavior === "inflow").map((emitter) => emitter.id));
     for (const [index, sink] of sinks.entries()) {
-        for (const target of sink.targets) {
+        for (const target of sink.mode === "recycle" ? sink.targets : []) {
             if (!emitterIds.has(target)) {
                 fail(`manifest.preset.sinks[${index}].targets references unknown or non-inflow emitter "${target}"`);
             }
@@ -575,6 +529,15 @@ function validatePreset(value: unknown): FluidExportJson {
     if (preset.envIntensity !== undefined) {
         finiteNumber(preset.envIntensity, "manifest.preset.envIntensity", 0, 100);
     }
+    if (preset.simulationDuration !== undefined) {
+        finiteNumber(preset.simulationDuration, "manifest.preset.simulationDuration", 0, 120);
+    }
+    if (preset.alphaDecay !== undefined) {
+        finiteNumber(preset.alphaDecay, "manifest.preset.alphaDecay", 0, 10);
+    }
+    if (preset.simulationTimeScale !== undefined) {
+        finiteNumber(preset.simulationTimeScale, "manifest.preset.simulationTimeScale", 0.01, 100);
+    }
     if (preset.pagedGridMaxPages !== undefined) {
         integer(preset.pagedGridMaxPages, "manifest.preset.pagedGridMaxPages", 1, 1_000_000);
     }
@@ -590,28 +553,6 @@ function validatePreset(value: unknown): FluidExportJson {
     validateRender(preset.render);
     validateFoam(preset.foam);
     return preset as unknown as FluidExportJson;
-}
-
-function parseManifest(bytes: Uint8Array): BliteFluidManifest {
-    if (bytes.byteLength > MAX_MANIFEST_BYTES) {
-        fail("manifest.json exceeds the 1 MiB limit");
-    }
-    let value: unknown;
-    try {
-        value = JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-        fail("manifest.json is not valid JSON");
-    }
-    const manifest = record(value, "manifest.json");
-    if (manifest.bundleVersion !== 1) {
-        fail("unsupported bundle version");
-    }
-    const preset = validatePreset(manifest.preset);
-    const scene = record(manifest.scene, "manifest.scene");
-    if (scene.glb !== "scene.glb" || scene.collision !== "collision.blsdf") {
-        fail("manifest scene paths are invalid");
-    }
-    return { bundleVersion: 1, preset, scene: { glb: "scene.glb", collision: "collision.blsdf" } };
 }
 
 function parseGlb(bytes: Uint8Array): ArrayBuffer {
@@ -631,7 +572,27 @@ function parseGlb(bytes: Uint8Array): ArrayBuffer {
     return bytes.slice().buffer;
 }
 
-export function parseBliteFluidCollision(bytes: Uint8Array): BliteFluidCollision {
+function decodeBase64(value: unknown, path: string): Uint8Array {
+    if (typeof value !== "string" || value.length === 0) {
+        fail(`${path} must be a non-empty base64 string`);
+    }
+    const encoded = value;
+    if (encoded.length > Math.ceil((MAX_ENTRY_BYTES * 4) / 3) + 4 || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+        fail(`${path} is not valid bounded base64 data`);
+    }
+    let binary: string;
+    try {
+        binary = atob(encoded);
+    } catch {
+        fail(`${path} is not valid base64 data`);
+    }
+    if (binary.length > MAX_ENTRY_BYTES) {
+        fail(`${path} exceeds the 512 MiB limit`);
+    }
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+export function parseBlenderFluidCollision(bytes: Uint8Array): BlenderFluidCollision {
     if (bytes.byteLength < SDF_HEADER_BYTES) {
         fail("collision.blsdf is truncated");
     }
@@ -677,14 +638,29 @@ export function parseBliteFluidCollision(bytes: Uint8Array): BliteFluidCollision
     return { dims, origin, cellSize, distances };
 }
 
-export function parseBliteFluidBundle(data: ArrayBuffer): BliteFluidBundle {
-    const entries = parseStoredZip(data);
-    const expectedEntries = new Set(["manifest.json", "scene.glb", "collision.blsdf"]);
-    if (entries.size !== expectedEntries.size || [...entries.keys()].some((name) => !expectedEntries.has(name))) {
-        fail("archive must contain exactly manifest.json, scene.glb, and collision.blsdf");
+/** Parse the self-contained format-6/7/8/9 JSON emitted by the Blender add-on. */
+export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
+    if (contents.length > MAX_JSON_BYTES) {
+        fail("JSON export exceeds the 768 MiB limit");
     }
-    const manifest = parseManifest(requiredEntry(entries, "manifest.json"));
-    const sceneGlb = parseGlb(requiredEntry(entries, manifest.scene.glb));
-    const collision = parseBliteFluidCollision(requiredEntry(entries, manifest.scene.collision));
-    return { manifest, sceneGlb, collision };
+    let value: unknown;
+    try {
+        value = JSON.parse(contents);
+    } catch {
+        fail("export is not valid JSON");
+    }
+    const preset = validatePreset(value);
+    if (preset.formatVersion !== 6 && preset.formatVersion !== 7 && preset.formatVersion !== 8 && preset.formatVersion !== 9) {
+        fail("self-contained Blender JSON must use formatVersion 6, 7, 8, or 9");
+    }
+    const scene = record(preset.scene, "manifest.preset.scene");
+    if (scene.encoding !== "base64") {
+        fail('manifest.preset.scene.encoding must be "base64"');
+    }
+    if (scene.anchorPosition !== undefined) {
+        vector(scene.anchorPosition, "manifest.preset.scene.anchorPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
+    }
+    const sceneGlb = parseGlb(decodeBase64(scene.glb, "manifest.preset.scene.glb"));
+    const collision = parseBlenderFluidCollision(decodeBase64(scene.collision, "manifest.preset.scene.collision"));
+    return { preset, sceneGlb, collision };
 }

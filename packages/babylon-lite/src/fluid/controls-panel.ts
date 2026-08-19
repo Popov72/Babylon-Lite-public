@@ -463,7 +463,7 @@ export interface FluidControlsCallbacks {
     onPagedGrid?(enabled: boolean): void;
     onPagedGridMaxPages?(pages: number): void;
     onFusedBlockDiscovery?(enabled: boolean): void;
-    onReset?(): void;
+    onReset?(preserveSceneAnimations?: boolean): void;
     // Foam config (generation) — gated on "enabled" by the host.
     onFoamEnable?(enabled: boolean): void;
     onFoamActiveParticles?(enabled: boolean): void;
@@ -562,6 +562,7 @@ export interface FluidControlsHandle {
     // ── Programmatic setters (see the module contract for which fire callbacks) ──
     setMethod(method: string): void;
     setParticleCount(count: number): void;
+    setActiveParticleCount(count: number): void;
     setSimulationDuration(seconds: number): void;
     setAlphaDecay(seconds: number): void;
     setRenderMode(spheres: boolean): void;
@@ -610,7 +611,8 @@ export interface FluidControlsHandle {
 
 /** Default right-side panel style (the fluid demo's). */
 const DEFAULT_PANEL_STYLE =
-    "position:fixed;top:12px;right:12px;z-index:20;width:248px;max-height:calc(100vh - 24px);overflow-y:auto;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
+    "position:fixed;top:12px;right:12px;z-index:20;width:272px;min-width:220px;min-height:160px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);" +
+    "overflow:auto;resize:both;box-sizing:border-box;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
     "color:#dfe6ee;background:rgba(10,14,20,0.85);padding:10px 12px;border-radius:8px;pointer-events:auto;user-select:none;";
 const SELECT_STYLE = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
 
@@ -735,17 +737,46 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     particlesTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
     const particlesSel = document.createElement("select");
     particlesSel.style.cssText = SELECT_STYLE;
-    for (const c of opts.particleCounts) {
-        const opt = document.createElement("option");
-        opt.value = String(c);
-        // "750k" below 1M and "1M" / "1.5M" at/above so larger counts read sensibly.
-        opt.textContent = c >= 1000000 ? `${(c / 1000000).toFixed(c % 1000000 === 0 ? 0 : 1)}M` : `${(c / 1000).toFixed(0)}k`;
-        if (c === init.count) {
-            opt.selected = true;
+    const particleCountLabel = (count: number): string =>
+        count >= 1000000
+            ? `${(count / 1000000).toFixed(count % 1000000 === 0 ? 0 : 1)}M`
+            : count >= 1000
+              ? `${(count / 1000).toFixed(count % 1000 === 0 ? 0 : 1)}k`
+              : String(count);
+    const ensureParticleCountOption = (count: number): void => {
+        if (particlesSel.querySelector(`option[value="${count}"]`)) {
+            return;
         }
-        particlesSel.appendChild(opt);
+        const opt = document.createElement("option");
+        opt.value = String(count);
+        // "750k" below 1M and "1M" / "1.5M" at/above so larger counts read sensibly.
+        opt.textContent = particleCountLabel(count);
+        const next = Array.from(particlesSel.options).find((candidate) => Number(candidate.value) > count);
+        particlesSel.insertBefore(opt, next ?? null);
+    };
+    for (const count of opts.particleCounts) {
+        ensureParticleCountOption(count);
     }
+    ensureParticleCountOption(init.count);
+    particlesSel.value = String(init.count);
     particlesSel.onchange = () => on.onParticleCount?.(parseInt(particlesSel.value, 10));
+    const activeParticlesValue = document.createElement("div");
+    activeParticlesValue.style.cssText = "margin-top:4px;color:#9fb4cc;font-size:11px;";
+    const formatParticleCount = (count: number): string =>
+        count >= 1000000
+            ? `${(count / 1000000).toFixed(count % 1000000 === 0 ? 0 : 2)}M`
+            : count >= 1000
+              ? `${(count / 1000).toFixed(count % 1000 === 0 ? 0 : 1)}k`
+              : String(count);
+    let displayedActiveParticleCount = -1;
+    const setActiveParticleCount = (count: number): void => {
+        if (count === displayedActiveParticleCount) {
+            return;
+        }
+        displayedActiveParticleCount = count;
+        activeParticlesValue.textContent = `Active particles: ${formatParticleCount(count)}`;
+    };
+    setActiveParticleCount(init.count);
     const formatSeconds = (v: number): string => `${Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)} s`;
     const simulationDurationRow = makeRenderSlider(
         "Simulation duration",
@@ -1215,7 +1246,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     const gridPositionControl = createGridVectorRow(
         "Grid position",
-        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center; scene meshes and collision SDFs remain fixed in world space.",
+        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center. A self-contained imported Blender scene and its collision SDF translate with it; built-in demo geometry remains fixed.",
         init.gridPosition ?? [0, 9.5, 0]
     );
     const gridSizeControl = createGridVectorRow(
@@ -1411,7 +1442,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const resetBtn = document.createElement("button");
     resetBtn.textContent = "Reset simulation";
     resetBtn.style.cssText = "width:100%;margin-top:8px;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
-    resetBtn.onclick = () => on.onReset?.();
+    resetBtn.onclick = (event) => on.onReset?.(event.shiftKey);
 
     // ── FOAM controls ───────────────────────────────────────────────────────
     let foamEnabled = init.foam.enabled;
@@ -1724,7 +1755,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         generalItems.push(methodTitle, methodSel);
     }
     if (!opts.hideParticles) {
-        generalItems.push(particlesTitle, particlesSel);
+        generalItems.push(particlesTitle, particlesSel, activeParticlesValue);
     }
     if (opts.showSimulationTiming) {
         generalItems.push(simulationDurationRow, alphaDecayRow);
@@ -2016,8 +2047,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             applyActiveBlocksVisibility();
         },
         setParticleCount(count: number): void {
+            ensureParticleCountOption(count);
             particlesSel.value = String(count);
         },
+        setActiveParticleCount,
         setSimulationDuration(seconds: number): void {
             simulationDurationRow.set(seconds);
         },

@@ -1,18 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { parseBliteFluidBundle, parseBliteFluidCollision } from "../../../lab/lite/src/demos/fluid/blitefluid-bundle";
+import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../lab/lite/src/demos/fluid/blender-fluid-json";
 import type { FluidExportJson } from "../../../lab/lite/src/demos/fluid/preset-io";
-
-function crc32(bytes: Uint8Array): number {
-    let crc = 0xffffffff;
-    for (const byte of bytes) {
-        crc ^= byte;
-        for (let bit = 0; bit < 8; bit++) {
-            crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-        }
-    }
-    return (crc ^ 0xffffffff) >>> 0;
-}
 
 function collisionBytes(): Uint8Array {
     const bytes = new Uint8Array(64 + 8 * 4);
@@ -41,33 +30,6 @@ function glbBytes(): Uint8Array {
     return bytes;
 }
 
-function storedZip(entries: Record<string, Uint8Array>): ArrayBuffer {
-    const encoder = new TextEncoder();
-    const parts: Uint8Array[] = [];
-    let size = 0;
-    for (const [name, payload] of Object.entries(entries)) {
-        const nameBytes = encoder.encode(name);
-        const header = new Uint8Array(30 + nameBytes.byteLength);
-        const view = new DataView(header.buffer);
-        view.setUint32(0, 0x04034b50, true);
-        view.setUint16(4, 20, true);
-        view.setUint32(14, crc32(payload), true);
-        view.setUint32(18, payload.byteLength, true);
-        view.setUint32(22, payload.byteLength, true);
-        view.setUint16(26, nameBytes.byteLength, true);
-        header.set(nameBytes, 30);
-        parts.push(header, payload);
-        size += header.byteLength + payload.byteLength;
-    }
-    const output = new Uint8Array(size);
-    let offset = 0;
-    for (const part of parts) {
-        output.set(part, offset);
-        offset += part.byteLength;
-    }
-    return output.buffer;
-}
-
 function validPreset(): FluidExportJson {
     return {
         formatVersion: 5,
@@ -75,6 +37,8 @@ function validPreset(): FluidExportJson {
         physics: { gravity: 9.8, viscosity: 0.08, relaxation: 50, scorr: 0.02, iterations: 3, restDensity: 341, boundaryDensity: 0 },
         demoParams: {},
         demoState: {},
+        simulationDuration: 12,
+        alphaDecay: 1.5,
         emitters: [
             {
                 id: "source",
@@ -153,41 +117,120 @@ function validPreset(): FluidExportJson {
             foamAmbient: 0.2,
             foamAO: 0,
             foamNormalStrength: 1,
-            foamDebug: "none",
+            foamDebug: "off",
             foamSize: 1,
         },
     };
 }
 
-function bundleWithPreset(preset: unknown): ArrayBuffer {
-    const manifest = new TextEncoder().encode(
-        JSON.stringify({
-            bundleVersion: 1,
-            preset,
-            scene: { glb: "scene.glb", collision: "collision.blsdf" },
-        })
-    );
-    return storedZip({ "manifest.json": manifest, "scene.glb": glbBytes(), "collision.blsdf": collisionBytes() });
+function selfContainedJson(preset: FluidExportJson): string {
+    preset.formatVersion = 9;
+    for (const sink of preset.sinks ?? []) {
+        sink.mode ??= "recycle";
+    }
+    preset.scene = {
+        encoding: "base64",
+        glb: Buffer.from(glbBytes()).toString("base64"),
+        collision: Buffer.from(collisionBytes()).toString("base64"),
+        anchorPosition: [1, 2, 3],
+    };
+    return JSON.stringify(preset);
 }
 
-describe(".blitefluid bundle", () => {
-    it("parses a stored ZIP with preset, GLB, and signed-distance data", () => {
-        const bundle = parseBliteFluidBundle(bundleWithPreset(validPreset()));
+describe("Blender fluid JSON", () => {
+    it("parses the self-contained format-6 Blender JSON", () => {
+        const preset = validPreset();
+        preset.formatVersion = 6;
+        preset.simulationTimeScale = 0.5;
+        preset.scene = {
+            encoding: "base64",
+            glb: Buffer.from(glbBytes()).toString("base64"),
+            collision: Buffer.from(collisionBytes()).toString("base64"),
+        };
 
-        expect(bundle.manifest.preset.meta.method).toBe("PBF");
+        const bundle = parseBlenderFluidJson(JSON.stringify(preset));
+
+        expect(bundle.preset.simulationTimeScale).toBe(0.5);
+        expect(bundle.preset.sinks?.[0]?.mode).toBe("recycle");
+        expect(bundle.sceneGlb.byteLength).toBe(glbBytes().byteLength);
         expect(bundle.collision.dims).toEqual([2, 2, 2]);
-        expect(bundle.collision.origin).toEqual([-1, -2, -3]);
-        expect([...bundle.collision.distances]).toEqual([-4, -3, -2, -1, 0, 1, 2, 3]);
+    });
+
+    it("parses format-7 delete sinks and requires an explicit mode", () => {
+        const preset = validPreset();
+        preset.formatVersion = 7;
+        preset.sinks![0]!.mode = "delete";
+        preset.sinks![0]!.targets = [];
+        preset.scene = {
+            encoding: "base64",
+            glb: Buffer.from(glbBytes()).toString("base64"),
+            collision: Buffer.from(collisionBytes()).toString("base64"),
+        };
+
+        expect(parseBlenderFluidJson(JSON.stringify(preset)).preset.sinks?.[0]?.mode).toBe("delete");
+        delete preset.sinks![0]!.mode;
+        expect(() => parseBlenderFluidJson(JSON.stringify(preset))).toThrow(/mode must be/);
+    });
+
+    it("parses format-8 optional Initial Velocity fields", () => {
+        const preset = validPreset();
+        preset.formatVersion = 8;
+        preset.emitters![0]!.sourceVelocity = [1, 2, 3];
+        preset.emitters![0]!.sourceVelocityFactor = 0.75;
+        preset.emitters![0]!.normalVelocity = -2;
+        preset.sinks![0]!.mode = "delete";
+        preset.sinks![0]!.targets = [];
+        preset.scene = {
+            encoding: "base64",
+            glb: Buffer.from(glbBytes()).toString("base64"),
+            collision: Buffer.from(collisionBytes()).toString("base64"),
+        };
+
+        const emitter = parseBlenderFluidJson(JSON.stringify(preset)).preset.emitters![0]!;
+        expect(emitter.sourceVelocity).toEqual([1, 2, 3]);
+        expect(emitter.sourceVelocityFactor).toBe(0.75);
+        expect(emitter.normalVelocity).toBe(-2);
+    });
+
+    it("parses format-9 emitter source-node bindings", () => {
+        const preset = validPreset();
+        preset.formatVersion = 9;
+        preset.emitters![0]!.sourceNode = "Animated Inflow";
+        preset.emitters![0]!.sourceVelocityFactor = 0.75;
+        preset.emitters![0]!.delayBeforeStart = 5;
+        preset.sinks![0]!.mode = "recycle";
+        preset.scene = {
+            encoding: "base64",
+            glb: Buffer.from(glbBytes()).toString("base64"),
+            collision: Buffer.from(collisionBytes()).toString("base64"),
+        };
+
+        const emitter = parseBlenderFluidJson(JSON.stringify(preset)).preset.emitters![0]!;
+        expect(emitter.sourceNode).toBe("Animated Inflow");
+        expect(emitter.sourceVelocityFactor).toBe(0.75);
+        expect(emitter.delayBeforeStart).toBe(5);
+    });
+
+    it.each(["", "none"])('normalizes legacy foamDebug "%s" to "off"', (foamDebug) => {
+        const preset = validPreset();
+        preset.foam!.foamDebug = foamDebug;
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.foam?.foamDebug).toBe("off");
+    });
+
+    it("preserves embedded scene payloads when re-exporting", () => {
+        const scene = scenePayloadFromBlenderFluidJson(parseBlenderFluidJson(selfContainedJson(validPreset())));
+        const glb = Buffer.from(scene.glb, "base64");
+        const collision = parseBlenderFluidCollision(Buffer.from(scene.collision, "base64"));
+
+        expect([...glb]).toEqual([...glbBytes()]);
+        expect(collision.dims).toEqual([2, 2, 2]);
+        expect([...collision.distances]).toEqual([-4, -3, -2, -1, 0, 1, 2, 3]);
+        expect(scene.anchorPosition).toEqual([1, 2, 3]);
     });
 
     it("rejects truncated collision payloads", () => {
-        expect(() => parseBliteFluidCollision(collisionBytes().subarray(0, -4))).toThrow("payload length");
-    });
-
-    it("rejects corrupted ZIP entries", () => {
-        const archive = new Uint8Array(storedZip({ "scene.glb": glbBytes() }));
-        archive[archive.length - 1] = archive[archive.length - 1]! ^ 1;
-        expect(() => parseBliteFluidBundle(archive.buffer)).toThrow("CRC mismatch");
+        expect(() => parseBlenderFluidCollision(collisionBytes().subarray(0, -4))).toThrow("payload length");
     });
 
     it.each([
@@ -195,6 +238,9 @@ describe(".blitefluid bundle", () => {
         ["unknown solver method", (preset: FluidExportJson) => (preset.meta.method = "SPH"), "meta.method"],
         ["unbounded particle count", (preset: FluidExportJson) => (preset.particleCount = 2_000_001), "particleCount"],
         ["unbounded physics particle size", (preset: FluidExportJson) => (preset.physicsParticleSize = 9), "physicsParticleSize"],
+        ["negative simulation duration", (preset: FluidExportJson) => (preset.simulationDuration = -1), "simulationDuration"],
+        ["unbounded alpha decay", (preset: FluidExportJson) => (preset.alphaDecay = 11), "alphaDecay"],
+        ["unbounded simulation time scale", (preset: FluidExportJson) => (preset.simulationTimeScale = 101), "simulationTimeScale"],
         ["negative grid extent", (preset: FluidExportJson) => (preset.gridSize = [40, -1, 40]), "gridSize[1]"],
         ["unbounded grid allocation", (preset: FluidExportJson) => (preset.gridSize = [10_000, 10_000, 10_000]), "allocation limits"],
         [
@@ -258,6 +304,6 @@ describe(".blitefluid bundle", () => {
     ])("rejects %s before installation", (_name, mutate, message) => {
         const preset = validPreset();
         mutate(preset);
-        expect(() => parseBliteFluidBundle(bundleWithPreset(preset))).toThrow(message);
+        expect(() => parseBlenderFluidJson(selfContainedJson(preset))).toThrow(message);
     });
 });

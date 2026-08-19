@@ -80,6 +80,8 @@ export interface PairState {
     simulationDuration?: number;
     /** Seconds taken to fade fluid opacity to zero after the duration. */
     alphaDecay?: number;
+    /** Multiplier applied to real frame time before stepping the simulation. */
+    simulationTimeScale?: number;
     /** Solver-independent fluid sources, stored in grid-local coordinates. */
     emitters?: FluidEmitter[];
     /** Solver-independent recycling volumes, stored in grid-local coordinates. */
@@ -106,9 +108,7 @@ export interface PairState {
     count: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
-    /** Optional ArcRotate camera framing (alpha/beta/radius). A demo's preset can set
-     *  it to frame the scene on the first visit to that (demo, method) pair; it is also
-     *  captured live so switching pairs remembers each one's viewpoint. */
+    /** Optional authored ArcRotate camera framing (alpha/beta/radius). */
     camera?: { alpha: number; beta: number; radius: number };
     // ── Surface-render settings (per-pair, restored on switch). All optional so old
     //    presets/states without them fall back to the core render defaults. ──
@@ -289,6 +289,13 @@ export interface FluidDemo {
     /** Quality tier this demo should open on the first time it is picked. Omit to carry the
      *  current tier over. Same first-visit-only rule as {@link defaultMethod}. */
     readonly defaultQuality?: "low" | "middle" | "high";
+    /** Preserve solver-independent authoring state when switching methods. The target method
+     *  keeps its own specialized physics schema while shared state (including gravity) carries over. */
+    readonly methodIndependentAuthoring?: boolean;
+    /** Whether runtime quality preset files apply to this demo. Defaults to true. */
+    readonly usesQualityPresets?: boolean;
+    /** Use the editable grid's lower Y bound as the solver safety floor instead of world Y=0. */
+    readonly useGridFloor?: boolean;
     /** Injected scene SDF. `gridConfine` affects the MLS-MPM backend ONLY (the PBF/SPH
      *  backend ignores it and always confines per-particle): for MLS-MPM, a spec with
      *  `gridConfine === false` uses per-particle push-out confinement (for thin curved

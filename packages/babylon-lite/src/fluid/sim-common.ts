@@ -60,6 +60,8 @@ export interface FluidSim {
     setEmitters(config: EmitterConfig | null): void;
     /** Configure solver-independent initial volumes, inflows and recycling sinks. */
     setFlow(config: FluidFlowConfig | null): void;
+    /** Update one installed emitter's transform and initial velocity without resetting flow budgets. */
+    updateFlowEmitter(emitter: FluidEmitter): void;
     /** Set the spawn box used by `reset()` to re-seed particles. `accept`, when
      *  provided, restricts seeding to positions where it returns true (CPU
      *  reject-sampling), so particles fit a non-box container shape. */
@@ -341,9 +343,19 @@ export interface FluidEmitter {
     sampling: "volume" | "surface";
     velocity: FluidVec3;
     velocitySpace: "local" | "world";
+    /** Optional imported scene-node name whose animated world transform drives this analytical emitter. */
+    sourceNode?: string;
+    /** Optional world-space source-object velocity. Combined with velocity before GPU upload. */
+    sourceVelocity?: FluidVec3;
+    /** Multiplier applied only to sourceVelocity. Defaults to 1. */
+    sourceVelocityFactor?: number;
+    /** Optional speed along the analytical shape's outward normal. */
+    normalVelocity?: number;
     spread: number;
     /** Inflow world-volume/second. Omitted means unlimited. Ignored by initial emitters. */
     volumeRate?: number;
+    /** Simulation-time seconds before an Inflow starts. Ignored by initial emitters. Defaults to 0. */
+    delayBeforeStart?: number;
 }
 
 export interface FluidSink {
@@ -352,10 +364,12 @@ export interface FluidSink {
     enabled: boolean;
     transform: FluidTransform;
     shape: FluidShape;
+    /** Delete captured particles by default. Explicit recycle mode preserves closed-loop pump behavior. */
+    mode?: "delete" | "recycle";
     targets: string[];
-    /** Omitted means every captured particle is recycled. Otherwise world-volume/second. */
+    /** Omitted means every captured particle is handled. Otherwise world-volume/second. */
     volumeRate?: number;
-    /** Per-particle recycle attempts/second. Mutually exclusive with volumeRate. */
+    /** Legacy field name: per-particle capture attempts/second. Mutually exclusive with volumeRate. */
     perParticleRecycleRate?: number;
 }
 
@@ -459,6 +473,7 @@ export function legacyEmitterConfigToFluidFlow(config: EmitterConfig | null, par
                     scale: [1, 1, 1],
                 },
                 shape: { type: "box", size: intakeSize },
+                mode: "recycle",
                 targets: emitters.map((emitter) => emitter.id),
             },
         ],
@@ -757,6 +772,92 @@ function sampleLocalShape(shape: FluidShape, sampling: "volume" | "surface"): Fl
     }
 }
 
+function normaliseVector(value: FluidVec3, fallback: FluidVec3 = [0, 1, 0]): FluidVec3 {
+    const length = Math.hypot(value[0], value[1], value[2]);
+    return length > 1e-8 ? [value[0] / length, value[1] / length, value[2] / length] : fallback;
+}
+
+function localPolygonPrismNormal(shape: Extract<FluidShape, { type: "polygonPrism" }>, point: FluidVec3): FluidVec3 {
+    const halfThickness = absFinite(shape.thickness) * 0.5;
+    const capDistance = halfThickness - Math.abs(point[1]);
+    let nearestDistance2 = Number.POSITIVE_INFINITY;
+    let nearest: [number, number] = [0, 1];
+    const winding = polyArea2(shape.points) < 0 ? -1 : 1;
+    for (let index = 0; index < shape.points.length; index++) {
+        const a = shape.points[index]!;
+        const b = shape.points[(index + 1) % shape.points.length]!;
+        const dx = b[0] - a[0];
+        const dz = b[1] - a[1];
+        const length2 = dx * dx + dz * dz;
+        const t = length2 > 1e-12 ? Math.max(0, Math.min(1, ((point[0] - a[0]) * dx + (point[2] - a[1]) * dz) / length2)) : 0;
+        const offsetX = point[0] - (a[0] + dx * t);
+        const offsetZ = point[2] - (a[1] + dz * t);
+        const distance2 = offsetX * offsetX + offsetZ * offsetZ;
+        if (distance2 < nearestDistance2) {
+            nearestDistance2 = distance2;
+            const inverseLength = length2 > 1e-12 ? 1 / Math.sqrt(length2) : 0;
+            nearest = [winding * dz * inverseLength, -winding * dx * inverseLength];
+        }
+    }
+    return capDistance <= Math.sqrt(nearestDistance2) ? [0, point[1] < 0 ? -1 : 1, 0] : [nearest[0], 0, nearest[1]];
+}
+
+function localShapeNormal(shape: FluidShape, point: FluidVec3): FluidVec3 {
+    switch (shape.type) {
+        case "box": {
+            const half: FluidVec3 = [absFinite(shape.size[0]) * 0.5, absFinite(shape.size[1]) * 0.5, absFinite(shape.size[2]) * 0.5];
+            const distances: FluidVec3 = [half[0] - Math.abs(point[0]), half[1] - Math.abs(point[1]), half[2] - Math.abs(point[2])];
+            const axis = distances[0] <= distances[1] && distances[0] <= distances[2] ? 0 : distances[1] <= distances[2] ? 1 : 2;
+            const result: FluidVec3 = [0, 0, 0];
+            result[axis] = point[axis] < 0 ? -1 : 1;
+            return result;
+        }
+        case "sphere":
+            return normaliseVector(point);
+        case "cylinder": {
+            const radius = absFinite(shape.radius);
+            const innerRadius = Math.min(radius, absFinite(shape.innerRadius ?? 0));
+            const radial = Math.hypot(point[0], point[2]);
+            const outerDistance = radius - radial;
+            const innerDistance = innerRadius > 0 ? radial - innerRadius : Number.POSITIVE_INFINITY;
+            const capDistance = absFinite(shape.height) * 0.5 - Math.abs(point[1]);
+            if (capDistance <= outerDistance && capDistance <= innerDistance) {
+                return [0, point[1] < 0 ? -1 : 1, 0];
+            }
+            const direction: FluidVec3 = radial > 1e-8 ? [point[0] / radial, 0, point[2] / radial] : [1, 0, 0];
+            return innerDistance < outerDistance ? [-direction[0], 0, -direction[2]] : direction;
+        }
+        case "cone": {
+            const height = absFinite(shape.height);
+            const bottomRadius = absFinite(shape.bottomRadius);
+            const topRadius = absFinite(shape.topRadius);
+            const delta = topRadius - bottomRadius;
+            const t = height > 1e-8 ? Math.max(0, Math.min(1, point[1] / height + 0.5)) : 0.5;
+            const radius = bottomRadius + delta * t;
+            const radial = Math.hypot(point[0], point[2]);
+            const slope = height > 1e-8 ? delta / height : 0;
+            const lateralDistance = Math.abs(radius - radial) / Math.hypot(1, slope);
+            const bottomDistance = point[1] + height * 0.5;
+            const topDistance = height * 0.5 - point[1];
+            if (bottomDistance <= lateralDistance && bottomDistance <= topDistance) {
+                return [0, -1, 0];
+            }
+            if (topDistance <= lateralDistance) {
+                return [0, 1, 0];
+            }
+            return normaliseVector([radial > 1e-8 ? point[0] / radial : 1, -slope, radial > 1e-8 ? point[2] / radial : 0]);
+        }
+        case "capsule": {
+            const radius = absFinite(shape.radius);
+            const segmentHalf = Math.max(0, absFinite(shape.height) - 2 * radius) * 0.5;
+            const closestY = Math.max(-segmentHalf, Math.min(segmentHalf, point[1]));
+            return normaliseVector([point[0], point[1] - closestY, point[2]], [1, 0, 0]);
+        }
+        case "polygonPrism":
+            return localPolygonPrismNormal(shape, point);
+    }
+}
+
 function normalisedRotation(rotation: FluidTransform["rotation"]): FluidTransform["rotation"] {
     const length = Math.hypot(rotation[0], rotation[1], rotation[2], rotation[3]);
     return length > 1e-8 ? [rotation[0] / length, rotation[1] / length, rotation[2] / length, rotation[3] / length] : [0, 0, 0, 1];
@@ -770,17 +871,206 @@ function rotateVector(rotation: FluidTransform["rotation"], value: FluidVec3): F
     return [value[0] + qw * tx + qy * tz - qz * ty, value[1] + qw * ty + qz * tx - qx * tz, value[2] + qw * tz + qx * ty - qy * tx];
 }
 
-export function sampleFluidEmitterPosition(emitter: FluidEmitter): FluidVec3 {
-    const local = sampleLocalShape(emitter.shape, emitter.sampling);
-    const scaled: FluidVec3 = [local[0] * emitter.transform.scale[0], local[1] * emitter.transform.scale[1], local[2] * emitter.transform.scale[2]];
-    const rotated = rotateVector(emitter.transform.rotation, scaled);
-    return [rotated[0] + emitter.transform.position[0], rotated[1] + emitter.transform.position[1], rotated[2] + emitter.transform.position[2]];
+function transformFluidPoint(transform: FluidTransform, local: FluidVec3): FluidVec3 {
+    const scaled: FluidVec3 = [local[0] * transform.scale[0], local[1] * transform.scale[1], local[2] * transform.scale[2]];
+    const rotated = rotateVector(transform.rotation, scaled);
+    return [rotated[0] + transform.position[0], rotated[1] + transform.position[1], rotated[2] + transform.position[2]];
 }
 
-function sampleFluidEmitterVelocity(emitter: FluidEmitter): FluidVec3 {
-    const base = emitter.velocitySpace === "world" ? emitter.velocity : rotateVector(emitter.transform.rotation, emitter.velocity);
+export function sampleFluidEmitterPosition(emitter: FluidEmitter): FluidVec3 {
+    return transformFluidPoint(emitter.transform, sampleLocalShape(emitter.shape, emitter.sampling));
+}
+
+function emitterBaseVelocity(emitter: FluidEmitter): FluidVec3 {
+    const authored = emitter.velocitySpace === "world" ? emitter.velocity : rotateVector(emitter.transform.rotation, emitter.velocity);
+    const source = emitter.sourceVelocity ?? [0, 0, 0];
+    const factor = emitter.sourceVelocityFactor ?? 1;
+    return [authored[0] + source[0] * factor, authored[1] + source[1] * factor, authored[2] + source[2] * factor];
+}
+
+function worldShapeNormal(emitter: FluidEmitter, localPoint: FluidVec3): FluidVec3 {
+    const local = localShapeNormal(emitter.shape, localPoint);
+    const safeScale = emitter.transform.scale.map((value) => (Math.abs(value) > 1e-8 ? value : 1e-8)) as FluidVec3;
+    const inverseScaled: FluidVec3 = [local[0] / safeScale[0], local[1] / safeScale[1], local[2] / safeScale[2]];
+    return normaliseVector(rotateVector(emitter.transform.rotation, inverseScaled));
+}
+
+function fluidEmitterLaunchAtLocal(emitter: FluidEmitter, local: FluidVec3): { position: FluidVec3; velocity: FluidVec3 } {
+    const base = emitterBaseVelocity(emitter);
+    const normalSpeed = emitter.normalVelocity ?? 0;
+    if (normalSpeed !== 0) {
+        const normal = worldShapeNormal(emitter, local);
+        base[0] += normal[0] * normalSpeed;
+        base[1] += normal[1] * normalSpeed;
+        base[2] += normal[2] * normalSpeed;
+    }
     const spread = Math.hypot(base[0], base[1], base[2]) * emitter.spread;
-    return [base[0] + (Math.random() - 0.5) * spread, base[1] + (Math.random() - 0.5) * spread, base[2] + (Math.random() - 0.5) * spread];
+    return {
+        position: transformFluidPoint(emitter.transform, local),
+        velocity: [base[0] + (Math.random() - 0.5) * spread, base[1] + (Math.random() - 0.5) * spread, base[2] + (Math.random() - 0.5) * spread],
+    };
+}
+
+function sampleFluidEmitterLaunch(emitter: FluidEmitter): { position: FluidVec3; velocity: FluidVec3 } {
+    return fluidEmitterLaunchAtLocal(emitter, sampleLocalShape(emitter.shape, emitter.sampling));
+}
+
+function localShapeBounds(shape: FluidShape): { min: FluidVec3; max: FluidVec3 } {
+    switch (shape.type) {
+        case "box": {
+            const half = shape.size.map((value) => absFinite(value) * 0.5) as FluidVec3;
+            return { min: [-half[0], -half[1], -half[2]], max: half };
+        }
+        case "sphere": {
+            const radius = absFinite(shape.radius);
+            return { min: [-radius, -radius, -radius], max: [radius, radius, radius] };
+        }
+        case "cylinder": {
+            const radius = absFinite(shape.radius);
+            const halfHeight = absFinite(shape.height) * 0.5;
+            return { min: [-radius, -halfHeight, -radius], max: [radius, halfHeight, radius] };
+        }
+        case "cone": {
+            const radius = Math.max(absFinite(shape.bottomRadius), absFinite(shape.topRadius));
+            const halfHeight = absFinite(shape.height) * 0.5;
+            return { min: [-radius, -halfHeight, -radius], max: [radius, halfHeight, radius] };
+        }
+        case "capsule": {
+            const radius = absFinite(shape.radius);
+            const halfHeight = absFinite(shape.height) * 0.5;
+            return { min: [-radius, -halfHeight, -radius], max: [radius, halfHeight, radius] };
+        }
+        case "polygonPrism": {
+            const halfThickness = absFinite(shape.thickness) * 0.5;
+            if (shape.points.length === 0) {
+                return { min: [0, -halfThickness, 0], max: [0, halfThickness, 0] };
+            }
+            let minX = Number.POSITIVE_INFINITY;
+            let maxX = Number.NEGATIVE_INFINITY;
+            let minZ = Number.POSITIVE_INFINITY;
+            let maxZ = Number.NEGATIVE_INFINITY;
+            for (const [x, z] of shape.points) {
+                minX = Math.min(minX, x);
+                maxX = Math.max(maxX, x);
+                minZ = Math.min(minZ, z);
+                maxZ = Math.max(maxZ, z);
+            }
+            return { min: [minX, -halfThickness, minZ], max: [maxX, halfThickness, maxZ] };
+        }
+    }
+}
+
+function localShapeContains(shape: FluidShape, point: FluidVec3, polygon?: PreparedPolygon): boolean {
+    const epsilon = 1e-7;
+    switch (shape.type) {
+        case "box":
+            return (
+                Math.abs(point[0]) <= absFinite(shape.size[0]) * 0.5 + epsilon &&
+                Math.abs(point[1]) <= absFinite(shape.size[1]) * 0.5 + epsilon &&
+                Math.abs(point[2]) <= absFinite(shape.size[2]) * 0.5 + epsilon
+            );
+        case "sphere":
+            return point[0] * point[0] + point[1] * point[1] + point[2] * point[2] <= absFinite(shape.radius) ** 2 + epsilon;
+        case "cylinder": {
+            const radius = absFinite(shape.radius);
+            const radial2 = point[0] * point[0] + point[2] * point[2];
+            const innerRadius = Math.min(radius, absFinite(shape.innerRadius ?? 0));
+            return Math.abs(point[1]) <= absFinite(shape.height) * 0.5 + epsilon && radial2 <= radius * radius + epsilon && radial2 + epsilon >= innerRadius * innerRadius;
+        }
+        case "cone": {
+            const height = absFinite(shape.height);
+            if (Math.abs(point[1]) > height * 0.5 + epsilon) {
+                return false;
+            }
+            const t = height > 1e-8 ? Math.max(0, Math.min(1, point[1] / height + 0.5)) : 0.5;
+            const radius = absFinite(shape.bottomRadius) + (absFinite(shape.topRadius) - absFinite(shape.bottomRadius)) * t;
+            return point[0] * point[0] + point[2] * point[2] <= radius * radius + epsilon;
+        }
+        case "capsule": {
+            const radius = absFinite(shape.radius);
+            const segmentHalf = Math.max(0, absFinite(shape.height) - 2 * radius) * 0.5;
+            const closestY = Math.max(-segmentHalf, Math.min(segmentHalf, point[1]));
+            const dy = point[1] - closestY;
+            return point[0] * point[0] + dy * dy + point[2] * point[2] <= radius * radius + epsilon;
+        }
+        case "polygonPrism":
+            return (
+                Math.abs(point[1]) <= absFinite(shape.thickness) * 0.5 + epsilon &&
+                (polygon ?? preparePolygon(shape.points)).triangles.some((triangle) =>
+                    inTriangle(point[0], point[2], triangle.a[0], triangle.a[1], triangle.b[0], triangle.b[1], triangle.c[0], triangle.c[1])
+                )
+            );
+    }
+}
+
+export interface FluidInitialBounds {
+    min: FluidVec3;
+    max: FluidVec3;
+}
+
+function fluidPointInsideBounds(point: FluidVec3, bounds: FluidInitialBounds): boolean {
+    return (
+        point[0] >= bounds.min[0] && point[0] <= bounds.max[0] && point[1] >= bounds.min[1] && point[1] <= bounds.max[1] && point[2] >= bounds.min[2] && point[2] <= bounds.max[2]
+    );
+}
+
+function createFluidInitialLattice(emitter: FluidEmitter, count: number, worldVolume: number, worldBounds?: FluidInitialBounds): FluidVec3[] {
+    if (count <= 0 || !(worldVolume > 0)) {
+        return [];
+    }
+    const scale = emitter.transform.scale.map(absFinite) as FluidVec3;
+    if (scale.some((value) => value === 0)) {
+        return Array.from({ length: count }, () => [0, 0, 0] as FluidVec3);
+    }
+    const bounds = localShapeBounds(emitter.shape);
+    const extents: FluidVec3 = [bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1], bounds.max[2] - bounds.min[2]];
+    const center: FluidVec3 = [(bounds.min[0] + bounds.max[0]) * 0.5, (bounds.min[1] + bounds.max[1]) * 0.5, (bounds.min[2] + bounds.max[2]) * 0.5];
+    const polygon = emitter.shape.type === "polygonPrism" ? preparePolygon(emitter.shape.points) : undefined;
+    let worldSpacing = Math.cbrt(worldVolume / count);
+    let candidates: FluidVec3[] = [];
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const spacing: FluidVec3 = [worldSpacing / scale[0], worldSpacing / scale[1], worldSpacing / scale[2]];
+        const dimensions: FluidVec3 = [
+            Math.max(1, Math.ceil(extents[0] / spacing[0] - 1e-8)),
+            Math.max(1, Math.ceil(extents[1] / spacing[1] - 1e-8)),
+            Math.max(1, Math.ceil(extents[2] / spacing[2] - 1e-8)),
+        ];
+        const start: FluidVec3 = [
+            center[0] - ((dimensions[0] - 1) * spacing[0]) / 2,
+            center[1] - ((dimensions[1] - 1) * spacing[1]) / 2,
+            center[2] - ((dimensions[2] - 1) * spacing[2]) / 2,
+        ];
+        candidates = [];
+        let unclippedCount = 0;
+        for (let y = 0; y < dimensions[1]; y++) {
+            for (let z = 0; z < dimensions[2]; z++) {
+                for (let x = 0; x < dimensions[0]; x++) {
+                    const point: FluidVec3 = [start[0] + x * spacing[0], start[1] + y * spacing[1], start[2] + z * spacing[2]];
+                    if (localShapeContains(emitter.shape, point, polygon)) {
+                        unclippedCount++;
+                        if (!worldBounds || fluidPointInsideBounds(transformFluidPoint(emitter.transform, point), worldBounds)) {
+                            candidates.push(point);
+                        }
+                    }
+                }
+            }
+        }
+        if (unclippedCount >= count) {
+            break;
+        }
+        worldSpacing *= 0.96;
+    }
+    if (worldBounds && candidates.length < count) {
+        return candidates;
+    }
+    if (candidates.length < count) {
+        const fallback = candidates.length > 0 ? candidates : [center];
+        return Array.from({ length: count }, (_, index) => fallback[index % fallback.length]!);
+    }
+    if (candidates.length === count) {
+        return candidates;
+    }
+    return Array.from({ length: count }, (_, index) => candidates[Math.floor(((index + 0.5) * candidates.length) / count)]!);
 }
 
 export interface FluidInitialParticles {
@@ -795,15 +1085,15 @@ export interface FluidInitialParticles {
  *  `initialEmittersFillCapacity` explicitly fills the complete pool instead.
  *  An inflow-only graph deliberately returns an empty active prefix so subsequent frames can
  *  activate dormant slots at the authored inflow rate. */
-export function createFluidInitialParticles(count: number, config: FluidFlowConfig | null, particleVolume = 1): FluidInitialParticles | null {
+export function createFluidInitialParticles(count: number, config: FluidFlowConfig | null, particleVolume = 1, bounds?: FluidInitialBounds): FluidInitialParticles | null {
+    if (!config) {
+        return null;
+    }
     const enabled = (config?.emitters.slice(0, MAX_FLUID_EMITTERS) ?? []).filter((emitter) => emitter.enabled);
     const initial = enabled.filter((emitter) => emitter.behavior === "initial");
     const hasInflow = enabled.some((emitter) => emitter.behavior === "inflow");
     if (initial.length === 0) {
-        if (hasInflow) {
-            return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
-        }
-        return null;
+        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
     }
     const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
     const total = volumes.reduce((sum, value) => sum + value, 0);
@@ -833,9 +1123,24 @@ export function createFluidInitialParticles(count: number, config: FluidFlowConf
     let cursor = 0;
     for (const allocation of allocations) {
         const emitter = initial[allocation.index]!;
-        for (let i = 0; i < allocation.count; i++) {
-            const point = sampleFluidEmitterPosition(emitter);
-            const velocity = sampleFluidEmitterVelocity(emitter);
+        const localPoints = emitter.sampling === "volume" ? createFluidInitialLattice(emitter, allocation.count, volumes[allocation.index]!, bounds) : undefined;
+        const launchCount = localPoints?.length ?? allocation.count;
+        for (let i = 0; i < launchCount; i++) {
+            let launch = localPoints ? fluidEmitterLaunchAtLocal(emitter, localPoints[i]!) : sampleFluidEmitterLaunch(emitter);
+            if (!localPoints && bounds && !fluidPointInsideBounds(launch.position, bounds)) {
+                let accepted = false;
+                for (let attempt = 0; attempt < 31; attempt++) {
+                    launch = sampleFluidEmitterLaunch(emitter);
+                    if (fluidPointInsideBounds(launch.position, bounds)) {
+                        accepted = true;
+                        break;
+                    }
+                }
+                if (!accepted) {
+                    continue;
+                }
+            }
+            const { position: point, velocity } = launch;
             positions[cursor] = point[0];
             velocities[cursor++] = velocity[0];
             positions[cursor] = point[1];
@@ -844,7 +1149,11 @@ export function createFluidInitialParticles(count: number, config: FluidFlowConf
             velocities[cursor++] = velocity[2];
         }
     }
-    return { positions, velocities, activeCount };
+    return {
+        positions: cursor === positions.length ? positions : positions.slice(0, cursor),
+        velocities: cursor === velocities.length ? velocities : velocities.slice(0, cursor),
+        activeCount: cursor / 3,
+    };
 }
 
 const FLOW_HEADER_FLOATS = 8;
@@ -858,9 +1167,15 @@ export const FLUID_FLOW_BYTES = FLUID_FLOW_FLOATS * 4;
 const FLOW_EMITTER_COUNTER_U32 = MAX_FLUID_EMITTERS * 2;
 export const FLUID_FLOW_COUNTER_BYTES = (FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS) * 4;
 const UNLIMITED_FLOW_BUDGET = 0xffffffff;
-const FLOW_SINK_MODE_VOLUME = 0;
-const FLOW_SINK_MODE_LEGACY = 1;
-const FLOW_SINK_MODE_PER_PARTICLE = 2;
+const FLOW_SINK_OPERATION_DELETE = 0;
+const FLOW_SINK_OPERATION_RECYCLE = 1;
+const FLOW_SINK_OPERATION_LEGACY = 2;
+const FLOW_SINK_RATE_VOLUME = 0;
+const FLOW_SINK_RATE_PER_PARTICLE = 1;
+const FLUID_LIFECYCLE_HEADER_U32 = 4;
+const FLUID_PARTICLE_FREE = 0;
+const FLUID_PARTICLE_ACTIVE = 1;
+const FLUID_PARTICLE_RESERVED = 2;
 
 export interface FluidFlowState {
     readonly device: GPUDevice;
@@ -871,23 +1186,39 @@ export interface FluidFlowState {
     readonly u32: Uint32Array;
     readonly counterData: Uint32Array;
     readonly particleVolume: number;
+    readonly capacity: number;
+    readonly lifecycleBuffer: GPUBuffer;
     config: FluidFlowConfig | null;
     legacyEmitter: LegacyEmitterFlowCompatibility | null;
     active: boolean;
+    activeCount: number;
     frameSeed: number;
     emitterCursor: number;
     emitterIds: string[];
     emitterRates: (number | undefined)[];
     emitterActive: boolean[];
+    emitterDelays: number[];
     emitterCarries: Float64Array;
+    elapsedSeconds: number;
     sinkIds: string[];
     sinkRates: (number | undefined)[];
     sinkCarries: Float64Array;
+    activeCountReadback: FluidActiveCountReadback | null;
 }
 
 export interface FluidFlowFrame {
-    readonly particles: FluidInitialParticles | null;
-    readonly recycleActive: boolean;
+    readonly flowActive: boolean;
+    readonly deleteActive: boolean;
+    readonly emitActive: boolean;
+}
+
+interface FluidActiveCountReadback {
+    readonly buffers: GPUBuffer[];
+    readonly states: Array<"idle" | "copied" | "mapping">;
+    readonly generations: number[];
+    generation: number;
+    error: unknown;
+    next: number;
 }
 
 export interface FluidVolumeBudget {
@@ -988,31 +1319,130 @@ function packFluidShape(f32: Float32Array, u32: Uint32Array, offset: number, tra
 
 export function createFluidFlowState(device: GPUDevice, particleCount: number, particleRadius: number): FluidFlowState {
     const data = new ArrayBuffer(FLUID_FLOW_BYTES);
+    const capacity = Math.max(1, Math.floor(particleCount));
     const state: FluidFlowState = {
         device,
         uniformBuffer: device.createBuffer({ label: "fluid-flow", size: FLUID_FLOW_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
         counterBuffer: device.createBuffer({ label: "fluid-flow-counters", size: FLUID_FLOW_COUNTER_BYTES, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        lifecycleBuffer: device.createBuffer({
+            label: "fluid-particle-lifecycle",
+            size: (FLUID_LIFECYCLE_HEADER_U32 + capacity) * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        }),
         data,
         f32: new Float32Array(data),
         u32: new Uint32Array(data),
         counterData: new Uint32Array(FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS),
         particleVolume: Math.max(fluidParticleVolume(particleRadius), 1e-12),
+        capacity,
         config: null,
         legacyEmitter: null,
         active: false,
+        activeCount: capacity,
         frameSeed: 0,
         emitterCursor: 0,
         emitterIds: [],
         emitterRates: [],
         emitterActive: [],
+        emitterDelays: [],
         emitterCarries: new Float64Array(MAX_FLUID_EMITTERS),
+        elapsedSeconds: 0,
         sinkIds: [],
         sinkRates: [],
         sinkCarries: new Float64Array(MAX_FLUID_SINKS),
+        activeCountReadback: null,
     };
-    state.u32[2] = particleCount;
+    state.u32[2] = capacity;
+    resetFluidParticleLifecycle(state, capacity, capacity);
     device.queue.writeBuffer(state.uniformBuffer, 0, data);
     return state;
+}
+
+export function resetFluidParticleLifecycle(state: FluidFlowState, activeCount: number, reservedEnd: number): void {
+    const active = Math.min(state.capacity, Math.max(0, Math.floor(activeCount)));
+    const reserved = Math.min(state.capacity, Math.max(active, Math.floor(reservedEnd)));
+    const data = new Uint32Array(FLUID_LIFECYCLE_HEADER_U32 + state.capacity);
+    data[0] = active;
+    data[1] = state.capacity;
+    for (let i = 0; i < state.capacity; i++) {
+        data[FLUID_LIFECYCLE_HEADER_U32 + i] = i < active ? FLUID_PARTICLE_ACTIVE : i < reserved ? FLUID_PARTICLE_RESERVED : FLUID_PARTICLE_FREE;
+    }
+    state.activeCount = active;
+    if (state.activeCountReadback) {
+        state.activeCountReadback.generation++;
+    }
+    state.device.queue.writeBuffer(state.lifecycleBuffer, 0, data);
+}
+
+export function enableFluidActiveCountReadback(state: FluidFlowState): void {
+    if (state.activeCountReadback) {
+        return;
+    }
+    state.activeCountReadback = {
+        buffers: [0, 1].map((index) =>
+            state.device.createBuffer({
+                label: `fluid-active-count-readback-${index}`,
+                size: 4,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            })
+        ),
+        states: ["idle", "idle"],
+        generations: [0, 0],
+        generation: 0,
+        error: null,
+        next: 0,
+    };
+}
+
+export function pollFluidActiveCount(state: FluidFlowState): void {
+    const readback = state.activeCountReadback;
+    if (!readback) {
+        return;
+    }
+    if (readback.error) {
+        const error = readback.error;
+        readback.error = null;
+        throw error;
+    }
+    for (let i = 0; i < readback.buffers.length; i++) {
+        if (readback.states[i] !== "copied") {
+            continue;
+        }
+        readback.states[i] = "mapping";
+        const buffer = readback.buffers[i]!;
+        const generation = readback.generations[i]!;
+        void buffer
+            .mapAsync(GPUMapMode.READ)
+            .then(() => {
+                if (generation === readback.generation) {
+                    state.activeCount = new Uint32Array(buffer.getMappedRange())[0] ?? state.activeCount;
+                }
+                buffer.unmap();
+                readback.states[i] = "idle";
+            })
+            .catch((error: unknown) => {
+                readback.error = error;
+                readback.states[i] = "idle";
+            });
+    }
+}
+
+export function encodeFluidActiveCountReadback(state: FluidFlowState, encoder: GPUCommandEncoder): void {
+    const readback = state.activeCountReadback;
+    if (!readback) {
+        return;
+    }
+    for (let offset = 0; offset < readback.buffers.length; offset++) {
+        const index = (readback.next + offset) % readback.buffers.length;
+        if (readback.states[index] !== "idle") {
+            continue;
+        }
+        encoder.copyBufferToBuffer(state.lifecycleBuffer, 0, readback.buffers[index]!, 0, 4);
+        readback.states[index] = "copied";
+        readback.generations[index] = readback.generation;
+        readback.next = (index + 1) % readback.buffers.length;
+        return;
+    }
 }
 
 export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfig | null): void {
@@ -1037,6 +1467,17 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
             throw new RangeError(`Fluid sink "${sink.id}" perParticleRecycleRate must be a finite non-negative number.`);
         }
     }
+    for (const emitter of config?.emitters ?? []) {
+        if (emitter.sourceVelocityFactor !== undefined && !Number.isFinite(emitter.sourceVelocityFactor)) {
+            throw new RangeError(`Fluid emitter "${emitter.id}" sourceVelocityFactor must be finite.`);
+        }
+        if (emitter.normalVelocity !== undefined && !Number.isFinite(emitter.normalVelocity)) {
+            throw new RangeError(`Fluid emitter "${emitter.id}" normalVelocity must be finite.`);
+        }
+        if (emitter.delayBeforeStart !== undefined && (!Number.isFinite(emitter.delayBeforeStart) || emitter.delayBeforeStart < 0)) {
+            throw new RangeError(`Fluid emitter "${emitter.id}" delayBeforeStart must be a finite non-negative number.`);
+        }
+    }
     const previousEmitterCarries = new Map(state.emitterIds.map((id, index) => [id, state.emitterCarries[index]!]));
     const previousSinkCarries = new Map(state.sinkIds.map((id, index) => [id, state.sinkCarries[index]!]));
     state.config = config;
@@ -1045,6 +1486,7 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
     state.emitterIds = [];
     state.emitterRates = [];
     state.emitterActive = [];
+    state.emitterDelays = [];
     state.emitterCarries.fill(0);
     state.sinkIds = [];
     state.sinkRates = [];
@@ -1066,10 +1508,8 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
             throw new RangeError(`Fluid emitter "${emitter.id}" exceeds the polygon flow-buffer capacity or has an invalid polygon.`);
         }
         emitterPacked.push(packed);
-        if (state.legacyEmitter) {
-            state.f32[offset + 15] = state.legacyEmitter.emitterSpeeds[i] ?? 0;
-        }
-        state.f32.set(emitter.velocity, offset + 24);
+        state.f32[offset + 15] = state.legacyEmitter ? (state.legacyEmitter.emitterSpeeds[i] ?? 0) : (emitter.normalVelocity ?? 0);
+        state.f32.set(emitterBaseVelocity(emitter), offset + 24);
         state.f32[offset + 27] = emitter.spread;
         state.u32.set(
             [emitter.enabled && packed ? 1 : 0, emitter.behavior === "inflow" ? 1 : 0, emitter.sampling === "surface" ? 1 : 0, emitter.velocitySpace === "world" ? 1 : 0],
@@ -1079,6 +1519,7 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
         state.emitterIds.push(emitter.id);
         state.emitterRates.push(emitter.volumeRate);
         state.emitterActive.push(active);
+        state.emitterDelays.push(emitter.delayBeforeStart ?? 0);
         state.emitterCarries[i] = previousEmitterCarries.get(emitter.id) ?? 0;
     }
     for (let i = 0; i < sinks.length; i++) {
@@ -1088,21 +1529,24 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
         if (!sinkPacked) {
             throw new RangeError(`Fluid sink "${sink.id}" exceeds the polygon flow-buffer capacity or has an invalid polygon.`);
         }
+        const operation = state.legacyEmitter && i === 0 ? FLOW_SINK_OPERATION_LEGACY : sink.mode === "recycle" ? FLOW_SINK_OPERATION_RECYCLE : FLOW_SINK_OPERATION_DELETE;
         const targetIds = new Set(sink.targets);
         let targetMask = 0;
-        for (let emitterIndex = 0; emitterIndex < emitters.length; emitterIndex++) {
-            const emitter = emitters[emitterIndex]!;
-            if (emitter.enabled && emitterPacked[emitterIndex] && emitter.behavior === "inflow" && targetIds.has(emitter.id)) {
-                targetMask |= 1 << emitterIndex;
+        if (operation !== FLOW_SINK_OPERATION_DELETE) {
+            for (let emitterIndex = 0; emitterIndex < emitters.length; emitterIndex++) {
+                const emitter = emitters[emitterIndex]!;
+                if (emitter.enabled && emitterPacked[emitterIndex] && emitter.behavior === "inflow" && targetIds.has(emitter.id)) {
+                    targetMask |= 1 << emitterIndex;
+                }
             }
         }
         state.u32.set([sink.enabled && sinkPacked ? 1 : 0, targetMask >>> 0, sink.volumeRate === undefined ? UNLIMITED_FLOW_BUDGET : 0, i], offset + 24);
-        state.u32[offset + 28] = sink.perParticleRecycleRate === undefined ? FLOW_SINK_MODE_VOLUME : FLOW_SINK_MODE_PER_PARTICLE;
+        state.u32[offset + 28] = operation;
+        state.u32[offset + 29] = sink.perParticleRecycleRate === undefined ? FLOW_SINK_RATE_VOLUME : FLOW_SINK_RATE_PER_PARTICLE;
         if (sink.perParticleRecycleRate !== undefined) {
             state.f32[offset + 30] = sink.perParticleRecycleRate;
         }
         if (i === 0 && state.legacyEmitter) {
-            state.u32[offset + 28] = FLOW_SINK_MODE_LEGACY;
             state.u32[offset + 29] = state.legacyEmitter.fixedStreamCount;
             state.f32[offset + 30] = state.legacyEmitter.rate;
             state.f32[offset + 31] = state.legacyEmitter.fixedStreamDrainY;
@@ -1110,9 +1554,24 @@ export function setFluidFlowConfig(state: FluidFlowState, config: FluidFlowConfi
         state.sinkIds.push(sink.id);
         state.sinkRates.push(sink.volumeRate);
         state.sinkCarries[i] = previousSinkCarries.get(sink.id) ?? 0;
-        state.active ||= sink.enabled && sinkPacked && targetMask !== 0;
+        state.active ||= sink.enabled && sinkPacked && (operation === FLOW_SINK_OPERATION_DELETE || targetMask !== 0);
     }
     state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
+}
+
+/** Update one already-installed emitter's dynamic transform and velocity fields without disturbing emission carries. */
+export function updateFluidFlowEmitter(state: FluidFlowState, emitter: FluidEmitter): void {
+    const index = state.emitterIds.indexOf(emitter.id);
+    if (index < 0) {
+        return;
+    }
+    const offset = FLOW_EMITTER_BASE + index * FLOW_ENTITY_FLOATS;
+    state.f32.set(emitter.transform.position, offset);
+    state.f32.set(normalisedRotation(emitter.transform.rotation), offset + 4);
+    state.f32.set(emitter.transform.scale, offset + 8);
+    state.f32[offset + 15] = emitter.normalVelocity ?? 0;
+    state.f32.set(emitterBaseVelocity(emitter), offset + 24);
+    state.device.queue.writeBuffer(state.uniformBuffer, offset * 4, state.data, offset * 4, FLOW_ENTITY_FLOATS * 4);
 }
 
 export function resetFluidFlowState(state: FluidFlowState): void {
@@ -1120,76 +1579,62 @@ export function resetFluidFlowState(state: FluidFlowState): void {
     state.emitterCursor = 0;
     state.emitterCarries.fill(0);
     state.sinkCarries.fill(0);
+    state.elapsedSeconds = 0;
 }
 
-/** Activates dormant slots, updates exact budgets, and initializes GPU atomic counters.
+/** Updates exact emitter/sink budgets and initializes GPU atomic counters.
  *  Unmet whole-particle capacity is discarded each frame rather than accumulated. */
-export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, particleCount: number, inactiveCapacity: number, velocityScale = 1): FluidFlowFrame {
+export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, velocityScale = 1): FluidFlowFrame {
     if (!state.active && !state.emitterActive.some(Boolean)) {
-        return { particles: null, recycleActive: false };
+        return { flowActive: false, deleteActive: false, emitActive: false };
     }
     if (state.legacyEmitter) {
-        state.u32[2] = particleCount;
+        state.u32[2] = state.capacity;
         state.u32[3] = state.frameSeed++;
         state.f32[4] = dt;
         state.f32[5] = velocityScale;
         state.counterData.fill(0);
         state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
         state.device.queue.writeBuffer(state.counterBuffer, 0, state.counterData);
-        return { particles: null, recycleActive: state.active };
+        return { flowActive: state.active, deleteActive: state.active, emitActive: false };
     }
     const emitterBudgets = new Uint32Array(MAX_FLUID_EMITTERS);
-    const unlimited = new Array<boolean>(MAX_FLUID_EMITTERS).fill(false);
+    const emitterStarted = new Array<boolean>(state.emitterRates.length).fill(false);
+    const frameStart = state.elapsedSeconds;
+    const frameDuration = Math.max(0, dt);
+    const frameEnd = frameStart + frameDuration;
     for (let i = 0; i < state.emitterRates.length; i++) {
         if (!state.emitterActive[i]) {
+            continue;
+        }
+        const delay = state.emitterDelays[i] ?? 0;
+        const activeDt = Math.max(0, frameEnd - Math.max(frameStart, delay));
+        const started = delay <= frameStart || activeDt > 0;
+        emitterStarted[i] = started;
+        state.u32[FLOW_EMITTER_BASE + i * FLOW_ENTITY_FLOATS + 28] = started ? 1 : 0;
+        if (!started) {
             continue;
         }
         const rate = state.emitterRates[i];
         if (rate === undefined) {
             emitterBudgets[i] = UNLIMITED_FLOW_BUDGET;
-            unlimited[i] = true;
         } else {
-            const budget = fluidVolumeBudget(rate, dt, state.particleVolume, state.emitterCarries[i]!);
+            const budget = fluidVolumeBudget(rate, activeDt, state.particleVolume, state.emitterCarries[i]!);
             state.emitterCarries[i] = budget.carry;
             emitterBudgets[i] = budget.count;
         }
     }
-    const allocations = allocateFluidInflowCapacity(emitterBudgets, unlimited, inactiveCapacity, state.emitterCursor);
+    state.elapsedSeconds = frameEnd;
     if (state.emitterRates.length > 0) {
         state.emitterCursor = (state.emitterCursor + 1) % state.emitterRates.length;
     }
-    const activationCount = allocations.reduce((sum, value) => sum + value, 0);
-    let particles: FluidInitialParticles | null = null;
-    if (activationCount > 0) {
-        const positions = new Float32Array(activationCount * 3);
-        const velocities = new Float32Array(activationCount * 3);
-        let cursor = 0;
-        const emitters = state.config?.emitters ?? [];
-        for (let i = 0; i < allocations.length; i++) {
-            const emitter = emitters[i];
-            if (!emitter) {
-                continue;
-            }
-            for (let j = 0; j < allocations[i]!; j++) {
-                const point = sampleFluidEmitterPosition(emitter);
-                const velocity = sampleFluidEmitterVelocity(emitter);
-                positions[cursor] = point[0];
-                velocities[cursor++] = velocity[0];
-                positions[cursor] = point[1];
-                velocities[cursor++] = velocity[1];
-                positions[cursor] = point[2];
-                velocities[cursor++] = velocity[2];
-            }
-        }
-        particles = { positions, velocities, activeCount: activationCount };
-    }
-    state.u32[2] = particleCount + activationCount;
+    state.u32[2] = state.capacity;
     state.u32[3] = state.frameSeed++;
     state.f32[4] = dt;
     state.f32[5] = velocityScale;
     state.counterData.fill(0);
     for (let i = 0; i < MAX_FLUID_EMITTERS; i++) {
-        state.counterData[i * 2] = allocations[i]!;
+        state.counterData[i * 2] = 0;
         state.counterData[i * 2 + 1] = emitterBudgets[i]!;
     }
     for (let i = 0; i < state.sinkRates.length; i++) {
@@ -1205,12 +1650,108 @@ export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, particl
     }
     state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
     state.device.queue.writeBuffer(state.counterBuffer, 0, state.counterData);
-    return { particles, recycleActive: state.active };
+    const emitActive = emitterStarted.some(Boolean);
+    return { flowActive: state.active || emitActive, deleteActive: state.active, emitActive };
 }
 
 export function disposeFluidFlowState(state: FluidFlowState): void {
     state.uniformBuffer.destroy();
     state.counterBuffer.destroy();
+    state.lifecycleBuffer.destroy();
+    for (const buffer of state.activeCountReadback?.buffers ?? []) {
+        buffer.destroy();
+    }
+}
+
+export function fluidFlowGpuBytes(state: FluidFlowState): number {
+    return (
+        state.uniformBuffer.size +
+        state.counterBuffer.size +
+        state.lifecycleBuffer.size +
+        (state.activeCountReadback?.buffers.reduce((total, buffer) => total + buffer.size, 0) ?? 0)
+    );
+}
+
+export interface FluidWarmupState {
+    readonly pipeline: GPUComputePipeline;
+    readonly bindGroup: GPUBindGroup;
+    readonly paramsBuffer: GPUBuffer;
+}
+
+export const FLUID_LIFECYCLE_STRUCT_WGSL = /* wgsl */ `
+struct FluidLifecycle {
+    activeCount: atomic<u32>,
+    capacity: u32,
+    reserved0: u32,
+    reserved1: u32,
+    states: array<atomic<u32>>,
+};`;
+
+export const FLUID_LIFECYCLE_RUNTIME_WGSL = /* wgsl */ `
+const FLUID_PARTICLE_FREE: u32 = ${FLUID_PARTICLE_FREE}u;
+const FLUID_PARTICLE_ACTIVE: u32 = ${FLUID_PARTICLE_ACTIVE}u;
+const FLUID_PARTICLE_RESERVED: u32 = ${FLUID_PARTICLE_RESERVED}u;
+fn fluidParticleIsActive(index:u32)->bool{return atomicLoad(&lifecycle.states[index])==FLUID_PARTICLE_ACTIVE;}
+fn fluidParticleIsFree(index:u32)->bool{return atomicLoad(&lifecycle.states[index])==FLUID_PARTICLE_FREE;}
+fn fluidDeleteParticle(index:u32)->bool{
+    loop{
+        let current=atomicLoad(&lifecycle.states[index]);if(current!=FLUID_PARTICLE_ACTIVE){return false;}
+        if(atomicCompareExchangeWeak(&lifecycle.states[index],current,FLUID_PARTICLE_FREE).exchanged){atomicSub(&lifecycle.activeCount,1u);return true;}
+    }
+}
+fn fluidActivateParticle(index:u32)->bool{
+    loop{
+        let current=atomicLoad(&lifecycle.states[index]);if(current!=FLUID_PARTICLE_FREE){return false;}
+        if(atomicCompareExchangeWeak(&lifecycle.states[index],current,FLUID_PARTICLE_ACTIVE).exchanged){atomicAdd(&lifecycle.activeCount,1u);return true;}
+    }
+}`;
+
+const FLUID_WARMUP_WGSL = /* wgsl */ `
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+struct WarmupParams { start:u32,end:u32,reserved0:u32,reserved1:u32, };
+@group(0) @binding(0) var<storage,read_write> lifecycle:FluidLifecycle;
+@group(0) @binding(1) var<uniform> p:WarmupParams;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid:vec3<u32>){
+    let index=p.start+gid.x;if(index>=p.end||index>=lifecycle.capacity){return;}
+    loop{
+        let current=atomicLoad(&lifecycle.states[index]);if(current!=${FLUID_PARTICLE_RESERVED}u){return;}
+        if(atomicCompareExchangeWeak(&lifecycle.states[index],current,${FLUID_PARTICLE_ACTIVE}u).exchanged){atomicAdd(&lifecycle.activeCount,1u);return;}
+    }
+}`;
+
+export function createFluidWarmupState(state: FluidFlowState): FluidWarmupState {
+    const pipeline = state.device.createComputePipeline({
+        label: "fluid-warmup",
+        layout: "auto",
+        compute: { module: state.device.createShaderModule({ label: "fluid-warmup", code: FLUID_WARMUP_WGSL }), entryPoint: "main" },
+    });
+    const paramsBuffer = state.device.createBuffer({ label: "fluid-warmup-params", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    return {
+        pipeline,
+        paramsBuffer,
+        bindGroup: state.device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: state.lifecycleBuffer } },
+                { binding: 1, resource: { buffer: paramsBuffer } },
+            ],
+        }),
+    };
+}
+
+export function encodeFluidWarmup(state: FluidFlowState, warmup: FluidWarmupState, encoder: GPUCommandEncoder, start: number, end: number): void {
+    const first = Math.min(state.capacity, Math.max(0, Math.floor(start)));
+    const last = Math.min(state.capacity, Math.max(first, Math.floor(end)));
+    if (last <= first) {
+        return;
+    }
+    state.device.queue.writeBuffer(warmup.paramsBuffer, 0, new Uint32Array([first, last, 0, 0]));
+    const pass = encoder.beginComputePass({ label: "fluid-warmup" });
+    pass.setPipeline(warmup.pipeline);
+    pass.setBindGroup(0, warmup.bindGroup);
+    pass.dispatchWorkgroups(Math.ceil((last - first) / 64));
+    pass.end();
 }
 
 export const FLUID_FLOW_STRUCT_WGSL = /* wgsl */ `
@@ -1338,18 +1879,58 @@ fn fluidSampleLocal(s:FluidShapeData,surface:bool,seed:u32)->vec3<f32>{
     }
     let xz=fluidEdge(s,seed*3u+1u);return vec3<f32>(xz.x,(fluidRnd(seed*5u+2u)-0.5)*h,xz.y);
 }
+fn fluidSafeNormal(v:vec3<f32>,fallback:vec3<f32>)->vec3<f32>{let l=length(v);return select(fallback,v/l,l>1e-6);}
+fn fluidLocalNormal(s:FluidShapeData,p:vec3<f32>)->vec3<f32>{
+    let k=u32(s.scaleKind.w);
+    if(k==0u){
+        let h=abs(s.params0.xyz)*0.5;let d=h-abs(p);
+        if(d.x<=d.y&&d.x<=d.z){return vec3<f32>(select(-1.0,1.0,p.x>=0.0),0.0,0.0);}
+        if(d.y<=d.z){return vec3<f32>(0.0,select(-1.0,1.0,p.y>=0.0),0.0);}
+        return vec3<f32>(0.0,0.0,select(-1.0,1.0,p.z>=0.0));
+    }
+    if(k==1u){return fluidSafeNormal(p,vec3<f32>(0.0,1.0,0.0));}
+    if(k==2u){
+        let ro=abs(s.params0.x);let ri=min(ro,abs(s.params0.z));let radial=length(p.xz);
+        let od=ro-radial;let id=select(1.0e30,radial-ri,ri>0.0);let cd=abs(s.params0.y)*0.5-abs(p.y);
+        if(cd<=od&&cd<=id){return vec3<f32>(0.0,select(-1.0,1.0,p.y>=0.0),0.0);}
+        let n=fluidSafeNormal(vec3<f32>(p.x,0.0,p.z),vec3<f32>(1.0,0.0,0.0));return select(n,-n,id<od);
+    }
+    if(k==3u){
+        let r0=abs(s.params0.x);let r1=abs(s.params0.y);let h=abs(s.params0.z);let slope=(r1-r0)/max(h,1.0e-6);
+        let t=clamp(p.y/max(h,1.0e-6)+0.5,0.0,1.0);let r=mix(r0,r1,t);let radial=length(p.xz);
+        let ld=abs(r-radial)/sqrt(1.0+slope*slope);let bd=p.y+h*0.5;let td=h*0.5-p.y;
+        if(bd<=ld&&bd<=td){return vec3<f32>(0.0,-1.0,0.0);}if(td<=ld){return vec3<f32>(0.0,1.0,0.0);}
+        let q=select(vec2<f32>(1.0,0.0),p.xz/radial,radial>1.0e-6);return normalize(vec3<f32>(q.x,-slope,q.y));
+    }
+    if(k==4u){
+        let r=abs(s.params0.x);let sh=max(0.0,abs(s.params0.y)-2.0*r)*0.5;let y=clamp(p.y,-sh,sh);
+        return fluidSafeNormal(vec3<f32>(p.x,p.y-y,p.z),vec3<f32>(1.0,0.0,0.0));
+    }
+    let h=abs(s.params0.x)*0.5;let st=s.polygon.z;let n=s.polygon.w;var area2=0.0;var nearest=1.0e30;var edgeN=vec2<f32>(0.0,1.0);
+    for(var i=0u;i<n;i=i+1u){
+        let a=flow.points[st+i].xy;let b=flow.points[st+(i+1u)%n].xy;let e=b-a;area2=area2+a.x*b.y-b.x*a.y;
+        let t=clamp(dot(p.xz-a,e)/max(dot(e,e),1.0e-12),0.0,1.0);let d=p.xz-(a+t*e);let d2=dot(d,d);
+        if(d2<nearest){nearest=d2;edgeN=fluidSafeNormal(vec3<f32>(e.y,0.0,-e.x),vec3<f32>(1.0,0.0,0.0)).xz;}
+    }
+    edgeN*=select(-1.0,1.0,area2>=0.0);if(h-abs(p.y)<=sqrt(nearest)){return vec3<f32>(0.0,select(-1.0,1.0,p.y>=0.0),0.0);}
+    return vec3<f32>(edgeN.x,0.0,edgeN.y);
+}
+fn fluidNormalToWorld(s:FluidShapeData,n:vec3<f32>)->vec3<f32>{
+    let scale=select(vec3<f32>(1.0e-6),s.scaleKind.xyz,abs(s.scaleKind.xyz)>vec3<f32>(1.0e-6));
+    return fluidSafeNormal(fluidQuatRotate(s.rotation,n/scale),vec3<f32>(0.0,1.0,0.0));
+}
 fn fluidClaimEmitter(index:u32)->bool{
     let counterIndex=index*2u;let budget=atomicLoad(&flowCounters[counterIndex+1u]);
     if(budget==0xffffffffu){atomicAdd(&flowCounters[counterIndex],1u);return true;}
     loop{let old=atomicLoad(&flowCounters[counterIndex]);if(old>=budget){return false;}if(atomicCompareExchangeWeak(&flowCounters[counterIndex],old,old+1u).exchanged){return true;}}
 }
 fn fluidChooseEmitter(mask:u32,seed:u32)->u32{
-    var n=0u;for(var i=0u;i<${MAX_FLUID_EMITTERS}u;i=i+1u){if((mask&(1u<<i))!=0u){n=n+1u;}}
+    var n=0u;for(var i=0u;i<${MAX_FLUID_EMITTERS}u;i=i+1u){if((mask&(1u<<i))!=0u&&flow.emitters[i].flags.x!=0u){n=n+1u;}}
     if(n==0u){return ${MAX_FLUID_EMITTERS}u;}let wanted=fluidHash(seed)%n;
     for(var attempt=0u;attempt<n;attempt=attempt+1u){
         let ordinal=(wanted+attempt)%n;var seen=0u;
         for(var i=0u;i<${MAX_FLUID_EMITTERS}u;i=i+1u){
-            if((mask&(1u<<i))!=0u){if(seen==ordinal&&fluidClaimEmitter(i)){return i;}seen=seen+1u;}
+            if((mask&(1u<<i))!=0u&&flow.emitters[i].flags.x!=0u){if(seen==ordinal&&fluidClaimEmitter(i)){return i;}seen=seen+1u;}
         }
     }
     return ${MAX_FLUID_EMITTERS}u;
@@ -1377,12 +1958,28 @@ fn fluidLegacyLaunch(e:FluidEmitterData,seed:u32)->FluidLaunch{
     return FluidLaunch(fluidLegacySamplePosition(e,seed),e.velocitySpread.xyz+spread,1u);
 }
 fn fluidPerParticleLaunch(e:FluidEmitterData,seed:u32)->FluidLaunch{
-    let s=e.shape;let kind=u32(s.scaleKind.w);var position=vec3<f32>(0.0);
-    if(e.flags.z==0u&&(kind==0u||kind==5u)){position=fluidLegacySamplePosition(e,seed);}
-    else{position=fluidToWorld(s,fluidSampleLocal(s,e.flags.z!=0u,seed));}
+    let s=e.shape;let kind=u32(s.scaleKind.w);let normalSpeed=s.params0.w;var position=vec3<f32>(0.0);var local=vec3<f32>(0.0);
+    if(normalSpeed==0.0&&e.flags.z==0u&&(kind==0u||kind==5u)){position=fluidLegacySamplePosition(e,seed);}
+    else{local=fluidSampleLocal(s,e.flags.z!=0u,seed);position=fluidToWorld(s,local);}
     var velocity=e.velocitySpread.xyz;if(e.flags.w==0u){velocity=fluidQuatRotate(s.rotation,velocity);}
+    if(normalSpeed!=0.0){velocity+=fluidNormalToWorld(s,fluidLocalNormal(s,local))*normalSpeed;}
     let spread=(vec3<f32>(fluidRnd(seed*11u),fluidRnd(seed*13u),fluidRnd(seed*17u))-0.5)*(length(velocity)*e.velocitySpread.w);
     return FluidLaunch(position,velocity+spread,1u);
+}
+fn fluidTryEmit(seed:u32)->FluidLaunch{
+    var mask=0u;
+    for(var i=0u;i<flow.header.x;i=i+1u){
+        let e=flow.emitters[i];if(e.flags.x!=0u&&e.flags.y!=0u){mask=mask|(1u<<i);}
+    }
+    let ei=fluidChooseEmitter(mask,seed);if(ei>=flow.header.x){return FluidLaunch(vec3<f32>(0.0),vec3<f32>(0.0),0u);}
+    return fluidPerParticleLaunch(flow.emitters[ei],seed);
+}
+fn fluidSinkCaptures(sink:FluidSinkData,world:vec3<f32>,particleIndex:u32,si:u32)->bool{
+    if(sink.route.x==0u||!fluidInsideShape(sink.shape,world)){return false;}
+    let perParticle=sink.compat.y==${FLOW_SINK_RATE_PER_PARTICLE}u;
+    let seed=(flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u);
+    if(perParticle&&!(fluidRnd(seed)<clamp(bitcast<f32>(sink.compat.z)*flow.frame.x,0.0,1.0))){return false;}
+    return fluidClaimSink(sink.route.w,sink.route.z);
 }
 fn fluidTryLegacyRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
     if(flow.header.x==0u){return FluidLaunch(world,vec3<f32>(0.0),0u);}
@@ -1397,21 +1994,21 @@ fn fluidTryLegacyRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
     var ei=fluidHash(seed)%flow.header.x;if(fixedN>0u){ei=fluidHash(seed)%max(flow.header.x-1u,1u);}
     return fluidLegacyLaunch(flow.emitters[ei],seed);
 }
-fn fluidTryRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
-    if(flow.header.y>0u&&flow.sinks[0].compat.x==${FLOW_SINK_MODE_LEGACY}u){return fluidTryLegacyRelaunch(world,particleIndex);}
+fn fluidTryDelete(world:vec3<f32>,particleIndex:u32)->bool{
     for(var si=0u;si<flow.header.y;si=si+1u){
         let sink=flow.sinks[si];
-        if(sink.route.x==0u||sink.route.y==0u||!fluidInsideShape(sink.shape,world)){continue;}
-        let perParticle=sink.compat.x==${FLOW_SINK_MODE_PER_PARTICLE}u;
-        let seed=select((flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u),flow.header.w*2654435761u+particleIndex+si*3266489917u,perParticle);
-        if(perParticle&&!(fluidRnd(seed)<clamp(bitcast<f32>(sink.compat.z)*flow.frame.x,0.0,1.0))){continue;}
-        if(!fluidClaimSink(sink.route.w,sink.route.z)){continue;}
+        if(sink.compat.x==${FLOW_SINK_OPERATION_DELETE}u&&fluidSinkCaptures(sink,world,particleIndex,si)){return true;}
+    }
+    return false;
+}
+fn fluidTryRelaunch(world:vec3<f32>,particleIndex:u32)->FluidLaunch{
+    if(flow.header.y>0u&&flow.sinks[0].compat.x==${FLOW_SINK_OPERATION_LEGACY}u){return fluidTryLegacyRelaunch(world,particleIndex);}
+    for(var si=0u;si<flow.header.y;si=si+1u){
+        let sink=flow.sinks[si];
+        if(sink.compat.x!=${FLOW_SINK_OPERATION_RECYCLE}u||sink.route.y==0u||!fluidSinkCaptures(sink,world,particleIndex,si)){continue;}
+        let seed=(flow.header.w*2654435761u)^(particleIndex*2246822519u)^(si*3266489917u);
         let ei=fluidChooseEmitter(sink.route.y,seed);if(ei>=flow.header.x){continue;}let e=flow.emitters[ei];
-        if(perParticle){return fluidPerParticleLaunch(e,seed);}
-        let local=fluidSampleLocal(e.shape,e.flags.z!=0u,seed*3u+1u);let position=fluidToWorld(e.shape,local);
-        var velocity=e.velocitySpread.xyz;if(e.flags.w==0u){velocity=fluidQuatRotate(e.shape.rotation,velocity);}
-        let spread=(vec3<f32>(fluidRnd(seed*5u+2u),fluidRnd(seed*7u+3u),fluidRnd(seed*11u+5u))-0.5)*(length(velocity)*e.velocitySpread.w);
-        return FluidLaunch(position,velocity+spread,1u);
+        return fluidPerParticleLaunch(e,seed);
     }
     return FluidLaunch(world,vec3<f32>(0.0),0u);
 }`;

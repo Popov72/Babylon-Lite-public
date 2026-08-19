@@ -36,26 +36,47 @@
 // packs world positions + speed for the renderer.
 
 import type { EngineContext } from "../engine/engine.js";
-import type { FluidSim, FluidSimBaseOptions, SceneSdfSpec, EmitterConfig, FluidFlowConfig, ForceFieldSpec, FoamConfig, DiffusePool, FluidProfiler } from "./sim-common.js";
+import type {
+    FluidSim,
+    FluidSimBaseOptions,
+    SceneSdfSpec,
+    EmitterConfig,
+    FluidEmitter,
+    FluidFlowConfig,
+    ForceFieldSpec,
+    FoamConfig,
+    DiffusePool,
+    FluidProfiler,
+} from "./sim-common.js";
 import {
     SPAWN_ACCEPT_TRIES,
     FLUID_FLOW_RUNTIME_WGSL,
     FLUID_FLOW_STRUCT_WGSL,
+    FLUID_LIFECYCLE_RUNTIME_WGSL,
+    FLUID_LIFECYCLE_STRUCT_WGSL,
     FOAM_ACTIVE_FINISH_WGSL,
     FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_BYTES,
     FOAM_COMMON_WGSL,
     createFluidFlowState,
     createFluidInitialParticles,
+    createFluidWarmupState,
     disposeFluidFlowState,
+    encodeFluidActiveCountReadback,
+    encodeFluidWarmup,
+    enableFluidActiveCountReadback,
+    fluidFlowGpuBytes,
     foamActiveListOffset,
     foamActiveStateBytes,
     legacyEmitterConfigToFluidFlow,
+    pollFluidActiveCount,
     prepareFluidFlowFrame,
+    resetFluidParticleLifecycle,
     resetFluidFlowState,
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
     setFluidFlowConfig,
+    updateFluidFlowEmitter,
 } from "./sim-common.js";
 
 // Opt-in GPU timing hook (see FluidProfiler / lab gpu-profiler.ts). Module-scoped:
@@ -234,6 +255,7 @@ function buildHistogramWgsl(fusedBlockDiscovery: boolean): string {
 @group(0) @binding(3) var<storage, read_write> activeBlockList: array<u32>;
 @group(0) @binding(4) var<storage, read_write> activeCount: array<atomic<u32>>;`
         : "";
+    const lifecycleBinding = fusedBlockDiscovery ? 5 : 3;
     const increment = fusedBlockDiscovery
         ? `
     let b = blockIndexOfCell(c, p);
@@ -246,15 +268,18 @@ function buildHistogramWgsl(fusedBlockDiscovery: boolean): string {
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${BLOCK_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> blockCount: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> p: Params;
 ${fusedDecls}
+@group(0) @binding(${lifecycleBinding}) var<storage, read_write> lifecycle: FluidLifecycle;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; } // warm-up: dormant particles are not sorted
+    if (!fluidParticleIsActive(i)) { return; }
     let c = cellOf(particles[i].position, p);
     if (!inGrid(c, p)) { return; } // out-of-grid base cell deposits nothing (as in the old P2G)
 ${increment}
@@ -346,16 +371,19 @@ const SCATTER_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${BLOCK_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read> blockStart: array<u32>;
 @group(0) @binding(2) var<storage, read_write> blockCursor: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> sortedIdx: array<u32>;
 @group(0) @binding(4) var<uniform> p: Params;
+@group(0) @binding(5) var<storage, read_write> lifecycle: FluidLifecycle;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) ng: vec3<u32>) {
     let i = gid.x + gid.y * ng.x * ${WORKGROUP_SIZE}u;
     if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; }
+    if (!fluidParticleIsActive(i)) { return; }
     let c = cellOf(particles[i].position, p);
     if (!inGrid(c, p)) { return; }
     let b = blockIndexOfCell(c, p);
@@ -842,22 +870,26 @@ function buildG2pWgsl(scene: SceneSdfSpec, pagedGrid: boolean): string {
 ${BLOCK_WGSL}
 ${PAGE_HELPERS_WGSL}`
         : "";
+    const lifecycleBinding = pagedGrid ? 7 : scene.sdfGrid ? 5 : 4;
     const confine = g2pConfineSdf(scene);
     return /* wgsl */ `
 ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read> cells: array<vec4<i32>>;
 @group(0) @binding(2) var<uniform> p: Params;
 ${decls}
 ${pageDecls}
+@group(0) @binding(${lifecycleBinding}) var<storage, read_write> lifecycle: FluidLifecycle;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; } // warm-up: skip dormant particles
+    if (!fluidParticleIsActive(i)) { return; }
     ${pagedGrid ? "if (pageState[2] != 0u) { return; }" : ""}
     let pos = particles[i].position;
     let base = cellOf(pos, p);
@@ -923,6 +955,8 @@ ${confine}
 function buildForceWgsl(force: ForceFieldSpec): string {
     return /* wgsl */ `
 ${PARTICLE_STRUCT}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 struct Params {
     origin: vec4<f32>,
     dim: vec4<f32>,
@@ -936,12 +970,13 @@ struct Params {
 @group(0) @binding(1) var<uniform> p: Params;
 ${force.struct}
 @group(0) @binding(2) var<uniform> forceFieldParams: ForceFieldParams;
+@group(0) @binding(3) var<storage, read_write> lifecycle: FluidLifecycle;
 ${force.wgsl}
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.counts.x) { return; }
-    if (i >= p.counts.z) { return; } // warm-up: dormant particles feel no external force
+    if (!fluidParticleIsActive(i)) { return; }
     var v = particles[i].v;
     v += externalForce(particles[i].position, v, p.sim0.x);
     particles[i].v = v;
@@ -950,19 +985,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 const COPY_WGSL = /* wgsl */ `
 ${PARTICLE_STRUCT}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 struct Params2 { count: u32, debugScale: f32, live: u32, _b: f32, };
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> renderPos: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> dbg: array<f32>;
 @group(0) @binding(3) var<uniform> pc: Params2;
 @group(0) @binding(4) var<storage, read_write> renderVel: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> lifecycle: FluidLifecycle;
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= pc.count) { return; }
-    if (i >= pc.live) {
-        // Dormant (not-yet-released) particle during the start warm-up: park it far
-        // off-screen so it stays invisible until it is activated (see warmupFrames).
+    if (!fluidParticleIsActive(i)) {
         renderPos[i] = vec4<f32>(0.0, -1.0e5, 0.0, 1.0);
         dbg[i] = 0.0;
         renderVel[i] = vec4<f32>(0.0);
@@ -973,19 +1009,51 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     renderVel[i] = vec4<f32>(particles[i].v, 0.0);
 }`;
 
-const FLOW_WGSL = /* wgsl */ `
+const FLOW_DELETE_WGSL = /* wgsl */ `
 ${PARTICLE_STRUCT}
 ${FLUID_FLOW_STRUCT_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> flow: FluidFlowData;
 @group(0) @binding(2) var<storage, read_write> flowCounters: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> lifecycle: FluidLifecycle;
 ${FLUID_FLOW_RUNTIME_WGSL}
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= flow.header.z) { return; }
+    if (!fluidParticleIsActive(i)) { return; }
     let launch = fluidTryRelaunch(particles[i].position, i);
     if (launch.launched != 0u) {
+        particles[i].position = launch.position;
+        particles[i].v = launch.velocity;
+        particles[i].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+        return;
+    }
+    if (fluidTryDelete(particles[i].position, i) && fluidDeleteParticle(i)) {
+        particles[i].position = vec3<f32>(0.0, -1.0e5, 0.0);
+        particles[i].v = vec3<f32>(0.0);
+        particles[i].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    }
+}`;
+
+const FLOW_EMIT_WGSL = /* wgsl */ `
+${PARTICLE_STRUCT}
+${FLUID_FLOW_STRUCT_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<uniform> flow: FluidFlowData;
+@group(0) @binding(2) var<storage, read_write> flowCounters: array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> lifecycle: FluidLifecycle;
+${FLUID_FLOW_RUNTIME_WGSL}
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= flow.header.z || !fluidParticleIsFree(i)) { return; }
+    let launch = fluidTryEmit(flow.header.w * 2654435761u + i);
+    if (launch.launched != 0u && fluidActivateParticle(i)) {
         particles[i].position = launch.position;
         particles[i].v = launch.velocity;
         particles[i].C = mat3x3<f32>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
@@ -1016,6 +1084,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //     neighbour count: low ρ → spray, high ρ → bubble, mid → foam.
 // K_STRAIN / WC_SCALE and the RHO_* fractions below are the tuned live constants.
 function buildFoamEmitWgsl(activeParticles: boolean, pagedGrid: boolean): string {
+    const lifecycleBinding = pagedGrid ? 8 : 6;
     const headDecl = activeParticles
         ? "@group(0) @binding(5) var<storage, read_write> activeState: array<atomic<u32>>;"
         : "@group(0) @binding(5) var<storage, read_write> head: array<atomic<u32>>;";
@@ -1046,6 +1115,8 @@ ${COMMON_WGSL}
 ${PARTICLE_STRUCT}
 ${WEIGHTS_WGSL}
 ${FOAM_COMMON_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
 struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read> cells: array<Cell>;
@@ -1053,6 +1124,7 @@ struct Cell { vx: i32, vy: i32, vz: i32, mass: i32, };
 @group(0) @binding(3) var<uniform> foam: Foam;
 @group(0) @binding(4) var<storage, read_write> diffuse: array<Diffuse>;
 ${headDecl}
+@group(0) @binding(${lifecycleBinding}) var<storage, read_write> lifecycle: FluidLifecycle;
 ${activeDecl}
 ${pageDecls}
 
@@ -1071,6 +1143,7 @@ fn frob(m: mat3x3<f32>) -> f32 { return sqrt(dot(m[0], m[0]) + dot(m[1], m[1]) +
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= p.counts.x) { return; }
+    if (!fluidParticleIsActive(i)) { return; }
     ${pagedGrid ? "if (pageState[2] != 0u) { return; }" : ""}
     let pos = particles[i].position;
     let vi = particles[i].v;
@@ -1441,6 +1514,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     const paramsBuffer = device.createBuffer({ label: "mpm-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const copyParamsBuffer = device.createBuffer({ label: "mpm-copy-params", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const flowState = createFluidFlowState(device, count, particleRadius);
+    enableFluidActiveCountReadback(flowState);
+    const warmupState = createFluidWarmupState(flowState);
     let flowSeedsInitialParticles = true;
 
     // Block counting-sort buffers (per-substep). blockCount/blockCursor are zeroed each
@@ -1523,12 +1598,16 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
 
     function seed(): void {
         resetFluidFlowState(flowState);
-        const flowParticles = initialPositions || !flowSeedsInitialParticles ? null : createFluidInitialParticles(count, flowState.config, flowState.particleVolume);
+        const flowParticles =
+            initialPositions || !flowSeedsInitialParticles
+                ? null
+                : createFluidInitialParticles(count, flowState.config, flowState.particleVolume, { min: boundsMin, max: boundsMax });
         initialTargetCount = initialPositions ? count : (flowParticles?.activeCount ?? count);
         warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(initialTargetCount / warmupFrames)) : initialTargetCount;
         // Reset the warm-up ramp: start with just the first initial batch live (or the
         // whole initial prefix when disabled). Inflow capacity remains dormant.
         liveCount = warmupFrames > 0 ? Math.min(initialTargetCount, warmupStep) : initialTargetCount;
+        resetFluidParticleLifecycle(flowState, liveCount, initialTargetCount);
         const buf = new ArrayBuffer(count * PARTICLE_STRIDE);
         const f = new Float32Array(buf);
         const rp = new Float32Array(count * 4);
@@ -1616,21 +1695,6 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         device.queue.writeBuffer(velocityBuffer, 0, renderVelocities);
     }
 
-    function activateInflowParticles(start: number, particles: NonNullable<ReturnType<typeof prepareFluidFlowFrame>["particles"]>): void {
-        const data = new ArrayBuffer(particles.activeCount * PARTICLE_STRIDE);
-        const values = new Float32Array(data);
-        for (let i = 0; i < particles.activeCount; i++) {
-            const source = i * 3;
-            const target = (i * PARTICLE_STRIDE) / 4;
-            values[target] = particles.positions[source]!;
-            values[target + 1] = particles.positions[source + 1]!;
-            values[target + 2] = particles.positions[source + 2]!;
-            values[target + 4] = particles.velocities[source]!;
-            values[target + 5] = particles.velocities[source + 1]!;
-            values[target + 6] = particles.velocities[source + 2]!;
-        }
-        device.queue.writeBuffer(particleBuffer, start * PARTICLE_STRIDE, data);
-    }
     seed();
 
     function pipeline(label: string, code: string): GPUComputePipeline {
@@ -1680,7 +1744,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     }
     let g2pPipe: GPUComputePipeline | null = null;
     const copyPipe = pipeline("mpm-copy", COPY_WGSL);
-    const flowPipe = pipeline("mpm-flow", FLOW_WGSL);
+    const flowDeletePipe = pipeline("mpm-flow-delete", FLOW_DELETE_WGSL);
+    const flowEmitPipe = pipeline("mpm-flow-emit", FLOW_EMIT_WGSL);
     let pagedGridOverflowed = false;
     let pageStatusGeneration = 0;
     let disposed = false;
@@ -1716,13 +1781,19 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 });
         }
     }
-    const flowBG = device.createBindGroup({
-        layout: flowPipe.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: particleBuffer } },
-            { binding: 1, resource: { buffer: flowState.uniformBuffer } },
-            { binding: 2, resource: { buffer: flowState.counterBuffer } },
-        ],
+    const flowEntries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: particleBuffer } },
+        { binding: 1, resource: { buffer: flowState.uniformBuffer } },
+        { binding: 2, resource: { buffer: flowState.counterBuffer } },
+        { binding: 3, resource: { buffer: flowState.lifecycleBuffer } },
+    ];
+    const flowDeleteBG = device.createBindGroup({
+        layout: flowDeletePipe.getBindGroupLayout(0),
+        entries: flowEntries,
+    });
+    const flowEmitBG = device.createBindGroup({
+        layout: flowEmitPipe.getBindGroupLayout(0),
+        entries: flowEntries,
     });
 
     const clearBG = device.createBindGroup({
@@ -1745,6 +1816,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     if (fusedBlockDiscovery) {
         histogramEntries.push({ binding: 3, resource: { buffer: activeBlockListBuffer! } }, { binding: 4, resource: { buffer: activeBlockCountBuffer! } });
     }
+    histogramEntries.push({ binding: fusedBlockDiscovery ? 5 : 3, resource: { buffer: flowState.lifecycleBuffer } });
     const histogramBG = device.createBindGroup({
         layout: histogramPipe.getBindGroupLayout(0),
         entries: histogramEntries,
@@ -1776,6 +1848,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             { binding: 2, resource: { buffer: blockCursorBuffer } },
             { binding: 3, resource: { buffer: sortedIdxBuffer } },
             { binding: 4, resource: { buffer: paramsBuffer } },
+            { binding: 5, resource: { buffer: flowState.lifecycleBuffer } },
         ],
     });
     const p2gEntries: GPUBindGroupEntry[] = [
@@ -1891,6 +1964,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         if (pagedGrid) {
             entries.push({ binding: 5, resource: { buffer: pageMapBuffer! } }, { binding: 6, resource: { buffer: activeBlockCountBuffer! } });
         }
+        entries.push({ binding: pagedGrid ? 7 : scene.sdfGrid ? 5 : 4, resource: { buffer: flowState.lifecycleBuffer } });
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
     let g2pBG: GPUBindGroup | null = null;
@@ -1917,6 +1991,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             { binding: 2, resource: { buffer: debugBuffer } },
             { binding: 3, resource: { buffer: copyParamsBuffer } },
             { binding: 4, resource: { buffer: velocityBuffer } },
+            { binding: 5, resource: { buffer: flowState.lifecycleBuffer } },
         ],
     });
 
@@ -1937,6 +2012,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 { binding: 0, resource: { buffer: particleBuffer } },
                 { binding: 1, resource: { buffer: paramsBuffer } },
                 { binding: 2, resource: { buffer: spec.buffer } },
+                { binding: 3, resource: { buffer: flowState.lifecycleBuffer } },
             ],
         });
     }
@@ -2025,6 +2101,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                           { binding: 7, resource: { buffer: activeBlockCountBuffer! } },
                       ]
                     : []),
+                { binding: pagedGrid ? 8 : 6, resource: { buffer: flowState.lifecycleBuffer } },
             ],
         });
         const updateEntries: GPUBindGroupEntry[] = [
@@ -2198,7 +2275,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
     return {
         count,
         get activeCount(): number {
-            return liveCount;
+            return flowState.activeCount;
         },
         particleRadius,
         // MLS-MPM particles settle on a near-regular lattice spaced wider than the
@@ -2220,8 +2297,8 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 debugBuffer.size +
                 paramsBuffer.size +
                 copyParamsBuffer.size +
-                flowState.uniformBuffer.size +
-                flowState.counterBuffer.size;
+                fluidFlowGpuBytes(flowState) +
+                warmupState.paramsBuffer.size;
             // Block counting-sort buffers (always allocated).
             b += blockCountBuffer.size + blockStartBuffer.size + blockCursorBuffer.size + partialSumsBuffer.size + sortedIdxBuffer.size;
             if (activeBlockListBuffer) {
@@ -2256,6 +2333,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
         },
         step(encoder: GPUCommandEncoder, dt: number): void {
             pollPagedGridStatus();
+            pollFluidActiveCount(flowState);
             if (pagedGridOverflowed) {
                 return;
             }
@@ -2275,28 +2353,23 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             const stepCount = Math.max(substepsMut, Math.ceil(frameDt / maxSubDt - 1e-9));
             pf[16] = frameDt / stepCount;
             pf[MISC2_BASE_F32 + 1] = frameDt; // misc2.y — frame dt for the foam emit count
-            // Warm-up ramp: grow the live-particle count by one batch per frame. counts.z
-            // gates the mass/integration passes; copyU32[2] gates the render copy pass.
             if (liveCount < initialTargetCount) {
+                const previous = liveCount;
                 liveCount = Math.min(initialTargetCount, liveCount + warmupStep);
+                encodeFluidWarmup(flowState, warmupState, encoder, previous, liveCount);
             }
-            const flowFrame = prepareFluidFlowFrame(flowState, frameDt, liveCount, liveCount >= initialTargetCount ? count - liveCount : 0);
-            if (flowFrame.particles) {
-                activateInflowParticles(liveCount, flowFrame.particles);
-                liveCount += flowFrame.particles.activeCount;
-            }
-            pu[COUNTS_OFFSET_F32 + 2] = liveCount;
-            if (copyU32[2] !== liveCount) {
-                copyU32[2] = liveCount;
-                device.queue.writeBuffer(copyParamsBuffer, 0, copyData);
-            }
+            const flowFrame = prepareFluidFlowFrame(flowState, frameDt);
+            pu[COUNTS_OFFSET_F32 + 2] = count;
             device.queue.writeBuffer(paramsBuffer, 0, paramsData);
             // PIX / GPU-capture debug group: scopes this frame's MLS-MPM compute
             // passes (plus the nested substep + foam groups). Balanced by the
             // popDebugGroup at the end of step().
             encoder.pushDebugGroup("MLS-MPM sim step");
-            if (flowFrame.recycleActive) {
-                dispatch(encoder, "mpm-flow", flowPipe, flowBG, particleGroups);
+            if (flowFrame.deleteActive) {
+                dispatch(encoder, "mpm-flow-delete", flowDeletePipe, flowDeleteBG, particleGroups);
+            }
+            if (flowFrame.emitActive) {
+                dispatch(encoder, "mpm-flow-emit", flowEmitPipe, flowEmitBG, particleGroups);
             }
             encoder.pushDebugGroup(`substeps (${stepCount})`);
             for (let s = 0; s < stepCount; s++) {
@@ -2391,6 +2464,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
                 encoder.popDebugGroup();
             }
             dispatch(encoder, "mpm-copy", copyPipe, copyBG, particleGroups);
+            encodeFluidActiveCountReadback(flowState, encoder);
             if (pagedGrid) {
                 const stagingIndex = pageStatusStates.indexOf("idle");
                 if (stagingIndex !== -1) {
@@ -2468,6 +2542,9 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             flowSeedsInitialParticles = true;
             setFluidFlowConfig(flowState, config);
         },
+        updateFlowEmitter(emitter: FluidEmitter): void {
+            updateFluidFlowEmitter(flowState, emitter);
+        },
         setSpawn(min: [number, number, number], max: [number, number, number], accept?: ((x: number, y: number, z: number) => boolean) | null): void {
             spawnMin[0] = min[0];
             spawnMin[1] = min[1];
@@ -2519,6 +2596,7 @@ export function createMlsMpmSim(engine: EngineContext, options: MlsMpmOptions = 
             debugBuffer.destroy();
             paramsBuffer.destroy();
             copyParamsBuffer.destroy();
+            warmupState.paramsBuffer.destroy();
             disposeFluidFlowState(flowState);
             blockCountBuffer.destroy();
             blockStartBuffer.destroy();

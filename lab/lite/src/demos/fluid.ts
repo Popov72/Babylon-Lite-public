@@ -43,15 +43,19 @@ import {
     getEffectiveAspectRatio,
     getFrameGraph,
     getViewProjectionMatrix,
+    getContainerMeshes,
     isGizmoDragging,
     isGizmoInteracting,
     isGizmoPickPending,
+    goToFrame,
     loadGltf,
     loadEnvironment,
     loadHdrEnvironment,
+    mat4Decompose,
     createBlurPostProcessTask,
     markMaterialUboDirty,
     onBeforeRender,
+    playAnimation,
     registerSceneWithShadowSupport,
     registerUtilityLayer,
     removeFromScene,
@@ -74,7 +78,7 @@ import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js"
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
 import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
-import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, Vec3 } from "babylon-lite";
+import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, SceneNode, Vec3 } from "babylon-lite";
 import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 import { retireGpuResources } from "babylon-lite/engine/gpu-resource-retirement.js";
 // Plain source→target blit used as the no-bloom presentation pass. Only the TYPE is
@@ -86,8 +90,9 @@ import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettings, PairState, PendingForce } from "./fluid/demo.js";
+import { carryMethodIndependentState } from "./fluid/method-independent-state.js";
 import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "./fluid/preset-io.js";
-import { parseBliteFluidBundle, type BliteFluidBundle } from "./fluid/blitefluid-bundle.js";
+import { parseBlenderFluidJson, scenePayloadFromBlenderFluidJson, type BlenderFluidScene } from "./fluid/blender-fluid-json.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/simulation-lifecycle.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
@@ -113,6 +118,7 @@ import { createBoxDemo } from "./fluid/scenes/box.js";
 import { createFountainDemo } from "./fluid/scenes/fountain.js";
 import { createMarbleTowerDemo } from "./fluid/scenes/marbleTower.js";
 import { createWaterfallDemo, WATERFALL_ENV_URL, WATERFALL_BELFAST_ENV_URL } from "./fluid/scenes/waterfall.js";
+import { createWhiteboardDemo } from "./fluid/scenes/whiteboard.js";
 
 // Particle count is chosen at runtime via the panel dropdown. The PBF rest
 // density is pinned (see below) so the count scales the liquid VOLUME, not the
@@ -135,9 +141,9 @@ const PBMPM_MATERIALS = [
 // Material 2 = sand. Sand renders as opaque grainy spheres (no water surface) with no velocity
 // brightening (uniform grains); its colour comes from the per-material sand preset.
 const PBMPM_SAND_MATERIAL = 2;
-// Only these demos expose the PB-MPM material selector (sand / jelly / viscoelastic need a container to
-// hold their shape); every other demo is a liquid flow/jet showcase and is liquid-only.
-const MATERIAL_DEMO_KEYS = ["box"];
+// Only demos with closed solver bounds expose the PB-MPM material selector; open flow/jet showcases
+// remain liquid-only.
+const MATERIAL_DEMO_KEYS = ["box", "whiteboard"];
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -173,7 +179,12 @@ async function main(): Promise<void> {
     // writing the swapchain colour and sharing a depth buffer we control.
     const scene = createSceneContext(engine, { defaultRenderTask: false });
 
-    const cam = createArcRotateCamera(-Math.PI / 2, 1.1, 30, { x: 0, y: 6, z: 0 });
+    const DEFAULT_CAMERA = { alpha: -Math.PI / 2, beta: 1.1, radius: 30, target: [0, 6, 0] as const };
+    const cam = createArcRotateCamera(DEFAULT_CAMERA.alpha, DEFAULT_CAMERA.beta, DEFAULT_CAMERA.radius, {
+        x: DEFAULT_CAMERA.target[0],
+        y: DEFAULT_CAMERA.target[1],
+        z: DEFAULT_CAMERA.target[2],
+    });
     cam.nearPlane = 0.1;
     cam.farPlane = 200;
     scene.camera = cam;
@@ -295,6 +306,20 @@ async function main(): Promise<void> {
         size: 160, // capsule = a + b + 8 holes (10 × vec4); box = lo/hi + paddle (4 × vec4)
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    const whiteboardMlsContainerBuffer = engine._device.createBuffer({
+        label: "fluid-whiteboard-mls-container",
+        size: 32,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const whiteboardMlsContainerSdf: SceneSdfSpec = {
+        struct: "struct SceneSdfParams { lo: vec4<f32>, hi: vec4<f32>, };",
+        sdf: `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    let fromLo = pt - sceneSdfParams.lo.xyz;
+    let fromHi = sceneSdfParams.hi.xyz - pt;
+    return min(min(min(fromLo.x, fromLo.y), fromLo.z), min(min(fromHi.x, fromHi.y), fromHi.z));
+}`,
+        buffer: whiteboardMlsContainerBuffer,
+    };
 
     // Drain-hole ring buffer (capsule demo). Holes live in the capsule SDF UBO
     // (after a, b) as sphere subtracts that carve the solid wall shell, opening a
@@ -362,6 +387,9 @@ async function main(): Promise<void> {
     let gridSettings: FluidGridSettings | undefined;
     let builtGridSettings: FluidGridSettings | undefined;
     let builtGridMethod = methodName;
+    let activeDemo: FluidDemo | null = null;
+    let importedCollisionActive = false;
+    let builtWithGridFloor = false;
     let showGridBounds = false;
     let showGridGizmo = false;
 
@@ -420,6 +448,10 @@ async function main(): Promise<void> {
         const pbfBoundsMax = explicitBounds?.max ?? scaleTriple(BOUNDS_MAX);
         const mpmBoundsMin = explicitBounds?.min ?? [pbfBoundsMin[0], -1 * ds, pbfBoundsMin[2]];
         const mpmBoundsMax = explicitBounds?.max ?? pbfBoundsMax;
+        const useGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
+        const pbfGroundY = useGridFloor ? pbfBoundsMin[1] : 0;
+        const mpmGroundY = useGridFloor ? mpmBoundsMin[1] : 0;
+        canvas.dataset.simulationGroundY = String(methodName === "PBF" ? pbfGroundY : mpmGroundY);
         const pbfSpawn = scaledSpawn(pbfScale);
         const mpmSpawn = scaledSpawn(mpmScale);
         const pbmpmSpawn = scaledSpawn(pbmpmScale);
@@ -433,7 +465,7 @@ async function main(): Promise<void> {
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
-            groundY: 0,
+            groundY: pbfGroundY,
             restDensity: 341 / (pbfScale * pbfScale * pbfScale),
             boundsMin: pbfBoundsMin,
             boundsMax: pbfBoundsMax,
@@ -450,7 +482,7 @@ async function main(): Promise<void> {
             capsuleA: CAP_A,
             capsuleB: CAP_B,
             capsuleRadius: CAP_R,
-            groundY: 0,
+            groundY: mpmGroundY,
             // Drop the MLS grid floor below every demo floor (box/fountain at y=0,
             // capsule bottom at y=2) so a demo floor is confined by its own scene
             // SDF (like the side walls) rather than the grid's 2-cell domain-border
@@ -488,7 +520,7 @@ async function main(): Promise<void> {
             particleRadius: 0.09 * pbmpmScale * (explicitGrid ? 1 : ds),
             spawnMin: explicitGrid ? pbmpmSpawn.min : scaleTriple(pbmpmSpawn.min),
             spawnMax: explicitGrid ? pbmpmSpawn.max : scaleTriple(pbmpmSpawn.max),
-            groundY: 0,
+            groundY: mpmGroundY,
             boundsMin: mpmBoundsMin,
             boundsMax: mpmBoundsMax,
             dx: cellSize ?? 0.22 * pbmpmScale * ds,
@@ -535,7 +567,7 @@ async function main(): Promise<void> {
     let pbmpmMaterialSel: HTMLSelectElement | null = null;
     function refreshPbMpmMaterialUi(): void {
         if (pbmpmMaterialRow) {
-            // Material selector only for PB-MPM on a material-capable demo (the box container).
+            // Material selector only for PB-MPM on demos with closed solver bounds.
             const show = methodName === "PB-MPM" && !!activeDemo && MATERIAL_DEMO_KEYS.includes(activeDemo.key);
             pbmpmMaterialRow.style.display = show ? "block" : "none";
         }
@@ -548,16 +580,30 @@ async function main(): Promise<void> {
     // it on the ACTIVE sim via setForceField, so it dispatches its own dedicated
     // compute pass ONLY while a push is active (and compiles lazily on first use).
     const rayForce = createRayForce(engine._device);
-    // The active demo (capsule / box / fountain). Assigned by the first switchPair;
-    // every consumer below runs only after that, so the `!` reads are safe.
-    let activeDemo: FluidDemo | null = null;
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
-    interface ImportedFluidScene {
-        asset: AssetContainer;
+    interface ImportedEmitterSourceBinding {
+        emitterId: string;
+        node: SceneNode;
+        lastPosition: [number, number, number];
+    }
+    interface ImportedCollisionResources {
         sdf: SceneSdfSpec;
+        mlsSdf: SceneSdfSpec;
         paramsBuffer: GPUBuffer;
         gridBuffer: GPUBuffer;
+        collisionOrigin: [number, number, number];
+    }
+    interface ImportedFluidScene extends ImportedCollisionResources {
+        asset: AssetContainer;
+        assetRoot: SceneNode;
+        assetRootPosition: [number, number, number];
+        referenceGridPosition: [number, number, number];
+        gridOffset: [number, number, number];
+        groundWasVisible: boolean;
+        bundle: BlenderFluidScene;
+        sourceBindings: ImportedEmitterSourceBinding[];
+        sourceBindingHook?: (deltaMs: number) => void;
     }
     let importedScene: ImportedFluidScene | null = null;
     let suppressPairSnapshot = false;
@@ -596,6 +642,7 @@ async function main(): Promise<void> {
     addTask(scene, foamTask);
     let simulationDuration = 0;
     let simulationAlphaDecay = 2;
+    let simulationTimeScale = 1;
     let simulationElapsed = 0;
     let simulationOpacity = 1;
     let simulationStopped = false;
@@ -784,7 +831,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // ~4× a normal canvas-sized pair, so a user who never asks for it never pays for it.
     const MSAA_SAMPLES = 4;
     let msaaOn = false;
-    let msaaSceneTask: Task | null = null;
+    let msaaSceneTask: ReturnType<typeof createRenderTask> | null = null;
     let pendingFrameGraphRebuild = false;
     gateExistingTask(sceneTask, () => !msaaOn);
     const setMsaa = (on: boolean): void => {
@@ -798,7 +845,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             });
             // No `depth`: the MSAA target owns its own depth attachment (matching the engine's
             // own MSAA scene task), which is what the resolve task then reads.
-            msaaSceneTask = createRenderTask({ name: "scene-msaa", rt: sceneMsaaRT, rst: sceneColorRT, clr: false }, engine, scene);
+            msaaSceneTask = createRenderTask({ name: "scene-msaa", rt: sceneMsaaRT, rst: sceneColorRT, clr: hostSceneSuspended }, engine, scene);
             const depthResolveTask = createDepthResolveTask({ name: "fluid-depth-resolve", sourceTexture: sceneMsaaRT, targetTexture: depthRT }, engine, scene);
             gateExistingTask(msaaSceneTask, () => msaaOn);
             gateExistingTask(depthResolveTask, () => msaaOn);
@@ -952,6 +999,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let studioSlot: EnvSlot | null = null;
     let skySlot: EnvSlot | null = null;
     let activeSky: Renderable | null = null;
+    let hostSceneSuspended = false;
+    let suspendedHostSkyVisible = false;
+    let suspendedAmbientIntensity = ambient.intensity;
+    let suspendedSunIntensity = sun.intensity;
+    let suspendedClearColor = { ...scene.clearColor };
 
     // ── Environment picker (TEMPORARY: a shortlist to audition backdrops) ────────────────
     // Every demo can be viewed under any of these. The first two are the demos' own defaults
@@ -1121,11 +1173,28 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                     scene._renderables.splice(i, 1);
                 }
             }
-            scene._renderables.push(slot.sky);
+            if (!hostSceneSuspended || suspendedHostSkyVisible) {
+                scene._renderables.push(slot.sky);
+            }
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
         surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
+    }
+
+    function setHostSkyVisible(visible: boolean): void {
+        if (!activeSky) {
+            return;
+        }
+        const index = scene._renderables.indexOf(activeSky);
+        if (visible ? index < 0 : index >= 0) {
+            if (visible) {
+                scene._renderables.push(activeSky);
+            } else {
+                scene._renderables.splice(index, 1);
+            }
+            scene._renderableVersion++;
+        }
     }
 
     // On-screen FPS accumulators (smoothed over ~0.5 s windows). The FPS read-out element
@@ -1147,6 +1216,17 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let forceLastT = 0;
 
     const effectiveGridSettings = (method = methodName, scale = domainScale): FluidGridSettings => gridSettings ?? defaultGridSettings(method, scale);
+    function writeWhiteboardMlsContainer(buffer: GPUBuffer, byteOffset: number): void {
+        const grid = effectiveGridSettings();
+        const dx = cellSizeForPhysicsScale("MLS-MPM", physicsScale);
+        const dims = gridCellsForSize(grid.size, dx);
+        const minimum = gridBounds(grid.position, grid.size).min;
+        const lo: [number, number, number] = [minimum[0] + dx * 2.5, minimum[1] + dx * 2.5, minimum[2] + dx * 2.5];
+        const hi: [number, number, number] = [minimum[0] + (dims[0] - 3.5) * dx, minimum[1] + (dims[1] - 3.5) * dx, minimum[2] + (dims[2] - 3.5) * dx];
+        engine._device.queue.writeBuffer(buffer, byteOffset, new Float32Array([lo[0], lo[1], lo[2], 0, hi[0], hi[1], hi[2], 0]));
+        canvas.dataset.mlsContainerLo = lo.join(",");
+        canvas.dataset.mlsContainerHi = hi.join(",");
+    }
     const gridLocalToWorld = (local: readonly [number, number, number], position: readonly [number, number, number]): [number, number, number] => [
         local[0] + position[0],
         local[1] + position[1],
@@ -1206,8 +1286,23 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             activeDemo?.onFlowChanged?.(installedFlow);
         }
     }
-    function resetActiveFlow(clearHoles: boolean): void {
+    function syncImportedMeshAnimations(rewind: boolean): void {
+        const imported = importedScene;
+        if (!imported) {
+            return;
+        }
+        if (rewind) {
+            for (const group of imported.asset.animationGroups ?? []) {
+                goToFrame(group, 0, engine);
+                playAnimation(group);
+            }
+        }
+        updateImportedEmitterSources(imported, 0);
+    }
+
+    function resetActiveFlow(clearHoles: boolean, preserveSceneAnimations = false): void {
         applyFlow();
+        syncImportedMeshAnimations(!preserveSceneAnimations);
         activeSim.reset();
         restartSimulationLifecycle();
         if (clearHoles) {
@@ -1215,14 +1310,74 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
     }
 
+    function suspendHostScenePresentation(): void {
+        if (hostSceneSuspended) {
+            return;
+        }
+        suspendedHostSkyVisible = activeDemo?.key === "whiteboard";
+        activeDemo?.onLeave();
+        setMeshVisible(ground, false);
+        suspendedAmbientIntensity = ambient.intensity;
+        suspendedSunIntensity = sun.intensity;
+        suspendedClearColor = { ...scene.clearColor };
+        ambient.intensity = 0;
+        sun.intensity = 0;
+        ambient._bumpLightVersion?.();
+        sun._bumpLightVersion?.();
+        setHostSkyVisible(suspendedHostSkyVisible);
+        sceneTask._config.clr = !suspendedHostSkyVisible;
+        if (msaaSceneTask) {
+            msaaSceneTask._config.clr = !suspendedHostSkyVisible;
+        }
+        hostSceneSuspended = true;
+        canvas.dataset.importedHostSceneCleared = "true";
+        canvas.dataset.importedHostLightsDisabled = "true";
+        canvas.dataset.importedHostSkyHidden = String(!suspendedHostSkyVisible);
+    }
+
+    function restoreHostScenePresentation(restoreDemo: boolean): void {
+        if (!hostSceneSuspended) {
+            return;
+        }
+        hostSceneSuspended = false;
+        suspendedHostSkyVisible = false;
+        ambient.intensity = suspendedAmbientIntensity;
+        sun.intensity = suspendedSunIntensity;
+        scene.clearColor = suspendedClearColor;
+        setHostSkyVisible(true);
+        sceneTask._config.clr = false;
+        if (msaaSceneTask) {
+            msaaSceneTask._config.clr = false;
+        }
+        if (restoreDemo) {
+            activeDemo?.onEnter();
+        }
+        ambient._bumpLightVersion?.();
+        sun._bumpLightVersion?.();
+        delete canvas.dataset.importedHostSceneCleared;
+        delete canvas.dataset.importedHostLightsDisabled;
+        delete canvas.dataset.importedHostSkyHidden;
+    }
+
     function applySceneSdf(): void {
         const demo = activeDemo!;
-        if (!importedScene) {
+        if (importedScene) {
+            syncImportedSceneGridTransform(importedScene);
+        } else {
             demo.writeSdfParams();
         }
         const sdf = importedScene?.sdf ?? demo.sdf;
+        let mlsSdf = sdf;
+        if (demo.key === "whiteboard") {
+            const buffer = importedScene?.paramsBuffer ?? whiteboardMlsContainerBuffer;
+            writeWhiteboardMlsContainer(buffer, importedScene ? 32 : 0);
+            mlsSdf = importedScene?.mlsSdf ?? whiteboardMlsContainerSdf;
+        } else {
+            delete canvas.dataset.mlsContainerLo;
+            delete canvas.dataset.mlsContainerHi;
+        }
         pbfSim.setSceneSdf(sdf);
-        mpmSim.setSceneSdf(sdf);
+        mpmSim.setSceneSdf(mlsSdf);
         pbmpmSim.setSceneSdf(sdf);
         applyFlow();
     }
@@ -1233,28 +1388,60 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return;
         }
         importedScene = null;
+        importedCollisionActive = false;
         canvas.dataset.importedBundle = "false";
+        canvas.dataset.importedMeshCount = "0";
+        delete canvas.dataset.importedCollisionDims;
+        delete canvas.dataset.importedCollisionOrigin;
+        delete canvas.dataset.importedCollisionCellSize;
+        delete canvas.dataset.importedSceneOffset;
+        delete canvas.dataset.importedAnimationCount;
+        delete canvas.dataset.importedAnimationTime;
+        delete canvas.dataset.importedPlayingAnimationCount;
+        delete canvas.dataset.importedBoundEmitterCount;
+        delete canvas.dataset.importedEmitterPosition;
+        delete canvas.dataset.importedEmitterSourceVelocity;
+        delete canvas.dataset.importedMissingEmitterSourceCount;
+        delete canvas.dataset.importedHostGroundHidden;
+        delete canvas.dataset.importedLightCount;
+        delete canvas.dataset.importedFrameClearing;
+        delete canvas.dataset.importedCameraFramed;
+        delete canvas.dataset.importedCameraAlpha;
+        delete canvas.dataset.importedCameraRadius;
+        delete canvas.dataset.importedCameraTarget;
+        setMeshVisible(ground, previous.groundWasVisible);
+        if (previous.sourceBindingHook) {
+            const index = scene._beforeRender.indexOf(previous.sourceBindingHook);
+            if (index >= 0) {
+                scene._beforeRender.splice(index, 1);
+            }
+        }
         removeFromScene(scene, previous.asset);
         retireGpuResources(engine, () => {
             previous.paramsBuffer.destroy();
             previous.gridBuffer.destroy();
         });
+        restoreHostScenePresentation(restoreDemo);
         if (restoreDemo && activeDemo) {
-            activeDemo.setContainerVisible?.(controls.getValues().showContainer);
-            applySceneSdf();
+            const usesGridFloor = activeDemo.useGridFloor === true;
+            if (builtWithGridFloor !== usesGridFloor) {
+                rebuildSims(particleCount, physicsScale);
+            } else {
+                applySceneSdf();
+            }
         }
     }
 
-    function createImportedCollision(bundle: BliteFluidBundle): Omit<ImportedFluidScene, "asset"> {
+    function createImportedCollision(bundle: BlenderFluidScene): ImportedCollisionResources {
         const paramsBuffer = engine._device.createBuffer({
-            label: "blitefluid-sdf-params",
-            size: 32,
+            label: "blender-fluid-sdf-params",
+            size: 64,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         let gridBuffer: GPUBuffer | undefined;
         try {
             gridBuffer = engine._device.createBuffer({
-                label: "blitefluid-sdf-grid",
+                label: "blender-fluid-sdf-grid",
                 size: bundle.collision.distances.byteLength,
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             });
@@ -1264,6 +1451,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return {
                 paramsBuffer,
                 gridBuffer,
+                collisionOrigin: [...origin],
                 sdf: {
                     struct: /* wgsl */ `
 struct SceneSdfParams {
@@ -1277,11 +1465,246 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                     buffer: paramsBuffer,
                     sdfGrid: gridBuffer,
                 },
+                mlsSdf: {
+                    struct: /* wgsl */ `
+struct SceneSdfParams {
+    grid: vec4<f32>,
+    dims: vec4<f32>,
+    lo: vec4<f32>,
+    hi: vec4<f32>,
+};`,
+                    sdf: /* wgsl */ `
+fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    let collision = sampleSdfGrid(pt, sceneSdfParams.grid.xyz, sceneSdfParams.grid.w, vec3<i32>(sceneSdfParams.dims.xyz));
+    let fromLo = pt - sceneSdfParams.lo.xyz;
+    let fromHi = sceneSdfParams.hi.xyz - pt;
+    let container = min(min(min(fromLo.x, fromLo.y), fromLo.z), min(min(fromHi.x, fromHi.y), fromHi.z));
+    return min(collision, container);
+}`,
+                    buffer: paramsBuffer,
+                    sdfGrid: gridBuffer,
+                },
             };
         } catch (error) {
             paramsBuffer.destroy();
             gridBuffer?.destroy();
             throw error;
+        }
+    }
+
+    function importedSceneNodes(asset: AssetContainer): Map<string, SceneNode[]> {
+        const nodes = new Map<string, SceneNode[]>();
+        const seen = new Set<SceneNode>();
+        const visit = (node: SceneNode): void => {
+            if (seen.has(node)) {
+                return;
+            }
+            seen.add(node);
+            if (!("_gpu" in node)) {
+                const named = nodes.get(node.name);
+                if (named) {
+                    named.push(node);
+                } else {
+                    nodes.set(node.name, [node]);
+                }
+            }
+            for (const child of node.children) {
+                visit(child);
+            }
+        };
+        for (const entity of asset.entities) {
+            if (!("lightType" in (entity as object))) {
+                visit(entity as SceneNode);
+            }
+        }
+        return nodes;
+    }
+
+    function importedSourceTransform(node: SceneNode): ReturnType<typeof mat4Decompose> {
+        return mat4Decompose(node.worldMatrix);
+    }
+
+    function useImportedFluidBundleBasis(asset: AssetContainer): SceneNode {
+        const root = asset.entities[0];
+        if (!root || "lightType" in root || root.name !== "__root__") {
+            throw new Error("Imported Blender fluid GLB has no transform root.");
+        }
+        root.scaling.x = Math.abs(root.scaling.x);
+        return root;
+    }
+
+    function syncImportedSceneGridTransform(imported: ImportedFluidScene): void {
+        const gridPosition = effectiveGridSettings().position;
+        const nextOffset: [number, number, number] = [
+            gridPosition[0] - imported.referenceGridPosition[0],
+            gridPosition[1] - imported.referenceGridPosition[1],
+            gridPosition[2] - imported.referenceGridPosition[2],
+        ];
+        const offsetDelta: [number, number, number] = [nextOffset[0] - imported.gridOffset[0], nextOffset[1] - imported.gridOffset[1], nextOffset[2] - imported.gridOffset[2]];
+        imported.assetRoot.position.set(
+            imported.assetRootPosition[0] + nextOffset[0],
+            imported.assetRootPosition[1] + nextOffset[1],
+            imported.assetRootPosition[2] + nextOffset[2]
+        );
+        for (const binding of imported.sourceBindings) {
+            binding.lastPosition[0] += offsetDelta[0];
+            binding.lastPosition[1] += offsetDelta[1];
+            binding.lastPosition[2] += offsetDelta[2];
+        }
+        imported.gridOffset = nextOffset;
+        const { dims, cellSize } = imported.bundle.collision;
+        const origin: [number, number, number] = [
+            imported.collisionOrigin[0] + nextOffset[0],
+            imported.collisionOrigin[1] + nextOffset[1],
+            imported.collisionOrigin[2] + nextOffset[2],
+        ];
+        engine._device.queue.writeBuffer(imported.paramsBuffer, 0, new Float32Array([origin[0], origin[1], origin[2], 1 / cellSize, dims[0], dims[1], dims[2], 0]));
+        canvas.dataset.importedCollisionOrigin = origin.join(",");
+        canvas.dataset.importedSceneOffset = nextOffset.join(",");
+    }
+
+    function createImportedEmitterSourceBindings(asset: AssetContainer): ImportedEmitterSourceBinding[] {
+        const nodes = importedSceneNodes(asset);
+        const bindings: ImportedEmitterSourceBinding[] = [];
+        let missing = 0;
+        for (const emitter of installedFlow.emitters) {
+            if (!emitter.sourceNode) {
+                continue;
+            }
+            const matches = nodes.get(emitter.sourceNode);
+            if (!matches) {
+                missing++;
+                console.warn(`Fluid emitter "${emitter.id}" references missing GLB source node "${emitter.sourceNode}"; using its static analytical transform.`);
+                continue;
+            }
+            if (matches.length !== 1) {
+                throw new Error(`Fluid emitter "${emitter.id}" references ambiguous GLB source node "${emitter.sourceNode}".`);
+            }
+            const node = matches[0]!;
+            const translation = importedSourceTransform(node).translation;
+            bindings.push({ emitterId: emitter.id, node, lastPosition: [translation.x, translation.y, translation.z] });
+        }
+        canvas.dataset.importedMissingEmitterSourceCount = String(missing);
+        return bindings;
+    }
+
+    function flowShapeHalfExtents(shape: FluidShape): [number, number, number] {
+        if (shape.type === "box") {
+            return [shape.size[0] * 0.5, shape.size[1] * 0.5, shape.size[2] * 0.5];
+        }
+        if (shape.type === "sphere") {
+            return [shape.radius, shape.radius, shape.radius];
+        }
+        if (shape.type === "cylinder") {
+            return [shape.radius, shape.height * 0.5, shape.radius];
+        }
+        if (shape.type === "cone") {
+            const radius = Math.max(shape.bottomRadius, shape.topRadius);
+            return [radius, shape.height * 0.5, radius];
+        }
+        if (shape.type === "capsule") {
+            return [shape.radius, shape.height * 0.5, shape.radius];
+        }
+        let halfX = 0;
+        let halfZ = 0;
+        for (const point of shape.points) {
+            halfX = Math.max(halfX, Math.abs(point[0]));
+            halfZ = Math.max(halfZ, Math.abs(point[1]));
+        }
+        return [halfX, shape.thickness * 0.5, halfZ];
+    }
+
+    function includeFlowShapeBounds(minimum: [number, number, number], maximum: [number, number, number], object: FluidEmitter | FluidSink): void {
+        const local = flowShapeHalfExtents(object.shape);
+        const scaled: [number, number, number] = [
+            local[0] * Math.abs(object.transform.scale[0]),
+            local[1] * Math.abs(object.transform.scale[1]),
+            local[2] * Math.abs(object.transform.scale[2]),
+        ];
+        const [rawX, rawY, rawZ, rawW] = object.transform.rotation;
+        const invLength = 1 / Math.max(Math.hypot(rawX, rawY, rawZ, rawW), 1e-12);
+        const x = rawX * invLength;
+        const y = rawY * invLength;
+        const z = rawZ * invLength;
+        const w = rawW * invLength;
+        const xx = x * x;
+        const yy = y * y;
+        const zz = z * z;
+        const xy = x * y;
+        const xz = x * z;
+        const yz = y * z;
+        const wx = w * x;
+        const wy = w * y;
+        const wz = w * z;
+        const worldHalf: [number, number, number] = [
+            Math.abs(1 - 2 * (yy + zz)) * scaled[0] + Math.abs(2 * (xy - wz)) * scaled[1] + Math.abs(2 * (xz + wy)) * scaled[2],
+            Math.abs(2 * (xy + wz)) * scaled[0] + Math.abs(1 - 2 * (xx + zz)) * scaled[1] + Math.abs(2 * (yz - wx)) * scaled[2],
+            Math.abs(2 * (xz - wy)) * scaled[0] + Math.abs(2 * (yz + wx)) * scaled[1] + Math.abs(1 - 2 * (xx + yy)) * scaled[2],
+        ];
+        for (let axis = 0; axis < 3; axis++) {
+            minimum[axis] = Math.min(minimum[axis]!, object.transform.position[axis]! - worldHalf[axis]!);
+            maximum[axis] = Math.max(maximum[axis]!, object.transform.position[axis]! + worldHalf[axis]!);
+        }
+    }
+
+    function frameImportedWhiteboardScene(): void {
+        const grid = effectiveGridSettings();
+        const minimum: [number, number, number] = [grid.position[0] - grid.size[0] * 0.5, grid.position[1] - grid.size[1] * 0.5, grid.position[2] - grid.size[2] * 0.5];
+        const maximum: [number, number, number] = [grid.position[0] + grid.size[0] * 0.5, grid.position[1] + grid.size[1] * 0.5, grid.position[2] + grid.size[2] * 0.5];
+        for (const object of [...installedFlow.emitters, ...installedFlow.sinks]) {
+            includeFlowShapeBounds(minimum, maximum, object);
+        }
+        const center: [number, number, number] = [(minimum[0] + maximum[0]) * 0.5, (minimum[1] + maximum[1]) * 0.5, (minimum[2] + maximum[2]) * 0.5];
+        const radius = Math.max(0.1, Math.hypot((maximum[0] - minimum[0]) * 0.5, (maximum[1] - minimum[1]) * 0.5, (maximum[2] - minimum[2]) * 0.5));
+        const aspect = Math.max(getEffectiveAspectRatio(cam, canvas.width, canvas.height), 1e-6);
+        const horizontalFov = 2 * Math.atan(Math.tan(cam.fov * 0.5) * aspect);
+        const limitingFov = Math.min(cam.fov, horizontalFov);
+        cam.alpha = Math.PI / 2;
+        cam.target.x = center[0];
+        cam.target.y = center[1];
+        cam.target.z = center[2];
+        cam.radius = (radius / Math.sin(limitingFov * 0.5)) * 1.1;
+        cam.farPlane = Math.max(cam.farPlane, cam.radius + radius * 2);
+        canvas.dataset.importedCameraFramed = "true";
+        canvas.dataset.importedCameraAlpha = String(cam.alpha);
+        canvas.dataset.importedCameraRadius = String(cam.radius);
+        canvas.dataset.importedCameraTarget = center.join(",");
+    }
+
+    function updateImportedEmitterSources(imported: ImportedFluidScene, deltaMs: number): void {
+        const deltaSeconds = deltaMs / 1000;
+        for (const binding of imported.sourceBindings) {
+            const emitter = installedFlow.emitters.find((candidate) => candidate.id === binding.emitterId);
+            if (!emitter) {
+                continue;
+            }
+            const { translation, rotation, scale } = importedSourceTransform(binding.node);
+            const position: [number, number, number] = [translation.x, translation.y, translation.z];
+            emitter.transform.position = position;
+            emitter.transform.rotation = [rotation.x, rotation.y, rotation.z, rotation.w];
+            emitter.transform.scale = [scale.x, scale.y, scale.z];
+            if (emitter.sourceVelocityFactor !== undefined && deltaSeconds > 0) {
+                emitter.sourceVelocity = [
+                    (position[0] - binding.lastPosition[0]) / deltaSeconds,
+                    (position[1] - binding.lastPosition[1]) / deltaSeconds,
+                    (position[2] - binding.lastPosition[2]) / deltaSeconds,
+                ];
+            } else {
+                delete emitter.sourceVelocity;
+            }
+            pbfSim.updateFlowEmitter(emitter);
+            mpmSim.updateFlowEmitter(emitter);
+            pbmpmSim.updateFlowEmitter(emitter);
+            binding.lastPosition = position;
+        }
+        const first = imported.sourceBindings[0];
+        canvas.dataset.importedAnimationTime = String(imported.asset.animationGroups?.[0]?.currentTime ?? 0);
+        if (first) {
+            const emitter = installedFlow.emitters.find((candidate) => candidate.id === first.emitterId);
+            if (emitter) {
+                canvas.dataset.importedEmitterPosition = emitter.transform.position.join(",");
+                canvas.dataset.importedEmitterSourceVelocity = (emitter.sourceVelocity ?? [0, 0, 0]).join(",");
+            }
         }
     }
 
@@ -1628,6 +2051,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onGridGizmo: (visible) => setGridGizmoVisible(visible),
             onShowGridBounds: (visible) => {
                 showGridBounds = visible;
+                canvas.dataset.showGridBounds = String(visible);
                 syncGridBoundsWireframe();
             },
             onActiveBlocks: (enabled) => {
@@ -1658,7 +2082,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 mpmFusedBlockDiscovery = enabled;
                 rebuildSims(particleCount, physicsScale);
             },
-            onReset: () => resetActiveFlow(true),
+            onReset: (preserveSceneAnimations) => resetActiveFlow(true, preserveSceneAnimations),
             onFoamEnable: () => pushFoam(),
             onFoamActiveParticles: () => pushFoam(),
             onFoamKta: () => {
@@ -1715,7 +2139,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const sinkFlowHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
 
-    // ── Preset / Blender bundle import and parameter export ──────────────────
+    // ── Preset / Blender JSON import and parameter export ────────────────────
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export parameters";
     exportBtn.style.cssText = "width:100%;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
@@ -1723,6 +2147,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // Serialise the live UI into the shared grouped shape (the same format the on-disk
         // quality presets use), so an exported file can be dropped straight into presets/.
         const data = exportJsonFromPairState(activeDemo!.key, methodName, readLivePairState(methodName));
+        if (importedScene) {
+            data.meta.demo = "blender";
+            data.scene = {
+                ...scenePayloadFromBlenderFluidJson(importedScene.bundle),
+                anchorPosition: [...importedScene.referenceGridPosition],
+            };
+            if (importedScene.bundle.preset.source) {
+                data.source = structuredClone(importedScene.bundle.preset.source);
+            }
+        }
         const json = JSON.stringify(data, null, 2);
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -1761,8 +2195,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             foam: partial.foam ? { ...current.foam!, ...partial.foam } : current.foam,
         });
     }
-    async function installImportedBundle(bundle: BliteFluidBundle, generation: number, targetDemo: FluidDemo): Promise<void> {
-        const importedMethod = bundle.manifest.preset.meta?.method;
+    async function installImportedBundle(bundle: BlenderFluidScene, generation: number, targetDemo: FluidDemo): Promise<void> {
+        const importedMethod = bundle.preset.meta?.method;
         if (!importedMethod || !supportedMethods.has(importedMethod)) {
             throw new Error(`Unsupported fluid method "${importedMethod}"`);
         }
@@ -1779,14 +2213,27 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             removeFromScene(scene, asset);
             return;
         }
-        let collision: Omit<ImportedFluidScene, "asset">;
+        const assetRoot = useImportedFluidBundleBasis(asset);
+        let collision: ImportedCollisionResources;
         try {
             collision = createImportedCollision(bundle);
         } catch (error) {
             removeFromScene(scene, asset);
             throw error;
         }
-        const nextImported: ImportedFluidScene = { asset, ...collision };
+        const groundWasVisible = importedScene?.groundWasVisible ?? ground.visible !== false;
+        const referenceGridPosition = bundle.preset.scene?.anchorPosition ?? presetFromExportJson(bundle.preset).grid?.position ?? effectiveGridSettings().position;
+        const nextImported: ImportedFluidScene = {
+            asset,
+            assetRoot,
+            assetRootPosition: [assetRoot.position.x, assetRoot.position.y, assetRoot.position.z],
+            referenceGridPosition: [...referenceGridPosition],
+            gridOffset: [0, 0, 0],
+            ...collision,
+            groundWasVisible,
+            bundle,
+            sourceBindings: [],
+        };
         const replacingImported = importedScene !== null;
         let assetAdded = false;
         try {
@@ -1802,13 +2249,47 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                     suppressPairSnapshot = false;
                 }
             }
+            suspendHostScenePresentation();
             assetAdded = true;
             addToScene(scene, asset);
+            for (const group of asset.animationGroups ?? []) {
+                group.loopAnimation = true;
+                playAnimation(group);
+            }
             importedScene = nextImported;
+            importedCollisionActive = true;
+            setMeshVisible(ground, false);
+            canvas.dataset.importedHostGroundHidden = "true";
             canvas.dataset.importedBundle = "true";
-            activeDemo!.setContainerVisible?.(false);
-            applyImportedPreset(bundle.manifest.preset, false);
-            activeDemo!.setContainerVisible?.(false);
+            canvas.dataset.importedMeshCount = String(getContainerMeshes(asset).length);
+            canvas.dataset.importedLightCount = String(asset.entities.filter((entity) => "lightType" in entity).length);
+            canvas.dataset.importedCollisionDims = bundle.collision.dims.join(",");
+            canvas.dataset.importedCollisionCellSize = String(bundle.collision.cellSize);
+            canvas.dataset.importedAnimationCount = String(asset.animationGroups?.length ?? 0);
+            canvas.dataset.importedPlayingAnimationCount = String(asset.animationGroups?.filter((group) => group.isPlaying).length ?? 0);
+            applyImportedPreset(bundle.preset, false);
+            if (targetDemo.key === "whiteboard") {
+                frameImportedWhiteboardScene();
+            }
+            nextImported.sourceBindings = createImportedEmitterSourceBindings(asset);
+            updateImportedEmitterSources(nextImported, 0);
+            if (nextImported.sourceBindings.length > 0) {
+                const sourceBindingHook = (deltaMs: number): void => updateImportedEmitterSources(nextImported, deltaMs);
+                nextImported.sourceBindingHook = sourceBindingHook;
+                const animationHook = asset._beforeRenderHook;
+                if (animationHook) {
+                    const animationIndex = scene._beforeRender.indexOf(animationHook);
+                    if (animationIndex >= 0) {
+                        scene._beforeRender.splice(animationIndex, 1);
+                    }
+                    scene._beforeRender.unshift(animationHook, sourceBindingHook);
+                } else {
+                    scene._beforeRender.unshift(sourceBindingHook);
+                }
+            }
+            canvas.dataset.importedBoundEmitterCount = String(nextImported.sourceBindings.length);
+            resetActiveFlow(false);
+            canvas.dataset.importedFrameClearing = String(sceneTask._config.clr && (!msaaOn || msaaSceneTask?._config.clr === true));
         } catch (error) {
             if (importedScene === nextImported) {
                 clearImportedScene(true);
@@ -1818,18 +2299,30 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
                 nextImported.paramsBuffer.destroy();
                 nextImported.gridBuffer.destroy();
+                restoreHostScenePresentation(true);
             }
             throw error;
         }
     }
     const importInput = document.createElement("input");
     importInput.type = "file";
-    importInput.accept = ".blitefluid,.json,application/json,application/zip";
+    importInput.accept = ".json,application/json";
     importInput.hidden = true;
     const importBtn = document.createElement("button");
-    importBtn.textContent = "Import preset / Blender bundle";
+    importBtn.textContent = "Import fluid JSON";
     importBtn.style.cssText = exportBtn.style.cssText;
     importBtn.onclick = () => importInput.click();
+    const importedParticleCount = (count: number): number => {
+        if (count <= 100_000) {
+            return count;
+        }
+        const requested = count.toLocaleString("en-US");
+        return window.confirm(
+            `High particle count: ${requested}\n\nThis fluid JSON requests ${requested} particles, which may use substantial GPU memory or make the dashboard unstable.\n\nPlay it safe and use 40,000 particles instead?\n\nOK: use 40,000\nCancel: keep ${requested}`
+        )
+            ? 40_000
+            : count;
+    };
     importInput.onchange = async () => {
         const file = importInput.files?.[0];
         importInput.value = "";
@@ -1839,22 +2332,29 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         const generation = ++importGeneration;
         try {
-            if (file.name.toLowerCase().endsWith(".blitefluid")) {
-                const data = await file.arrayBuffer();
-                if (generation !== importGeneration || activeDemo !== targetDemo) {
-                    return;
-                }
-                await installImportedBundle(parseBliteFluidBundle(data), generation, targetDemo);
-                return;
-            }
             const contents = await file.text();
             if (generation !== importGeneration || activeDemo !== targetDemo) {
                 return;
             }
             const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
+            if (parsed.scene) {
+                const bundle = parseBlenderFluidJson(contents);
+                bundle.preset.particleCount = importedParticleCount(bundle.preset.particleCount);
+                await installImportedBundle(bundle, generation, targetDemo);
+                return;
+            }
+            if (typeof parsed.particleCount === "number") {
+                parsed.particleCount = importedParticleCount(parsed.particleCount);
+            }
             clearImportedScene(true);
             if (Array.isArray(parsed.emitters) && !parsed.render) {
-                const importedFlow = { emitters: structuredClone(parsed.emitters), sinks: structuredClone(parsed.sinks ?? []) };
+                const importedFlow = {
+                    emitters: structuredClone(parsed.emitters),
+                    sinks: structuredClone(parsed.sinks ?? []).map((sink) => ({
+                        ...sink,
+                        mode: sink.mode ?? ((parsed.formatVersion ?? 0) <= 6 ? "recycle" : "delete"),
+                    })),
+                };
                 activeFlow = (parsed.formatVersion ?? 0) < 4 ? flowToGridLocal(importedFlow) : importedFlow;
                 resetActiveFlow(false);
                 updateAuthoredFlow();
@@ -2371,20 +2871,37 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const numberInput = (value: number, onChange: (value: number) => void, step = 0.1, min?: number): HTMLInputElement => {
         let committed = value;
         const input = document.createElement("input");
-        input.type = "number";
-        input.step = String(step);
+        input.type = "text";
+        input.inputMode = "decimal";
+        input.dataset.step = String(step);
         if (min !== undefined) {
-            input.min = String(min);
+            input.dataset.min = String(min);
         }
         input.value = String(value);
         input.style.cssText = "width:100%;min-width:0;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:3px 5px;";
         input.onchange = () => {
-            const next = Number(input.value);
+            const next = Number(input.value.trim().replace(",", "."));
             if (Number.isFinite(next) && (min === undefined || next >= min)) {
                 committed = next;
+                input.value = String(next);
                 onChange(next);
             } else {
                 input.value = String(committed);
+            }
+        };
+        input.onkeydown = (event) => {
+            if (event.key === "Enter") {
+                input.blur();
+                return;
+            }
+            if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                event.preventDefault();
+                const parsed = Number(input.value.trim().replace(",", "."));
+                const base = Number.isFinite(parsed) ? parsed : committed;
+                const next = Math.max(min ?? Number.NEGATIVE_INFINITY, base + (event.key === "ArrowUp" ? step : -step));
+                committed = next;
+                input.value = String(next);
+                onChange(next);
             }
         };
         return input;
@@ -2730,14 +3247,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 });
                 selectedEmitterId = id;
             } else {
-                const firstInflow = activeFlow.emitters.find((emitter) => emitter.behavior === "inflow");
                 activeFlow.sinks.push({
                     id,
-                    name: "New recycle sink",
+                    name: "New sink",
                     enabled: true,
+                    mode: "delete",
                     transform: identityFlowTransform(),
                     shape: defaultFlowShape("box"),
-                    targets: firstInflow ? [firstInflow.id] : [],
+                    targets: [],
                     volumeRate: 1,
                 });
                 selectedSinkId = id;
@@ -2825,6 +3342,29 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const emitter = activeFlow.emitters.find((item) => item.id === selectedEmitterId);
         const editor = emitter ? commonFlowEditor("emitter", emitter) : document.createElement("div");
         if (emitter) {
+            const sourceAndNormalEnabled =
+                emitter.sourceVelocityFactor !== undefined || emitter.normalVelocity !== undefined || (emitter.sourceNode === undefined && emitter.sourceVelocity !== undefined);
+            const sourceAndNormal = document.createElement("input");
+            sourceAndNormal.type = "checkbox";
+            sourceAndNormal.checked = sourceAndNormalEnabled;
+            sourceAndNormal.onchange = () => {
+                if (sourceAndNormal.checked) {
+                    emitter.sourceVelocityFactor ??= 1;
+                    emitter.normalVelocity ??= 0;
+                } else {
+                    delete emitter.sourceVelocity;
+                    delete emitter.sourceVelocityFactor;
+                    delete emitter.normalVelocity;
+                }
+                updateLiveFlowObject("emitter", emitter);
+            };
+            if (emitter.sourceNode) {
+                const sourceNode = document.createElement("code");
+                sourceNode.textContent = emitter.sourceNode;
+                sourceNode.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+                sourceNode.title = emitter.sourceNode;
+                editor.appendChild(flowField("Source mesh", sourceNode, "Imported GLB node whose animated world transform drives this analytical emitter."));
+            }
             const unlimited = document.createElement("input");
             unlimited.type = "checkbox";
             unlimited.checked = emitter.volumeRate === undefined;
@@ -2849,6 +3389,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 )
             );
             if (emitter.behavior === "inflow") {
+                editor.appendChild(
+                    flowField(
+                        "Delay before start",
+                        numberInput(
+                            emitter.delayBeforeStart ?? 0,
+                            (value) => {
+                                emitter.delayBeforeStart = value;
+                                updateLiveFlowObject("emitter", emitter, false);
+                            },
+                            0.1,
+                            0
+                        ),
+                        "Simulation-time seconds to wait after reset before this Inflow emits or accepts recycled particles."
+                    )
+                );
                 editor.appendChild(flowField("Unlimited", unlimited));
                 if (emitter.volumeRate !== undefined) {
                     editor.appendChild(
@@ -2869,11 +3424,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
             editor.append(
                 flowField(
-                    "Velocity",
+                    "Velocity (XYZ)",
                     vec3Editor(emitter.velocity, (value) => {
                         emitter.velocity = value;
                         updateLiveFlowObject("emitter", emitter, false);
-                    })
+                    }),
+                    "Authored launch velocity added to every emitted particle. This is Blender's Initial Velocity X/Y/Z, not the Source mesh's motion."
                 ),
                 flowField(
                     "Velocity space",
@@ -2893,8 +3449,29 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                         0.05,
                         0
                     )
-                )
+                ),
+                flowField("Source + normal", sourceAndNormal, "Opt-in inherited velocity from the linked Source mesh plus analytical shape-normal velocity.")
             );
+            if (sourceAndNormalEnabled) {
+                editor.append(
+                    flowField(
+                        "Source factor",
+                        numberInput(emitter.sourceVelocityFactor ?? 1, (value) => {
+                            emitter.sourceVelocityFactor = value;
+                            updateLiveFlowObject("emitter", emitter, false);
+                        }),
+                        "Multiplier applied to velocity derived each frame from the linked Source mesh's animation."
+                    ),
+                    flowField(
+                        "Normal velocity",
+                        numberInput(emitter.normalVelocity ?? 0, (value) => {
+                            emitter.normalVelocity = value;
+                            updateLiveFlowObject("emitter", emitter, false);
+                        }),
+                        "Speed along the emitter shape's outward analytical normal. Negative values point inward."
+                    )
+                );
+            }
         }
         emitterFlowHost.replaceChildren(flowField("Initial emitters fill capacity", fillCapacity), flowList("emitter"), flowButtons("emitter"), editor);
     };
@@ -2905,6 +3482,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const sink = activeFlow.sinks.find((item) => item.id === selectedSinkId);
         const editor = sink ? commonFlowEditor("sink", sink) : document.createElement("div");
         if (sink) {
+            const operation = selectInput(sink.mode ?? "delete", ["delete", "recycle"] as const, (value) => {
+                sink.mode = value;
+                if (value === "recycle" && sink.targets.length === 0) {
+                    const firstInflow = activeFlow.emitters.find((emitter) => emitter.behavior === "inflow");
+                    sink.targets = firstInflow ? [firstInflow.id] : [];
+                }
+                updateLiveFlowObject("sink", sink);
+                refreshSinkUI();
+            });
             const targets = document.createElement("div");
             targets.style.cssText = "display:grid;gap:2px;";
             for (const emitter of activeFlow.emitters.filter((item) => item.behavior === "inflow")) {
@@ -2920,7 +3506,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 targets.appendChild(label);
             }
             const rateMode = sink.perParticleRecycleRate !== undefined ? "perParticle" : sink.volumeRate !== undefined ? "volume" : "all";
-            const mode = selectInput(rateMode, ["all", "volume", "perParticle"] as const, (value) => {
+            const rate = selectInput(rateMode, ["all", "volume", "perParticle"] as const, (value) => {
                 if (value === "all") {
                     sink.volumeRate = undefined;
                     sink.perParticleRecycleRate = undefined;
@@ -2933,7 +3519,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
                 updateLiveFlowObject("sink", sink);
             });
-            editor.append(flowField("Targets", targets), flowField("Recycle mode", mode));
+            editor.append(flowField("Behavior", operation));
+            if ((sink.mode ?? "delete") === "recycle") {
+                editor.append(flowField("Targets", targets));
+            }
+            editor.append(flowField("Capture limit", rate));
             if (sink.volumeRate !== undefined) {
                 editor.appendChild(
                     flowField(
@@ -2990,6 +3580,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             else if (key === "relaxation") v = value / (s * s);
         }
         sim.setParam(key, v);
+        if (key === "gravity" && sim === activeSim) {
+            canvas.dataset.gravity = String(value);
+        }
     }
 
     function applyMethod(name: string): void {
@@ -3076,6 +3669,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         canvas.dataset.gridCells = cells.join(",");
         canvas.dataset.gridCellSize = String(cellSize);
         canvas.dataset.gridExplicit = String(gridSettings !== undefined);
+        canvas.dataset.physicsParticleSize = String(physicsScale);
+        canvas.dataset.showGridBounds = String(showGridBounds);
     }
 
     function setPhysicsScale(s: number): void {
@@ -3121,6 +3716,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(count, scale));
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
+        builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
         applyMethod(methodName);
@@ -3184,20 +3780,23 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const DEMO_PARAM_DEFAULTS: Record<string, Record<string, number>> = {};
 
     const pairStates = new Map<string, PairState>();
+    const methodIndependentStates = new Map<string, PairState>();
     let currentPairKey: string | null = null;
 
-    function defaultPairState(demo: FluidDemo, method: string): PairState {
+    function defaultPairState(demo: FluidDemo, method: string, material = 0): PairState {
         const flowPosition = defaultGridSettings(method, demo.getDomainScale?.() ?? 1).position;
         const flow = flowToGridLocal(demo.flow(), flowPosition);
+        const sand = method === "PB-MPM" && material === PBMPM_SAND_MATERIAL;
         return {
             schema: { ...SCHEMA_DEFAULTS[method]! },
             demoParams: { ...(DEMO_PARAM_DEFAULTS[demo.key] ?? {}) },
             simulationDuration: RENDER_DEFAULTS.simulationDuration,
             alphaDecay: RENDER_DEFAULTS.alphaDecay,
+            simulationTimeScale: 1,
             emitters: flow.emitters,
             sinks: flow.sinks,
             initialEmittersFillCapacity: flow.initialEmittersFillCapacity,
-            color: RENDER_DEFAULTS.color,
+            color: sand ? "#c2b280" : RENDER_DEFAULTS.color,
             half: RENDER_DEFAULTS.half,
             thicknessDownscale: RENDER_DEFAULTS.thicknessDownscale,
             absorption: RENDER_DEFAULTS.absorption,
@@ -3205,8 +3804,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             physScale: RENDER_DEFAULTS.physScale,
             showGridBounds: false,
             count: RENDER_DEFAULTS.count,
-            material: method === "PB-MPM" ? 0 : undefined,
-            renderMode: RENDER_DEFAULTS.renderMode,
+            material: method === "PB-MPM" ? material : undefined,
+            renderMode: sand ? "spheres" : RENDER_DEFAULTS.renderMode,
             refraction: RENDER_DEFAULTS.refraction,
             specular: RENDER_DEFAULTS.specular,
             reflectionExposure: RENDER_DEFAULTS.reflectionExposure,
@@ -3231,7 +3830,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // First-visit state: the on-disk quality preset for this (demo, method, quality),
     // if any, merged over the core defaults. Pairs with no file use pure defaults.
     function presetOrDefault(demo: FluidDemo, method: string, q: Quality, material = 0): PairState {
-        const base = defaultPairState(demo, method);
+        const base = defaultPairState(demo, method, material);
+        if (demo.usesQualityPresets === false) {
+            return base;
+        }
         const p = getQualityPreset(demo.key, method, q, material);
         if (!p) {
             return base;
@@ -3245,6 +3847,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             demoParams: { ...base.demoParams, ...(p.demoParams ?? {}) },
             simulationDuration: p.simulationDuration ?? base.simulationDuration,
             alphaDecay: p.alphaDecay ?? base.alphaDecay,
+            simulationTimeScale: p.simulationTimeScale ?? base.simulationTimeScale,
             emitters: structuredClone(p.emitters ?? base.emitters ?? []),
             sinks: structuredClone(p.sinks ?? base.sinks ?? []),
             initialEmittersFillCapacity: p.initialEmittersFillCapacity ?? base.initialEmittersFillCapacity,
@@ -3304,6 +3907,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             demoParams,
             simulationDuration: v.simulationDuration,
             alphaDecay: v.alphaDecay,
+            simulationTimeScale,
             emitters: structuredClone(activeFlow.emitters),
             sinks: structuredClone(activeFlow.sinks),
             initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
@@ -3369,6 +3973,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setPhysics(st.schema);
         controls.setSimulationDuration(st.simulationDuration ?? 0);
         controls.setAlphaDecay(st.alphaDecay ?? 2);
+        simulationTimeScale = Math.min(100, Math.max(0.01, st.simulationTimeScale ?? 1));
+        canvas.dataset.simulationTimeScale = String(simulationTimeScale);
         if (typeof st.material === "number") {
             pbmpmMaterial = st.material;
         }
@@ -3516,6 +4122,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             domainScale !== builtDomainScale ||
             gridChanged ||
             (gridSettings !== undefined && builtGridMethod !== methodName) ||
+            builtWithGridFloor !== (importedCollisionActive || demo.useGridFloor === true) ||
             activeBlocksChanged
         ) {
             rebuildSims(st.count, nextPhysicsScale);
@@ -3538,7 +4145,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
     // demo visuals if the demo changed, then load the target pair's state.
+    function resetCameraBase(): void {
+        cam.alpha = DEFAULT_CAMERA.alpha;
+        cam.beta = DEFAULT_CAMERA.beta;
+        cam.radius = DEFAULT_CAMERA.radius;
+        cam.target.x = DEFAULT_CAMERA.target[0];
+        cam.target.y = DEFAULT_CAMERA.target[1];
+        cam.target.z = DEFAULT_CAMERA.target[2];
+    }
+
     function switchPair(nextDemo: FluidDemo, nextMethod: string, nextQuality: Quality = quality, nextMaterial: number = pbmpmMaterial, invalidateImport = true): void {
+        const demoChanged = activeDemo !== nextDemo || currentPairKey === null;
+        const preservingImportedScene = importedScene !== null && !demoChanged && nextDemo.methodIndependentAuthoring === true;
+        const leavingImportedScene = importedScene !== null && !preservingImportedScene;
         if (invalidateImport) {
             importGeneration++;
         }
@@ -3547,15 +4166,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             paused = false;
             canvas.dataset.paused = "false";
         }
-        if (currentPairKey !== null && !importedScene && !suppressPairSnapshot) {
-            pairStates.set(currentPairKey, readLivePairState(methodName));
+        if (currentPairKey !== null && (!importedScene || preservingImportedScene) && !suppressPairSnapshot) {
+            const snapshot = readLivePairState(methodName);
+            pairStates.set(currentPairKey, snapshot);
+            if (activeDemo?.methodIndependentAuthoring) {
+                methodIndependentStates.set(activeDemo.key, snapshot);
+            }
         }
-        if (importedScene) {
-            clearImportedScene(false);
+        if (leavingImportedScene) {
+            resetCameraBase();
+            clearImportedScene(true);
         }
         // Adopt the target method before applying scene state.
         methodName = nextMethod;
-        if (activeDemo !== nextDemo || currentPairKey === null) {
+        if (demoChanged) {
             if (activeDemo) {
                 activeDemo.onLeave();
             }
@@ -3569,6 +4193,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             syncFlowGizmo();
             activeDemo = nextDemo;
             activeFlow = flowToGridLocal(nextDemo.flow(), defaultGridSettings(nextMethod, nextDemo.getDomainScale?.() ?? 1).position);
+            resetCameraBase();
             activeDemo.onEnter(); // meshes, camera mode
             applyDemoEnv(activeDemo); // swap skybox background + surface-reflection cube
             applyEnvRotation(activeDemo.envRotationDeg ?? 0); // aim the backdrop the way this demo wants it
@@ -3581,18 +4206,36 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             clearSceneHoles();
         }
         quality = nextQuality;
-        // PB-MPM keeps a SEPARATE pair (physics/render/colour) per material — but ONLY on material-capable
-        // demos (the box). Every other demo is liquid-only, so material is forced to 0 there and the key
-        // carries no material axis.
+        const usesQualityPresets = nextDemo.usesQualityPresets !== false;
+        qualitySel.style.display = usesQualityPresets ? "" : "none";
+        canvas.dataset.qualityPresets = String(usesQualityPresets);
+        controls.containerToggleRow!.style.display = nextDemo.setContainerVisible ? "" : "none";
+        canvas.dataset.demo = nextDemo.key;
+        // PB-MPM keeps a SEPARATE pair (physics/render/colour) per material on demos with closed solver
+        // bounds. Open flow demos are liquid-only, so their key carries no material axis.
         const withMaterial = nextMethod === "PB-MPM" && MATERIAL_DEMO_KEYS.includes(nextDemo.key);
         if (nextMethod === "PB-MPM") {
             pbmpmMaterial = withMaterial ? nextMaterial : 0;
         }
-        const key = withMaterial ? `${nextDemo.key}:${nextMethod}:${nextQuality}:m${pbmpmMaterial}` : `${nextDemo.key}:${nextMethod}:${nextQuality}`;
-        const st = pairStates.get(key) ?? presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial);
+        const qualityKey = nextDemo.methodIndependentAuthoring ? "" : `:${nextQuality}`;
+        const key = withMaterial ? `${nextDemo.key}:${nextMethod}${qualityKey}:m${pbmpmMaterial}` : `${nextDemo.key}:${nextMethod}${qualityKey}`;
+        const defaultState = presetOrDefault(nextDemo, nextMethod, nextQuality, pbmpmMaterial);
+        const targetState = pairStates.get(key) ?? defaultState;
+        const sharedState = nextDemo.methodIndependentAuthoring ? methodIndependentStates.get(nextDemo.key) : undefined;
+        const st = sharedState ? carryMethodIndependentState(targetState, sharedState, { retainTargetPresentation: withMaterial }) : targetState;
         currentPairKey = key;
         domainScale = typeof st.demoParams.meshScale === "number" ? st.demoParams.meshScale : (nextDemo.getDomainScale?.() ?? 1);
         loadPairState(st);
+        if (demoChanged || leavingImportedScene) {
+            const authoredCamera = defaultState.camera ?? DEFAULT_CAMERA;
+            cam.alpha = authoredCamera.alpha;
+            cam.beta = authoredCamera.beta;
+            cam.radius = authoredCamera.radius;
+        }
+        canvas.dataset.cameraAlpha = String(cam.alpha);
+        canvas.dataset.cameraBeta = String(cam.beta);
+        canvas.dataset.cameraRadius = String(cam.radius);
+        canvas.dataset.cameraTarget = [cam.target.x, cam.target.y, cam.target.z].join(",");
         restartSimulationLifecycle();
         // Re-apply the container-mesh visibility choice (onEnter shows it by default).
         nextDemo.setContainerVisible?.(importedScene ? false : controls.getValues().showContainer);
@@ -3668,7 +4311,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
 
     // Build the demo registry (capsule default) and populate the demo dropdown.
-    const demos: FluidDemo[] = [createCapsuleDemo(ctx), await createBoxDemo(ctx), createFountainDemo(ctx), createWaterfallDemo(ctx), createMarbleTowerDemo(ctx)];
+    const demos: FluidDemo[] = [
+        createWhiteboardDemo(ctx),
+        createCapsuleDemo(ctx),
+        await createBoxDemo(ctx),
+        createFountainDemo(ctx),
+        createWaterfallDemo(ctx),
+        createMarbleTowerDemo(ctx),
+    ];
     for (const d of demos) {
         const opt = document.createElement("option");
         opt.value = d.key;
@@ -3818,7 +4468,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // Rendering and the camera keep running, so you can inspect the frozen state;
         // forces / holes resume on unpause.
         if (!paused && !simulationStopped) {
-            const stepDt = fluidSimulationStepDelta(simulationElapsed, dt, simulationDuration, simulationAlphaDecay);
+            const stepDt = fluidSimulationStepDelta(simulationElapsed, dt * simulationTimeScale, simulationDuration, simulationAlphaDecay);
             if (!importedScene) {
                 activeDemo?.update(stepDt); // box: spin paddle + write paddle SDF block
             }
@@ -3835,6 +4485,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
             }
         }
+        const activeParticleCount = activeSim.activeCount ?? activeSim.count;
+        controls.setActiveParticleCount(activeParticleCount);
+        canvas.dataset.activeParticleCount = String(activeParticleCount);
     });
 
     // ── Input dispatch ────────────────────────────────────────────────────
@@ -3919,7 +4572,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         // Global shortcuts: R resets (refills), M toggles the backend, P pauses, F8 hides the UI.
         if (e.key === "r" || e.key === "R") {
-            resetActiveFlow(true);
+            resetActiveFlow(true, e.shiftKey);
         } else if (e.key === "m" || e.key === "M") {
             const methods = Object.keys(DEFAULT_FLUID_SCHEMAS);
             const nextMethod = methods[(methods.indexOf(methodName) + 1) % methods.length] ?? "PBF";
@@ -3940,7 +4593,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // switchPair, so first-visit lookups see them. Runtime fetch → editing a preset + reloading
     // the page applies it with no bundle rebuild.
     await loadQualityPresets(
-        demos.map((d) => d.key),
+        demos.filter((demo) => demo.usesQualityPresets !== false).map((demo) => demo.key),
         MATERIAL_DEMO_KEYS
     );
     switchPair(boxDemo, "MLS-MPM", quality); // box + MLS-MPM at the default quality

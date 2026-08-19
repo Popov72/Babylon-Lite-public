@@ -124,6 +124,7 @@ export function createFountainDemo(ctx: FluidCtx): FluidDemo {
                     id: "fountain-basin-recycle",
                     name: "Basin recycle",
                     enabled: true,
+                    mode: "recycle",
                     transform: { position: [0, FOUNTAIN_FLOOR + 0.4, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
                     shape: { type: "box", size: [FOUNTAIN_R * 2, 0.8, FOUNTAIN_R * 2] },
                     targets: jets.map((emitter) => emitter.id),

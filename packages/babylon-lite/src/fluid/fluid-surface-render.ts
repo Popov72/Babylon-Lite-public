@@ -614,6 +614,7 @@ misc: vec4<f32>,
 @group(0) @binding(1) var<storage, read> aniso: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> dbg: array<f32>;
 @group(0) @binding(3) var sceneDepthTex: texture_depth_2d;
+@group(0) @binding(4) var<storage, read> palpha: array<f32>;
 
 fn occludedByScene(fragEyeZ: f32, ndc: vec4<f32>) -> bool {
 let uv = ndc.xy / ndc.w;

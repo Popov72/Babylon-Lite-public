@@ -12,10 +12,20 @@ import type { FluidEmitter, FluidSink } from "babylon-lite";
 import type { DemoStateValue, FluidDomainBounds, PairState } from "./demo.js";
 import { cellSizeForPhysicsScale, gridPositionForBounds, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
 
+function truncateToThreeDecimals(value: number): number {
+    return Math.trunc(value * 1000) / 1000;
+}
+
 /** The grouped, human-facing JSON shape (matches the "Export parameters" download). */
 export interface FluidExportJson {
     formatVersion?: number;
     meta: { demo: string; method: string };
+    /** Original authoring data retained for diagnostics and future mappings. */
+    source?: {
+        application: string;
+        version?: string;
+        settings?: Record<string, unknown>;
+    };
     physics: Record<string, number>;
     demoParams: Record<string, number>;
     demoState: Record<string, DemoStateValue>;
@@ -23,6 +33,8 @@ export interface FluidExportJson {
     simulationDuration?: number;
     /** Seconds taken to fade fluid opacity to zero. */
     alphaDecay?: number;
+    /** Multiplier applied to real frame time before stepping the simulation. */
+    simulationTimeScale?: number;
     /** Solver-independent flow authoring data. Optional for legacy presets. */
     emitters?: FluidEmitter[];
     sinks?: FluidSink[];
@@ -129,6 +141,14 @@ export interface FluidExportJson {
         foamDebug: string;
         foamSize: number;
     };
+    /** Self-contained Blender scene payload. Omitted by parameter-only presets. */
+    scene?: {
+        encoding: "base64";
+        glb: string;
+        collision: string;
+        /** Grid position at which the immutable GLB and collision coordinates were authored. */
+        anchorPosition?: [number, number, number];
+    };
 }
 
 /** Serialise a full PairState (from a preset/default or the live UI) into the
@@ -136,15 +156,16 @@ export interface FluidExportJson {
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
     const f = ps.foam;
     return {
-        formatVersion: 5,
+        formatVersion: 9,
         meta: { demo, method },
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
         demoState: ps.demoState ? { ...ps.demoState } : {},
         simulationDuration: ps.simulationDuration ?? 0,
         alphaDecay: ps.alphaDecay ?? 2,
+        simulationTimeScale: ps.simulationTimeScale ?? 1,
         emitters: structuredClone(ps.emitters ?? []),
-        sinks: structuredClone(ps.sinks ?? []),
+        sinks: structuredClone(ps.sinks ?? []).map((sink) => ({ ...sink, mode: sink.mode ?? "delete" })),
         ...(ps.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: ps.initialEmittersFillCapacity } : {}),
         showContainer: ps.showContainer ?? true,
         ...(ps.envIntensity !== undefined ? { envIntensity: ps.envIntensity } : {}),
@@ -199,7 +220,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             foamAmbient: f?.ambient ?? 0,
             foamAO: f?.aoStrength ?? 0,
             foamNormalStrength: f?.normalStrength ?? 0,
-            foamDebug: f?.debugTexture ?? "off",
+            foamDebug: f?.debugTexture && f.debugTexture !== "none" ? f.debugTexture : "off",
             foamSize: f?.size ?? 1,
         },
     };
@@ -239,12 +260,23 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         return copies;
     };
     const emitters = localizeFlow(j.emitters);
-    const sinks = localizeFlow(j.sinks);
+    const sinks = localizeFlow(j.sinks)?.map((sink) => ({
+        ...sink,
+        mode: sink.mode ?? ((j.formatVersion ?? 0) <= 6 ? "recycle" : "delete"),
+    }));
+    const schema = { ...j.physics };
+    if (schema.gravity !== undefined) {
+        schema.gravity = truncateToThreeDecimals(schema.gravity);
+    }
+    if (schema.scorr !== undefined) {
+        schema.scorr = truncateToThreeDecimals(schema.scorr);
+    }
     return {
-        schema: { ...j.physics },
+        schema,
         demoParams: { ...j.demoParams },
         simulationDuration: j.simulationDuration ?? 0,
         alphaDecay: j.alphaDecay ?? 2,
+        simulationTimeScale: j.simulationTimeScale ?? 1,
         ...(emitters ? { emitters } : {}),
         ...(sinks ? { sinks } : {}),
         ...(j.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: j.initialEmittersFillCapacity } : {}),
@@ -289,7 +321,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
             ambient: fm.foamAmbient,
             aoStrength: fm.foamAO,
             normalStrength: fm.foamNormalStrength,
-            debugTexture: fm.foamDebug,
+            debugTexture: fm.foamDebug && fm.foamDebug !== "none" ? fm.foamDebug : "off",
             softness: fm.foamSoftness,
             density: fm.foamDensity,
             subsurfaceStrength: fm.subsurfaceBubbleStrength,

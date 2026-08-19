@@ -821,6 +821,7 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
                     id: "waterfall-floor-recycle",
                     name: "Waterfall floor return",
                     enabled: true,
+                    mode: "recycle",
                     transform: { position: [ROCK_CX, FLOOR_Y - 0.35, ROCK_CZ], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
                     shape: { type: "box", size: [pr * 2, 1.3, pr * 2] },
                     targets: inflows.map((emitter) => emitter.id),
