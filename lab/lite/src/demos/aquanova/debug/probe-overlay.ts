@@ -1,8 +1,7 @@
-// Debug visualization for the point-of-interest cubemap blend.
+// Debug visualization for the fragment-weighted cubemap blend.
 //
 // Each probe shows its full-influence inner box, zero-influence outer box, and capture point.
-// The camera marker is the POI consumed by the selector; the panel reports the selected probes,
-// their normalized distance fields, and final weights.
+// Only probes in the camera's current voxel show capture spheres or appear in the panel.
 
 import { addToScene, createCylinder, createSphere, createStandardMaterial, setMeshVisible, type EngineContext, type Material, type Mesh, type SceneContext } from "babylon-lite";
 import type { LocalEnvironmentBlendInfo, LocalEnvironmentProbeVolume } from "../local-environments.js";
@@ -13,20 +12,14 @@ export interface ProbeOverlayOptions {
     canvas: HTMLCanvasElement;
     probes: readonly LocalEnvironmentProbeVolume[];
     blendInfo: () => LocalEnvironmentBlendInfo;
-    poi: () => readonly [number, number, number];
+    blendingEnabled: () => boolean;
+    setDebugEnabled: (enabled: boolean) => void;
 }
 
 export interface ProbeOverlay {
     toggle(): void;
     onFrame(): void;
 }
-
-const PROBE_COLORS: readonly (readonly [number, number, number])[] = [
-    [0.2, 0.85, 1],
-    [1, 0.55, 0.15],
-    [0.9, 0.3, 0.9],
-    [0.35, 1, 0.45],
-];
 
 const EDGE_PAIRS = [
     [0, 1],
@@ -123,14 +116,15 @@ function vec(values: readonly number[]): string {
     return values.map((value) => value.toFixed(2)).join(", ");
 }
 
-export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, poi }: ProbeOverlayOptions): ProbeOverlay {
-    const meshes: Mesh[] = [];
-    const weightMarkers = new Map<string, Mesh>();
+export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, blendingEnabled, setDebugEnabled }: ProbeOverlayOptions): ProbeOverlay {
+    const boxMeshes: Mesh[] = [];
+    const probeMarkers = new Map<string, Mesh>();
+    const probesById = new Map(probes.map((probe) => [probe.id, probe]));
 
-    probes.forEach((probe, index) => {
-        const color = PROBE_COLORS[index % PROBE_COLORS.length]!;
-        meshes.push(...addBox(engine, scene, probe.centre, probe.outerHalfSize, createUnlitMaterial(dim(color, 0.35)), 0.025));
-        meshes.push(...addBox(engine, scene, probe.centre, probe.innerHalfSize, createUnlitMaterial(color), 0.045));
+    probes.forEach((probe) => {
+        const color = probe.debugColor;
+        boxMeshes.push(...addBox(engine, scene, probe.centre, probe.outerHalfSize, createUnlitMaterial(dim(color, 0.35)), 0.025));
+        boxMeshes.push(...addBox(engine, scene, probe.centre, probe.innerHalfSize, createUnlitMaterial(color), 0.045));
 
         const marker = createSphere(engine, { diameter: 0.3, segments: 8 });
         marker.position.set(probe.capturePosition[0], probe.capturePosition[1], probe.capturePosition[2]);
@@ -138,8 +132,7 @@ export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, p
         marker.pickable = false;
         marker.visible = false;
         addToScene(scene, marker);
-        meshes.push(marker);
-        weightMarkers.set(probe.id, marker);
+        probeMarkers.set(probe.id, marker);
     });
 
     const panel = document.createElement("div");
@@ -155,40 +148,44 @@ export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, p
 
     const refresh = (): void => {
         if (!enabled) return;
-        const point = poi();
         const info = blendInfo();
-        const selected = new Map(info.probes.map((probe) => [probe.id, probe]));
+        const selectedIds = new Set(info.cameraVoxelProbeIds);
+        const blending = blendingEnabled();
         for (const probe of probes) {
-            const weight = selected.get(probe.id)?.weight ?? 0;
-            const marker = weightMarkers.get(probe.id)!;
-            const scale = 0.65 + weight * 1.8;
-            marker.scaling.set(scale, scale, scale);
+            const marker = probeMarkers.get(probe.id)!;
+            setMeshVisible(marker, blending && selectedIds.has(probe.id));
         }
 
-        const nextKey = `${point.map((value) => value.toFixed(2)).join("|")}|${info.probes.map((probe) => `${probe.id}:${probe.weight.toFixed(4)}:${probe.ndf.toFixed(4)}`).join("|")}`;
+        const nextKey = `${blending}|${info.cameraVoxelProbeIds.join(",")}`;
         if (nextKey === panelKey) return;
         panelKey = nextKey;
+        const selectedProbes = info.cameraVoxelProbeIds.map((id) => probesById.get(id)).filter((probe): probe is LocalEnvironmentProbeVolume => probe !== undefined);
         panel.textContent =
-            `CUBEMAP POI BLEND (V)\n` +
-            `POI (${vec(point)})\n` +
-            `Inner boxes: full influence   Outer boxes: zero-influence boundary\n` +
-            `Dominant: ${info.dominantProbeId ?? "none"}\n` +
-            (info.probes.length ? info.probes.map((probe) => `${probe.id}  weight=${probe.weight.toFixed(4)}  ndf=${probe.ndf.toFixed(4)}`).join("\n") : "No selected probe.") +
-            "\n\n" +
-            probes
-                .map(
-                    (probe) =>
-                        `${probe.id}\n  centre(${vec(probe.centre)})  inner(${vec(probe.innerHalfSize.map((value) => value * 2))})  outer(${vec(probe.outerHalfSize.map((value) => value * 2))})`
-                )
-                .join("\n");
-        canvas.dataset.probeOverlayBlend = info.probes.map((probe) => `${probe.id}:${probe.weight.toFixed(4)}:${probe.ndf.toFixed(4)}`).join(",");
+            `CUBEMAP BLEND COLORS (V)\n` +
+            `Mode: ${blending ? "per-fragment debug colors" : "disabled — static per-mesh cubemaps"}\n` +
+            `Camera voxel probes: ${selectedProbes.length}\n\n` +
+            (selectedProbes.length
+                ? selectedProbes
+                      .map(
+                          (probe) =>
+                              `${probe.id}\n  centre(${vec(probe.centre)})\n  inner(${vec(probe.innerHalfSize.map((value) => value * 2))})\n  outer(${vec(probe.outerHalfSize.map((value) => value * 2))})`
+                      )
+                      .join("\n\n")
+                : "No camera voxel probes while blending is disabled.");
+        canvas.dataset.probeOverlaySelected = info.cameraVoxelProbeIds.join(",");
     };
 
     return {
         toggle(): void {
             enabled = !enabled;
             canvas.dataset.probeOverlay = enabled ? "on" : "off";
-            setVisible(meshes, enabled);
+            setDebugEnabled(enabled);
+            setVisible(boxMeshes, enabled);
+            if (!enabled) {
+                for (const marker of probeMarkers.values()) {
+                    setMeshVisible(marker, false);
+                }
+            }
             panel.style.display = enabled ? "block" : "none";
             if (enabled) {
                 panelKey = "";

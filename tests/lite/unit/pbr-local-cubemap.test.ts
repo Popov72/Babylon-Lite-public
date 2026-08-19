@@ -1,36 +1,147 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { EnvironmentTextures } from "../../../packages/babylon-lite/src/loader-env/load-env";
-import type { PbrMaterialProps } from "../../../packages/babylon-lite/src/material/pbr/pbr-material";
-import type { MaterialPlugin } from "../../../packages/babylon-lite/src/material/plugin/material-plugin";
-import { pbrExt as clearcoatExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/clearcoat-fragment";
+import {
+    createPbrLocalEnvironmentProbeSet,
+    enablePbrLocalCubemap,
+    getPbrLocalEnvironmentProbeGridCell,
+    MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
+    MAX_PBR_LOCAL_ENVIRONMENT_PROBES,
+    setPbrLocalEnvironmentProbeDebug,
+} from "../../../packages/babylon-lite/src/material/pbr/enable-pbr-local-cubemap";
 import { pbrExt as alphaTestExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/alpha-test-fragment";
-import { createIblFragment, pbrExt as iblExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/ibl-fragment";
-import { pbrExt as diffuseLightmapExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/diffuse-lightmap-fragment";
-import { createLocalCubemapFragment, pbrExt, registerPbrLocalCubemapExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/local-cubemap-fragment";
-import { pbrExt as morphExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/morph-fragment";
+import { pbrExt as clearcoatExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/clearcoat-fragment";
+import { pbrExt as iblExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/ibl-fragment";
+import { pbrExt, registerPbrLocalCubemapExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/local-cubemap-fragment";
+import { pbrExt as sheenExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/sheen-fragment";
 import { createPbrComposer } from "../../../packages/babylon-lite/src/material/pbr/pbr-compose";
-import { _registerPbrExt, PBR_HAS_ENV, PBR_HAS_SPECULAR_AA } from "../../../packages/babylon-lite/src/material/pbr/pbr-flags";
-import { _computePbrMaterialFeatures } from "../../../packages/babylon-lite/src/material/pbr/pbr-material";
+import { _registerPbrExt, PBR_HAS_ENV } from "../../../packages/babylon-lite/src/material/pbr/pbr-flags";
+import { _computePbrMaterialFeatures, type PbrLocalEnvironmentProbeSet, type PbrMaterialProps } from "../../../packages/babylon-lite/src/material/pbr/pbr-material";
 import { createPbrMeshBindGroup } from "../../../packages/babylon-lite/src/material/pbr/pbr-pipeline";
-import { enablePbrLocalCubemap } from "../../../packages/babylon-lite/src/material/pbr/enable-pbr-local-cubemap";
+import type { MaterialPlugin } from "../../../packages/babylon-lite/src/material/plugin/material-plugin";
 import { registerPbrPlugins } from "../../../packages/babylon-lite/src/material/plugin/pbr-plugin-bridge";
-import { createPbrTemplate } from "../../../packages/babylon-lite/src/material/pbr/pbr-template";
-import { MSH_HAS_MORPH_TARGETS } from "../../../packages/babylon-lite/src/material/mesh-features";
-import { composeShader } from "../../../packages/babylon-lite/src/shader/shader-composer";
 
 function makeEnvironment(overrides: Partial<EnvironmentTextures> = {}): EnvironmentTextures {
     return overrides as EnvironmentTextures;
 }
 
+function composer() {
+    return createPbrComposer({
+        _singleLightWGSL: "",
+        _getSingleLightBlock: null,
+        _multiLightWGSL: "",
+        _multiLightLoop: "",
+        _toneMappingHelpers: "",
+        _toneMappingCall: "",
+        _fogHelper: "",
+        _fogBlock: "",
+        _createPbrTemplateExt: null,
+        _anisoExt: null,
+        _iblSkyboxCalc: "",
+        _flatNormalWgsl: "",
+        _gammaTemplate: null,
+        _createPbrShadowFragment: null,
+        _shadowLights: [],
+        _createThinInstanceFragment: null,
+    });
+}
+
+function fakeProbeSet(environment: EnvironmentTextures): PbrLocalEnvironmentProbeSet {
+    return {
+        probes: [
+            {
+                environment,
+                capturePosition: [0, 0, 0],
+                projectionPosition: [0, 0, 0],
+                projectionSize: [4, 4, 4],
+                influencePosition: [0, 0, 0],
+                influenceInnerSize: [2, 2, 2],
+                influenceOuterSize: [6, 6, 6],
+            },
+        ],
+        _uniformBuffer: {} as GPUBuffer,
+        _uniformData: new Float32Array(),
+        _uniformU32: new Uint32Array(),
+        _texture: {} as GPUTexture,
+        _textureView: {} as GPUTextureView,
+        _sampler: {} as GPUSampler,
+        _gridBuffer: {} as GPUBuffer,
+        _gridData: new Uint32Array([0, 0, 0, 0, 1, 1, 1, 7, 1, 0, 0, 0, 0, 0, 0]),
+        _gridMinimum: [0, 0, 0],
+        _gridCellSize: 1,
+        _gridDimensions: [1, 1, 1],
+        _gridStride: 7,
+        _device: {} as GPUDevice,
+        _bindVersion: 0,
+    };
+}
+
+function makeProbeGridTestScene(): { scene: unknown; environment: EnvironmentTextures } {
+    const destinationTexture = {
+        createView: vi.fn(() => ({}) as GPUTextureView),
+        destroy: vi.fn(),
+    } as unknown as GPUTexture;
+    const device = {
+        limits: {
+            maxTextureArrayLayers: 256,
+            maxUniformBufferBindingSize: 65536,
+            maxStorageBufferBindingSize: 65536,
+            maxBufferSize: 65536,
+        },
+        createTexture: vi.fn(() => destinationTexture),
+        createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
+            const mapped = new ArrayBuffer(Number(descriptor.size));
+            return {
+                destroy: vi.fn(),
+                getMappedRange: vi.fn(() => mapped),
+                unmap: vi.fn(),
+            } as unknown as GPUBuffer;
+        }),
+        createCommandEncoder: vi.fn(() => ({
+            copyTextureToTexture: vi.fn(),
+            finish: () => ({}),
+        })),
+        queue: {
+            submit: vi.fn(),
+            writeBuffer: vi.fn(),
+        },
+    } as unknown as GPUDevice;
+    const environment = makeEnvironment({
+        _specularCube: {
+            width: 64,
+            height: 64,
+            depthOrArrayLayers: 6,
+            mipLevelCount: 7,
+            format: "rgba16float",
+        } as GPUTexture,
+        _cubeSampler: {} as GPUSampler,
+    });
+    return {
+        scene: {
+            surface: { engine: { _device: device } },
+            _disposables: [],
+        },
+        environment,
+    };
+}
+
 describe("PBR local cubemap projection", () => {
-    it("binds a loader-created material's local environment after the feature opt-in", async () => {
-        const baseView = {} as GPUTextureView;
-        const baseSampler = {} as GPUSampler;
-        const ormView = {} as GPUTextureView;
-        const ormSampler = {} as GPUSampler;
+    it("defaults to four candidates and locks a custom value during initialization", async () => {
+        expect(MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES).toBe(4);
+        expect(MAX_PBR_LOCAL_ENVIRONMENT_PROBES).toBe(682);
+        expect(() => enablePbrLocalCubemap({ maxCandidates: 0 })).toThrow(/integer from 1 to 12/);
+
+        await enablePbrLocalCubemap({ maxCandidates: 6 });
+
+        expect(MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES).toBe(6);
+        await expect(enablePbrLocalCubemap()).resolves.toBeUndefined();
+        expect(() => enablePbrLocalCubemap({ maxCandidates: 5 })).toThrow(/already 6/);
+    });
+
+    it("keeps the lightweight single-probe box projection path", async () => {
         const globalCubeView = {} as GPUTextureView;
         const localCubeView = {} as GPUTextureView;
+        const localSampler = {} as GPUSampler;
         const globalEnvironment = makeEnvironment({
             _brdfLutView: {} as GPUTextureView,
             _brdfSampler: {} as GPUSampler,
@@ -41,11 +152,14 @@ describe("PBR local cubemap projection", () => {
             _brdfLutView: {} as GPUTextureView,
             _brdfSampler: {} as GPUSampler,
             _specularCubeView: localCubeView,
-            _cubeSampler: {} as GPUSampler,
+            _cubeSampler: localSampler,
+            boundingBoxPosition: [1, 2, 3],
+            boundingBoxSize: [4, 5, 6],
+            _lodGenerationScale: 0.7,
         });
         const material = {
-            baseColorTexture: { view: baseView, sampler: baseSampler },
-            ormTexture: { view: ormView, sampler: ormSampler },
+            baseColorTexture: { view: {} as GPUTextureView, sampler: {} as GPUSampler },
+            ormTexture: { view: {} as GPUTextureView, sampler: {} as GPUSampler },
             localEnvironment,
         } as PbrMaterialProps;
         let descriptor: GPUBindGroupDescriptor | undefined;
@@ -62,8 +176,8 @@ describe("PBR local cubemap projection", () => {
         await enablePbrLocalCubemap();
         createPbrMeshBindGroup(
             engine as never,
-            { _features: 0, _features2: 0, _meshFeatures: 0, _meshBGL: {} as GPUBindGroupLayout, _shadowBGL: null } as never,
-            { _fragmentKey: "ibl" } as never,
+            { _features: 0, _features2: 1 << 29, _meshFeatures: 0, _meshBGL: {} as GPUBindGroupLayout, _shadowBGL: null } as never,
+            { _fragmentKey: "ibl|local-cubemap" } as never,
             {} as GPUBuffer,
             {} as GPUBuffer,
             material,
@@ -73,10 +187,283 @@ describe("PBR local cubemap projection", () => {
 
         const resources = Array.from(descriptor!.entries, (entry) => entry.resource);
         expect(resources).toContain(localCubeView);
+        expect(resources).toContain(localSampler);
         expect(resources).not.toContain(globalCubeView);
     });
 
-    it("keeps plugin shader variants separate from local-cubemap feature bits", () => {
+    it("binds one cube array, one sampler, and one shared UBO for every local probe", async () => {
+        const environment = makeEnvironment({
+            _brdfLutView: {} as GPUTextureView,
+            _brdfSampler: {} as GPUSampler,
+            _specularCubeView: {} as GPUTextureView,
+            _cubeSampler: {} as GPUSampler,
+        });
+        const set = fakeProbeSet(environment);
+        const material = {
+            baseColorTexture: { view: {} as GPUTextureView, sampler: {} as GPUSampler },
+            ormTexture: { view: {} as GPUTextureView, sampler: {} as GPUSampler },
+            localEnvironmentProbes: set,
+        } as PbrMaterialProps;
+        let descriptor: GPUBindGroupDescriptor | undefined;
+        const engine = {
+            _device: {
+                createBindGroup(value: GPUBindGroupDescriptor): GPUBindGroup {
+                    descriptor = value;
+                    return {} as GPUBindGroup;
+                },
+            },
+        };
+
+        _registerPbrExt(iblExt);
+        await enablePbrLocalCubemap();
+        const features = _computePbrMaterialFeatures(material);
+        createPbrMeshBindGroup(
+            engine as never,
+            { _features: features.features, _features2: features.features2, _meshFeatures: 0, _meshBGL: {} as GPUBindGroupLayout, _shadowBGL: null } as never,
+            { _fragmentKey: "ibl" } as never,
+            {} as GPUBuffer,
+            {} as GPUBuffer,
+            material,
+            environment,
+            null
+        );
+
+        const resources = Array.from(descriptor!.entries, (entry) => entry.resource);
+        expect(resources).toContainEqual({ buffer: set._uniformBuffer });
+        expect(resources).toContainEqual({ buffer: set._gridBuffer });
+        expect(resources).toContain(set._textureView);
+        expect(resources).toContain(set._sampler);
+        expect(resources).not.toContain(environment._specularCubeView);
+    });
+
+    it("composes per-fragment oriented box weights without replacing scene irradiance", async () => {
+        _registerPbrExt(iblExt);
+        _registerPbrExt(clearcoatExt);
+        _registerPbrExt(sheenExt);
+        await enablePbrLocalCubemap();
+        const environment = makeEnvironment({});
+        const material = {
+            localEnvironmentProbes: fakeProbeSet(environment),
+            clearCoat: { isEnabled: true },
+            sheen: { isEnabled: true },
+        } as PbrMaterialProps;
+        const features = _computePbrMaterialFeatures(material);
+        const result = composer()(features.features | clearcoatExt.detect!(material).f | sheenExt.detect!(material).f, features.features2, 0, PBR_HAS_ENV);
+
+        expect(result._fragmentWGSL).toContain("var localProbeTexture:texture_cube_array<f32>");
+        expect(result._fragmentWGSL).toContain("probes:array<LocalEnvironmentProbe,682>");
+        expect(result._fragmentWGSL).toContain("var<storage, read> localProbeGrid:localProbeGridUniforms");
+        expect(result._fragmentWGSL).toContain("fn localProbeVoxelBase(worldPos:vec3f)");
+        expect(result._fragmentWGSL).toContain("let candidateCount=min(localProbeGrid.indices[voxelBase],6u);");
+        expect(result._fragmentWGSL).toContain("var ndfs:array<f32,6>");
+        expect(result._fragmentWGSL).toContain("fn probeNdf(");
+        expect(result._fragmentWGSL).toContain("let axisNdf=(abs(localPosition)-innerHalfSize)/span;");
+        expect(result._fragmentWGSL).toContain("var nearestProbeIndex=voxelProbeIndex(voxelBase,0u);");
+        expect(result._fragmentWGSL).toContain("return sampleOneLocalProbe(nearestProbeIndex");
+        expect(result._fragmentWGSL).toContain("let boundaryWeight=(1.0-ndf/max(sumNdf,0.00001))/countMinusOne;");
+        expect(result._fragmentWGSL).toContain("probeToLocal(worldPos-probe.influenceCentreAndCos.xyz");
+        expect(result._fragmentWGSL).toContain("fn localProbeDebugColor(");
+        expect(result._fragmentWGSL).toContain("let localProbeDebugOutput=environmentRadiance;");
+        expect(result._fragmentWGSL).toContain("color=localProbeDebugOutput;");
+        expect(result._fragmentWGSL).toContain("sampleLocalProbeRadiance(input.worldPos,ccR_raw");
+        expect(result._fragmentWGSL).toContain("sampleLocalProbeRadiance(input.worldPos,R_raw,shAlphaG_ibl");
+        expect(result._fragmentWGSL).toContain("let environmentIrradiance = (scene.vSphericalL00.rgb");
+        expect(result._fragmentWGSL).not.toContain("localSphericalL00");
+        expect(result._fragmentWGSL).not.toContain("var iblTexture:texture_cube<f32>");
+        expect(result._meshBGLDescriptor.entries).toContainEqual(expect.objectContaining({ buffer: { type: "read-only-storage" } }));
+    });
+
+    it("normalizes mixed-resolution cubemaps through matching source mip copies", () => {
+        const copies: Array<{ sourceMip: number; sourceLayer: number; destinationLayer: number; size: readonly number[] }> = [];
+        const writes: Float32Array[] = [];
+        const destinationTexture = {
+            width: 512,
+            height: 512,
+            depthOrArrayLayers: 12,
+            mipLevelCount: 10,
+            format: "rgba16float",
+            createView: vi.fn(() => ({ id: "cube-array-view" })),
+            destroy: vi.fn(),
+        } as unknown as GPUTexture;
+        const uniformBuffer = { destroy: vi.fn() } as unknown as GPUBuffer;
+        const gridMapped = new ArrayBuffer(64 * 1024);
+        const gridBuffer = {
+            destroy: vi.fn(),
+            getMappedRange: vi.fn(() => gridMapped),
+            unmap: vi.fn(),
+        } as unknown as GPUBuffer;
+        const device = {
+            limits: {
+                maxTextureArrayLayers: 256,
+                maxUniformBufferBindingSize: 65536,
+                maxStorageBufferBindingSize: 65536,
+                maxBufferSize: 65536,
+            },
+            createTexture: vi.fn(() => destinationTexture),
+            createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => (descriptor.mappedAtCreation ? gridBuffer : uniformBuffer)),
+            createCommandEncoder: vi.fn(() => ({
+                copyTextureToTexture(source: GPUImageCopyTexture, destination: GPUImageCopyTexture, size: GPUExtent3DStrict) {
+                    const sourceOrigin = source.origin as readonly number[];
+                    const destinationOrigin = destination.origin as readonly number[];
+                    copies.push({
+                        sourceMip: source.mipLevel ?? 0,
+                        sourceLayer: sourceOrigin[2]!,
+                        destinationLayer: destinationOrigin[2]!,
+                        size: size as readonly number[],
+                    });
+                },
+                finish: () => ({}),
+            })),
+            queue: {
+                submit: vi.fn(),
+                writeBuffer: vi.fn((_buffer, _offset, source: ArrayBuffer, byteOffset: number, byteLength: number) => {
+                    writes.push(new Float32Array(source.slice(byteOffset, byteOffset + byteLength)));
+                }),
+            },
+        } as unknown as GPUDevice;
+        const source = (width: number, mipLevelCount: number) =>
+            ({
+                width,
+                height: width,
+                depthOrArrayLayers: 6,
+                mipLevelCount,
+                format: "rgba16float",
+            }) as GPUTexture;
+        const environment = (width: number, mipLevelCount: number) =>
+            makeEnvironment({
+                _specularCube: source(width, mipLevelCount),
+                _cubeSampler: {} as GPUSampler,
+                _lodGenerationScale: 0.8,
+            });
+        const scene = {
+            surface: { engine: { _device: device } },
+            _disposables: [],
+        };
+
+        const set = createPbrLocalEnvironmentProbeSet(scene as never, {
+            probes: [
+                {
+                    environment: environment(1024, 11),
+                    capturePosition: [1, 2, 3],
+                    projectionPosition: [4, 5, 6],
+                    projectionSize: [8, 10, 12],
+                    influencePosition: [7, 8, 9],
+                    influenceInnerSize: [2, 4, 6],
+                    influenceOuterSize: [10, 12, 14],
+                    angleRadians: Math.PI / 2,
+                    debugColor: [0.2, 0.4, 0.6],
+                },
+                {
+                    environment: environment(512, 10),
+                    capturePosition: [0, 0, 0],
+                    projectionPosition: [0, 0, 0],
+                    projectionSize: [4, 4, 4],
+                    influencePosition: [0, 0, 0],
+                    influenceInnerSize: [2, 2, 2],
+                    influenceOuterSize: [6, 6, 6],
+                },
+            ],
+            voxelGrid: {
+                minimum: [-8, -8, -8],
+                maximum: [8, 8, 8],
+                cellSize: 4,
+            },
+        });
+
+        expect(device.createTexture).toHaveBeenCalledWith(expect.objectContaining({ size: [512, 512, 12], mipLevelCount: 10, format: "rgba16float" }));
+        expect(copies[0]).toEqual({ sourceMip: 1, sourceLayer: 0, destinationLayer: 0, size: [512, 512, 1] });
+        expect(copies.find((copy) => copy.destinationLayer === 6)).toMatchObject({ sourceMip: 0, sourceLayer: 0 });
+        expect(set._uniformU32.slice(0, 4)).toEqual(new Uint32Array([2, 0, 0, 1]));
+        expect(set._uniformData[4 + 15]).toBeCloseTo(0);
+        expect(set._uniformData[4 + 19]).toBeCloseTo(1);
+        expect(set._uniformData[4 + 11]).toBeCloseTo(-0.2);
+        expect(set._uniformU32[4 + 23]).toBe(0x996633);
+        expect(device.createBuffer).toHaveBeenCalledWith(expect.objectContaining({ size: 65536, usage: expect.any(Number) }));
+        expect(device.createBuffer).toHaveBeenCalledWith(expect.objectContaining({ mappedAtCreation: true }));
+        expect(writes).toHaveLength(1);
+        expect(writes[0]).toHaveLength(16384);
+
+        const centreCell = getPbrLocalEnvironmentProbeGridCell(set, [0, 0, 0]);
+        expect(centreCell.coordinates).toEqual([2, 2, 2]);
+        expect(centreCell.probeIndices).toEqual([1]);
+        expect(centreCell.outside).toBe(false);
+        const outsideCell = getPbrLocalEnvironmentProbeGridCell(set, [100, 0, 0]);
+        expect(outsideCell.coordinates).toEqual([3, 2, 2]);
+        expect(outsideCell.outside).toBe(true);
+
+        setPbrLocalEnvironmentProbeDebug(set, true);
+        expect(set._uniformU32[3]).toBe(3);
+        expect(writes).toHaveLength(2);
+        expect(writes[1]).toHaveLength(1);
+
+        setPbrLocalEnvironmentProbeDebug(set, true);
+        expect(writes).toHaveLength(2);
+
+        setPbrLocalEnvironmentProbeDebug(set, false);
+        expect(set._uniformU32[3]).toBe(1);
+        expect(writes).toHaveLength(3);
+    });
+
+    it("voxelizes yaw-oriented outer boxes and fills empty cells with a nearest fallback", () => {
+        const { scene, environment } = makeProbeGridTestScene();
+        const set = createPbrLocalEnvironmentProbeSet(scene as never, {
+            probes: [
+                {
+                    environment,
+                    capturePosition: [0, 0, 0],
+                    projectionPosition: [0, 0, 0],
+                    projectionSize: [2, 2, 6],
+                    influencePosition: [0, 0, 0],
+                    influenceInnerSize: [1, 1, 5],
+                    influenceOuterSize: [2, 2, 6],
+                    angleRadians: Math.PI / 2,
+                },
+                {
+                    environment,
+                    capturePosition: [3, 0, 0],
+                    projectionPosition: [3, 0, 0],
+                    projectionSize: [1, 1, 1],
+                    influencePosition: [3, 0, 0],
+                    influenceInnerSize: [0.25, 0.25, 0.25],
+                    influenceOuterSize: [0.5, 0.5, 0.5],
+                },
+            ],
+            voxelGrid: {
+                minimum: [-4, -2, -4],
+                maximum: [4, 2, 4],
+                cellSize: 2,
+            },
+        });
+
+        expect(getPbrLocalEnvironmentProbeGridCell(set, [3, 0, 0]).probeIndices).toEqual([0, 1]);
+        expect(getPbrLocalEnvironmentProbeGridCell(set, [-3, 0, 3]).probeIndices).toEqual([0]);
+    });
+
+    it("fails explicitly when one voxel intersects more probes than maxCandidates", () => {
+        const { scene, environment } = makeProbeGridTestScene();
+        const probe = {
+            environment,
+            capturePosition: [0, 0, 0] as const,
+            projectionPosition: [0, 0, 0] as const,
+            projectionSize: [4, 4, 4] as const,
+            influencePosition: [0, 0, 0] as const,
+            influenceInnerSize: [2, 2, 2] as const,
+            influenceOuterSize: [4, 4, 4] as const,
+        };
+
+        expect(() =>
+            createPbrLocalEnvironmentProbeSet(scene as never, {
+                probes: Array.from({ length: MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES + 1 }, () => probe),
+                voxelGrid: {
+                    minimum: [-1, -1, -1],
+                    maximum: [1, 1, 1],
+                    cellSize: 2,
+                },
+            })
+        ).toThrow(`exceeding maxCandidates ${MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES}`);
+    });
+
+    it("keeps plugin variants separate from local-cubemap feature bits", () => {
         const pluginMarker = "if(material.materialAlpha < -1.0){discard;}";
         const plugin: MaterialPlugin = {
             name: "local-cubemap-regression",
@@ -90,168 +477,13 @@ describe("PBR local cubemap projection", () => {
 
         _registerPbrExt(alphaTestExt);
         _registerPbrExt(iblExt);
-        registerPbrLocalCubemapExt(_registerPbrExt);
+        registerPbrLocalCubemapExt(_registerPbrExt, () => {});
         registerPbrPlugins(_registerPbrExt);
-
         const renderFeatures = _computePbrMaterialFeatures(material);
-        expect(renderFeatures.features2).toBe(1 << 29);
-        expect(material._pi).toBeGreaterThan(0);
-
-        const composePbr = createPbrComposer({
-            _singleLightWGSL: "",
-            _getSingleLightBlock: null,
-            _multiLightWGSL: "",
-            _multiLightLoop: "",
-            _toneMappingHelpers: "",
-            _toneMappingCall: "",
-            _fogHelper: "",
-            _fogBlock: "",
-            _createPbrTemplateExt: null,
-            _anisoExt: null,
-            _iblSkyboxCalc: "",
-            _flatNormalWgsl: "",
-            _gammaTemplate: null,
-            _createPbrShadowFragment: null,
-            _shadowLights: [],
-            _createThinInstanceFragment: null,
-        });
-        const result = composePbr(renderFeatures.features, renderFeatures.features2, 0, PBR_HAS_ENV, 0, "", "", undefined, "", 0, material._pi);
+        const result = composer()(renderFeatures.features, renderFeatures.features2, 0, PBR_HAS_ENV, 0, "", "", undefined, "", 0, material._pi);
 
         expect(result._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,R_raw");
-        expect(result._fragmentWGSL).toContain("if(alpha*material.materialAlpha<material.alphaCutOff){discard;}");
         expect(result._fragmentWGSL).toContain(pluginMarker);
-    });
-
-    it("activates only when a material-local environment defines a projection box", () => {
         expect(pbrExt.detect?.({})).toEqual({ f: 0, f2: 0 });
-        expect(pbrExt.detect?.({ localEnvironment: makeEnvironment({ boundingBoxPosition: [1, 2, 3] }) })).toEqual({ f: 0, f2: 0 });
-        expect(pbrExt.detect?.({ localEnvironment: makeEnvironment({ boundingBoxSize: [4, 5, 6] }) })).toEqual({
-            f: 0,
-            f2: 1 << 29,
-        });
-    });
-
-    it("injects Babylon.js box-projection math before environment rotation", () => {
-        _registerPbrExt(iblExt);
-        registerPbrLocalCubemapExt(_registerPbrExt);
-        const localCubemapFeature = pbrExt.detect?.({ localEnvironment: makeEnvironment({ boundingBoxSize: [4, 5, 6] }) }).f2 ?? 0;
-        const composePbr = createPbrComposer({
-            _singleLightWGSL: "",
-            _getSingleLightBlock: null,
-            _multiLightWGSL: "",
-            _multiLightLoop: "",
-            _toneMappingHelpers: "",
-            _toneMappingCall: "",
-            _fogHelper: "",
-            _fogBlock: "",
-            _createPbrTemplateExt: null,
-            _anisoExt: null,
-            _iblSkyboxCalc: "",
-            _flatNormalWgsl: "",
-            _gammaTemplate: null,
-            _createPbrShadowFragment: null,
-            _shadowLights: [],
-            _createThinInstanceFragment: null,
-        });
-
-        const result = composePbr(0, localCubemapFeature, 0, PBR_HAS_ENV);
-
-        expect(result._fragmentWGSL).toContain("fn parallaxCorrectNormal");
-        expect(result._fragmentWGSL).toContain("let largestIntersec=max(intersecAtMaxPlane,intersecAtMinPlane);");
-        expect(result._fragmentWGSL).toContain(
-            "let R=rotateY(parallaxCorrectNormal(input.worldPos,R_raw,material.vReflectionSize,material.vReflectionPosition),scene.envRotationY);"
-        );
-        expect(result._fragmentWGSL).toContain("let environmentIrradiance = (material.localSphericalL00.rgb");
-        expect(result._fragmentWGSL).not.toContain("let environmentIrradiance = (scene.vSphericalL00.rgb");
-        expect(result._fragmentWGSL).toContain("material.localLodGenerationScale");
-        expect(result._fragmentWGSL).not.toContain("scene.vImageInfos.z");
-        expect(result._materialUboSpec?._offsets.has("vReflectionPosition")).toBe(true);
-        expect(result._materialUboSpec?._offsets.has("vReflectionSize")).toBe(true);
-        expect(result._materialUboSpec?._offsets.has("localSphericalL00")).toBe(true);
-        expect(result._materialUboSpec?._offsets.has("localSphericalL22")).toBe(true);
-
-        const unbounded = composePbr(0, 0, 0, PBR_HAS_ENV);
-        expect(unbounded._fragmentWGSL).not.toContain("parallaxCorrectNormal");
-        expect(unbounded._materialUboSpec?._offsets.has("vReflectionPosition")).toBe(false);
-
-        _registerPbrExt(morphExt);
-        const morphed = composePbr(0, localCubemapFeature, MSH_HAS_MORPH_TARGETS, PBR_HAS_ENV);
-        expect(morphed._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,R_raw");
-        expect(morphed._vertexWGSL).toContain("var<storage, read> morphDeltas:");
-        expect(morphed._vertexWGSL).toContain("var<storage, read> morph:");
-
-        _registerPbrExt(clearcoatExt);
-        const clearcoatFeatures = clearcoatExt.detect?.({ clearCoat: { isEnabled: true } }) ?? { f: 0, f2: 0 };
-        const clearcoat = composePbr(clearcoatFeatures.f, localCubemapFeature | clearcoatFeatures.f2, 0, PBR_HAS_ENV);
-        expect(clearcoat._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,R_raw");
-        expect(clearcoat._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,ccR_raw");
-
-        const clearcoatVariant = composePbr(clearcoatFeatures.f | PBR_HAS_SPECULAR_AA, localCubemapFeature | clearcoatFeatures.f2, 0, PBR_HAS_ENV);
-        expect(clearcoatVariant._fragmentKey).toContain("clearcoat-A");
-        expect(clearcoatVariant._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,ccR_raw");
-    });
-
-    it("writes the probe position, full box size, and local SH to the material UBO", () => {
-        const result = composeShader(createPbrTemplate({ _normalMode: "none", _hasIbl: true }), [createIblFragment(false), createLocalCubemapFragment()]);
-        const spec = result._materialUboSpec!;
-        const data = new Float32Array(spec._totalBytes / 4);
-        const material = {
-            localEnvironment: makeEnvironment({
-                boundingBoxPosition: [1.25, -2.5, 3.75],
-                boundingBoxSize: [8, 6, 4],
-                _lodGenerationScale: 0.65,
-                _sphericalHarmonics: Float32Array.from({ length: 36 }, (_, i) => i + 0.5),
-            }),
-        } as PbrMaterialProps;
-
-        pbrExt.writeUbo?.(data, material, spec._offsets);
-
-        const positionOffset = spec._offsets.get("vReflectionPosition")! / 4;
-        const sizeOffset = spec._offsets.get("vReflectionSize")! / 4;
-        const lodOffset = spec._offsets.get("localLodGenerationScale")! / 4;
-        expect([...data.slice(positionOffset, positionOffset + 3)]).toEqual([1.25, -2.5, 3.75]);
-        expect([...data.slice(sizeOffset, sizeOffset + 3)]).toEqual([8, 6, 4]);
-        expect(data[lodOffset]).toBeCloseTo(0.65);
-        const l00Offset = spec._offsets.get("localSphericalL00")! / 4;
-        const l22Offset = spec._offsets.get("localSphericalL22")! / 4;
-        expect([...data.slice(l00Offset, l00Offset + 3)]).toEqual([0.5, 1.5, 2.5]);
-        expect([...data.slice(l22Offset, l22Offset + 3)]).toEqual([32.5, 33.5, 34.5]);
-    });
-
-    it("replaces diffuse IBL with baked irradiance without modulating local reflections", () => {
-        _registerPbrExt(iblExt);
-        _registerPbrExt(diffuseLightmapExt);
-        registerPbrLocalCubemapExt(_registerPbrExt);
-        const material = {
-            _diffuseLightmapTexture: { uAng: 0 },
-            localEnvironment: makeEnvironment({ boundingBoxSize: [8, 6, 4] }),
-        };
-        const lightmapFeatures = diffuseLightmapExt.detect?.(material) ?? { f: 0, f2: 0 };
-        const localFeatures = pbrExt.detect?.(material) ?? { f: 0, f2: 0 };
-        const composePbr = createPbrComposer({
-            _singleLightWGSL: "",
-            _getSingleLightBlock: null,
-            _multiLightWGSL: "",
-            _multiLightLoop: "",
-            _toneMappingHelpers: "",
-            _toneMappingCall: "",
-            _fogHelper: "",
-            _fogBlock: "",
-            _createPbrTemplateExt: null,
-            _anisoExt: null,
-            _iblSkyboxCalc: "",
-            _flatNormalWgsl: "",
-            _gammaTemplate: null,
-            _createPbrShadowFragment: null,
-            _shadowLights: [],
-            _createThinInstanceFragment: null,
-        });
-
-        const result = composePbr(lightmapFeatures.f, lightmapFeatures.f2 | localFeatures.f2, 0, PBR_HAS_ENV);
-
-        expect(result._fragmentWGSL).toContain("let bakedIrradiance=textureSample(lmTexture,lmSampler,input.uv).rgb*material.lmLvl;");
-        expect(result._fragmentWGSL).toContain("finalIrradiance=bakedIrradiance*surfaceAlbedo*occlusion;");
-        expect(result._fragmentWGSL).toContain("parallaxCorrectNormal(input.worldPos,R_raw");
-        expect(result._fragmentWGSL).not.toContain("color=(color-emissive)");
     });
 });

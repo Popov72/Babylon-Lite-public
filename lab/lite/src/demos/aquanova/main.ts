@@ -769,13 +769,10 @@ export async function main(): Promise<void> {
     lights.attachClusteredScene(weaponLayer.scene);
     canvas.dataset.clusteredLightCount = String(lights.clusteredPoint + lights.clusteredSpot);
     if (lights.overflow) console.warn(`[aquanova] ${lights.overflow} non-clustered light(s) dropped: the shared lights UBO is full`);
-    // Full mode blends two box-projected probes at the camera/player POI. With blending disabled,
-    // authored ship elements keep immutable probes while the camera-attached weapons use the
-    // current room's single dominant probe.
+    // Full mode supplies a POI-ranked candidate set whose weights are calculated from each
+    // fragment's world position. Disabled mode gives every mesh one immutable intersecting probe.
     const localEnvironmentController = await applyLocalEnvironmentProbes(scene, [...allShipMeshes, ...weaponMeshes], {
         blendingEnabled: graphics.localCubemapBlending,
-        staticElements: [...primitivesByOwner.values()],
-        poiMeshes: weaponMeshes,
     });
     if (localEnvironmentController) {
         canvas.dataset.localEnvironmentCount = String(localEnvironmentController.loaded);
@@ -1486,7 +1483,8 @@ export async function main(): Promise<void> {
                   canvas,
                   probes: localEnvironmentController.probeVolumes(),
                   blendInfo: () => localEnvironmentController.blendInfo(),
-                  poi: () => [cam.position.x, cam.position.y, cam.position.z],
+                  blendingEnabled: () => localEnvironmentController.blendingEnabled(),
+                  setDebugEnabled: (enabled) => localEnvironmentController.setDebugEnabled(enabled),
               });
     const portalOverlay = !LAB_DEBUG
         ? null
@@ -3735,7 +3733,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         ...(probeOverlay
             ? [
                   {
-                      label: "Cubemap influence volumes (V)",
+                      label: "Cubemap blend colors (V)",
                       get: () => canvas.dataset.probeOverlay === "on",
                       set: (on: boolean): void => {
                           if (on !== (canvas.dataset.probeOverlay === "on")) probeOverlay.toggle();

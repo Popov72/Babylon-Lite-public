@@ -28,7 +28,8 @@ export interface ShipEnvironmentProbe {
     boxPosition: Vec3;
     boxSize: Vec3;
     capturePosition: Vec3;
-    resolution: number;
+    /** Probe yaw in degrees. Optional until the editor exports oriented probes. */
+    angle?: number;
 }
 
 /**

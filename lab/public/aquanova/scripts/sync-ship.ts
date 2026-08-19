@@ -26,6 +26,7 @@ interface SourceLocalEnvironment {
     position: [number, number, number];
     boxPosition: [number, number, number];
     boxSize: [number, number, number];
+    angle?: number;
     resolution: number;
     hash: string;
 }
@@ -43,6 +44,7 @@ interface RuntimeLocalEnvironment {
     influenceBoxPosition: [number, number, number];
     influenceBoxSize: [number, number, number];
     influenceInnerBoxSize: [number, number, number];
+    angle: number;
     resolution: number;
     bytes: number;
 }
@@ -59,6 +61,7 @@ interface ShipManifest {
         boxPosition?: [number, number, number];
         boxSize?: [number, number, number];
         capturePosition?: [number, number, number];
+        angle?: number;
         influenceBoxPosition?: [number, number, number];
         influenceBoxSize?: [number, number, number];
         influenceInnerBoxSize?: [number, number, number];
@@ -81,6 +84,7 @@ interface AuthoredProbe {
     boxPosition: [number, number, number];
     boxSize: [number, number, number];
     capturePosition?: [number, number, number];
+    angle?: number;
     influenceBoxPosition?: [number, number, number];
     influenceBoxSize?: [number, number, number];
     influenceInnerBoxSize?: [number, number, number];
@@ -219,17 +223,18 @@ function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, Auth
             }
             const influenceBoxSize = authoredVector(probe.influenceBoxSize, "positive");
             const influenceInnerBoxSize = authoredVector(probe.influenceInnerBoxSize, "nonNegative");
+            const angle = Number(probe.angle ?? 0);
             boxes.set(probe.id, {
                 boxPosition: [...position],
                 boxSize: [...size],
                 capturePosition: authoredVector(probe.capturePosition),
+                angle: Number.isFinite(angle) ? angle : 0,
                 influenceBoxPosition: authoredVector(probe.influenceBoxPosition),
                 influenceBoxSize,
                 // An inner box larger than the outer one would make the runtime
                 // divide by a negative width, so it is dropped rather than
                 // published; the derived default takes over.
-                influenceInnerBoxSize:
-                    influenceBoxSize && influenceInnerBoxSize?.every((n, axis) => n <= influenceBoxSize[axis]!) ? influenceInnerBoxSize : undefined,
+                influenceInnerBoxSize: influenceBoxSize && influenceInnerBoxSize?.every((n, axis) => n <= influenceBoxSize[axis]!) ? influenceInnerBoxSize : undefined,
             });
         }
         return boxes;
@@ -451,6 +456,7 @@ async function main(): Promise<void> {
                 influenceBoxPosition: authored?.influenceBoxPosition ?? previous?.influenceBoxPosition ?? boxPosition,
                 influenceBoxSize: authored?.influenceBoxSize ?? previous?.influenceBoxSize ?? defaults.outer,
                 influenceInnerBoxSize: authored?.influenceInnerBoxSize ?? previous?.influenceInnerBoxSize ?? defaults.inner,
+                angle: authored?.angle ?? previous?.angle ?? (Number.isFinite(probe.angle) ? -probe.angle! : 0),
                 resolution: probe.resolution,
                 bytes,
             };

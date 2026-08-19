@@ -33,7 +33,7 @@ export interface GraphicsSettings {
     soundsEnabled: boolean;
     /** Master gain for all Aquanova gameplay sound effects, from silent (`0`) to full volume (`1`). */
     soundVolume: number;
-    /** Blend the two nearest local cubemaps. Disabled uses one dominant box-projected probe. */
+    /** Blend local cubemaps per fragment. Disabled assigns one intersecting probe per mesh. */
     localCubemapBlending: boolean;
     /** Render through an sRGB swapchain view so the GPU encodes linear→sRGB on store.
      *
@@ -73,8 +73,8 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
     weaponSway: true,
     soundsEnabled: true,
     soundVolume: 1,
-    // On by default for smooth room transitions. Older devices can use one dominant probe, retaining
-    // box projection while avoiding the second cubemap sample.
+    // On by default for smooth room transitions. Disabled mode retains box projection with one
+    // setup-time probe assignment per mesh.
     localCubemapBlending: true,
     // Off, and it should stay off: measured, it double-encodes (the image-processing stage already
     // writes display-space values) and changes AA quality by less than a percentage point.
@@ -128,7 +128,7 @@ export const GRAPHICS_SETTING_DEFS: readonly GraphicsSettingDef[] = [
         key: "localCubemapBlending",
         kind: "toggle",
         label: "Local cubemap blending",
-        help: "Blends two box-projected probes across room boundaries. Disable on older devices to sample only the dominant probe.",
+        help: "Blends box-projected probes per fragment across room boundaries. Disable to assign one intersecting probe statically to each mesh.",
     },
     {
         key: "srgb",

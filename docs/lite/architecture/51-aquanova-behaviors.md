@@ -9,6 +9,33 @@ hard-wired to mesh-name checks in `main.ts`. A manifest entity may assign
 several behaviors to the same mesh, and every assignment is resolved and
 instantiated independently.
 
+## Local environment probe modes
+
+Aquanova loads every authored reflection probe once and assigns one shared
+`rgba16float` cube-texture-array probe set to PBR materials. A dense 2 m world-space voxel grid
+stores every probe whose oriented outer influence box intersects each cell.
+Fragments address that grid from `worldPos`, then calculate exact oriented-box
+weights only for the probes in their cell. Empty cells use their deterministic
+nearest probe, and any cell exceeding the initialization-time capacity fails
+explicitly instead of silently dropping a probe.
+
+When blending is disabled, probe selection is static and mesh-owned rather than
+player-owned. Each mesh's setup-time world AABB is tested against the authored
+oriented projection boxes. The containing box wins; otherwise the nearest
+intersecting box wins, with the closest probe as a deterministic fallback.
+Materials shared by meshes assigned to different probes are cloned per
+source/probe pair and use the lightweight `localEnvironment` single-cubemap
+path. Runtime mode switches clone the mesh's current material state so later
+plugins and gameplay material changes are preserved.
+
+The `V` probe debug mode is active only while blending is enabled. It shows a
+colored sphere at every probe in the camera's current voxel and enables the
+core probe-set color diagnostic. The shader uses the same per-fragment weights
+as production rendering but blends each probe's assigned color instead of
+sampling/calculating the final PBR color. Its panel lists only that voxel set
+with each probe's centre and full inner/outer box sizes; POI-derived diagnostic
+weights are intentionally omitted because final influence is fragment-dependent.
+
 ## Typed behavior model
 
 The manifest's `behaviors` object is the source of truth for behavior names and

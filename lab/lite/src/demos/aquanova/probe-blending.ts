@@ -7,12 +7,16 @@ export interface BoxProbeInfluence {
     readonly innerHalfSize: ProbeBlendVec3;
     /** Half extents where this probe reaches zero influence. */
     readonly outerHalfSize: ProbeBlendVec3;
+    /** Yaw in radians. Defaults to zero. */
+    readonly angleRadians?: number;
 }
 
 export interface BoxProbeRegion {
     readonly id: string;
     readonly projectionCentre: ProbeBlendVec3;
     readonly projectionHalfSize: ProbeBlendVec3;
+    /** Yaw in radians. Defaults to zero. */
+    readonly angleRadians?: number;
 }
 
 export interface ProbeBlendWeight {
@@ -21,19 +25,34 @@ export interface ProbeBlendWeight {
     readonly ndf: number;
 }
 
+export interface ProbeWorldBounds {
+    readonly centre: ProbeBlendVec3;
+    readonly halfSize: ProbeBlendVec3;
+}
+
 const EPSILON = 1e-6;
+
+function probeLocalOffset(point: ProbeBlendVec3, centre: ProbeBlendVec3, angleRadians = 0): ProbeBlendVec3 {
+    const x = point[0] - centre[0];
+    const y = point[1] - centre[1];
+    const z = point[2] - centre[2];
+    const cosine = Math.cos(angleRadians);
+    const sine = Math.sin(angleRadians);
+    return [cosine * x - sine * z, y, sine * x + cosine * z];
+}
 
 /**
  * Normalized distance field from Sébastien Lagarde's POI cubemap blending method:
  * <= 0 inside the inner box, 1 at the outer box, and > 1 outside it.
  */
 export function boxProbeNdf(probe: BoxProbeInfluence, point: ProbeBlendVec3): number {
+    const local = probeLocalOffset(point, probe.centre, probe.angleRadians);
     let ndf = Number.NEGATIVE_INFINITY;
     for (let axis = 0; axis < 3; axis++) {
         const inner = probe.innerHalfSize[axis]!;
         const outer = probe.outerHalfSize[axis]!;
         const span = outer - inner;
-        const distance = Math.abs(point[axis]! - probe.centre[axis]!);
+        const distance = Math.abs(local[axis]!);
         const axisNdf = span > EPSILON ? (distance - inner) / span : distance <= outer ? 0 : Number.POSITIVE_INFINITY;
         ndf = Math.max(ndf, axisNdf);
     }
@@ -55,9 +74,10 @@ export function selectContainingBoxProbe<T extends BoxProbeRegion>(probes: reado
     let selected: T | undefined;
     let selectedVolume = Number.POSITIVE_INFINITY;
     for (const probe of probes) {
+        const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
         let contains = true;
         for (let axis = 0; axis < 3; axis++) {
-            if (Math.abs(point[axis]! - probe.projectionCentre[axis]!) > probe.projectionHalfSize[axis]! + EPSILON) {
+            if (Math.abs(local[axis]!) > probe.projectionHalfSize[axis]! + EPSILON) {
                 contains = false;
                 break;
             }
@@ -70,6 +90,85 @@ export function selectContainingBoxProbe<T extends BoxProbeRegion>(probes: reado
         }
     }
     return selected;
+}
+
+function projectionVolume(probe: BoxProbeRegion): number {
+    return probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2] * 8;
+}
+
+function projectionDistanceSquared(probe: BoxProbeRegion, point: ProbeBlendVec3): number {
+    const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
+    let distanceSquared = 0;
+    for (let axis = 0; axis < 3; axis++) {
+        const outside = Math.max(0, Math.abs(local[axis]!) - probe.projectionHalfSize[axis]!);
+        distanceSquared += outside * outside;
+    }
+    return distanceSquared;
+}
+
+/** Exact intersection between a world AABB and a probe box with yaw-only orientation. */
+export function intersectsProbeProjectionBox(probe: BoxProbeRegion, bounds: ProbeWorldBounds): boolean {
+    const dx = bounds.centre[0] - probe.projectionCentre[0];
+    const dy = bounds.centre[1] - probe.projectionCentre[1];
+    const dz = bounds.centre[2] - probe.projectionCentre[2];
+    const probeHalf = probe.projectionHalfSize;
+    if (Math.abs(dy) > bounds.halfSize[1] + probeHalf[1] + EPSILON) {
+        return false;
+    }
+
+    const cosine = Math.cos(probe.angleRadians ?? 0);
+    const sine = Math.sin(probe.angleRadians ?? 0);
+    const absCosine = Math.abs(cosine);
+    const absSine = Math.abs(sine);
+    if (Math.abs(dx) > bounds.halfSize[0] + absCosine * probeHalf[0] + absSine * probeHalf[2] + EPSILON) {
+        return false;
+    }
+    if (Math.abs(dz) > bounds.halfSize[2] + absSine * probeHalf[0] + absCosine * probeHalf[2] + EPSILON) {
+        return false;
+    }
+
+    const localX = cosine * dx - sine * dz;
+    const localZ = sine * dx + cosine * dz;
+    if (Math.abs(localX) > probeHalf[0] + absCosine * bounds.halfSize[0] + absSine * bounds.halfSize[2] + EPSILON) {
+        return false;
+    }
+    return Math.abs(localZ) <= probeHalf[2] + absSine * bounds.halfSize[0] + absCosine * bounds.halfSize[2] + EPSILON;
+}
+
+/**
+ * Resolve one immutable probe assignment for a mesh.
+ *
+ * A containing box wins first. Otherwise the nearest intersecting box wins. Geometry outside every
+ * authored box falls back to the closest box so every PBR mesh still receives deterministic IBL.
+ */
+export function selectStaticBoxProbe<T extends BoxProbeRegion>(probes: readonly T[], bounds: ProbeWorldBounds): T | undefined {
+    const containing = selectContainingBoxProbe(probes, bounds.centre);
+    if (containing) {
+        return containing;
+    }
+    return probes
+        .map((probe) => ({
+            probe,
+            intersects: intersectsProbeProjectionBox(probe, bounds),
+            distanceSquared: projectionDistanceSquared(probe, bounds.centre),
+        }))
+        .sort(
+            (a, b) =>
+                Number(b.intersects) - Number(a.intersects) ||
+                a.distanceSquared - b.distanceSquared ||
+                projectionVolume(a.probe) - projectionVolume(b.probe) ||
+                a.probe.id.localeCompare(b.probe.id)
+        )[0]?.probe;
+}
+
+/** Rank a conservative shader candidate set by POI distance without calculating shader weights. */
+export function selectPoiProbeCandidates(probes: readonly BoxProbeInfluence[], point: ProbeBlendVec3, maxProbes: number): number[] {
+    if (maxProbes < 1) return [];
+    return probes
+        .map((probe, index) => ({ index, probe, ndf: boxProbeNdf(probe, point) }))
+        .sort((a, b) => a.ndf - b.ndf || volume(a.probe) - volume(b.probe) || a.probe.id.localeCompare(b.probe.id))
+        .slice(0, maxProbes)
+        .map((candidate) => candidate.index);
 }
 
 /**

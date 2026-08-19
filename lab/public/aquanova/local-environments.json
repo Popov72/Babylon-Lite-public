@@ -18,22 +18,23 @@
     4.5
    ],
    "influenceBoxPosition": [
-    0.6317955041629171,
+    2.7859760816571715,
     2.5,
     2
    ],
    "influenceBoxSize": [
-    16.2,
+    12.99,
     8,
     5.2
    ],
    "influenceInnerBoxSize": [
-    2,
+    11,
     3.5,
     5
    ],
-   "resolution": 1024,
-   "bytes": 4253812
+   "angle": 0,
+   "resolution": 512,
+   "bytes": 1342874
   },
   "CH01_Corridor2": {
    "url": "environments/CH01_Corridor2.env",
@@ -58,17 +59,18 @@
     -8.170461957037828
    ],
    "influenceBoxSize": [
-    7.7035,
+    6,
     8.011,
     27.648
    ],
    "influenceInnerBoxSize": [
     5,
     3.5,
-    18
+    17
    ],
-   "resolution": 1024,
-   "bytes": 4742322
+   "angle": 0,
+   "resolution": 512,
+   "bytes": 1438990
   },
   "CH00_Storage": {
    "url": "environments/CH00_Storage.env",
@@ -102,8 +104,9 @@
     2.5,
     5.5644
    ],
+   "angle": 0,
    "resolution": 512,
-   "bytes": 1376711
+   "bytes": 1376715
   },
   "CH01_CorridorEnd": {
    "url": "environments/CH01_CorridorEnd.env",
@@ -137,6 +140,7 @@
     2.011,
     1.648
    ],
+   "angle": 0,
    "resolution": 512,
    "bytes": 93677
   },
@@ -172,8 +176,9 @@
     1.5,
     0.4
    ],
+   "angle": 0,
    "resolution": 512,
-   "bytes": 1330830
+   "bytes": 121548
   },
   "CH01_Escape2": {
    "url": "environments/CH01_Escape2.env",
@@ -207,8 +212,9 @@
     1.5,
     0.4
    ],
+   "angle": 0,
    "resolution": 512,
-   "bytes": 156916
+   "bytes": 97808
   },
   "CH01_Escape3": {
    "url": "environments/CH01_Escape3.env",
@@ -242,8 +248,9 @@
     1.2,
     1.713
    ],
+   "angle": 0,
    "resolution": 512,
-   "bytes": 1071436
+   "bytes": 708947
   }
  }
 }
