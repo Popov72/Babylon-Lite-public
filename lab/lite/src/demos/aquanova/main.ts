@@ -71,12 +71,18 @@ import {
     removePhysicsBody,
     setMeshVisible,
     setParent,
+    setPhysicsBodyAngularVelocity,
+    setPhysicsBodyLinearVelocity,
+    setPhysicsBodyMass,
+    setPhysicsBodyMotionType,
     setPhysicsBodyShape,
+    setPhysicsBodyTransform,
     setPhysicsTimestepMs,
     setPositionGizmoLocalCoordinates,
     setRotationGizmoLocalCoordinates,
     setScaleGizmoLocalCoordinates,
     startEngine,
+    stopAnimation,
 } from "babylon-lite";
 import type { EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
@@ -90,7 +96,19 @@ import type { LitColorScene } from "../particle-lit-colors.js";
 import { DEFAULT_SHIP_IBL_STRENGTH, resolveExposure, resolveToneMapping } from "../ship-manifest.js";
 import type { LiquefyState } from "../liquefy-plugin.js";
 import { gridFloorY, gridTopY } from "../fluid/grid-bounds.js";
-import { CEIL_Y, FLOOR_Y, SHIP_URL, SKYBOX_EXT, SKYBOX_SIZE, SKYBOX_URL, toLite, type Vec3 } from "./constants.js";
+import {
+    CEIL_Y,
+    CROUCH_CAPSULE_HEIGHT,
+    CROUCH_CAPSULE_RADIUS,
+    FLOOR_Y,
+    MAX_WALKABLE_SLOPE_COSINE,
+    SHIP_URL,
+    SKYBOX_EXT,
+    SKYBOX_SIZE,
+    SKYBOX_URL,
+    toLite,
+    type Vec3,
+} from "./constants.js";
 import { applyLocalEnvironmentProbes, type LocalEnvironmentBlendInfo } from "./local-environments.js";
 import { buildRuntimeLights } from "./lights.js";
 import { buildManifestColliders, createWorldCollisionShape } from "./colliders.js";
@@ -111,7 +129,7 @@ import { chunkAt, fetchManifest } from "./manifest.js";
 import { createInspectOverlay } from "./debug/inspect-overlay.js";
 import { createPerfOverlay } from "./debug/perf-overlay.js";
 import { createFluidProfiler, type FluidProfilerImpl } from "../fluid/gpu-profiler.js";
-import { createColliderOverlay } from "./debug/collider-overlay.js";
+import { createColliderOverlay, visibleInjectedPrimitives } from "./debug/collider-overlay.js";
 import { createLightOverlay } from "./debug/light-overlay.js";
 import { createProbeOverlay } from "./debug/probe-overlay.js";
 import { createPortalOverlay } from "./debug/portal-overlay.js";
@@ -122,9 +140,10 @@ import { createPortalVisibility } from "./portal-visibility.js";
 import { registerDoorEntityEventHandlers } from "./door-events.js";
 import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
 import { canonicalSettingName, fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
-import { BehaviorManager, PlayerBehavior, type LiquefiableBehaviorConfig, type MeshBehaviorAvailability } from "./behaviors/index.js";
+import { BehaviorManager, PlayerBehavior, type JumpApertureAssist, type LiquefiableBehaviorConfig, type MeshBehaviorAvailability } from "./behaviors/index.js";
+import { selectClosestClearApertureOffset } from "./behaviors/player.js";
 import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
-import { createLiquefactorViewmodel } from "./liquefactor-viewmodel.js";
+import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
 import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
 
 export async function main(): Promise<void> {
@@ -206,7 +225,10 @@ export async function main(): Promise<void> {
     // diffuse SH and specular radiance; there is deliberately no scene-global environment.
     const ship = await loadGltf(engine, SHIP_URL);
     const shipRoot = ship.entities[0] as SceneNode;
-    addToScene(scene, shipRoot);
+    for (const animation of ship.animationGroups ?? []) {
+        stopAnimation(animation);
+    }
+    addToScene(scene, ship);
 
     // First-person weapon overlay. A utility layer gives it a fresh depth buffer and renders it
     // after the world/fluid/post-process chain, while sharing the gameplay camera. All three detail
@@ -215,19 +237,27 @@ export async function main(): Promise<void> {
     const weaponLayer = createUtilityLayer(engine, scene, { addDefaultLight: false });
     Object.assign(weaponLayer.scene.imageProcessing, scene.imageProcessing);
     const weaponViewmodel = await createLiquefactorViewmodel(engine, cam);
+    const antiGravityGunViewmodel = await createAntiGravityGunViewmodel(engine, cam);
+    const weaponViewmodels: readonly LiquefactorViewmodel[] = [weaponViewmodel, antiGravityGunViewmodel];
+    const weaponMeshes = weaponViewmodels.flatMap((viewmodel) => viewmodel.meshes);
     weaponViewmodel.select(graphics.liquefactorModel);
-    weaponViewmodel.setSwayEnabled(graphics.weaponSway);
+    antiGravityGunViewmodel.select(graphics.liquefactorModel);
+    for (const viewmodel of weaponViewmodels) {
+        viewmodel.setSwayEnabled(graphics.weaponSway);
+    }
     canvas.dataset.liquefactorModel = graphics.liquefactorModel;
     addToScene(weaponLayer.scene, weaponViewmodel.root);
+    addToScene(weaponLayer.scene, antiGravityGunViewmodel.root);
     const weaponGizmoLayer = createUtilityLayer(engine, scene);
     addToScene(weaponGizmoLayer.scene, weaponViewmodel.localGuideRoot);
+    addToScene(weaponGizmoLayer.scene, antiGravityGunViewmodel.localGuideRoot);
     const weaponLaser = createWeaponParticleLaser(engine, weaponGizmoLayer.scene);
     let weaponAimRay: WeaponLaserAim | null = null;
     let weaponCrosshair: HTMLElement | null = null;
-    const updateWeaponCrosshair = (): void => {
+    const updateWeaponCrosshair = (viewmodel: LiquefactorViewmodel): void => {
         weaponCrosshair ??= document.getElementById("aq-crosshair");
         if (!weaponCrosshair) return;
-        const lineMatrix = weaponViewmodel.localGuideYaw.worldMatrix;
+        const lineMatrix = viewmodel.localGuideYaw.worldMatrix;
         const pointX = lineMatrix[8]! * 2 + lineMatrix[12]!;
         const pointY = lineMatrix[9]! * 2 + lineMatrix[13]!;
         const pointZ = lineMatrix[10]! * 2 + lineMatrix[14]!;
@@ -262,30 +292,42 @@ export async function main(): Promise<void> {
         weaponCrosshair.style.left = `${rect.left + (ndcX * 0.5 + 0.5) * rect.width}px`;
         weaponCrosshair.style.top = `${rect.top + (0.5 - ndcY * 0.5) * rect.height}px`;
     };
-    let weaponEnabled = false;
+    let activeWeapon: "liquefactor" | "antiGravityGun" | null = null;
     let playerBehavior: PlayerBehavior | null = null;
-    const setWeaponEnabled = (enabled: boolean, animated = true): void => {
-        weaponEnabled = enabled;
-        canvas.dataset.weaponEnabled = String(enabled);
+    const setWeaponEnabled = (id: "liquefactor" | "antiGravityGun", viewmodel: LiquefactorViewmodel, enabled: boolean, animated = true): void => {
         if (enabled) {
-            weaponViewmodel.select(weaponViewmodel.model);
-            weaponViewmodel.setPresented(true, animated);
+            activeWeapon = id;
+        } else if (activeWeapon === id) {
+            activeWeapon = null;
+        }
+        canvas.dataset.weaponEnabled = String(activeWeapon !== null);
+        canvas.dataset.weapon = activeWeapon ?? "hidden";
+        if (enabled) {
+            viewmodel.select(viewmodel.model);
+            viewmodel.setPresented(true, animated);
             return;
         }
-        weaponViewmodel.setPresented(false, animated);
-        weaponLaser.stop();
-        weaponAimRay = null;
-        weaponCrosshair ??= document.getElementById("aq-crosshair");
-        if (weaponCrosshair) {
-            weaponCrosshair.style.display = "none";
+        viewmodel.setPresented(false, animated);
+        if (activeWeapon === null) {
+            weaponLaser.stop();
+            weaponAimRay = null;
+            weaponCrosshair ??= document.getElementById("aq-crosshair");
+            if (weaponCrosshair) {
+                weaponCrosshair.style.display = "none";
+            }
         }
     };
+    let grabDynamicWithAntiGravity = (_mesh: Mesh): boolean => false;
+    let updateAntiGravityGrab = (_deltaMs: number): boolean => false;
+    let releaseAntiGravityGrab = (_throwSpeed: number): void => {};
+    canvas.dataset.antiGravityGrabbed = "none";
+    canvas.dataset.antiGravityThrowSpeed = "0";
     const weaponLiquefactor = {
-        setEnabled: setWeaponEnabled,
+        setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("liquefactor", weaponViewmodel, enabled, animated),
         setTargetDistance: (distance: number | null, restart = false): void => {
             weaponLaser.setTargetDistance(distance, restart);
         },
-        isReady: (): boolean => weaponEnabled && weaponViewmodel.ready,
+        isReady: (): boolean => activeWeapon === "liquefactor" && weaponViewmodel.ready,
         stop: (): void => {
             weaponLaser.stop();
         },
@@ -297,74 +339,128 @@ export async function main(): Promise<void> {
                 playerBehavior?.weaponSwayMultiplier ?? 1,
                 playerBehavior?.isWeaponTriggerHeld ?? false
             );
-            if (!weaponEnabled || !weaponViewmodel.ready) {
+            if (activeWeapon !== "liquefactor" || !weaponViewmodel.ready) {
                 return false;
             }
-            updateWeaponCrosshair();
+            updateWeaponCrosshair(weaponViewmodel);
             return weaponLaser.update(deltaMs, weaponAimRay, weaponViewmodel.localGuideOrigin.worldMatrix);
         },
     };
-    const weaponPositionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
-    const weaponRotationGizmo = createRotationGizmo(engine, weaponGizmoLayer);
-    const weaponScaleGizmo = createScaleGizmo(engine, weaponGizmoLayer);
-    const weaponLocalGuidePositionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
-    setPositionGizmoLocalCoordinates(weaponPositionGizmo, true);
-    setRotationGizmoLocalCoordinates(weaponRotationGizmo, true);
-    setScaleGizmoLocalCoordinates(weaponScaleGizmo, true);
-    setPositionGizmoLocalCoordinates(weaponLocalGuidePositionGizmo, true);
-    let weaponPositionGizmoOn = false;
-    let weaponRotationGizmoOn = false;
-    let weaponScaleGizmoOn = false;
-    let weaponLocalGuideGizmoOn = false;
-    let weaponToolsVisible = false;
-    const setWeaponGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
-        for (const gizmo of gizmos) {
-            for (const mesh of gizmo._visibleMeshes) setMeshVisible(mesh, visible);
-        }
+    const weaponAntiGravityGun = {
+        setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("antiGravityGun", antiGravityGunViewmodel, enabled, animated),
+        isReady: (): boolean => activeWeapon === "antiGravityGun" && antiGravityGunViewmodel.ready,
+        update: (deltaMs: number): void => {
+            antiGravityGunViewmodel.update(
+                cam,
+                engine.canvas.width / Math.max(1, engine.canvas.height),
+                deltaMs,
+                playerBehavior?.weaponSwayMultiplier ?? 1,
+                playerBehavior?.isWeaponTriggerHeld ?? false
+            );
+            if (activeWeapon === "antiGravityGun" && antiGravityGunViewmodel.ready) {
+                updateWeaponCrosshair(antiGravityGunViewmodel);
+            }
+        },
+        grab: (mesh: Mesh): boolean => grabDynamicWithAntiGravity(mesh),
+        updateGrab: (deltaMs: number): boolean => updateAntiGravityGrab(deltaMs),
+        releaseGrab: (throwSpeed: number): void => releaseAntiGravityGrab(throwSpeed),
     };
-    const syncWeaponTools = (): void => {
-        const positionVisible = weaponToolsVisible && weaponPositionGizmoOn;
-        const rotationVisible = weaponToolsVisible && weaponRotationGizmoOn;
-        const scaleVisible = weaponToolsVisible && weaponScaleGizmoOn;
-        const localGuideGizmoVisible = weaponToolsVisible && weaponLocalGuideGizmoOn;
-        attachPositionGizmoToNode(weaponPositionGizmo, positionVisible ? weaponViewmodel.adjustment : null);
-        attachRotationGizmoToNode(weaponRotationGizmo, rotationVisible ? weaponViewmodel.adjustment : null);
-        attachScaleGizmoToNode(weaponScaleGizmo, scaleVisible ? weaponViewmodel.adjustment : null);
-        attachPositionGizmoToNode(weaponLocalGuidePositionGizmo, localGuideGizmoVisible ? weaponViewmodel.localGuideOrigin : null);
-        setWeaponGizmoMeshesVisible(positionVisible, [
-            weaponPositionGizmo.xGizmo,
-            weaponPositionGizmo.yGizmo,
-            weaponPositionGizmo.zGizmo,
-            ...(weaponPositionGizmo.xPlaneGizmo ? [weaponPositionGizmo.xPlaneGizmo] : []),
-            ...(weaponPositionGizmo.yPlaneGizmo ? [weaponPositionGizmo.yPlaneGizmo] : []),
-            ...(weaponPositionGizmo.zPlaneGizmo ? [weaponPositionGizmo.zPlaneGizmo] : []),
-        ]);
-        setWeaponGizmoMeshesVisible(rotationVisible, [weaponRotationGizmo.xGizmo, weaponRotationGizmo.yGizmo, weaponRotationGizmo.zGizmo]);
-        setWeaponGizmoMeshesVisible(scaleVisible, [weaponScaleGizmo.xGizmo, weaponScaleGizmo.yGizmo, weaponScaleGizmo.zGizmo, weaponScaleGizmo.uniformScaleGizmo]);
-        setWeaponGizmoMeshesVisible(localGuideGizmoVisible, [
-            weaponLocalGuidePositionGizmo.xGizmo,
-            weaponLocalGuidePositionGizmo.yGizmo,
-            weaponLocalGuidePositionGizmo.zGizmo,
-            ...(weaponLocalGuidePositionGizmo.xPlaneGizmo ? [weaponLocalGuidePositionGizmo.xPlaneGizmo] : []),
-            ...(weaponLocalGuidePositionGizmo.yPlaneGizmo ? [weaponLocalGuidePositionGizmo.yPlaneGizmo] : []),
-            ...(weaponLocalGuidePositionGizmo.zPlaneGizmo ? [weaponLocalGuidePositionGizmo.zPlaneGizmo] : []),
-        ]);
-    };
-    const weaponTransformValues = (): WeaponTransformValues => {
-        const adjustment = weaponViewmodel.adjustment;
-        const localGuideOrigin = weaponViewmodel.localGuideOrigin;
-        const localGuideYaw = weaponViewmodel.localGuideYaw;
-        const degrees = 180 / Math.PI;
-        return {
-            position: [adjustment.position.x, adjustment.position.y, adjustment.position.z],
-            rotationDegrees: [adjustment.rotation.x * degrees, adjustment.rotation.y * degrees, adjustment.rotation.z * degrees],
-            scale: [adjustment.scaling.x, adjustment.scaling.y, adjustment.scaling.z],
-            localGuidePosition: [localGuideOrigin.position.x, localGuideOrigin.position.y, localGuideOrigin.position.z],
-            localGuideRotationDegrees: [localGuideYaw.rotation.x * degrees, localGuideYaw.rotation.y * degrees, localGuideYaw.rotation.z * degrees],
-        };
-    };
+    const weaponDebugTools = !LAB_DEBUG
+        ? null
+        : (() => {
+              const positionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
+              const rotationGizmo = createRotationGizmo(engine, weaponGizmoLayer);
+              const scaleGizmo = createScaleGizmo(engine, weaponGizmoLayer);
+              const localGuidePositionGizmo = createPositionGizmo(engine, weaponGizmoLayer, { planarEnabled: true });
+              setPositionGizmoLocalCoordinates(positionGizmo, true);
+              setRotationGizmoLocalCoordinates(rotationGizmo, true);
+              setScaleGizmoLocalCoordinates(scaleGizmo, true);
+              setPositionGizmoLocalCoordinates(localGuidePositionGizmo, true);
+              let positionGizmoOn = false;
+              let rotationGizmoOn = false;
+              let scaleGizmoOn = false;
+              let localGuideGizmoOn = false;
+              let toolsVisible = false;
+              const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
+                  for (const gizmo of gizmos) {
+                      for (const mesh of gizmo._visibleMeshes) setMeshVisible(mesh, visible);
+                  }
+              };
+              const sync = (): void => {
+                  const positionVisible = toolsVisible && positionGizmoOn;
+                  const rotationVisible = toolsVisible && rotationGizmoOn;
+                  const scaleVisible = toolsVisible && scaleGizmoOn;
+                  const localGuideVisible = toolsVisible && localGuideGizmoOn;
+                  attachPositionGizmoToNode(positionGizmo, positionVisible ? weaponViewmodel.adjustment : null);
+                  attachRotationGizmoToNode(rotationGizmo, rotationVisible ? weaponViewmodel.adjustment : null);
+                  attachScaleGizmoToNode(scaleGizmo, scaleVisible ? weaponViewmodel.adjustment : null);
+                  attachPositionGizmoToNode(localGuidePositionGizmo, localGuideVisible ? weaponViewmodel.localGuideOrigin : null);
+                  setGizmoMeshesVisible(positionVisible, [
+                      positionGizmo.xGizmo,
+                      positionGizmo.yGizmo,
+                      positionGizmo.zGizmo,
+                      ...(positionGizmo.xPlaneGizmo ? [positionGizmo.xPlaneGizmo] : []),
+                      ...(positionGizmo.yPlaneGizmo ? [positionGizmo.yPlaneGizmo] : []),
+                      ...(positionGizmo.zPlaneGizmo ? [positionGizmo.zPlaneGizmo] : []),
+                  ]);
+                  setGizmoMeshesVisible(rotationVisible, [rotationGizmo.xGizmo, rotationGizmo.yGizmo, rotationGizmo.zGizmo]);
+                  setGizmoMeshesVisible(scaleVisible, [scaleGizmo.xGizmo, scaleGizmo.yGizmo, scaleGizmo.zGizmo, scaleGizmo.uniformScaleGizmo]);
+                  setGizmoMeshesVisible(localGuideVisible, [
+                      localGuidePositionGizmo.xGizmo,
+                      localGuidePositionGizmo.yGizmo,
+                      localGuidePositionGizmo.zGizmo,
+                      ...(localGuidePositionGizmo.xPlaneGizmo ? [localGuidePositionGizmo.xPlaneGizmo] : []),
+                      ...(localGuidePositionGizmo.yPlaneGizmo ? [localGuidePositionGizmo.yPlaneGizmo] : []),
+                      ...(localGuidePositionGizmo.zPlaneGizmo ? [localGuidePositionGizmo.zPlaneGizmo] : []),
+                  ]);
+              };
+              const values = (): WeaponTransformValues => {
+                  const adjustment = weaponViewmodel.adjustment;
+                  const localGuideOrigin = weaponViewmodel.localGuideOrigin;
+                  const localGuideYaw = weaponViewmodel.localGuideYaw;
+                  const degrees = 180 / Math.PI;
+                  return {
+                      position: [adjustment.position.x, adjustment.position.y, adjustment.position.z],
+                      rotationDegrees: [adjustment.rotation.x * degrees, adjustment.rotation.y * degrees, adjustment.rotation.z * degrees],
+                      scale: [adjustment.scaling.x, adjustment.scaling.y, adjustment.scaling.z],
+                      localGuidePosition: [localGuideOrigin.position.x, localGuideOrigin.position.y, localGuideOrigin.position.z],
+                      localGuideRotationDegrees: [localGuideYaw.rotation.x * degrees, localGuideYaw.rotation.y * degrees, localGuideYaw.rotation.z * degrees],
+                  };
+              };
+              sync();
+              return {
+                  values,
+                  positionGizmoEnabled: (): boolean => positionGizmoOn,
+                  setPositionGizmoEnabled: (enabled: boolean): void => {
+                      positionGizmoOn = enabled;
+                      sync();
+                  },
+                  rotationGizmoEnabled: (): boolean => rotationGizmoOn,
+                  setRotationGizmoEnabled: (enabled: boolean): void => {
+                      rotationGizmoOn = enabled;
+                      sync();
+                  },
+                  scaleGizmoEnabled: (): boolean => scaleGizmoOn,
+                  setScaleGizmoEnabled: (enabled: boolean): void => {
+                      scaleGizmoOn = enabled;
+                      sync();
+                  },
+                  localGuideGizmoEnabled: (): boolean => localGuideGizmoOn,
+                  setLocalGuideGizmoEnabled: (enabled: boolean): void => {
+                      localGuideGizmoOn = enabled;
+                      sync();
+                  },
+                  localGuideYawDegrees: (): number => (weaponViewmodel.localGuideYaw.rotation.y * 180) / Math.PI,
+                  setLocalGuideYawDegrees: (degrees: number): void => {
+                      weaponViewmodel.localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
+                  },
+                  setVisible: (visible: boolean): void => {
+                      toolsVisible = visible;
+                      sync();
+                  },
+              };
+          })();
     canvas.dataset.liquefactorParent = weaponViewmodel.root.parent === cam ? "camera" : "other";
-    syncWeaponTools();
 
     // Backdrop seen through the ship's openings. Kept separate from the IBL above: the HDRI is what
     // lights the metal, this is only what you see. Non-fatal — the cube faces are gitignored like
@@ -461,7 +557,7 @@ export async function main(): Promise<void> {
         }
         return [...materials];
     };
-    const pbrMaterials = (): PbrMaterialProps[] => pbrMaterialsOf([...allShipMeshes, ...weaponViewmodel.meshes]);
+    const pbrMaterials = (): PbrMaterialProps[] => pbrMaterialsOf([...allShipMeshes, ...weaponMeshes]);
     const fullyMetallicRoughnessOriginal = Symbol("fullyMetallicRoughnessOriginal");
     type RoughnessTaggedMaterial = PbrMaterialProps & {
         [fullyMetallicRoughnessOriginal]?: number | undefined;
@@ -524,6 +620,7 @@ export async function main(): Promise<void> {
         entityNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
     });
     behaviorManager.setSoundsEnabled(graphics.soundsEnabled);
+    behaviorManager.setSoundVolume(graphics.soundVolume);
     // Portal meshes ("Portal_*") are doorway markers the exporter emits for culling / door pairing —
     // NOT real geometry. They render as a visible pane spanning the doorway (seen from the corridor)
     // AND sit coplanar with the door leaves, so the weapon pick can hit the portal instead of the door
@@ -663,7 +760,7 @@ export async function main(): Promise<void> {
     // clustered-light state and the regular-light UBO layout are pipeline inputs.
     const runtimeLitMeshes = new Set(allShipMeshes.filter((mesh) => !isDisabledMesh(mesh)));
     canvas.dataset.runtimeLitCount = String(runtimeLitMeshes.size);
-    for (const mesh of weaponViewmodel.meshes) {
+    for (const mesh of weaponMeshes) {
         if (mesh.material && isPbrMaterial(mesh.material)) mesh.material.environmentIntensity = environmentIntensity;
     }
     const lights = buildRuntimeLights(scene, shipRoot, runtimeLitMeshes, chunkOfMesh, manifest?.lights);
@@ -673,12 +770,12 @@ export async function main(): Promise<void> {
     canvas.dataset.clusteredLightCount = String(lights.clusteredPoint + lights.clusteredSpot);
     if (lights.overflow) console.warn(`[aquanova] ${lights.overflow} non-clustered light(s) dropped: the shared lights UBO is full`);
     // Full mode blends two box-projected probes at the camera/player POI. With blending disabled,
-    // authored ship elements keep immutable probes while the camera-attached weapon uses the
+    // authored ship elements keep immutable probes while the camera-attached weapons use the
     // current room's single dominant probe.
-    const localEnvironmentController = await applyLocalEnvironmentProbes(scene, [...allShipMeshes, ...weaponViewmodel.meshes], {
+    const localEnvironmentController = await applyLocalEnvironmentProbes(scene, [...allShipMeshes, ...weaponMeshes], {
         blendingEnabled: graphics.localCubemapBlending,
         staticElements: [...primitivesByOwner.values()],
-        poiMeshes: weaponViewmodel.meshes,
+        poiMeshes: weaponMeshes,
     });
     if (localEnvironmentController) {
         canvas.dataset.localEnvironmentCount = String(localEnvironmentController.loaded);
@@ -808,6 +905,7 @@ export async function main(): Promise<void> {
     const sz = pMin && pMax ? (pMin[2]! + pMax[2]!) / 2 : fallback[2];
     const sy = pMax ? pMax[1]! + CAP_H / 2 + 0.1 : CAP_H / 2 + 0.1;
     const character = createPhysicsCharacterController(world, { x: sx, y: sy, z: sz }, { capsuleHeight: CAP_H, capsuleRadius: CAP_R });
+    character.maxSlopeCosine = MAX_WALKABLE_SLOPE_COSINE;
     const capsuleHeight = (): number => character.shapeOptions.capsuleHeight ?? CAP_H;
     const canStand = (): boolean => {
         const currentHeight = capsuleHeight();
@@ -830,6 +928,61 @@ export async function main(): Promise<void> {
             [-diagonal, -diagonal],
         ];
         return offsets.every(([dx, dz]) => !physicsRaycast(world, { x: position.x + dx, y: fromY, z: position.z + dz }, { x: position.x + dx, y: toY, z: position.z + dz }).hasHit);
+    };
+    const jumpApertureAssist = (forwardX: number, forwardZ: number): JumpApertureAssist | null => {
+        const length = Math.hypot(forwardX, forwardZ);
+        if (length < 1e-6) {
+            return null;
+        }
+        const fx = forwardX / length;
+        const fz = forwardZ / length;
+        const rightX = fz;
+        const rightZ = -fx;
+        const position = character.getPosition();
+        const startDistance = CAP_R + 0.02;
+        const endDistance = startDistance + 0.75;
+        const pathClear = (height: number, radius: number, lateralOffset: number): boolean => {
+            const axisHalf = Math.max(0, height * 0.5 - radius);
+            const sampleRadius = Math.max(0, radius - 0.03);
+            const diagonal = sampleRadius / Math.SQRT2;
+            const profile: ReadonlyArray<readonly [number, number]> = [
+                [0, -axisHalf - sampleRadius],
+                [-diagonal, -axisHalf - diagonal],
+                [diagonal, -axisHalf - diagonal],
+                [-sampleRadius, -axisHalf],
+                [0, -axisHalf],
+                [sampleRadius, -axisHalf],
+                [-sampleRadius, 0],
+                [0, 0],
+                [sampleRadius, 0],
+                [-sampleRadius, axisHalf],
+                [0, axisHalf],
+                [sampleRadius, axisHalf],
+                [-diagonal, axisHalf + diagonal],
+                [diagonal, axisHalf + diagonal],
+                [0, axisHalf + sampleRadius],
+            ];
+            for (const [side, vertical] of profile) {
+                const correctedSide = side + lateralOffset;
+                const offsetX = rightX * correctedSide;
+                const offsetZ = rightZ * correctedSide;
+                const y = position.y + vertical;
+                if (
+                    physicsRaycast(
+                        world,
+                        { x: position.x + offsetX + fx * startDistance, y, z: position.z + offsetZ + fz * startDistance },
+                        { x: position.x + offsetX + fx * endDistance, y, z: position.z + offsetZ + fz * endDistance }
+                    ).hasHit
+                ) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const lateralOffset = selectClosestClearApertureOffset(
+            (candidate) => !pathClear(CAP_H, CAP_R, candidate) && pathClear(CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS, candidate)
+        );
+        return lateralOffset === null ? null : { lateralOffset };
     };
 
     // ── Dynamic (dissolvable) props ──────────────────────────────────────────────────────
@@ -879,6 +1032,8 @@ export async function main(): Promise<void> {
         dispOffset: [number, number, number];
         /** Whether Havok may move this body (manifest `dynamic` behavior). Immovable ones are STATIC. */
         movable: boolean;
+        /** Authoritative manifest mass in kilograms. Zero for immovable bodies. */
+        mass: number;
         /** The manifest placement this prop came from, so its debug shape can be dropped on melt. */
         instanceId: string | undefined;
         disp: SceneNode;
@@ -936,6 +1091,7 @@ export async function main(): Promise<void> {
         // STATIC unless the manifest assigns the `dynamic` behavior — a fixture stays put no matter
         // how hard the player runs into it, while a genuinely loose prop still falls and can be shoved.
         const movable = group.some((m) => behaviorManager.movableMeshes.has(m));
+        const mass = movable ? (behaviorManager.getDynamicMass(group[0]!) ?? 10) : 0;
         const proxy = createTransformNode(`dyn_proxy_${dynBodies.length}`, centre[0], centre[1], centre[2]);
         const instanceId = instanceIdOfMesh(group[0]!);
         const authored = instanceId ? placementById.get(instanceId)?.shapes[0] : undefined;
@@ -945,6 +1101,9 @@ export async function main(): Promise<void> {
         if (authored) {
             body = createPhysicsBody(world, proxy, movable ? PhysicsMotionType.DYNAMIC : PhysicsMotionType.STATIC, true);
             setPhysicsBodyShape(world, body, createWorldCollisionShape(world, authored, centre));
+            if (movable) {
+                setPhysicsBodyMass(world, body, mass);
+            }
         }
         // The display root's offset in its OWN frame, so a moved body poses it as
         // `position = pose ∘ (−displayScale · centre)` — the transform the floating-body system used
@@ -957,6 +1116,7 @@ export async function main(): Promise<void> {
             meshes: group,
             bounds,
             movable,
+            mass,
             instanceId,
             disp: r,
             dispOffset,
@@ -1044,6 +1204,85 @@ export async function main(): Promise<void> {
         const ty = 2 * (q.z * v[0] - q.x * v[2]);
         const tz = 2 * (q.x * v[1] - q.y * v[0]);
         return [v[0] + q.w * tx + (q.y * tz - q.z * ty), v[1] + q.w * ty + (q.z * tx - q.x * tz), v[2] + q.w * tz + (q.x * ty - q.y * tx)];
+    };
+    const syncDynDisplay = (d: DynBody): void => {
+        const p = d.proxy.position;
+        const q = d.proxy.rotationQuaternion;
+        const off = qRot(q, d.dispOffset);
+        d.disp.position.set(p.x + off[0], p.y + off[1], p.z + off[2]);
+        d.disp.rotationQuaternion.set(q.x, q.y, q.z, q.w);
+    };
+    let antiGravityGrabbedBody: DynBody | null = null;
+    grabDynamicWithAntiGravity = (mesh): boolean => {
+        const d = dynBodyByMesh.get(mesh);
+        if (!d?.movable || !d.body || d.wriggling || !dynBodies.includes(d)) {
+            return false;
+        }
+        if (antiGravityGrabbedBody && antiGravityGrabbedBody !== d) {
+            releaseAntiGravityGrab(0);
+        }
+        antiGravityGrabbedBody = d;
+        canvas.dataset.antiGravityGrabbed = nodeNameOfMesh.get(d.mesh) ?? d.mesh.name;
+        canvas.dataset.antiGravityMass = String(d.mass);
+        setPhysicsBodyMotionType(world, d.body, PhysicsMotionType.ANIMATED);
+        setPhysicsBodyLinearVelocity(world, d.body, { x: 0, y: 0, z: 0 });
+        setPhysicsBodyAngularVelocity(world, d.body, { x: 0, y: 0, z: 0 });
+        return true;
+    };
+    updateAntiGravityGrab = (deltaMs): boolean => {
+        const d = antiGravityGrabbedBody;
+        if (!d?.body || !dynBodies.includes(d)) {
+            antiGravityGrabbedBody = null;
+            canvas.dataset.antiGravityGrabbed = "none";
+            canvas.dataset.antiGravityMass = "";
+            return false;
+        }
+        if (d.wriggling) {
+            releaseAntiGravityGrab(0);
+            return false;
+        }
+        const dx = cam.target.x - cam.position.x;
+        const dy = cam.target.y - cam.position.y;
+        const dz = cam.target.z - cam.position.z;
+        const invLength = 1 / (Math.hypot(dx, dy, dz) || 1);
+        const targetX = cam.position.x + dx * invLength * 2.5;
+        const targetY = cam.position.y + dy * invLength * 2.5;
+        const targetZ = cam.position.z + dz * invLength * 2.5;
+        const blend = 1 - Math.exp((-Math.max(0, deltaMs) * 12) / 1000);
+        const p = d.proxy.position;
+        setPhysicsBodyTransform(
+            world,
+            d.body,
+            {
+                x: p.x + (targetX - p.x) * blend,
+                y: p.y + (targetY - p.y) * blend,
+                z: p.z + (targetZ - p.z) * blend,
+            },
+            d.proxy.rotationQuaternion
+        );
+        syncDynDisplay(d);
+        return true;
+    };
+    releaseAntiGravityGrab = (throwSpeed): void => {
+        const d = antiGravityGrabbedBody;
+        antiGravityGrabbedBody = null;
+        canvas.dataset.antiGravityGrabbed = "none";
+        canvas.dataset.antiGravityMass = "";
+        canvas.dataset.antiGravityThrowSpeed = String(throwSpeed);
+        if (!d?.body || !dynBodies.includes(d)) {
+            return;
+        }
+        setPhysicsBodyMotionType(world, d.body, PhysicsMotionType.DYNAMIC);
+        const dx = cam.target.x - cam.position.x;
+        const dy = cam.target.y - cam.position.y;
+        const dz = cam.target.z - cam.position.z;
+        const invLength = 1 / (Math.hypot(dx, dy, dz) || 1);
+        setPhysicsBodyLinearVelocity(world, d.body, {
+            x: dx * invLength * throwSpeed,
+            y: dy * invLength * throwSpeed,
+            z: dz * invLength * throwSpeed,
+        });
+        setPhysicsBodyAngularVelocity(world, d.body, { x: 0, y: 0, z: 0 });
     };
     /** A dissolvable prop's primitive at its CURRENT pose, with the velocity the solver needs. */
     const livePrim = (d: DynBody): FluidPrimitive | null => {
@@ -1221,7 +1460,9 @@ export async function main(): Promise<void> {
               injectedPrims: () =>
                   activeSims.map((a) => ({
                       sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name,
-                      prims: a.collision.prims.filter((primitive) => primitive.active !== false),
+                      // The player capsule is always reserved in every set and is too large to be
+                      // useful in this visualization. Keep it in the simulation, but do not draw it.
+                      prims: visibleInjectedPrimitives(a.collision.prims, a.collision.playerSlot),
                   })),
               dynBodies: () => dynBodies.map((d) => ({ name: nodeNameOfMesh.get(d.mesh) ?? d.mesh.name, position: d.proxy.position, half: d.bounds.half })),
               roomAt,
@@ -1299,7 +1540,9 @@ export async function main(): Promise<void> {
     let setTaaEnabled: (on: boolean) => void = () => {};
     let controlPanel: AquanovaControlPanel | null = null;
     const setLiquefactorModel = (model: LiquefactorModel): void => {
-        weaponViewmodel.select(model);
+        for (const viewmodel of weaponViewmodels) {
+            viewmodel.select(model);
+        }
         graphics.liquefactorModel = model;
         saveGraphicsSettings(graphics);
         canvas.dataset.liquefactorModel = model;
@@ -1307,7 +1550,9 @@ export async function main(): Promise<void> {
     const setWeaponSwayEnabled = (enabled: boolean): void => {
         graphics.weaponSway = enabled;
         saveGraphicsSettings(graphics);
-        weaponViewmodel.setSwayEnabled(enabled);
+        for (const viewmodel of weaponViewmodels) {
+            viewmodel.setSwayEnabled(enabled);
+        }
         canvas.dataset.weaponSway = String(enabled);
     };
     const setSoundsEnabled = (enabled: boolean): void => {
@@ -1316,22 +1561,34 @@ export async function main(): Promise<void> {
         behaviorManager.setSoundsEnabled(enabled);
         canvas.dataset.soundsEnabled = String(enabled);
     };
+    const setSoundVolume = (volume: number): void => {
+        graphics.soundVolume = Math.max(0, Math.min(1, volume));
+        saveGraphicsSettings(graphics);
+        behaviorManager.setSoundVolume(graphics.soundVolume);
+        canvas.dataset.soundVolume = String(graphics.soundVolume);
+    };
     canvas.dataset.weaponSway = String(graphics.weaponSway);
     canvas.dataset.soundsEnabled = String(graphics.soundsEnabled);
+    canvas.dataset.soundVolume = String(graphics.soundVolume);
 
     await behaviorManager.start({
         canvas,
         camera: cam,
         character,
+        animationGroups: ship.animationGroups ?? [],
         capsuleHeight: CAP_H,
+        capsuleRadius: CAP_R,
         eyeHeight: EYE,
         canStand,
+        jumpApertureAssist,
         getPicker,
         nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
         isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
         isInspecting: inspectOn,
         inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
+        weaponAntiGravityGun,
         weaponLiquefactor,
+        dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
         requestFusionResume: () => requestFusionResume(),
         resolveFusionResume: (token, mesh) => resolveFusionResume(token, mesh),
         resolveFusionTarget: (mesh, point) => resolveFusionTarget(mesh, point),
@@ -1542,6 +1799,23 @@ export async function main(): Promise<void> {
         fire: (): void => {
             void playerBehavior?.fire();
         },
+        antiGravityState: (): {
+            grabbed: string | null;
+            bodies: Array<{ name: string; mass: number; position: [number, number, number]; velocity: [number, number, number] }>;
+        } => ({
+            grabbed: antiGravityGrabbedBody ? (nodeNameOfMesh.get(antiGravityGrabbedBody.mesh) ?? antiGravityGrabbedBody.mesh.name) : null,
+            bodies: dynBodies
+                .filter((body) => body.movable && body.body)
+                .map((body) => {
+                    const velocity = getPhysicsBodyLinearVelocity(world, body.body!);
+                    return {
+                        name: nodeNameOfMesh.get(body.mesh) ?? body.mesh.name,
+                        mass: body.mass,
+                        position: [body.proxy.position.x, body.proxy.position.y, body.proxy.position.z],
+                        velocity: [velocity.x, velocity.y, velocity.z],
+                    };
+                }),
+        }),
         setFusionPressed: (pressed: boolean, targetName?: string): boolean => {
             if (!pressed) return reverseFusion();
             const token = requestFusionResume();
@@ -3126,6 +3400,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             member.mesh.pickable = false;
             if (!member.dyn || removedBodies.has(member.dyn) || !dynBodies.includes(member.dyn)) continue;
             removedBodies.add(member.dyn);
+            if (antiGravityGrabbedBody === member.dyn) {
+                releaseAntiGravityGrab(0);
+            }
             // Disable collision BEFORE the first fluid step. Any prop resting on this body drops into
             // the erupting water, and every already-running simulation skips the deactivated slots.
             setDynBodyCollisionActive(member.dyn, false);
@@ -3176,7 +3453,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             getFrameGraph(scene).build();
         }
         if (controlPanel?.isVisible()) {
-            controlPanel.updateWeaponTransform(weaponTransformValues());
+            if (weaponDebugTools) controlPanel.updateWeaponTransform(weaponDebugTools.values());
             controlPanel.updateCameraTransform({
                 position: [cam.position.x, cam.position.y, cam.position.z],
                 target: [cam.target.x, cam.target.y, cam.target.z],
@@ -3390,7 +3667,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
 
     const setEnvironmentIntensity = (value: number): void => {
         const materials = new Set<PbrMaterialProps>();
-        for (const mesh of [...runtimeLitMeshes, ...weaponViewmodel.meshes]) {
+        for (const mesh of [...runtimeLitMeshes, ...weaponMeshes]) {
             if (mesh.material && isPbrMaterial(mesh.material)) materials.add(mesh.material);
         }
         for (const material of materials) {
@@ -3541,50 +3818,44 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 get: () => graphics.weaponSway,
                 set: setWeaponSwayEnabled,
             },
-            positionGizmo: {
-                label: "Position gizmo",
-                get: () => weaponPositionGizmoOn,
-                set: (on) => {
-                    weaponPositionGizmoOn = on;
-                    syncWeaponTools();
-                },
-            },
-            rotationGizmo: {
-                label: "Rotation gizmo",
-                get: () => weaponRotationGizmoOn,
-                set: (on) => {
-                    weaponRotationGizmoOn = on;
-                    syncWeaponTools();
-                },
-            },
-            scaleGizmo: {
-                label: "Scale gizmo",
-                get: () => weaponScaleGizmoOn,
-                set: (on) => {
-                    weaponScaleGizmoOn = on;
-                    syncWeaponTools();
-                },
-            },
-            localGuideGizmo: {
-                label: "Aim origin gizmo",
-                get: () => weaponLocalGuideGizmoOn,
-                set: (on) => {
-                    weaponLocalGuideGizmoOn = on;
-                    syncWeaponTools();
-                },
-            },
-            localGuideYaw: {
-                get: () => (weaponViewmodel.localGuideYaw.rotation.y * 180) / Math.PI,
-                set: (degrees) => {
-                    weaponViewmodel.localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
-                },
-            },
+            debug: weaponDebugTools
+                ? {
+                      positionGizmo: {
+                          label: "Position gizmo",
+                          get: weaponDebugTools.positionGizmoEnabled,
+                          set: weaponDebugTools.setPositionGizmoEnabled,
+                      },
+                      rotationGizmo: {
+                          label: "Rotation gizmo",
+                          get: weaponDebugTools.rotationGizmoEnabled,
+                          set: weaponDebugTools.setRotationGizmoEnabled,
+                      },
+                      scaleGizmo: {
+                          label: "Scale gizmo",
+                          get: weaponDebugTools.scaleGizmoEnabled,
+                          set: weaponDebugTools.setScaleGizmoEnabled,
+                      },
+                      localGuideGizmo: {
+                          label: "Aim origin gizmo",
+                          get: weaponDebugTools.localGuideGizmoEnabled,
+                          set: weaponDebugTools.setLocalGuideGizmoEnabled,
+                      },
+                      localGuideYaw: {
+                          get: weaponDebugTools.localGuideYawDegrees,
+                          set: weaponDebugTools.setLocalGuideYawDegrees,
+                      },
+                  }
+                : undefined,
         },
         audio: {
             sounds: {
                 label: "Sounds",
                 get: () => graphics.soundsEnabled,
                 set: setSoundsEnabled,
+            },
+            volume: {
+                get: () => graphics.soundVolume,
+                set: setSoundVolume,
             },
         },
         environment: {
@@ -3628,11 +3899,10 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             actions: debugActions,
         },
         onVisibilityChange: (visible) => {
-            weaponToolsVisible = visible;
-            syncWeaponTools();
+            weaponDebugTools?.setVisible(visible);
         },
     });
-    controlPanel.updateWeaponTransform(weaponTransformValues());
+    if (weaponDebugTools) controlPanel.updateWeaponTransform(weaponDebugTools.values());
     controlPanel.updateCameraTransform({
         position: [cam.position.x, cam.position.y, cam.position.z],
         target: [cam.target.x, cam.target.y, cam.target.z],

@@ -3,6 +3,7 @@ import type { Mesh } from "../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
 import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
 import type { BehaviorContext, WeaponLiquefactorBehaviorConfig, WeaponLiquefactorRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
+import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 import { WeaponLiquefactorBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-liquefactor";
 
 const audio = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const audio = vi.hoisted(() => ({
     disposeAudioEngine: vi.fn(),
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
+    setMasterVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
 }));
 
@@ -18,7 +20,7 @@ vi.mock("../../../packages/babylon-lite/src/index.ts", () => audio);
 
 type WeaponContext = Pick<
     BehaviorContext,
-    "events" | "nodeNameOf" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
+    "events" | "nodeNameOf" | "weaponInventory" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
 >;
 
 function mesh(name: string): Mesh {
@@ -34,6 +36,8 @@ function createHarness(
     } = {}
 ) {
     const events = new EventManager();
+    const weaponInventory = new WeaponInventory();
+    weaponInventory.start(events);
     let reachedTarget = false;
     let ready = true;
     const runtime: WeaponLiquefactorRuntime = {
@@ -46,6 +50,7 @@ function createHarness(
     const context: WeaponContext = {
         events,
         nodeNameOf: vi.fn((mesh) => mesh.name),
+        weaponInventory,
         weaponLiquefactor: runtime,
         requestFusionResume: vi.fn(() => options.resumeToken ?? null),
         resolveFusionResume: vi.fn(() => options.resumeResult ?? "start-new"),
@@ -80,6 +85,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         audio.disposeAudioEngine.mockReset();
         audio.playStreamingSound.mockReset();
         audio.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
+        audio.setMasterVolume.mockReset();
         audio.stopStreamingSound.mockReset();
     });
 
@@ -106,6 +112,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
 
         expect(audio.createAudioEngineAsync).toHaveBeenCalledOnce();
+        expect(audio.setMasterVolume).toHaveBeenCalledWith({ id: "audio-engine" }, 1);
         expect(audio.createStreamingSoundAsync.mock.calls.map(([, source]) => source).sort()).toEqual([
             "/aquanova/sounds/big.mp3?v=20260813-1",
             "/aquanova/sounds/liquefactorLiquefy.mp3?v=20260813-1",
@@ -120,6 +127,26 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         expect(audio.disposeAudioEngine).not.toHaveBeenCalled();
         WeaponLiquefactorBehavior.dispose();
         expect(audio.disposeAudioEngine).toHaveBeenCalledWith({ id: "audio-engine" });
+    });
+
+    it("updates the master volume while a weapon loop is active", async () => {
+        WeaponLiquefactorBehavior.setSoundVolume(0.4);
+        await WeaponLiquefactorBehavior.init({
+            sounds: {
+                quickSplash: ["quick"],
+            },
+        });
+        const harness = createHarness();
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        const stopCount = audio.stopStreamingSound.mock.calls.length;
+
+        WeaponLiquefactorBehavior.setSoundVolume(0.65);
+
+        expect(audio.setMasterVolume.mock.calls).toEqual([
+            [{ id: "audio-engine" }, 0.4],
+            [{ id: "audio-engine" }, 0.65],
+        ]);
+        expect(audio.stopStreamingSound).toHaveBeenCalledTimes(stopCount);
     });
 
     it("starts hidden and ignores firing until its entity receives enable", () => {
@@ -158,6 +185,20 @@ describe("Aquanova Liquefactor weapon behavior", () => {
 
         harness.events.emit("weaponSlotSelected", { slot: 2 });
         expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, true);
+    });
+
+    it("cycles between the owned Liquefactor and the hidden slot", () => {
+        const harness = createHarness({ enabled: false });
+
+        harness.events.emit("weaponCycleRequested", { direction: 1 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, false);
+
+        harness.events.emit("entityEvent", { name: "itemLiquefactor", event: "enable" });
+        harness.events.emit("weaponCycleRequested", { direction: 1 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, true);
+
+        harness.events.emit("weaponCycleRequested", { direction: -1 });
+        expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(true, true);
     });
 
     it("ignores firing until the raise animation reaches its ready pose", () => {

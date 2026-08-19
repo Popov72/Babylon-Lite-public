@@ -1,13 +1,16 @@
 import type { Mesh, PhysicsWorld, SceneContext } from "babylon-lite";
-import { DynamicBehavior } from "./dynamic.js";
+import { DynamicBehavior, resolveDynamicMass } from "./dynamic.js";
 import { DisableEntityBehavior, EnableEntityBehavior } from "./entity-toggle.js";
 import { EventManager } from "./event-manager.js";
 import { LiquefiableBehavior } from "./liquefiable.js";
 import { PickEntityBehavior } from "./pick-entity.js";
+import { PlayAnimationBehavior } from "./play-animation.js";
 import { PlayerBehavior } from "./player.js";
 import { isEntityToggleBehaviorConfig, isLiquefiableBehaviorConfig, isPickEntityBehaviorConfig } from "./types.js";
 import type { Behavior, BehaviorAssignment, BehaviorContext, BehaviorLibrary, Entities, LiquefiableBehaviorConfig } from "./types.js";
 import { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
+import { WeaponAntiGravityGunBehavior } from "./weapon-anti-gravity-gun.js";
+import { WeaponInventory } from "./weapon-inventory.js";
 
 export interface BehaviorManagerOptions {
     readonly library: BehaviorLibrary | undefined;
@@ -47,6 +50,8 @@ export class BehaviorManager {
     private readonly entityNameOf: (mesh: Mesh) => string;
     private readonly assignmentCache = new Map<string, BehaviorAssignment[]>();
     private readonly liquefiableConfigByMesh = new Map<Mesh, LiquefiableBehaviorConfig>();
+    private readonly dynamicMassByMesh = new Map<Mesh, number>();
+    private readonly weaponInventory = new WeaponInventory();
     private started = false;
 
     public constructor(options: BehaviorManagerOptions) {
@@ -80,6 +85,7 @@ export class BehaviorManager {
             const liquefiableConfig = this.liquefiableConfigOf(entityName);
             if (liquefiableConfig) this.liquefiableConfigByMesh.set(mesh, liquefiableConfig);
             const explicitlyDynamic = assignments.some((assignment) => assignment.name === "dynamic");
+            const dynamicConfig = assignments.find((assignment) => assignment.name === "dynamic");
             const dissolvable = dissolvableEntityNames.has(entityName);
             if (dissolvable) {
                 this.dissolvableMeshes.add(mesh);
@@ -87,15 +93,19 @@ export class BehaviorManager {
                 if (instanceId) this.dissolvableInstanceIds.add(instanceId);
             }
             if (dissolvable || explicitlyDynamic) this.dynamicMeshes.add(mesh);
-            if (explicitlyDynamic) this.movableMeshes.add(mesh);
+            if (explicitlyDynamic) {
+                this.movableMeshes.add(mesh);
+                this.dynamicMassByMesh.set(mesh, resolveDynamicMass(dynamicConfig!));
+            }
             if (liquefiableConfig) this.liquefiableMeshes.add(mesh);
         }
     }
 
-    public async start(context: Omit<BehaviorContext, "events">): Promise<void> {
+    public async start(context: Omit<BehaviorContext, "events" | "weaponInventory">): Promise<void> {
         if (this.started) throw new Error("[aquanova] behaviors are already started");
         this.started = true;
-        const behaviorContext: BehaviorContext = { ...context, events: this.events };
+        this.weaponInventory.start(this.events);
+        const behaviorContext: BehaviorContext = { ...context, events: this.events, weaponInventory: this.weaponInventory };
         try {
             const weapon = this.findEntityWithBehavior("weaponLiquefactor");
             if (weapon?.meshes.length) await WeaponLiquefactorBehavior.init(weapon.assignment);
@@ -119,7 +129,13 @@ export class BehaviorManager {
                         continue;
                     }
                     const targets =
-                        assignment.name === "player" || assignment.name === "weaponLiquefactor" || isEntityToggleBehaviorConfig(assignment) ? meshes.slice(0, 1) : meshes;
+                        assignment.name === "player" ||
+                        assignment.name === "weaponLiquefactor" ||
+                        assignment.name === "weaponAntiGravityGun" ||
+                        assignment.name === "playAnimation" ||
+                        isEntityToggleBehaviorConfig(assignment)
+                            ? meshes.slice(0, 1)
+                            : meshes;
                     for (const mesh of targets) this.instances.push(createBehavior(assignment, mesh, behaviorContext, entityName));
                 }
             }
@@ -129,6 +145,7 @@ export class BehaviorManager {
             this.instances.length = 0;
             PickEntityBehavior.dispose();
             WeaponLiquefactorBehavior.dispose();
+            this.weaponInventory.dispose();
             this.started = false;
             throw error;
         }
@@ -137,6 +154,11 @@ export class BehaviorManager {
     public setSoundsEnabled(enabled: boolean): void {
         PickEntityBehavior.setSoundEnabled(enabled);
         WeaponLiquefactorBehavior.setSoundEnabled(enabled);
+    }
+
+    public setSoundVolume(volume: number): void {
+        PickEntityBehavior.setSoundVolume(volume);
+        WeaponLiquefactorBehavior.setSoundVolume(volume);
     }
 
     public bindSystemEvents(scene: SceneContext, world: PhysicsWorld): void {
@@ -157,6 +179,10 @@ export class BehaviorManager {
 
     public getLiquefiableConfig(mesh: Mesh): LiquefiableBehaviorConfig | undefined {
         return this.liquefiableConfigByMesh.get(mesh);
+    }
+
+    public getDynamicMass(mesh: Mesh): number | null {
+        return this.dynamicMassByMesh.get(mesh) ?? null;
     }
 
     public getLinkedEntityNames(mesh: Mesh): readonly string[] {
@@ -187,6 +213,7 @@ export class BehaviorManager {
         this.instances.length = 0;
         PickEntityBehavior.dispose();
         WeaponLiquefactorBehavior.dispose();
+        this.weaponInventory.dispose();
         this.events.dispose();
         this.started = false;
     }
@@ -227,6 +254,7 @@ export class BehaviorManager {
         this.dissolvableMeshes.clear();
         this.dissolvableInstanceIds.clear();
         this.liquefiableConfigByMesh.clear();
+        this.dynamicMassByMesh.clear();
     }
 }
 
@@ -241,8 +269,12 @@ function createBehavior(assignment: BehaviorAssignment, mesh: Mesh, context: Beh
             return new DynamicBehavior(mesh, assignment);
         case "player":
             return new PlayerBehavior(mesh, assignment, context);
+        case "playAnimation":
+            return new PlayAnimationBehavior(entityName, mesh, assignment, context.animationGroups);
         case "weaponLiquefactor":
             return new WeaponLiquefactorBehavior(entityName, mesh, assignment, context);
+        case "weaponAntiGravityGun":
+            return new WeaponAntiGravityGunBehavior(entityName, mesh, assignment, context);
     }
     if (isLiquefiableBehaviorConfig(assignment)) return new LiquefiableBehavior(assignment.name, mesh, assignment, context);
     throw new Error(`[aquanova] behavior "${assignment.name}" has no runtime implementation`);

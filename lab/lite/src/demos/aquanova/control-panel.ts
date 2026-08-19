@@ -1,3 +1,5 @@
+import { LAB_DEBUG } from "./debug-flag.js";
+
 type MaybePromise = void | Promise<void>;
 
 interface ToggleOption {
@@ -45,17 +47,23 @@ export interface AquanovaControlPanelOptions {
             readonly options: readonly string[];
         };
         readonly sway: ToggleOption;
-        readonly positionGizmo: ToggleOption;
-        readonly rotationGizmo: ToggleOption;
-        readonly scaleGizmo: ToggleOption;
-        readonly localGuideGizmo: ToggleOption;
-        readonly localGuideYaw: {
-            readonly get: () => number;
-            readonly set: (degrees: number) => void;
+        readonly debug?: {
+            readonly positionGizmo: ToggleOption;
+            readonly rotationGizmo: ToggleOption;
+            readonly scaleGizmo: ToggleOption;
+            readonly localGuideGizmo: ToggleOption;
+            readonly localGuideYaw: {
+                readonly get: () => number;
+                readonly set: (degrees: number) => void;
+            };
         };
     };
     readonly audio: {
         readonly sounds: ToggleOption;
+        readonly volume: {
+            readonly get: () => number;
+            readonly set: (value: number) => void;
+        };
     };
     readonly environment: {
         readonly localCubemapBlending: ToggleOption;
@@ -246,19 +254,28 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
     const weapon = addSection("Weapon");
     addSelect(weapon, "Model detail", options.weapon.model.options, options.weapon.model.get, options.weapon.model.set);
     addToggle(weapon, options.weapon.sway);
-    addToggle(weapon, options.weapon.positionGizmo);
-    addToggle(weapon, options.weapon.rotationGizmo);
-    addToggle(weapon, options.weapon.scaleGizmo);
-    addToggle(weapon, options.weapon.localGuideGizmo);
-    addSlider(weapon, "Aim Y rotation", -180, 180, 0.1, options.weapon.localGuideYaw.get, options.weapon.localGuideYaw.set);
-    const weaponPosition = addVectorReadout(weapon, "Position");
-    const weaponRotation = addVectorReadout(weapon, "Rotation (deg)");
-    const weaponScale = addVectorReadout(weapon, "Scale");
-    const localGuidePosition = addVectorReadout(weapon, "Aim origin position");
-    const localGuideRotation = addVectorReadout(weapon, "Aim rotation (deg)");
+    const weaponDebug = LAB_DEBUG ? options.weapon.debug : undefined;
+    let weaponPosition: HTMLOutputElement | null = null;
+    let weaponRotation: HTMLOutputElement | null = null;
+    let weaponScale: HTMLOutputElement | null = null;
+    let localGuidePosition: HTMLOutputElement | null = null;
+    let localGuideRotation: HTMLOutputElement | null = null;
+    if (weaponDebug) {
+        addToggle(weapon, weaponDebug.positionGizmo);
+        addToggle(weapon, weaponDebug.rotationGizmo);
+        addToggle(weapon, weaponDebug.scaleGizmo);
+        addToggle(weapon, weaponDebug.localGuideGizmo);
+        addSlider(weapon, "Aim Y rotation", -180, 180, 0.1, weaponDebug.localGuideYaw.get, weaponDebug.localGuideYaw.set);
+        weaponPosition = addVectorReadout(weapon, "Position");
+        weaponRotation = addVectorReadout(weapon, "Rotation (deg)");
+        weaponScale = addVectorReadout(weapon, "Scale");
+        localGuidePosition = addVectorReadout(weapon, "Aim origin position");
+        localGuideRotation = addVectorReadout(weapon, "Aim rotation (deg)");
+    }
 
     const audio = addSection("Audio");
     addToggle(audio, options.audio.sounds);
+    addSlider(audio, "Volume", 0, 1, 0.05, options.audio.volume.get, options.audio.volume.set);
 
     const environment = addSection("Environment");
     addToggle(environment, options.environment.localCubemapBlending);
@@ -302,11 +319,11 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
         refresh,
         isVisible: () => visible,
         updateWeaponTransform: (values) => {
-            setVector(weaponPosition, values.position, 4);
-            setVector(weaponRotation, values.rotationDegrees, 2);
-            setVector(weaponScale, values.scale, 4);
-            setVector(localGuidePosition, values.localGuidePosition, 4);
-            setVector(localGuideRotation, values.localGuideRotationDegrees, 2);
+            if (weaponPosition) setVector(weaponPosition, values.position, 4);
+            if (weaponRotation) setVector(weaponRotation, values.rotationDegrees, 2);
+            if (weaponScale) setVector(weaponScale, values.scale, 4);
+            if (localGuidePosition) setVector(localGuidePosition, values.localGuidePosition, 4);
+            if (localGuideRotation) setVector(localGuideRotation, values.localGuideRotationDegrees, 2);
         },
         updateCameraTransform: (values) => {
             setVectorInput(cameraPosition, values.position);

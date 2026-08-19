@@ -31,6 +31,8 @@ export interface GraphicsSettings {
     weaponSway: boolean;
     /** Gameplay sound effects for pickups and the Liquefactor. */
     soundsEnabled: boolean;
+    /** Master gain for all Aquanova gameplay sound effects, from silent (`0`) to full volume (`1`). */
+    soundVolume: number;
     /** Blend the two nearest local cubemaps. Disabled uses one dominant box-projected probe. */
     localCubemapBlending: boolean;
     /** Render through an sRGB swapchain view so the GPU encodes linear→sRGB on store.
@@ -70,6 +72,7 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
     liquefactorModel: "80k",
     weaponSway: true,
     soundsEnabled: true,
+    soundVolume: 1,
     // On by default for smooth room transitions. Older devices can use one dominant probe, retaining
     // box projection while avoiding the second cubemap sample.
     localCubemapBlending: true,
@@ -120,6 +123,7 @@ export const GRAPHICS_SETTING_DEFS: readonly GraphicsSettingDef[] = [
     },
     { key: "weaponSway", kind: "toggle", label: "Weapon sway", help: "Adds subtle idle balancing motion to the held weapon without moving the crosshair." },
     { key: "soundsEnabled", kind: "toggle", label: "Sounds", help: "Enables pickup and Liquefactor sound effects." },
+    { key: "soundVolume", kind: "scale", label: "Sound volume", help: "Controls the volume of all Aquanova gameplay sound effects.", options: [0, 1] },
     {
         key: "localCubemapBlending",
         kind: "toggle",
@@ -152,12 +156,12 @@ function queryOverride(key: string): boolean | undefined {
     return raw === null || raw === "" ? true : raw !== "0" && raw.toLowerCase() !== "false";
 }
 
-/** Parse a positive numeric query-string value, e.g. `?ssaa=1.5`. */
+/** Parse a non-negative numeric query-string value, e.g. `?ssaa=1.5` or `?soundVolume=0`. */
 function queryScale(key: string): number | undefined {
     const raw = queryRaw(key);
     if (raw === undefined || raw === null || raw === "") return undefined;
     const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 /**
@@ -200,7 +204,7 @@ export function loadGraphicsSettings(authored?: Partial<GraphicsSettings>): Grap
         const out = settings as unknown as Record<string, boolean | number | string>;
         if (def.kind === "scale") {
             const stored = saved?.[def.key];
-            if (typeof stored === "number" && Number.isFinite(stored) && stored > 0) out[def.key] = stored;
+            if (typeof stored === "number" && Number.isFinite(stored) && stored >= 0) out[def.key] = stored;
             const override = queryScale(def.key);
             if (override !== undefined) out[def.key] = override;
         } else if (def.kind === "choice") {
@@ -221,6 +225,7 @@ export function loadGraphicsSettings(authored?: Partial<GraphicsSettings>): Grap
         if (legacyOverride !== undefined) settings.localCubemapBlending = legacyOverride;
     }
     settings.ssaa = settings.ssaa > 1 ? 2 : 1;
+    settings.soundVolume = Math.max(0, Math.min(1, settings.soundVolume));
     if (!LIQUEFACTOR_MODELS.includes(settings.liquefactorModel)) settings.liquefactorModel = DEFAULT_GRAPHICS.liquefactorModel;
     return applyExclusivity(settings);
 }

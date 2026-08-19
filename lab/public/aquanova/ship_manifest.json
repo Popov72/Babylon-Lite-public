@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-16T23:53:51.945Z",
+  "savedAt": "2026-08-18T20:36:23.810Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -9,6 +9,7 @@
       "chunks[].aabb",
       "environmentProbes[].boxPosition",
       "environmentProbes[].capturePosition",
+      "environmentProbes[].angle",
       "environmentProbes[].influenceBoxPosition",
       "collision",
       "moduleCollision",
@@ -43,13 +44,13 @@
       "adjacency",
       "space",
       "environmentProbes[].boxSize",
-      "environmentProbes[].resolution",
       "environmentProbes[].influenceBoxSize",
       "environmentProbes[].influenceInnerBoxSize"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
       "point": "[-x, y, z]",
+      "yaw": "-angle",
       "quaternion": "[-x, y, z, -w] — mirroring flips the handedness of the turn as well",
       "aabb": "min.x and max.x swap as well as negate",
       "moduleCollision": "local to its module, in glTF space: convert centre AND rotation before composing onto a placement"
@@ -63,16 +64,17 @@
     "autoSaveMinutes": 2,
     "hullTolerance": 0.39,
     "hullThickness": 0.35,
-    "hullOffset": "centered"
+    "hullOffset": "centered",
+    "probeResolution": 512
   },
   "kits": {
     "source": "local",
     "base": "D:\\alexis\\TombRaider\\Popov72\\BabylonAssets\\kits",
     "folders": [
-      "Modular SciFi MegaKit",
-      "Sci-Fi Essentials Kit",
       "Aquanova",
+      "Modular SciFi MegaKit",
       "Pirate Kit",
+      "Sci-Fi Essentials Kit",
       "Ultimate Nature Pack",
       "Ultimate RPG Items Pack"
     ]
@@ -137,8 +139,8 @@
       "node": "CHUNK_CH03_StorageC2",
       "aabb": {
         "min": [
-          5.226,
-          -3.0065,
+          7.226,
+          -0.013,
           -20.774
         ],
         "max": [
@@ -148,7 +150,7 @@
         ]
       },
       "instanceCount": 45,
-      "meshCount": 120
+      "meshCount": 128
     },
     {
       "id": "Test",
@@ -173,18 +175,18 @@
       "node": "CHUNK_CH03_StorageC2Escape",
       "aabb": {
         "min": [
-          1.349,
-          0.64,
-          -13.341
+          1.271,
+          0.5025,
+          -13.4146
         ],
         "max": [
           7.871,
-          2.3557,
-          -6.598
+          2.3777,
+          -6.575
         ]
       },
-      "instanceCount": 26,
-      "meshCount": 44
+      "instanceCount": 28,
+      "meshCount": 50
     }
   ],
   "environmentProbes": [
@@ -205,22 +207,22 @@
         2.5,
         2
       ],
+      "angle": 0,
       "influenceBoxPosition": [
-        0.6317955041629171,
+        2.7859760816571715,
         2.5,
         2
       ],
       "influenceBoxSize": [
-        16.2,
+        12.99,
         8,
         5.2
       ],
       "influenceInnerBoxSize": [
-        2,
+        11,
         3.5,
         5
-      ],
-      "resolution": 1024
+      ]
     },
     {
       "id": "CH01_Corridor2",
@@ -239,22 +241,22 @@
         2.499047666788101,
         -8.170461957037828
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         10.313207630119352,
         2.499047666788101,
         -8.170461957037828
       ],
       "influenceBoxSize": [
-        7.7035,
+        6,
         8.011,
         27.648
       ],
       "influenceInnerBoxSize": [
         5,
         3.5,
-        18
-      ],
-      "resolution": 1024
+        17
+      ]
     },
     {
       "id": "CH00_Storage",
@@ -273,6 +275,7 @@
         2.5,
         0.03219
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         -7.95142,
         2.5,
@@ -287,8 +290,7 @@
         2.1972,
         2.5,
         5.5644
-      ],
-      "resolution": 512
+      ]
     },
     {
       "id": "CH01_CorridorEnd",
@@ -307,6 +309,7 @@
         2.297625784585776,
         -18.05311936597713
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         14.079641277139773,
         2.297625784585776,
@@ -321,8 +324,7 @@
         1.1035,
         2.011,
         1.648
-      ],
-      "resolution": 512
+      ]
     },
     {
       "id": "CH01_Escape1",
@@ -341,6 +343,7 @@
         1.5,
         -7.1
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         4.6,
         1.5,
@@ -355,8 +358,7 @@
         6,
         1.5,
         0.4
-      ],
-      "resolution": 512
+      ]
     },
     {
       "id": "CH01_Escape2",
@@ -375,6 +377,7 @@
         1.5,
         -7.1
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         4.6,
         1.5,
@@ -389,8 +392,7 @@
         6,
         1.5,
         0.4
-      ],
-      "resolution": 512
+      ]
     },
     {
       "id": "CH01_Escape3",
@@ -409,6 +411,7 @@
         1.4978633255374065,
         -9.969499588012695
       ],
+      "angle": 0,
       "influenceBoxPosition": [
         1.8089687753009538,
         1.4978633255374065,
@@ -423,8 +426,7 @@
         0.72,
         1.2,
         1.713
-      ],
-      "resolution": 512
+      ]
     }
   ],
   "instances": [
@@ -685,6 +687,7 @@
       "id": "P0067",
       "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
+      "name": "mywall",
       "position": [
         -10,
         0,
@@ -700,49 +703,7 @@
         1,
         1
       ],
-      "node": "P0067"
-    },
-    {
-      "id": "P0068",
-      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
-      "chunk": "CH03_StorageC2",
-      "position": [
-        -8,
-        -3,
-        -14
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0068"
-    },
-    {
-      "id": "P0069",
-      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
-      "chunk": "CH03_StorageC2",
-      "position": [
-        -8,
-        -3,
-        -7
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0069"
+      "node": "mywall"
     },
     {
       "id": "P0070",
@@ -3265,7 +3226,7 @@
       "name": "itemLiquefactor",
       "position": [
         6.012,
-        0.126,
+        0.221,
         -1
       ],
       "rotation": [
@@ -3284,10 +3245,11 @@
       "id": "P0363",
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
+      "name": "p4",
       "position": [
         -5.887,
-        1.008,
-        -5.594
+        0.951,
+        -5.59
       ],
       "rotation": [
         10.5,
@@ -3296,19 +3258,20 @@
       ],
       "scale": [
         1,
-        1,
+        1.06,
         1
       ],
-      "node": "P0363"
+      "node": "p4"
     },
     {
       "id": "P0364",
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
+      "name": "p2",
       "position": [
         -5.887,
-        1.008,
-        -8.602
+        0.971,
+        -8.586
       ],
       "rotation": [
         -10.5,
@@ -3317,19 +3280,20 @@
       ],
       "scale": [
         1,
-        1,
+        1.06,
         1
       ],
-      "node": "P0364"
+      "node": "p2"
     },
     {
       "id": "P0365",
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
+      "name": "p3",
       "position": [
-        -6.06,
-        0.02,
-        -6.6
+        -6.007,
+        0.006,
+        -6.585
       ],
       "rotation": [
         -10.5,
@@ -3338,10 +3302,10 @@
       ],
       "scale": [
         1,
-        1,
-        1
+        1.02,
+        1.04
       ],
-      "node": "P0365"
+      "node": "p3"
     },
     {
       "id": "P0370",
@@ -3349,9 +3313,9 @@
       "chunk": "CH03_StorageC2",
       "name": "CH01_CorridorFan1",
       "position": [
-        -7.845,
+        -7.869,
         1.799,
-        -7.105
+        -7.08
       ],
       "rotation": [
         0,
@@ -3359,9 +3323,9 @@
         79.5
       ],
       "scale": [
-        1,
-        1,
-        1
+        1.07,
+        1.07,
+        1.07
       ],
       "node": "CH01_CorridorFan1"
     },
@@ -3371,9 +3335,9 @@
       "chunk": "CH03_StorageC2",
       "name": "CH01_CorridorFan2",
       "position": [
-        -7.835,
-        1.799,
-        -12.93
+        -7.874,
+        1.807,
+        -12.92
       ],
       "rotation": [
         0,
@@ -3381,9 +3345,9 @@
         79.5
       ],
       "scale": [
-        1,
-        1,
-        1
+        1.07,
+        1.07,
+        1.07
       ],
       "node": "CH01_CorridorFan2"
     },
@@ -3391,13 +3355,14 @@
       "id": "P0373",
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
+      "name": "p5",
       "position": [
-        -5.54,
-        2.977,
-        -7.6
+        -5.532,
+        2.954,
+        -7.575
       ],
       "rotation": [
-        -10.5,
+        -10,
         -90,
         -90
       ],
@@ -3406,7 +3371,7 @@
         1,
         1
       ],
-      "node": "P0373"
+      "node": "p5"
     },
     {
       "id": "P0376",
@@ -3414,11 +3379,11 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -1.354,
-        -0.36,
-        -9.967
+        -0.437,
+        -9.936
       ],
       "rotation": [
-        0,
+        -1,
         0,
         90
       ],
@@ -3435,18 +3400,18 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -0.348,
-        0.64,
-        -9.974
+        0.586,
+        -9.99
       ],
       "rotation": [
-        0,
+        1,
         180,
         0
       ],
       "scale": [
         1,
         1,
-        1.188
+        1.208
       ],
       "node": "P0377"
     },
@@ -3455,19 +3420,19 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -2.349,
-        2.64,
-        -9.973
+        -2.353,
+        2.586,
+        -10.042
       ],
       "rotation": [
-        0,
+        -1,
         0,
         -90
       ],
       "scale": [
         1,
-        1,
-        1.684
+        1.02,
+        1.704
       ],
       "node": "P0378"
     },
@@ -3477,11 +3442,11 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -3.358,
-        0.64,
-        -9.966
+        0.586,
+        -9.962
       ],
       "rotation": [
-        0,
+        -1,
         0,
         0
       ],
@@ -3493,34 +3458,13 @@
       "node": "P0379"
     },
     {
-      "id": "P0384",
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
-      "chunk": "CH03_StorageC2Escape",
-      "position": [
-        -3.153,
-        -0.36,
-        -6.599
-      ],
-      "rotation": [
-        0,
-        -90,
-        90
-      ],
-      "scale": [
-        1,
-        1,
-        0.4
-      ],
-      "node": "P0384"
-    },
-    {
       "id": "P0385",
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.147,
-        0.642,
-        -5.599
+        -3.144,
+        0.64,
+        -5.593
       ],
       "rotation": [
         0,
@@ -3539,9 +3483,9 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.153,
-        2.642,
-        -7.6
+        -3.129,
+        2.651,
+        -7.592
       ],
       "rotation": [
         0,
@@ -3561,12 +3505,12 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -2.656,
-        0.642,
-        -8.611
+        0.646,
+        -8.601
       ],
       "rotation": [
         0,
-        -90,
+        -89.6,
         0
       ],
       "scale": [
@@ -3581,12 +3525,12 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.153,
-        -0.36,
-        -12.335
+        -3.154,
+        -0.443,
+        -12.404
       ],
       "rotation": [
-        0,
+        -3,
         -90,
         90
       ],
@@ -3602,13 +3546,13 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -2.662,
-        0.642,
-        -11.335
+        -2.657,
+        0.546,
+        -11.365
       ],
       "rotation": [
-        0,
-        90,
+        2,
+        88.5,
         0
       ],
       "scale": [
@@ -3623,19 +3567,19 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.153,
-        2.642,
-        -13.336
+        -3.071,
+        2.561,
+        -13.405
       ],
       "rotation": [
-        0,
+        -2,
         -90,
         -90
       ],
       "scale": [
         1,
         1,
-        0.4
+        0.5
       ],
       "node": "P0394"
     },
@@ -3644,13 +3588,13 @@
       "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.147,
-        0.642,
-        -14.347
+        -3.141,
+        0.563,
+        -14.412
       ],
       "rotation": [
-        0,
-        -90,
+        -2,
+        -90.4,
         0
       ],
       "scale": [
@@ -3666,8 +3610,8 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -5.887,
-        1.008,
-        -11.332
+        0.947,
+        -11.398
       ],
       "rotation": [
         10.5,
@@ -3687,8 +3631,8 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -5.887,
-        1.008,
-        -14.34
+        0.947,
+        -14.406
       ],
       "rotation": [
         -10.5,
@@ -3708,8 +3652,8 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -6.06,
-        0.02,
-        -12.338
+        -0.041,
+        -12.404
       ],
       "rotation": [
         -10.5,
@@ -3729,8 +3673,8 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -5.54,
-        2.977,
-        -13.338
+        2.916,
+        -13.404
       ],
       "rotation": [
         -10.5,
@@ -3750,8 +3694,8 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -5.781,
-        1.866,
-        -6.607
+        1.842,
+        -6.59
       ],
       "rotation": [
         -79.5,
@@ -3771,7 +3715,7 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -3.028,
-        1.485,
+        1.462,
         -7.596
       ],
       "rotation": [
@@ -3792,7 +3736,7 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -1.36,
-        1.488,
+        1.436,
         -8.374
       ],
       "rotation": [
@@ -3813,13 +3757,13 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -1.36,
-        1.488,
-        -11.509
+        1.385,
+        -11.478
       ],
       "rotation": [
-        -90,
-        90,
-        0
+        -89,
+        180,
+        -90
       ],
       "scale": [
         0.57,
@@ -3833,9 +3777,9 @@
       "module": "Modular SciFi MegaKit/Props/Prop_Light_Floor",
       "chunk": "CH03_StorageC2Escape",
       "position": [
-        -3.158,
-        1.491,
-        -12.349
+        -3.159,
+        1.421,
+        -12.418
       ],
       "rotation": [
         -90,
@@ -3855,7 +3799,7 @@
       "chunk": "CH03_StorageC2Escape",
       "position": [
         -5.781,
-        1.832,
+        1.785,
         -13.33
       ],
       "rotation": [
@@ -3869,6 +3813,112 @@
         0.57
       ],
       "node": "P0405"
+    },
+    {
+      "id": "P0479",
+      "module": "Aquanova/Walls/WallAstra_Straight-right-riveted",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -10,
+        0,
+        -6
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0479"
+    },
+    {
+      "id": "P0480",
+      "module": "Aquanova/Walls/WallAstra_Straight-left-riveted",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        -10,
+        0,
+        -14
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0480"
+    },
+    {
+      "id": "P0481",
+      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -2.969,
+        -0.393,
+        -6.595
+      ],
+      "rotation": [
+        0,
+        -90,
+        90
+      ],
+      "scale": [
+        1,
+        1,
+        0.4
+      ],
+      "node": "P0481"
+    },
+    {
+      "id": "P0482",
+      "module": "Modular SciFi MegaKit/Props/Prop_ItemHolder",
+      "chunk": "CH03_StorageC2Escape",
+      "position": [
+        -1.86,
+        0.599,
+        -10.007
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.4,
+        0.4,
+        0.4
+      ],
+      "node": "P0482"
+    },
+    {
+      "id": "P0483",
+      "module": "Aquanova/Weapons/antiGravityItem",
+      "chunk": "CH03_StorageC2Escape",
+      "name": "itemAntiGravityGun",
+      "position": [
+        -1.863,
+        0.761,
+        -10.014
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.75,
+        0.75,
+        0.75
+      ],
+      "node": "itemAntiGravityGun"
     }
   ],
   "markers": [
@@ -4047,7 +4097,7 @@
       "chunkB": "CH03_StorageC2Escape",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
-      "enabled": true,
+      "enabled": false,
       "sealed": false,
       "leaves": [
         "P0069"
@@ -4635,7 +4685,7 @@
         -0.07
       ],
       "rotation": [
-        53,
+        56,
         -180,
         -180
       ],
@@ -4647,8 +4697,8 @@
           1,
           1
         ],
-        "intensity": 50,
-        "range": 3,
+        "intensity": 1,
+        "range": 0.5,
         "angle": 160,
         "castsShadows": false
       }
@@ -4674,8 +4724,8 @@
           1,
           1
         ],
-        "intensity": 50,
-        "range": 3,
+        "intensity": 1,
+        "range": 0.5,
         "angle": 160,
         "castsShadows": false
       }
@@ -4701,8 +4751,8 @@
           1,
           1
         ],
-        "intensity": 90,
-        "range": 3,
+        "intensity": 5,
+        "range": 0.5,
         "angle": 170,
         "castsShadows": false
       }
@@ -4716,7 +4766,7 @@
         -0.07
       ],
       "rotation": [
-        57,
+        53,
         180,
         180
       ],
@@ -4728,9 +4778,9 @@
           1,
           1
         ],
-        "intensity": 90,
-        "range": 3,
-        "angle": 160,
+        "intensity": 5,
+        "range": 0.5,
+        "angle": 170,
         "castsShadows": false
       }
     },
@@ -4755,8 +4805,8 @@
           1,
           1
         ],
-        "intensity": 50,
-        "range": 3,
+        "intensity": 3,
+        "range": 1.5,
         "angle": 160,
         "castsShadows": false
       }
@@ -4782,9 +4832,36 @@
           1,
           1
         ],
-        "intensity": 50,
-        "range": 3,
+        "intensity": 7,
+        "range": 0.5,
         "angle": 160,
+        "castsShadows": false
+      }
+    },
+    {
+      "id": "L0027",
+      "owner": "P0482",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        180,
+        180
+      ],
+      "runtime": {
+        "type": "point",
+        "clustered": true,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 3,
+        "range": 1,
+        "angle": 140,
         "castsShadows": false
       }
     }
@@ -9097,6 +9174,372 @@
           -1
         ]
       }
+    ],
+    "Aquanova/Walls/WallAstra_Straight_left_hole": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:0",
+        "kind": "box",
+        "centre": [
+          7.613,
+          2.8534,
+          -10
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:1",
+        "kind": "box",
+        "centre": [
+          7.984,
+          1.467,
+          -10
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:2",
+        "kind": "box",
+        "centre": [
+          7.8188,
+          1.477,
+          -10.74
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:3",
+        "kind": "box",
+        "centre": [
+          7.8756,
+          0.5357,
+          -8.7413
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:4",
+        "kind": "box",
+        "centre": [
+          7.6401,
+          1.9614,
+          -8.1634
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight_left_hole:5",
+        "kind": "box",
+        "centre": [
+          7.5318,
+          2.553,
+          -8.8858
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-left-riveted": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:0",
+        "kind": "box",
+        "centre": [
+          -2.387,
+          2.8537,
+          0
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:1",
+        "kind": "box",
+        "centre": [
+          -2.016,
+          1.4673,
+          0
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:2",
+        "kind": "box",
+        "centre": [
+          -2.1812,
+          1.4773,
+          -0.74
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:3",
+        "kind": "box",
+        "centre": [
+          -2.1244,
+          0.536,
+          1.2587
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:4",
+        "kind": "box",
+        "centre": [
+          -2.3599,
+          1.9617,
+          1.8366
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-left-riveted:5",
+        "kind": "box",
+        "centre": [
+          -2.4682,
+          2.5533,
+          1.1142
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-right-riveted": [
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:0",
+        "kind": "box",
+        "centre": [
+          -2.387,
+          2.8174,
+          0
+        ],
+        "halfExtents": [
+          2,
+          0.175,
+          0.5
+        ],
+        "rotation": [
+          -0.144,
+          0.6923,
+          -0.144,
+          -0.6923
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:1",
+        "kind": "box",
+        "centre": [
+          -2.016,
+          1.431,
+          0
+        ],
+        "halfExtents": [
+          0.2685,
+          1.6,
+          0.222
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:2",
+        "kind": "box",
+        "centre": [
+          -2.1812,
+          1.441,
+          0.7801
+        ],
+        "halfExtents": [
+          0.175,
+          1.6,
+          1.265
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:3",
+        "kind": "box",
+        "centre": [
+          -2.1244,
+          0.4997,
+          -1.2403
+        ],
+        "halfExtents": [
+          0.175,
+          0.71,
+          0.75
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:4",
+        "kind": "box",
+        "centre": [
+          -2.3599,
+          1.9254,
+          -1.8218
+        ],
+        "halfExtents": [
+          0.175,
+          0.725,
+          0.17
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      },
+      {
+        "id": "Aquanova/Walls/WallAstra_Straight-right-riveted:5",
+        "kind": "box",
+        "centre": [
+          -2.4682,
+          2.517,
+          -1.0418
+        ],
+        "halfExtents": [
+          0.175,
+          0.165,
+          0.615
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.0872,
+          -0.9962
+        ]
+      }
     ]
   },
   "moduleShapes": {
@@ -13001,6 +13444,336 @@
           1.677
         ]
       }
+    ],
+    "Aquanova/Walls/WallAstra_Straight_left_hole": [
+      {
+        "kind": "box",
+        "position": [
+          -7.613,
+          2.8534,
+          -10
+        ],
+        "rotation": [
+          23.5,
+          90,
+          0
+        ],
+        "scale": [
+          4,
+          0.35,
+          1
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          -7.984,
+          1.467,
+          -10
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.537,
+          3.2,
+          0.444
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          -7.8188,
+          1.477,
+          -10.74
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          3.2,
+          2.53
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          -7.8756,
+          0.5357,
+          -8.7413
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.42,
+          1.5
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          -7.6401,
+          1.9614,
+          -8.1634
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.45,
+          0.34
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          -7.5318,
+          2.553,
+          -8.8858
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          0.33,
+          1.23
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-left-riveted": [
+      {
+        "kind": "box",
+        "position": [
+          2.387,
+          2.8537,
+          0
+        ],
+        "rotation": [
+          23.5,
+          90,
+          0
+        ],
+        "scale": [
+          4,
+          0.35,
+          1
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.016,
+          1.4673,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.537,
+          3.2,
+          0.444
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.1812,
+          1.4773,
+          -0.74
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          3.2,
+          2.53
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.1244,
+          0.536,
+          1.2587
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.42,
+          1.5
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.3599,
+          1.9617,
+          1.8366
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.45,
+          0.34
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.4682,
+          2.5533,
+          1.1142
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          0.33,
+          1.23
+        ]
+      }
+    ],
+    "Aquanova/Walls/WallAstra_Straight-right-riveted": [
+      {
+        "kind": "box",
+        "position": [
+          2.387,
+          2.8174,
+          0
+        ],
+        "rotation": [
+          23.5,
+          90,
+          0
+        ],
+        "scale": [
+          4,
+          0.35,
+          1
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.016,
+          1.431,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.537,
+          3.2,
+          0.444
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.1812,
+          1.441,
+          0.7801
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          3.2,
+          2.53
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.1244,
+          0.4997,
+          -1.2403
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.42,
+          1.5
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.3599,
+          1.9254,
+          -1.8218
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          1.45,
+          0.34
+        ]
+      },
+      {
+        "kind": "box",
+        "position": [
+          2.4682,
+          2.517,
+          -1.0418
+        ],
+        "rotation": [
+          0,
+          0,
+          -10
+        ],
+        "scale": [
+          0.35,
+          0.33,
+          1.23
+        ]
+      }
     ]
   },
   "stageLayout": [
@@ -13259,9 +14032,25 @@
         0,
         68
       ]
+    },
+    {
+      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
+      "position": [
+        18,
+        0,
+        50
+      ]
+    },
+    {
+      "module": "Aquanova/Walls/WallAstra_Straight-right-riveted",
+      "position": [
+        10,
+        0.536,
+        50
+      ]
     }
   ],
-  "activeChunk": "CH03_StorageC2Escape",
+  "activeChunk": "CH03_StorageC2",
   "fluidSim": [
     "viscosity-inplace",
     "liquid-slow.json",
@@ -13305,7 +14094,9 @@
     },
     "pickEntity": {},
     "enableEntity": {},
-    "disableEntity": {}
+    "disableEntity": {},
+    "playAnimation": {},
+    "weaponAntiGravityGun": {}
   },
   "entities": {
     "player": {
@@ -13423,6 +14214,9 @@
         },
         {
           "name": "dynamic"
+        },
+        {
+          "name": "playAnimation"
         }
       ]
     },
@@ -13532,6 +14326,19 @@
       "behaviors": [
         {
           "name": "stdLiquefaction"
+        },
+        {
+          "name": "enableEntity",
+          "onEvent": "startLiquefaction",
+          "entity": "Door_D05"
+        },
+        {
+          "name": "disableEntity",
+          "onEvent": "cancelLiquefaction",
+          "entity": "Door_D05"
+        },
+        {
+          "name": "playAnimation"
         }
       ]
     },
@@ -13539,25 +14346,60 @@
       "behaviors": [
         {
           "name": "stdLiquefaction"
+        },
+        {
+          "name": "enableEntity",
+          "onEvent": "startLiquefaction",
+          "entity": "Door_D06"
+        },
+        {
+          "name": "disableEntity",
+          "onEvent": "cancelLiquefaction",
+          "entity": "Door_D06"
+        },
+        {
+          "name": "playAnimation"
+        }
+      ]
+    },
+    "itemAntiGravityGun": {
+      "behaviors": [
+        {
+          "name": "probeExcluded"
+        },
+        {
+          "name": "weaponAntiGravityGun"
+        },
+        {
+          "name": "pickEntity",
+          "boundingBoxScale": [
+            4,
+            1,
+            1
+          ],
+          "raiseEvent": {
+            "name": "itemAntiGravityGun",
+            "event": "enable"
+          }
         }
       ]
     }
   },
   "view": {
     "position": [
-      -1.781,
-      3.799,
-      -16.311
+      0.937,
+      2.974,
+      -5.093
     ],
     "rotation": [
-      0.233,
-      633.276,
+      0.097,
+      707.501,
       0
     ],
     "target": [
-      -11.22,
-      1.49,
-      -13.95
+      -5.03,
+      2.001,
+      -13.059
     ]
   },
   "environment": {
@@ -13576,6 +14418,7 @@
     "veilAlpha": 0.5,
     "bigPalette": true,
     "strayChunkCheck": true,
+    "runBehaviors": true,
     "probes": {
       "CH01_Escape1": {
         "alwaysVisible": true,
@@ -13807,7 +14650,7 @@
       "chunkA": "CH03_StorageC2",
       "chunkB": "CH03_StorageC2Escape",
       "door": "Door_D05",
-      "enabled": true,
+      "enabled": false,
       "centre": [
         7.8442,
         1.8008,
@@ -14000,14 +14843,9 @@
       "width": 1.68,
       "height": 1.6654,
       "triggerRadius": 3.5,
-      "enabled": true,
+      "enabled": false,
       "sealed": false,
-      "leaves": [
-        {
-          "node": "P0069",
-          "openDistance": 1.51
-        }
-      ]
+      "leaves": []
     },
     {
       "id": "Door_D06",
@@ -14024,12 +14862,7 @@
       "triggerRadius": 3.5,
       "enabled": true,
       "sealed": false,
-      "leaves": [
-        {
-          "node": "P0068",
-          "openDistance": 1.51
-        }
-      ]
+      "leaves": []
     }
   ],
   "adjacency": {

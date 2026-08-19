@@ -22,9 +22,11 @@ parameters. The current definitions are:
 | `explosiveLiquefaction` | Liquefies with the explosive fluid setting            |
 | `player`                | Owns first-person input, movement, and weapon firing  |
 | `weaponLiquefactor`     | Gates and drives the Liquefactor weapon               |
+| `weaponAntiGravityGun`  | Grabs and throws dynamic rigid bodies                 |
 | `pickEntity`            | Collects an intersected entity and emits an event     |
 | `enableEntity`          | Forwards a configured entity event as `enable`        |
 | `disableEntity`         | Forwards a configured entity event as `disable`       |
+| `playAnimation`         | Starts one animation clip from the ship glTF          |
 
 Definition parameters are merged with per-entity overrides while retaining the
 behavior identity; assignments are never flattened into one anonymous parameter
@@ -74,17 +76,46 @@ know whether the picked mesh is liquefiable. Each liquefiable behavior listens
 for that event, accepts hits addressed to its own mesh while it remains an
 active target, and invokes the shared liquefaction service.
 
+While the canvas owns pointer lock, each mouse-wheel notch emits a typed
+`weaponCycleRequested` event and prevents page scrolling. A shared weapon
+inventory owns slots, ownership, and the currently equipped slot. Slot 1 is the
+Liquefactor, slot 2 is the anti-gravity gun, and the wheel cycles through every
+owned slot plus the hidden state in the requested direction. Selecting an
+unowned numbered slot holsters the current weapon; selecting the equipped slot
+again also holsters it.
+
+The Havok character controller uses a 45-degree maximum walkable slope
+(`maxSlopeCosine = cos(45°)`). Shallower surfaces remain fully supported instead
+of entering the sliding state. While supported, horizontal intent is projected
+onto the support plane and the contact force is applied along the surface normal
+rather than world-down. An idle player therefore has no downhill tangent to
+slide along, while deliberate uphill/downhill movement remains responsive.
+Steeper surfaces may slide.
+
 The `player` definition may set `characterStrength`, the maximum force applied
 to contacted dynamic bodies. It defaults to `100`; setting it to `0` preserves
 collision while disabling player pushes.
 
 `C` toggles crouching. Over `0.2 s`, the character controller keeps the
 capsule's foot position fixed while smoothly changing its total height from
-`1.8 m` to `0.8 m`; camera height and the 25% crouched movement-speed reduction
+`1.8 m` to `0.7 m`. Its crouched radius is `0.35 m`, keeping the capsule valid
+while reducing its standing `0.4 m` radius. Camera height and the 25% crouched movement-speed reduction
 interpolate with the same progress. The transition is reversible and works on
 the ground or during a jump. A jump request or held run key requests standing
 first; expansion is accepted only while the taller capsule has overhead
-clearance. Jump input is buffered through the standing transition.
+clearance. Jump input is buffered through the standing transition. While a
+forward jump is active, clearance rays across the standing and crouched capsule
+profiles detect low apertures: if the standing profile is blocked and the
+crouched profile is clear, crouch engages automatically. Once fully crouched,
+the controller adds up to `0.2 m` of collision-resolved forward movement to carry
+the player past the aperture edge. The airborne automatic transition preserves
+the capsule centre rather than its foot position, tucking the feet upward instead
+of dropping the player onto the lower sill. Entry progress is measured from the
+controller's resolved displacement, so a blocked frame does not consume the
+assist, and touching the sill does not cancel it. The clearance test evaluates
+candidate centre offsets at `0`, `5`, and `10 cm` on either side; the closest
+clear candidate is applied as a lateral correction, allowing a small jamb
+overlap to be compensated without reducing the collision capsule.
 
 ## Runtime lifecycle
 
@@ -94,8 +125,8 @@ disposal. `main.ts` consumes its classified mesh sets and gameplay queries but
 does not parse or merge behavior definitions.
 
 Named implementations remain explicit for structurally different behaviors
-such as `player`, `weaponLiquefactor`, `pickEntity`, and `dynamic`; liquefiable definitions use the
-shared implementation.
+such as `player`, `weaponLiquefactor`, `weaponAntiGravityGun`, `pickEntity`, and
+`dynamic`; liquefiable definitions use the shared implementation.
 
 Player and weapon are singleton entity behaviors. Geometry behaviors are
 instantiated for every matching mesh primitive so a picked primitive can receive
@@ -116,14 +147,50 @@ owned primitives, optionally plays its preloaded MP3, optionally emits
 defaults to `pickItem`. The resolved sound for every pickup is loaded once by
 `PickEntityBehavior.init()` before behavior instances start.
 
+`playAnimation` is one instance per manifest entity. Its optional `animation`
+parameter selects an animation group targeting that entity, or one of its
+exported child nodes, by its exact glTF animation name. This target filtering
+keeps identically named clips on separate placed modules independent. When
+`animation` is absent, it selects the entity's first animation group in file
+order; if the entity has no animations, startup is a no-op. A configured name
+that does not exist for the entity is an authoring error and stops behavior
+startup with an explicit message instead of silently selecting another clip.
+The optional `loop` parameter controls `AnimationGroup.loopAnimation` and
+defaults to `true`.
+Aquanova registers the complete ship asset container so its animation groups
+are ticked by the scene, but stops every group before behavior startup; only
+clips selected by `playAnimation` begin playback. Disposing the behavior stops
+and rewinds its selected group. The editor excludes `playAnimation` entities
+from reflection-probe captures because their exported transform is not static.
+
 `weaponLiquefactor` starts unowned and hidden. The behavior listens for
 `entityEvent` addressed to the manifest entity on which it was instantiated.
 The `enable` event grants ownership and equips the weapon by animating it from a
-lowered, muzzle-down pose to its horizontal firing pose. `Digit1` then toggles
-the owned Liquefactor between equipped and holstered; `Digit2` holsters it and
-leaves the player unarmed until the pistol behavior is implemented. Holstering
-reverses the same presentation animation. Trigger events are ignored while the
-weapon is unowned, holstered, or still moving into position.
+lowered, muzzle-down pose to its horizontal firing pose. `Digit1` selects or
+holsters it. Holstering reverses the same presentation animation. Trigger
+events are ignored while the weapon is unowned, holstered, or still moving into
+position.
+
+`weaponAntiGravityGun` uses slot 2 and the same pickup, presentation, model
+detail, sway, and crosshair lifecycle. It has no audio. Its optional
+`maxGrabDistance` and `maxMass` parameters must be finite positive numbers and
+default to `6 m` and `100 kg`. The first trigger press may grab only a mesh with
+an explicit `dynamic` behavior whose configured mass is within that limit and
+whose centre-screen hit distance is within range.
+
+A grabbed body switches from dynamic to kinematic motion, has its velocities
+cleared, and is attracted toward a point `2.5 m` along the camera aim ray while
+retaining its orientation. It remains held after the first trigger is released.
+The next trigger press starts charging a throw. Releasing within `150 ms` drops
+the body with zero velocity; longer holds scale linearly to a mass-independent
+launch speed of `15 m/s`, capped after `2 s`. Holstering, disposal, target
+removal, or liquefaction drops the held body without throwing it.
+
+The `dynamic` behavior may define `mass` in kilograms. It must be finite and
+positive and defaults to `10 kg`. That value is applied to the Havok rigid body
+after its authored collision shape is attached, so shape-derived inertia is
+preserved while anti-gravity mass filtering and physical response use the same
+authoritative mass.
 
 The held weapon can apply a subtle procedural balancing motion made from
 layered low-frequency translation and rotation. This motion is cosmetic: the
@@ -134,9 +201,16 @@ Shift scales them to 4×. Holding the weapon trigger suppresses sway immediately
 so the rendered muzzle remains aligned with the laser origin, then sway blends
 back after the trigger is released.
 
+Weapon position/rotation/scale gizmos, the aim-origin gizmo and yaw slider, and
+their transform readouts are debug-build tooling. Release demo bundles omit
+both these controls and the corresponding gizmo construction; model detail and
+weapon sway remain available in every build.
+
 The `Sounds` control-panel checkbox persists a global gameplay-audio
 preference. Disabling it immediately stops active Liquefactor loops and
 suppresses subsequent pickup, firing, liquefaction, and splash sounds.
+The persisted `Volume` slider controls the master gain of both Aquanova audio
+engines from `0` to `1`; changing it also affects active weapon loops.
 
 When liquefaction starts it raises `startLiquefaction` once for every unique
 entity in the target's linked liquefaction group. If reversal restores the
@@ -162,8 +236,14 @@ to position and automatically size that grid, but never directly filters the
 collision shapes.
 
 The third `B` collider-debug mode shows the deduplicated union of primitives
-packed into all running simulations, avoiding misleading colour accumulation
-where independently liquefied objects use the same collision primitive.
+packed into all running simulations as opaque magenta wireframes. Solid
+translucent volumes are intentionally avoided: the selected set commonly
+contains complete floor, wall, and ceiling primitives whose faces cover much of
+the camera view and would tint unrelated visible geometry. Deduplication avoids
+misleading line-brightness accumulation where independently liquefied objects
+use the same collision primitive. The player capsule remains packed into every
+simulation but is omitted from this overlay because it is always present and
+would obscure too much of the scene.
 
 A hit and every mesh reached through its linked-entity closure produce one
 shared fluid simulation. Their asynchronously sampled particles are concatenated

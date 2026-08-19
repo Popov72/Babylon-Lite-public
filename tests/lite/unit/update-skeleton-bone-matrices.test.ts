@@ -34,4 +34,12 @@ describe("updateSkeletonBoneMatrices", () => {
         expect(() => updateSkeletonBoneMatrices(engine, skeleton, new Float32Array(16))).toThrow("Invalid bone matrices");
         expect(writeTexture).not.toHaveBeenCalled();
     });
+
+    it("rejects updates after the skeleton GPU resources are disposed", () => {
+        const { engine, skeleton, writeTexture } = setup();
+        skeleton._disposed = true;
+
+        expect(() => updateSkeletonBoneMatrices(engine, skeleton, new Float32Array(32))).toThrow("Cannot update disposed skeleton");
+        expect(writeTexture).not.toHaveBeenCalled();
+    });
 });

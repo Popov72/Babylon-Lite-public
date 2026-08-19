@@ -10,6 +10,7 @@ const runtime = vi.hoisted(() => ({
     getMeshTriangles: vi.fn(),
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
+    setMasterVolume: vi.fn(),
     setMeshVisible: vi.fn(),
 }));
 
@@ -87,6 +88,7 @@ describe("Aquanova pickEntity behavior", () => {
         });
         runtime.playStreamingSound.mockReset();
         runtime.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
+        runtime.setMasterVolume.mockReset();
         runtime.setMeshVisible.mockReset();
     });
 
@@ -100,10 +102,20 @@ describe("Aquanova pickEntity behavior", () => {
         await PickEntityBehavior.init([{ sound: "ignored-after-initialization" }]);
 
         expect(runtime.createAudioEngineAsync).toHaveBeenCalledOnce();
+        expect(runtime.setMasterVolume).toHaveBeenCalledWith({ id: "audio-engine" }, 1);
         expect(runtime.createStreamingSoundAsync.mock.calls).toEqual([
             [{ id: "audio-engine" }, "/aquanova/sounds/click.mp3?v=20260813-1", { preloadCount: 1 }],
             [{ id: "audio-engine" }, "/aquanova/sounds/pickItem.mp3?v=20260813-1", { preloadCount: 1 }],
         ]);
+    });
+
+    it("applies the global sound volume before and after audio initialization", async () => {
+        PickEntityBehavior.setSoundVolume(0.35);
+        await PickEntityBehavior.init([{ sound: "click" }]);
+        expect(runtime.setMasterVolume).toHaveBeenLastCalledWith({ id: "audio-engine" }, 0.35);
+
+        PickEntityBehavior.setSoundVolume(0.7);
+        expect(runtime.setMasterVolume).toHaveBeenLastCalledWith({ id: "audio-engine" }, 0.7);
     });
 
     it("collects once when the player capsule intersects the entity bounds", async () => {
@@ -238,20 +250,16 @@ describe("Aquanova pickEntity behavior", () => {
         const target = mesh("pickup");
         const raised = vi.fn();
         events.on("entityEvent", raised);
-        const behavior = new PickEntityBehavior(
-            [target],
-            { sound: "click", raiseEvent: { name: "itemLiquefactor", event: "enable" } },
-            {
-                events,
-                character: {
-                    getPosition: () => ({ x: 0, y: 0, z: 0 }),
-                    shapeOptions: {
-                        capsuleHeight: 1.8,
-                        capsuleRadius: 0.4,
-                    },
+        const behavior = new PickEntityBehavior([target], { sound: "click", raiseEvent: { name: "itemLiquefactor", event: "enable" } }, {
+            events,
+            character: {
+                getPosition: () => ({ x: 0, y: 0, z: 0 }),
+                shapeOptions: {
+                    capsuleHeight: 1.8,
+                    capsuleRadius: 0.4,
                 },
-            } as never
-        );
+            },
+        } as never);
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 1 / 60 });

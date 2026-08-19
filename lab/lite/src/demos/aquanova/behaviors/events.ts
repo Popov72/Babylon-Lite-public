@@ -7,6 +7,8 @@ export interface EventMap {
     frameEnd: { deltaMs: number };
     entityEvent: { name: string; event: string };
     weaponSlotSelected: { slot: number };
+    weaponCycleRequested: { direction: -1 | 1 };
+    weaponEquippedChanged: { slot: number | null };
     weaponTriggerPressed: { held: boolean };
     hitWithWeapon: {
         mesh: Mesh;

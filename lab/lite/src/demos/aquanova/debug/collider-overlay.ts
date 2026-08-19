@@ -13,6 +13,8 @@ import {
     createBox,
     createCapsule,
     createCylinder,
+    createLineMaterial,
+    createLineSystem,
     createSphere,
     createStandardMaterial,
     removeFromScene,
@@ -20,6 +22,7 @@ import {
     type Material,
     type Mesh,
     type SceneContext,
+    type Vec3,
 } from "babylon-lite";
 import type { WorldCollisionShape } from "../collision-shapes.js";
 import type { FluidPrimitive } from "../collision-field.js";
@@ -57,6 +60,91 @@ export interface ColliderOverlay {
 
 const PARKED = -1e6;
 const MODES = ["off", "authored", "authored+dynamic", "fluid-injected"] as const;
+const WIREFRAME_SEGMENTS = 24;
+
+function point(x: number, y: number, z: number): Vec3 {
+    return { x, y, z };
+}
+
+function ring(radius: number, at: (cos: number, sin: number) => Vec3): Vec3[] {
+    const points: Vec3[] = [];
+    for (let i = 0; i < WIREFRAME_SEGMENTS; i++) {
+        const angle = (i / WIREFRAME_SEGMENTS) * Math.PI * 2;
+        points.push(at(Math.cos(angle) * radius, Math.sin(angle) * radius));
+    }
+    points.push(points[0]!);
+    return points;
+}
+
+/** Build local-space line paths that identify one fluid collider's exact bounds. */
+export function fluidPrimitiveWireframeLines(primitive: FluidPrimitive): Vec3[][] {
+    if (primitive.kind === "box") {
+        const half = primitive.b ?? [0.1, 0.1, 0.1];
+        const corners = [
+            point(-half[0], -half[1], -half[2]),
+            point(half[0], -half[1], -half[2]),
+            point(half[0], half[1], -half[2]),
+            point(-half[0], half[1], -half[2]),
+            point(-half[0], -half[1], half[2]),
+            point(half[0], -half[1], half[2]),
+            point(half[0], half[1], half[2]),
+            point(-half[0], half[1], half[2]),
+        ];
+        return [
+            [corners[0]!, corners[1]!],
+            [corners[1]!, corners[2]!],
+            [corners[2]!, corners[3]!],
+            [corners[3]!, corners[0]!],
+            [corners[4]!, corners[5]!],
+            [corners[5]!, corners[6]!],
+            [corners[6]!, corners[7]!],
+            [corners[7]!, corners[4]!],
+            [corners[0]!, corners[4]!],
+            [corners[1]!, corners[5]!],
+            [corners[2]!, corners[6]!],
+            [corners[3]!, corners[7]!],
+        ];
+    }
+
+    const radius = Math.max(primitive.radius ?? 0.1, 1e-3);
+    if (primitive.kind === "sphere") {
+        return [ring(radius, (x, y) => point(x, y, 0)), ring(radius, (x, z) => point(x, 0, z)), ring(radius, (y, z) => point(0, y, z))];
+    }
+
+    const b = primitive.b ?? primitive.a;
+    const halfAxisLength = Math.max(Math.hypot(b[0] - primitive.a[0], b[1] - primitive.a[1], b[2] - primitive.a[2]) * 0.5, 5e-4);
+    const lines = [ring(radius, (x, z) => point(x, halfAxisLength, z)), ring(radius, (x, z) => point(x, -halfAxisLength, z))];
+    if (primitive.kind === "cylinder") {
+        for (let rib = 0; rib < 8; rib++) {
+            const angle = (rib / 8) * Math.PI * 2;
+            const x = Math.cos(angle) * radius;
+            const z = Math.sin(angle) * radius;
+            lines.push([point(x, -halfAxisLength, z), point(x, halfAxisLength, z)]);
+        }
+        return lines;
+    }
+
+    for (let rib = 0; rib < 8; rib++) {
+        const azimuth = (rib / 8) * Math.PI * 2;
+        const radialX = Math.cos(azimuth);
+        const radialZ = Math.sin(azimuth);
+        const ribPoints: Vec3[] = [];
+        for (let i = 0; i <= WIREFRAME_SEGMENTS; i++) {
+            const angle = (i / WIREFRAME_SEGMENTS) * Math.PI;
+            const radial = Math.sin(angle) * radius;
+            const capOffset = Math.cos(angle) * radius;
+            const centerY = angle <= Math.PI * 0.5 ? halfAxisLength : -halfAxisLength;
+            ribPoints.push(point(radialX * radial, centerY + capOffset, radialZ * radial));
+        }
+        lines.push(ribPoints);
+    }
+    return lines;
+}
+
+/** Active primitives shown by the fluid-injected overlay, excluding its reserved player slot. */
+export function visibleInjectedPrimitives(primitives: readonly FluidPrimitive[], playerSlot: number | null): FluidPrimitive[] {
+    return primitives.filter((primitive, slot) => primitive.active !== false && slot !== playerSlot);
+}
 
 /** Quaternion rotating +Y (the axis every capsule/cylinder is built along) onto `d`. */
 function quatFromYTo(d: readonly [number, number, number]): [number, number, number, number] {
@@ -132,18 +220,18 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
     // ── Stage 3: what the RUNNING simulations actually collide against ───────────────────────────
     // Each live sim was handed the subset of primitives whose bounds met its domain, packed into its
     // own buffer. Linked multi-mesh props can create several simulations with identical sets, so the
-    // overlay draws their deduplicated union; otherwise the same translucent mesh is drawn repeatedly
-    // and appears increasingly pink, falsely suggesting that some colliders are more active than others.
+    // overlay draws their deduplicated union; otherwise repeated lines would falsely suggest that some
+    // colliders are more active than others.
     //
     // Meshes are rebuilt only when the SET changes (a liquefaction starts or ends), not per frame: a
     // capsule's proportions are baked into its geometry, so a moving prop can be re-posed cheaply but
     // a different primitive needs a different mesh.
-    const injMat = createStandardMaterial();
-    injMat.disableLighting = true;
-    injMat.diffuseColor = [1, 1, 1];
-    injMat.emissiveColor = [1.4, 0.2, 0.9];
-    injMat.alpha = 0.35;
-    injMat.backFaceCulling = false;
+    const injMat = createLineMaterial({
+        name: "overlay-injected-wireframe-mat",
+        color: { r: 1, g: 0.12, b: 0.75, a: 1 },
+        useVertexAlpha: false,
+        depthWrite: false,
+    });
     let injMeshes: Mesh[] = [];
     let injSignature = "";
     const vecKey = (v: readonly number[] | undefined): string => v?.map((n) => n.toFixed(3)).join(",") ?? "";
@@ -158,20 +246,13 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         return `${p.kind[0]}:${p.radius?.toFixed(3)}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
     };
     const buildInjMesh = (p: FluidPrimitive): Mesh => {
-        let m: Mesh;
-        if (p.kind === "sphere") {
-            m = createSphere(engine, { diameter: Math.max((p.radius ?? 0.1) * 2, 1e-3) });
-        } else if (p.kind === "capsule" || p.kind === "cylinder") {
-            const a = p.a,
-                b = p.b ?? p.a;
-            const h = Math.max(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]), 1e-3);
-            const r = Math.max(p.radius ?? 0.1, 1e-3);
-            m = p.kind === "capsule" ? createCapsule(engine, { radius: r, height: h + 2 * r }) : createCylinder(engine, { height: h, diameter: r * 2 });
-        } else {
-            m = createBox(engine, 1);
-        }
-        m.material = injMat;
+        const m = createLineSystem(engine, {
+            name: `inj-${p.kind}-wireframe`,
+            lines: fluidPrimitiveWireframeLines(p),
+            material: injMat,
+        });
         m.pickable = false;
+        m.renderOrder = 9_998;
         addToScene(scene, m);
         return m;
     };
@@ -179,7 +260,9 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         const sets = colliderMode === 3 ? injectedPrims() : [];
         const unique = new Map<string, FluidPrimitive>();
         for (const { prims } of sets) {
-            for (const primitive of prims) unique.set(injVisualKey(primitive), primitive);
+            for (const primitive of prims) {
+                if (primitive.active !== false) unique.set(injVisualKey(primitive), primitive);
+            }
         }
         const flat = [...unique.values()];
         const sig = flat.map(injKey).join("|");
@@ -192,9 +275,7 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             const p = flat[i]!;
             const m = injMeshes[i]!;
             if (p.kind === "box") {
-                const h = p.b ?? [0.1, 0.1, 0.1];
                 m.position.set(p.a[0], p.a[1], p.a[2]);
-                m.scaling.set(Math.max(h[0] * 2, 1e-3), Math.max(h[1] * 2, 1e-3), Math.max(h[2] * 2, 1e-3));
                 const q = p.rotation ?? [0, 0, 0, 1];
                 m.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
             } else if (p.kind === "sphere") {
@@ -269,7 +350,9 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
                 const sets = injectedPrims();
                 const unique = new Set<string>();
                 for (const { prims } of sets) {
-                    for (const primitive of prims) unique.add(injVisualKey(primitive));
+                    for (const primitive of prims) {
+                        if (primitive.active !== false) unique.add(injVisualKey(primitive));
+                    }
                 }
                 // eslint-disable-next-line no-console
                 console.log(
@@ -277,10 +360,11 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
                         ? `[aquanova] fluid-injected collision — ${sets.length} running sim(s), ${unique.size} unique primitive(s):` +
                               sets
                                   .map((s) => {
+                                      const activePrims = s.prims.filter((p) => p.active !== false);
                                       const k: Record<string, number> = {};
-                                      for (const p of s.prims) k[p.kind] = (k[p.kind] ?? 0) + 1;
-                                      const moving = s.prims.filter((p) => p.velocity && (p.velocity[0] || p.velocity[1] || p.velocity[2])).length;
-                                      return `\n    ${s.sim}: ${s.prims.length} primitive(s) (${Object.entries(k)
+                                      for (const p of activePrims) k[p.kind] = (k[p.kind] ?? 0) + 1;
+                                      const moving = activePrims.filter((p) => p.velocity && (p.velocity[0] || p.velocity[1] || p.velocity[2])).length;
+                                      return `\n    ${s.sim}: ${activePrims.length} primitive(s) (${Object.entries(k)
                                           .map(([kk, n]) => `${n} ${kk}`)
                                           .join(", ")})${moving ? `, ${moving} moving` : ""}`;
                                   })

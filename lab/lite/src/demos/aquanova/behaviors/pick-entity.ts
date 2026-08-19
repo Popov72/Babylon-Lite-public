@@ -1,6 +1,15 @@
-import { createAudioEngineAsync, createStreamingSoundAsync, disposeAudioEngine, playStreamingSound, preloadStreamingInstanceAsync, setMeshVisible } from "babylon-lite";
+import {
+    createAudioEngineAsync,
+    createStreamingSoundAsync,
+    disposeAudioEngine,
+    playStreamingSound,
+    preloadStreamingInstanceAsync,
+    setMasterVolume,
+    setMeshVisible,
+} from "babylon-lite";
 import type { AudioEngine, Mesh, SceneNode, StreamingSound } from "babylon-lite";
 import { meshGroupBounds, type MeshGroupBounds } from "../mesh-bounds.js";
+import { normalizeSoundVolume } from "./sound-volume.js";
 import type { Behavior, BehaviorContext, PickEntityBehaviorConfig } from "./types.js";
 
 const SOUND_ROOT = "/aquanova/sounds";
@@ -17,6 +26,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     private static audioEngine: AudioEngine | null = null;
     private static sounds: Map<string, StreamingSound> | null = null;
     private static soundEnabled = true;
+    private static soundVolume = 1;
     public readonly name = "pickEntity";
     public readonly mesh: Mesh;
     public readonly config: PickEntityBehaviorConfig;
@@ -60,11 +70,19 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         this.audioEngine = null;
         this.sounds = null;
         this.soundEnabled = true;
+        this.soundVolume = 1;
         this.initialization = null;
     }
 
     public static setSoundEnabled(enabled: boolean): void {
         this.soundEnabled = enabled;
+    }
+
+    public static setSoundVolume(volume: number): void {
+        this.soundVolume = normalizeSoundVolume(volume);
+        if (this.audioEngine) {
+            setMasterVolume(this.audioEngine, this.soundVolume);
+        }
     }
 
     private static async initialize(configs: readonly PickEntityBehaviorConfig[]): Promise<void> {
@@ -92,6 +110,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
             }
             this.sounds = sounds;
             this.audioEngine = engine;
+            setMasterVolume(engine, this.soundVolume);
         } catch (error) {
             disposeAudioEngine(engine);
             throw error;

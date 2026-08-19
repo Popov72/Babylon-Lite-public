@@ -326,6 +326,7 @@ describe("removeFromScene symmetry", () => {
             _refCount: 2,
         };
         const boneTexture = { destroy: vi.fn() };
+        const skeleton = { boneTexture, jointsBuffer: { destroy: vi.fn() }, weightsBuffer: { destroy: vi.fn() }, _skinBuffers: {}, _disposed: false };
         const mesh = {
             name: "skinned",
             _gpu: gpu,
@@ -333,7 +334,7 @@ describe("removeFromScene symmetry", () => {
             children: [],
             parent: null,
             // Per-node skeleton: not shared, so it dies with this mesh.
-            skeleton: { boneTexture, jointsBuffer: { destroy: vi.fn() }, weightsBuffer: { destroy: vi.fn() }, _skinBuffers: {} },
+            skeleton,
         } as unknown as Mesh;
 
         addToScene(scene, mesh);
@@ -341,6 +342,7 @@ describe("removeFromScene symmetry", () => {
         drainRetirements(scene);
         expect(gpu.positionBuffer.destroy).not.toHaveBeenCalled();
         expect(boneTexture.destroy).toHaveBeenCalledOnce();
+        expect(skeleton._disposed).toBe(true);
 
         expect(() => addToScene(scene, mesh)).toThrow(/was disposed/);
     });

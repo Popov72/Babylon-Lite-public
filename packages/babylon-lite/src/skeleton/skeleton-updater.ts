@@ -134,8 +134,30 @@ export function createAnimationController(
     boneOverrides?: ReadonlyMap<number, unknown>,
     nodeNames?: readonly (string | undefined)[]
 ): AnimationController {
-    const requiresEngine = skeletons.length > 0 || morphBindings.length > 0;
     const numNodes = nodes.length;
+    const animatedTrsNodes = new Set<number>();
+    for (let channelIndex = 0; channelIndex < clip.channels.length; channelIndex++) {
+        const channel = clip.channels[channelIndex]!;
+        if (channel.nodeIdx >= 0 && (channel.path === PATH_TRANSLATION || channel.path === PATH_ROTATION || channel.path === PATH_SCALE)) {
+            animatedTrsNodes.add(channel.nodeIdx);
+        }
+    }
+    const clipSkeletons =
+        animatedTrsNodes.size === 0
+            ? []
+            : skeletons.filter((skeleton) =>
+                  skeleton.jointNodes.some((jointNode) => {
+                      let nodeIndex = jointNode;
+                      while (nodeIndex >= 0) {
+                          if (animatedTrsNodes.has(nodeIndex)) {
+                              return true;
+                          }
+                          nodeIndex = nodes[nodeIndex]?.parentIdx ?? -1;
+                      }
+                      return false;
+                  })
+              );
+    const requiresEngine = clipSkeletons.length > 0 || morphBindings.length > 0;
 
     // Plain node-TRS bindings: glTF translation/rotation/scale channels that target
     // a non-excluded node with a live scene node. These move node-animated meshes
@@ -172,7 +194,7 @@ export function createAnimationController(
     const topoOrder = computeTopoOrder(nodes);
 
     // Per-skeleton bone scratch
-    const boneScratch = skeletons.map((s) => s.boneMatrices);
+    const boneScratch = clipSkeletons.map((s) => s.boneMatrices);
 
     // Per-morph-binding scratch for weight evaluation
     const morphBindingsByNode: (MorphBinding[] | undefined)[] = [];
@@ -334,7 +356,7 @@ export function createAnimationController(
                                           const mb = bindings[bindingIndex]!;
                                           mb.weights.set(morphUploadF32.subarray(0, tc));
                                           // Write the weights array after the immutable header.
-                                          if (uploadGpu) {
+                                          if (uploadGpu && !mb.runtimeMorphTargets?._disposed) {
                                               device!.queue.writeBuffer(mb.runtimeMorphTargets?.weightsBuffer ?? mb.weightsBuffer, 16, morphUploadF32.buffer, 0, tc * 4);
                                           }
                                       }
@@ -412,8 +434,8 @@ export function createAnimationController(
                       }
 
                       // 4. Compute bone matrices and upload to GPU
-                      for (let si = 0; si < skeletons.length; si++) {
-                          const skel = skeletons[si]!;
+                      for (let si = 0; si < clipSkeletons.length; si++) {
+                          const skel = clipSkeletons[si]!;
                           const boneData = boneScratch[si]!;
 
                           for (let bi = 0; bi < skel.boneCount; bi++) {
@@ -425,7 +447,7 @@ export function createAnimationController(
                           }
 
                           // Upload to GPU
-                          if (uploadGpu) {
+                          if (uploadGpu && !skel.runtimeSkeleton?._disposed) {
                               const texWidth = skel.boneCount * 4;
                               device!.queue.writeTexture(
                                   { texture: skel.runtimeSkeleton?.boneTexture ?? skel.boneTexture },

@@ -1,6 +1,7 @@
 import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
-import type { Behavior, BehaviorContext, PlayerBehaviorConfig } from "./types.js";
+import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS } from "../constants.js";
+import type { Behavior, BehaviorContext, JumpApertureAssist, PlayerBehaviorConfig } from "./types.js";
 
 const LOOK_SENSITIVITY = 1 / 600;
 const WALK_SPEED = 4;
@@ -9,12 +10,55 @@ const MOVE_ACCELERATION = 12;
 const LOOK_ACCELERATION = 30;
 const JUMP_SPEED = 6;
 const JUMP_GRAVITY = 16;
-const CROUCH_CAPSULE_HEIGHT = 0.8;
 const CROUCH_SPEED_FACTOR = 0.75;
 const CROUCH_TRANSITION_SECONDS = 0.2;
 const JUMP_BUFFER_SECONDS = 0.3;
+const APERTURE_EDGE_ADVANCE = 0.2;
+const APERTURE_EDGE_ADVANCE_SPEED = 2;
+const APERTURE_LATERAL_SPEED = 1;
+const APERTURE_ASSIST_SECONDS = 1.5;
+const GROUND_ADHESION_SPEED = 2;
 const DEFAULT_CHARACTER_STRENGTH = 100;
 const DOWN = { x: 0, y: -1, z: 0 };
+
+export function playerSupportedMovementVelocity(
+    horizontalX: number,
+    horizontalZ: number,
+    surfaceNormal: Readonly<{ x: number; y: number; z: number }>
+): { x: number; y: number; z: number } {
+    const length = Math.hypot(surfaceNormal.x, surfaceNormal.y, surfaceNormal.z);
+    const normal = length > 1e-6 ? { x: surfaceNormal.x / length, y: surfaceNormal.y / length, z: surfaceNormal.z / length } : { x: 0, y: 1, z: 0 };
+    const normalVelocity = horizontalX * normal.x + horizontalZ * normal.z + GROUND_ADHESION_SPEED;
+    return {
+        x: horizontalX - normal.x * normalVelocity,
+        y: -normal.y * normalVelocity,
+        z: horizontalZ - normal.z * normalVelocity,
+    };
+}
+
+export function selectClosestClearApertureOffset(pathClear: (lateralOffset: number) => boolean): number | null {
+    for (const lateralOffset of [0, -0.05, 0.05, -0.1, 0.1]) {
+        if (pathClear(lateralOffset)) {
+            return lateralOffset;
+        }
+    }
+    return null;
+}
+
+export function remainingForwardApertureAssist(distance: number, resolvedForwardProgress: number): number {
+    return Math.max(0, distance - Math.max(0, resolvedForwardProgress));
+}
+
+export function remainingLateralApertureAssist(offset: number, resolvedLateralProgress: number): number {
+    if (Math.sign(resolvedLateralProgress) !== Math.sign(offset)) {
+        return offset;
+    }
+    return offset - Math.sign(offset) * Math.min(Math.abs(offset), Math.abs(resolvedLateralProgress));
+}
+
+export function shouldUseJumpApertureAssist(jumpActive: boolean, forwardInput: number, crouched: boolean, apertureAssist: JumpApertureAssist | null): boolean {
+    return jumpActive && forwardInput > 0 && !crouched && apertureAssist !== null;
+}
 
 export function playerWeaponSwayMultiplier(keys: ReadonlySet<string>, frozen = false): 1 | 2 | 4 {
     if (frozen) return 1;
@@ -29,6 +73,13 @@ export function playerWeaponSwayMultiplier(keys: ReadonlySet<string>, frozen = f
         keys.has("ArrowRight");
     if (!moving) return 1;
     return keys.has("ShiftLeft") || keys.has("ShiftRight") ? 4 : 2;
+}
+
+export function weaponWheelDirection(deltaY: number): -1 | 1 | null {
+    if (!Number.isFinite(deltaY) || deltaY === 0) {
+        return null;
+    }
+    return deltaY < 0 ? -1 : 1;
 }
 
 export class PlayerBehavior implements Behavior<"player"> {
@@ -47,13 +98,23 @@ export class PlayerBehavior implements Behavior<"player"> {
     private targetDistance = 1;
     private verticalVelocity = 0;
     private jumpBufferSeconds = 0;
+    private jumpActive = false;
     private crouchToggleQueued = false;
     private crouchTarget = false;
+    private apertureCrouchActive = false;
+    private apertureAdvanceRemaining = 0;
+    private apertureLateralRemaining = 0;
+    private apertureAssistSeconds = 0;
+    private apertureForwardX = 0;
+    private apertureForwardZ = 0;
+    private apertureRightX = 0;
+    private apertureRightZ = 0;
     private noclip = false;
     private frozen = false;
     private weaponTriggerHeld = false;
     private weaponTriggerSequence = 0;
     private weaponAimPickPending = false;
+    private lastWeaponWheelTime = Number.NEGATIVE_INFINITY;
     private crosshair: HTMLDivElement | null = null;
     private readonly characterStrength: number;
 
@@ -85,6 +146,7 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.listen(this.context.canvas, "pointerdown", this.onPointerDown);
         this.listen(this.context.canvas, "pointercancel", this.onPointerCancel);
         this.listen(this.context.canvas, "pointermove", this.onPointerMove);
+        this.listen(this.context.canvas, "wheel", this.onWheel);
         this.listen(window, "pointerup", this.onPointerUp);
         this.listen(window, "blur", this.onWindowBlur);
         this.listen(document, "pointerlockchange", this.onPointerLockChange);
@@ -204,7 +266,9 @@ export class PlayerBehavior implements Behavior<"player"> {
         const [pickX, pickY] = this.crosshairPickCoordinates();
         const info = await pickAsync(this.context.getPicker(), pickX, pickY);
         const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;
-        if (triggerSequence !== this.weaponTriggerSequence || (requireHeldTrigger && !this.weaponTriggerHeld)) return;
+        const activeTrigger = triggerSequence === this.weaponTriggerSequence && (!requireHeldTrigger || this.weaponTriggerHeld);
+        const justReleasedTrigger = requireHeldTrigger && !this.weaponTriggerHeld && this.weaponTriggerSequence === triggerSequence + 1;
+        if (!activeTrigger && !justReleasedTrigger) return;
         this.updateTargetDataset(mesh);
         this.context.events.emit("weaponAimUpdated", {
             mesh,
@@ -284,13 +348,29 @@ export class PlayerBehavior implements Behavior<"player"> {
             return;
         }
 
-        const grounded = this.context.character.checkSupport(deltaSeconds, DOWN).supportedState === CharacterSupportedState.SUPPORTED;
+        const support = this.context.character.checkSupport(deltaSeconds, DOWN);
+        const grounded = support.supportedState === CharacterSupportedState.SUPPORTED;
+        if (grounded && this.verticalVelocity <= 0) {
+            this.jumpActive = false;
+        }
         if (this.crouchToggleQueued) {
             this.crouchTarget = !this.crouchTarget;
             this.crouchToggleQueued = false;
         }
-        if ((runRequested || this.jumpBufferSeconds > 0) && (this.crouchTarget || !this.isFullyStanding())) {
+        if (!this.apertureCrouchActive && (runRequested || this.jumpBufferSeconds > 0) && (this.crouchTarget || !this.isFullyStanding())) {
             this.crouchTarget = false;
+        }
+        const apertureAssist = this.jumpActive && inputZ > 0 && !this.crouchTarget ? this.context.jumpApertureAssist(sin, cos) : null;
+        if (apertureAssist && shouldUseJumpApertureAssist(this.jumpActive, inputZ, this.crouchTarget, apertureAssist)) {
+            this.crouchTarget = true;
+            this.apertureCrouchActive = true;
+            this.apertureAdvanceRemaining = APERTURE_EDGE_ADVANCE;
+            this.apertureLateralRemaining = apertureAssist.lateralOffset;
+            this.apertureAssistSeconds = APERTURE_ASSIST_SECONDS;
+            this.apertureForwardX = sin;
+            this.apertureForwardZ = cos;
+            this.apertureRightX = cos;
+            this.apertureRightZ = -sin;
         }
         this.updateCrouch(deltaSeconds);
 
@@ -302,20 +382,59 @@ export class PlayerBehavior implements Behavior<"player"> {
         if (grounded && this.verticalVelocity <= 0) {
             if (this.jumpBufferSeconds > 0 && fullyStanding) {
                 this.verticalVelocity = JUMP_SPEED;
+                this.jumpActive = true;
                 this.jumpBufferSeconds = 0;
             } else {
-                this.verticalVelocity = -2;
+                this.verticalVelocity = 0;
             }
         } else {
             this.verticalVelocity -= JUMP_GRAVITY * deltaSeconds;
         }
         this.jumpBufferSeconds = Math.max(0, this.jumpBufferSeconds - deltaSeconds);
+        const supportedVelocity =
+            grounded && this.verticalVelocity <= 0
+                ? playerSupportedMovementVelocity(this.walkVelocity.x, this.walkVelocity.z, support.averageSurfaceNormal)
+                : { x: this.walkVelocity.x, y: this.verticalVelocity, z: this.walkVelocity.z };
+        let moveX = supportedVelocity.x * deltaSeconds;
+        let moveZ = supportedVelocity.z * deltaSeconds;
+        const apertureMoving = this.apertureCrouchActive && inputZ > 0 && this.crouchAmount() >= 0.95;
+        if (apertureMoving && this.apertureAdvanceRemaining > 0) {
+            const advance = Math.min(this.apertureAdvanceRemaining, APERTURE_EDGE_ADVANCE_SPEED * deltaSeconds);
+            moveX += this.apertureForwardX * advance;
+            moveZ += this.apertureForwardZ * advance;
+        }
+        if (apertureMoving && Math.abs(this.apertureLateralRemaining) > 1e-4) {
+            const correction = Math.sign(this.apertureLateralRemaining) * Math.min(Math.abs(this.apertureLateralRemaining), APERTURE_LATERAL_SPEED * deltaSeconds);
+            moveX += this.apertureRightX * correction;
+            moveZ += this.apertureRightZ * correction;
+        }
+        const previousPosition = this.context.character.getPosition();
+        const previousX = previousPosition.x;
+        const previousZ = previousPosition.z;
         this.context.character.moveWithCollisions({
-            x: this.walkVelocity.x * deltaSeconds,
-            y: this.verticalVelocity * deltaSeconds,
-            z: this.walkVelocity.z * deltaSeconds,
+            x: moveX,
+            y: supportedVelocity.y * deltaSeconds,
+            z: moveZ,
         });
         const position = this.context.character.getPosition();
+        if (this.apertureCrouchActive) {
+            const resolvedX = position.x - previousX;
+            const resolvedZ = position.z - previousZ;
+            const forwardProgress = resolvedX * this.apertureForwardX + resolvedZ * this.apertureForwardZ;
+            const lateralProgress = resolvedX * this.apertureRightX + resolvedZ * this.apertureRightZ;
+            this.apertureAdvanceRemaining = remainingForwardApertureAssist(this.apertureAdvanceRemaining, forwardProgress);
+            this.apertureLateralRemaining = remainingLateralApertureAssist(this.apertureLateralRemaining, lateralProgress);
+            this.apertureAssistSeconds -= deltaSeconds;
+            if (
+                inputZ <= 0 ||
+                this.apertureAssistSeconds <= 0 ||
+                (this.crouchAmount() >= 0.95 && this.apertureAdvanceRemaining <= 1e-3 && Math.abs(this.apertureLateralRemaining) <= 1e-3)
+            ) {
+                this.apertureCrouchActive = false;
+                this.apertureAdvanceRemaining = 0;
+                this.apertureLateralRemaining = 0;
+            }
+        }
         this.updatePositionDataset(position);
         if (this.frozen) return;
         const eyeHeight = this.currentEyeHeight();
@@ -335,7 +454,9 @@ export class PlayerBehavior implements Behavior<"player"> {
         if (heightDelta === 0) return;
         const nextHeight = currentHeight + Math.sign(targetHeight - currentHeight) * heightDelta;
         if (nextHeight > currentHeight && !this.context.canStand()) return;
-        this.context.character.setShapeOptions({ ...this.context.character.shapeOptions, capsuleHeight: nextHeight });
+        const amount = Math.max(0, Math.min(1, (this.context.capsuleHeight - nextHeight) / (this.context.capsuleHeight - CROUCH_CAPSULE_HEIGHT)));
+        const radius = this.context.capsuleRadius + (CROUCH_CAPSULE_RADIUS - this.context.capsuleRadius) * amount;
+        this.context.character.setShapeOptions({ capsuleHeight: nextHeight, capsuleRadius: Math.min(radius, nextHeight * 0.5) }, !this.apertureCrouchActive);
         this.updateCrouchDataset();
     }
 
@@ -423,6 +544,20 @@ export class PlayerBehavior implements Behavior<"player"> {
             return;
         }
         this.context.inspectAt(event.offsetX, event.offsetY);
+    };
+
+    private readonly onWheel = (event: WheelEvent): void => {
+        const direction = weaponWheelDirection(event.deltaY);
+        if (direction === null || document.pointerLockElement !== this.context.canvas || this.context.isInspecting()) {
+            return;
+        }
+        event.preventDefault();
+        const now = performance.now();
+        if (now - this.lastWeaponWheelTime < 120) {
+            return;
+        }
+        this.lastWeaponWheelTime = now;
+        this.context.events.emit("weaponCycleRequested", { direction });
     };
 
     private readonly onKeyDown = (event: KeyboardEvent): void => {

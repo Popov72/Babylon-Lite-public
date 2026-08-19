@@ -1,8 +1,10 @@
-import type { FreeCamera, GpuPicker, Mesh, PhysicsCharacterController } from "babylon-lite";
+import type { AnimationGroup, FreeCamera, GpuPicker, Mesh, PhysicsCharacterController } from "babylon-lite";
 import type { EventManager } from "./event-manager.js";
 
 export interface DynamicBehaviorConfig {
     dynamic?: boolean;
+    /** Rigid-body mass in kilograms. Defaults to 10. */
+    mass?: number;
 }
 
 export interface LiquefiableBehaviorConfig {
@@ -41,6 +43,13 @@ export interface PickEntityBehaviorConfig {
     speed?: number;
 }
 
+export interface PlayAnimationBehaviorConfig {
+    /** Exact glTF animation name. Defaults to the first animation in file order. */
+    animation?: string;
+    /** Whether playback loops. Defaults to true. */
+    loop?: boolean;
+}
+
 export interface WeaponLiquefactorBehaviorConfig {
     direction?: number[];
     /** Maximum beam range when the crosshair does not hit geometry. */
@@ -49,9 +58,17 @@ export interface WeaponLiquefactorBehaviorConfig {
     sounds?: Record<string, string[]>;
 }
 
+export interface WeaponAntiGravityGunBehaviorConfig {
+    /** Maximum centre-screen hit distance that may be grabbed. Defaults to 6 metres. */
+    maxGrabDistance?: number;
+    /** Maximum dynamic-body mass that may be grabbed. Defaults to 100 kilograms. */
+    maxMass?: number;
+}
+
 /** All parameters that a manifest behavior definition or entity override may provide. */
 export interface BehaviorConfig {
     dynamic?: boolean;
+    mass?: number;
     liquefiable?: boolean;
     fluidSim?: string[];
     linked?: string[];
@@ -66,6 +83,10 @@ export interface BehaviorConfig {
     onEvent?: string;
     raiseEvent?: EntityEventConfig;
     reflectionProbe?: "exclude";
+    animation?: string;
+    loop?: boolean;
+    maxGrabDistance?: number;
+    maxMass?: number;
 }
 
 export function isLiquefiableBehaviorConfig<Config extends BehaviorConfig>(config: Config): config is Config & LiquefiableBehaviorConfig {
@@ -96,21 +117,48 @@ export interface WeaponLiquefactorRuntime {
     update(deltaMs: number): boolean;
 }
 
+export interface WeaponAntiGravityGunRuntime {
+    setEnabled(enabled: boolean, animated?: boolean): void;
+    isReady(): boolean;
+    update(deltaMs: number): void;
+    grab(mesh: Mesh): boolean;
+    updateGrab(deltaMs: number): boolean;
+    releaseGrab(throwSpeed: number): void;
+}
+
+export interface WeaponInventoryRuntime {
+    acquire(slot: number): void;
+    isOwned(slot: number): boolean;
+    isEquipped(slot: number): boolean;
+}
+
+export interface JumpApertureAssist {
+    /** Signed correction along the player's right axis, in metres. */
+    lateralOffset: number;
+}
+
 export interface BehaviorContext {
     readonly canvas: HTMLCanvasElement;
     readonly camera: FreeCamera;
     readonly character: PhysicsCharacterController;
     readonly events: EventManager;
+    readonly animationGroups: readonly AnimationGroup[];
     readonly capsuleHeight: number;
+    readonly capsuleRadius: number;
     readonly eyeHeight: number;
     /** Whether the standing capsule can expand upward without intersecting the ship. */
     readonly canStand: () => boolean;
+    /** Entry correction when the forward path is clear only for the crouched capsule. */
+    readonly jumpApertureAssist: (forwardX: number, forwardZ: number) => JumpApertureAssist | null;
     readonly getPicker: () => GpuPicker;
     readonly nodeNameOf: (mesh: Mesh) => string;
     readonly isLiquefiable: (mesh: Mesh) => boolean;
     readonly isInspecting: () => boolean;
     readonly inspectAt: (x: number, y: number) => void;
+    readonly weaponInventory: WeaponInventoryRuntime;
     readonly weaponLiquefactor: WeaponLiquefactorRuntime;
+    readonly weaponAntiGravityGun: WeaponAntiGravityGunRuntime;
+    readonly dynamicMassOf: (mesh: Mesh) => number | null;
     /** Begin validating a re-press against reversing liquefaction. Null means there is no liquefaction to resume. */
     readonly requestFusionResume: () => number | null;
     readonly resolveFusionResume: (token: number, mesh: Mesh | null) => "resumed" | "start-new" | "await-target" | "continue";

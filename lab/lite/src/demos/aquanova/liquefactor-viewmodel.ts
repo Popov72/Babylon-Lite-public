@@ -13,10 +13,15 @@ import {
 } from "babylon-lite";
 import { LIQUEFACTOR_MODELS, type LiquefactorModel } from "./settings.js";
 
-const MODEL_URLS: Readonly<Record<LiquefactorModel, string>> = {
+const LIQUEFACTOR_MODEL_URLS: Readonly<Record<LiquefactorModel, string>> = {
     "20k": "/aquanova/weapons/liquefactor-20k.glb",
     "80k": "/aquanova/weapons/liquefactor-80k.glb",
     "350k": "/aquanova/weapons/liquefactor-350k.glb",
+};
+const ANTI_GRAVITY_GUN_MODEL_URLS: Readonly<Record<LiquefactorModel, string>> = {
+    "20k": "/aquanova/weapons/antiGravityGun-20k.glb",
+    "80k": "/aquanova/weapons/antiGravityGun-80k.glb",
+    "350k": "/aquanova/weapons/antiGravityGun-350k.glb",
 };
 
 // The root is anchored in normalized screen space, then converted through the live projection.
@@ -73,6 +78,23 @@ interface ModelEntry {
     root: SceneNode;
     meshes: Mesh[];
 }
+
+interface WeaponViewmodelSpec {
+    readonly name: string;
+    readonly modelUrls: Readonly<Record<LiquefactorModel, string>>;
+    readonly contentRotationY?: number;
+}
+
+const LIQUEFACTOR_SPEC: WeaponViewmodelSpec = {
+    name: "liquefactor",
+    modelUrls: LIQUEFACTOR_MODEL_URLS,
+};
+
+const ANTI_GRAVITY_GUN_SPEC: WeaponViewmodelSpec = {
+    name: "anti-gravity-gun",
+    modelUrls: ANTI_GRAVITY_GUN_MODEL_URLS,
+    contentRotationY: (3 * Math.PI) / 2,
+};
 
 function setLocalParent(child: SceneNode, parent: SceneNode | FreeCamera): void {
     if (child.parent && "children" in child.parent) {
@@ -212,33 +234,34 @@ export function computeLiquefactorPose(cameraWorld: ArrayLike<number>, projectio
 
 const CAMERA_LOCAL_WORLD = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
-export async function createLiquefactorViewmodel(engine: EngineContext, camera: FreeCamera): Promise<LiquefactorViewmodel> {
-    const root = createTransformNode("liquefactor-viewmodel");
+async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, spec: WeaponViewmodelSpec): Promise<LiquefactorViewmodel> {
+    const root = createTransformNode(`${spec.name}-viewmodel`);
     root.scaling.set(LIQUEFACTOR_MODEL_SCALE, LIQUEFACTOR_MODEL_SCALE, LIQUEFACTOR_MODEL_SCALE);
     setLocalParent(root, camera);
-    const presentation = createTransformNode("liquefactor-presentation");
+    const presentation = createTransformNode(`${spec.name}-presentation`);
     setLocalParent(presentation, root);
-    const sway = createTransformNode("liquefactor-sway");
+    const sway = createTransformNode(`${spec.name}-sway`);
     setLocalParent(sway, presentation);
-    const adjustment = createTransformNode("liquefactor-adjustment");
+    const adjustment = createTransformNode(`${spec.name}-adjustment`);
     adjustment.position.set(...ADJUSTMENT_POSITION);
     adjustment.rotation.y = ADJUSTMENT_ROTATION_Y;
     adjustment.scaling.set(ADJUSTMENT_SCALE, ADJUSTMENT_SCALE, ADJUSTMENT_SCALE);
     setLocalParent(adjustment, sway);
-    const content = createTransformNode("liquefactor-content");
+    const content = createTransformNode(`${spec.name}-content`);
     content.position.set(-GIZMO_PIVOT.x, -GIZMO_PIVOT.y, -GIZMO_PIVOT.z);
+    content.rotation.y = spec.contentRotationY ?? 0;
     setLocalParent(content, adjustment);
 
     // This mirrored hierarchy keeps the calibrated aim origin/direction available in the
     // gizmo layer without rendering debug geometry over the weapon.
-    const localGuideRoot = createTransformNode("liquefactor-local-guide-root");
+    const localGuideRoot = createTransformNode(`${spec.name}-local-guide-root`);
     setLocalParent(localGuideRoot, camera);
-    const localGuideWeaponSpace = createTransformNode("liquefactor-local-guide-weapon-space");
+    const localGuideWeaponSpace = createTransformNode(`${spec.name}-local-guide-weapon-space`);
     setLocalParent(localGuideWeaponSpace, localGuideRoot);
-    const localGuideOrigin = createTransformNode("liquefactor-local-guide-origin");
+    const localGuideOrigin = createTransformNode(`${spec.name}-local-guide-origin`);
     localGuideOrigin.position.set(0, 0.1707, 0.2889);
     setLocalParent(localGuideOrigin, localGuideWeaponSpace);
-    const localGuideYaw = createTransformNode("liquefactor-local-guide-yaw");
+    const localGuideYaw = createTransformNode(`${spec.name}-local-guide-yaw`);
     localGuideYaw.rotation.y = (17.5 * Math.PI) / 180;
     setLocalParent(localGuideYaw, localGuideOrigin);
 
@@ -247,9 +270,9 @@ export async function createLiquefactorViewmodel(engine: EngineContext, camera: 
 
     await Promise.all(
         LIQUEFACTOR_MODELS.map(async (model) => {
-            const asset = await loadGltf(engine, MODEL_URLS[model]);
+            const asset = await loadGltf(engine, spec.modelUrls[model]);
             const modelRoot = asset.entities[0] as SceneNode | undefined;
-            if (!modelRoot) throw new Error(`Liquefactor ${model} has no root entity`);
+            if (!modelRoot) throw new Error(`${spec.name} ${model} has no root entity`);
             const meshes: Mesh[] = [];
             collectMeshes(modelRoot, meshes);
             for (const mesh of meshes) {
@@ -348,4 +371,12 @@ export async function createLiquefactorViewmodel(engine: EngineContext, camera: 
             localGuideWeaponSpace.scaling.set(adjustment.scaling.x, adjustment.scaling.y, adjustment.scaling.z);
         },
     };
+}
+
+export function createLiquefactorViewmodel(engine: EngineContext, camera: FreeCamera): Promise<LiquefactorViewmodel> {
+    return createWeaponViewmodel(engine, camera, LIQUEFACTOR_SPEC);
+}
+
+export function createAntiGravityGunViewmodel(engine: EngineContext, camera: FreeCamera): Promise<LiquefactorViewmodel> {
+    return createWeaponViewmodel(engine, camera, ANTI_GRAVITY_GUN_SPEC);
 }

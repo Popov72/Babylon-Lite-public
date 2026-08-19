@@ -17,6 +17,12 @@ export const SKYBOX_EXT = ".png";
  *  CORNERS — at (size/2)·√3 — have to stay inside the camera's 400 m far plane or the corners of the
  *  view clip to the clear colour. 300 puts the faces 150 m out and the corners at ~260 m. */
 export const SKYBOX_SIZE = 300;
+/** Cosine of the steepest slope the player may stand on without sliding (45 degrees). */
+export const MAX_WALKABLE_SLOPE_COSINE = Math.SQRT1_2;
+/** Total player capsule height while crouched. */
+export const CROUCH_CAPSULE_HEIGHT = 0.7;
+/** Crouched radius; height must remain at least twice the radius for a valid capsule. */
+export const CROUCH_CAPSULE_RADIUS = CROUCH_CAPSULE_HEIGHT * 0.5;
 
 export type Vec3 = readonly [number, number, number];
 

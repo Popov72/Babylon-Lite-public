@@ -1,5 +1,14 @@
-import { createAudioEngineAsync, createStreamingSoundAsync, disposeAudioEngine, playStreamingSound, preloadStreamingInstanceAsync, stopStreamingSound } from "babylon-lite";
+import {
+    createAudioEngineAsync,
+    createStreamingSoundAsync,
+    disposeAudioEngine,
+    playStreamingSound,
+    preloadStreamingInstanceAsync,
+    setMasterVolume,
+    stopStreamingSound,
+} from "babylon-lite";
 import type { AudioEngine, Mesh, StreamingSound } from "babylon-lite";
+import { normalizeSoundVolume } from "./sound-volume.js";
 import type { Behavior, BehaviorContext, WeaponLiquefactorBehaviorConfig } from "./types.js";
 
 const DEFAULT_RANGE = 100;
@@ -10,9 +19,10 @@ const LIQUEFY_SOUND = "liquefactorLiquefy";
 
 type WeaponLiquefactorContext = Pick<
     BehaviorContext,
-    "events" | "nodeNameOf" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
+    "events" | "nodeNameOf" | "weaponInventory" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
 >;
 
+const WEAPON_SLOT = 1;
 interface PendingHit {
     readonly mesh: Mesh;
     readonly point: readonly [number, number, number] | null;
@@ -26,6 +36,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     private static liquefySound: StreamingSound | null = null;
     private static soundCategories: Map<string, readonly StreamingSound[]> | null = null;
     private static soundEnabled = true;
+    private static soundVolume = 1;
     public readonly name = "weaponLiquefactor";
     public readonly mesh: Mesh;
     public readonly config: WeaponLiquefactorBehaviorConfig;
@@ -71,6 +82,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         this.liquefySound = null;
         this.soundCategories = null;
         this.soundEnabled = true;
+        this.soundVolume = 1;
         this.initialization = null;
     }
 
@@ -78,6 +90,13 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         this.soundEnabled = enabled;
         if (!enabled) {
             this.stopActionSounds();
+        }
+    }
+
+    public static setSoundVolume(volume: number): void {
+        this.soundVolume = normalizeSoundVolume(volume);
+        if (this.audioEngine) {
+            setMasterVolume(this.audioEngine, this.soundVolume);
         }
     }
 
@@ -126,6 +145,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             this.liquefySound = soundsByName.get(LIQUEFY_SOUND)!;
             this.soundCategories = soundCategories;
             this.audioEngine = engine;
+            setMasterVolume(engine, this.soundVolume);
         } catch (error) {
             disposeAudioEngine(engine);
             throw error;
@@ -140,7 +160,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
                     this.acquire();
                 }
             }),
-            this.context.events.on("weaponSlotSelected", ({ slot }) => this.selectSlot(slot)),
+            this.context.events.on("weaponEquippedChanged", ({ slot }) => this.setEquipped(slot === WEAPON_SLOT)),
             this.context.events.on("weaponTriggerPressed", ({ held }) => this.pressTrigger(held)),
             this.context.events.on("weaponAimUpdated", (aim) => this.updateAim(aim.mesh, aim.point, aim.distance)),
             this.context.events.on("weaponTriggerReleased", () => this.releaseTrigger()),
@@ -181,18 +201,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             return;
         }
         this.owned = true;
-        this.setEquipped(true);
-    }
-
-    private selectSlot(slot: number): void {
-        if (!this.owned) {
-            return;
-        }
-        if (slot === 1) {
-            this.setEquipped(!this.equipped);
-        } else if (slot === 2) {
-            this.setEquipped(false);
-        }
+        this.context.weaponInventory.acquire(WEAPON_SLOT);
     }
 
     private setEquipped(equipped: boolean): void {
