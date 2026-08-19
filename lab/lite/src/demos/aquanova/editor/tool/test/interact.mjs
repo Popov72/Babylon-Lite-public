@@ -10701,6 +10701,97 @@ check("the camera input claims the right button only", await page.evaluate(async
   return b.length === 1 && b[0] === 2;
 }));
 
+// ---- a door marker drops through whatever is in the way ---------------------
+// A doorway is a wall module with a hole in it, so the ray hits that wall
+// first. Dropping the marker only where the pick found bare ground therefore
+// refused it at exactly the spot it is wanted, which made the Door button
+// nearly useless. The click now goes straight to the build plane under the
+// cursor whatever is in front of it - nothing is lost, because the marker takes
+// the grid elevation rather than the height of what it was clicked through.
+const doorDropSetup = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+    new V(0, 0, 0), { silent: true });
+  ed.select([]);
+  // above and in front, so a ray through the wall carries on down to the grid
+  ed.state.camera.position = new V(0, 6, -8);
+  ed.state.camera.setTarget(new V(0, 0, 0));
+  ed.state.camera.cameraDirection.setAll(0);
+  return { wall: wall.id, doors: [...ed.state.markers.values()].filter((m) => m.type === "door").length };
+});
+await page.waitForTimeout(700);
+const wallAim = await page.evaluate(async (ids) => {
+  const ed = await import("/js/editor.js");
+  const scene = ed.state.scene;
+  const b = ed.screenBoundsOf(ed.state.placements.get(ids.wall).node);
+  const r = scene.getEngine().getRenderingCanvas().getBoundingClientRect();
+  const at = (fx, fy) => ({
+    x: b.minX + (b.maxX - b.minX) * fx,
+    y: b.minY + (b.maxY - b.minY) * fy,
+  });
+  // Hunt for a point that really is on the panel rather than trusting its
+  // screen centre: a wall module can have an opening through the middle, and a
+  // marker aimed at fresh air would be testing the old behaviour by accident.
+  for (const fy of [0.5, 0.3, 0.7, 0.15, 0.85]) {
+    for (const fx of [0.5, 0.2, 0.8, 0.35, 0.65]) {
+      const p = at(fx, fy);
+      const pick = scene.pick(p.x, p.y, (m) => m.isPickable && m.isEnabled());
+      if (pick?.hit && ed.ownerIdOf(pick.pickedMesh) === ids.wall) {
+        return { x: r.x + p.x, y: r.y + p.y, found: true };
+      }
+    }
+  }
+  const c = at(0.5, 0.5);
+  return { x: r.x + c.x, y: r.y + c.y, found: false };
+}, doorDropSetup);
+
+await page.mouse.move(wallAim.x, wallAim.y, { steps: 5 });
+await page.waitForTimeout(250);
+const overWall = await page.evaluate(async () =>
+  (await import("/js/interact.js")).hoveredId());
+check("the spot a door is wanted at is squarely on a wall",
+  wallAim.found && overWall === doorDropSetup.wall,
+  `found=${wallAim.found}, hovered=${overWall}`);
+
+await page.click("#btn-door");
+await page.mouse.move(wallAim.x + 5, wallAim.y + 5, { steps: 3 });
+await page.mouse.move(wallAim.x, wallAim.y, { steps: 3 });
+await page.waitForTimeout(250);
+const armedHover = await page.evaluate(async () => ({
+  hovered: (await import("/js/interact.js")).hoveredId(),
+  armed: (await import("/js/editor.js")).state.markerBrush,
+}));
+check("arming the marker stops the hover promising a selection it will not make",
+  armedHover.armed === "door" && armedHover.hovered === null,
+  JSON.stringify(armedHover));
+
+await page.mouse.click(wallAim.x, wallAim.y);
+await page.waitForTimeout(450);
+const doorDropped = await page.evaluate(async (ids) => {
+  const ed = await import("/js/editor.js");
+  const doors = [...ed.state.markers.values()].filter((m) => m.type === "door");
+  const d = doors[doors.length - 1];
+  return {
+    doors: doors.length,
+    selection: [...ed.state.selection],
+    onDoor: !!d && ed.state.selection.length === 1 && ed.state.selection[0] === d.id,
+    y: d ? Number(d.node.position.y.toFixed(3)) : null,
+    gridY: ed.state.gridY,
+    armed: ed.state.markerBrush,
+    wallStands: ed.state.placements.has(ids.wall),
+  };
+}, doorDropSetup);
+check("clicking on the wall drops the marker instead of selecting the wall",
+  doorDropped.doors === doorDropSetup.doors + 1 && doorDropped.onDoor
+    && doorDropped.wallStands,
+  JSON.stringify(doorDropped));
+check("and it lands on the build plane, not on the wall it was clicked through",
+  Math.abs(doorDropped.y - doorDropped.gridY) < 1e-3 && doorDropped.armed === null,
+  `y=${doorDropped.y}, gridY=${doorDropped.gridY}, armed=${doorDropped.armed}`);
+
 // ---- 1i-duodecies. reaching the panel behind a portal ----------------------
 // A portal is a flat quad sitting exactly where the door panels are, and it
 // turns to face the camera, so no amount of flying gets you behind it. Shift

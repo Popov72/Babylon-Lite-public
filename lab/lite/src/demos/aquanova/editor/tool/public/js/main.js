@@ -886,7 +886,7 @@ function armMarker(kind, btn) {
   // The hint carries transient "you are mid-gesture" guidance only - there is
   // no idle text, because a permanent instruction just goes stale.
   $("hint").textContent = state.markerBrush
-    ? `Click the grid to drop the ${kind.replace(":", " ")} marker. Esc to stop.`
+    ? `Click to drop the ${kind.replace(":", " ")} marker — anywhere, including on top of the ship. Esc to stop.`
     : "";
 }
 

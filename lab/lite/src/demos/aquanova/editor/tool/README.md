@@ -2012,7 +2012,13 @@ and is purely for finding things again.
 
 Doors carry the portal:
 
-- **Door** arms a marker you drop on the grid.
+- **Door** arms a marker you drop with a click. It lands on the build plane
+  under the cursor **wherever you click, including on top of the ship** — the
+  click looks straight through whatever is in the way. It has to: a doorway is a
+  wall module with a hole in it, so a pick-first rule made the one spot the
+  marker is wanted the one spot it could not be put. Nothing is lost by ignoring
+  what is under the cursor, since the marker takes the grid elevation rather
+  than the height of what it landed on.
 - **Door from sel** is the usual route — select the door geometry you already
   placed and it creates a marker centred on it, sized to its opening, with those
   placements registered as the animated leaves.

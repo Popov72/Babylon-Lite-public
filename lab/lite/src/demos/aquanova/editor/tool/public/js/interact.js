@@ -1453,6 +1453,10 @@ function onPointerMove(ev) {
   // work on every frame of a look, and the outline would flicker across
   // everything the cursor sweeps past.
   if (isRmbDown()) return;
+  // Nor while a marker is armed - the click drops the marker rather than
+  // selecting, so outlining whatever the cursor crosses on the way would
+  // promise something that is not going to happen.
+  if (state.markerBrush) { setHover(null); return; }
   const hit = pickUnderCursor();
   setHover(hit.kind === "entry" ? hit.id : null);
 }
@@ -1460,6 +1464,27 @@ function onPointerMove(ev) {
 async function onClick(ev) {
   if (isBusy()) return;
   if (ghost) { await dropGhost(); return; }
+
+  // An armed marker drops wherever the cursor is, straight through whatever is
+  // under it. A door belongs in a doorway, and a doorway is a wall module with
+  // a hole in it, so the ray hits that wall first: picking before dropping made
+  // the one spot the marker is actually wanted the one spot it could not be put.
+  // Nothing is lost by ignoring the hit, because the marker takes `gridY` rather
+  // than the height of what it landed on - the mesh under the cursor never had
+  // anything to contribute to the position.
+  if (state.markerBrush) {
+    const p = cursorOnGrid();
+    if (!p) return;                       // grid plane edge-on or behind the eye
+    const s = state.snap.pos || 0;
+    emit("markerdrop", {
+      kind: state.markerBrush,
+      position: new Vector3(
+        s ? Math.round(p.x / s) * s : p.x,
+        state.gridY,
+        s ? Math.round(p.z / s) * s : p.z),
+    });
+    return;
+  }
 
   const hit = pickUnderCursor();
   if (hit.kind === "entry") {
@@ -1481,15 +1506,6 @@ async function onClick(ev) {
   }
 
   if (hit.kind === "ground") {
-    if (state.markerBrush) {
-      const s = state.snap.pos || 0;
-      const p = new Vector3(
-        s ? Math.round(hit.point.x / s) * s : hit.point.x,
-        state.gridY,
-        s ? Math.round(hit.point.z / s) * s : hit.point.z);
-      emit("markerdrop", { kind: state.markerBrush, position: p });
-      return;
-    }
     select([]);
   }
 }
