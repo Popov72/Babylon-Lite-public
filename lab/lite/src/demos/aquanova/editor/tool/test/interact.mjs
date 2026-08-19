@@ -4550,11 +4550,12 @@ check(
         `${gizmoSize.big.arm} m, ${gizmoSize.scaled.span} m element ${gizmoSize.scaled.arm} m`
 );
 
-// ---- except right up close, where they halve ---------------------------------
+// ---- except right up close, where they halve, and halve again ----------------
 // The arms are world geometry, so leaning in to seat something against a wall
 // puts 2 m of arrow across the whole viewport and buries the detail being
-// aimed. Inside 5 m of the point the gizmo hangs on they drop to half length -
-// a step, not a ramp, so an arm is still a ruler you can read the snap step off.
+// aimed. Inside 5 m of the point the gizmo hangs on they drop to half length,
+// and inside 2 m to a quarter - steps, not a ramp, so an arm is still a ruler
+// you can read the snap step off.
 const gizmoNear = await page.evaluate(async () => {
     const ed = await import("/js/editor.js");
     const i = await import("/js/interact.js");
@@ -4582,18 +4583,25 @@ const gizmoNear = await page.evaluate(async () => {
     };
     const far = from(12);
     const close = from(3);
+    const closer = from(1.5);
     const back = from(12); // and it comes back when you pull away again
 
     ed.hideAxes();
     ed.clearAll();
     ed.select([]);
-    return { far, close, back };
+    return { far, close, closer, back };
 });
 check("the camera really did move either side of the 5 m mark", gizmoNear.far.dist > 5 && gizmoNear.close.dist < 5, `${gizmoNear.far.dist} m then ${gizmoNear.close.dist} m`);
 check(
     "the arms halve inside 5 m and come back when you pull away",
     Math.abs(gizmoNear.far.arm - 2) < 1e-3 && Math.abs(gizmoNear.close.arm - 1) < 1e-3 && Math.abs(gizmoNear.back.arm - 2) < 1e-3,
     `${gizmoNear.far.dist} m -> ${gizmoNear.far.arm} m arms, ` + `${gizmoNear.close.dist} m -> ${gizmoNear.close.arm} m, back at ${gizmoNear.back.arm} m`
+);
+check("the camera really did get inside the 2 m mark too", gizmoNear.closer.dist < 2, `${gizmoNear.closer.dist} m`);
+check(
+    "and they halve again inside 2 m, to a quarter length",
+    Math.abs(gizmoNear.closer.arm - 0.5) < 1e-3,
+    `${gizmoNear.closer.dist} m -> ${gizmoNear.closer.arm} m arms`
 );
 
 // ---- 1d-octodecies. no target hides, and the ghost counts as a target -------

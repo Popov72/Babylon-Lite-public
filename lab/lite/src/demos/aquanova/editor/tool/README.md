@@ -1416,21 +1416,23 @@ so the shafts, heads, scale cubes and rotation arrows all retune together.
 > and 4 m modules without swallowing a small prop, and it is what the code
 > already fell back to for an element with no measurable bounds.
 
-**Inside 5 m of the camera they halve.** Fixed is right across the working
-range, but the arms are world geometry and the camera is not held at a polite
-distance: leaning in to seat a light against a wall puts the eye a couple of
-metres off the model, where 2 m of arrow crosses the whole viewport and buries
-the detail being aimed. Close in there is also less need for reach — nothing
-else is on screen to measure against — so the arms give way rather than the
-model. The distance is measured to the point the gizmo hangs on, which is the
-thing you are looking at.
+**Inside 5 m of the camera they halve, and inside 2 m they halve again.** Fixed
+is right across the working range, but the arms are world geometry and the
+camera is not held at a polite distance: leaning in to seat a light against a
+wall puts the eye a couple of metres off the model, where 2 m of arrow crosses
+the whole viewport and buries the detail being aimed. Close in there is also
+less need for reach — nothing else is on screen to measure against — so the arms
+give way rather than the model. The distance is measured to the point the gizmo
+hangs on, which is the thing you are looking at.
 
-> A step rather than a ramp, deliberately. At any distance the gizmo is either
-> its stated length or exactly half of it, so an arm is still a ruler you can
-> read the snap step off. A continuous falloff would make every arm a different,
-> unknowable length again — which is the problem the fixed length exists to
-> solve. Both numbers are constants next to it, `AXIS_GIZMO_NEAR_DISTANCE` and
-> `AXIS_GIZMO_NEAR_SCALE`.
+> Steps rather than a ramp, deliberately. At any distance the gizmo is at one of
+> a few stated fractions of its length — full, half, or a quarter — so an arm is
+> still a ruler you can read the snap step off. A continuous falloff would make
+> every arm a different, unknowable length again, which is the problem the fixed
+> length exists to solve. Each tier halves the one outside it, so the fractions
+> stay easy to hold in your head. The tiers are a table beside the length,
+> `AXIS_GIZMO_NEAR_STEPS`; the tightest match wins, so adding one is a line and
+> the order does not matter.
 
 The local arms are aimed **individually**, from the world matrix's basis rows,
 rather than by rotating the gizmo as a whole. A mirrored element — negative

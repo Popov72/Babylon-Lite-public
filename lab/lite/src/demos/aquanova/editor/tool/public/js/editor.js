@@ -1206,9 +1206,9 @@ export const AXIS_COLOR = {
 const AXIS_GIZMO_LENGTH = 2;
 
 /**
- * How close the camera has to get, in metres, before the gizmo is drawn at
- * `AXIS_GIZMO_NEAR_SCALE` of that length — measured to the point the gizmo
- * hangs on, which is the thing you are looking at.
+ * How close the camera has to get, in metres, before the gizmo gives ground,
+ * and how much of its length is left when it does — measured to the point the
+ * gizmo hangs on, which is the thing you are looking at.
  *
  * A fixed length is right across the working range, but the arms are world
  * geometry and the camera is not held at a polite distance: leaning in to seat
@@ -1217,14 +1217,19 @@ const AXIS_GIZMO_LENGTH = 2;
  * in there is also less need for reach — nothing else is on screen to measure
  * against — so the arms give way rather than the model.
  *
- * A step rather than a ramp, deliberately: at any distance the gizmo is either
- * its stated length or exactly half of it, so the arms stay a ruler you can
+ * Steps rather than a ramp, deliberately: at any distance the gizmo is at one
+ * of a few stated fractions of its length, so the arms stay a ruler you can
  * read the snap step off. A continuous falloff would make every arm a
- * different, unknowable length again, which is the problem this pair of
- * constants exists to avoid.
+ * different, unknowable length again, which is the problem this table exists to
+ * avoid. Each tier halves the one outside it, so the fractions stay easy to
+ * hold in your head and an arm is always a clean multiple of the last.
+ *
+ * The tightest matching tier wins, so the order here does not matter.
  */
-const AXIS_GIZMO_NEAR_DISTANCE = 5;
-const AXIS_GIZMO_NEAR_SCALE = 0.5;
+const AXIS_GIZMO_NEAR_STEPS = [
+  { within: 5, scale: 0.5 },
+  { within: 2, scale: 0.25 },
+];
 
 /** Which axes a drag currently moves along. */
 export function liveAxes(mode = state.dragAxis) {
@@ -1591,7 +1596,7 @@ function anchorPoint(node) {
 }
 
 /**
- * Halve the gizmo when the camera is right on top of it.
+ * Shrink the gizmo as the camera closes on it.
  *
  * Applied to the root as a uniform scale, so one number governs shafts, heads,
  * turn rings, scale cubes and the gaps between them together, and the arms keep
@@ -1605,9 +1610,16 @@ function sizeAxes() {
   // first frame after a saved view is restored - which is exactly the frame a
   // gizmo restored with it would be sized on.
   const eye = state.camera?.position;
-  const near = !!eye
-    && Vector3.Distance(eye, axes.root.position) < AXIS_GIZMO_NEAR_DISTANCE;
-  axes.root.scaling.setAll(near ? AXIS_GIZMO_NEAR_SCALE : 1);
+  let scale = 1;
+  if (eye) {
+    const away = Vector3.Distance(eye, axes.root.position);
+    // The smallest fraction any tier asks for, so tiers nest without the list
+    // having to be kept in order.
+    for (const step of AXIS_GIZMO_NEAR_STEPS) {
+      if (away < step.within) scale = Math.min(scale, step.scale);
+    }
+  }
+  axes.root.scaling.setAll(scale);
 }
 
 export function showAxes(id, space = "world", anchor = "origin") {
