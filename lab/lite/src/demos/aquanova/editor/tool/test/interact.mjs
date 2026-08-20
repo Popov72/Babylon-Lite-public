@@ -4814,9 +4814,56 @@ const rotFollowed = await page.evaluate(async () => {
   };
 });
 check("the angle chip follows Shift+R, and moves to the arm R picks",
-  rotFollowed.text === "0.5°" && rotFollowed.axis === "x"
+  rotFollowed.text === "free" && rotFollowed.axis === "x"
     && rotFollowed.onAxisArm.join() === "true,false,false",
   `${rotFollowed.text} on ${rotFollowed.axis}, at ${rotFollowed.onAxisArm}`);
+// A chip says what its combo says. `free` is a real zero on Move but the finest
+// step there is on Rot and Scale - 0.5 degrees and 0.01 - so a chip that printed
+// the number while the toolbar said `free` made one setting look like two.
+const freeChips = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const pick = (id, key, v) => {
+    ed.state.snap[key] = v;
+    document.getElementById(id).value = String(v);
+  };
+  pick("snap-rot", "rot", 0.5);
+  pick("snap-scale", "scale", 0.01);
+  // all three cubes lit and the camera far enough back that their chips are on
+  // canvas: a chip clamped off-screen is hidden, and would read as no chip
+  ed.state.scaleAxis = "all";
+  document.getElementById("scale-axis").value = "all";
+  ed.state.camera.position = new BABYLON.Vector3(14, 12, -18);
+  ed.state.camera.setTarget(BABYLON.Vector3.Zero());
+  ed.state.camera.cameraDirection.setAll(0);
+  return { free: { ...ed.freeSnap } };
+});
+await page.waitForTimeout(500);
+const freeText = await page.evaluate(() => ({
+  rot: document.querySelector("#viewport .axis-rot")?.textContent,
+  scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")]
+    .filter((e) => !e.hidden).map((e) => e.textContent))],
+}));
+check("the loosest step of each list is read off the combo, not written out again",
+  freeChips.free.pos === 0 && freeChips.free.rot === 0.5 && freeChips.free.scale === 0.01,
+  JSON.stringify(freeChips.free));
+check("so the rot and scale chips say 'free' where the combo does",
+  freeText.rot === "free" && freeText.scale.join() === "free",
+  JSON.stringify(freeText));
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.state.snap.rot = 5; ed.state.snap.scale = 0.05;
+  document.getElementById("snap-rot").value = "5";
+  document.getElementById("snap-scale").value = "0.05";
+});
+await page.waitForTimeout(500);
+const coarse = await page.evaluate(() => ({
+  rot: document.querySelector("#viewport .axis-rot")?.textContent,
+  scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")]
+    .filter((e) => !e.hidden).map((e) => e.textContent))],
+}));
+check("and go back to the number for any other step",
+  coarse.rot === "5°" && coarse.scale.join() === "0.05",
+  JSON.stringify(coarse));
 // put the angle back for the tests below
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");

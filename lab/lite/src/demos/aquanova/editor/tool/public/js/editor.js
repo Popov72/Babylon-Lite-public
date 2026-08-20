@@ -1206,6 +1206,24 @@ export const AXIS_COLOR = {
 const AXIS_GIZMO_LENGTH = 2;
 
 /**
+ * The step value each of the three lists calls `free`.
+ *
+ * Filled from the markup by `main.js`, which owns the combos - the same reason
+ * `cycleSnap` reads its values off the select rather than repeating them in
+ * code: the list is declared in one place, and adding an option there is the
+ * whole change. `null` means nobody has said, which only happens before the
+ * toolbar is wired.
+ *
+ * The gizmo chips need it because `free` is not the same number on all three.
+ * Move's is a real zero, so "no step" and "free" coincide; Rot's and Scale's
+ * are the *finest* step there is - `0.5°` and `0.01` - because a wheel notch is
+ * discrete and a step of nothing would simply do nothing. Without this the
+ * toolbar read `free` while the chip on the arrow read `0.01`, and the two
+ * looked like different settings.
+ */
+export const freeSnap = { pos: null, rot: null, scale: null };
+
+/**
  * How close the camera has to get, in metres, before the gizmo gives ground,
  * and how much of its length is left when it does — measured to the point the
  * gizmo hangs on, which is the thing you are looking at.
@@ -1709,10 +1727,20 @@ function placeChip(el, at, text) {
  * with the axis set to `all` the three cubes are the statement that all three
  * axes grow, and a value on only one of them would read as "just this one".
  */
+/**
+ * What one of the step chips says: the value with its unit, or `free` when it
+ * is the loosest its list offers. See `freeSnap` for why that is not simply a
+ * zero on two of the three.
+ */
+function stepChipText(key, value, unit = "") {
+  if (!value || value === freeSnap[key]) return "free";
+  return `${value}${unit}`;
+}
+
 function placeAxisLabel() {
   if (!axes) return;
   placeChip(axes.label, axes.root.position,
-    state.snap.pos ? `${state.snap.pos} m` : "free");
+    stepChipText("pos", state.snap.pos, " m"));
 
   const ring = axes.marks.rot[state.rotAxis];
   if (ring && axes.rotLabel) {
@@ -1722,7 +1750,7 @@ function placeAxisLabel() {
       // turns, the other way turns back - so the step is a magnitude again and
       // the arrow has nothing to disagree with.
       placeChip(axes.rotLabel, ring.getAbsolutePosition(),
-        state.snap.rot ? `${state.snap.rot}°` : "free");
+        stepChipText("rot", state.snap.rot, "°"));
     }
   }
 
@@ -1733,7 +1761,7 @@ function placeAxisLabel() {
     if (!cube.isEnabled()) { el.hidden = true; continue; }
     cube.computeWorldMatrix(true);
     placeChip(el, cube.getAbsolutePosition(),
-      state.snap.scale ? `${state.snap.scale}` : "free");
+      stepChipText("scale", state.snap.scale));
   }
 }
 

@@ -25,7 +25,7 @@ import {
   bringToCamera,
 } from "./interact.js";
 import {
-  state, on, emit, initScene, setGridVisible, setGridElevation,
+  state, on, emit, initScene, setGridVisible, setGridElevation, freeSnap,
   nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
   shipPlacements, modePlacements, loadModuleCollision,
   addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
@@ -1555,6 +1555,16 @@ $("insp-name").addEventListener("blur", () => refreshBehavior());
 // ---------------------------------------------------------------- toolbar
 
 $("snap-pos").addEventListener("change", (e) => { state.snap.pos = +e.target.value; refreshHud(); });
+
+// What each list calls `free`, taken off the markup for the gizmo's step chips.
+// The combo is where that is decided - `free` is `0` on Move but `0.5` and
+// `0.01` on Rot and Scale - and reading it here means the chip on an arrow and
+// the value in the combo can never drift apart. Same reason `cycleSnap` reads
+// its values off the select instead of repeating them.
+for (const [id, key] of [["snap-pos", "pos"], ["snap-rot", "rot"], ["snap-scale", "scale"]]) {
+  const opt = [...$(id).options].find((o) => o.text.trim().toLowerCase() === "free");
+  if (opt) freeSnap[key] = +opt.value;
+}
 
 /**
  * Walk one of the snap dropdowns.

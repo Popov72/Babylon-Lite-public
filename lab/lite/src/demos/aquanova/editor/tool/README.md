@@ -1530,13 +1530,22 @@ to this element" is one glance rather than three readouts:
 | curved arrow encircling it       | the axis a turn goes about                     | `Shift+R` |
 | cube on the tip                  | the axis a scale acts on (all three for `all`) | `F`       |
 | the chip at the anchor           | the move step, in metres, or `free`            | `Shift+V` |
-| the chip inside the curved arrow | the turn angle, in degrees, signed             | `Ctrl+R`  |
-| a chip on each lit cube          | the scale step                                 | `Ctrl+F`  |
+| the chip inside the curved arrow | the turn angle, in degrees, or `free`          | `Ctrl+R`  |
+| a chip on each lit cube          | the scale step, or `free`                      | `Ctrl+F`  |
 
 Each modal setting has exactly one marker, and each marker means exactly one
 thing — `V` never touches the ring, `Shift+R` never touches the brightness. The
 curved arrow sweeps three quarters of a turn rather than closing into a full
 ring, so it reads as a direction of travel and not as a collar.
+
+**A chip says `free` whenever its combo does.** That is not simply "the value is
+zero": Move's loosest step really is `0`, but Rot's and Scale's are the finest
+step there is, `0.5°` and `0.01`, because a wheel notch is discrete and a step
+of nothing would do nothing at all. A chip that printed the number while the
+toolbar said `free` made one setting look like two. The value each list calls
+`free` is read off the combo itself at startup (`freeSnap`, filled by `main.js`),
+for the same reason `cycleSnap` reads its steps there: the list is declared once,
+in the markup, and adding an option to it is the whole change.
 
 **The turn angle is a magnitude.** It was briefly _signed_ — `-90°` through
 `-5°` sat alongside the positives — because a key only ever turned one way, so
