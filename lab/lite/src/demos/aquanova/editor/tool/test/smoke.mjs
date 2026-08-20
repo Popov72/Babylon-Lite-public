@@ -7,11 +7,14 @@
 
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { toolUrl } from "./target.mjs";
 
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const URL = toolUrl();
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -221,7 +224,12 @@ const thumbs = await page.evaluate(async () => {
 });
 console.log("thumbnails  :", JSON.stringify(thumbs));
 
-await page.screenshot({ path: "test/shot-app.png" });
+// Beside this file, not beside whatever directory it was launched from: the
+// .gitignore covers `tool/test/shot-*.png`, so a run from anywhere else used to
+// drop an untracked screenshot wherever it landed - which is how one ended up
+// in the repository root. `URL` above shadows the global constructor, so the
+// path comes from HERE rather than `new URL(..., import.meta.url)`.
+await page.screenshot({ path: path.join(HERE, "shot-app.png") });
 
 const glb = await page.evaluate(async () => {
   const m = await import("/js/manifest.js");

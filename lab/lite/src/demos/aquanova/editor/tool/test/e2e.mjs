@@ -5,11 +5,13 @@
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { toolUrl } from "./target.mjs";
 
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const URL = toolUrl();
 const EXPORT = process.env.SHIP_EXPORT_DIR || "D:/alexis/TombRaider/Popov72/SciFiShip/export";
 const before = Object.fromEntries(fs.readdirSync(EXPORT).map((f) => [f, fs.statSync(path.join(EXPORT, f)).size]));
@@ -193,7 +195,9 @@ console.log("reload       :", JSON.stringify(reload));
 
 await page.evaluate(() => document.getElementById("btn-focus").click());
 await page.waitForTimeout(1200);
-await page.screenshot({ path: "test/shot-final.png" });
+// Beside this file, not beside the launch directory - see the note in
+// smoke.mjs. `URL` above shadows the global constructor, hence HERE.
+await page.screenshot({ path: path.join(HERE, "shot-final.png") });
 
 const after = Object.fromEntries(fs.readdirSync(EXPORT).map((f) => [f, fs.statSync(path.join(EXPORT, f)).size]));
 console.log("export after :", JSON.stringify(after));
