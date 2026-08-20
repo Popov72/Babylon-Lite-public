@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
+import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
 describe("Aquanova weapon inventory", () => {
     it("selects acquired slots, toggles the selected slot, and holsters for an unowned slot", () => {
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
         const inventory = new WeaponInventory();
         const changed = vi.fn();
         events.on("weaponEquippedChanged", changed);
@@ -25,7 +25,7 @@ describe("Aquanova weapon inventory", () => {
     });
 
     it("cycles both directions through owned weapons and the hidden state", () => {
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
         const inventory = new WeaponInventory();
         inventory.start(events);
         inventory.acquire(1);

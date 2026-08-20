@@ -24,12 +24,20 @@
  */
 
 import { onPhysicsAfterStep } from "./havok.js";
-import type { PhysicsShape, PhysicsWorld } from "./havok.js";
+import type { PhysicsBody, PhysicsShape, PhysicsWorld } from "./havok.js";
 
 /** A single trigger-volume event reported by Havok after a physics step. */
 export interface PhysicsTriggerInfo {
     /** `ENTERED` when a body enters the trigger volume, `EXITED` when it leaves. */
     type: "ENTERED" | "EXITED";
+}
+
+/** Trigger event including the two participating bodies. */
+export interface PhysicsTriggerBodyInfo extends PhysicsTriggerInfo {
+    /** First body reported by Havok for the overlap, or `null` if it is no longer tracked. */
+    bodyA: PhysicsBody | null;
+    /** Second body reported by Havok for the overlap, or `null` if it is no longer tracked. */
+    bodyB: PhysicsBody | null;
 }
 
 /**
@@ -54,8 +62,9 @@ export function setPhysicsShapeIsTrigger(world: PhysicsWorld, shape: PhysicsShap
  * {@link setPhysicsShapeIsTrigger} first, otherwise the stream is empty.
  * @param world - The physics world to listen on.
  * @param cb - Callback invoked with each {@link PhysicsTriggerInfo} as it is read.
+ * @returns A disposer that removes the callback.
  */
-export function onPhysicsTrigger(world: PhysicsWorld, cb: (info: PhysicsTriggerInfo) => void): void {
+export function onPhysicsTrigger(world: PhysicsWorld, cb: (info: PhysicsTriggerInfo) => void): () => void {
     const hknp = world._hknp;
     // Native Havok trigger event types: 8 = ENTERED, 16 = EXITED. The Havok `EventType` enum
     // only enumerates the collision types, so the trigger values are matched literally (mirroring
@@ -63,7 +72,7 @@ export function onPhysicsTrigger(world: PhysicsWorld, cb: (info: PhysicsTriggerI
     const TRIGGER_ENTERED = 8;
     const TRIGGER_EXITED = 16;
 
-    onPhysicsAfterStep(world, () => {
+    const drain = (): void => {
         let addr = hknp.HP_World_GetTriggerEvents(world._hkWorld)[1];
         while (addr) {
             const intBuf = new Int32Array(hknp.HEAPU8.buffer, addr);
@@ -75,5 +84,53 @@ export function onPhysicsTrigger(world: PhysicsWorld, cb: (info: PhysicsTriggerI
             }
             addr = hknp.HP_World_GetNextTriggerEvent(world._hkWorld, addr);
         }
-    });
+    };
+    return registerTriggerDrain(world, drain);
+}
+
+/** Register a trigger callback that also resolves both participating Havok bodies. */
+export function onPhysicsTriggerBodies(world: PhysicsWorld, cb: (info: PhysicsTriggerBodyInfo) => void): () => void {
+    const hknp = world._hknp;
+    const drain = (): void => {
+        let addr = hknp.HP_World_GetTriggerEvents(world._hkWorld)[1];
+        while (addr) {
+            const intBuf = new Int32Array(hknp.HEAPU8.buffer, addr);
+            const type = intBuf[0];
+            const info =
+                type === 8
+                    ? { type: "ENTERED" as const, bodyA: findBodyById(world, intBuf[2]), bodyB: findBodyById(world, intBuf[6]) }
+                    : type === 16
+                      ? { type: "EXITED" as const, bodyA: findBodyById(world, intBuf[2]), bodyB: findBodyById(world, intBuf[6]) }
+                      : null;
+            if (info) {
+                cb(info);
+            }
+            addr = hknp.HP_World_GetNextTriggerEvent(world._hkWorld, addr);
+        }
+    };
+    return registerTriggerDrain(world, drain);
+}
+
+function registerTriggerDrain(world: PhysicsWorld, drain: () => void): () => void {
+    onPhysicsAfterStep(world, drain);
+    return () => {
+        const callbacks = world._afterStep;
+        if (!callbacks) {
+            return;
+        }
+        const index = callbacks.indexOf(drain);
+        if (index >= 0) {
+            callbacks.splice(index, 1);
+        }
+    };
+}
+
+function findBodyById(world: PhysicsWorld, bodyId: unknown): PhysicsBody | null {
+    for (const body of world._bodies) {
+        const nativeId = body._hkBody[0];
+        if (nativeId === bodyId || (typeof nativeId === "bigint" && nativeId === BigInt(bodyId as number))) {
+            return body;
+        }
+    }
+    return null;
 }

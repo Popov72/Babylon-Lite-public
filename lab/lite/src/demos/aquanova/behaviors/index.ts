@@ -1,30 +1,48 @@
-export { BehaviorManager } from "./behavior-manager.js";
-export { DisableEntityBehavior, EnableEntityBehavior } from "./entity-toggle.js";
-export { EventManager } from "./event-manager.js";
+export { AquanovaBehaviorManager } from "./aquanova-behavior-manager.js";
+export {
+    DisableCollisionBehavior,
+    DisableEntityBehavior,
+    EnableCollisionBehavior,
+    EnableEntityBehavior,
+    HideEntityBehavior,
+    RemoveEntityBehavior,
+    ShowEntityBehavior,
+} from "./entity-toggle.js";
+export { AquanovaEventManager } from "./aquanova-event-manager.js";
 export { LiquefiableBehavior } from "./liquefiable.js";
 export { PickEntityBehavior } from "./pick-entity.js";
 export { PlayAnimationBehavior } from "./play-animation.js";
+export { SetCollisionShapeBehavior } from "./set-collision-shape.js";
+export { SoundManager } from "./sound-manager.js";
+export { TriggerBehavior } from "./trigger.js";
 export { PlayerBehavior } from "./player.js";
 export { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
 export { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "./weapon-anti-gravity-gun.js";
 export { WeaponInventory } from "./weapon-inventory.js";
-export { isEntityToggleBehaviorConfig, isLiquefiableBehaviorConfig, isPickEntityBehaviorConfig } from "./types.js";
 export type {
     Behavior,
     BehaviorAssignment,
     BehaviorConfig,
-    BehaviorContext,
+    BehaviorEventSubscription,
     BehaviorLibrary,
+    BehaviorReference,
     EntityToggleBehaviorConfig,
     Entities,
-    JumpApertureAssist,
     LiquefiableBehaviorConfig,
     PickEntityBehaviorConfig,
     PlayAnimationBehaviorConfig,
+    SetCollisionShapeBehaviorConfig,
+    TriggerBehaviorConfig,
     WeaponLiquefactorBehaviorConfig,
-    WeaponLiquefactorRuntime,
     WeaponAntiGravityGunBehaviorConfig,
+} from "./types.js";
+export type {
+    AquanovaGameContext,
+    IntersectionTriggerCallbacks,
+    IntersectionTriggerRegistration,
+    JumpApertureAssist,
     WeaponAntiGravityGunRuntime,
     WeaponInventoryRuntime,
-} from "./types.js";
-export type { MeshBehaviorAvailability } from "./behavior-manager.js";
+    WeaponLiquefactorRuntime,
+} from "./game-context.js";
+export type { MeshBehaviorAvailability } from "./aquanova-behavior-manager.js";

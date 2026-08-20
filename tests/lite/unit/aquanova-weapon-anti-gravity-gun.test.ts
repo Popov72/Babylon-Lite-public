@@ -1,19 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Mesh } from "../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
-import type { BehaviorContext, WeaponAntiGravityGunRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
+import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import type { AquanovaGameContext, WeaponAntiGravityGunRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 import { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
 import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
-type WeaponContext = Pick<BehaviorContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
+type WeaponContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;
 }
 
 function createHarness(options: { maxGrabDistance?: number; maxMass?: number; mass?: number | null; enabled?: boolean } = {}) {
-    const events = new EventManager();
+    const events = new AquanovaEventManager();
     const weaponInventory = new WeaponInventory();
     weaponInventory.start(events);
     let ready = true;
@@ -37,7 +37,7 @@ function createHarness(options: { maxGrabDistance?: number; maxMass?: number; ma
         weaponAntiGravityGun: runtime,
         dynamicMassOf: vi.fn(() => (options.mass === undefined ? 10 : options.mass)),
     };
-    const behavior = new WeaponAntiGravityGunBehavior("itemAntiGravityGun", mesh("weapon"), { maxGrabDistance: options.maxGrabDistance, maxMass: options.maxMass }, context);
+    const behavior = new WeaponAntiGravityGunBehavior("itemAntiGravityGun", [mesh("weapon")], { maxGrabDistance: options.maxGrabDistance, maxMass: options.maxMass }, context);
     behavior.start();
     if (options.enabled !== false) {
         events.emit("entityEvent", { name: "itemAntiGravityGun", event: "enable" });

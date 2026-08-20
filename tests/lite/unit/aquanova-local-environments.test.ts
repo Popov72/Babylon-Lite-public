@@ -2,10 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const lite = vi.hoisted(() => ({
     MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES: 4,
-    createPbrLocalEnvironmentProbeSet: vi.fn((_scene, options) => ({
-        ...options,
-        _bindVersion: 0,
-    })),
+    createPbrLocalEnvironmentProbeSet: vi.fn((_scene, options) => ({ ...options })),
     enablePbrLocalCubemap: vi.fn(async () => {}),
     getPbrLocalEnvironmentProbeGridCell: vi.fn((set: { probes: readonly unknown[] }, position: readonly number[]) => ({
         coordinates: [0, 0, 0],
@@ -14,7 +11,15 @@ const lite = vi.hoisted(() => ({
     })),
     isPbrMaterial: vi.fn((material: { kind?: string }) => material.kind === "pbr"),
     loadEnvironment: vi.fn(),
+    setPbrLocalEnvironment: vi.fn((material, environment, options) => {
+        material._testLocalEnvironment = { environment, options };
+        delete material._testLocalEnvironmentProbeSet;
+    }),
     setPbrLocalEnvironmentProbeDebug: vi.fn(),
+    setPbrLocalEnvironmentProbeSet: vi.fn((material, set) => {
+        material._testLocalEnvironmentProbeSet = set;
+        delete material._testLocalEnvironment;
+    }),
 }));
 
 vi.mock("babylon-lite", () => lite);
@@ -80,7 +85,7 @@ describe("Aquanova local environment probes", () => {
             roughness?: number;
             metallic?: number;
             _renderFeatures?: number;
-            localEnvironmentProbes?: unknown;
+            _testLocalEnvironmentProbeSet?: unknown;
         }
         const globalEnvironment = { name: "global" };
         const scene = {
@@ -106,8 +111,8 @@ describe("Aquanova local environment probes", () => {
         expect(third.material).not.toBe(other);
         expect(standard.material).toEqual({ kind: "standard" });
         expect(first.material).not.toHaveProperty("_renderFeatures");
-        expect(first.material).toHaveProperty("localEnvironmentProbes");
-        expect(first.material.localEnvironmentProbes).toBe(third.material.localEnvironmentProbes);
+        expect(first.material).toHaveProperty("_testLocalEnvironmentProbeSet");
+        expect(first.material._testLocalEnvironmentProbeSet).toBe(third.material._testLocalEnvironmentProbeSet);
         expect(lite.createPbrLocalEnvironmentProbeSet).toHaveBeenCalledWith(
             scene,
             expect.objectContaining({
@@ -149,7 +154,7 @@ describe("Aquanova local environment probes", () => {
 
     it("reports the camera voxel probe set while the POI dominant probe changes", async () => {
         const scene = { _envTextures: null, imageProcessing: {} };
-        const mesh: { material: { kind: string; localEnvironmentProbes?: unknown }; worldMatrix: number[] } = {
+        const mesh: { material: { kind: string; _testLocalEnvironmentProbeSet?: unknown }; worldMatrix: number[] } = {
             material: { kind: "pbr" },
             worldMatrix: worldMatrixAt(),
         };
@@ -167,15 +172,15 @@ describe("Aquanova local environment probes", () => {
         expect(insideB?.dominantProbeId).toBe("B");
         expect(insideB?.cameraVoxelProbeIds).toEqual(["B"]);
         expect(controller?.dominantEnvironment()).toBe(controller?.environment("B"));
-        expect(mesh.material.localEnvironmentProbes).toBe(probeSet);
+        expect(mesh.material._testLocalEnvironmentProbeSet).toBe(probeSet);
     });
 
     it("uses immutable intersecting single-probe materials while fragment blending is disabled", async () => {
         const scene = { _envTextures: null, imageProcessing: {} };
         interface TestMaterial {
             kind: string;
-            localEnvironment?: unknown;
-            localEnvironmentProbes?: unknown;
+            _testLocalEnvironment?: { environment: unknown; options: unknown };
+            _testLocalEnvironmentProbeSet?: unknown;
             plugins?: unknown[];
         }
         const source: TestMaterial = { kind: "pbr" };
@@ -186,8 +191,14 @@ describe("Aquanova local environment probes", () => {
 
         expect(controller?.blendingEnabled()).toBe(false);
         expect(meshA.material).not.toBe(meshB.material);
-        expect(meshA.material).toMatchObject({ localEnvironment: controller?.environment("A"), localEnvironmentProbes: null });
-        expect(meshB.material).toMatchObject({ localEnvironment: controller?.environment("B"), localEnvironmentProbes: null });
+        expect(meshA.material._testLocalEnvironment).toMatchObject({
+            environment: controller?.environment("A"),
+            options: { projectionPosition: [-2, 0, 0], projectionSize: [6, 6, 6] },
+        });
+        expect(meshB.material._testLocalEnvironment).toMatchObject({
+            environment: controller?.environment("B"),
+            options: { projectionPosition: [2, 0, 0], projectionSize: [10, 10, 10] },
+        });
         expect(controller?.updatePoi([5.5, 0, 0])).toMatchObject({
             dominantProbeId: "B",
             probes: [{ id: "B", weight: 1 }],
@@ -197,10 +208,10 @@ describe("Aquanova local environment probes", () => {
         meshA.material = { ...meshA.material, plugins };
         controller?.setBlendingEnabled(true);
         expect(controller?.blendingEnabled()).toBe(true);
-        expect(meshA.material.localEnvironmentProbes).toBe(probeSet);
-        expect(meshB.material.localEnvironmentProbes).toBe(probeSet);
-        expect(meshA.material.localEnvironment).toBeNull();
-        expect(meshB.material.localEnvironment).toBeNull();
+        expect(meshA.material._testLocalEnvironmentProbeSet).toBe(probeSet);
+        expect(meshB.material._testLocalEnvironmentProbeSet).toBe(probeSet);
+        expect(meshA.material._testLocalEnvironment).toBeUndefined();
+        expect(meshB.material._testLocalEnvironment).toBeUndefined();
         expect(meshA.material.plugins).toBe(plugins);
     });
 

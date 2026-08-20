@@ -32,8 +32,21 @@ const SCREEN_Y = -0.35;
 const AIM_DISTANCE = 2.5;
 export const LIQUEFACTOR_MODEL_SCALE = 0.35;
 const ADJUSTMENT_POSITION = [-0.009, -0.7394, 0.517] as const;
-const ADJUSTMENT_ROTATION_Y = (8.44 * Math.PI) / 180;
+const ADJUSTMENT_ROTATION_DEGREES = [0, 8.44, 0] as const;
 const ADJUSTMENT_SCALE = 2.74;
+const LOCAL_GUIDE_POSITION = [0, 0.1707, 0.2889] as const;
+const LOCAL_GUIDE_ROTATION_DEGREES = [0, 17.5, 0] as const;
+export const ANTI_GRAVITY_GUN_TRANSFORM = {
+    position: [-0.2063, -0.7618, -0.0354],
+    rotationDegrees: [-0.05, 19.92, 6.41],
+    scale: [2.74, 2.74, 2.74],
+    localGuidePosition: [0, 0.1707, 0.2889],
+    localGuideRotationDegrees: [0, 4.3, 0],
+} as const;
+
+function rotationDegreesToRadians(rotation: readonly [number, number, number]): [number, number, number] {
+    return [(rotation[0] * Math.PI) / 180, (rotation[1] * Math.PI) / 180, (rotation[2] * Math.PI) / 180];
+}
 const PRESENTATION_DURATION_MS = 420;
 const LOWERED_ROTATION_X = 1.05;
 const LOWERED_POSITION_Y = -0.72;
@@ -83,6 +96,13 @@ interface WeaponViewmodelSpec {
     readonly name: string;
     readonly modelUrls: Readonly<Record<LiquefactorModel, string>>;
     readonly contentRotationY?: number;
+    readonly transform?: {
+        readonly position: readonly [number, number, number];
+        readonly rotationDegrees: readonly [number, number, number];
+        readonly scale: readonly [number, number, number];
+        readonly localGuidePosition: readonly [number, number, number];
+        readonly localGuideRotationDegrees: readonly [number, number, number];
+    };
 }
 
 const LIQUEFACTOR_SPEC: WeaponViewmodelSpec = {
@@ -94,6 +114,7 @@ const ANTI_GRAVITY_GUN_SPEC: WeaponViewmodelSpec = {
     name: "anti-gravity-gun",
     modelUrls: ANTI_GRAVITY_GUN_MODEL_URLS,
     contentRotationY: (3 * Math.PI) / 2,
+    transform: ANTI_GRAVITY_GUN_TRANSFORM,
 };
 
 function setLocalParent(child: SceneNode, parent: SceneNode | FreeCamera): void {
@@ -243,9 +264,12 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
     const sway = createTransformNode(`${spec.name}-sway`);
     setLocalParent(sway, presentation);
     const adjustment = createTransformNode(`${spec.name}-adjustment`);
-    adjustment.position.set(...ADJUSTMENT_POSITION);
-    adjustment.rotation.y = ADJUSTMENT_ROTATION_Y;
-    adjustment.scaling.set(ADJUSTMENT_SCALE, ADJUSTMENT_SCALE, ADJUSTMENT_SCALE);
+    const adjustmentPosition = spec.transform?.position ?? ADJUSTMENT_POSITION;
+    const adjustmentRotationDegrees = spec.transform?.rotationDegrees ?? ADJUSTMENT_ROTATION_DEGREES;
+    const adjustmentScale = spec.transform?.scale ?? ([ADJUSTMENT_SCALE, ADJUSTMENT_SCALE, ADJUSTMENT_SCALE] as const);
+    adjustment.position.set(...adjustmentPosition);
+    adjustment.rotation.set(...rotationDegreesToRadians(adjustmentRotationDegrees));
+    adjustment.scaling.set(...adjustmentScale);
     setLocalParent(adjustment, sway);
     const content = createTransformNode(`${spec.name}-content`);
     content.position.set(-GIZMO_PIVOT.x, -GIZMO_PIVOT.y, -GIZMO_PIVOT.z);
@@ -259,10 +283,11 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
     const localGuideWeaponSpace = createTransformNode(`${spec.name}-local-guide-weapon-space`);
     setLocalParent(localGuideWeaponSpace, localGuideRoot);
     const localGuideOrigin = createTransformNode(`${spec.name}-local-guide-origin`);
-    localGuideOrigin.position.set(0, 0.1707, 0.2889);
+    localGuideOrigin.position.set(...(spec.transform?.localGuidePosition ?? LOCAL_GUIDE_POSITION));
     setLocalParent(localGuideOrigin, localGuideWeaponSpace);
     const localGuideYaw = createTransformNode(`${spec.name}-local-guide-yaw`);
-    localGuideYaw.rotation.y = (17.5 * Math.PI) / 180;
+    const localGuideRotationDegrees = spec.transform?.localGuideRotationDegrees ?? LOCAL_GUIDE_ROTATION_DEGREES;
+    localGuideYaw.rotation.set(...rotationDegreesToRadians(localGuideRotationDegrees));
     setLocalParent(localGuideYaw, localGuideOrigin);
 
     const entries = new Map<LiquefactorModel, ModelEntry>();

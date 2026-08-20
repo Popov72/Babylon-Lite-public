@@ -1,6 +1,3 @@
-import type { AnimationGroup, FreeCamera, GpuPicker, Mesh, PhysicsCharacterController } from "babylon-lite";
-import type { EventManager } from "./event-manager.js";
-
 export interface DynamicBehaviorConfig {
     dynamic?: boolean;
     /** Rigid-body mass in kilograms. Defaults to 10. */
@@ -21,22 +18,52 @@ export interface PlayerBehaviorConfig {
     characterStrength?: number;
 }
 
-export interface EntityEventConfig {
-    name: string;
+export interface PickEntityRaiseEventConfig {
+    /** Entity or door that receives the event. Defaults to the behavior owner. */
+    target?: string;
+    /** @deprecated Use `target`; retained while existing manifests are migrated. */
+    entity?: string;
     event: string;
 }
 
+export interface BehaviorEventSubscription {
+    /** Event emitted by the source owner. */
+    name: string;
+    /** Entity or door whose event is observed, or several equivalent sources. */
+    source: string | string[];
+}
+
 export interface EntityToggleBehaviorConfig {
-    /** Event addressed to the entity owning this behavior that triggers the forwarding. */
-    onEvent: string;
-    /** Entity or door that receives the forwarded `enable` or `disable` event. */
-    entity: string;
+    /** Events that cause this behavior to act on its owning entity or door. */
+    events?: BehaviorEventSubscription[];
+    /** @deprecated Use `events`; retained while existing manifests are migrated. */
+    onEvent?: string;
+    /** @deprecated Legacy action target paired with `onEvent`. */
+    entity?: string;
+}
+
+export interface SetCollisionShapeBehaviorConfig {
+    type?: "mesh";
+    /** Compatibility with manifests authored before the parameter was named `type`. */
+    shape?: "mesh";
+}
+
+export interface TriggerBehaviorConfig {
+    onIntersection: {
+        enterEvent?: string;
+        exitEvent?: string;
+        playerOnly?: boolean;
+        /** @deprecated Use `enterEvent`; retained while existing manifests are migrated. */
+        raiseEvent?: string;
+        /** @deprecated New trigger events are always raised by the behavior owner. */
+        entity?: string;
+    };
 }
 
 export interface PickEntityBehaviorConfig {
     /** Per-axis scale applied to the pickup's world-space bounding box. Defaults to `[1, 1, 1]`. */
     boundingBoxScale?: number[];
-    raiseEvent?: EntityEventConfig;
+    raiseEvent?: PickEntityRaiseEventConfig;
     /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `pickItem`. */
     sound?: string;
     /** Multiplier for the default one-revolution-per-3-seconds Y rotation. Defaults to `1`. */
@@ -67,6 +94,7 @@ export interface WeaponAntiGravityGunBehaviorConfig {
 
 /** All parameters that a manifest behavior definition or entity override may provide. */
 export interface BehaviorConfig {
+    readonly [key: string]: unknown;
     dynamic?: boolean;
     mass?: number;
     liquefiable?: boolean;
@@ -81,24 +109,16 @@ export interface BehaviorConfig {
     boundingBoxScale?: number[];
     entity?: string;
     onEvent?: string;
-    raiseEvent?: EntityEventConfig;
+    events?: BehaviorEventSubscription[];
+    raiseEvent?: PickEntityRaiseEventConfig;
     reflectionProbe?: "exclude";
     animation?: string;
     loop?: boolean;
     maxGrabDistance?: number;
     maxMass?: number;
-}
-
-export function isLiquefiableBehaviorConfig<Config extends BehaviorConfig>(config: Config): config is Config & LiquefiableBehaviorConfig {
-    return config.liquefiable === true;
-}
-
-export function isPickEntityBehaviorConfig(config: BehaviorReference): config is BehaviorReference & PickEntityBehaviorConfig & { name: "pickEntity" } {
-    return config.name === "pickEntity";
-}
-
-export function isEntityToggleBehaviorConfig(config: BehaviorReference): config is BehaviorReference & EntityToggleBehaviorConfig & { name: "disableEntity" | "enableEntity" } {
-    return config.name === "disableEntity" || config.name === "enableEntity";
+    type?: "mesh";
+    shape?: "mesh";
+    onIntersection?: TriggerBehaviorConfig["onIntersection"];
 }
 
 export interface BehaviorReference extends BehaviorConfig {
@@ -108,71 +128,4 @@ export interface BehaviorReference extends BehaviorConfig {
 export type BehaviorAssignment = BehaviorReference;
 export type BehaviorLibrary = Record<string, BehaviorConfig>;
 export type Entities = Record<string, { behaviors?: BehaviorReference[] }>;
-
-export interface WeaponLiquefactorRuntime {
-    setEnabled(enabled: boolean, animated?: boolean): void;
-    setTargetDistance(distance: number | null, restart?: boolean): void;
-    isReady(): boolean;
-    stop(): void;
-    update(deltaMs: number): boolean;
-}
-
-export interface WeaponAntiGravityGunRuntime {
-    setEnabled(enabled: boolean, animated?: boolean): void;
-    isReady(): boolean;
-    update(deltaMs: number): void;
-    grab(mesh: Mesh): boolean;
-    updateGrab(deltaMs: number): boolean;
-    releaseGrab(throwSpeed: number): void;
-}
-
-export interface WeaponInventoryRuntime {
-    acquire(slot: number): void;
-    isOwned(slot: number): boolean;
-    isEquipped(slot: number): boolean;
-}
-
-export interface JumpApertureAssist {
-    /** Signed correction along the player's right axis, in metres. */
-    lateralOffset: number;
-}
-
-export interface BehaviorContext {
-    readonly canvas: HTMLCanvasElement;
-    readonly camera: FreeCamera;
-    readonly character: PhysicsCharacterController;
-    readonly events: EventManager;
-    readonly animationGroups: readonly AnimationGroup[];
-    readonly capsuleHeight: number;
-    readonly capsuleRadius: number;
-    readonly eyeHeight: number;
-    /** Whether the standing capsule can expand upward without intersecting the ship. */
-    readonly canStand: () => boolean;
-    /** Entry correction when the forward path is clear only for the crouched capsule. */
-    readonly jumpApertureAssist: (forwardX: number, forwardZ: number) => JumpApertureAssist | null;
-    readonly getPicker: () => GpuPicker;
-    readonly nodeNameOf: (mesh: Mesh) => string;
-    readonly isLiquefiable: (mesh: Mesh) => boolean;
-    readonly isInspecting: () => boolean;
-    readonly inspectAt: (x: number, y: number) => void;
-    readonly weaponInventory: WeaponInventoryRuntime;
-    readonly weaponLiquefactor: WeaponLiquefactorRuntime;
-    readonly weaponAntiGravityGun: WeaponAntiGravityGunRuntime;
-    readonly dynamicMassOf: (mesh: Mesh) => number | null;
-    /** Begin validating a re-press against reversing liquefaction. Null means there is no liquefaction to resume. */
-    readonly requestFusionResume: () => number | null;
-    readonly resolveFusionResume: (token: number, mesh: Mesh | null) => "resumed" | "start-new" | "await-target" | "continue";
-    /** Resolve clipped active-liquefaction geometry before the visible picker target behind it. */
-    readonly resolveFusionTarget: (mesh: Mesh | null, point: readonly [number, number, number] | null) => Mesh | null;
-    /** Whether forward liquefaction should reverse because the held beam left its active mesh group. */
-    readonly fusionTargetLost: (mesh: Mesh | null) => boolean;
-    readonly reverseFusion: () => void;
-    readonly liquefy: (mesh: Mesh, point: readonly [number, number, number] | null, config: LiquefiableBehaviorConfig) => void;
-}
-
-export interface Behavior<Name extends string = string> {
-    readonly name: Name;
-    readonly mesh: Mesh;
-    start(): void;
-    dispose(): void;
-}
+export type { Behavior } from "../behavior-system/behavior.js";

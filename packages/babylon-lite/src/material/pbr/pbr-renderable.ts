@@ -17,7 +17,7 @@ import type { Renderable, MeshGroupBuildResult } from "../../render/renderable.j
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import { acquireTexture, releaseTexture, clearSamplerCache } from "../../resource/gpu-pool.js";
 import { createUniformBuffer } from "../../resource/gpu-buffers.js";
-import { getOrCreatePbrBindings, getOrCreatePbrPipeline, createPbrMeshBindGroup, clearPbrPipelineCache, _resolvePbrEnvironment } from "./pbr-pipeline.js";
+import { getOrCreatePbrBindings, getOrCreatePbrPipeline, createPbrMeshBindGroup, clearPbrPipelineCache } from "./pbr-pipeline.js";
 import {
     _registerPbrExt,
     _getPbrExts,
@@ -65,7 +65,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
     const device = engine._device;
     // Per-size scratch buffers for material UBO re-writes (zero allocation per frame).
     const materialScratch = new Map<number, Float32Array>();
-    const hasEnv = !!envTextures || meshes.some((mesh) => !!_resolvePbrEnvironment(mesh.material as PbrMaterialProps, null));
+    const hasEnv = !!envTextures;
     const shadowLights: { lightIndex: number; shadowType: "esm" | "pcf" | "csm"; gen: ShadowGenerator }[] = [];
     for (let i = 0; i < scene.lights.length; i++) {
         const sg = scene.lights[i]!.shadowGenerator;
@@ -362,7 +362,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         const vbLayout = mesh._gpu._vbLayout;
         const vbKey = mesh._gpu._vbKey ?? "";
         const uv2Mask = (mat as { _uv2Mask?: number })._uv2Mask ?? 0;
-        const sceneFeatures = baseSceneFeatures | (_resolvePbrEnvironment(mat, envTextures) ? PBR_HAS_ENV : 0);
+        const sceneFeatures = baseSceneFeatures | (envTextures ? PBR_HAS_ENV : 0);
 
         const composed = composePbr(features, features2, meshFeatures, sceneFeatures, lightMode, singleLightType, esmShadowDepthCode, vbLayout, vbKey, uv2Mask, pluginIndex);
         // Non-triangle topology rides on the composed variant (see ComposedShader._prim). The

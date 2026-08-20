@@ -53,6 +53,7 @@ import {
     enableMaterialPlugins,
     getMeshGeometry,
     getFrameGraph,
+    getPhysicsCharacterControllerBody,
     getPhysicsBodyLinearVelocity,
     getProjectionMatrix,
     getViewMatrix,
@@ -61,12 +62,14 @@ import {
     loadGltf,
     loadSkybox,
     markMaterialUboDirty,
+    mat4Decompose,
     PhysicsMotionType,
     PhysicsShapeType,
     physicsRaycast,
     rebuildScenePbrPipelines,
     registerScene,
     registerUtilityLayer,
+    releasePhysicsShape,
     removeFromScene,
     removePhysicsBody,
     setMeshVisible,
@@ -77,6 +80,7 @@ import {
     setPhysicsBodyMotionType,
     setPhysicsBodyShape,
     setPhysicsBodyTransform,
+    setPhysicsShapeFilterCollideMask,
     setPhysicsTimestepMs,
     setPositionGizmoLocalCoordinates,
     setRotationGizmoLocalCoordinates,
@@ -138,13 +142,24 @@ import { LIQUEFACTOR_MODELS, loadGraphicsSettings, saveGraphicsSettings, type Li
 import { meshGroupBounds, type MeshGroupBounds } from "./mesh-bounds.js";
 import { createPortalVisibility } from "./portal-visibility.js";
 import { registerDoorEntityEventHandlers } from "./door-events.js";
+import { registerEntityCollisionEventHandlers } from "./entity-collision-events.js";
+import { createIntersectionTriggerRegistry } from "./intersection-triggers.js";
+import { createPersistentMeshEntityEventOperations, registerMeshEntityEventHandlers } from "./entity-events.js";
 import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
 import { canonicalSettingName, fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
-import { BehaviorManager, PlayerBehavior, type JumpApertureAssist, type LiquefiableBehaviorConfig, type MeshBehaviorAvailability } from "./behaviors/index.js";
+import {
+    AquanovaBehaviorManager,
+    PlayerBehavior,
+    SoundManager,
+    type JumpApertureAssist,
+    type LiquefiableBehaviorConfig,
+    type MeshBehaviorAvailability,
+} from "./behaviors/index.js";
 import { selectClosestClearApertureOffset } from "./behaviors/player.js";
 import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
 import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
 import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
+import { createCheatCodeMatcher } from "./cheat-code.js";
 
 export async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -293,6 +308,7 @@ export async function main(): Promise<void> {
         weaponCrosshair.style.top = `${rect.top + (0.5 - ndcY * 0.5) * rect.height}px`;
     };
     let activeWeapon: "liquefactor" | "antiGravityGun" | null = null;
+    let refreshWeaponDebugTools = (): void => {};
     let playerBehavior: PlayerBehavior | null = null;
     const setWeaponEnabled = (id: "liquefactor" | "antiGravityGun", viewmodel: LiquefactorViewmodel, enabled: boolean, animated = true): void => {
         if (enabled) {
@@ -305,17 +321,18 @@ export async function main(): Promise<void> {
         if (enabled) {
             viewmodel.select(viewmodel.model);
             viewmodel.setPresented(true, animated);
-            return;
-        }
-        viewmodel.setPresented(false, animated);
-        if (activeWeapon === null) {
-            weaponLaser.stop();
-            weaponAimRay = null;
-            weaponCrosshair ??= document.getElementById("aq-crosshair");
-            if (weaponCrosshair) {
-                weaponCrosshair.style.display = "none";
+        } else {
+            viewmodel.setPresented(false, animated);
+            if (activeWeapon === null) {
+                weaponLaser.stop();
+                weaponAimRay = null;
+                weaponCrosshair ??= document.getElementById("aq-crosshair");
+                if (weaponCrosshair) {
+                    weaponCrosshair.style.display = "none";
+                }
             }
         }
+        refreshWeaponDebugTools();
     };
     let grabDynamicWithAntiGravity = (_mesh: Mesh): boolean => false;
     let updateAntiGravityGrab = (_deltaMs: number): boolean => false;
@@ -381,20 +398,23 @@ export async function main(): Promise<void> {
               let scaleGizmoOn = false;
               let localGuideGizmoOn = false;
               let toolsVisible = false;
+              const activeViewmodel = (): LiquefactorViewmodel | null =>
+                  activeWeapon === "antiGravityGun" ? antiGravityGunViewmodel : activeWeapon === "liquefactor" ? weaponViewmodel : null;
               const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
                   for (const gizmo of gizmos) {
                       for (const mesh of gizmo._visibleMeshes) setMeshVisible(mesh, visible);
                   }
               };
               const sync = (): void => {
+                  const viewmodel = activeViewmodel();
                   const positionVisible = toolsVisible && positionGizmoOn;
                   const rotationVisible = toolsVisible && rotationGizmoOn;
                   const scaleVisible = toolsVisible && scaleGizmoOn;
                   const localGuideVisible = toolsVisible && localGuideGizmoOn;
-                  attachPositionGizmoToNode(positionGizmo, positionVisible ? weaponViewmodel.adjustment : null);
-                  attachRotationGizmoToNode(rotationGizmo, rotationVisible ? weaponViewmodel.adjustment : null);
-                  attachScaleGizmoToNode(scaleGizmo, scaleVisible ? weaponViewmodel.adjustment : null);
-                  attachPositionGizmoToNode(localGuidePositionGizmo, localGuideVisible ? weaponViewmodel.localGuideOrigin : null);
+                  attachPositionGizmoToNode(positionGizmo, positionVisible ? (viewmodel?.adjustment ?? null) : null);
+                  attachRotationGizmoToNode(rotationGizmo, rotationVisible ? (viewmodel?.adjustment ?? null) : null);
+                  attachScaleGizmoToNode(scaleGizmo, scaleVisible ? (viewmodel?.adjustment ?? null) : null);
+                  attachPositionGizmoToNode(localGuidePositionGizmo, localGuideVisible ? (viewmodel?.localGuideOrigin ?? null) : null);
                   setGizmoMeshesVisible(positionVisible, [
                       positionGizmo.xGizmo,
                       positionGizmo.yGizmo,
@@ -413,11 +433,13 @@ export async function main(): Promise<void> {
                       ...(localGuidePositionGizmo.yPlaneGizmo ? [localGuidePositionGizmo.yPlaneGizmo] : []),
                       ...(localGuidePositionGizmo.zPlaneGizmo ? [localGuidePositionGizmo.zPlaneGizmo] : []),
                   ]);
+                  canvas.dataset.weaponGizmoTarget = toolsVisible && viewmodel ? activeWeapon! : "hidden";
               };
               const values = (): WeaponTransformValues => {
-                  const adjustment = weaponViewmodel.adjustment;
-                  const localGuideOrigin = weaponViewmodel.localGuideOrigin;
-                  const localGuideYaw = weaponViewmodel.localGuideYaw;
+                  const viewmodel = activeViewmodel() ?? weaponViewmodel;
+                  const adjustment = viewmodel.adjustment;
+                  const localGuideOrigin = viewmodel.localGuideOrigin;
+                  const localGuideYaw = viewmodel.localGuideYaw;
                   const degrees = 180 / Math.PI;
                   return {
                       position: [adjustment.position.x, adjustment.position.y, adjustment.position.z],
@@ -427,8 +449,7 @@ export async function main(): Promise<void> {
                       localGuideRotationDegrees: [localGuideYaw.rotation.x * degrees, localGuideYaw.rotation.y * degrees, localGuideYaw.rotation.z * degrees],
                   };
               };
-              sync();
-              return {
+              const tools = {
                   values,
                   positionGizmoEnabled: (): boolean => positionGizmoOn,
                   setPositionGizmoEnabled: (enabled: boolean): void => {
@@ -450,15 +471,18 @@ export async function main(): Promise<void> {
                       localGuideGizmoOn = enabled;
                       sync();
                   },
-                  localGuideYawDegrees: (): number => (weaponViewmodel.localGuideYaw.rotation.y * 180) / Math.PI,
+                  localGuideYawDegrees: (): number => ((activeViewmodel() ?? weaponViewmodel).localGuideYaw.rotation.y * 180) / Math.PI,
                   setLocalGuideYawDegrees: (degrees: number): void => {
-                      weaponViewmodel.localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
+                      (activeViewmodel() ?? weaponViewmodel).localGuideYaw.rotation.y = (degrees * Math.PI) / 180;
                   },
                   setVisible: (visible: boolean): void => {
                       toolsVisible = visible;
                       sync();
                   },
               };
+              refreshWeaponDebugTools = sync;
+              sync();
+              return tools;
           })();
     canvas.dataset.liquefactorParent = weaponViewmodel.root.parent === cam ? "camera" : "other";
 
@@ -613,14 +637,16 @@ export async function main(): Promise<void> {
             markMaterialUboDirty(material);
         }
     }
-    const behaviorManager = new BehaviorManager({
+    const soundManager = new SoundManager();
+    soundManager.setEnabled(graphics.soundsEnabled);
+    soundManager.setVolume(graphics.soundVolume);
+    const behaviorManager = new AquanovaBehaviorManager({
         library: manifest?.behaviors,
         entities: manifest?.entities,
+        doors: manifest?.doors,
         meshesByEntityName: meshesByNodeName,
         entityNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
     });
-    behaviorManager.setSoundsEnabled(graphics.soundsEnabled);
-    behaviorManager.setSoundVolume(graphics.soundVolume);
     // Portal meshes ("Portal_*") are doorway markers the exporter emits for culling / door pairing —
     // NOT real geometry. They render as a visible pane spanning the doorway (seen from the corridor)
     // AND sit coplanar with the door leaves, so the weapon pick can hit the portal instead of the door
@@ -729,6 +755,12 @@ export async function main(): Promise<void> {
     }
     if (placementNodes.size > 0 && Object.keys(manifest?.moduleCollision ?? {}).length > 0 && placementById.size === 0) {
         throw new Error("[aquanova] no GLB placement module ids match manifest.moduleCollision");
+    }
+    const placementIdsByEntityName = new Map<string, string[]>();
+    for (const [id, placement] of placementById) {
+        const ids = placementIdsByEntityName.get(placement.node);
+        if (ids) ids.push(id);
+        else placementIdsByEntityName.set(placement.node, [id]);
     }
     canvas.dataset.collisionPlacements = String(placementById.size);
     /** Flattened view for the debug overlay and QA, tagged with the instance that produced each. */
@@ -864,6 +896,7 @@ export async function main(): Promise<void> {
     setPhysicsTimestepMs(world, 1000 / 60);
     /** Manifest-authored collision primitives that became static bodies (QA/debug). */
     let manifestShapes: WorldCollisionShape[] = [];
+    const manifestColliderBodiesByInstanceId = new Map<string, PhysicsBody[]>();
     // The raw ship geometry is one glTF hierarchy of 568 overlapping modules; a trimesh collider
     // built from it pins the character controller on countless coplanar/overlapping triangles.
     // Instead we collide against clean per-chunk box shells from the manifest — smooth for the
@@ -877,10 +910,18 @@ export async function main(): Promise<void> {
         // pass below (from the same manifest shape), and that body is removed when the prop melts.
         // A second static body here would outlive the melt as an invisible wall. Matched by INSTANCE
         // ID from the glTF node's extras, never by name — names repeat across placements.
-        manifestShapes = buildManifestColliders(
+        const manifestColliders = buildManifestColliders(
             world,
-            [...placementById].filter(([id]) => !behaviorManager.dissolvableInstanceIds.has(id)).flatMap(([, p]) => p.shapes)
+            [...placementById]
+                .filter(([id]) => !behaviorManager.dissolvableInstanceIds.has(id))
+                .flatMap(([instanceId, placement]) => placement.shapes.map((shape) => ({ instanceId, shape })))
         );
+        manifestShapes = manifestColliders.map(({ shape }) => shape);
+        for (const { body, instanceId } of manifestColliders) {
+            const bodies = manifestColliderBodiesByInstanceId.get(instanceId);
+            if (bodies) bodies.push(body);
+            else manifestColliderBodiesByInstanceId.set(instanceId, [body]);
+        }
         canvas.dataset.manifestColliders = String(manifestShapes.length);
     } else {
         // Fallback floor so the player at least stands if the manifest failed to load.
@@ -1041,6 +1082,8 @@ export async function main(): Promise<void> {
     const dynBodyByMesh = new Map<Mesh, DynBody>();
     /** Placements whose prop has melted — their colliders and debug shapes are gone. */
     const removedPlacements = new Set<string>();
+    const collisionDisabledPlacements = new Set<string>();
+    const collisionDisabledDynBodies = new Set<DynBody>();
 
     // ── The fluid's collision set ────────────────────────────────────────────────────────────────
     // The same authored primitives the player collides against, handed to the fluid as an analytic
@@ -1351,6 +1394,7 @@ export async function main(): Promise<void> {
     };
     syncPoiEnvironment();
     const gameplayHiddenMeshes = new Set<Mesh>();
+    const behaviorHiddenMeshes = new Set<Mesh>();
     const movableMeshes = new Set(dynBodies.filter((body) => body.movable).flatMap((body) => body.meshes));
     const classifierMeshes = allShipMeshes.filter((mesh) => !isDisabledMesh(mesh));
     const classifierBounds = meshGroupBounds(classifierMeshes);
@@ -1391,11 +1435,18 @@ export async function main(): Promise<void> {
             return position ? chunkAt(manifest?.chunks ?? [], -position.x, position.z)?.id : undefined;
         },
         exteriorMeshes: () => exteriorMeshes,
-        canRestore: (mesh) => !gameplayHiddenMeshes.has(mesh),
+        canRestore: (mesh) => !gameplayHiddenMeshes.has(mesh) && !behaviorHiddenMeshes.has(mesh),
     });
     registerDoorEntityEventHandlers(behaviorManager.events, manifest?.doors ?? [], (door, enabled) => {
         portalVisibility.setDoorEnabled(door, enabled);
     });
+    const entityCollisionStates = new Map<string, boolean>();
+    let applyEntityCollisionState: ((entityName: string, active: boolean) => void) | null = null;
+    registerEntityCollisionEventHandlers(behaviorManager.events, (entityName, active) => {
+        entityCollisionStates.set(entityName, active);
+        applyEntityCollisionState?.(entityName, active);
+    });
+    registerMeshEntityEventHandlers(behaviorManager.events, scene, meshesByNodeName, createPersistentMeshEntityEventOperations(behaviorHiddenMeshes));
 
     // ── Debug overlays (I inspect, B colliders, L lights, F portal frusta) — see ./debug/ ─────────
     // Gated on LAB_DEBUG so a release bundle folds these to `null` and drops the modules entirely.
@@ -1453,7 +1504,7 @@ export async function main(): Promise<void> {
               scene,
               canvas,
               manifestShapes: manifestPlacements,
-              isRemoved: (id) => removedPlacements.has(id),
+              isRemoved: (id) => removedPlacements.has(id) || collisionDisabledPlacements.has(id),
               injectedPrims: () =>
                   activeSims.map((a) => ({
                       sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name,
@@ -1556,46 +1607,162 @@ export async function main(): Promise<void> {
     const setSoundsEnabled = (enabled: boolean): void => {
         graphics.soundsEnabled = enabled;
         saveGraphicsSettings(graphics);
-        behaviorManager.setSoundsEnabled(enabled);
+        soundManager.setEnabled(enabled);
         canvas.dataset.soundsEnabled = String(enabled);
     };
     const setSoundVolume = (volume: number): void => {
         graphics.soundVolume = Math.max(0, Math.min(1, volume));
         saveGraphicsSettings(graphics);
-        behaviorManager.setSoundVolume(graphics.soundVolume);
+        soundManager.setVolume(graphics.soundVolume);
         canvas.dataset.soundVolume = String(graphics.soundVolume);
     };
     canvas.dataset.weaponSway = String(graphics.weaponSway);
     canvas.dataset.soundsEnabled = String(graphics.soundsEnabled);
     canvas.dataset.soundVolume = String(graphics.soundVolume);
 
-    await behaviorManager.start({
-        canvas,
-        camera: cam,
-        character,
-        animationGroups: ship.animationGroups ?? [],
-        capsuleHeight: CAP_H,
-        capsuleRadius: CAP_R,
-        eyeHeight: EYE,
-        canStand,
-        jumpApertureAssist,
-        getPicker,
-        nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
-        isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
-        isInspecting: inspectOn,
-        inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
-        weaponAntiGravityGun,
-        weaponLiquefactor,
-        dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
-        requestFusionResume: () => requestFusionResume(),
-        resolveFusionResume: (token, mesh) => resolveFusionResume(token, mesh),
-        resolveFusionTarget: (mesh, point) => resolveFusionTarget(mesh, point),
-        fusionTargetLost: (mesh) => fusionTargetLost(mesh),
-        reverseFusion: () => {
-            reverseFusion();
-        },
-        liquefy: (mesh, point, config) => liquefyMesh(mesh, point, config),
-    });
+    const behaviorCollisionBodiesByEntityName = new Map<string, PhysicsBody[]>();
+    const removeBodyAndShape = (body: PhysicsBody): void => {
+        const shape = body._shape;
+        removePhysicsBody(world, body);
+        if (shape) releasePhysicsShape(world, shape);
+    };
+    const collisionBodiesOfEntity = (entityName: string): PhysicsBody[] => {
+        const bodies = new Set(behaviorCollisionBodiesByEntityName.get(entityName) ?? []);
+        for (const instanceId of placementIdsByEntityName.get(entityName) ?? []) {
+            for (const body of manifestColliderBodiesByInstanceId.get(instanceId) ?? []) bodies.add(body);
+        }
+        for (const mesh of meshesByNodeName.get(entityName) ?? []) {
+            const body = dynBodyByMesh.get(mesh)?.body;
+            if (body) bodies.add(body);
+        }
+        return [...bodies];
+    };
+    const setEntityCollisionShape = (entityName: string, type: "aabb" | "mesh"): void => {
+        const meshes = meshesByNodeName.get(entityName) ?? [];
+        if (meshes.length === 0) throw new Error(`[aquanova] setCollisionShape entity "${entityName}" has no meshes`);
+        const made: PhysicsBody[] = [];
+        const replacedDynamicBodies = new Set<DynBody>();
+        const replacedOwners = new Set<SceneNode>();
+        for (const mesh of meshes) {
+            const dynamicBody = dynBodyByMesh.get(mesh);
+            if (dynamicBody) {
+                if (replacedDynamicBodies.has(dynamicBody)) continue;
+                replacedDynamicBodies.add(dynamicBody);
+                if (type === "mesh" && dynamicBody.movable) {
+                    throw new Error(`[aquanova] setCollisionShape type "mesh" requires static entity "${entityName}"`);
+                }
+                const shape =
+                    type === "mesh"
+                        ? createPhysicsShape(world, { type: PhysicsShapeType.MESH, mesh: dynamicBody.disp, includeChildMeshes: true })
+                        : createPhysicsShape(world, {
+                              type: PhysicsShapeType.BOX,
+                              parameters: {
+                                  extents: {
+                                      x: dynamicBody.bounds.half[0] * 2,
+                                      y: dynamicBody.bounds.half[1] * 2,
+                                      z: dynamicBody.bounds.half[2] * 2,
+                                  },
+                              },
+                          });
+                if (type === "aabb" && dynamicBody.body) {
+                    const previousShape = dynamicBody.body._shape;
+                    setPhysicsBodyShape(world, dynamicBody.body, shape);
+                    if (previousShape) releasePhysicsShape(world, previousShape);
+                } else {
+                    const bodyNode = type === "mesh" ? dynamicBody.disp : dynamicBody.proxy;
+                    const body = createPhysicsBody(world, bodyNode, dynamicBody.movable ? PhysicsMotionType.DYNAMIC : PhysicsMotionType.STATIC);
+                    setPhysicsBodyShape(world, body, shape);
+                    if (dynamicBody.body) removeBodyAndShape(dynamicBody.body);
+                    dynamicBody.body = body;
+                }
+                if (dynamicBody.movable && dynamicBody.body) setPhysicsBodyMass(world, dynamicBody.body, dynamicBody.mass);
+                made.push(dynamicBody.body!);
+                continue;
+            }
+            const owner = ownerOfMesh.get(mesh);
+            if (!owner || replacedOwners.has(owner)) continue;
+            replacedOwners.add(owner);
+            const instanceId = instanceIdOfMesh(mesh);
+            const bounds = meshGroupBounds(nodePrimitives.get(mesh) ?? [mesh]);
+            if (!bounds) continue;
+            let shape: ReturnType<typeof createPhysicsShape>;
+            let position: readonly [number, number, number];
+            let rotation: { x: number; y: number; z: number; w: number } | null = null;
+            if (type === "aabb") {
+                shape = createPhysicsShape(world, {
+                    type: PhysicsShapeType.BOX,
+                    parameters: {
+                        extents: {
+                            x: bounds.half[0] * 2,
+                            y: bounds.half[1] * 2,
+                            z: bounds.half[2] * 2,
+                        },
+                    },
+                });
+                position = bounds.centre;
+            } else {
+                const worldTransform = mat4Decompose(owner.worldMatrix);
+                const localScale = [owner.scaling.x, owner.scaling.y, owner.scaling.z] as const;
+                owner.scaling.set(worldTransform.scale.x, worldTransform.scale.y, worldTransform.scale.z);
+                try {
+                    shape = createPhysicsShape(world, { type: PhysicsShapeType.MESH, mesh: owner, includeChildMeshes: true });
+                } finally {
+                    owner.scaling.set(...localScale);
+                }
+                position = [worldTransform.translation.x, worldTransform.translation.y, worldTransform.translation.z];
+                rotation = worldTransform.rotation;
+            }
+            const proxy = createTransformNode(`behavior_${type}_${entityName}_${made.length}`, position[0], position[1], position[2]);
+            if (rotation) proxy.rotationQuaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+            const body = createPhysicsBody(world, proxy, PhysicsMotionType.STATIC);
+            setPhysicsBodyShape(world, body, shape);
+            if (instanceId) {
+                for (const body of manifestColliderBodiesByInstanceId.get(instanceId) ?? []) removeBodyAndShape(body);
+            }
+            made.push(body);
+            if (instanceId) manifestColliderBodiesByInstanceId.set(instanceId, [body]);
+        }
+        if (made.length === 0) throw new Error(`[aquanova] setCollisionShape entity "${entityName}" produced no colliders`);
+        behaviorCollisionBodiesByEntityName.set(entityName, made);
+    };
+    const intersectionTriggers = createIntersectionTriggerRegistry(world, getPhysicsCharacterControllerBody(character), collisionBodiesOfEntity);
+
+    try {
+        await behaviorManager.start({
+            canvas,
+            camera: cam,
+            character,
+            sounds: soundManager,
+            animationGroups: ship.animationGroups ?? [],
+            capsuleHeight: CAP_H,
+            capsuleRadius: CAP_R,
+            eyeHeight: EYE,
+            canStand,
+            jumpApertureAssist,
+            getPicker,
+            nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
+            isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
+            getLiquefiableConfig: (mesh) => behaviorManager.getLiquefiableConfig(mesh),
+            isInspecting: inspectOn,
+            inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
+            weaponAntiGravityGun,
+            weaponLiquefactor,
+            dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
+            setCollisionShape: setEntityCollisionShape,
+            registerIntersectionTrigger: intersectionTriggers.register,
+            requestFusionResume: () => requestFusionResume(),
+            resolveFusionResume: (token, mesh) => resolveFusionResume(token, mesh),
+            resolveFusionTarget: (mesh, point) => resolveFusionTarget(mesh, point),
+            fusionTargetLost: (mesh) => fusionTargetLost(mesh),
+            reverseFusion: () => {
+                reverseFusion();
+            },
+            liquefy: (mesh, point, config) => liquefyMesh(mesh, point, config),
+        });
+    } catch (error) {
+        soundManager.dispose();
+        throw error;
+    }
     playerBehavior = behaviorManager.player;
     if (!playerBehavior) {
         // eslint-disable-next-line no-console
@@ -2455,12 +2622,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         };
         if (!groundOnly) {
             for (const s of staticPrims) {
-                if (!exclude.has(s.id) && !removedPlacements.has(s.id) && hit(s.min, s.max)) addPrimitive(s.prim, s.id);
+                if (!exclude.has(s.id) && !removedPlacements.has(s.id) && !collisionDisabledPlacements.has(s.id) && hit(s.min, s.max)) {
+                    addPrimitive(s.prim, s.id);
+                }
             }
             for (const d of dynBodies) {
                 // The melting prop is excluded: it has just BECOME this water, so colliding against it
                 // would trap every particle inside a solid.
-                if (d.instanceId && (exclude.has(d.instanceId) || removedPlacements.has(d.instanceId))) continue;
+                if (
+                    collisionDisabledDynBodies.has(d) ||
+                    (d.instanceId && (exclude.has(d.instanceId) || removedPlacements.has(d.instanceId) || collisionDisabledPlacements.has(d.instanceId)))
+                ) {
+                    continue;
+                }
                 const p = livePrim(d);
                 if (!p) continue;
                 const bb = primAabb(p);
@@ -2497,16 +2671,50 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         }
     };
     const setPlacementCollisionActive = (instanceId: string, active: boolean): void => {
-        if (active) removedPlacements.delete(instanceId);
-        else removedPlacements.add(instanceId);
-        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByInstanceId.get(instanceId) ?? [], active);
+        if (active) collisionDisabledPlacements.delete(instanceId);
+        else collisionDisabledPlacements.add(instanceId);
+        const effectiveActive = active && !removedPlacements.has(instanceId);
+        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByInstanceId.get(instanceId) ?? [], effectiveActive);
     };
     const setDynBodyCollisionActive = (body: DynBody, active: boolean): void => {
         if (body.instanceId) {
             setPlacementCollisionActive(body.instanceId, active);
             return;
         }
+        if (active) collisionDisabledDynBodies.delete(body);
+        else collisionDisabledDynBodies.add(body);
         for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByBody.get(body) ?? [], active);
+    };
+    const retireDynBodyCollision = (body: DynBody): void => {
+        if (body.instanceId) {
+            removedPlacements.add(body.instanceId);
+            for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByInstanceId.get(body.instanceId) ?? [], false);
+            return;
+        }
+        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByBody.get(body) ?? [], false);
+    };
+    const setPhysicsBodyCollisionActive = (body: PhysicsBody | null, active: boolean): void => {
+        if (body?._shape) {
+            setPhysicsShapeFilterCollideMask(world, body._shape, active ? 0xffffffff : 0);
+        }
+    };
+    applyEntityCollisionState = (entityName, active) => {
+        const bodies = new Set<PhysicsBody>(behaviorCollisionBodiesByEntityName.get(entityName) ?? []);
+        const instanceIds = placementIdsByEntityName.get(entityName) ?? [];
+        for (const instanceId of instanceIds) {
+            setPlacementCollisionActive(instanceId, active);
+            for (const body of manifestColliderBodiesByInstanceId.get(instanceId) ?? []) bodies.add(body);
+        }
+        const dynamicBodies = new Set<DynBody>();
+        for (const mesh of meshesByNodeName.get(entityName) ?? []) {
+            const body = dynBodyByMesh.get(mesh);
+            if (body) dynamicBodies.add(body);
+        }
+        for (const body of dynamicBodies) {
+            setDynBodyCollisionActive(body, active);
+            if (body.body) bodies.add(body.body);
+        }
+        for (const body of bodies) setPhysicsBodyCollisionActive(body, active);
     };
     let groundOnly = false;
     toggleGroundOnly = (): void => {
@@ -2757,6 +2965,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         gridAabb: SimulationGridAabb;
     }
     const activeSims: ActiveSim[] = [];
+    for (const [entityName, active] of entityCollisionStates) applyEntityCollisionState(entityName, active);
 
     interface CollectedSample {
         entry: PendingSample;
@@ -3403,7 +3612,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             }
             // Disable collision BEFORE the first fluid step. Any prop resting on this body drops into
             // the erupting water, and every already-running simulation skips the deactivated slots.
-            setDynBodyCollisionActive(member.dyn, false);
+            retireDynBodyCollision(member.dyn);
             if (member.dyn.body) removePhysicsBody(world, member.dyn.body);
             for (const m of member.dyn.meshes) {
                 dynBodyByMesh.delete(m);
@@ -3421,7 +3630,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         }
         a.phase = "fluid";
         a.fluidElapsed = 0;
-        behaviorManager.events.emit("liquefactionCompleted", { sound: a.group.soundCategory });
+        behaviorManager.events.emit("liquefactionCompleted", { meshes: [...a.group.meshes], sound: a.group.soundCategory });
         releaseControlledGroup(a.group);
     }
 
@@ -3905,8 +4114,16 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         position: [cam.position.x, cam.position.y, cam.position.z],
         target: [cam.target.x, cam.target.y, cam.target.z],
     });
+    const enterCheatCode = !LAB_DEBUG
+        ? null
+        : createCheatCodeMatcher("idkfa", () => {
+              behaviorManager.acquireAllWeapons();
+              canvas.dataset.cheatCode = "idkfa";
+              controlPanel?.refresh();
+          });
     window.addEventListener("keydown", (event) => {
         if (event.repeat) return;
+        if (!event.altKey && !event.ctrlKey && !event.metaKey) enterCheatCode?.(event.key);
         if (event.code === "Digit1") behaviorManager.events.emit("weaponSlotSelected", { slot: 1 });
         else if (event.code === "Digit2") behaviorManager.events.emit("weaponSlotSelected", { slot: 2 });
         else if (event.code === "KeyH") toggleNearestLight();

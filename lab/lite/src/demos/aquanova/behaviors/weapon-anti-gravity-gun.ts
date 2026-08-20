@@ -1,5 +1,6 @@
 import type { Mesh } from "babylon-lite";
-import type { Behavior, BehaviorContext, WeaponAntiGravityGunBehaviorConfig } from "./types.js";
+import type { AquanovaGameContext } from "./game-context.js";
+import type { Behavior, WeaponAntiGravityGunBehaviorConfig } from "./types.js";
 
 const WEAPON_SLOT = 2;
 const DEFAULT_MAX_GRAB_DISTANCE = 6;
@@ -8,7 +9,7 @@ const QUICK_DROP_MS = 150;
 const MAX_CHARGE_MS = 2000;
 const MAX_THROW_SPEED = 15;
 
-type WeaponAntiGravityGunContext = Pick<BehaviorContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
+type WeaponAntiGravityGunContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
 
 export function antiGravityThrowSpeed(chargeMs: number): number {
     const normalized = Math.max(0, Math.min(MAX_CHARGE_MS, chargeMs) - QUICK_DROP_MS) / (MAX_CHARGE_MS - QUICK_DROP_MS);
@@ -31,7 +32,11 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
     private charging = false;
     private chargeMs = 0;
 
-    public constructor(entityName: string, mesh: Mesh, config: WeaponAntiGravityGunBehaviorConfig, context: WeaponAntiGravityGunContext) {
+    public constructor(entityName: string, meshes: readonly Mesh[], config: WeaponAntiGravityGunBehaviorConfig, context: WeaponAntiGravityGunContext) {
+        const mesh = meshes[0];
+        if (!mesh) {
+            throw new Error("[aquanova] weaponAntiGravityGun requires at least one mesh");
+        }
         this.entityName = entityName;
         this.mesh = mesh;
         this.config = config;
@@ -39,6 +44,8 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
         this.maxGrabDistance = positive(config.maxGrabDistance ?? DEFAULT_MAX_GRAB_DISTANCE, "maxGrabDistance");
         this.maxMass = positive(config.maxMass ?? DEFAULT_MAX_MASS, "maxMass");
     }
+
+    public init(): void {}
 
     public start(): void {
         this.context.weaponAntiGravityGun.setEnabled(false, false);

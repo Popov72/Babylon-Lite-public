@@ -36,8 +36,8 @@ import { getSceneBindGroupLayout } from "../../render/scene-helpers.js";
 import type { PbrMaterialProps } from "./pbr-material.js";
 import { collectPbrBoundTextures } from "./pbr-material.js";
 import { _computePbrMaterialFeatures } from "./pbr-material.js";
-import { PBR_HAS_ALPHA_BLEND, PBR_HAS_DOUBLE_SIDED, PBR_HAS_ENV, PBR_HAS_NORMAL_MAP, PBR2_HAS_UV2 } from "./pbr-flags.js";
-import { createPbrMeshBindGroup, _resolvePbrEnvironment } from "./pbr-pipeline.js";
+import { PBR_HAS_ALPHA_BLEND, PBR_HAS_DOUBLE_SIDED, PBR_HAS_NORMAL_MAP, PBR2_HAS_UV2 } from "./pbr-flags.js";
+import { createPbrMeshBindGroup } from "./pbr-pipeline.js";
 import type { _PbrGeometryContext } from "./pbr-renderable.js";
 import { _writeMaterialData } from "./pbr-renderable.js";
 import type { PbrGeometryMaterialView } from "./pbr-geometry-view.js";
@@ -142,7 +142,7 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
     // the Standard path must not pay to read them.
     const meshFeatures = _computeMeshFeatures(mesh, receiveShadows) | ((mesh as Mesh & { _primitiveFeatures?: number })._primitiveFeatures ?? 0);
 
-    const sceneFeatures = ctx._sceneFeatures | (_resolvePbrEnvironment(source, ctx._envTextures) ? PBR_HAS_ENV : 0);
+    const sceneFeatures = ctx._sceneFeatures;
     const variantKey = _variantKey(meshFeatures, sceneFeatures, lightMode, singleLightType);
     const res = _ensureViewResources(view, engine, ctx, meshFeatures, sceneFeatures, lightMode, singleLightType, variantKey);
     // The geometry pass composes its OWN variant, so it needs the mesh's exotic primitive state

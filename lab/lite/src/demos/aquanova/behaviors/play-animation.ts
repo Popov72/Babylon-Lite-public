@@ -1,5 +1,8 @@
 import { playAnimation, stopAnimation, type AnimationGroup, type Mesh } from "babylon-lite";
+import type { AquanovaGameContext } from "./game-context.js";
 import type { Behavior, PlayAnimationBehaviorConfig } from "./types.js";
+
+type PlayAnimationContext = Pick<AquanovaGameContext, "animationGroups">;
 
 export class PlayAnimationBehavior implements Behavior<"playAnimation"> {
     public readonly name = "playAnimation";
@@ -9,7 +12,11 @@ export class PlayAnimationBehavior implements Behavior<"playAnimation"> {
     private readonly animationGroups: readonly AnimationGroup[];
     private selected: AnimationGroup | null = null;
 
-    public constructor(entityName: string, mesh: Mesh, config: PlayAnimationBehaviorConfig, animationGroups: readonly AnimationGroup[]) {
+    public constructor(entityName: string, meshes: readonly Mesh[], config: PlayAnimationBehaviorConfig, context: PlayAnimationContext) {
+        const mesh = meshes[0];
+        if (!mesh) {
+            throw new Error("[aquanova] playAnimation requires at least one mesh");
+        }
         if (config.animation !== undefined && (typeof config.animation !== "string" || config.animation.length === 0)) {
             throw new Error("[aquanova] playAnimation.animation must be a non-empty animation name");
         }
@@ -19,8 +26,10 @@ export class PlayAnimationBehavior implements Behavior<"playAnimation"> {
         this.entityName = entityName;
         this.mesh = mesh;
         this.config = config;
-        this.animationGroups = animationGroups;
+        this.animationGroups = context.animationGroups;
     }
+
+    public init(): void {}
 
     public start(): void {
         const requested = this.config.animation;

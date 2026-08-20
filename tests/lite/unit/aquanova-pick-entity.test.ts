@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mesh, SceneNode } from "../../../packages/babylon-lite/src";
-import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
+import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import { PickEntityBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/pick-entity";
+import { SoundManager } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
 
 const runtime = vi.hoisted(() => ({
     createAudioEngineAsync: vi.fn(),
@@ -12,11 +13,13 @@ const runtime = vi.hoisted(() => ({
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
     setMeshVisible: vi.fn(),
+    stopStreamingSound: vi.fn(),
 }));
 
 vi.mock("../../../packages/babylon-lite/src/index.ts", () => runtime);
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const soundManagers: SoundManager[] = [];
 
 function mesh(name: string, x = 0): Mesh {
     const worldMatrix = IDENTITY.slice();
@@ -43,7 +46,8 @@ function entityNode(name: string): SceneNode {
 }
 
 function createHarness(position = { x: 4, y: 0, z: 0 }) {
-    const events = new EventManager();
+    const events = new AquanovaEventManager();
+    const sounds = createSoundManager();
     const character = {
         getPosition: vi.fn(() => position),
         shapeOptions: {
@@ -53,19 +57,21 @@ function createHarness(position = { x: 4, y: 0, z: 0 }) {
     };
     const meshes = [mesh("pickup-a"), mesh("pickup-b")];
     const behavior = new PickEntityBehavior(
+        "pickup",
         meshes,
         {
-            raiseEvent: { name: "itemLiquefactor", event: "enable" },
+            raiseEvent: { target: "itemLiquefactor", event: "enable" },
             sound: "click",
         },
-        { character, events } as never
+        { character, events, sounds } as never
     );
-    return { behavior, character, events, meshes, position };
+    return { behavior, character, events, meshes, position, sounds };
 }
 
 function minimalContext(): never {
     return {
-        events: new EventManager(),
+        events: new AquanovaEventManager(),
+        sounds: createSoundManager(),
         character: {
             getPosition: () => ({ x: 0, y: 0, z: 0 }),
             shapeOptions: {
@@ -76,9 +82,15 @@ function minimalContext(): never {
     } as never;
 }
 
+function createSoundManager(): SoundManager {
+    const manager = new SoundManager();
+    soundManagers.push(manager);
+    return manager;
+}
+
 describe("Aquanova pickEntity behavior", () => {
     beforeEach(() => {
-        PickEntityBehavior.dispose();
+        soundManagers.length = 0;
         runtime.createAudioEngineAsync.mockReset().mockResolvedValue({ id: "audio-engine" });
         runtime.createStreamingSoundAsync.mockReset().mockImplementation(async (_engine: unknown, source: string) => source);
         runtime.disposeAudioEngine.mockReset();
@@ -90,37 +102,49 @@ describe("Aquanova pickEntity behavior", () => {
         runtime.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
         runtime.setMasterVolume.mockReset();
         runtime.setMeshVisible.mockReset();
+        runtime.stopStreamingSound.mockReset();
     });
 
     afterEach(() => {
-        PickEntityBehavior.dispose();
+        for (const manager of soundManagers.splice(0)) {
+            manager.dispose();
+        }
         vi.restoreAllMocks();
     });
 
-    it("preloads each configured sound once in static init", async () => {
-        await PickEntityBehavior.init([{ sound: "click" }, { sound: "click" }, {}]);
-        await PickEntityBehavior.init([{ sound: "ignored-after-initialization" }]);
+    it("preloads each configured sound once as behaviors initialize", async () => {
+        const context = minimalContext();
+        const behaviors = [
+            new PickEntityBehavior("first", [mesh("first")], { sound: "click" }, context),
+            new PickEntityBehavior("second", [mesh("second")], { sound: "click" }, context),
+            new PickEntityBehavior("third", [mesh("third")], {}, context),
+            new PickEntityBehavior("fourth", [mesh("fourth")], { sound: "ignored-after-initialization" }, context),
+        ];
+
+        await Promise.all(behaviors.map((behavior) => behavior.init()));
 
         expect(runtime.createAudioEngineAsync).toHaveBeenCalledOnce();
         expect(runtime.setMasterVolume).toHaveBeenCalledWith({ id: "audio-engine" }, 1);
         expect(runtime.createStreamingSoundAsync.mock.calls).toEqual([
             [{ id: "audio-engine" }, "/aquanova/sounds/click.mp3?v=20260813-1", { preloadCount: 1 }],
             [{ id: "audio-engine" }, "/aquanova/sounds/pickItem.mp3?v=20260813-1", { preloadCount: 1 }],
+            [{ id: "audio-engine" }, "/aquanova/sounds/ignored-after-initialization.mp3?v=20260813-1", { preloadCount: 1 }],
         ]);
     });
 
     it("applies the global sound volume before and after audio initialization", async () => {
-        PickEntityBehavior.setSoundVolume(0.35);
-        await PickEntityBehavior.init([{ sound: "click" }]);
+        const sounds = createSoundManager();
+        sounds.setVolume(0.35);
+        await sounds.load("click", "/aquanova/sounds/click.mp3?v=20260813-1");
         expect(runtime.setMasterVolume).toHaveBeenLastCalledWith({ id: "audio-engine" }, 0.35);
 
-        PickEntityBehavior.setSoundVolume(0.7);
+        sounds.setVolume(0.7);
         expect(runtime.setMasterVolume).toHaveBeenLastCalledWith({ id: "audio-engine" }, 0.7);
     });
 
     it("collects once when the player capsule intersects the entity bounds", async () => {
-        await PickEntityBehavior.init([{ sound: "click" }]);
         const harness = createHarness();
+        await harness.behavior.init();
         const raised = vi.fn();
         harness.events.on("entityEvent", raised);
         harness.behavior.start();
@@ -143,12 +167,36 @@ describe("Aquanova pickEntity behavior", () => {
         expect(raised).toHaveBeenCalledWith({ name: "itemLiquefactor", event: "enable" });
     });
 
+    it("raises events on the owning entity when no target override is provided", async () => {
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
+        const raised = vi.fn();
+        events.on("entityEvent", raised);
+        const behavior = new PickEntityBehavior("pickupOwner", [mesh("pickup")], { sound: "click", raiseEvent: { event: "enable" } }, {
+            events,
+            character: {
+                getPosition: () => ({ x: 0, y: 0, z: 0 }),
+                shapeOptions: {
+                    capsuleHeight: 1.8,
+                    capsuleRadius: 0.4,
+                },
+            },
+            sounds,
+        } as never);
+        await behavior.init();
+        behavior.start();
+
+        events.emit("physicsStep", { deltaSeconds: 1 / 60 });
+
+        expect(raised).toHaveBeenCalledWith({ name: "pickupOwner", event: "enable" });
+    });
+
     it("scales the entity bounds around their centre before testing intersection", async () => {
-        await PickEntityBehavior.init([{}]);
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
         const position = { x: 12.4, y: 0, z: 0 };
         const target = mesh("pickup", 10);
-        const behavior = new PickEntityBehavior([target], { boundingBoxScale: [2, 1, 1] }, {
+        const behavior = new PickEntityBehavior("pickup", [target], { boundingBoxScale: [2, 1, 1] }, {
             events,
             character: {
                 getPosition: () => position,
@@ -157,7 +205,9 @@ describe("Aquanova pickEntity behavior", () => {
                     capsuleRadius: 0.4,
                 },
             },
+            sounds,
         } as never);
+        await behavior.init();
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 1 / 60 });
@@ -166,27 +216,24 @@ describe("Aquanova pickEntity behavior", () => {
     });
 
     it("rotates the authored entity node around Y once every three seconds by default", async () => {
-        await PickEntityBehavior.init([{}]);
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
         const owner = entityNode("itemLiquefactor");
         const meshes = [mesh("pickup-a"), mesh("pickup-b")];
         meshes[0]!.parent = owner;
         meshes[1]!.parent = owner;
-        const behavior = new PickEntityBehavior(
-            meshes,
-            {},
-            {
-                events,
-                character: {
-                    getPosition: () => ({ x: 10, y: 0, z: 0 }),
-                    shapeOptions: {
-                        capsuleHeight: 1.8,
-                        capsuleRadius: 0.4,
-                    },
+        const behavior = new PickEntityBehavior("itemLiquefactor", meshes, {}, {
+            events,
+            character: {
+                getPosition: () => ({ x: 10, y: 0, z: 0 }),
+                shapeOptions: {
+                    capsuleHeight: 1.8,
+                    capsuleRadius: 0.4,
                 },
-            } as never,
-            "itemLiquefactor"
-        );
+            },
+            sounds,
+        } as never);
+        await behavior.init();
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 1 });
@@ -199,10 +246,10 @@ describe("Aquanova pickEntity behavior", () => {
     });
 
     it("scales the rotation rate with speed", async () => {
-        await PickEntityBehavior.init([{ speed: 2 }]);
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
         const target = mesh("pickup");
-        const behavior = new PickEntityBehavior([target], { speed: 2 }, {
+        const behavior = new PickEntityBehavior("pickup", [target], { speed: 2 }, {
             events,
             character: {
                 getPosition: () => ({ x: 10, y: 0, z: 0 }),
@@ -211,7 +258,9 @@ describe("Aquanova pickEntity behavior", () => {
                     capsuleRadius: 0.4,
                 },
             },
+            sounds,
         } as never);
+        await behavior.init();
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 0.75 });
@@ -220,10 +269,10 @@ describe("Aquanova pickEntity behavior", () => {
     });
 
     it("uses the default pickItem sound when sound is omitted", async () => {
-        await PickEntityBehavior.init([{}]);
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
         const target = mesh("pickup");
-        const behavior = new PickEntityBehavior([target], {}, {
+        const behavior = new PickEntityBehavior("pickup", [target], {}, {
             events,
             character: {
                 getPosition: () => ({ x: 0, y: 0, z: 0 }),
@@ -232,7 +281,9 @@ describe("Aquanova pickEntity behavior", () => {
                     capsuleRadius: 0.4,
                 },
             },
+            sounds,
         } as never);
+        await behavior.init();
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 1 / 60 });
@@ -242,15 +293,13 @@ describe("Aquanova pickEntity behavior", () => {
         expect(runtime.setMeshVisible).toHaveBeenCalledWith(target, false);
         expect(runtime.playStreamingSound).toHaveBeenCalledWith("/aquanova/sounds/pickItem.mp3?v=20260813-1");
     });
-
     it("still collects the entity without playing audio when sounds are disabled", async () => {
-        await PickEntityBehavior.init([{ sound: "click" }]);
-        PickEntityBehavior.setSoundEnabled(false);
-        const events = new EventManager();
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
         const target = mesh("pickup");
         const raised = vi.fn();
         events.on("entityEvent", raised);
-        const behavior = new PickEntityBehavior([target], { sound: "click", raiseEvent: { name: "itemLiquefactor", event: "enable" } }, {
+        const behavior = new PickEntityBehavior("pickup", [target], { sound: "click", raiseEvent: { target: "itemLiquefactor", event: "enable" } }, {
             events,
             character: {
                 getPosition: () => ({ x: 0, y: 0, z: 0 }),
@@ -259,7 +308,10 @@ describe("Aquanova pickEntity behavior", () => {
                     capsuleRadius: 0.4,
                 },
             },
+            sounds,
         } as never);
+        await behavior.init();
+        sounds.setEnabled(false);
         behavior.start();
 
         events.emit("physicsStep", { deltaSeconds: 1 / 60 });
@@ -269,14 +321,43 @@ describe("Aquanova pickEntity behavior", () => {
         expect(raised).toHaveBeenCalledWith({ name: "itemLiquefactor", event: "enable" });
     });
 
-    it("rejects incomplete event configuration and invalid sound paths", async () => {
-        expect(() => new PickEntityBehavior([mesh("pickup")], { raiseEvent: { name: "", event: "enable" } }, minimalContext())).toThrow(
-            "pickEntity.raiseEvent requires non-empty name and event values"
+    it("rejects incomplete event configuration and invalid sound paths", () => {
+        expect(() => new PickEntityBehavior("pickup", [mesh("pickup")], { raiseEvent: { target: "", event: "enable" } }, minimalContext())).toThrow(
+            "pickEntity.raiseEvent.target must be a non-empty entity or door name when provided"
         );
-        expect(() => new PickEntityBehavior([mesh("pickup")], { boundingBoxScale: [1, -1, 1] }, minimalContext())).toThrow(
+        expect(
+            () => new PickEntityBehavior("pickup", [mesh("pickup")], { raiseEvent: { target: "newTarget", entity: "legacyTarget", event: "enable" } }, minimalContext())
+        ).toThrow("pickEntity.raiseEvent cannot combine target with legacy entity");
+        expect(() => new PickEntityBehavior("pickup", [mesh("pickup")], { boundingBoxScale: [1, -1, 1] }, minimalContext())).toThrow(
             "pickEntity.boundingBoxScale must contain three finite non-negative values"
         );
-        expect(() => new PickEntityBehavior([mesh("pickup")], { speed: 0 }, minimalContext())).toThrow("pickEntity.speed must be a finite positive value");
-        await expect(PickEntityBehavior.init([{ sound: "folder/click" }])).rejects.toThrow('pickEntity sound "folder/click" must be an MP3 file name without its extension');
+        expect(() => new PickEntityBehavior("pickup", [mesh("pickup")], { speed: 0 }, minimalContext())).toThrow("pickEntity.speed must be a finite positive value");
+        expect(() => new PickEntityBehavior("pickup", [mesh("pickup")], { sound: "folder/click" }, minimalContext())).toThrow(
+            'pickEntity sound "folder/click" must be an MP3 file name without its extension'
+        );
+    });
+
+    it("keeps the legacy raiseEvent.entity target working during migration", async () => {
+        const events = new AquanovaEventManager();
+        const sounds = createSoundManager();
+        const raised = vi.fn();
+        events.on("entityEvent", raised);
+        const behavior = new PickEntityBehavior("pickup", [mesh("pickup")], { sound: "click", raiseEvent: { entity: "legacyTarget", event: "enable" } }, {
+            events,
+            character: {
+                getPosition: () => ({ x: 0, y: 0, z: 0 }),
+                shapeOptions: {
+                    capsuleHeight: 1.8,
+                    capsuleRadius: 0.4,
+                },
+            },
+            sounds,
+        } as never);
+        await behavior.init();
+        behavior.start();
+
+        events.emit("physicsStep", { deltaSeconds: 1 / 60 });
+
+        expect(raised).toHaveBeenCalledWith({ name: "legacyTarget", event: "enable" });
     });
 });

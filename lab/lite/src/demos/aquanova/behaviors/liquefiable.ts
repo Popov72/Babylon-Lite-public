@@ -1,25 +1,32 @@
 import type { Mesh } from "babylon-lite";
-import type { Behavior, BehaviorContext, LiquefiableBehaviorConfig } from "./types.js";
+import type { AquanovaGameContext } from "./game-context.js";
+import type { Behavior, LiquefiableBehaviorConfig } from "./types.js";
 
 /** Data-driven weapon-hit handling for every manifest behavior marked `liquefiable: true`. */
 export class LiquefiableBehavior implements Behavior {
     public readonly name: string;
     public readonly mesh: Mesh;
     protected readonly config: LiquefiableBehaviorConfig;
-    protected readonly context: BehaviorContext;
+    protected readonly context: AquanovaGameContext;
     private stopHit: (() => void) | null = null;
 
-    public constructor(name: string, mesh: Mesh, config: LiquefiableBehaviorConfig, context: BehaviorContext) {
-        this.name = name;
+    public constructor(_entityName: string, meshes: readonly Mesh[], config: LiquefiableBehaviorConfig & { name: string }, context: AquanovaGameContext) {
+        const mesh = meshes[0];
+        if (!mesh) {
+            throw new Error("[aquanova] liquefiable behavior requires at least one mesh");
+        }
+        this.name = config.name;
         this.mesh = mesh;
         this.config = config;
         this.context = context;
     }
 
+    public init(): void {}
+
     public start(): void {
         this.stopHit = this.context.events.on("hitWithWeapon", ({ mesh, point }) => {
-            if (mesh === this.mesh && this.context.isLiquefiable(mesh)) {
-                this.context.liquefy(this.mesh, point, this.config);
+            if (this.context.isLiquefiable(mesh) && this.context.getLiquefiableConfig(mesh) === this.config) {
+                this.context.liquefy(mesh, point, this.config);
             }
         });
     }

@@ -1,10 +1,7 @@
 import type { Mesh } from "babylon-lite";
 
 /** All gameplay and system events understood by Aquanova behaviors. */
-export interface EventMap {
-    frameStart: { deltaMs: number };
-    physicsStep: { deltaSeconds: number };
-    frameEnd: { deltaMs: number };
+export interface AquanovaEventMap {
     entityEvent: { name: string; event: string };
     weaponSlotSelected: { slot: number };
     weaponCycleRequested: { direction: -1 | 1 };
@@ -24,5 +21,5 @@ export interface EventMap {
     liquefactionStarted: { meshes: readonly Mesh[] };
     liquefactionReversed: Record<string, never>;
     liquefactionCancelled: { meshes: readonly Mesh[] };
-    liquefactionCompleted: { sound: string };
+    liquefactionCompleted: { meshes: readonly Mesh[]; sound: string };
 }

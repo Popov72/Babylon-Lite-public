@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CharacterSupportedState } from "../../../packages/babylon-lite/src";
 import type { Mesh, PhysicsCharacterController } from "../../../packages/babylon-lite/src";
 import {
@@ -12,9 +12,15 @@ import {
     weaponWheelDirection,
 } from "../../../lab/lite/src/demos/aquanova/behaviors/player";
 import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS, MAX_WALKABLE_SLOPE_COSINE } from "../../../lab/lite/src/demos/aquanova/constants";
-import type { BehaviorContext } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
+import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 describe("Aquanova player", () => {
+    it("defaults to the intended dynamic-body push strength", () => {
+        const player = new PlayerBehavior("player", [{} as Mesh], {}, {} as AquanovaGameContext);
+
+        expect((player as unknown as { characterStrength: number }).characterStrength).toBe(10_000);
+    });
+
     it("keeps slopes below 45 degrees walkable", () => {
         expect(MAX_WALKABLE_SLOPE_COSINE).toBeCloseTo(Math.cos(Math.PI / 4));
         expect(Math.cos((44.999 * Math.PI) / 180)).toBeGreaterThan(MAX_WALKABLE_SLOPE_COSINE);
@@ -91,8 +97,8 @@ describe("Aquanova player", () => {
             eyeHeight: 0.62,
             canStand: () => true,
             jumpApertureAssist: () => ({ lateralOffset: 0.05 }),
-        } as unknown as BehaviorContext;
-        const player = new PlayerBehavior({} as Mesh, {}, context);
+        } as unknown as AquanovaGameContext;
+        const player = new PlayerBehavior("player", [{} as Mesh], {}, context);
         const state = player as unknown as {
             update(deltaSeconds: number): void;
             apertureAdvanceRemaining: number;
@@ -128,5 +134,72 @@ describe("Aquanova player", () => {
         expect(weaponWheelDirection(120)).toBe(1);
         expect(weaponWheelDirection(0)).toBeNull();
         expect(weaponWheelDirection(Number.NaN)).toBeNull();
+    });
+
+    it("plays metallic footsteps only for grounded collision-resolved movement", async () => {
+        let supportedState = CharacterSupportedState.SUPPORTED;
+        let blocked = false;
+        const position = { x: 0, y: 1, z: 0 };
+        const shapeOptions = { capsuleHeight: 1.8, capsuleRadius: 0.4 };
+        const sound = { label: "player:stepMetallic", source: "/aquanova/sounds/stepMetallic.mp3", sound: {} };
+        const load = vi.fn().mockResolvedValue(sound);
+        const play = vi.fn();
+        const character = {
+            shapeOptions,
+            checkSupport: () => ({
+                supportedState,
+                averageSurfaceNormal: { x: 0, y: 1, z: 0 },
+            }),
+            moveWithCollisions: (movement: { x: number; y: number; z: number }) => {
+                if (blocked) return;
+                position.x += movement.x;
+                position.y += movement.y;
+                position.z += movement.z;
+            },
+            getPosition: () => position,
+        } as unknown as PhysicsCharacterController;
+        const vector = { set: () => {} };
+        const context = {
+            canvas: { dataset: {} },
+            camera: { position: vector, target: vector },
+            character,
+            sounds: { load, play },
+            capsuleHeight: 1.8,
+            capsuleRadius: 0.4,
+            eyeHeight: 0.62,
+            canStand: () => true,
+            jumpApertureAssist: () => null,
+        } as unknown as AquanovaGameContext;
+        const player = new PlayerBehavior("player", [{} as Mesh], {}, context);
+        const state = player as unknown as { update(deltaSeconds: number): void };
+
+        await player.init();
+        expect(load).toHaveBeenCalledWith("player:stepMetallic", "/aquanova/sounds/stepMetallic.mp3", { preloadCount: 1 });
+
+        player.press("KeyW");
+        state.update(1 / 60);
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(play).toHaveBeenLastCalledWith(sound, { volume: 2.5 });
+
+        player.release("KeyW");
+        state.update(1 / 60);
+        supportedState = CharacterSupportedState.UNSUPPORTED;
+        player.press("KeyW");
+        state.update(1 / 60);
+        expect(play).toHaveBeenCalledTimes(1);
+
+        supportedState = CharacterSupportedState.SUPPORTED;
+        blocked = true;
+        state.update(1 / 60);
+        expect(play).toHaveBeenCalledTimes(1);
+
+        blocked = false;
+        player.press("ShiftLeft");
+        state.update(1 / 60);
+        expect(play).toHaveBeenCalledTimes(2);
+
+        player.toggleNoclip();
+        state.update(1 / 60);
+        expect(play).toHaveBeenCalledTimes(2);
     });
 });

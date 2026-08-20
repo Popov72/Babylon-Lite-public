@@ -41,43 +41,48 @@ weights are intentionally omitted because final influence is fragment-dependent.
 The manifest's `behaviors` object is the source of truth for behavior names and
 parameters. The current definitions are:
 
-| Behavior                | Responsibility                                        |
-| ----------------------- | ----------------------------------------------------- |
-| `dynamic`               | Makes a prop physically simulated and player-pushable |
-| `anyLiquefaction`       | Liquefies with the manifest's default fluid setting   |
-| `stdLiquefaction`       | Liquefies with the standard fluid setting             |
-| `explosiveLiquefaction` | Liquefies with the explosive fluid setting            |
-| `player`                | Owns first-person input, movement, and weapon firing  |
-| `weaponLiquefactor`     | Gates and drives the Liquefactor weapon               |
-| `weaponAntiGravityGun`  | Grabs and throws dynamic rigid bodies                 |
-| `pickEntity`            | Collects an intersected entity and emits an event     |
-| `enableEntity`          | Forwards a configured entity event as `enable`        |
-| `disableEntity`         | Forwards a configured entity event as `disable`       |
-| `playAnimation`         | Starts one animation clip from the ship glTF          |
+| Behavior                | Responsibility                                          |
+| ----------------------- | ------------------------------------------------------- |
+| `dynamic`               | Makes a prop physically simulated and player-pushable   |
+| `anyLiquefaction`       | Liquefies with the manifest's default fluid setting     |
+| `stdLiquefaction`       | Liquefies with the standard fluid setting               |
+| `explosiveLiquefaction` | Liquefies with the explosive fluid setting              |
+| `player`                | Owns first-person input, movement, and weapon firing    |
+| `weaponLiquefactor`     | Gates and drives the Liquefactor weapon                 |
+| `weaponAntiGravityGun`  | Grabs and throws dynamic rigid bodies                   |
+| `pickEntity`            | Collects an intersected entity and emits an event       |
+| `enableEntity`          | Enables its owner after a configured source event       |
+| `disableEntity`         | Disables its owner after a configured source event      |
+| `setCollisionShape`     | Replaces an entity collider from its visible geometry   |
+| `trigger`               | Raises owner events when its collider is entered/exited |
+| `playAnimation`         | Starts one animation clip from the ship glTF            |
 
 Definition parameters are merged with per-entity overrides while retaining the
 behavior identity; assignments are never flattened into one anonymous parameter
 bag.
 
-Liquefaction behavior names are data-driven. Any new definition with
-`liquefiable: true` is instantiated as `LiquefiableBehavior`; its `fluidSim`
-parameter selects the simulation. Adding another liquefaction preset therefore
-requires only a manifest definition and assignment, not a TypeScript class.
+Liquefaction behavior names are data-driven. The constructor catalog exports
+`AnyLiquefactionBehavior`, `StdLiquefactionBehavior`, and
+`ExplosiveLiquefactionBehavior` as aliases of `LiquefiableBehavior`; each
+manifest name therefore follows the same dynamic class-name rule as every other
+behavior while sharing one implementation.
 
 Each behavior receives:
 
-- the mesh it is attached to;
-- its behavior-specific typed configuration;
-- one shared `BehaviorContext` containing the camera, canvas, character
-  controller, picker access, event bus, and gameplay services.
+- the owning entity or door name;
+- every mesh primitive owned by that entity;
+- its resolved manifest assignment;
+- one Aquanova-specific `AquanovaGameContext` containing the camera, canvas,
+  character controller, picker access, event manager, and gameplay services.
 
 ## Events
 
-`EventMap` centrally declares every event and payload. `TypedEventBus`
-only accepts names from that map and enforces the corresponding payload type for
-both publishers and handlers.
+The generic behavior system provides `TypedEventBus` and `EventManager` without
+declaring Aquanova events. `SystemEventMap` separately declares frame and
+physics events, while `AquanovaEventMap` declares gameplay events. Their
+intersection is the typed event map used by `AquanovaEventManager`.
 
-`EventManager` owns that bus and the engine integration. It brackets the
+`AquanovaEventManager` owns the engine integration. It brackets the
 scene's registered frame callbacks with `frameStart` / `frameEnd` and translates
 Havok's after-step callback into `physicsStep`. Gameplay code subscribes through
 the manager instead of registering engine callbacks directly.
@@ -88,15 +93,49 @@ The system currently emits:
 - `physicsStep` after Havok has stepped and synchronized nodes;
 - `frameEnd` after Aquanova's registered per-frame update callbacks.
 
-`entityEvent` carries a target entity name and event name. It is the generic
-manifest-driven link between otherwise independent behaviors. `pickEntity` may
-define `raiseEvent: { name, event }`; after collection it emits that payload
-exactly once. Consumers ignore events addressed to other entities.
+`entityEvent` carries an entity or door name and event name. It is the generic
+manifest-driven link between otherwise independent behaviors. Subscriptions
+treat that owner name as their `source`. `pickEntity` may define
+`raiseEvent: { target, event }`; after collection it emits that payload exactly
+once. `target` is optional and defaults to the entity carrying `pickEntity`.
+Consumers ignore events addressed to other entities. The former `entity` field
+remains runtime-compatible while manifests are migrated.
 
-`enableEntity` and `disableEntity` listen for `onEvent` addressed to the entity
-that owns the behavior, then forward `enable` or `disable` to the configured
-`entity` target. Door ids are valid targets. Runtime door handlers update both
-the door's `enabled` property and its portal-traversal state.
+`setCollisionShape` builds a Havok box from each entity mesh group's world-space
+AABB by default. Explicit `{ "type": "mesh" }` instead builds a static
+triangle-mesh shape from every primitive owned by the entity. Mesh collision
+shapes are rejected on physically dynamic entities.
+
+`trigger` accepts
+`{ "onIntersection": { "enterEvent": "activated",
+"exitEvent": "deactivated", "playerOnly": true } }`. `enterEvent` and
+`exitEvent` are independently optional, and `playerOnly` defaults to `false`.
+The collider becomes a Havok trigger volume, so overlaps produce no physical
+response. The enter event is raised when the first qualifying body enters and
+the exit event when the final qualifying body leaves. Both events are raised by
+the entity carrying the behavior. Entity `disable` and `enable` events disable
+and re-enable overlap reporting respectively.
+
+Entity action behaviors (`enableEntity`, `disableEntity`, `removeEntity`,
+`hideEntity`, `showEntity`, `enableCollision`, and `disableCollision`) always
+act on their owner. Their optional `events` array identifies event sources:
+
+```json
+{
+    "name": "showEntity",
+    "events": [
+        { "name": "activated", "source": ["trapTrigger", "backupTrigger"] },
+        { "name": "opened", "source": "Door_D06" }
+    ]
+}
+```
+
+The behavior runs when any entry matches. `source` is an entity or door id, or
+an array of ids with equivalent OR semantics; sources do not need to own
+meshes. With no `events`, the action runs immediately during behavior startup.
+The old `onEvent`/`entity` forwarding form and
+`trigger.onIntersection.raiseEvent`/`entity` remain runtime-compatible only
+while manifests are migrated.
 
 The player emits `hitWithWeapon` after a center-screen pick. The player does not
 know whether the picked mesh is liquefiable. Each liquefiable behavior listens
@@ -120,8 +159,8 @@ slide along, while deliberate uphill/downhill movement remains responsive.
 Steeper surfaces may slide.
 
 The `player` definition may set `characterStrength`, the maximum force applied
-to contacted dynamic bodies. It defaults to `100`; setting it to `0` preserves
-collision while disabling player pushes.
+to contacted dynamic bodies. It defaults to `10000`; setting it to `0`
+preserves collision while disabling player pushes.
 
 `C` toggles crouching. Over `0.2 s`, the character controller keeps the
 capsule's foot position fixed while smoothly changing its total height from
@@ -146,18 +185,27 @@ overlap to be compensated without reducing the collision capsule.
 
 ## Runtime lifecycle
 
-`BehaviorManager` owns manifest assignment resolution, linked-entity
-closure, mesh classification, target availability, behavior construction, and
-disposal. `main.ts` consumes its classified mesh sets and gameplay queries but
-does not parse or merge behavior definitions.
+The generic `behavior-system/BehaviorManager` owns manifest assignment
+resolution, dynamic constructor lookup, lifecycle ordering, and disposal. A
+behavior named `disableCollision` resolves to the externally supplied export
+`DisableCollisionBehavior`: uppercase the first character and append
+`Behavior`. The generic manager has no imports or branches for Aquanova
+implementations.
 
-Named implementations remain explicit for structurally different behaviors
-such as `player`, `weaponLiquefactor`, `weaponAntiGravityGun`, `pickEntity`, and
-`dynamic`; liquefiable definitions use the shared implementation.
+`AquanovaBehaviorManager` composes that generic runtime with mesh
+classification, linked-entity closure, weapon inventory, system-event binding,
+and gameplay queries. Its constructor catalog lives outside the generic
+package.
 
-Player and weapon are singleton entity behaviors. Geometry behaviors are
-instantiated for every matching mesh primitive so a picked primitive can receive
-the event directly.
+Exactly one behavior instance is constructed per owner assignment. Owners may
+be meshed entities or meshless doors. Geometry-dependent behaviors still reject
+owners without meshes; event-only entity action behaviors support both. Every
+non-door owner with configured behaviors but no runtime mesh is skipped with a
+browser-console warning.
+instance is constructed first, then every `init()` is invoked and the resulting
+promises are awaited together with `Promise.all`, then every `start()` runs.
+Behaviors that operate on geometry retain the complete entity mesh group and
+handle the relevant primitive internally.
 
 `pickEntity` is also one instance per manifest entity, but it owns every mesh
 primitive under that entity. At each physics step it intersects the live player
@@ -171,8 +219,9 @@ revolution duration is `3 / speed` seconds. The first intersection hides all
 owned primitives, optionally plays its preloaded MP3, optionally emits
 `entityEvent`, and unregisters both the intersection check and rotation.
 `sound` is an MP3 file name without extension under `/aquanova/sounds/` and
-defaults to `pickItem`. The resolved sound for every pickup is loaded once by
-`PickEntityBehavior.init()` before behavior instances start.
+defaults to `pickItem`. Each instance's `init()` lazily creates the shared audio
+engine through `SoundManager` and preloads that pickup's sound before any
+behavior starts; repeated sound URLs are deduplicated.
 
 `playAnimation` is one instance per manifest entity. Its optional `animation`
 parameter selects an animation group targeting that entity, or one of its
@@ -233,15 +282,27 @@ their transform readouts are debug-build tooling. Release demo bundles omit
 both these controls and the corresponding gizmo construction; model detail and
 weapon sway remain available in every build.
 
+`SoundManager` owns Aquanova's single lazily created audio engine, streaming
+sound loading, URL deduplication, playback replenishment, active-loop tracking,
+master volume, and disposal. Behaviors receive it through
+`AquanovaGameContext`; neither behavior manager imports audio functions or
+knows which behaviors play sounds. The player preloads `stepMetallic.mp3` and
+plays it from grounded, collision-resolved movement, with a longer stride while
+running; airborne, blocked, frozen, stationary, and noclip movement stay silent.
+
 The `Sounds` control-panel checkbox persists a global gameplay-audio
 preference. Disabling it immediately stops active Liquefactor loops and
-suppresses subsequent pickup, firing, liquefaction, and splash sounds.
-The persisted `Volume` slider controls the master gain of both Aquanova audio
-engines from `0` to `1`; changing it also affects active weapon loops.
+suppresses subsequent pickup, firing, liquefaction, and splash sounds. The
+persisted `Volume` slider controls the shared engine's master gain from `0` to
+`1`; changing it also affects active weapon loops.
 
 When liquefaction starts it raises `startLiquefaction` once for every unique
 entity in the target's linked liquefaction group. If reversal restores the
 group completely, it raises `cancelLiquefaction` for those same entities.
+Liquefaction behavior is inherited by linked entities that do not define one,
+so any member can be targeted directly. Linked relations form one symmetric,
+transitive group for melting; an entity's own liquefaction behavior takes
+precedence over an inherited one.
 
 ## Migration boundary
 

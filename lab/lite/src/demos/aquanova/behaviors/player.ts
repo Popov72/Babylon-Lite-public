@@ -1,7 +1,9 @@
 import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS } from "../constants.js";
-import type { Behavior, BehaviorContext, JumpApertureAssist, PlayerBehaviorConfig } from "./types.js";
+import type { AquanovaGameContext, JumpApertureAssist } from "./game-context.js";
+import type { ManagedSound } from "./sound-manager.js";
+import type { Behavior, PlayerBehaviorConfig } from "./types.js";
 
 const LOOK_SENSITIVITY = 1 / 600;
 const WALK_SPEED = 4;
@@ -18,7 +20,11 @@ const APERTURE_EDGE_ADVANCE_SPEED = 2;
 const APERTURE_LATERAL_SPEED = 1;
 const APERTURE_ASSIST_SECONDS = 1.5;
 const GROUND_ADHESION_SPEED = 2;
-const DEFAULT_CHARACTER_STRENGTH = 100;
+const DEFAULT_CHARACTER_STRENGTH = 10_000;
+const WALK_STEP_DISTANCE = 1.8;
+const RUN_STEP_DISTANCE = 2.4;
+const FOOTSTEP_VOLUME = 2.5;
+const FOOTSTEP_SOUND_URL = "/aquanova/sounds/stepMetallic.mp3";
 const DOWN = { x: 0, y: -1, z: 0 };
 
 export function playerSupportedMovementVelocity(
@@ -85,7 +91,7 @@ export function weaponWheelDirection(deltaY: number): -1 | 1 | null {
 export class PlayerBehavior implements Behavior<"player"> {
     public readonly name = "player";
     public readonly mesh: Mesh;
-    private readonly context: BehaviorContext;
+    private readonly context: AquanovaGameContext;
     private readonly keys = new Set<string>();
     private readonly freePosition = { x: 0, y: 0, z: 0 };
     private readonly walkVelocity = { x: 0, z: 0 };
@@ -115,10 +121,17 @@ export class PlayerBehavior implements Behavior<"player"> {
     private weaponTriggerSequence = 0;
     private weaponAimPickPending = false;
     private lastWeaponWheelTime = Number.NEGATIVE_INFINITY;
+    private footstepSound: ManagedSound | null = null;
+    private footstepDistance = 0;
+    private footstepActive = false;
     private crosshair: HTMLDivElement | null = null;
     private readonly characterStrength: number;
 
-    public constructor(mesh: Mesh, config: PlayerBehaviorConfig, context: BehaviorContext) {
+    public constructor(_entityName: string, meshes: readonly Mesh[], config: PlayerBehaviorConfig, context: AquanovaGameContext) {
+        const mesh = meshes[0];
+        if (!mesh) {
+            throw new Error("[aquanova] player requires at least one mesh");
+        }
         this.mesh = mesh;
         this.context = context;
         const characterStrength = config.characterStrength ?? DEFAULT_CHARACTER_STRENGTH;
@@ -129,6 +142,14 @@ export class PlayerBehavior implements Behavior<"player"> {
         const direction = config.direction;
         this.yaw = direction && (direction[0] || direction[2]) ? Math.atan2(-direction[0]!, direction[2]!) : -Math.PI / 2;
         this.yawTarget = this.yaw;
+    }
+
+    public async init(): Promise<void> {
+        try {
+            this.footstepSound = await this.context.sounds.load("player:stepMetallic", FOOTSTEP_SOUND_URL, { preloadCount: 1 });
+        } catch (error) {
+            throw new Error(`[aquanova] failed to preload player footstep sound from "${FOOTSTEP_SOUND_URL}"`, { cause: error });
+        }
     }
 
     public start(): void {
@@ -330,6 +351,7 @@ export class PlayerBehavior implements Behavior<"player"> {
         const moveFactor = 1 - Math.exp(-deltaSeconds * MOVE_ACCELERATION);
 
         if (this.noclip) {
+            this.resetFootsteps();
             const up = (this.keys.has("Space") ? 1 : 0) - (this.keys.has("ControlLeft") || this.keys.has("KeyC") ? 1 : 0);
             const speed = FLY_SPEED * (runRequested ? 2 : 1);
             this.flyVelocity.x += ((sin * cosPitch * inputZ + cos * inputX) * speed - this.flyVelocity.x) * moveFactor;
@@ -436,6 +458,7 @@ export class PlayerBehavior implements Behavior<"player"> {
             }
         }
         this.updatePositionDataset(position);
+        this.updateFootsteps(!this.frozen && grounded && this.verticalVelocity <= 0 && (inputX !== 0 || inputZ !== 0), run > 1, position.x - previousX, position.z - previousZ);
         if (this.frozen) return;
         const eyeHeight = this.currentEyeHeight();
         this.context.camera.position.set(position.x, position.y + eyeHeight, position.z);
@@ -444,6 +467,34 @@ export class PlayerBehavior implements Behavior<"player"> {
             position.y + eyeHeight + sinPitch * this.targetDistance,
             position.z + cos * cosPitch * this.targetDistance
         );
+    }
+
+    private updateFootsteps(moving: boolean, running: boolean, resolvedX: number, resolvedZ: number): void {
+        if (!moving || !this.footstepSound) {
+            this.resetFootsteps();
+            return;
+        }
+        const distance = Math.hypot(resolvedX, resolvedZ);
+        if (distance <= 1e-5) {
+            return;
+        }
+        if (!this.footstepActive) {
+            this.footstepActive = true;
+            this.footstepDistance = 0;
+            this.context.sounds.play(this.footstepSound, { volume: FOOTSTEP_VOLUME });
+            return;
+        }
+        this.footstepDistance += distance;
+        const stepDistance = running ? RUN_STEP_DISTANCE : WALK_STEP_DISTANCE;
+        if (this.footstepDistance >= stepDistance) {
+            this.footstepDistance %= stepDistance;
+            this.context.sounds.play(this.footstepSound, { volume: FOOTSTEP_VOLUME });
+        }
+    }
+
+    private resetFootsteps(): void {
+        this.footstepActive = false;
+        this.footstepDistance = 0;
     }
 
     private updateCrouch(deltaSeconds: number): void {

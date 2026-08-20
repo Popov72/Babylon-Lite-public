@@ -5,7 +5,7 @@
 // this" or "what does this prop do" resolves it from here rather than inferring it from geometry.
 
 import type { ShipEnvironment } from "../ship-manifest.js";
-import type { BehaviorLibrary, Entities } from "./behaviors/index.js";
+import type { BehaviorLibrary, BehaviorReference, Entities } from "./behaviors/index.js";
 import type { ShipCollisionShape, ShipInstance } from "./collision-shapes.js";
 import { MANIFEST_URL, type Vec3 } from "./constants.js";
 
@@ -86,6 +86,7 @@ export interface ShipPortal {
 export interface ShipDoor {
     id: string;
     enabled?: boolean;
+    behaviors?: BehaviorReference[];
 }
 
 // `behaviors` is a library of named behaviour definitions; `entities` assigns them to MESH NAMES,

@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-18T20:36:23.810Z",
+  "savedAt": "2026-08-20T20:36:35.776Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -104,7 +104,7 @@
       "aabb": {
         "min": [
           -4.0017,
-          -0.0065,
+          -0.5992,
           -0.774
         ],
         "max": [
@@ -113,8 +113,8 @@
           4.774
         ]
       },
-      "instanceCount": 18,
-      "meshCount": 46
+      "instanceCount": 20,
+      "meshCount": 51
     },
     {
       "id": "CH02_StorageCTL",
@@ -155,20 +155,9 @@
     {
       "id": "Test",
       "node": "CHUNK_Test",
-      "aabb": {
-        "min": [
-          -26.5,
-          -0.119,
-          -2.4353
-        ],
-        "max": [
-          -19.5363,
-          9.979,
-          10.4219
-        ]
-      },
-      "instanceCount": 10,
-      "meshCount": 21
+      "aabb": null,
+      "instanceCount": 0,
+      "meshCount": 0
     },
     {
       "id": "CH03_StorageC2Escape",
@@ -177,16 +166,16 @@
         "min": [
           1.271,
           0.5025,
-          -13.4146
+          -13.6048
         ],
         "max": [
           7.871,
           2.3777,
-          -6.575
+          -6.38
         ]
       },
-      "instanceCount": 28,
-      "meshCount": 50
+      "instanceCount": 30,
+      "meshCount": 56
     }
   ],
   "environmentProbes": [
@@ -687,7 +676,6 @@
       "id": "P0067",
       "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
       "chunk": "CH03_StorageC2",
-      "name": "mywall",
       "position": [
         -10,
         0,
@@ -703,7 +691,7 @@
         1,
         1
       ],
-      "node": "mywall"
+      "node": "P0067"
     },
     {
       "id": "P0070",
@@ -2569,7 +2557,7 @@
       "id": "P0318",
       "module": "Modular SciFi MegaKit/Platforms/Door_Metal",
       "chunk": "CH00_Storage",
-      "name": "storageDoorLFB",
+      "name": "storageDoorLB",
       "position": [
         4,
         0,
@@ -2585,7 +2573,7 @@
         0.9,
         -1
       ],
-      "node": "storageDoorLFB"
+      "node": "storageDoorLB"
     },
     {
       "id": "P0319",
@@ -3008,216 +2996,6 @@
         1
       ],
       "node": "P0341"
-    },
-    {
-      "id": "P0342",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_A",
-      "chunk": "Test",
-      "position": [
-        20,
-        0,
-        0
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0342"
-    },
-    {
-      "id": "P0343",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
-      "chunk": "Test",
-      "position": [
-        20,
-        0,
-        2
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0343"
-    },
-    {
-      "id": "P0344",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
-      "chunk": "Test",
-      "position": [
-        20,
-        0,
-        -2
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        -1,
-        1,
-        1
-      ],
-      "node": "P0344"
-    },
-    {
-      "id": "P0345",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
-      "chunk": "Test",
-      "position": [
-        26,
-        0,
-        3
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0345"
-    },
-    {
-      "id": "P0347",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Simple",
-      "chunk": "Test",
-      "position": [
-        26,
-        0,
-        3
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        -1,
-        1,
-        1
-      ],
-      "node": "P0347"
-    },
-    {
-      "id": "P0348",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square",
-      "chunk": "Test",
-      "position": [
-        26,
-        0,
-        3
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0348"
-    },
-    {
-      "id": "P0349",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Side",
-      "chunk": "Test",
-      "position": [
-        26,
-        0,
-        -1
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0349"
-    },
-    {
-      "id": "P0351",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric",
-      "chunk": "Test",
-      "position": [
-        26,
-        0,
-        8
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0351"
-    },
-    {
-      "id": "P0352",
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Blocked",
-      "chunk": "Test",
-      "position": [
-        26,
-        4.979,
-        3
-      ],
-      "rotation": [
-        0,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0352"
-    },
-    {
-      "id": "P0353",
-      "module": "Modular SciFi MegaKit/Decals/Decal_Logo",
-      "chunk": "Test",
-      "position": [
-        26.5,
-        4.729,
-        3
-      ],
-      "rotation": [
-        90,
-        90,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "P0353"
     },
     {
       "id": "P0354",
@@ -3881,6 +3659,7 @@
       "id": "P0482",
       "module": "Modular SciFi MegaKit/Props/Prop_ItemHolder",
       "chunk": "CH03_StorageC2Escape",
+      "name": "weaponAntiGravityGunHolder",
       "position": [
         -1.86,
         0.599,
@@ -3896,7 +3675,7 @@
         0.4,
         0.4
       ],
-      "node": "P0482"
+      "node": "weaponAntiGravityGunHolder"
     },
     {
       "id": "P0483",
@@ -3919,6 +3698,94 @@
         0.75
       ],
       "node": "itemAntiGravityGun"
+    },
+    {
+      "id": "P0484",
+      "module": "Modular SciFi MegaKit/Props/Prop_Vent_Small",
+      "chunk": "CH03_StorageC2Escape",
+      "name": "CH01_CorridorGridFan1",
+      "position": [
+        -7.73,
+        1.839,
+        -7.091
+      ],
+      "rotation": [
+        0,
+        0,
+        -99.5
+      ],
+      "scale": [
+        1.025,
+        1.01,
+        2.3
+      ],
+      "node": "CH01_CorridorGridFan1"
+    },
+    {
+      "id": "P0485",
+      "module": "Modular SciFi MegaKit/Props/Prop_Vent_Small",
+      "chunk": "CH03_StorageC2Escape",
+      "name": "CH01_CorridorGridFan2",
+      "position": [
+        -7.753,
+        1.795,
+        -12.903
+      ],
+      "rotation": [
+        0,
+        0,
+        -99.5
+      ],
+      "scale": [
+        1.025,
+        1.01,
+        2.27
+      ],
+      "node": "CH01_CorridorGridFan2"
+    },
+    {
+      "id": "P0486",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pod_Short",
+      "chunk": "CH01_StorageC",
+      "name": "trap",
+      "position": [
+        -2,
+        -0.598,
+        2
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "trap"
+    },
+    {
+      "id": "P0487",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH01_StorageC",
+      "name": "trapTrigger",
+      "position": [
+        -2,
+        0,
+        2
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        0.12,
+        0.52,
+        0.12
+      ],
+      "node": "trapTrigger"
     }
   ],
   "markers": [
@@ -4127,7 +3994,7 @@
       "chunkB": "",
       "triggerRadius": 3.5,
       "slideDistance": 1.51,
-      "enabled": true,
+      "enabled": false,
       "sealed": false,
       "leaves": [
         "P0068"
@@ -9540,6 +9407,28 @@
           -0.9962
         ]
       }
+    ],
+    "Aquanova/Props/AreaBox": [
+      {
+        "id": "Aquanova/Props/AreaBox:0",
+        "kind": "box",
+        "centre": [
+          0,
+          0.5,
+          0
+        ],
+        "halfExtents": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
     ]
   },
   "moduleShapes": {
@@ -13774,6 +13663,26 @@
           1.23
         ]
       }
+    ],
+    "Aquanova/Props/AreaBox": [
+      {
+        "kind": "box",
+        "position": [
+          0,
+          0.5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
     ]
   },
   "stageLayout": [
@@ -14048,6 +13957,14 @@
         0.536,
         50
       ]
+    },
+    {
+      "module": "Aquanova/Props/AreaBox",
+      "position": [
+        7,
+        0,
+        43
+      ]
     }
   ],
   "activeChunk": "CH03_StorageC2",
@@ -14096,7 +14013,14 @@
     "enableEntity": {},
     "disableEntity": {},
     "playAnimation": {},
-    "weaponAntiGravityGun": {}
+    "weaponAntiGravityGun": {},
+    "removeEntity": {},
+    "hideEntity": {},
+    "showEntity": {},
+    "disableCollision": {},
+    "setCollisionShape": {},
+    "trigger": {},
+    "enableCollision": {}
   },
   "entities": {
     "player": {
@@ -14111,44 +14035,6 @@
         },
         {
           "name": "probeExcluded"
-        }
-      ]
-    },
-    "storageDoorL": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoorR",
-            "storageDoor_caution"
-          ],
-          "sound": "longSplash"
-        }
-      ]
-    },
-    "storageDoorR": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoorL",
-            "storageDoor_caution"
-          ],
-          "sound": "longSplash"
-        }
-      ]
-    },
-    "storageDoor_caution": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoorLF",
-            "storageDoorLFB",
-            "storageDoorRB",
-            "storageDoorRF"
-          ],
-          "sound": "longSplash"
         }
       ]
     },
@@ -14180,6 +14066,16 @@
         },
         {
           "name": "dynamic"
+        },
+        {
+          "name": "hideEntity",
+          "onEvent": "startLiquefaction",
+          "entity": "CH01_CorridorFan2"
+        },
+        {
+          "name": "showEntity",
+          "onEvent": "cancelLiquefaction",
+          "entity": "CH01_CorridorFan2"
         }
       ]
     },
@@ -14226,70 +14122,11 @@
           "name": "stdLiquefaction",
           "linked": [
             "storageDoor_caution",
-            "storageDoorLFB",
+            "storageDoorLB",
             "storageDoorRB",
             "storageDoorRF"
           ],
           "sound": "longSplash"
-        },
-        {
-          "name": "enableEntity",
-          "onEvent": "startLiquefaction",
-          "entity": "Door_D00"
-        },
-        {
-          "name": "disableEntity",
-          "onEvent": "cancelLiquefaction",
-          "entity": "Door_D00"
-        }
-      ]
-    },
-    "storageDoorLFB": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoor_caution",
-            "storageDoorLF",
-            "storageDoorRB",
-            "storageDoorRF"
-          ],
-          "sound": "longSplash"
-        }
-      ]
-    },
-    "storageDoorRB": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoor_caution",
-            "storageDoorLF",
-            "storageDoorLFB",
-            "storageDoorRF"
-          ],
-          "sound": "longSplash"
-        }
-      ]
-    },
-    "storageDoorRF": {
-      "behaviors": [
-        {
-          "name": "stdLiquefaction",
-          "linked": [
-            "storageDoor_caution",
-            "storageDoorLF",
-            "storageDoorLFB",
-            "storageDoorRB"
-          ],
-          "sound": "longSplash"
-        }
-      ]
-    },
-    "test": {
-      "behaviors": [
-        {
-          "name": "explosiveLiquefaction"
         }
       ]
     },
@@ -14316,7 +14153,7 @@
             1
           ],
           "raiseEvent": {
-            "name": "itemLiquefactor",
+            "target": "itemLiquefactor",
             "event": "enable"
           }
         }
@@ -14328,17 +14165,34 @@
           "name": "stdLiquefaction"
         },
         {
-          "name": "enableEntity",
-          "onEvent": "startLiquefaction",
-          "entity": "Door_D05"
-        },
-        {
-          "name": "disableEntity",
-          "onEvent": "cancelLiquefaction",
-          "entity": "Door_D05"
-        },
-        {
           "name": "playAnimation"
+        },
+        {
+          "name": "removeEntity",
+          "events": [
+            {
+              "name": "endLiquefaction",
+              "source": "CH01_CorridorGridFan1"
+            }
+          ]
+        },
+        {
+          "name": "hideEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": "CH01_CorridorGridFan1"
+            }
+          ]
+        },
+        {
+          "name": "showEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": "CH01_CorridorGridFan1"
+            }
+          ]
         }
       ]
     },
@@ -14348,17 +14202,34 @@
           "name": "stdLiquefaction"
         },
         {
-          "name": "enableEntity",
-          "onEvent": "startLiquefaction",
-          "entity": "Door_D06"
-        },
-        {
-          "name": "disableEntity",
-          "onEvent": "cancelLiquefaction",
-          "entity": "Door_D06"
-        },
-        {
           "name": "playAnimation"
+        },
+        {
+          "name": "removeEntity",
+          "events": [
+            {
+              "name": "endLiquefaction",
+              "source": "CH01_CorridorGridFan2"
+            }
+          ]
+        },
+        {
+          "name": "hideEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": "CH01_CorridorGridFan2"
+            }
+          ]
+        },
+        {
+          "name": "showEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": "CH01_CorridorGridFan2"
+            }
+          ]
         }
       ]
     },
@@ -14383,23 +14254,245 @@
           }
         }
       ]
+    },
+    "weaponAntiGravityGunHolder": {
+      "behaviors": [
+        {
+          "name": "disableCollision"
+        }
+      ]
+    },
+    "CH01_CorridorGridFan1": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        },
+        {
+          "name": "removeEntity",
+          "events": [
+            {
+              "name": "endLiquefaction",
+              "source": "CH01_CorridorFan1"
+            }
+          ]
+        },
+        {
+          "name": "hideEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": "CH01_CorridorFan1"
+            }
+          ]
+        },
+        {
+          "name": "showEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": "CH01_CorridorFan1"
+            }
+          ]
+        }
+      ]
+    },
+    "trap": {
+      "behaviors": [
+        {
+          "name": "setCollisionShape",
+          "shape": "mesh"
+        },
+        {
+          "name": "stdLiquefaction"
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "disableCollision"
+        },
+        {
+          "name": "showEntity",
+          "events": [
+            {
+              "name": "activated",
+              "source": "trapTrigger"
+            }
+          ]
+        },
+        {
+          "name": "enableCollision",
+          "events": [
+            {
+              "name": "activated",
+              "source": "trapTrigger"
+            }
+          ]
+        }
+      ]
+    },
+    "trapTrigger": {
+      "behaviors": [
+        {
+          "name": "trigger",
+          "onIntersection": {
+            "enterEvent": "activated"
+          }
+        },
+        {
+          "name": "disableEntity",
+          "events": [
+            {
+              "name": "activated",
+              "source": "trapTrigger"
+            }
+          ]
+        },
+        {
+          "name": "hideEntity"
+        }
+      ]
+    },
+    "CH01_CorridorGridFan2": {
+      "behaviors": [
+        {
+          "name": "removeEntity",
+          "events": [
+            {
+              "name": "endLiquefaction",
+              "source": "CH01_CorridorFan2"
+            }
+          ]
+        },
+        {
+          "name": "hideEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": "CH01_CorridorFan2"
+            }
+          ]
+        },
+        {
+          "name": "showEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": "CH01_CorridorFan2"
+            }
+          ]
+        },
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "Door_D00": {
+      "behaviors": [
+        {
+          "name": "enableEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": [
+                "storageDoorLF",
+                "storageDoorRF",
+                "storageDoorLB",
+                "storageDoorRB",
+                "storageDoor_caution"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "disableEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": [
+                "storageDoorLF",
+                "storageDoorRF",
+                "storageDoorLB",
+                "storageDoorRB",
+                "storageDoor_caution"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Door_D05": {
+      "behaviors": [
+        {
+          "name": "enableEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": [
+                "CH01_CorridorGridFan1",
+                "CH01_CorridorFan1"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "disableEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": [
+                "CH01_CorridorGridFan1",
+                "CH01_CorridorFan1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Door_D06": {
+      "behaviors": [
+        {
+          "name": "enableEntity",
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": [
+                "CH01_CorridorGridFan2",
+                "CH01_CorridorFan2"
+              ]
+            }
+          ]
+        },
+        {
+          "name": "disableEntity",
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": [
+                "CH01_CorridorGridFan2",
+                "CH01_CorridorFan2"
+              ]
+            }
+          ]
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      0.937,
-      2.974,
-      -5.093
+      -1.317,
+      0.993,
+      2
     ],
     "rotation": [
-      0.097,
-      707.501,
+      0.433,
+      664.455,
       0
     ],
     "target": [
-      -5.03,
-      2.001,
-      -13.059
+      -10.394,
+      -3.203,
+      2.074
     ]
   },
   "environment": {
@@ -14419,6 +14512,7 @@
     "bigPalette": true,
     "strayChunkCheck": true,
     "runBehaviors": true,
+    "shipOptimize": false,
     "probes": {
       "CH01_Escape1": {
         "alwaysVisible": true,
@@ -14689,7 +14783,7 @@
       "chunkA": "CH03_StorageC2",
       "chunkB": "CH03_StorageC2Escape",
       "door": "Door_D06",
-      "enabled": true,
+      "enabled": false,
       "centre": [
         7.8441,
         1.8004,
@@ -14860,7 +14954,7 @@
       "width": 1.68,
       "height": 1.6654,
       "triggerRadius": 3.5,
-      "enabled": true,
+      "enabled": false,
       "sealed": false,
       "leaves": []
     }

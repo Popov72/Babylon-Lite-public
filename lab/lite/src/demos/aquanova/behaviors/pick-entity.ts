@@ -1,16 +1,9 @@
-import {
-    createAudioEngineAsync,
-    createStreamingSoundAsync,
-    disposeAudioEngine,
-    playStreamingSound,
-    preloadStreamingInstanceAsync,
-    setMasterVolume,
-    setMeshVisible,
-} from "babylon-lite";
-import type { AudioEngine, Mesh, SceneNode, StreamingSound } from "babylon-lite";
+import { setMeshVisible } from "babylon-lite";
+import type { Mesh, SceneNode } from "babylon-lite";
 import { meshGroupBounds, type MeshGroupBounds } from "../mesh-bounds.js";
-import { normalizeSoundVolume } from "./sound-volume.js";
-import type { Behavior, BehaviorContext, PickEntityBehaviorConfig } from "./types.js";
+import type { AquanovaGameContext } from "./game-context.js";
+import type { ManagedSound } from "./sound-manager.js";
+import type { Behavior, PickEntityBehaviorConfig } from "./types.js";
 
 const SOUND_ROOT = "/aquanova/sounds";
 const SOUND_ASSET_VERSION = "20260813-1";
@@ -18,102 +11,47 @@ const DEFAULT_SOUND = "pickItem";
 const DEFAULT_BOUNDING_BOX_SCALE = [1, 1, 1] as const;
 const DEFAULT_ROTATION_SPEED = (Math.PI * 2) / 3;
 
-type PickEntityContext = Pick<BehaviorContext, "character" | "events">;
+type PickEntityContext = Pick<AquanovaGameContext, "character" | "events" | "sounds">;
 type BoundingBoxScale = readonly [number, number, number];
 
 export class PickEntityBehavior implements Behavior<"pickEntity"> {
-    private static initialization: Promise<void> | null = null;
-    private static audioEngine: AudioEngine | null = null;
-    private static sounds: Map<string, StreamingSound> | null = null;
-    private static soundEnabled = true;
-    private static soundVolume = 1;
     public readonly name = "pickEntity";
     public readonly mesh: Mesh;
     public readonly config: PickEntityBehaviorConfig;
     private readonly meshes: readonly Mesh[];
     private readonly rotationNodes: readonly SceneNode[];
     private readonly context: PickEntityContext;
+    private readonly entityName: string;
     private readonly boundingBoxScale: BoundingBoxScale;
     private readonly rotationSpeed: number;
     private bounds: MeshGroupBounds | null = null;
+    private sound: ManagedSound | null = null;
     private stopPhysicsStep: (() => void) | null = null;
     private picked = false;
 
-    public constructor(meshes: readonly Mesh[], config: PickEntityBehaviorConfig, context: PickEntityContext, entityName = meshes[0]?.name ?? "") {
+    public constructor(entityName: string, meshes: readonly Mesh[], config: PickEntityBehaviorConfig, context: PickEntityContext) {
         if (!meshes.length) {
             throw new Error("[aquanova] pickEntity requires at least one mesh");
         }
         validateEvent(config.raiseEvent);
+        validateSoundName(config.sound ?? DEFAULT_SOUND);
         this.mesh = meshes[0]!;
         this.meshes = meshes;
         this.rotationNodes = resolveRotationNodes(meshes, entityName);
         this.config = config;
         this.context = context;
+        this.entityName = entityName;
         this.boundingBoxScale = resolveBoundingBoxScale(config.boundingBoxScale);
         this.rotationSpeed = DEFAULT_ROTATION_SPEED * resolveSpeed(config.speed);
     }
 
-    public static init(configs: readonly PickEntityBehaviorConfig[]): Promise<void> {
-        if (!this.initialization) {
-            this.initialization = this.initialize(configs).catch((error: unknown) => {
-                this.initialization = null;
-                throw error;
-            });
-        }
-        return this.initialization;
-    }
-
-    public static dispose(): void {
-        if (this.audioEngine) {
-            disposeAudioEngine(this.audioEngine);
-        }
-        this.audioEngine = null;
-        this.sounds = null;
-        this.soundEnabled = true;
-        this.soundVolume = 1;
-        this.initialization = null;
-    }
-
-    public static setSoundEnabled(enabled: boolean): void {
-        this.soundEnabled = enabled;
-    }
-
-    public static setSoundVolume(volume: number): void {
-        this.soundVolume = normalizeSoundVolume(volume);
-        if (this.audioEngine) {
-            setMasterVolume(this.audioEngine, this.soundVolume);
-        }
-    }
-
-    private static async initialize(configs: readonly PickEntityBehaviorConfig[]): Promise<void> {
-        const soundNames = new Set<string>();
-        if (!configs.length) {
-            this.sounds = new Map();
-            return;
-        }
-        for (const config of configs) {
-            const soundName = config.sound ?? DEFAULT_SOUND;
-            validateSoundName(soundName);
-            soundNames.add(soundName);
-        }
-
-        const engine = await createAudioEngineAsync();
+    public async init(): Promise<void> {
+        const soundName = this.config.sound ?? DEFAULT_SOUND;
+        const url = soundUrl(soundName);
         try {
-            const sounds = new Map<string, StreamingSound>();
-            for (const soundName of soundNames) {
-                const url = soundUrl(soundName);
-                try {
-                    sounds.set(soundName, await createStreamingSoundAsync(engine, url, { preloadCount: 1 }));
-                } catch (error) {
-                    throw new Error(`[aquanova] failed to preload pickEntity sound "${soundName}" from "${url}"`, { cause: error });
-                }
-            }
-            this.sounds = sounds;
-            this.audioEngine = engine;
-            setMasterVolume(engine, this.soundVolume);
+            this.sound = await this.context.sounds.load(`pickEntity:${soundName}`, url, { preloadCount: 1 });
         } catch (error) {
-            disposeAudioEngine(engine);
-            throw error;
+            throw new Error(`[aquanova] failed to preload pickEntity sound "${soundName}" from "${url}"`, { cause: error });
         }
     }
 
@@ -147,24 +85,16 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         for (const mesh of this.meshes) {
             setMeshVisible(mesh, false);
         }
-        PickEntityBehavior.playSound(this.config.sound ?? DEFAULT_SOUND);
+        if (!this.sound) {
+            throw new Error("[aquanova] pickEntity sound was not initialized");
+        }
+        this.context.sounds.play(this.sound);
         if (this.config.raiseEvent) {
-            this.context.events.emit("entityEvent", this.config.raiseEvent);
+            this.context.events.emit("entityEvent", {
+                name: this.config.raiseEvent.target ?? this.config.raiseEvent.entity ?? this.entityName,
+                event: this.config.raiseEvent.event,
+            });
         }
-    }
-
-    private static playSound(soundName: string): void {
-        if (!this.soundEnabled) {
-            return;
-        }
-        const sound = this.sounds?.get(soundName);
-        if (!sound) {
-            throw new Error(`[aquanova] pickEntity sound "${soundName}" was not preloaded`);
-        }
-        playStreamingSound(sound);
-        void preloadStreamingInstanceAsync(sound).catch((error: unknown) => {
-            console.warn(`[aquanova] failed to replenish preloaded pickEntity sound "${soundName}"`, error);
-        });
     }
 }
 
@@ -172,8 +102,17 @@ function validateEvent(event: PickEntityBehaviorConfig["raiseEvent"]): void {
     if (!event) {
         return;
     }
-    if (!event.name || !event.event) {
-        throw new Error("[aquanova] pickEntity.raiseEvent requires non-empty name and event values");
+    if (!event.event) {
+        throw new Error("[aquanova] pickEntity.raiseEvent.event must be a non-empty event name");
+    }
+    if (event.target !== undefined && !event.target) {
+        throw new Error("[aquanova] pickEntity.raiseEvent.target must be a non-empty entity or door name when provided");
+    }
+    if (event.entity !== undefined && !event.entity) {
+        throw new Error("[aquanova] pickEntity.raiseEvent.entity must be a non-empty entity or door name when provided");
+    }
+    if (event.target !== undefined && event.entity !== undefined) {
+        throw new Error("[aquanova] pickEntity.raiseEvent cannot combine target with legacy entity");
     }
 }
 

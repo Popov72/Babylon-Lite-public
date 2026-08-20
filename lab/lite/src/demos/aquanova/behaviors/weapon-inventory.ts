@@ -1,13 +1,13 @@
-import type { EventManager } from "./event-manager.js";
-import type { WeaponInventoryRuntime } from "./types.js";
+import type { AquanovaEventManager } from "./aquanova-event-manager.js";
+import type { WeaponInventoryRuntime } from "./game-context.js";
 
 export class WeaponInventory implements WeaponInventoryRuntime {
     private readonly owned = new Set<number>();
     private readonly disposers: Array<() => void> = [];
-    private events: EventManager | null = null;
+    private events: AquanovaEventManager | null = null;
     private equipped: number | null = null;
 
-    public start(events: EventManager): void {
+    public start(events: AquanovaEventManager): void {
         if (this.events) {
             throw new Error("[aquanova] weapon inventory is already started");
         }

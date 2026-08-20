@@ -7,8 +7,28 @@
 // single source of collision for the player AND the fluid — if a surface has no authored shape, it
 // is not solid, and that is a gap to fill in the editor rather than to paper over here.
 
-import { createPhysicsBody, createPhysicsShape, createTransformNode, PhysicsMotionType, PhysicsShapeType, setPhysicsBodyShape, type PhysicsWorld } from "babylon-lite";
+import {
+    createPhysicsBody,
+    createPhysicsShape,
+    createTransformNode,
+    PhysicsMotionType,
+    PhysicsShapeType,
+    setPhysicsBodyShape,
+    type PhysicsBody,
+    type PhysicsWorld,
+} from "babylon-lite";
 import type { WorldCollisionShape } from "./collision-shapes.js";
+
+export interface ManifestColliderSource {
+    readonly instanceId: string;
+    readonly shape: WorldCollisionShape;
+}
+
+export interface ManifestCollider {
+    readonly instanceId: string;
+    readonly shape: WorldCollisionShape;
+    readonly body: PhysicsBody;
+}
 /** Build a manifest collision primitive (given in Lite WORLD space) as a shape on a body whose node
  *  sits at `origin`. Everything is re-expressed relative to that origin, so the caller is free to
  *  put the body node wherever it needs it — the dynamic-prop path anchors it at the SDF bake centre
@@ -47,13 +67,14 @@ export function createWorldCollisionShape(world: PhysicsWorld, s: WorldCollision
  * get their own removable body in the dynamic-prop pass, and a duplicate static body here would
  * outlive the melt as an invisible wall.
  */
-export function buildManifestColliders(world: PhysicsWorld, shapes: Iterable<WorldCollisionShape>): WorldCollisionShape[] {
-    const made: WorldCollisionShape[] = [];
+export function buildManifestColliders(world: PhysicsWorld, sources: Iterable<ManifestColliderSource>): ManifestCollider[] {
+    const made: ManifestCollider[] = [];
     let n = 0;
-    for (const s of shapes) {
-        const tn = createTransformNode(`mfCol_${n++}`, s.centre[0], s.centre[1], s.centre[2]);
-        setPhysicsBodyShape(world, createPhysicsBody(world, tn, PhysicsMotionType.STATIC), createWorldCollisionShape(world, s));
-        made.push(s);
+    for (const { instanceId, shape } of sources) {
+        const tn = createTransformNode(`mfCol_${n++}`, shape.centre[0], shape.centre[1], shape.centre[2]);
+        const body = createPhysicsBody(world, tn, PhysicsMotionType.STATIC);
+        setPhysicsBodyShape(world, body, createWorldCollisionShape(world, shape));
+        made.push({ instanceId, shape, body });
     }
     return made;
 }

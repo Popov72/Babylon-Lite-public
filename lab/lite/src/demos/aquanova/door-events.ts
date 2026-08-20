@@ -1,7 +1,7 @@
-import type { EventManager } from "./behaviors/event-manager.js";
+import type { AquanovaEventManager } from "./behaviors/aquanova-event-manager.js";
 import type { ShipDoor } from "./manifest.js";
 
-export function registerDoorEntityEventHandlers(events: EventManager, doors: readonly ShipDoor[], setDoorEnabled: (door: string, enabled: boolean) => void): () => void {
+export function registerDoorEntityEventHandlers(events: AquanovaEventManager, doors: readonly ShipDoor[], setDoorEnabled: (door: string, enabled: boolean) => void): () => void {
     const disposers: Array<() => void> = [];
     for (const door of doors) {
         const apply = (enabled: boolean): void => {

@@ -9,15 +9,6 @@ import type { CubeTexture } from "../texture/cube-texture.js";
 
 /** GPU-resident environment textures. */
 export interface EnvironmentTextures extends CubeTexture {
-    /** Center of the box used for parallax-corrected reflections when this
-     *  environment is assigned to a PBR material's localEnvironment and
-     *  enablePbrLocalCubemap() has been awaited. Set before registerScene;
-     *  later numeric changes require markMaterialUboDirty(material). */
-    boundingBoxPosition?: [number, number, number];
-    /** Full box dimensions used for parallax-corrected reflections. Defining
-     *  this value activates local projection after enablePbrLocalCubemap().
-     *  Adding or removing it after registration requires rebuildMaterial. */
-    boundingBoxSize?: [number, number, number] | null;
     /** @internal */
     _specularCube: GPUTexture;
     /** @internal */

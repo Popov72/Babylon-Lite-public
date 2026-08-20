@@ -1,15 +1,7 @@
-import {
-    createAudioEngineAsync,
-    createStreamingSoundAsync,
-    disposeAudioEngine,
-    playStreamingSound,
-    preloadStreamingInstanceAsync,
-    setMasterVolume,
-    stopStreamingSound,
-} from "babylon-lite";
-import type { AudioEngine, Mesh, StreamingSound } from "babylon-lite";
-import { normalizeSoundVolume } from "./sound-volume.js";
-import type { Behavior, BehaviorContext, WeaponLiquefactorBehaviorConfig } from "./types.js";
+import type { Mesh } from "babylon-lite";
+import type { AquanovaGameContext } from "./game-context.js";
+import type { ManagedSound } from "./sound-manager.js";
+import type { Behavior, WeaponLiquefactorBehaviorConfig } from "./types.js";
 
 const DEFAULT_RANGE = 100;
 const SOUND_ROOT = "/aquanova/sounds";
@@ -18,8 +10,17 @@ const START_SHOT_SOUND = "liquefactorStartShot";
 const LIQUEFY_SOUND = "liquefactorLiquefy";
 
 type WeaponLiquefactorContext = Pick<
-    BehaviorContext,
-    "events" | "nodeNameOf" | "weaponInventory" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
+    AquanovaGameContext,
+    | "events"
+    | "sounds"
+    | "nodeNameOf"
+    | "weaponInventory"
+    | "weaponLiquefactor"
+    | "requestFusionResume"
+    | "resolveFusionResume"
+    | "resolveFusionTarget"
+    | "fusionTargetLost"
+    | "reverseFusion"
 >;
 
 const WEAPON_SLOT = 1;
@@ -30,19 +31,15 @@ interface PendingHit {
 }
 
 export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> {
-    private static initialization: Promise<void> | null = null;
-    private static audioEngine: AudioEngine | null = null;
-    private static startShotSound: StreamingSound | null = null;
-    private static liquefySound: StreamingSound | null = null;
-    private static soundCategories: Map<string, readonly StreamingSound[]> | null = null;
-    private static soundEnabled = true;
-    private static soundVolume = 1;
     public readonly name = "weaponLiquefactor";
     public readonly mesh: Mesh;
     public readonly config: WeaponLiquefactorBehaviorConfig;
     private readonly context: WeaponLiquefactorContext;
     private readonly entityName: string;
     private readonly disposers: Array<() => void> = [];
+    private startShotSound: ManagedSound | null = null;
+    private liquefySound: ManagedSound | null = null;
+    private soundCategories: Map<string, readonly ManagedSound[]> | null = null;
     private pendingHit: PendingHit | null = null;
     private resumeToken: number | null = null;
     private triggerActive = false;
@@ -54,7 +51,11 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
     private owned = false;
     private equipped = false;
 
-    public constructor(entityName: string, mesh: Mesh, config: WeaponLiquefactorBehaviorConfig, context: WeaponLiquefactorContext) {
+    public constructor(entityName: string, meshes: readonly Mesh[], config: WeaponLiquefactorBehaviorConfig, context: WeaponLiquefactorContext) {
+        const mesh = meshes[0];
+        if (!mesh) {
+            throw new Error("[aquanova] weaponLiquefactor requires at least one mesh");
+        }
         this.entityName = entityName;
         this.mesh = mesh;
         this.config = config;
@@ -65,43 +66,8 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         }
     }
 
-    public static init(config: WeaponLiquefactorBehaviorConfig): Promise<void> {
-        if (!this.initialization) {
-            this.initialization = this.initialize(config).catch((error: unknown) => {
-                this.initialization = null;
-                throw error;
-            });
-        }
-        return this.initialization;
-    }
-
-    public static dispose(): void {
-        if (this.audioEngine) disposeAudioEngine(this.audioEngine);
-        this.audioEngine = null;
-        this.startShotSound = null;
-        this.liquefySound = null;
-        this.soundCategories = null;
-        this.soundEnabled = true;
-        this.soundVolume = 1;
-        this.initialization = null;
-    }
-
-    public static setSoundEnabled(enabled: boolean): void {
-        this.soundEnabled = enabled;
-        if (!enabled) {
-            this.stopActionSounds();
-        }
-    }
-
-    public static setSoundVolume(volume: number): void {
-        this.soundVolume = normalizeSoundVolume(volume);
-        if (this.audioEngine) {
-            setMasterVolume(this.audioEngine, this.soundVolume);
-        }
-    }
-
-    private static async initialize(config: WeaponLiquefactorBehaviorConfig): Promise<void> {
-        const categories = config.sounds;
+    public async init(): Promise<void> {
+        const categories = this.config.sounds;
         const entries = Object.entries(categories ?? {});
         const names = new Set<string>([START_SHOT_SOUND, LIQUEFY_SOUND]);
         for (const [category, soundNames] of entries) {
@@ -119,37 +85,30 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             throw new Error('[aquanova] weaponLiquefactor sounds must define the default "quickSplash" category');
         }
 
-        const engine = await createAudioEngineAsync();
-        try {
-            const soundsByName = new Map<string, StreamingSound>();
-            for (const soundName of names) {
+        const sounds = await Promise.all(
+            [...names].map(async (soundName) => {
                 const url = `${SOUND_ROOT}/${encodeURIComponent(soundName)}.mp3?v=${SOUND_ASSET_VERSION}`;
                 try {
-                    const sound = await createStreamingSoundAsync(engine, url, {
+                    return await this.context.sounds.load(`weaponLiquefactor:${soundName}`, url, {
                         preloadCount: 1,
                         ...(soundName === START_SHOT_SOUND || soundName === LIQUEFY_SOUND ? { maxInstances: 1 } : {}),
                     });
-                    soundsByName.set(soundName, sound);
                 } catch (error) {
                     throw new Error(`[aquanova] failed to preload Liquefactor sound "${soundName}" from "${url}"`, { cause: error });
                 }
-            }
-            const soundCategories = new Map<string, readonly StreamingSound[]>();
-            for (const [category, soundNames] of entries) {
-                soundCategories.set(
-                    category,
-                    soundNames.map((soundName) => soundsByName.get(soundName)!)
-                );
-            }
-            this.startShotSound = soundsByName.get(START_SHOT_SOUND)!;
-            this.liquefySound = soundsByName.get(LIQUEFY_SOUND)!;
-            this.soundCategories = soundCategories;
-            this.audioEngine = engine;
-            setMasterVolume(engine, this.soundVolume);
-        } catch (error) {
-            disposeAudioEngine(engine);
-            throw error;
+            })
+        );
+        const soundsByName = new Map([...names].map((soundName, index) => [soundName, sounds[index]!]));
+        const soundCategories = new Map<string, readonly ManagedSound[]>();
+        for (const [category, soundNames] of entries) {
+            soundCategories.set(
+                category,
+                soundNames.map((soundName) => soundsByName.get(soundName)!)
+            );
         }
+        this.startShotSound = soundsByName.get(START_SHOT_SOUND)!;
+        this.liquefySound = soundsByName.get(LIQUEFY_SOUND)!;
+        this.soundCategories = soundCategories;
     }
 
     public start(): void {
@@ -166,19 +125,22 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             this.context.events.on("weaponTriggerReleased", () => this.releaseTrigger()),
             this.context.events.on("liquefactionStarted", ({ meshes }) => {
                 if (this.equipped) {
-                    WeaponLiquefactorBehavior.playLiquefySound();
+                    this.playLiquefySound();
                 }
                 this.emitEntityEventForTargets(meshes, "startLiquefaction");
             }),
             this.context.events.on("liquefactionReversed", () => {
                 if (this.equipped) {
-                    WeaponLiquefactorBehavior.stopLiquefySound();
+                    this.stopLiquefySound();
                 }
             }),
             this.context.events.on("liquefactionCancelled", ({ meshes }) => {
                 this.emitEntityEventForTargets(meshes, "cancelLiquefaction");
             }),
-            this.context.events.on("liquefactionCompleted", ({ sound }) => this.completeLiquefaction(sound)),
+            this.context.events.on("liquefactionCompleted", ({ meshes, sound }) => {
+                this.emitEntityEventForTargets(meshes, "endLiquefaction");
+                this.completeLiquefaction(sound);
+            }),
             this.context.events.on("frameEnd", ({ deltaMs }) => {
                 if (this.owned) {
                     this.update(deltaMs);
@@ -189,7 +151,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
 
     public dispose(): void {
         for (const dispose of this.disposers.splice(0)) dispose();
-        WeaponLiquefactorBehavior.stopActionSounds();
+        this.stopActionSounds();
         this.reset();
         this.owned = false;
         this.equipped = false;
@@ -209,7 +171,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             return;
         }
         if (!equipped) {
-            WeaponLiquefactorBehavior.stopActionSounds();
+            this.stopActionSounds();
             if (this.triggerActive) {
                 this.context.reverseFusion();
             }
@@ -243,7 +205,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
             this.reset();
             return;
         }
-        WeaponLiquefactorBehavior.playStartShotSound();
+        this.playStartShotSound();
     }
 
     private updateAim(mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null): void {
@@ -270,7 +232,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         if (!this.equipped) {
             return;
         }
-        WeaponLiquefactorBehavior.stopActionSounds();
+        this.stopActionSounds();
         this.context.reverseFusion();
         this.reset();
     }
@@ -279,17 +241,17 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         if (!this.equipped) {
             return;
         }
-        WeaponLiquefactorBehavior.stopActionSounds();
-        WeaponLiquefactorBehavior.playSplashSound(soundCategory);
+        this.stopActionSounds();
+        this.playSplashSound(soundCategory);
         if (!this.triggerActive) return;
         if (this.triggerHeld) {
-            WeaponLiquefactorBehavior.playStartShotSound();
+            this.playStartShotSound();
             return;
         }
         this.reset();
     }
 
-    private static playSplashSound(category: string): void {
+    private playSplashSound(category: string): void {
         const categories = this.soundCategories;
         if (!categories?.size) return;
         const sounds = categories.get(category);
@@ -302,35 +264,27 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         this.playSound(sound);
     }
 
-    private static playStartShotSound(): void {
+    private playStartShotSound(): void {
         this.stopActionSounds();
         if (this.startShotSound) this.playSound(this.startShotSound, true);
     }
 
-    private static playLiquefySound(): void {
+    private playLiquefySound(): void {
         this.stopActionSounds();
         if (this.liquefySound) this.playSound(this.liquefySound, true);
     }
 
-    private static stopLiquefySound(): void {
-        if (this.liquefySound) stopStreamingSound(this.liquefySound);
+    private stopLiquefySound(): void {
+        if (this.liquefySound) this.context.sounds.stop(this.liquefySound);
     }
 
-    private static stopActionSounds(): void {
-        if (this.startShotSound) stopStreamingSound(this.startShotSound);
+    private stopActionSounds(): void {
+        if (this.startShotSound) this.context.sounds.stop(this.startShotSound);
         this.stopLiquefySound();
     }
 
-    private static playSound(sound: StreamingSound, loop = false): void {
-        if (!this.soundEnabled) {
-            return;
-        }
-        if (loop) playStreamingSound(sound, { loop: true });
-        else playStreamingSound(sound);
-        void preloadStreamingInstanceAsync(sound).catch((error: unknown) => {
-            // eslint-disable-next-line no-console
-            console.warn(`[aquanova] failed to replenish a preloaded Liquefactor sound instance`, error);
-        });
+    private playSound(sound: ManagedSound, loop = false): void {
+        this.context.sounds.play(sound, loop ? { loop: true } : {});
     }
 
     private update(deltaMs: number): void {

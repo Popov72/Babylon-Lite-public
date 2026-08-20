@@ -5,7 +5,9 @@ import {
     isPbrMaterial,
     loadEnvironment,
     MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
+    setPbrLocalEnvironment,
     setPbrLocalEnvironmentProbeDebug,
+    setPbrLocalEnvironmentProbeSet,
     type EnvironmentTextures,
     type Mesh,
     type PbrLocalEnvironmentProbeSet,
@@ -233,8 +235,6 @@ export async function applyLocalEnvironmentProbes(
                     skipGround: true,
                 });
                 const boxCentre = toLite(probe.boxPosition);
-                environment.boundingBoxPosition = [...boxCentre];
-                environment.boundingBoxSize = [...probe.boxSize];
                 environments.set(probeId, environment);
 
                 const defaults = defaultInfluenceHalfSizes(probe.boxSize);
@@ -317,11 +317,13 @@ export async function applyLocalEnvironmentProbes(
             if (!variant) {
                 variant = { ...source };
                 if (blendingEnabled) {
-                    variant.localEnvironment = null;
-                    variant.localEnvironmentProbes = probeSet;
+                    setPbrLocalEnvironmentProbeSet(variant, probeSet);
                 } else {
-                    variant.localEnvironment = loadedProbes[probeIndex]!.environment;
-                    variant.localEnvironmentProbes = null;
+                    const probe = loadedProbes[probeIndex]!;
+                    setPbrLocalEnvironment(variant, probe.environment, {
+                        projectionPosition: probe.projectionCentre,
+                        projectionSize: fullSize(probe.projectionHalfSize),
+                    });
                 }
                 delete (variant as { _renderFeatures?: unknown })._renderFeatures;
                 sourceVariants.set(variantKey, variant);

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AnimationGroup, Mesh } from "../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { BehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/behavior-manager";
+import { AquanovaBehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
 import { PlayAnimationBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/play-animation";
-import type { BehaviorContext } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
+import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;
@@ -27,7 +27,7 @@ describe("Aquanova playAnimation behavior", () => {
     it("plays the named animation from the beginning and honours loop false", () => {
         const idle = animationGroup("Idle", "other");
         const fan = animationGroup("Fan", "fan_blades");
-        const behavior = new PlayAnimationBehavior("fan", mesh("fan"), { animation: "Fan", loop: false }, [idle, fan]);
+        const behavior = new PlayAnimationBehavior("fan", [mesh("fan")], { animation: "Fan", loop: false }, { animationGroups: [idle, fan] });
 
         behavior.start();
 
@@ -46,7 +46,7 @@ describe("Aquanova playAnimation behavior", () => {
         const unrelated = animationGroup("Unrelated", "other");
         const first = animationGroup("First", "animated");
         const second = animationGroup("Second", "animated_blades");
-        const behavior = new PlayAnimationBehavior("animated", mesh("animated"), {}, [unrelated, first, second]);
+        const behavior = new PlayAnimationBehavior("animated", [mesh("animated")], {}, { animationGroups: [unrelated, first, second] });
 
         behavior.start();
 
@@ -59,7 +59,7 @@ describe("Aquanova playAnimation behavior", () => {
     it("keeps identically named clips on separate entities independent", () => {
         const firstFan = animationGroup("Fan_Idle", "fan1_propeller");
         const secondFan = animationGroup("Fan_Idle", "fan2_propeller");
-        const behavior = new PlayAnimationBehavior("fan2", mesh("fan2"), { animation: "Fan_Idle" }, [firstFan, secondFan]);
+        const behavior = new PlayAnimationBehavior("fan2", [mesh("fan2")], { animation: "Fan_Idle" }, { animationGroups: [firstFan, secondFan] });
 
         behavior.start();
 
@@ -68,29 +68,33 @@ describe("Aquanova playAnimation behavior", () => {
     });
 
     it("does nothing when no animation is available and none was requested", () => {
-        const behavior = new PlayAnimationBehavior("static", mesh("static"), {}, []);
+        const behavior = new PlayAnimationBehavior("static", [mesh("static")], {}, { animationGroups: [] });
         expect(() => behavior.start()).not.toThrow();
         behavior.dispose();
     });
 
     it("rejects invalid parameters and missing named animations", () => {
-        expect(() => new PlayAnimationBehavior("invalid", mesh("invalid"), { animation: "" }, [])).toThrow("animation must be a non-empty animation name");
-        expect(() => new PlayAnimationBehavior("invalid", mesh("invalid"), { loop: "yes" } as unknown as { loop: boolean }, [])).toThrow("loop must be a boolean");
-        expect(() => new PlayAnimationBehavior("invalid", mesh("invalid"), { animation: "Missing" }, []).start()).toThrow('animation "Missing" was not found');
+        expect(() => new PlayAnimationBehavior("invalid", [mesh("invalid")], { animation: "" }, { animationGroups: [] })).toThrow("animation must be a non-empty animation name");
+        expect(() => new PlayAnimationBehavior("invalid", [mesh("invalid")], { loop: "yes" } as unknown as { loop: boolean }, { animationGroups: [] })).toThrow(
+            "loop must be a boolean"
+        );
+        expect(() => new PlayAnimationBehavior("invalid", [mesh("invalid")], { animation: "Missing" }, { animationGroups: [] }).start()).toThrow(
+            'animation "Missing" was not found'
+        );
     });
 
     it("creates one runtime instance per entity rather than per mesh primitive", async () => {
         const group = animationGroup("Fan", "fan_blades");
         const firstPrimitive = mesh("fan-primitive-0");
         const secondPrimitive = mesh("fan-primitive-1");
-        const manager = new BehaviorManager({
+        const manager = new AquanovaBehaviorManager({
             library: { playAnimation: { animation: "Fan" } },
             entities: { fan: { behaviors: [{ name: "playAnimation", loop: false }] } },
             meshesByEntityName: new Map([["fan", [firstPrimitive, secondPrimitive]]]),
             entityNameOf: () => "fan",
         });
 
-        await manager.start({ animationGroups: [group] } as unknown as Omit<BehaviorContext, "events">);
+        await manager.start({ animationGroups: [group] } as unknown as Omit<AquanovaGameContext, "events" | "weaponInventory">);
 
         expect(manager.describeInstances()).toEqual([{ name: "playAnimation", mesh: "fan" }]);
         expect(group.isPlaying).toBe(true);

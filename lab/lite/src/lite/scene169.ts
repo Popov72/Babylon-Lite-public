@@ -14,6 +14,7 @@ import {
     enablePbrLocalCubemap,
     loadEnvironment,
     registerScene,
+    setPbrLocalEnvironment,
     startEngine,
 } from "babylon-lite";
 
@@ -39,8 +40,6 @@ async function main(): Promise<void> {
         brdfUrl: "/brdf-lut.png",
     });
     await enablePbrLocalCubemap();
-    localEnvironment.boundingBoxPosition = [1.6, 1, 0];
-    localEnvironment.boundingBoxSize = [4, 3, 4];
     await loadEnvironment(scene, GLOBAL_ENV_URL, {
         skipSkybox: true,
         skipGround: true,
@@ -61,8 +60,11 @@ async function main(): Promise<void> {
     const pbrMaterial = createPbrMaterial({
         baseColorTexture: createSolidTexture2D(engine, 0.72, 0.74, 0.78, 1),
         ormTexture: createSolidTexture2D(engine, 1, 0.18, 0.82, 1),
-        localEnvironment,
         environmentIntensity: 1,
+    });
+    setPbrLocalEnvironment(pbrMaterial, localEnvironment, {
+        projectionPosition: [1.6, 1, 0],
+        projectionSize: [4, 3, 4],
     });
     const pbrBox = createBox(engine, 2);
     pbrBox.position.set(1.6, 1, 0);

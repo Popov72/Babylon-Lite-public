@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 1,
-  "savedAt": "2026-08-18T20:36:23.818Z",
+  "savedAt": "2026-08-20T20:36:35.787Z",
   "units": "metres",
   "note": "Collision authored per kit module, in each module's local space. Editor space: the manifest's own collision block is the mirrored, runtime-facing copy.",
   "moduleShapes": {
@@ -4236,6 +4236,26 @@
           1.23
         ]
       }
+    ],
+    "Aquanova/Props/AreaBox": [
+      {
+        "kind": "box",
+        "position": [
+          0,
+          0.5,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
     ]
   },
   "stageLayout": [
@@ -4510,23 +4530,31 @@
         0.536,
         50
       ]
+    },
+    {
+      "module": "Aquanova/Props/AreaBox",
+      "position": [
+        7,
+        0,
+        43
+      ]
     }
   ],
   "stageView": {
     "position": [
-      3.651,
-      5.18,
-      52.138
+      2.942,
+      4.229,
+      48.785
     ],
     "rotation": [
-      0.178,
-      -4.233,
+      0.363,
+      -3.719,
       0
     ],
     "target": [
-      12.384,
-      3.411,
-      47.598
+      8.045,
+      0.683,
+      40.95
     ]
   }
 }

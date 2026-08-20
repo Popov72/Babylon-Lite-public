@@ -3,6 +3,7 @@ import {
     advanceLiquefactorPresentation,
     advanceLiquefactorSwayBlend,
     advanceLiquefactorSwayScale,
+    ANTI_GRAVITY_GUN_TRANSFORM,
     computeLiquefactorPose,
     liquefactorPresentationPose,
     liquefactorSwayPose,
@@ -21,6 +22,16 @@ function rotate(q: readonly [number, number, number, number], v: readonly [numbe
 
 describe("Aquanova Liquefactor viewmodel", () => {
     const cameraWorld = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+    it("keeps the calibrated anti-gravity gun transform", () => {
+        expect(ANTI_GRAVITY_GUN_TRANSFORM).toEqual({
+            position: [-0.2063, -0.7618, -0.0354],
+            rotationDegrees: [-0.05, 19.92, 6.41],
+            scale: [2.74, 2.74, 2.74],
+            localGuidePosition: [0, 0.1707, 0.2889],
+            localGuideRotationDegrees: [0, 4.3, 0],
+        });
+    });
 
     it("keeps its screen anchor stable across aspect-ratio changes", () => {
         const narrowProjection = new Float32Array([2.4, 0, 0, 0, 0, 2.4, 0, 0, 0, 0, 1, 1, 0, 0, -0.1, 0]);

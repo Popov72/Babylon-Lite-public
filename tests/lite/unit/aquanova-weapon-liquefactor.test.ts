@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mesh } from "../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { EventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/event-manager";
-import type { BehaviorContext, WeaponLiquefactorBehaviorConfig, WeaponLiquefactorRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
+import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import type { AquanovaGameContext, WeaponLiquefactorRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+import { SoundManager } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
+import type { WeaponLiquefactorBehaviorConfig } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
 import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 import { WeaponLiquefactorBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-liquefactor";
 
@@ -19,9 +21,20 @@ const audio = vi.hoisted(() => ({
 vi.mock("../../../packages/babylon-lite/src/index.ts", () => audio);
 
 type WeaponContext = Pick<
-    BehaviorContext,
-    "events" | "nodeNameOf" | "weaponInventory" | "weaponLiquefactor" | "requestFusionResume" | "resolveFusionResume" | "resolveFusionTarget" | "fusionTargetLost" | "reverseFusion"
+    AquanovaGameContext,
+    | "events"
+    | "sounds"
+    | "nodeNameOf"
+    | "weaponInventory"
+    | "weaponLiquefactor"
+    | "requestFusionResume"
+    | "resolveFusionResume"
+    | "resolveFusionTarget"
+    | "fusionTargetLost"
+    | "reverseFusion"
 >;
+
+const soundManagers: SoundManager[] = [];
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;
@@ -35,7 +48,9 @@ function createHarness(
         enabled?: boolean;
     } = {}
 ) {
-    const events = new EventManager();
+    const events = new AquanovaEventManager();
+    const sounds = new SoundManager();
+    soundManagers.push(sounds);
     const weaponInventory = new WeaponInventory();
     weaponInventory.start(events);
     let reachedTarget = false;
@@ -49,6 +64,7 @@ function createHarness(
     };
     const context: WeaponContext = {
         events,
+        sounds,
         nodeNameOf: vi.fn((mesh) => mesh.name),
         weaponInventory,
         weaponLiquefactor: runtime,
@@ -58,7 +74,7 @@ function createHarness(
         fusionTargetLost: vi.fn(() => false),
         reverseFusion: vi.fn(),
     };
-    const behavior = new WeaponLiquefactorBehavior("itemLiquefactor", mesh("weapon"), options.config ?? {}, context);
+    const behavior = new WeaponLiquefactorBehavior("itemLiquefactor", [mesh("weapon")], options.config ?? {}, context);
     behavior.start();
     if (options.enabled !== false) {
         events.emit("entityEvent", { name: "itemLiquefactor", event: "enable" });
@@ -68,6 +84,7 @@ function createHarness(
         context,
         events,
         runtime,
+        sounds,
         setReachedTarget: (reached: boolean): void => {
             reachedTarget = reached;
         },
@@ -79,7 +96,7 @@ function createHarness(
 
 describe("Aquanova Liquefactor weapon behavior", () => {
     beforeEach(() => {
-        WeaponLiquefactorBehavior.dispose();
+        soundManagers.length = 0;
         audio.createAudioEngineAsync.mockReset().mockResolvedValue({ id: "audio-engine" });
         audio.createStreamingSoundAsync.mockReset().mockImplementation(async (_engine: unknown, source: string) => source);
         audio.disposeAudioEngine.mockReset();
@@ -90,26 +107,27 @@ describe("Aquanova Liquefactor weapon behavior", () => {
     });
 
     afterEach(() => {
-        WeaponLiquefactorBehavior.dispose();
+        for (const manager of soundManagers.splice(0)) {
+            manager.dispose();
+        }
         vi.restoreAllMocks();
     });
 
-    it("statically preloads shared and manifest sounds once, then randomly plays the requested splash category", async () => {
+    it("preloads shared and manifest sounds once, then randomly plays the requested splash category", async () => {
         const config = {
             sounds: {
                 quickSplash: ["quick-a", "quick-b"],
                 bigSplash: ["big"],
             },
         };
-        await WeaponLiquefactorBehavior.init(config);
-        await WeaponLiquefactorBehavior.init(config);
         const harness = createHarness({
             config,
         });
+        await harness.behavior.init();
 
         vi.spyOn(Math, "random").mockReturnValue(0.75);
 
-        harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
+        harness.events.emit("liquefactionCompleted", { meshes: [mesh("target")], sound: "quickSplash" });
 
         expect(audio.createAudioEngineAsync).toHaveBeenCalledOnce();
         expect(audio.setMasterVolume).toHaveBeenCalledWith({ id: "audio-engine" }, 1);
@@ -125,22 +143,24 @@ describe("Aquanova Liquefactor weapon behavior", () => {
 
         harness.behavior.dispose();
         expect(audio.disposeAudioEngine).not.toHaveBeenCalled();
-        WeaponLiquefactorBehavior.dispose();
+        harness.sounds.dispose();
         expect(audio.disposeAudioEngine).toHaveBeenCalledWith({ id: "audio-engine" });
     });
 
     it("updates the master volume while a weapon loop is active", async () => {
-        WeaponLiquefactorBehavior.setSoundVolume(0.4);
-        await WeaponLiquefactorBehavior.init({
-            sounds: {
-                quickSplash: ["quick"],
+        const harness = createHarness({
+            config: {
+                sounds: {
+                    quickSplash: ["quick"],
+                },
             },
         });
-        const harness = createHarness();
+        harness.sounds.setVolume(0.4);
+        await harness.behavior.init();
         harness.events.emit("weaponTriggerPressed", { held: true });
         const stopCount = audio.stopStreamingSound.mock.calls.length;
 
-        WeaponLiquefactorBehavior.setSoundVolume(0.65);
+        harness.sounds.setVolume(0.65);
 
         expect(audio.setMasterVolume.mock.calls).toEqual([
             [{ id: "audio-engine" }, 0.4],
@@ -233,12 +253,14 @@ describe("Aquanova Liquefactor weapon behavior", () => {
     });
 
     it("stops action loops at transitions and restarts the shot loop after completion while held", async () => {
-        await WeaponLiquefactorBehavior.init({
-            sounds: {
-                quickSplash: ["quick"],
+        const harness = createHarness({
+            config: {
+                sounds: {
+                    quickSplash: ["quick"],
+                },
             },
         });
-        const harness = createHarness();
+        await harness.behavior.init();
         audio.playStreamingSound.mockClear();
         audio.stopStreamingSound.mockClear();
         audio.preloadStreamingInstanceAsync.mockClear();
@@ -256,7 +278,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
 
         audio.playStreamingSound.mockClear();
         audio.stopStreamingSound.mockClear();
-        harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
+        harness.events.emit("liquefactionCompleted", { meshes: [mesh("target")], sound: "quickSplash" });
         expect(audio.stopStreamingSound).toHaveBeenCalledWith("/aquanova/sounds/liquefactorLiquefy.mp3?v=20260813-1");
         expect(audio.playStreamingSound.mock.calls.slice(-2)).toEqual([
             ["/aquanova/sounds/quick.mp3?v=20260813-1"],
@@ -265,27 +287,29 @@ describe("Aquanova Liquefactor weapon behavior", () => {
     });
 
     it("suppresses weapon sounds and stops active loops while sounds are disabled", async () => {
-        await WeaponLiquefactorBehavior.init({
-            sounds: {
-                quickSplash: ["quick"],
+        const harness = createHarness({
+            config: {
+                sounds: {
+                    quickSplash: ["quick"],
+                },
             },
         });
-        const harness = createHarness();
+        await harness.behavior.init();
         audio.playStreamingSound.mockClear();
         audio.stopStreamingSound.mockClear();
 
         harness.events.emit("weaponTriggerPressed", { held: true });
         expect(audio.playStreamingSound).toHaveBeenCalledOnce();
 
-        WeaponLiquefactorBehavior.setSoundEnabled(false);
+        harness.sounds.setEnabled(false);
         expect(audio.stopStreamingSound).toHaveBeenCalled();
         audio.playStreamingSound.mockClear();
 
         harness.events.emit("liquefactionStarted", { meshes: [mesh("target")] });
-        harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
+        harness.events.emit("liquefactionCompleted", { meshes: [mesh("target")], sound: "quickSplash" });
         expect(audio.playStreamingSound).not.toHaveBeenCalled();
 
-        WeaponLiquefactorBehavior.setSoundEnabled(true);
+        harness.sounds.setEnabled(true);
         harness.events.emit("weaponTriggerReleased", {});
         harness.events.emit("weaponTriggerPressed", { held: true });
         expect(audio.playStreamingSound).toHaveBeenCalledOnce();
@@ -301,12 +325,15 @@ describe("Aquanova Liquefactor weapon behavior", () => {
 
         harness.events.emit("liquefactionStarted", { meshes: [caution, target, secondTargetPrimitive] });
         harness.events.emit("liquefactionCancelled", { meshes: [caution, target, secondTargetPrimitive] });
+        harness.events.emit("liquefactionCompleted", { meshes: [caution, target, secondTargetPrimitive], sound: "quickSplash" });
 
         expect(entityEvents).toEqual([
             { name: "storageDoor_caution", event: "startLiquefaction" },
             { name: "storageDoorLF", event: "startLiquefaction" },
             { name: "storageDoor_caution", event: "cancelLiquefaction" },
             { name: "storageDoorLF", event: "cancelLiquefaction" },
+            { name: "storageDoor_caution", event: "endLiquefaction" },
+            { name: "storageDoorLF", event: "endLiquefaction" },
         ]);
     });
 
@@ -317,14 +344,16 @@ describe("Aquanova Liquefactor weapon behavior", () => {
             return source;
         });
 
-        await expect(
-            WeaponLiquefactorBehavior.init({
+        const harness = createHarness({
+            config: {
                 sounds: {
                     quickSplash: ["broken-splash"],
                 },
-            })
-        ).rejects.toThrow('[aquanova] failed to preload Liquefactor sound "broken-splash" from "/aquanova/sounds/broken-splash.mp3?v=20260813-1"');
-        expect(audio.disposeAudioEngine).toHaveBeenCalledWith({ id: "audio-engine" });
+            },
+        });
+        await expect(harness.behavior.init()).rejects.toThrow(
+            '[aquanova] failed to preload Liquefactor sound "broken-splash" from "/aquanova/sounds/broken-splash.mp3?v=20260813-1"'
+        );
     });
 
     it("delivers one hit only after the laser reaches its target", () => {
@@ -493,7 +522,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         harness.events.emit("weaponAimUpdated", { mesh: mesh("target"), point: null, distance: 3 });
         vi.mocked(harness.runtime.stop).mockClear();
 
-        harness.events.emit("liquefactionCompleted", { sound: "quickSplash" });
+        harness.events.emit("liquefactionCompleted", { meshes: [mesh("target")], sound: "quickSplash" });
 
         expect(harness.runtime.stop).not.toHaveBeenCalled();
 

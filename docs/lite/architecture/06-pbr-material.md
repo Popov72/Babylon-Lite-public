@@ -329,20 +329,75 @@ All fragments live in `src/material/pbr/fragments/` and export factory functions
 
 ### `local-cubemap-fragment.ts` — Bounded Local IBL (opt-in)
 
-- **Opt-in**: `await enablePbrLocalCubemap()` before `registerScene()`.
-- **Activation**: `material.localEnvironment` references an `EnvironmentTextures` with
-  `boundingBoxSize`.
-- **Lighting ownership**: the material-local environment supplies the complete IBL source:
-  prefiltered specular radiance, BRDF LUT, and its own spherical-harmonics irradiance. A scene-global
-  environment is not required, and is used only as the fallback for materials without a local
-  environment.
-- **Projection**: reflected rays are box-projected from `boundingBoxPosition` through
-  `boundingBoxSize` before sampling the local cubemap.
-- **Material UBO**: the probe's nine pre-scaled SH vectors are appended only to local-cubemap
-  variants, so scenes that do not enable bounded local IBL pay no UBO or shader cost.
-- **Per-material IBL variants**: PBR composition decides `PBR_HAS_ENV` from the resolved material
-  environment. A scene may therefore mix locally lit materials and materials with no IBL without
-  binding a dummy global cubemap.
+- **Opt-in/init**: call `await enablePbrLocalCubemap({ maxCandidates })` before creating probe
+  sets or registering the scene. `maxCandidates` defaults to 4, accepts 1–12, and is fixed after
+  the first call.
+- **Zero-cost default**: local-probe state, WGSL, resource packing, and binding logic are reachable
+  only from `enable-pbr-local-cubemap.ts` and its dynamic fragment import. `PbrMaterialProps`,
+  `EnvironmentTextures`, `pbr-renderable.ts`, the ordinary IBL fragment, and the generic shader
+  composer contain no local-cubemap fields, branches, resolver hooks, or cube-array support.
+- **Activation**: use `setPbrLocalEnvironment(material, environment, { projectionPosition,
+  projectionSize })` for one bounded cubemap, or
+  `setPbrLocalEnvironmentProbeSet(material, probeSet)` for fragment-weighted probes. Assignments are
+  stored privately by the opt-in feature rather than extending every PBR material.
+- **Binding lifecycle**: configure assignments before `registerScene()`. Changing or clearing an
+  assignment after renderables exist is intentionally infrequent and does not add a per-frame
+  version check; call `rebuildMaterial(scene, material)` explicitly after the setter.
+- **Single local probe**: the assigned environment supplies prefiltered specular radiance, BRDF LUT,
+  and diffuse spherical harmonics. Its box projection uses the setter's `projectionPosition` and
+  `projectionSize`.
+- **Probe-set diffuse lighting**: local probe arrays replace only specular radiance. Diffuse
+  irradiance uses the scene spherical harmonics when a scene environment exists; otherwise it uses
+  the first probe's spherical harmonics. Probe irradiance is intentionally not blended.
+- **Projection**: reflected rays are box-projected from each probe's projection position through its
+  projection size before sampling the local cubemap.
+- **Probe array**: `createPbrLocalEnvironmentProbeSet()` copies every probe into one
+  `texture_cube_array<f32>`. All sources must have the same format and power-of-two-related square
+  dimensions. The destination uses the smallest source dimension; larger sources contribute the
+  corresponding lower mip so no resampling pass is needed. Persistent `.env` RGBD cubemaps, HDR
+  prefilter outputs, and therefore the shared local-probe array use `rgba16float`; the
+  `texture_cube_array<f32>` WGSL sample type denotes filterable floating-point sampling, not
+  32-bit-per-channel storage.
+- **Shared probe UBO**: one scene-owned buffer contains projection centre/half-size, capture
+  position, influence centre/inner/outer half-size, precomputed yaw sine/cosine, cube-array index,
+  LOD scale/bias, and an RGB8 debug color packed into the otherwise unused final probe-record word.
+  Every material using the set binds the same UBO, texture view and sampler.
+- **World-space voxel lookup**: each probe set also owns one dense read-only storage buffer. Its
+  header stores the grid minimum, reciprocal cell size, dimensions, and fixed cell stride. Each
+  cell stores a count followed by up to `maxCandidates` probe indices. CPU voxelization first
+  restricts work with the yaw-oriented outer box's conservative world AABB, then uses an exact
+  yaw-oriented box/AABB intersection before inserting the probe. Intersecting probes are never
+  discarded: exceeding the configured per-cell capacity throws during set creation. Empty cells
+  receive the deterministic nearest probe at the cell centre.
+- **Limits**: the 64 KiB probe UBO holds 682 probe records, the maximum permitted by WebGPU's
+  guaranteed uniform-binding size with the fixed header. The actual cube-array count is also
+  limited by the device's `maxTextureArrayLayers / 6`. Four voxel probes are evaluated by default;
+  initialization may choose 1–12. The dense grid buffer must fit both `maxBufferSize` and
+  `maxStorageBufferBindingSize`.
+- **Per-fragment lookup and influence**: `worldPos` selects a voxel directly; positions outside the
+  authored grid clamp to its boundary cells. Each listed probe then rotates
+  `worldPos - influenceCentre` into the probe's
+  yaw-local XZ frame, computes the box normalized distance field
+  `max((abs(localPosition) - innerHalfSize) / (outerHalfSize - innerHalfSize))`, and evaluates the
+  normalized multi-probe weights at the fragment. An inner-box hit receives full weight; one outer
+  hit receives full weight; multiple outer hits use the normalized blend-map formula; no outer hit
+  samples the voxel probe with the smallest unbounded box NDF at that world position.
+- **Oriented projection**: the same yaw rotates the reflection ray and fragment into the projection
+  box's local frame. The ray is intersected with the axis-aligned local box, then the vector from
+  the capture position to that hit is rotated back to world space before cubemap sampling.
+- **Blend-color diagnostics**: `setPbrLocalEnvironmentProbeDebug(set, true)` sets a header bit
+  without rebuilding material bindings. While enabled, the normal per-fragment influence
+  calculation is retained, but each cubemap sample is replaced by its probe's packed debug color
+  and the final PBR color is replaced by the resulting weighted color. This makes shader influence
+  boundaries directly visible while preserving the production weighting path.
+- **References**:
+    - Shadertoy reference implementation: <https://www.shadertoy.com/view/DtlBWn>
+    - Sébastien Lagarde, _Local Image-based Lighting with Parallax-Corrected Cubemaps_:
+      <https://dl.acm.org/doi/10.1145/2343045.2343094>
+- **Per-material IBL variants**: when a scene environment exists, the opt-in fragment patches its
+  ordinary IBL variant and adds/replaces only the feature's bindings. Without a scene environment,
+  the feature fragment supplies complete BRDF/specular/diffuse IBL itself. Ordinary materials still
+  compose with no IBL.
 
 ### `clearcoat-fragment.ts` — Clearcoat Layer
 
