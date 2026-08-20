@@ -1,0 +1,320 @@
+{
+  "version": 1,
+  "behaviors": {
+    "dynamic": {
+      "label": "Dynamic body",
+      "description": "Makes the owner a movable rigid body.",
+      "eventsRaised": [],
+      "properties": {
+        "dynamic": {
+          "type": "constant",
+          "value": true,
+          "label": "Dynamic"
+        },
+        "mass": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 10,
+          "label": "Mass (kg)"
+        }
+      }
+    },
+    "anyLiquefaction": {
+      "label": "Any liquefaction",
+      "description": "Allows any configured fluid simulation to liquefy the owner.",
+      "eventsRaised": [
+        { "name": "startLiquefaction" },
+        { "name": "cancelLiquefaction" },
+        { "name": "endLiquefaction" }
+      ],
+      "properties": {
+        "liquefiable": {
+          "type": "constant",
+          "value": true,
+          "label": "Liquefiable"
+        },
+        "fluidSim": {
+          "type": "array",
+          "items": { "type": "string", "optionsSource": "fluidSim" },
+          "label": "Fluid simulations"
+        },
+        "linked": {
+          "type": "array",
+          "items": { "type": "entity", "optionsSource": "nearbyEntities" },
+          "definition": false,
+          "label": "Linked entities",
+          "description": "Entities that melt and recover as one group with this owner."
+        },
+        "sound": {
+          "type": "string",
+          "label": "Splash sound category"
+        }
+      }
+    },
+    "stdLiquefaction": {
+      "extends": "anyLiquefaction",
+      "label": "Standard liquefaction",
+      "description": "Liquefies the owner using the standard liquid profile."
+    },
+    "explosiveLiquefaction": {
+      "extends": "anyLiquefaction",
+      "label": "Explosive liquefaction",
+      "description": "Liquefies the owner using the explosive liquid profile."
+    },
+    "probeExcluded": {
+      "label": "Exclude from reflections",
+      "description": "Excludes the owner from generated local environment probes.",
+      "eventsRaised": [],
+      "properties": {
+        "reflectionProbe": {
+          "type": "constant",
+          "value": "exclude",
+          "label": "Reflection probe"
+        }
+      }
+    },
+    "player": {
+      "label": "Player",
+      "description": "Configures the first-person player start and controller.",
+      "eventsRaised": [],
+      "properties": {
+        "direction": {
+          "type": "vector3",
+          "label": "Facing direction"
+        },
+        "characterStrength": {
+          "type": "number",
+          "minimum": 0,
+          "default": 10000,
+          "label": "Push strength"
+        }
+      }
+    },
+    "weaponLiquefactor": {
+      "label": "Liquefactor weapon",
+      "description": "Configures the Liquefactor weapon and its sound categories.",
+      "eventsRaised": [
+        { "name": "startLiquefaction" },
+        { "name": "cancelLiquefaction" },
+        { "name": "endLiquefaction" }
+      ],
+      "properties": {
+        "direction": {
+          "type": "vector3",
+          "label": "Facing direction"
+        },
+        "range": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 100,
+          "label": "Beam range"
+        },
+        "sounds": {
+          "type": "record",
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "label": "Sound categories",
+          "description": "Maps a category to MP3 file names without the extension."
+        }
+      }
+    },
+    "pickEntity": {
+      "label": "Pick up entity",
+      "description": "Rotates and collects the owner when the player intersects it.",
+      "eventsRaised": [
+        { "property": "raiseEvent.event" }
+      ],
+      "properties": {
+        "boundingBoxScale": {
+          "type": "vector3",
+          "minimum": 0,
+          "default": [1, 1, 1],
+          "label": "Pickup bounds scale"
+        },
+        "raiseEvent": {
+          "type": "object",
+          "label": "Event to raise",
+          "properties": {
+            "target": {
+              "type": "entity",
+              "optionsSource": "entities",
+              "label": "Target",
+              "description": "Defaults to the behavior owner."
+            },
+            "event": {
+              "type": "event",
+              "optionsSource": "events",
+              "required": true,
+              "label": "Event"
+            }
+          }
+        },
+        "sound": {
+          "type": "string",
+          "default": "pickItem",
+          "label": "Sound"
+        },
+        "speed": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 1,
+          "label": "Rotation speed"
+        }
+      }
+    },
+    "enableEntity": {
+      "extends": "entityAction",
+      "label": "Enable entity",
+      "eventsRaised": [{ "name": "enable" }]
+    },
+    "disableEntity": {
+      "extends": "entityAction",
+      "label": "Disable entity",
+      "eventsRaised": [{ "name": "disable" }]
+    },
+    "showEntity": {
+      "extends": "entityAction",
+      "label": "Show entity",
+      "eventsRaised": [{ "name": "show" }]
+    },
+    "hideEntity": {
+      "extends": "entityAction",
+      "label": "Hide entity",
+      "eventsRaised": [{ "name": "hide" }]
+    },
+    "removeEntity": {
+      "extends": "entityAction",
+      "label": "Remove entity",
+      "eventsRaised": [{ "name": "remove" }]
+    },
+    "enableCollision": {
+      "extends": "entityAction",
+      "label": "Enable collision",
+      "eventsRaised": [{ "name": "enableCollision" }]
+    },
+    "disableCollision": {
+      "extends": "entityAction",
+      "label": "Disable collision",
+      "eventsRaised": [{ "name": "disableCollision" }]
+    },
+    "playAnimation": {
+      "label": "Play animation",
+      "description": "Plays an animation targeting the owner.",
+      "eventsRaised": [],
+      "properties": {
+        "animation": {
+          "type": "string",
+          "label": "Animation name",
+          "description": "Defaults to the first animation targeting the owner."
+        },
+        "loop": {
+          "type": "boolean",
+          "default": true,
+          "label": "Loop"
+        }
+      }
+    },
+    "weaponAntiGravityGun": {
+      "label": "Anti-gravity gun",
+      "description": "Configures the anti-gravity weapon.",
+      "eventsRaised": [],
+      "properties": {
+        "maxGrabDistance": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 6,
+          "label": "Maximum grab distance"
+        },
+        "maxMass": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMinimum": true,
+          "default": 100,
+          "label": "Maximum mass (kg)"
+        }
+      }
+    },
+    "setCollisionShape": {
+      "label": "Set collision shape",
+      "description": "Selects the collision shape used by the owner.",
+      "eventsRaised": [],
+      "properties": {
+        "type": {
+          "type": "enum",
+          "values": ["mesh"],
+          "defaultLabel": "AABB (default)",
+          "label": "Shape"
+        }
+      }
+    },
+    "trigger": {
+      "label": "Intersection trigger",
+      "description": "Raises owner events when another physics body enters or exits.",
+      "eventsRaised": [
+        { "property": "onIntersection.enterEvent" },
+        { "property": "onIntersection.exitEvent" }
+      ],
+      "properties": {
+        "onIntersection": {
+          "type": "object",
+          "required": true,
+          "label": "Intersection",
+          "properties": {
+            "enterEvent": {
+              "type": "event",
+              "optionsSource": "events",
+              "label": "Enter event"
+            },
+            "exitEvent": {
+              "type": "event",
+              "optionsSource": "events",
+              "label": "Exit event"
+            },
+            "playerOnly": {
+              "type": "boolean",
+              "default": false,
+              "label": "Player only"
+            }
+          }
+        }
+      }
+    }
+  },
+  "templates": {
+    "entityAction": {
+      "description": "Acts on its owner immediately, or when one of the subscribed source events is raised.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "label": "Event subscriptions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "event",
+                "optionsSource": "events",
+                "required": true,
+                "label": "Event"
+              },
+              "source": {
+                "type": "entitySource",
+                "optionsSource": "entities",
+                "required": true,
+                "label": "Sources",
+                "description": "One source is written as a string; several are written as an array."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

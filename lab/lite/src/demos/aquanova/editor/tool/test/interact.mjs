@@ -3317,7 +3317,8 @@ const bhv = await page.evaluate(async () => {
   ed.renamePlacement(b.id, "crate");       // same name on purpose
   ed.renamePlacement(c.id, "doorL");
 
-  // the body is free-form JSON: the runtime owns which flags exist
+  // The storage layer still preserves unknown fields even though the UI edits
+  // known fields through metadata.
   const blank = ed.setBehaviorDef("   ", { dynamic: true });
   const notObject = ed.setBehaviorDef("bad", [1, 2, 3]);
   ed.setBehaviorDef("any_liquefiable", { liquefiable: true });
@@ -3489,9 +3490,7 @@ await page.waitForTimeout(200);
 const readPanel = () => page.evaluate(() => ({
   shown: !document.getElementById("behavior-fields").hidden,
   applied: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
-  linked: [...document.querySelectorAll("#bhv-applied [data-linked]")]
-    .map((s) => [...s.selectedOptions].map((o) => o.value).join("|")),
-  hasLinkedPicker: !!document.querySelector("#bhv-applied [data-linked]"),
+  hasLinkedPicker: !!document.querySelector('#bhv-applied [data-behavior-key="linked"]'),
   addOff: document.getElementById("btn-bhv-add").disabled,
   count: document.getElementById("bhv-count").textContent,
   hint: document.getElementById("bhv-hint").textContent,
@@ -3503,31 +3502,19 @@ check("an unnamed element carries behaviours under its id, and the panel says so
     && new RegExp(`^${bhvIds.a} —`).test(unnamed.count),
   `count="${unnamed.count}", hint="${unnamed.hint}"`);
 
-// define two behaviours through the dialog, exactly as a user would
+// Define two known behaviours through the metadata-driven dialog, exactly as a
+// user would. Unknown names are refused because there is no schema to edit.
 await page.fill("#insp-name", "crate");
 await page.locator("#insp-name").blur();
 await page.waitForTimeout(200);
 await page.click("#btn-bhv-library");
 await page.waitForTimeout(150);
 await page.click("#btn-bhv-new");
-await page.fill("#bhv-name", "meltable");
-await page.fill("#bhv-json", '{ "liquefiable": true }');
+await page.selectOption("#bhv-name", "stdLiquefaction");
 await page.click("#btn-bhv-save");
 await page.waitForTimeout(150);
 await page.click("#btn-bhv-new");
-await page.fill("#bhv-name", "heavy");
-await page.fill("#bhv-json", "{ not json }");
-await page.click("#btn-bhv-save");
-await page.waitForTimeout(150);
-const badJson = await page.evaluate(async () => ({
-  error: document.getElementById("bhv-error").textContent,
-  names: (await import("/js/editor.js")).behaviorNames(),
-}));
-check("a body that is not JSON is refused, with the parser's own complaint",
-  /not valid json/i.test(badJson.error) && !badJson.names.includes("heavy"),
-  `"${badJson.error}"`);
-
-await page.fill("#bhv-json", '{ "dynamic": true }');
+await page.selectOption("#bhv-name", "dynamic");
 await page.click("#btn-bhv-save");
 await page.waitForTimeout(150);
 
@@ -3543,13 +3530,13 @@ const libBefore = await page.evaluate(() => {
     offered: [...document.getElementById("bhv-add").options].map((o) => o.value),
     resize: getComputedStyle(win.querySelector(".panel")).resize,
     left: rect.left, top: rect.top, width: rect.width, height: rect.height,
-    json: document.getElementById("bhv-json").getBoundingClientRect().height,
+    fields: document.getElementById("bhv-fields").getBoundingClientRect().height,
     covers: rect.width >= window.innerWidth - 8,
   };
 });
 check("the library lists its definitions alphabetically, whatever order they were written in",
-  libBefore.listed.join() === "heavy,meltable"
-    && libBefore.offered.join() === "heavy,meltable",
+  libBefore.listed.join() === "dynamic,stdLiquefaction"
+    && libBefore.offered.join() === "dynamic,stdLiquefaction",
   `list=[${libBefore.listed}], add=[${libBefore.offered}]`);
 
 const bhvBar = await page.locator("#bhv-window-handle").boundingBox();
@@ -3582,33 +3569,34 @@ const libResized = await page.evaluate(() => {
   const rect = document.getElementById("bhv-modal").getBoundingClientRect();
   return {
     width: rect.width, height: rect.height,
-    json: document.getElementById("bhv-json").getBoundingClientRect().height,
+    fields: document.getElementById("bhv-fields").getBoundingClientRect().height,
   };
 });
-check("and pulled bigger from its corner, with the height going to the JSON box",
+check("and pulled bigger from its corner, with the height going to the typed fields",
   libBefore.resize === "both"
     && libResized.width > libMoved.width + 60
     && libResized.height > libMoved.height + 40
-    && libResized.json > libBefore.json + 40,
+    && libResized.fields > libBefore.fields + 40,
   `resize=${libBefore.resize}, ${libMoved.width}x${libMoved.height}`
-  + ` -> ${libResized.width}x${libResized.height}, json ${libBefore.json} -> ${libResized.json}`);
+  + ` -> ${libResized.width}x${libResized.height}, fields ${libBefore.fields} -> ${libResized.fields}`);
 
 await page.click("#btn-bhv-close");
 await page.waitForTimeout(200);
 const defined = await page.evaluate(async () =>
   (await import("/js/editor.js")).behaviorNames());
-check("the dialog creates definitions", defined.join() === "meltable,heavy", `[${defined}]`);
+check("the dialog creates typed definitions",
+  defined.join() === "stdLiquefaction,dynamic", `[${defined}]`);
 
 const named = await readPanel();
 check("naming the element unlocks Add, and the element count is shown",
   !named.addOff && /"crate" — 1 element\b/.test(named.count), `"${named.count}"`);
 
-await page.selectOption("#bhv-add", "meltable");
+await page.selectOption("#bhv-add", "stdLiquefaction");
 await page.click("#btn-bhv-add");
 await page.waitForTimeout(250);
 const attached = await readPanel();
 check("Add attaches the behaviour to the node name",
-  attached.applied.join() === "meltable", JSON.stringify(attached.applied));
+  attached.applied.join() === "stdLiquefaction", JSON.stringify(attached.applied));
 check("a liquefiable behaviour brings up the linked picker",
   attached.hasLinkedPicker, `pickers=${attached.hasLinkedPicker}`);
 
@@ -3620,211 +3608,128 @@ await page.locator("#insp-name").blur();
 await page.waitForTimeout(200);
 await page.evaluate(async (ids) => (await import("/js/editor.js")).select([ids.a]), bhvIds);
 await page.waitForTimeout(250);
-const options = await page.evaluate(() =>
-  [...document.querySelector("#bhv-applied [data-linked]").options].map((o) => o.value));
-check("the linked picker offers the other named nodes in the room",
-  options.join() === "crateB", `[${options}]`);
-
-await page.selectOption("#bhv-applied [data-linked]", ["crateB"]);
+await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-override input');
+await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
 await page.waitForTimeout(250);
-const linkedNow = await page.evaluate(async () =>
-  (await import("/js/editor.js")).entityBehaviors("crate")[0].linked);
-check("picking a linked node stores it", linkedNow.join() === "crateB", `[${linkedNow}]`);
+const linkedNow = await page.evaluate(async () => {
+  const input = document.querySelector(
+    '#bhv-applied [data-behavior-key="linked"] .behavior-array-row input');
+  const list = input ? document.getElementById(input.getAttribute("list")) : null;
+  return {
+    linked: (await import("/js/editor.js")).entityBehaviors("crate")[0].linked,
+    options: [...(list?.options ?? [])].map((option) => option.value),
+  };
+});
+check("the linked picker offers the other named nodes in the room",
+  linkedNow.options.join() === "crateB", `[${linkedNow.options}]`);
+check("picking a linked node stores it",
+  linkedNow.linked.join() === "crateB", `[${linkedNow.linked}]`);
 
 // a dynamic-only behaviour has nothing to link, so no picker
-await page.selectOption("#bhv-add", "heavy");
+await page.selectOption("#bhv-add", "dynamic");
 await page.click("#btn-bhv-add");
 await page.waitForTimeout(250);
 const both = await page.evaluate(() => ({
   applied: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
-  pickers: document.querySelectorAll("#bhv-applied [data-linked]").length,
+  pickers: document.querySelectorAll('#bhv-applied [data-behavior-key="linked"]').length,
 }));
 check("only the liquefiable one gets a linked picker",
-  both.applied.join() === "meltable,heavy" && both.pickers === 1,
+  both.applied.join() === "stdLiquefaction,dynamic" && both.pickers === 1,
   `${JSON.stringify(both.applied)}, ${both.pickers} picker(s)`);
 
 // isDynamicNode: only `dynamic: true` counts - liquefiable no longer implies it
 const dyn = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  ed.addEntityBehavior("crateB", "heavy");          // heavy is { dynamic: true }
+  ed.addEntityBehavior("crateB", "dynamic");
   ed.select([]);
   ed.select([[...ed.state.placements.values()].find((p) => p.name === "crate").id]);
   return {
     dynamic: ed.isDynamicNode("crateB"),
     unknown: ed.isDynamicNode("nothing"),
-    heavy: mf.buildManifest().entities.crateB.behaviors.find((b) => b.name === "heavy"),
+    dynamic: mf.buildManifest().entities.crateB.behaviors.find((b) => b.name === "dynamic"),
   };
 });
 check("`dynamic: true` makes a node dynamic",
   dyn.dynamic && !dyn.unknown, JSON.stringify(dyn));
 check("an empty linked list is left out of the manifest",
-  !("linked" in dyn.heavy), JSON.stringify(dyn.heavy));
+  !("linked" in dyn.dynamic), JSON.stringify(dyn.dynamic));
 
 await page.click("#bhv-applied [data-remove='1']");
 await page.waitForTimeout(250);
 const removed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { names: ed.entityBehaviors("crate").map((b) => b.name),
-    // "meltable" is { liquefiable: true }, which no longer implies dynamic
+    // stdLiquefaction is liquefiable, which no longer implies dynamic
     stillDynamic: ed.isDynamicNode("crate") };
 });
-check("Remove detaches it again", removed.names.join() === "meltable", `[${removed.names}]`);
+check("Remove detaches it again",
+  removed.names.join() === "stdLiquefaction", `[${removed.names}]`);
 check("liquefiable alone does not make a node dynamic",
   !removed.stillDynamic, JSON.stringify(removed));
 
-// parameters: edited as raw JSON, because the runtime owns which parameters a
-// behaviour understands - a form here would list only the ones this tool knows.
-// Rows are addressed by position, since a node may carry one behaviour twice.
-const paramBoxes = await page.evaluate(() => {
-  const areas = [...document.querySelectorAll("#bhv-applied [data-params]")];
-  return {
-    slots: areas.map((a) => a.dataset.params),
-    names: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
-    value: areas[0]?.value,
-  };
-});
-check("every applied behaviour gets a JSON box for its parameters",
-  paramBoxes.slots.join() === "0" && paramBoxes.names.join() === "meltable"
-    && JSON.parse(paramBoxes.value || "{}").linked?.join() === "crateB",
-  JSON.stringify(paramBoxes));
-
-await page.fill('#bhv-applied [data-params="0"]',
-  '{ "linked": ["crateB"], "direction": [-1, 0, 0], "impactSound": "thud",'
-  + ' "tuning": { "delay": 0.25 } }');
-await page.locator('#bhv-applied [data-params="0"]').blur();
+// Assignment parameters are typed overrides. The definition stays untouched,
+// and the manifest keeps the same wire shape.
+await page.click('#bhv-applied [data-behavior-key="sound"] .behavior-override input');
+await page.fill('#bhv-applied [data-behavior-key="sound"] input[type="text"]', "longSplash");
+await page.locator('#bhv-applied [data-behavior-key="sound"] input[type="text"]').blur();
 await page.waitForTimeout(250);
 const paramsStored = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  const b = ed.entityBehaviors("crate").find((x) => x.name === "meltable");
-  return { entity: b, written: mf.buildManifest().entities.crate.behaviors };
+  const b = ed.entityBehaviors("crate").find((x) => x.name === "stdLiquefaction");
+  return {
+    entity: b,
+    definition: ed.getBehaviorDef("stdLiquefaction"),
+    written: mf.buildManifest().entities.crate.behaviors,
+  };
 });
-const paramsWritten = paramsStored.written.find((b) => b.name === "meltable");
-check("the parameters are stored on the applied behaviour, not the definition",
-  paramsStored.entity?.direction?.join() === "-1,0,0"
-    && paramsStored.entity?.impactSound === "thud"
-    && paramsStored.entity?.tuning?.delay === 0.25,
+const paramsWritten = paramsStored.written.find((b) => b.name === "stdLiquefaction");
+check("typed parameters are stored on the applied behaviour, not the definition",
+  paramsStored.entity?.sound === "longSplash"
+    && paramsStored.definition?.sound === undefined,
   JSON.stringify(paramsStored.entity));
-check("parameters the tool knows nothing about reach the manifest intact",
-  paramsWritten?.impactSound === "thud" && paramsWritten?.tuning?.delay === 0.25
-    && paramsWritten?.linked?.join() === "crateB",
+check("typed parameters reach the unchanged manifest shape",
+  paramsWritten?.sound === "longSplash" && paramsWritten?.linked?.join() === "crateB",
   JSON.stringify(paramsWritten));
-check("the manifest writes the direction beside the name, in glTF space",
-  // X is negated: the manifest is glTF space, the editor's gizmo is not
-  paramsWritten?.direction?.join() === "1,0,0", JSON.stringify(paramsWritten));
 
-// the flip must be its own inverse, or undo would mirror the facing each time
+// Vector controls still edit in editor space, while the manifest writes glTF
+// space. The flip must be its own inverse, or undo would mirror the facing.
 const dirRoundTrip = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  const before = ed.entityBehaviors("crate").find((b) => b.name === "meltable");
+  ed.setBehaviorDef("player", {});
+  ed.addEntityBehavior("crate", "player");
+  return ed.entityBehaviors("crate").findIndex((b) => b.name === "player");
+});
+await page.waitForTimeout(200);
+await page.click(`[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-override input`);
+const directionInputs = page.locator(
+  `[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-vector input`);
+await directionInputs.nth(0).fill("-1");
+await directionInputs.nth(0).blur();
+await page.waitForTimeout(150);
+const directionRoundTrip = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const before = ed.entityBehaviors("crate").find((b) => b.name === "player");
   const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
   await ed.deserialize(snapshot);
-  const after = ed.entityBehaviors("crate").find((b) => b.name === "meltable");
+  const after = ed.entityBehaviors("crate").find((b) => b.name === "player");
   // a restore clears the selection; put it back so the panel below still has
   // something to render
   const crate = [...ed.state.placements.values()].find((p) => p.name === "crate");
   if (crate) ed.select([crate.id]);
-  return { before, snapshot: snapshot.entities.crate[0], after };
-});
-check("a direction survives undo without mirroring itself",
-  dirRoundTrip.before.direction.join() === "-1,0,0"
-    && dirRoundTrip.snapshot.direction.join() === "1,0,0"
-    && dirRoundTrip.after?.direction.join() === "-1,0,0",
-  `editor ${dirRoundTrip.before.direction} -> stored ${dirRoundTrip.snapshot.direction}`
-  + ` -> back ${dirRoundTrip.after?.direction}`);
-check("unknown parameters survive undo too",
-  dirRoundTrip.after?.impactSound === "thud" && dirRoundTrip.after?.tuning?.delay === 0.25,
-  JSON.stringify(dirRoundTrip.after));
-
-// invalid JSON is refused: the text stays as typed, since replacing it with the
-// stored value would throw away the edit being made
-await page.fill('#bhv-applied [data-params="0"]', '{ "direction": [1, 0');
-await page.locator('#bhv-applied [data-params="0"]').blur();
-await page.waitForTimeout(250);
-const badParams = await page.evaluate(async () => ({
-  error: document.querySelector('#bhv-applied [data-err="0"]')?.textContent || "",
-  text: document.querySelector('#bhv-applied [data-params="0"]')?.value,
-  entity: (await import("/js/editor.js")).entityBehaviors("crate")
-    .find((x) => x.name === "meltable"),
-}));
-check("invalid JSON is reported and changes nothing",
-  badParams.error.length > 0 && badParams.text === '{ "direction": [1, 0'
-    && badParams.entity?.direction?.join() === "-1,0,0",
-  JSON.stringify(badParams));
-
-// a definition that names a direction suggests it as the empty box's example
-const seeded = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  ed.setBehaviorDef("facing", { direction: [0, 0, 1] });
-  ed.addEntityBehavior("crate", "facing");
-  const box = document.querySelector('#bhv-applied [data-params="1"]');
-  // …but it is only an example: nothing is written until the entity says so
-  const written = (await import("/js/manifest.js")).buildManifest()
-    .entities.crate.behaviors.find((b) => b.name === "facing");
-  return { value: box?.value, hint: box?.placeholder, written };
-});
-check("a definition's direction is offered as a hint without being written",
-  seeded.value === "" && seeded.hint === '{ "direction": [0, 0, 1] }'
-    && !("direction" in seeded.written),
-  `${JSON.stringify(seeded.hint)} -> ${JSON.stringify(seeded.written)}`);
-
-// an all-zero direction names no direction at all, so it is dropped
-await page.fill('#bhv-applied [data-params="0"]', '{ "direction": [0, 0, 0] }');
-await page.locator('#bhv-applied [data-params="0"]').blur();
-await page.waitForTimeout(250);
-const dirCleared = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  const mf = await import("/js/manifest.js");
   return {
-    entity: ed.entityBehaviors("crate").find((x) => x.name === "meltable"),
-    written: mf.buildManifest().entities.crate.behaviors.find((b) => b.name === "meltable"),
-    box: document.querySelector('#bhv-applied [data-params="0"]')?.value,
+    before,
+    snapshot: snapshot.entities.crate.find((b) => b.name === "player"),
+    after,
   };
 });
-check("an all-zero direction is dropped, not written",
-  !("direction" in dirCleared.entity) && !("direction" in dirCleared.written)
-    && dirCleared.box === "",
-  JSON.stringify(dirCleared));
-
-// The same behaviour, twice on one node. The runtime walks the list and builds
-// one instance per entry, so this is a real thing to author - which means the
-// panel cannot key its rows by behaviour name, or the second row's Remove
-// would take the first one away and both boxes would edit one assignment.
-await page.selectOption("#bhv-add", "facing");
-await page.click("#btn-bhv-add");
-await page.waitForTimeout(250);
-const twiceUi = await page.evaluate(() => ({
-  names: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
-  ordinals: [...document.querySelectorAll("#bhv-applied .item .muted")].map((e) => e.textContent),
-  slots: [...document.querySelectorAll("#bhv-applied [data-params]")].map((a) => a.dataset.params),
-}));
-check("the same behaviour can be attached twice, and the repeats are numbered",
-  twiceUi.names.join() === "meltable,facing,facing"
-    && twiceUi.ordinals.join() === "#1,#2"
-    && twiceUi.slots.join() === "0,1,2",
-  JSON.stringify(twiceUi));
-
-await page.fill('#bhv-applied [data-params="2"]', '{ "direction": [0, 1, 0] }');
-await page.locator('#bhv-applied [data-params="2"]').blur();
-await page.waitForTimeout(250);
-const twiceEdited = await page.evaluate(async () =>
-  (await import("/js/editor.js")).entityBehaviors("crate")
-    .map((b) => `${b.name}:${(b.direction || []).join("|")}`));
-check("editing one row of a repeated behaviour leaves the other alone",
-  twiceEdited.join() === "meltable:,facing:,facing:0|1|0", JSON.stringify(twiceEdited));
-
-await page.click("#bhv-applied [data-remove='1']");
-await page.waitForTimeout(250);
-const twiceRemoved = await page.evaluate(async () => ({
-  entity: (await import("/js/editor.js")).entityBehaviors("crate")
-    .map((b) => `${b.name}:${(b.direction || []).join("|")}`),
-  ordinals: [...document.querySelectorAll("#bhv-applied .item .muted")].map((e) => e.textContent),
-}));
-check("Remove takes the row it was pressed on, not the first one with that name",
-  twiceRemoved.entity.join() === "meltable:,facing:0|1|0"
-    && twiceRemoved.ordinals.length === 0,
-  JSON.stringify(twiceRemoved));
+check("a direction survives undo without mirroring itself",
+  directionRoundTrip.before.direction.join() === "-1,0,0"
+    && directionRoundTrip.snapshot.direction.join() === "1,0,0"
+    && directionRoundTrip.after?.direction.join() === "-1,0,0",
+  `editor ${directionRoundTrip.before.direction} -> stored ${directionRoundTrip.snapshot.direction}`
+  + ` -> back ${directionRoundTrip.after?.direction}`);
 
 // isProbeExcludedNode: what an environment probe must not photograph. Five
 // separate reasons, because they are five separate facts about an element -
@@ -4468,7 +4373,7 @@ const doorBhv = await page.evaluate(async () => {
 
   ed.state.chunks = ["CH_DA", "CH_DB", "CH_DC"];
   ed.state.activeChunk = "CH_DA";
-  ed.setBehaviorDef("door_melt", { liquefiable: true });
+  ed.setBehaviorDef("stdLiquefaction", { liquefiable: true });
   // one named element per room, to prove the picker reads *both* sides
   const a = await ed.placeAt(M, new V(0, 0, 0), { chunk: "CH_DA", name: "leafL", silent: true });
   const b = await ed.placeAt(M, new V(6, 0, 0), { chunk: "CH_DB", name: "leafR", silent: true });
@@ -4492,22 +4397,29 @@ const doorNameRow = await page.evaluate(() =>
 check("a door is deliberately not nameable", doorNameRow === true, String(doorNameRow));
 
 // attach through the UI, exactly as a user would
-await page.selectOption("#bhv-add", "door_melt");
+await page.selectOption("#bhv-add", "stdLiquefaction");
 await page.click("#btn-bhv-add");
 await page.waitForTimeout(200);
+await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-override input');
+await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
+await page.waitForTimeout(150);
 const doorAttached = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
   const id = ed.state.selection[0];
   return {
     applied: ed.entityBehaviors(id).map((b) => b.name),
-    candidates: [...document.querySelectorAll("#bhv-applied [data-linked] option")]
-      .map((o) => o.value).filter(Boolean),
+    candidates: (() => {
+      const input = document.querySelector(
+        '#bhv-applied [data-behavior-key="linked"] .behavior-array-row input');
+      const list = input ? document.getElementById(input.getAttribute("list")) : null;
+      return [...(list?.options ?? [])].map((option) => option.value);
+    })(),
     exported: Object.keys(mf.buildManifest().entities || {}),
   };
 });
 check("a behaviour attached to a door is exported under the door's id",
-  doorAttached.applied.join() === "door_melt"
+  doorAttached.applied.join() === "stdLiquefaction"
     && doorAttached.exported.includes(doorBhv.door),
   JSON.stringify(doorAttached.applied) + " -> " + JSON.stringify(doorAttached.exported));
 check("the linked picker offers both of the door's sides, and nothing else",
@@ -4538,7 +4450,7 @@ check("deleting a door drops its behaviours, and the reused id inherits nothing"
     && doorGone.inherited.length === 0,
   JSON.stringify(doorGone));
 check("undo brings a deleted door's behaviours back",
-  doorGone.afterUndo.join() === "door_melt", JSON.stringify(doorGone.afterUndo));
+  doorGone.afterUndo.join() === "stdLiquefaction", JSON.stringify(doorGone.afterUndo));
 
 // a hand-edit that split `direction` into a sibling entry of its own
 const merged = await page.evaluate(async () => {

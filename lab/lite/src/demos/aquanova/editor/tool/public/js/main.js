@@ -5,7 +5,7 @@ import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
   saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, syncShip, resolveDoorChunks, nodeNameOf,
-  pruneOrphanEntities,
+  liveEntityNames, pruneOrphanEntities,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
@@ -38,9 +38,9 @@ import {
   validEnvironmentProbeId, environmentProbeIdAvailable,
   renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
   setVeilAlpha, SKYBOX_CHUNK,
-  getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
-  entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
-  isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed, entityNameOf,
+  getBehaviorDef, setBehaviorDef, deleteBehaviorDef, behaviorNames,
+  entityBehaviors, addEntityBehavior, removeEntityBehavior,
+  setEntityParams, nodeNamesInChunk, nodesNamed, entityNameOf,
   behaviorParams, behaviorHiddenPlacements,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
@@ -66,11 +66,33 @@ import {
   localEnvironmentProbeOf, showEnvironmentProbes, hideEnvironmentProbes, refreshEnvironmentProbeAssets,
 } from "./runtime.js";
 import { generateLocalEnvironments } from "./local-environments.js";
+import {
+  behaviorMetadata, behaviorMetadataNames, collectRaisedEventNames,
+  createBehaviorForm, defaultBehaviorDefinition, loadBehaviorMetadata,
+} from "./behavior-metadata.js";
 
 const $ = (id) => document.getElementById(id);
 const alphabetical = (values) => [...values].sort((a, b) => a.localeCompare(b));
 const statusText = $("status-text");
 const statusCounts = $("status-counts");
+const behaviorCatalog = await loadBehaviorMetadata();
+
+function fillBehaviorNameOptions(selected = "") {
+  const names = behaviorMetadataNames(behaviorCatalog);
+  if (selected && !names.includes(selected)) names.unshift(selected);
+  $("bhv-name").replaceChildren();
+  const prompt = document.createElement("option");
+  prompt.value = "";
+  prompt.textContent = "Choose a behaviour";
+  $("bhv-name").append(prompt);
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = behaviorMetadata(behaviorCatalog, name)?.label ?? name;
+    $("bhv-name").append(option);
+  }
+  $("bhv-name").value = selected;
+}
 
 /**
  * No browser context menu anywhere in the editor.
@@ -329,33 +351,7 @@ function refreshBehavior() {
 const esc = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-/**
- * The behaviours on this node, each with a Remove button, a JSON editor for its
- * parameters - and, for the ones that liquefy, the `linked` picker.
- *
- * Rows are keyed by **position**, not by behaviour name. A node may carry the
- * same behaviour twice - the runtime builds one instance per entry in the list
- * - and keying by name would have the second row's Remove take the first one
- * away and both parameter boxes write to the same assignment. Where a name
- * appears more than once the rows are numbered, since otherwise nothing on
- * screen would tell them apart.
- *
- * The parameters are edited as raw JSON rather than as named fields because the
- * runtime owns which parameters a behaviour understands: a form built here
- * would list whatever this tool happened to know about on the day it was
- * written, and hide the rest. The old three `direction` boxes were exactly that
- * - one runtime parameter promoted to a widget, with no way to author a second.
- *
- * The `linked` picker survives on top of the JSON because its value is a list
- * of node names from the current room, which is knowledge the editor has and
- * the person typing does not. It edits the same key, and that key is shown in
- * the JSON too, so neither view can silently contradict the other.
- *
- * A door is not in a room, it joins two, so its candidates come from both of
- * its sides. Sides left on "(auto)" are resolved at export time against the
- * chunk volumes and are not known here, so a door with neither side set offers
- * nothing - naming a side is what fills the picker.
- */
+/** Render each applied behavior by list position, because duplicate names are valid. */
 function renderApplied(nodeName, applied) {
   const host = $("bhv-applied");
   // Never rebuild under a field being typed in: it destroys the caret, the
@@ -373,18 +369,6 @@ function renderApplied(nodeName, applied) {
     ? [entry.chunkA, entry.chunkB]
     : [entry?.chunk];
   const candidates = nodeNamesInChunk(rooms, nodeName);
-  const empty = entry?.type === "door"
-    ? "(name a side to choose from its room)"
-    : "(nothing else named in this room)";
-  const picker = (kind, label, options, chosen, at) => {
-    const opts = options.length
-      ? options.map((n) =>
-        `<option value="${esc(n)}"${chosen.includes(n) ? " selected" : ""}>${esc(n)}</option>`)
-        .join("")
-      : `<option disabled>${esc(empty)}</option>`;
-    return `<div class="linked"><div class="lbl">${label}</div>`
-      + `<select multiple size="4" data-${kind}="${at}">${opts}</select></div>`;
-  };
   const total = new Map();
   for (const b of applied) total.set(b.name, (total.get(b.name) || 0) + 1);
   const seen = new Map();
@@ -396,19 +380,7 @@ function renderApplied(nodeName, applied) {
       + (total.get(b.name) > 1 ? `<span class="muted">#${ordinal}</span>` : "")
       + `<button data-remove="${at}">Remove</button></div>`,
     ];
-    if (isLiquefiable(b.name)) {
-      rows.push(picker("linked", "linked — melts together", candidates, b.linked, at));
-    }
-    // Empty rather than "{}" when there is nothing set, so the placeholder can
-    // show what this behaviour's definition suggests - the hint the old
-    // direction fields gave by pre-filling, which a filled-in "{}" would hide.
-    const text = behaviorParamsText(b);
-    const lines = text ? text.split("\n").length : 3;
-    rows.push('<div class="linked"><div class="lbl">parameters — JSON, editor space</div>'
-      + `<textarea data-params="${at}" spellcheck="false" `
-      + `rows="${Math.min(Math.max(lines, 3), 14)}" `
-      + `placeholder="${esc(behaviorParamsHint(b.name))}">${esc(text)}</textarea>`
-      + `<div class="bhv-err" data-err="${at}"></div></div>`);
+    rows.push(`<div data-behavior-form="${at}"></div>`);
     return rows.join("");
   }).join("");
 
@@ -417,59 +389,31 @@ function renderApplied(nodeName, applied) {
       removeEntityBehavior(nodeName, Number(btn.dataset.remove));
       refreshBehavior();
     });
-
   }
-  for (const sel of host.querySelectorAll("[data-linked]")) {
-    sel.addEventListener("change", () => {
-      setEntityLinked(nodeName, Number(sel.dataset.linked),
-        [...sel.selectedOptions].map((o) => o.value));
-      refreshBehavior();
-    });
-  }
-  // `change`, not `input`: JSON is invalid for most of the time it takes to
-  // type, so committing on every keystroke would be one long error message.
-  for (const area of host.querySelectorAll("[data-params]")) {
-    area.addEventListener("change", () => {
-      const at = Number(area.dataset.params);
-      const err = host.querySelector(`[data-err="${at}"]`);
-      const text = area.value.trim();
-      let params;
-      try {
-        params = text ? JSON.parse(text) : {};
-      } catch (e) {
-        // Left as typed, and NOT redrawn: the text is wrong but it is the
-        // user's, and replacing it with the stored value would throw away the
-        // edit they are in the middle of making.
-        if (err) err.textContent = String(e.message || e);
-        return;
-      }
-      if (!params || typeof params !== "object" || Array.isArray(params)) {
-        if (err) err.textContent = "expected a JSON object, like { \"direction\": [0, 0, 1] }";
-        return;
-      }
-      setEntityParams(nodeName, at, params);
-      refreshBehavior();
+  const options = behaviorFormOptions(candidates);
+  for (const formHost of host.querySelectorAll("[data-behavior-form]")) {
+    const at = Number(formHost.dataset.behaviorForm);
+    const assignment = applied[at];
+    createBehaviorForm(formHost, {
+      metadata: behaviorMetadata(behaviorCatalog, assignment.name),
+      value: behaviorParams(assignment),
+      inherited: getBehaviorDef(assignment.name) ?? {},
+      scope: "assignment",
+      options,
+      onChange: (params, errors) => {
+        if (!errors.length) setEntityParams(nodeName, at, params);
+      },
     });
   }
 }
 
-/** An applied behaviour as the JSON the panel shows: its parameters, no name. */
-function behaviorParamsText(b) {
-  const out = behaviorParams(b);
-  return Object.keys(out).length ? JSON.stringify(out, null, 2) : "";
-}
-
-/**
- * The placeholder for an empty parameter box: what this behaviour's definition
- * suggests. `direction` is the one the kit's definitions carry, and the old
- * fields pre-filled from it; the definition body is not otherwise a template
- * for the assignment, so nothing else is offered.
- */
-function behaviorParamsHint(behaviorName) {
-  const d = getBehaviorDef(behaviorName)?.direction;
-  return Array.isArray(d) && d.length === 3 && d.every(Number.isFinite)
-    ? `{ "direction": [${d.map(Number).join(", ")}] }`
-    : "{ }";
+function behaviorFormOptions(nearbyEntities = []) {
+  return {
+    entities: alphabetical(new Set([...liveEntityNames(), ...state.entities.keys()])),
+    nearbyEntities: alphabetical(nearbyEntities),
+    events: collectRaisedEventNames(behaviorCatalog, state.behaviors, state.entities),
+    fluidSim: alphabetical(state.fluidSim),
+  };
 }
 
 function selectedName() {
@@ -488,6 +432,7 @@ $("btn-bhv-add").addEventListener("click", () => {
 // ------------------------------------------------- behaviour library window
 
 let libSelected = null;
+let libraryForm = null;
 
 /**
  * The library in the order it is read in, not the order it was written in.
@@ -518,10 +463,15 @@ function refreshLibrary(pick) {
   $("bhv-list").innerHTML = names
     .map((n) => `<option value="${esc(n)}"${n === libSelected ? " selected" : ""}>${esc(n)}</option>`)
     .join("");
-  $("bhv-name").value = libSelected || "";
-  $("bhv-json").value = libSelected
-    ? JSON.stringify(getBehaviorDef(libSelected), null, 2)
-    : "";
+  fillBehaviorNameOptions(libSelected || "");
+  $("bhv-name").disabled = !!libSelected;
+  const name = $("bhv-name").value.trim();
+  libraryForm = createBehaviorForm($("bhv-fields"), {
+    metadata: behaviorMetadata(behaviorCatalog, name),
+    value: libSelected ? getBehaviorDef(libSelected) : defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
+    scope: "definition",
+    options: behaviorFormOptions(),
+  });
   $("bhv-error").textContent = "";
   $("btn-bhv-delete").disabled = !libSelected;
 }
@@ -532,31 +482,38 @@ $("bhv-list").addEventListener("change", (e) => refreshLibrary(e.target.value));
 $("btn-bhv-new").addEventListener("click", () => {
   libSelected = null;
   $("bhv-list").value = "";
-  $("bhv-name").value = "";
-  $("bhv-json").value = "{\n  \n}";
+  fillBehaviorNameOptions();
+  $("bhv-name").disabled = false;
+  libraryForm = createBehaviorForm($("bhv-fields"), {
+    metadata: null, value: {}, scope: "definition", options: behaviorFormOptions(),
+  });
   $("bhv-error").textContent = "";
   $("btn-bhv-delete").disabled = true;
   $("bhv-name").focus();
+});
+$("bhv-name").addEventListener("change", () => {
+  const name = $("bhv-name").value.trim();
+  const existing = libSelected && name === libSelected ? getBehaviorDef(libSelected) : null;
+  libraryForm = createBehaviorForm($("bhv-fields"), {
+    metadata: behaviorMetadata(behaviorCatalog, name),
+    value: existing ?? defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
+    scope: "definition",
+    options: behaviorFormOptions(),
+  });
 });
 
 $("btn-bhv-save").addEventListener("click", () => {
   const name = $("bhv-name").value.trim();
   if (!name) { $("bhv-error").textContent = "A behaviour needs a name."; return; }
-  let body;
-  try {
-    body = JSON.parse($("bhv-json").value || "{}");
-  } catch (err) {
-    // the parser's own message says where, which is the whole value of showing it
-    $("bhv-error").textContent = `Not valid JSON — ${err.message}`;
+  const metadata = behaviorMetadata(behaviorCatalog, name);
+  if (!metadata) { $("bhv-error").textContent = `No metadata describes "${name}".`; return; }
+  if (!libSelected && behaviorNames().includes(name)) {
+    $("bhv-error").textContent = `A behaviour named "${name}" already exists.`;
     return;
   }
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    $("bhv-error").textContent = "The body must be a JSON object, like { \"dynamic\": true }.";
-    return;
-  }
-  // renaming in place carries every entity reference with it, rather than
-  // leaving them pointing at a name that no longer exists
-  if (libSelected && libSelected !== name) renameBehaviorDef(libSelected, name);
+  const body = libraryForm?.read() ?? defaultBehaviorDefinition(metadata);
+  const errors = libraryForm?.validate(body) ?? [];
+  if (errors.length) { $("bhv-error").textContent = errors.join(" "); return; }
   setBehaviorDef(name, body);
   refreshLibrary(name);
   setStatus(`saved behaviour "${name}"`);

@@ -458,9 +458,9 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #chunk-modal .tool-window-scroll, #probe-modal .tool-window-scroll {
   flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px;
 }
-/* The library is one long field, so the height a taller window buys goes to it
-   rather than to white space: the split fills the pane and the JSON box fills
-   the split. The chunk window is rows, and stays content-tall. */
+/* The library is one long form, so the height a taller window buys goes to it
+   rather than to white space: the split and typed fields fill the pane. The
+   chunk window is rows, and stays content-tall. */
 #bhv-modal .tool-window-scroll { display: flex; }
 #bhv-modal .split { flex: 1 1 auto; min-height: 0; }
 /* The probe window does the same for its list: a ship with a dozen probes
@@ -573,14 +573,49 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #compound-modal input[type="checkbox"] { margin: 0; flex: 0 0 auto; }
 #probe-resolved { font-size: 11px; min-height: 14px; }
 #chunk-error, #probe-error, #bhv-error { min-height: 14px; color: var(--danger); font-size: 11px; }
-/* The window resizes now, so the box has no grip of its own to argue with. */
-#bhv-json {
-  flex: 1 1 auto; min-height: 96px;
-  width: 100%; box-sizing: border-box; resize: none;
-  font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--line); border-radius: 3px; padding: 6px;
+#bhv-fields { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.behavior-form { display: flex; flex-direction: column; gap: 8px; }
+.behavior-description { margin: 0 !important; color: var(--muted); font-size: 11px; }
+.behavior-property { padding-top: 7px; border-top: 1px solid var(--line); }
+.behavior-property:first-of-type { border-top: 0; padding-top: 0; }
+.behavior-label { margin-bottom: 3px; color: var(--text); font-size: 11px; font-weight: 600; }
+.behavior-help, .behavior-inherited {
+  margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.35;
 }
+.behavior-override { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.behavior-override input { margin: 0; }
+.behavior-constant {
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--muted); font: 11px/1.4 ui-monospace, "Cascadia Mono", monospace;
+}
+.behavior-object {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 7px; border-left: 2px solid var(--line); background: rgba(0, 0, 0, 0.08);
+}
+.behavior-nested { min-width: 0; }
+.behavior-form input[type="text"], .behavior-form input[type="number"],
+.behavior-form select { width: 100%; box-sizing: border-box; }
+.behavior-vector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.behavior-array, .behavior-record { display: flex; flex-direction: column; gap: 4px; }
+.behavior-array-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: start; gap: 3px;
+}
+.behavior-array-row > .behavior-object { grid-column: 1; }
+.behavior-record-row {
+  display: grid; grid-template-columns: minmax(76px, .45fr) minmax(0, 1fr) auto;
+  align-items: start; gap: 4px; padding: 5px; border: 1px solid var(--line); border-radius: 3px;
+}
+.behavior-record-row > .behavior-array { min-width: 0; }
+.behavior-small { min-width: 24px; padding: 2px 5px; }
+.behavior-array-add { align-self: flex-start; margin-top: 2px; }
+.behavior-unknown, .behavior-legacy, .behavior-validation {
+  padding: 6px; border-radius: 3px; font-size: 10px; line-height: 1.4;
+}
+.behavior-unknown, .behavior-legacy {
+  color: var(--accent); border: 1px solid var(--accent-dim); background: rgba(255, 176, 0, 0.06);
+}
+.behavior-validation { color: var(--danger); border: 1px solid var(--danger); }
 
 /* the applied list in the inspector */
 #bhv-applied .item {
@@ -591,9 +626,9 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 /* The ordinal shown only when a node carries the same behaviour more than once. */
 #bhv-applied .item .muted { flex: 0 0 auto; font-size: 11px; }
 #bhv-applied .item button { flex: 0 0 auto; }
-#bhv-applied .linked { margin: 2px 0 6px; }
-#bhv-applied .linked select { width: 100%; }
-#bhv-applied .linked .lbl { color: var(--muted); font-size: 10px; }
+#bhv-applied .behavior-form {
+  margin: 4px 0 8px; padding: 6px; border: 1px solid var(--line); border-radius: 3px;
+}
 
 /*
  * The step readouts that ride the axis gizmo: the move step at the origin, the
@@ -624,14 +659,6 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 /* Nudged clear of the cube it belongs to: the cube sits on the very tip of the
    arrow, so a centred chip would bury it. */
 .axis-snap.axis-scale { transform: translate(-50%, -140%); }
-#bhv-applied textarea {
-  width: 100%; box-sizing: border-box; resize: vertical;
-  font: 11px/1.5 ui-monospace, "Cascadia Mono", monospace;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--line); border-radius: 3px; padding: 5px 6px;
-}
-#bhv-applied .bhv-err:not(:empty) { margin-top: 3px; color: var(--danger); font-size: 11px; }
-
 /* -------------------------------------------------------- palette panes */
 /*
  * The folding panes under the module list: collision, compounds, settings.

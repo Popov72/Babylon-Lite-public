@@ -575,14 +575,13 @@
       <h2 id="bhv-window-title">Behaviours</h2>
       <button id="btn-bhv-close" type="button" title="Close behaviours window" aria-label="Close behaviours window">×</button>
     </div>
-    <p class="muted">A library of named definitions, listed alphabetically. The
-      body is free-form JSON — the runtime decides which flags mean anything.</p>
+    <p class="muted">A library of typed behaviour definitions, listed alphabetically.
+      Applied behaviours can override these values in the Inspector.</p>
     <div class="tool-window-scroll"><div class="split">
       <select id="bhv-list" size="10"></select>
       <div class="editor">
-        <div class="row"><label>Name</label><input type="text" id="bhv-name" placeholder="door_liquefiable"></div>
-        <textarea id="bhv-json" spellcheck="false" rows="9"
-                  placeholder='{ "liquefiable": true, "fluidSim": ["viscosity-inplace"] }'></textarea>
+        <div class="row"><label>Behaviour</label><select id="bhv-name"></select></div>
+        <div id="bhv-fields"></div>
       </div>
     </div></div>
     <div class="tool-window-footer">

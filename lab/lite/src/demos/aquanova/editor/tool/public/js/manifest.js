@@ -82,12 +82,11 @@ export { nodeNameOf };
 /**
  * The `behaviors` library and the `entities` that carry them.
  *
- * Definitions are written through untouched: the body is arbitrary JSON because
- * the runtime owns which flags exist, and a tool that normalised the ones it
- * happened to know about would quietly drop the rest. The parameters of an
- * APPLIED behaviour go through for the same reason, via writeBehaviorExtras -
- * one helper, shared with the undo snapshot, so the two can never disagree
- * about what an assignment is allowed to carry.
+ * Definitions are written through untouched. The authoring metadata controls
+ * which fields the UI edits, while pass-through serialization preserves unknown
+ * legacy fields instead of quietly deleting them. Applied parameters use
+ * writeBehaviorExtras for the same reason - one helper, shared with the undo
+ * snapshot, so the two can never disagree about what an assignment may carry.
  *
  * `linked` is omitted when empty rather than written as `[]` - the absence is
  * what "this one stands alone" means - and entries pointing at a behaviour that

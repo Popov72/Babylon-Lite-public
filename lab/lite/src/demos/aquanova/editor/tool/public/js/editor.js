@@ -3033,11 +3033,10 @@ export function renamePlacement(id, name) {
 //
 // Two halves, matching the manifest:
 //
-//   behaviors   a *library* of named definitions - "door_liquefiable" is
-//               `{ liquefiable: true, fluidSim: [...] }`. The body is arbitrary
-//               JSON, deliberately: the runtime owns which flags exist, and a
-//               tool that only understood the ones it knew about today would
-//               have to be edited every time one was added.
+//   behaviors   a *library* of named definitions - "stdLiquefaction" is
+//               `{ liquefiable: true, fluidSim: [...] }`. The metadata-driven
+//               editor knows the supported fields, while this model preserves
+//               unknown legacy fields until metadata is added for them.
 //   entities    which of those a node name carries, plus the `linked` node
 //               names some of them need - a door half links to its other half.
 //
@@ -3254,9 +3253,9 @@ export const HIDE_ENTITY_BEHAVIOR = "hideEntity";
  * `linked: []` that the manifest then omits when it writes it out. Counting
  * either would make "this has parameters" true for everything.
  *
- * This is the panel's own rule - the parameters box shows exactly this object,
- * and shows nothing when it is empty - so anything asking "was this left
- * blank?" has to ask here rather than inspect the assignment itself.
+ * This is the panel's own rule - the typed controls edit exactly this object,
+ * so anything asking "was this left blank?" has to ask here rather than inspect
+ * the assignment itself.
  */
 export function behaviorParams(assignment) {
   const out = {};
@@ -3328,16 +3327,15 @@ export function isProbeExcludedNode(nodeName) {
 /**
  * The parameters an applied behaviour carries, replaced wholesale.
  *
- * The panel edits the assignment as JSON, so this takes the whole object rather
- * than one named field: which parameters a behaviour understands is the
- * runtime's business, and a per-field setter here would be a second, always
- * out-of-date copy of that list.
+ * The metadata-driven panel edits a local object and replaces the assignment
+ * when its typed values are valid. Taking the whole object here also preserves
+ * fields from older manifests that do not yet have authoring metadata.
  *
  * Only three things are normalised, and each is a rule this tool owns rather
  * than the runtime:
  *
  *  - `name` is the identity of the assignment, never a parameter, so a `name`
- *    typed into the JSON is ignored.
+ *    supplied by authoring data is ignored.
  *  - `linked` is a node-name list this tool builds the picker from, so it gets
  *    the same cleaning the picker applies.
  *  - `direction` is stored as typed rather than normalised - normalising on
