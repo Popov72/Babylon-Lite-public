@@ -458,14 +458,6 @@ All fragments live in `src/material/pbr/fragments/` and export factory functions
   `pbrBlockFinalColorComposition.fx`
   (`GAMMALIGHTMAP`, `USELIGHTMAPASSHADOWMAP`, `vLightmapInfos.y` = `texture.level`).
 
-### `diffuse-lightmap-fragment.ts` — Color-Free Baked Irradiance (opt-in)
-
-- **Opt-in**: `await enablePbrDiffuseLightmap()` followed by `setPbrDiffuseLightmap()`.
-- **Purpose**: replaces spherical-harmonics diffuse irradiance with a color-free bake while leaving
-  direct lighting and environment specular reflections independent.
-- **Isolation**: implemented in a separate lazy fragment so ordinary PBR lightmap scenes retain
-  their existing bundle size.
-
 ### `morph-fragment.ts` — Morph Targets
 
 - **Factory**: `createMorphFragment(): ShaderFragment`
@@ -804,8 +796,6 @@ BRDF evaluation (GGX NDF + Smith-GGX geometry + Schlick Fresnel) for the primary
 | `src/material/pbr/fragments/emissive-fragment.ts`         | ~29 lines  | Emissive color uniform fragment                                                                                                                 |
 | `src/material/pbr/fragments/lightmap-fragment.ts`         | ~130 lines | Baked lightmap fragment (additive / shadowmap-multiply, sRGB decode, UV1 or UV2) — opt-in                                                       |
 | `src/material/pbr/enable-pbr-lightmap.ts`                 | ~70 lines  | Published `enablePbrLightmap()` / `setPbrLightmap()` opt-in seam for the lightmap fragment                                                      |
-| `src/material/pbr/enable-pbr-diffuse-lightmap.ts`         | ~45 lines  | Published opt-in seam for color-free irradiance lightmaps                                                                                       |
-| `src/material/pbr/fragments/diffuse-lightmap-fragment.ts` | ~100 lines | Replaces diffuse IBL with baked irradiance without modulating specular IBL                                                                      |
 | `src/material/pbr/fragments/morph-fragment.ts`            | ~48 lines  | Morph target vertex animation fragment                                                                                                          |
 | `src/material/pbr/fragments/skeleton-fragment.ts`         | ~71 lines  | Skeletal animation fragment (4-bone or 8-bone)                                                                                                  |
 | `src/material/pbr/fragments/pbr-shadow-fragment.ts`       | ~143 lines | PBR shadow receiving fragment (ESM + PCF, per-light)                                                                                            |

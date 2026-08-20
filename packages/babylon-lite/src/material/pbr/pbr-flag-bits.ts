@@ -18,7 +18,6 @@ export const PBR_HAS_USE_ALPHA_ONLY_MR = 1 << 12;
 // PBR_HAS_LIGHTMAP / PBR_LIGHTMAP_UV2 / PBR_LIGHTMAP_SHADOWMAP / PBR_LIGHTMAP_GAMMA /
 // PBR_LIGHTMAP_FLIP_V. Declared inside that lazy module per GUIDANCE §4c′; reserved here
 // so nothing reuses them.
-// 1<<24 is diffuse-lightmap-local (fragments/diffuse-lightmap-fragment.ts).
 export const PBR_HAS_OCCLUSION = 1 << 15;
 export const PBR_HAS_SPECULAR_AA = 1 << 17;
 export const PBR_HAS_CLEARCOAT = 1 << 20;
