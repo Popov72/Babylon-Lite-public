@@ -40,6 +40,7 @@ import {
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
   isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed,
+  behaviorParams, behaviorHiddenPlacements,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
   eulerOf, setEuler, worldBounds, entryOf, nudgeSelection, strayChunkMembers,
@@ -431,12 +432,7 @@ function renderApplied(nodeName, applied) {
 
 /** An applied behaviour as the JSON the panel shows: its parameters, no name. */
 function behaviorParamsText(b) {
-  const out = {};
-  for (const [key, value] of Object.entries(b)) {
-    if (key === "name") continue;
-    if (key === "linked" && !value.length) continue;   // absent means "stands alone"
-    out[key] = value;
-  }
+  const out = behaviorParams(b);
   return Object.keys(out).length ? JSON.stringify(out, null, 2) : "";
 }
 
@@ -1626,18 +1622,30 @@ $("stray-chunk-check").addEventListener("change", (e) => {
  *
  * An editor preference like the two above it, so it is saved with the ship and
  * stays off the undo stack. What it governs is described where it is done - see
- * syncBehaviorAnimations in runtime.js - and the status line quotes the count
- * back because "nothing moved" has two innocent explanations: nothing carries
- * the behaviour, and nothing that does is a skinned module.
+ * syncBehaviorAnimations in runtime.js for the clips, applyVisibility in
+ * editor.js for the elements a parameterless `hideEntity` takes off screen -
+ * and the status line quotes both counts back, because "nothing happened" has
+ * two innocent explanations: nothing carries the behaviour, and nothing that
+ * does is a skinned module.
  */
 $("run-behaviors").addEventListener("change", (e) => {
   state.runBehaviors = e.target.checked;
+  // Before the status line reads the counts, and before syncBehaviorAnimations
+  // - either order is correct, but this one leaves the view already right when
+  // the animation sync takes its time over a ship full of clips.
+  applyVisibility();
   const { playing, missing } = syncBehaviorAnimations();
-  if (!e.target.checked) setStatus("behaviours off — the ship's animations are held at their first frame");
-  else if (missing.length) setStatus(`behaviours on — ${playing} animation(s) playing, ${missing.length} clip(s) not found: ${missing.join(", ")}`);
-  else if (playing) setStatus(`behaviours on — ${playing} animation(s) playing`);
-  else if (!state.runtime) setStatus("behaviours on — they play in the Runtime view");
-  else setStatus("behaviours on — nothing in the ship has an animation to play");
+  const hidden = behaviorHiddenPlacements().length;
+  // Only ever an addition to the line below: the setting's headline is the
+  // animations, and a ship with nothing to hide should read exactly as before.
+  const hiddenNote = !hidden ? ""
+    : e.target.checked ? `, ${hidden} element(s) hidden by hideEntity`
+      : `, ${hidden} element(s) no longer hidden`;
+  if (!e.target.checked) setStatus(`behaviours off — the ship's animations are held at their first frame${hiddenNote}`);
+  else if (missing.length) setStatus(`behaviours on — ${playing} animation(s) playing, ${missing.length} clip(s) not found: ${missing.join(", ")}${hiddenNote}`);
+  else if (playing) setStatus(`behaviours on — ${playing} animation(s) playing${hiddenNote}`);
+  else if (!state.runtime) setStatus(`behaviours on — they play in the Runtime view${hiddenNote}`);
+  else setStatus(`behaviours on — nothing in the ship has an animation to play${hiddenNote}`);
 });
 
 // Keyboard shortcuts are ignored while a form control has focus, so a toolbar
@@ -1678,6 +1686,7 @@ function refreshEditorPrefs() {
   setBigPalette(state.bigPalette);
   $("stray-chunk-check").checked = !!state.strayChunkCheck;
   $("run-behaviors").checked = !!state.runBehaviors;
+  applyVisibility();                  // Run behaviours decides what is on screen
   syncBehaviorAnimations();           // the preference it reads has just moved
   validate();                         // the check it governs is a live one
   refreshStats();                     // the status bar quotes the ghost percentage

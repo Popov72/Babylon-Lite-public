@@ -3203,6 +3203,54 @@ export function isDynamicNode(nodeName) {
  */
 const WEAPON_BEHAVIORS = ["weaponLiquefactor", "weaponAntiGravityGun"];
 export const PLAY_ANIMATION_BEHAVIOR = "playAnimation";
+export const HIDE_ENTITY_BEHAVIOR = "hideEntity";
+
+/**
+ * The parameters an assignment actually carries - everything but its identity.
+ *
+ * Two keys are not parameters. `name` is the assignment's identity, and an
+ * EMPTY `linked` is the absence of one: setEntityParams and addEntityBehavior
+ * both normalise that field, so every assignment ever touched carries a
+ * `linked: []` that the manifest then omits when it writes it out. Counting
+ * either would make "this has parameters" true for everything.
+ *
+ * This is the panel's own rule - the parameters box shows exactly this object,
+ * and shows nothing when it is empty - so anything asking "was this left
+ * blank?" has to ask here rather than inspect the assignment itself.
+ */
+export function behaviorParams(assignment) {
+  const out = {};
+  for (const [key, value] of Object.entries(assignment || {})) {
+    if (key === "name") continue;
+    if (key === "linked" && !value?.length) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Whether a node is one the game hides before the player ever sees it.
+ *
+ * `hideEntity` with no parameters is the runtime's "hide me, now": with neither
+ * `onEvent` to wait for nor `entity` to name, `entity-toggle.ts` emits the hide
+ * event against its OWN entity as soon as it starts. With either one filled in
+ * it is a trigger instead - it hides something else, later - and the element
+ * itself stays exactly where it was authored.
+ *
+ * So this is a statement about the ship, not about the editor: it is true of a
+ * trap that starts buried whether or not anything is currently previewing it.
+ * The callers are what decide when it BITES - the Runtime view and the probe
+ * captures, both only while Run behaviours is on.
+ */
+export function isHiddenAtStartNode(nodeName) {
+  return entityBehaviors(nodeName).some(
+    (b) => b.name === HIDE_ENTITY_BEHAVIOR && !Object.keys(behaviorParams(b)).length);
+}
+
+/** The ship elements isHiddenAtStartNode speaks for, for the status line. */
+export function behaviorHiddenPlacements() {
+  return shipPlacements().filter((e) => isHiddenAtStartNode(nodeNameOf(e)));
+}
 
 /**
  * Whether a node's geometry must be kept OUT of an environment probe.
@@ -3442,11 +3490,18 @@ export function applyVisibility() {
   // veil keep the last word on what is left.
   const geometryOn = state.showLayer !== "collision";
   const collisionOn = state.showLayer !== "geometry";
+  // What the game hides before the player arrives is hidden here too, but only
+  // where that claim is being made: the Runtime view, with Run behaviours on.
+  // The editor view has to keep drawing it, or a trap would be unselectable in
+  // the only view you can author it in.
+  const hiddenAtStart = state.runtime && state.runBehaviors
+    ? (e) => isHiddenAtStartNode(nodeNameOf(e))
+    : () => false;
 
   for (const e of state.placements.values()) {
     const veil = veilOf(e.id);
     const on = (e.stage ? benchOf(e) === bench : !bench && geometryOn
-      && (!state.isolate || e.chunk === state.activeChunk)) && veil !== "hidden";
+      && (!state.isolate || e.chunk === state.activeChunk) && !hiddenAtStart(e)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
     for (const m of realMeshes(e.node)) {

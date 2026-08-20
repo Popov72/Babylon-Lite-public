@@ -36,7 +36,7 @@ const {
 import {
   state, emit, on, hooks, syncLightingMode, applyVisibility, environmentProbeOf, ownerIdOf,
   isProbeExcludedNode, withDeadline, environmentProbePartId, environmentProbePartOf,
-  shipPlacements, entityBehaviors, PLAY_ANIMATION_BEHAVIOR, nodeNameOf,
+  shipPlacements, entityBehaviors, PLAY_ANIMATION_BEHAVIOR, nodeNameOf, isHiddenAtStartNode,
 } from "./editor.js";
 
 const ROOT_NAME = "RUNTIME_PREVIEW";
@@ -1498,11 +1498,18 @@ export function meshesInProbeBox(boxPosition, boxSize) {
  *
  * Every mesh in a group belongs to the same placement (see elementOf), so the
  * first one answers for all of them.
+ *
+ * An element the game hides before the player arrives is dropped here too, on
+ * the same terms the Runtime view draws it on - Run behaviours decides, both
+ * ways round. That is what keeps a capture honest: turn the setting off and the
+ * element is back in the room, back in the render list AND back in the digest,
+ * so every probe that would now photograph it reads as stale.
  */
 function probeExcluded(group) {
   const id = ownerIdOf(group[0], true);
   const name = id ? nodeNameOf(state.placements.get(id)) : "";
-  return !!name && isProbeExcludedNode(name);
+  if (!name) return false;
+  return isProbeExcludedNode(name) || (state.runBehaviors && isHiddenAtStartNode(name));
 }
 
 /**
@@ -1796,7 +1803,10 @@ export function syncBehaviorAnimations() {
 }
 
 // An assignment gained, lost, re-parameterised or renamed onto another element.
-on("behaviors", () => syncBehaviorAnimations());
+// Visibility too: a `hideEntity` assignment losing its last parameter is what
+// turns a trigger into an element that hides itself, and applyVisibility is
+// where that shows.
+on("behaviors", () => { applyVisibility(); syncBehaviorAnimations(); });
 // A bench opened or closed. See wantedBehaviorAnimations.
 on("mode", () => syncBehaviorAnimations());
 

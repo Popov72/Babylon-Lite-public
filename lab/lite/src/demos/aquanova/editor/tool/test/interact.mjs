@@ -3869,6 +3869,161 @@ check(
 check("any behaviour in the list is enough, not just the first", probeOut.second, JSON.stringify(probeOut));
 check("everything else stays in the probe", !probeOut.plain && !probeOut.unnamed, JSON.stringify(probeOut));
 
+// ---- hideEntity: what the game hides before the player arrives -------------
+// `hideEntity` with no parameters is entity-toggle.ts's "hide me, now" - with
+// neither an event to wait for nor an entity to name it fires against its own
+// entity at start - so the Runtime view has to draw the ship without it, and a
+// probe capture must not photograph it. With parameters it is a trigger for
+// something else and the element itself stays put. Run behaviours governs both.
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.clearAll();
+    ed.select([]);
+    await ed.deserialize({
+        chunks: ["CH00_Storage"],
+        activeChunk: "CH00_Storage",
+        markers: [],
+        instances: [
+            { id: "T1", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "trap", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+            { id: "T2", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "plainWall", position: [4, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+            { id: "T3", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "trapTrigger", position: [8, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+        ],
+        behaviors: { hideEntity: {} },
+        entities: {
+            trap: { behaviors: [{ name: "hideEntity" }] },
+            trapTrigger: { behaviors: [{ name: "hideEntity", onEvent: "activated", entity: "plainWall" }] },
+        },
+    });
+});
+await page.waitForTimeout(2000);
+
+// One reader for the whole block: what is on screen, and what a capture of a
+// box around all three would render AND digest - meshesInProbeBox is the one
+// list both are built from, and it answers with nothing outside the Runtime
+// view because there is no preview to photograph.
+const hideState = () =>
+    page.evaluate(async () => {
+        const ed = await import("/js/editor.js");
+        const rt = await import("/js/runtime.js");
+        const inBox = new Set(rt.meshesInProbeBox([4, 1, 0], [40, 20, 40]).map((m) => m.uniqueId));
+        const out = { shown: {}, inProbe: {} };
+        for (const p of ed.shipPlacements()) {
+            out.shown[p.name] = p.node.isEnabled();
+            out.inProbe[p.name] = p.node.getChildMeshes().some((m) => inBox.has(m.uniqueId));
+        }
+        return out;
+    });
+
+const hideRule = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    return {
+        bare: ed.behaviorParams({ name: "hideEntity" }),
+        linkedEmpty: ed.behaviorParams({ name: "hideEntity", linked: [] }),
+        linkedFull: ed.behaviorParams({ name: "hideEntity", linked: ["a"] }),
+        withEvent: ed.behaviorParams({ name: "hideEntity", onEvent: "activated" }),
+        hidden: ed.behaviorHiddenPlacements().map((p) => p.name),
+    };
+});
+check(
+    "an empty parameters box is what says 'hide me' — name and an empty linked are not parameters",
+    Object.keys(hideRule.bare).length === 0 && Object.keys(hideRule.linkedEmpty).length === 0
+        && Object.keys(hideRule.linkedFull).length === 1 && Object.keys(hideRule.withEvent).length === 1
+        && hideRule.hidden.join() === "trap",
+    JSON.stringify(hideRule)
+);
+
+const hideEditor = await hideState();
+check(
+    "the editor view still draws it — a trap you cannot see is one you cannot move",
+    hideEditor.shown.trap && hideEditor.shown.plainWall && hideEditor.shown.trapTrigger,
+    JSON.stringify(hideEditor.shown)
+);
+
+await page.selectOption("#view-mode", "runtime");
+await page.waitForFunction(
+    async () => {
+        const ed = await import("/js/editor.js");
+        return ed.state.runtime === true && !document.getElementById("view-mode").disabled;
+    },
+    null,
+    { timeout: 60000 }
+);
+await page.waitForTimeout(500);
+
+const hideRun = await hideState();
+check(
+    "the runtime view takes it off screen, and leaves the rest of the room alone",
+    !hideRun.shown.trap && hideRun.shown.plainWall && hideRun.shown.trapTrigger,
+    JSON.stringify(hideRun.shown)
+);
+check(
+    "and a probe neither renders nor digests it",
+    !hideRun.inProbe.trap && hideRun.inProbe.plainWall && hideRun.inProbe.trapTrigger,
+    JSON.stringify(hideRun.inProbe)
+);
+check(
+    "a parameterised hideEntity hides something else, so its own element stays",
+    hideRun.shown.trapTrigger && hideRun.inProbe.trapTrigger,
+    JSON.stringify(hideRun)
+);
+
+await page.uncheck("#run-behaviors");
+await page.waitForTimeout(400);
+const hideOff = await hideState();
+const hideOffStatus = await page.textContent("#status-text");
+check(
+    "Run behaviours off puts it back — on screen, in the render list and in the digest",
+    hideOff.shown.trap && hideOff.inProbe.trap,
+    JSON.stringify(hideOff)
+);
+check("and the status line says how many came back", /1 element\(s\) no longer hidden/.test(hideOffStatus), hideOffStatus);
+
+await page.check("#run-behaviors");
+await page.waitForTimeout(400);
+const hideOn = await hideState();
+const hideOnStatus = await page.textContent("#status-text");
+check("checking it hides them again", !hideOn.shown.trap && !hideOn.inProbe.trap, JSON.stringify(hideOn));
+check("and the status line counts them", /1 element\(s\) hidden by hideEntity/.test(hideOnStatus), hideOnStatus);
+
+// Editing the assignment is what turns one reading into the other, and the
+// view has to follow it without a mode switch.
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.setEntityParams("trap", 0, { onEvent: "activated", entity: "plainWall" });
+});
+await page.waitForTimeout(400);
+const hideParamed = await hideState();
+check(
+    "giving it a parameter makes it a trigger, and the element comes straight back",
+    hideParamed.shown.trap && hideParamed.inProbe.trap,
+    JSON.stringify(hideParamed)
+);
+
+await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.setEntityParams("trap", 0, {});
+});
+await page.waitForTimeout(400);
+const hideBlanked = await hideState();
+check("and emptying the box hides it again", !hideBlanked.shown.trap, JSON.stringify(hideBlanked.shown));
+
+await page.selectOption("#view-mode", "editor");
+await page.waitForFunction(
+    async () => {
+        const ed = await import("/js/editor.js");
+        return ed.state.runtime === false && !document.getElementById("view-mode").disabled;
+    },
+    null,
+    { timeout: 60000 }
+);
+await page.waitForTimeout(400);
+const hideExit = await hideState();
+check(
+    "leaving the runtime view shows it again, setting or no setting",
+    hideExit.shown.trap && (await page.isChecked("#run-behaviors")),
+    JSON.stringify(hideExit.shown)
+);
+
 // ---- Run behaviours: the runtime view plays what the game would play -------
 // A `playAnimation` element is animated on screen the way `play-animation.ts`
 // animates it - same clip, same loop rule - but only in the Runtime view, and
