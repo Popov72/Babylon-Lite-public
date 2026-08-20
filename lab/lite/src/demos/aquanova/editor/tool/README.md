@@ -184,6 +184,71 @@ behaviours off its id. Give it a name later and they follow — see
 > not, so the only way to give a duplicate its own behaviour was to invent a
 > name for it.
 
+**A door carries behaviours too, under its id** (`Door_D00`). A door is not a
+placed element — it is the marker that owns the portal rectangle between two
+chunks — but the manifest writes its behaviours to the same `entities` map, so
+the panel is the same panel. Doors have **no `Name` field and are deliberately
+not renameable**: `doors[].id` is what the manifest writes as the door's `node`,
+what the portal graph joins two rooms by, and what an `entity` parameter names
+when one behaviour enables, disables or hides a door from somewhere else. A
+renameable door would be a door whose behaviours and whose events answered to
+two different strings. The panel says which it is rather than counting elements
+(`Door_D00 — a door, so it stands alone under its id`) — and warns when
+placements happen to be named after it, since then the one entry governs both.
+
+Deleting a door **drops its behaviours with it**. Door ids are slots the editor
+hands out and `Door_D00` is handed to the next door placed once it is free, so
+an entry left behind would quietly become that door's. This is the opposite of
+the rule for a named element, whose entry survives the last element carrying it,
+because a name is authored and an id is not.
+
+> Nothing runs yet. The game's `BehaviorManager` resolves an entity to the
+> meshes carrying its name in `ship.glb`, and door markers are not exported —
+> only chunk holders, placements, their art meshes, animation nodes and lights
+> are. So a door's behaviours are **authored into `manifest.json` and skipped at
+> load** until the runtime learns to resolve a door by its id.
+
+#### Tidied on Save
+
+Behaviours outlive the element that carried them **while you work** — deleting
+the last crate to put a better one down must not throw away how crates behave,
+and a rename leaves the old name's entry alone in case something else is meant
+to pick it up. That is the right rule at the desk and the wrong one for a file:
+the entries pile up under names that were typos, or that were renamed a year
+ago, and the runtime looks every one of them up and finds nothing.
+
+So **Save** drops the entries no node answers to any more, names them in the
+status line (`— dropped 2 unused behaviour entries: ghost, oldName`) and logs
+the full list to the console. It goes on the **undo stack** first, so an entry
+that was still wanted is one `Ctrl+Z` away.
+
+What counts as answered-to is the set of names `ship.glb` will actually carry,
+built by the same rules the exporter renames by, so the two cannot drift:
+
+| kept | because |
+| --- | --- |
+| `crate` | a placement's node name — or its id when it has none |
+| `crate_primitive0` | a placement's own primitives, `_primitive0`, `_primitive1`, … |
+| `crate_Spin` | an animation node, `<node>_<clip>` |
+| `CH00_Storage` | a chunk holder |
+| `LIGHT_L0003` | a lamp |
+| `Door_D00` | a door id — no glb node, but a key the manifest carries |
+
+The derived names matter as much as the plain ones: an entry on
+`crate_primitive0` is how one part of a module gets a behaviour of its own, and
+a cleanup that only knew about placement names would read it as rubbish. Every
+placement counts, not only the ship's — something on the **bench** has not been
+exported yet, but it exists, and work in progress is not stale data.
+
+**Auto-save drops nothing.** `ship_autosave.json` is a recovery copy, and a
+recovery copy must never be the thing that destroys what you were hoping to
+recover.
+
+`linked` lists and `entity` parameters are **not** touched. They can legitimately
+name a node that carries no behaviours of its own — a mesh that only melts when
+its neighbour does — and there is no way to tell that from a typo without
+guessing.
+
 **The same behaviour may be attached more than once.** An entity's behaviours
 are a _list_ of assignments, not a set keyed by name: the runtime walks the list
 and builds one instance per entry, so two entries of one behaviour carrying
@@ -197,9 +262,12 @@ boxes wrote to the same assignment. Repeated names are numbered on screen
 **`linked`** appears only for definitions with `liquefiable: true`, because
 linking is for pieces that melt as one — a pair of door halves. The candidates
 are the other named nodes **in the same room**: linked pieces are neighbours in
-practice, and a ship-wide list would be hundreds of entries long. The list is
-de-duplicated, drops the node itself, and is omitted from the manifest when
-empty — the absence is what "this one stands alone" means.
+practice, and a ship-wide list would be hundreds of entries long. For a door,
+which is not _in_ a room but joins two, the candidates come from **both of its
+sides**; a side left on `(auto)` is resolved at export time against the chunk
+volumes and is not known while editing, so a door with neither side named offers
+nothing. The list is de-duplicated, drops the node itself, and is omitted from
+the manifest when empty — the absence is what "this one stands alone" means.
 
 **Parameters** ride the applied entry beside `name`, and are edited as **raw
 JSON**, one box per attached behaviour:
@@ -237,8 +305,9 @@ and defaults to `10`. `weaponAntiGravityGun` accepts optional positive
 `maxGrabDistance` and `maxMass` values, defaulting to `6` metres and `100`
 kilograms.
 
-The runtime `setCollisionShape` behavior accepts `{ "type": "mesh" }`, replacing
-the entity's authored Havok primitive with a static triangle-mesh collider.
+The runtime `setCollisionShape` behavior replaces the entity's authored Havok
+primitive with its world-space mesh AABB by default. Explicit
+`{ "type": "mesh" }` uses a static triangle-mesh collider instead.
 The runtime `trigger` behavior accepts
 `{ "onIntersection": { "raiseEvent": "event", "playerOnly": true,
 "entity": "target" } }`. `playerOnly` defaults to `false`, `entity` defaults to
@@ -979,6 +1048,7 @@ the same thing.
 | Grid             | `G` · **Editor unlit** shows raw albedo with no lighting · **Settings ▸ Editor ▸ Exposure** — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Palette          | hover a tile to spin the module through a full 360° turn · **drag the grip** between the palette and the viewport to resize it, double-click the grip to restore the default width                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Save             | `Ctrl+S` — writes `ship_manifest.json` **and** `ship.glb`, and stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Demo             | **Start demo** publishes the ship **as last saved** into `lab/public/aquanova/` and opens the game in a tab — it does not save for you, so press `Ctrl+S` first if you want your latest edits in it · **Settings ▸ Demo ▸ Optimize ship** decides whether the textures are compressed on the way, off by default because that pass takes minutes · see [Publishing](#publishing)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **Every toolbar control names its shortcut in its tooltip**, or says outright
 that it has none. The keys are the whole point of the tool — the combos are a
@@ -2980,13 +3050,17 @@ their own place in the manifest:
 | Specular AA          | Runtime | on                    | `environment`       | authored default for the player's specular-AA toggle                                                                                                 |
 | Reflection roughness | Runtime | `1`×                  | `environment`       | multiplier over every ship material's authored roughness, `0.5`–`2`                                                                                  |
 | Run behaviours       | Runtime | on                    | `editorPrefs`       | run the ship's behaviours in the Runtime view the way the game runs them: `playAnimation` clips play, a parameterless `hideEntity` hides its element |
+| Optimize ship        | Demo    | off                   | `editorPrefs`       | compress textures and geometry when **Start demo** publishes — minutes rather than seconds, so off unless what you are checking is the shipped asset |
 
 The **Runtime** rows are edits to the ship, so they push undo entries — the
 sliders once per gesture, the checkbox once per click. **Run behaviours** is the
 one exception in that section: it is an editor preference like the rows above
 it, so it is saved in `editorPrefs` and takes no undo entry. It sits under
 Runtime because that is the view it governs, next to the **Edit behaviours…**
-button it belongs with. The **Editor** rows do not push entries either: they are
+button it belongs with. **Optimize ship** is an editor preference too, and has a
+section of its own because it governs neither view — it is read only at the
+moment **Start demo** publishes; see [Publishing](#publishing). The **Editor**
+rows do not push entries either: they are
 how you are looking at the ship, and taking one back would spend an entry on a
 change no edit made. **Reset to defaults** puts every row above back, the
 ship-side ones under a single undo entry and only when at least one of them has
@@ -4271,6 +4345,57 @@ purely decoration wants.
 
 ## Publishing
 
+### The button: **Start demo**
+
+**Start demo**, beside Save and Load, is the whole loop in one click: it runs
+`sync-ship.ts` server-side and then opens
+`http://localhost:5174/lite/demo-aquanova.html` in a tab named `aquanova-demo`,
+so publishing twice refreshes one tab instead of collecting them. The lab's own
+dev server has to be running for the page to load — the editor only publishes
+the files and opens the URL; it does not start Vite for you.
+
+What it publishes is the ship **as last saved**. It deliberately does not save
+first: the script reads the export folder off disk, and a button that quietly
+wrote your viewport into the project before publishing it would be doing two
+very different things under one label. When the scene is dirty the busy overlay
+says so — _publishing the SAVED ship — your unsaved changes are not in it_ — and
+the status line repeats it afterwards. Press **Ctrl+S** first if you meant to
+see your latest edits.
+
+The editor is locked for the duration, the same lock a capture takes, because
+the script is reading the export folder and a save landing halfway through would
+publish half of each ship. The server refuses a second publish with a 409 for
+the same reason, and kills a script that has not answered in twenty minutes so a
+wedged compressor cannot leave the editor locked forever.
+
+A publish that fails opens **nothing**: an open demo tab is a claim that what it
+loads is the ship you just published. The status line says what went wrong and
+the script's entire transcript — stdout and stderr interleaved, which is most of
+what makes a failure readable — is logged to the browser console.
+
+Nothing here is hard-coded: `config.json` ▸ `demo` carries the `url` and the
+`syncScript` path, so a checkout that moves either one needs no code change.
+`SHIP_DEMO_URL` and `SHIP_SYNC_SCRIPT` override them, which is what lets the
+test suite exercise the route without ever running the real script.
+
+### Optimizing, or not
+
+**Settings ▸ Demo ▸ Optimize ship** decides whether the ship is compressed on
+the way out. It is **off** by default, and off is what the script has to be
+*told*: `sync-ship.ts` optimizes unless given `--no-ship-optimize`, and that is
+exactly the flag the unticked box sends.
+
+Off, a publish is a file copy — a second or two. On, it runs a KTX2 texture
+compressor over every image on the ship and a Meshopt pass over the geometry,
+which is minutes. Off is right for what a publish is usually for: walking the
+corridor whose wall you just moved. Tick it when what you are checking *is* the
+shipped asset — load time, memory use, compression artefacts.
+
+Like the other editor preferences it is saved in the manifest's `editorPrefs`,
+never on the undo stack, and put back by **Reset to defaults**.
+
+### The script
+
 `lab/public/aquanova/scripts/sync-ship.ts` copies what the editor wrote into the
 demo:
 
@@ -4416,6 +4541,11 @@ Storage is cheap and these files are kilobytes. Recovering an afternoon is not.
     "exportDir": "../export", // ship.glb + ship_manifest.json
     "envDir": "../env", // HDRI, served at /env
     "port": 5180,
+    "demo": {
+        // what Start demo opens, and the script it runs first
+        "url": "http://localhost:5174/lite/demo-aquanova.html",
+        "syncScript": "../../../../../../public/aquanova/scripts/sync-ship.ts",
+    },
 }
 ```
 
@@ -4713,4 +4843,7 @@ textures baked in, so the game never sees these URIs, and the runtime needs no
 matching rule.
 
 `SHIP_EXPORT_DIR` and `SHIP_PORT` override `exportDir` and `port` — that is how
-the test runner keeps itself away from real data.
+the test runner keeps itself away from real data. `SHIP_SYNC_SCRIPT` and
+`SHIP_DEMO_URL` override the `demo` block for the same reason: **Start demo**
+runs a script that writes into the real game folder, and a test must be able to
+exercise the route without doing that.

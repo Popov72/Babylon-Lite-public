@@ -4301,6 +4301,245 @@ await page.evaluate(async () => {
 });
 await page.waitForTimeout(300);
 
+// ---- Start demo: publish the saved ship, then open it ----------------------
+// The button runs `sync-ship.ts` server-side and opens the demo page. Both are
+// stubbed here: the real script writes into lab/public/aquanova, which a test
+// run must no more touch than it touches a real export folder. What is checked
+// is everything on this side of the wire - which flag the request carries, that
+// the tab is opened only on success, and that the failure is readable.
+await page.evaluate(() => {
+    window.__demo = { posts: [], opened: [], reply: { ok: true, code: 0, optimized: false, output: "copied 3 files\n", url: "http://localhost:5174/lite/demo-aquanova.html" } };
+    window.__realFetch = window.fetch;
+    window.fetch = (url, opts) => {
+        if (String(url).includes("/api/sync-ship")) {
+            window.__demo.posts.push({ method: opts?.method, body: JSON.parse(opts?.body || "{}") });
+            return Promise.resolve(new Response(JSON.stringify(window.__demo.reply),
+                { status: 200, headers: { "Content-Type": "application/json" } }));
+        }
+        return window.__realFetch(url, opts);
+    };
+    window.__realOpen = window.open;
+    window.open = (u, name) => { window.__demo.opened.push([u, name]); return {}; };
+});
+
+// Off by default, and off is what the script has to be *told* - its own default
+// is to optimize - so the flag being absent from the request is the bug this
+// check exists for.
+const demoOff = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    document.getElementById("btn-demo").click();
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+        posts: window.__demo.posts.slice(),
+        opened: window.__demo.opened.slice(),
+        status: document.getElementById("status-text").textContent,
+        box: document.getElementById("ship-optimize").checked,
+        setting: ed.state.shipOptimize,
+        default: ed.SHIP_OPTIMIZE_DEFAULT,
+    };
+});
+check(
+    "Start demo publishes unoptimized by default, and opens the demo in a named tab",
+    demoOff.posts.length === 1 && demoOff.posts[0].method === "POST" && demoOff.posts[0].body.optimize === false
+        && demoOff.opened.length === 1 && demoOff.opened[0][0] === "http://localhost:5174/lite/demo-aquanova.html"
+        && demoOff.opened[0][1] === "aquanova-demo"
+        && demoOff.box === false && demoOff.setting === false && demoOff.default === false,
+    JSON.stringify(demoOff)
+);
+check("and says which of the two it published", /published \(unoptimized\)/.test(demoOff.status), demoOff.status);
+
+await page.check("#ship-optimize");
+await page.waitForTimeout(200);
+const demoOn = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    window.__demo.posts.length = 0;
+    window.__demo.opened.length = 0;
+    window.__demo.reply = { ...window.__demo.reply, optimized: true };
+    document.getElementById("btn-demo").click();
+    await new Promise((r) => setTimeout(r, 500));
+    return {
+        posts: window.__demo.posts.slice(),
+        status: document.getElementById("status-text").textContent,
+        setting: ed.state.shipOptimize,
+    };
+});
+check(
+    "ticking Optimize ship asks for the compressed publish instead",
+    demoOn.setting === true && demoOn.posts.length === 1 && demoOn.posts[0].body.optimize === true
+        && /published \(optimized\)/.test(demoOn.status),
+    JSON.stringify(demoOn)
+);
+
+// A script that failed must not be followed by a tab: an opened demo is a
+// claim that what it loads is the ship you just published.
+const demoFailed = await page.evaluate(async () => {
+    window.__demo.posts.length = 0;
+    window.__demo.opened.length = 0;
+    window.__demo.reply = { ok: false, code: 1, output: "Error: toktx not found\n", url: "http://localhost:5174/lite/demo-aquanova.html" };
+    document.getElementById("btn-demo").click();
+    await new Promise((r) => setTimeout(r, 500));
+    return { opened: window.__demo.opened.length, status: document.getElementById("status-text").textContent };
+});
+check(
+    "a failed publish opens nothing and says so, pointing at the script's output",
+    demoFailed.opened === 0 && /demo NOT started/.test(demoFailed.status)
+        && /exited with code 1/.test(demoFailed.status) && /console/.test(demoFailed.status),
+    JSON.stringify(demoFailed)
+);
+
+// A server that cannot run the script at all reports its own reason, not an
+// exit code it never got.
+const demoNoScript = await page.evaluate(async () => {
+    window.__demo.opened.length = 0;
+    window.__demo.reply = { ok: false, error: "node_modules/tsx not found — run pnpm install in the repository" };
+    document.getElementById("btn-demo").click();
+    await new Promise((r) => setTimeout(r, 500));
+    return { opened: window.__demo.opened.length, status: document.getElementById("status-text").textContent };
+});
+check(
+    "and a server that cannot run it at all quotes its own reason",
+    demoNoScript.opened === 0 && /tsx not found/.test(demoNoScript.status)
+        && !/exited with code/.test(demoNoScript.status),
+    JSON.stringify(demoNoScript)
+);
+
+await page.evaluate(() => {
+    window.fetch = window.__realFetch;
+    window.open = window.__realOpen;
+    delete window.__realFetch;
+    delete window.__realOpen;
+    delete window.__demo;
+});
+
+// An editor preference like Run behaviours: saved with the ship, restored on
+// load, off the undo stack and put back by Reset to defaults.
+const demoPrefs = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    ed.state.shipOptimize = true;
+    const on = ed.serializeEditorPrefs().shipOptimize;
+    ed.applyEditorPrefs({ shipOptimize: false });
+    const restored = ed.state.shipOptimize;
+    const undoable = "shipOptimize" in JSON.parse(JSON.stringify(ed.serialize()));
+    ed.state.shipOptimize = true;
+    document.getElementById("btn-cfg-reset").click();
+    await new Promise((r) => setTimeout(r, 200));
+    return {
+        on,
+        restored,
+        undoable,
+        afterReset: ed.state.shipOptimize,
+        box: document.getElementById("ship-optimize").checked,
+    };
+});
+check(
+    "Optimize ship is saved, restored, reset — and never on the undo stack",
+    demoPrefs.on === true && demoPrefs.restored === false && demoPrefs.undoable === false
+        && demoPrefs.afterReset === false && demoPrefs.box === false,
+    JSON.stringify(demoPrefs)
+);
+
+const demoSection = await page.evaluate(() => {
+    const box = document.getElementById("ship-optimize");
+    return {
+        section: box.closest("#settings-pane .settings-section")?.querySelector("h3")?.textContent,
+        inToolbar: !!document.getElementById("btn-demo").closest("#toolbar"),
+        afterLoad: document.getElementById("btn-demo").previousElementSibling?.id,
+    };
+});
+check(
+    "the button sits in the toolbar beside Load, and its setting under Demo",
+    demoSection.section === "Demo" && demoSection.inToolbar && demoSection.afterLoad === "btn-load",
+    JSON.stringify(demoSection)
+);
+
+// ---- 1d-quaterdecies-bis. a door carries behaviours under its id -----------
+// A door is a marker, not a placement, so the panel used to skip it entirely -
+// yet the manifest writes marker and element behaviours to the same `entities`
+// map. Its key is its id and can be nothing else, which is why a door has no
+// Name field: the id is what the portal graph and the runtime's door events
+// already refer to.
+const doorBhv = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+
+  ed.state.chunks = ["CH_DA", "CH_DB", "CH_DC"];
+  ed.state.activeChunk = "CH_DA";
+  ed.setBehaviorDef("door_melt", { liquefiable: true });
+  // one named element per room, to prove the picker reads *both* sides
+  const a = await ed.placeAt(M, new V(0, 0, 0), { chunk: "CH_DA", name: "leafL", silent: true });
+  const b = await ed.placeAt(M, new V(6, 0, 0), { chunk: "CH_DB", name: "leafR", silent: true });
+  await ed.placeAt(M, new V(30, 0, 0), { chunk: "CH_DC", name: "elsewhere", silent: true });
+  const door = mk.addDoor(new V(3, 0, 0),
+    { chunkA: "CH_DA", chunkB: "CH_DB", leaves: [a.id, b.id], silent: true });
+  return { door: door.id, key: ed.entityNameOf(door), name: door.name ?? null };
+});
+await page.evaluate((id) => import("/js/editor.js").then((ed) => ed.select([id])), doorBhv.door);
+await page.waitForTimeout(200);
+
+const doorPanel = await readPanel();
+check("the behaviour panel opens on a door, keyed by its id",
+  doorPanel.shown && doorBhv.key === doorBhv.door && doorBhv.name === null
+    && new RegExp(`^${doorBhv.door} — a door, so it stands alone under its id$`)
+      .test(doorPanel.count) && !doorPanel.addOff,
+  `key="${doorBhv.key}", count="${doorPanel.count}"`);
+
+const doorNameRow = await page.evaluate(() =>
+  document.getElementById("insp-name").parentElement.hidden);
+check("a door is deliberately not nameable", doorNameRow === true, String(doorNameRow));
+
+// attach through the UI, exactly as a user would
+await page.selectOption("#bhv-add", "door_melt");
+await page.click("#btn-bhv-add");
+await page.waitForTimeout(200);
+const doorAttached = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  const id = ed.state.selection[0];
+  return {
+    applied: ed.entityBehaviors(id).map((b) => b.name),
+    candidates: [...document.querySelectorAll("#bhv-applied [data-linked] option")]
+      .map((o) => o.value).filter(Boolean),
+    exported: Object.keys(mf.buildManifest().entities || {}),
+  };
+});
+check("a behaviour attached to a door is exported under the door's id",
+  doorAttached.applied.join() === "door_melt"
+    && doorAttached.exported.includes(doorBhv.door),
+  JSON.stringify(doorAttached.applied) + " -> " + JSON.stringify(doorAttached.exported));
+check("the linked picker offers both of the door's sides, and nothing else",
+  doorAttached.candidates.slice().sort().join() === "leafL,leafR",
+  JSON.stringify(doorAttached.candidates));
+
+// A door id is a slot the editor hands back out, so deleting one has to take
+// its behaviours with it - or the next door placed would silently inherit them.
+const doorGone = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const V = BABYLON.Vector3;
+  const id = ed.state.selection[0];
+  ed.select([id]);
+  ed.removeSelected();
+  const afterDelete = ed.state.entities.has(id);
+  const reused = mk.addDoor(new V(3, 0, 0), { silent: true });
+  const inherited = ed.entityBehaviors(reused.id).map((b) => b.name);
+  ed.select([reused.id]); ed.removeSelected();
+  // addDoor is silent, so it left no entry of its own: the two removals are the
+  // whole stack, and undoing both is what puts the original door back.
+  await ed.undo(); await ed.undo();
+  return { id, afterDelete, reusedId: reused.id, inherited,
+    afterUndo: ed.entityBehaviors(id).map((b) => b.name) };
+});
+check("deleting a door drops its behaviours, and the reused id inherits nothing",
+  doorGone.afterDelete === false && doorGone.reusedId === doorGone.id
+    && doorGone.inherited.length === 0,
+  JSON.stringify(doorGone));
+check("undo brings a deleted door's behaviours back",
+  doorGone.afterUndo.join() === "door_melt", JSON.stringify(doorGone.afterUndo));
+
 // a hand-edit that split `direction` into a sibling entry of its own
 const merged = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -6197,6 +6436,113 @@ check("one Save writes both files and says so",
     && /saved \d+ bytes/.test(saveBoth.status) && /MB →/.test(saveBoth.status),
   `${saveBoth.posted.join(" ")} — "${saveBoth.status}"`);
 
+// ---- 1d-tervicies-bis. Save drops behaviour entries nothing carries --------
+// Behaviours outlive the element that carried them while you work - deleting
+// the last crate to put a better one down must not throw away how crates behave
+// - but a save is the moment that stops being a working state and becomes the
+// file the game reads. The names the exporter *derives* count as carried: an
+// entry on `crate_primitive0` is how one part of a module gets a behaviour of
+// its own, and anything that only knew about placement names would eat it.
+const pruneSetup = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const l = await import("/js/lights.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.state.chunks = ["CH_PRUNE"]; ed.state.activeChunk = "CH_PRUNE";
+  ed.setBehaviorDef("keep", {});
+
+  const named = await ed.placeAt(M, new V(0, 0, 0),
+    { chunk: "CH_PRUNE", name: "crate", silent: true });
+  const bare = await ed.placeAt(M, new V(6, 0, 0), { chunk: "CH_PRUNE", silent: true });
+  const door = mk.addDoor(new V(3, 0, 0), { chunkA: "CH_PRUNE", silent: true });
+  const lamp = l.addLight(named.id, { silent: true });
+
+  for (const key of ["crate", "crate_primitive0", bare.id, door.id, "CH_PRUNE",
+    `LIGHT_${lamp.id}`, "ghost", "oldName"]) {
+    ed.addEntityBehavior(key, "keep");
+  }
+  return { named: named.id, bare: bare.id, door: door.id, lamp: lamp.id,
+    before: [...ed.state.entities.keys()].sort() };
+});
+const pruned = await page.evaluate(async () => {
+  const realFetch = window.fetch;
+  const posted = [];
+  window.fetch = (url, opts) => {
+    const u = String(url);
+    if (opts?.method === "POST" && /\/api\/(layout|export|collision)/.test(u)) {
+      posted.push(u.replace(location.origin, ""));
+      return Promise.resolve(new Response(
+        JSON.stringify({ ok: true, bytes: 1048576, path: "x" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    document.getElementById("btn-save").click();
+    for (let i = 0; i < 200 && !posted.some((u) => u.includes("export")); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  } finally { window.fetch = realFetch; }
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  return {
+    after: [...ed.state.entities.keys()].sort(),
+    exported: Object.keys(mf.buildManifest().entities || {}).sort(),
+    status: document.getElementById("status-text").textContent,
+  };
+});
+check("a save drops the entries no node answers to, and names them",
+  !pruned.after.includes("ghost") && !pruned.after.includes("oldName")
+    && / — dropped 2 unused behaviour entries: ghost, oldName/.test(pruned.status),
+  `${JSON.stringify(pruned.after)} — "${pruned.status}"`);
+check("and keeps every name the export will actually carry",
+  ["crate", "crate_primitive0", pruneSetup.bare, pruneSetup.door, "CH_PRUNE",
+    `LIGHT_${pruneSetup.lamp}`].every((k) => pruned.after.includes(k))
+    && pruned.exported.includes("crate_primitive0"),
+  JSON.stringify(pruned.after));
+
+const pruneUndo = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  await ed.undo();
+  const back = [...ed.state.entities.keys()].sort();
+  await ed.redo();
+  return back;
+});
+check("undo brings a dropped entry back",
+  pruneUndo.includes("ghost") && pruneUndo.includes("oldName"),
+  JSON.stringify(pruneUndo));
+
+const pruneAuto = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const main = await import("/js/main.js");
+  const realFetch = window.fetch;
+  window.fetch = (url, opts) => {
+    if (opts?.method === "POST" && String(url).includes("/api/autosave")) {
+      return Promise.resolve(new Response(
+        JSON.stringify({ ok: true, bytes: 42, path: "ship_autosave.json" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return realFetch(url, opts);
+  };
+  ed.addEntityBehavior("ghostAgain", "keep");
+  const minutes = ed.state.config.autoSaveMinutes;
+  try {
+    ed.setConfig("autoSaveMinutes", 2);
+    await main.autoSaveNow();
+  } finally {
+    window.fetch = realFetch;
+    ed.setConfig("autoSaveMinutes", minutes);
+  }
+  const held = ed.state.entities.has("ghostAgain");
+  ed.clearAll(); ed.select([]);
+  return held;
+});
+check("an auto-save is a recovery copy, so it drops nothing",
+  pruneAuto === true, String(pruneAuto));
+
 // ---- 1d-septendecies. the inspector never shows a stale element ------------
 // `hidden` only works through the UA rule `[hidden] { display: none }`, and any
 // author `display` rule beats it: `.row { display: flex }` left the Name and
@@ -6219,6 +6565,7 @@ const stale = await page.evaluate(async () => {
       nameShown: row.getBoundingClientRect().height > 0,
       chunkShown: chunkRow.getBoundingClientRect().height > 0,
       behaviour: document.getElementById("behavior-fields").getBoundingClientRect().height > 0,
+      bhvCount: document.getElementById("bhv-count").textContent,
       id: document.getElementById("insp-id").textContent,
       module: document.getElementById("insp-module").textContent,
     };
@@ -6238,15 +6585,20 @@ const stale = await page.evaluate(async () => {
 });
 check("a placement shows its name, chunk and behaviour",
   stale.onPlacement.name === "weaponHolder" && stale.onPlacement.nameShown
-    && stale.onPlacement.chunkShown && stale.onPlacement.behaviour,
+    && stale.onPlacement.chunkShown && stale.onPlacement.behaviour
+    && /^"weaponHolder" —/.test(stale.onPlacement.bhvCount),
   JSON.stringify(stale.onPlacement));
+// The behaviour panel stays - a door carries behaviours under its id - but it
+// has to be keyed to the door, which is the staleness this whole block is about.
 check("selecting a door drops the previous element's name",
   stale.onDoor.name === "" && !stale.onDoor.nameShown
-    && !stale.onDoor.chunkShown && !stale.onDoor.behaviour,
+    && !stale.onDoor.chunkShown && stale.onDoor.behaviour
+    && /^Door_\w+ — a door,/.test(stale.onDoor.bhvCount),
   JSON.stringify(stale.onDoor));
 check("selecting a placement again brings the fields back",
   stale.backAgain.name === "weaponHolder" && stale.backAgain.nameShown
-    && stale.backAgain.chunkShown,
+    && stale.backAgain.chunkShown
+    && /^"weaponHolder" —/.test(stale.backAgain.bhvCount),
   JSON.stringify(stale.backAgain));
 
 // The id is read-only and always present - it is what doors, portals and

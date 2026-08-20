@@ -189,6 +189,11 @@ export const state = {
   // game draws, and a game whose fans are stopped is not that. See
   // syncBehaviorAnimations in runtime.js and RUN_BEHAVIORS_DEFAULT.
   runBehaviors: true,
+  // Whether **Start demo** compresses the ship on the way out. Off by default:
+  // the KTX2/Meshopt pass is minutes of toktx over every texture, and a publish
+  // is usually there to look at the wall you just moved. See
+  // SHIP_OPTIMIZE_DEFAULT and doStartDemo in main.js.
+  shipOptimize: false,
   behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
   entities: new Map(),     // node name -> [{ name, linked: [] }]
   fluidSim: [],            // the global sim list from config.json
@@ -524,6 +529,14 @@ export const BIG_PALETTE_DEFAULT = true;
 export const STRAY_CHUNK_CHECK_DEFAULT = true;
 /** See `state.runBehaviors` and `syncBehaviorAnimations` in runtime.js. */
 export const RUN_BEHAVIORS_DEFAULT = true;
+/**
+ * See `state.shipOptimize` and `doStartDemo` in main.js.
+ *
+ * Off, because the alternative is waiting minutes for a texture compressor
+ * every time you want to walk the corridor you just changed. Turn it on when
+ * what you are checking *is* the shipped asset - load time, memory, banding.
+ */
+export const SHIP_OPTIMIZE_DEFAULT = false;
 
 /**
  * The three ways of looking at the ship.
@@ -2258,6 +2271,12 @@ function removeMarkerNode(id) {
   m.mesh?.dispose();
   m.node.dispose();
   state.markers.delete(id);
+  // A door's behaviours hang off its id, and `nextDoorId` hands a freed id to
+  // the next door placed - so an entry left behind here would quietly become
+  // that door's. This is the one way an id gets re-adopted, and why a marker
+  // cannot be treated like a placement, whose named entries are worth keeping
+  // precisely because no other element will ever carry that id.
+  state.entities.delete(id);
 }
 
 export function removePlacement(id) {
@@ -2943,6 +2962,27 @@ export function nodeNameOf(placement) {
   return String(placement?.name || "").trim() || placement?.id || "";
 }
 
+/**
+ * What can carry behaviours, and under which key: a placed element under its
+ * node name, a **door** under its id, and nothing else.
+ *
+ * A door's key is its id and can be nothing else, which is also why the
+ * inspector offers a marker no Name field. That id is what the manifest writes
+ * as the door's `node`, what the portal graph joins two chunks by, and what an
+ * `entity` parameter names when one behaviour opens, seals or hides a door from
+ * somewhere else - so a door that could be renamed would be a door whose
+ * behaviours and whose events answered to two different strings.
+ *
+ * Lights, probes and colliders answer "": they are not nodes the runtime
+ * resolves behaviours against, and a panel offered for them would write entries
+ * the manifest has nowhere to put.
+ */
+export function entityNameOf(entry) {
+  if (!entry) return "";
+  if (entry.type === "door") return String(entry.id || "");
+  return entry.type ? "" : nodeNameOf(entry);
+}
+
 /** The elements carrying a node name - several for a shared one, 1 for an id. */
 function placementsCarrying(nodeName) {
   const key = String(nodeName || "").trim();
@@ -3344,11 +3384,15 @@ function isVector3(v) {
  * unnamed element has a node name - its id - so it *can* be linked to, but
  * offering every one of them would bury the handful worth linking under a room
  * full of `P0042`s. Carrying a behaviour is what makes one a participant.
+ *
+ * Several chunks may be asked for at once, which is what a door needs: a door
+ * is not *in* a room, it joins two, and both sides are equally its neighbours.
  */
 export function nodeNamesInChunk(chunk, exclude = "") {
+  const rooms = new Set((Array.isArray(chunk) ? chunk : [chunk]).filter(Boolean));
   const names = new Set();
   for (const e of state.placements.values()) {
-    if (e.chunk !== chunk) continue;
+    if (!rooms.has(e.chunk)) continue;
     const named = String(e.name || "").trim();
     const n = named || (state.entities.has(e.id) ? e.id : "");
     if (n && n !== exclude) names.add(n);
@@ -3876,6 +3920,7 @@ export function serializeEditorPrefs() {
     bigPalette: !!state.bigPalette,
     strayChunkCheck: !!state.strayChunkCheck,
     runBehaviors: !!state.runBehaviors,
+    shipOptimize: !!state.shipOptimize,
     probes,
   };
 }
@@ -3931,6 +3976,7 @@ export function applyEditorPrefs(prefs) {
   if (typeof prefs.bigPalette === "boolean") state.bigPalette = prefs.bigPalette;
   if (typeof prefs.strayChunkCheck === "boolean") state.strayChunkCheck = prefs.strayChunkCheck;
   if (typeof prefs.runBehaviors === "boolean") state.runBehaviors = prefs.runBehaviors;
+  if (typeof prefs.shipOptimize === "boolean") state.shipOptimize = prefs.shipOptimize;
   // Probes are already in by the time this runs; an id the block names but the
   // ship no longer has is simply ignored, which is how a deleted probe stops
   // being mentioned without anybody having to prune the block.

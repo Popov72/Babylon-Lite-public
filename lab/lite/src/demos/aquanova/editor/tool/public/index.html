@@ -14,6 +14,7 @@
   <div class="group">
     <button id="btn-save" title="Write export/ship_manifest.json and export/ship.glb — Ctrl+S">Save</button>
     <button id="btn-load" title="Reload the saved layout, discarding unsaved changes. No shortcut">Load</button>
+    <button id="btn-demo" title="Publish the SAVED ship into the demo and open it in a new tab. Save first if you want to see your latest edits — see Settings ▸ Demo for whether the textures are compressed on the way. No shortcut">Start demo</button>
   </div>
 
   <div class="group">
@@ -233,6 +234,15 @@
         <span class="unit"></span>
       </label>
       <button id="btn-bhv-library" title="Open the behaviour library: the definitions every element's Behaviour panel picks from. Ship-wide, so it opens from anywhere. No shortcut">Edit behaviours…</button>
+      </section>
+      <section class="settings-section">
+      <h3>Demo</h3>
+      <label class="cfg-row" title="Compress the ship's textures and geometry when Start demo publishes it. Off by default: the KTX2 pass runs a texture compressor over every image on the ship and takes minutes, whereas an unoptimised publish is a file copy. Turn it on when what you are checking is the shipped asset itself — load time, memory use, compression artefacts. An editor preference, saved with the ship and never on the undo stack.">
+        <span>Optimize ship</span>
+        <input type="checkbox" id="ship-optimize"
+               title="Compress textures and geometry when publishing to the demo. Slow. No shortcut">
+        <span class="unit"></span>
+      </label>
       </section>
       <section class="settings-section">
       <h3>Probes</h3>

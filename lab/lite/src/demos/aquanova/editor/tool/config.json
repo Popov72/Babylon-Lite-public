@@ -10,5 +10,9 @@
   "envDir": "../env",
   "skybox": "../../../../../../public/aquanova/skybox/sky_equirect.png",
   "port": 5180,
+  "demo": {
+    "url": "http://localhost:5174/lite/demo-aquanova.html",
+    "syncScript": "../../../../../../public/aquanova/scripts/sync-ship.ts"
+  },
   "fluidSim": ["viscosity-inplace", "liquid-slow.json"]
 }

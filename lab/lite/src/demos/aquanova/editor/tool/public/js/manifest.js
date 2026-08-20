@@ -11,7 +11,7 @@ import {
   serializeEditorPrefs, applyEditorPrefs,
   applyEnvironment, whileBusy, withVeilSuspended,
   isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
-  environmentProbeIds, environmentProbeOf, writeBehaviorExtras, nodeNameOf,
+  environmentProbeIds, environmentProbeOf, writeBehaviorExtras, nodeNameOf, pushUndo,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -590,6 +590,29 @@ export async function loadLayout(name) {
 }
 
 /**
+ * Copy what is on disk into the demo, by running `sync-ship.ts` server-side.
+ *
+ * This publishes the **saved** ship: the manifest, collision hulls, probes and
+ * glb the export folder holds right now. Unsaved edits in the viewport are not
+ * part of it, which is why the caller says so before starting.
+ *
+ * The script's own success is `ok`; a `false` with no `output` means the server
+ * could not run it at all. Either way the whole transcript comes back, because
+ * a publish that failed halfway is only diagnosable from its log.
+ */
+export async function syncShip(optimize) {
+  const res = await fetch("/api/sync-ship", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ optimize: !!optimize }),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* answered with something that is not JSON */ }
+  if (!data) return { ok: false, error: `server answered ${res.status}` };
+  return data;
+}
+
+/**
  * Export one ship.glb with every chunk as a named parent node, matching the
  * runtime contract the portal renderer already expects.
  *
@@ -737,4 +760,70 @@ function r(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
 /** A placement's own primitives - its module's parts, and nothing else. */
 function artMeshes(node) {
   return node.getChildMeshes().filter((m) => !isGizmoMesh(m) && !isRuntimeStandIn(m));
+}
+
+/**
+ * Every name an entity entry can legitimately be keyed by.
+ *
+ * The runtime resolves an entity by looking its key up among the nodes of
+ * `ship.glb`, so this is that set - built by the same rules `exportGlbInner`
+ * renames by, and deliberately sitting next to them so the two cannot drift:
+ * placements under their node name, their primitives under
+ * `<name>_primitive<i>`, their animation nodes under `<name>_<clip>`, the chunk
+ * holders under the chunk id and the lights under `LIGHT_<id>`. Door ids join
+ * them: a door is not in the glb, but its id is a key the manifest carries.
+ *
+ * The derived names matter as much as the plain ones. A hand-written entry on
+ * `Fan_primitive0` is a perfectly good way to give one part of a module a
+ * behaviour of its own, and anything that only knew about placement names would
+ * read it as rubbish and throw it away.
+ *
+ * **Every** placement, not only the ship's: something on the bench has not been
+ * exported yet, but it exists, and work in progress is not stale data.
+ */
+export function liveEntityNames() {
+  const live = new Set(state.chunks);
+  for (const p of state.placements.values()) {
+    const name = nodeNameOf(p);
+    live.add(name);
+    artMeshes(p.node).forEach((m, i) => live.add(`${name}_primitive${i}`));
+    for (const a of p.node._shipAnimationNodes ?? []) {
+      live.add(`${name}_${a._shipAnimationSourceName}`);
+    }
+  }
+  for (const m of state.markers.values()) if (m.type === "door") live.add(m.id);
+  for (const l of state.lights.values()) live.add(`LIGHT_${l.id}`);
+  return live;
+}
+
+/**
+ * Drop the behaviour entries no node answers to any more.
+ *
+ * Behaviours outlive the element that carried them **by design**: deleting the
+ * last crate to put a better one down must not throw away how crates behave,
+ * and renaming leaves the old name's entry alone in case something else is
+ * meant to pick it up. That is the right rule while you are working, and the
+ * wrong one for a file - the entries pile up under names that were typos, or
+ * were renamed years ago, and the runtime looks every one of them up and finds
+ * nothing.
+ *
+ * So the tidy happens at the one moment the working state becomes the ship:
+ * an explicit **Save**. Not on auto-save, which is a recovery copy and must
+ * never be the thing that destroys what you were hoping to recover, and not on
+ * every edit, which would make the working rule above impossible.
+ *
+ * Returns what it dropped, so the save can name them - and pushes an undo entry
+ * first, and only when there is something to drop, so an entry that was still
+ * wanted is one Ctrl+Z away rather than gone.
+ */
+export function pruneOrphanEntities() {
+  const live = liveEntityNames();
+  const dropped = [...state.entities.keys()]
+    .filter((k) => !live.has(k))
+    .sort((a, b) => a.localeCompare(b));
+  if (!dropped.length) return dropped;
+  pushUndo();
+  for (const k of dropped) state.entities.delete(k);
+  emit("behaviors");
+  return dropped;
 }

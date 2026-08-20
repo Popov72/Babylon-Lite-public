@@ -9,11 +9,13 @@
 //   4. writes the layout manifest and the exported ship.glb to disk
 //   5. holds the environment probe cubemaps the editor captures, and the index
 //      that says which of them are still stale
+//   6. publishes the export folder into the demo, by running sync-ship.ts
 
 import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +79,27 @@ const COLLISION = path.join(EXPORT_DIR, "ship_collision.json");
 const COMPOUNDS = path.join(EXPORT_DIR, "ship_compounds.json");
 const AUTOSAVE = path.join(EXPORT_DIR, "ship_autosave.json");
 const GLB = path.join(EXPORT_DIR, "ship.glb");
+
+// ------------------------------------------------------------------- the demo
+//
+// The editor writes into `export/`; the game reads from `lab/public/aquanova/`.
+// sync-ship.ts is what carries one to the other - copying the manifest, the
+// collision hulls and the captured probes, and compressing the glb - so the
+// **Start demo** button is that script followed by opening the page.
+//
+// Both live in config.json rather than in this file: which port the lab's dev
+// server is on and where the script sits are facts about this checkout, and a
+// checkout that moves either one should not need a code change.
+//
+// SHIP_SYNC_SCRIPT / SHIP_DEMO_URL override them, for the same reason
+// SHIP_EXPORT_DIR exists: the real script writes into the real game folder, and
+// a test run must be able to exercise this route without doing that.
+const DEMO = CONFIG.demo || {};
+const DEMO_URL = String(process.env.SHIP_DEMO_URL || DEMO.url || "");
+const SYNC_SCRIPT_REL = process.env.SHIP_SYNC_SCRIPT || DEMO.syncScript;
+const SYNC_SCRIPT = SYNC_SCRIPT_REL ? path.resolve(HERE, SYNC_SCRIPT_REL) : "";
+/** How long a publish may run before it is killed, in ms. */
+const SYNC_TIMEOUT_MS = 20 * 60 * 1000;
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -726,6 +749,88 @@ async function declareLocalEnvironments(declared, force = false) {
   return localEnvironmentStatus();
 }
 
+// ------------------------------------------------------ publishing the demo
+
+/**
+ * The checkout root, found by the tool tsx lives in rather than by counting.
+ *
+ * `../../../../../../..` would be the same answer today and a silent breakage
+ * the day this folder moves. What the publish actually needs is the tsx CLI, so
+ * looking for that is both the search and the check: no `node_modules/tsx`
+ * means `pnpm install` has not been run, which is worth saying plainly rather
+ * than failing later inside a spawn.
+ */
+function findTsxCli() {
+  for (let dir = HERE; ; dir = path.dirname(dir)) {
+    const cli = path.join(dir, "node_modules", "tsx", "dist", "cli.mjs");
+    if (fs.existsSync(cli)) return { cli, root: dir };
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+
+/**
+ * One publish at a time.
+ *
+ * The script writes into `lab/public/aquanova`, so two of them interleaved
+ * would be two writers over one folder. The editor disables its own button for
+ * the duration, but that is one tab's opinion - the lock is here.
+ */
+let syncing = false;
+
+/**
+ * Run sync-ship.ts and report what it said.
+ *
+ * Spawned through `process.execPath` and tsx's own CLI rather than through
+ * `pnpm tsx`: no shell to quote a path into, nothing on `PATH` to find, and the
+ * same trick the lab's own dev server uses to run TypeDoc.
+ *
+ * Never throws and never sends a non-200 for a script that merely failed: the
+ * output *is* the answer, and the editor shows it. A 4xx/5xx is reserved for
+ * this server being unable to run it at all.
+ */
+async function runSyncShip(optimize) {
+  if (!SYNC_SCRIPT) return { ok: false, error: "config.json has no demo.syncScript" };
+  if (!fs.existsSync(SYNC_SCRIPT)) return { ok: false, error: `${SYNC_SCRIPT} does not exist` };
+  const tsx = findTsxCli();
+  if (!tsx) return { ok: false, error: "node_modules/tsx not found — run pnpm install in the repository" };
+
+  const args = [tsx.cli, SYNC_SCRIPT];
+  // The flag the script actually takes. Optimising is opt-IN because it runs
+  // toktx over every texture on the ship, which is minutes rather than the
+  // second a plain copy costs - and what a publish is usually for is looking at
+  // the room you have just moved a wall in.
+  if (!optimize) args.push("--no-ship-optimize");
+  const command = `node ${args.map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ")}`;
+
+  syncing = true;
+  try {
+    return await new Promise((resolve) => {
+      const child = spawn(process.execPath, args, { cwd: tsx.root });
+      let output = "";
+      // Interleaved into one string on purpose: the script reports progress on
+      // stdout and its errors on stderr, and which line came after which is
+      // most of what makes a failure readable.
+      const collect = (chunk) => { output += chunk.toString(); };
+      child.stdout.on("data", collect);
+      child.stderr.on("data", collect);
+      const timer = setTimeout(() => {
+        output += `\n[server] no answer after ${Math.round(SYNC_TIMEOUT_MS / 60000)} minutes — killed\n`;
+        child.kill();
+      }, SYNC_TIMEOUT_MS);
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({ ok: false, error: String(err && err.message || err), command, output });
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ ok: code === 0, code, command, output, optimized: !!optimize });
+      });
+    });
+  } finally {
+    syncing = false;
+  }
+}
+
 // ------------------------------------------------------------------ routes
 
 async function handle(req, res) {
@@ -1013,6 +1118,21 @@ async function handle(req, res) {
       await writeLocalEnvironmentIndex({ probes: fresh.probes });
     }
     return sendJson(res, 200, { ok: true, bytes: body.length, file: path.basename(file) });
+  }
+
+  // Publish the export folder into the demo and hand back the page to open.
+  // The editor opens the tab itself, so a failed publish opens nothing.
+  if (p === "/api/sync-ship" && req.method === "POST") {
+    if (!DEMO_URL) return sendJson(res, 501, { ok: false, error: "config.json has no demo.url" });
+    if (syncing) return sendJson(res, 409, { ok: false, error: "a publish is already running" });
+    let optimize = false;
+    try {
+      const body = await readBody(req, 64 * 1024);
+      const text = body.toString("utf8").trim();
+      if (text) optimize = !!JSON.parse(text)?.optimize;
+    } catch { return sendJson(res, 400, { ok: false, error: "body is not JSON" }); }
+    const result = await runSyncShip(optimize);
+    return sendJson(res, 200, { ...result, url: DEMO_URL });
   }
 
   if (p.startsWith("/environments/")) {

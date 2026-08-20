@@ -4,7 +4,8 @@ import { loadCatalogue, getCatalogue, defaultKit, moduleBounds, instantiate } fr
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
-  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, resolveDoorChunks, nodeNameOf,
+  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, syncShip, resolveDoorChunks, nodeNameOf,
+  pruneOrphanEntities,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
@@ -39,7 +40,7 @@ import {
   setVeilAlpha, SKYBOX_CHUNK,
   getBehaviorDef, setBehaviorDef, renameBehaviorDef, deleteBehaviorDef, behaviorNames,
   entityBehaviors, addEntityBehavior, removeEntityBehavior, setEntityLinked,
-  isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed,
+  isLiquefiable, setEntityParams, nodeNamesInChunk, nodesNamed, entityNameOf,
   behaviorParams, behaviorHiddenPlacements,
   isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
   toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
@@ -50,6 +51,7 @@ import {
   setLightSetting, viewMode, viewModeFlags, VIEW_MODES,
   TONE_MAPPING_DEFAULT, RUNTIME_SPECULAR_AA_DEFAULT, RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
   VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT, STRAY_CHUNK_CHECK_DEFAULT, RUN_BEHAVIORS_DEFAULT,
+  SHIP_OPTIMIZE_DEFAULT,
   setShowLayer, SHOW_LAYERS,
   resolveToneMapping, setRuntimeSpecularAA, setRuntimeRoughnessFactor,
   breakApart, groupAnchor, groupMembers,
@@ -285,22 +287,32 @@ function editLight(part, patch) {
  * and behaviours attach to that just as well. The count is then always one, and
  * the panel says so plainly, because "P0042" is not something anybody typed and
  * would otherwise read as a bug.
+ *
+ * A **door** carries behaviours too, under its id. It is not a placement and
+ * `nodesNamed` cannot see it, so it gets its own line rather than being counted
+ * as an orphan - and a warning if placements happen to be named after it, since
+ * then one entry governs both and only this line would say so.
  */
 function refreshBehavior() {
   const single = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
-  const placement = single && !single.type ? single : null;
-  $("behavior-fields").hidden = !placement;
-  if (!placement) return;
+  const name = entityNameOf(single);
+  $("behavior-fields").hidden = !name;
+  if (!name) return;
 
-  const name = nodeNameOf(placement);
-  const named = !!String(placement.name || "").trim();
+  const isDoor = single.type === "door";
+  const named = !isDoor && !!String(single.name || "").trim();
   const count = nodesNamed(name);
   const applied = entityBehaviors(name);
   const library = libraryNames();
 
-  $("bhv-count").textContent = named
-    ? `"${name}" — ${count} element${count === 1 ? "" : "s"}`
-    : `${name} — unnamed, so it stands alone under its id`;
+  const doorLine = count
+    ? `${name} — a door, and ${count} element${count === 1 ? " is" : "s are"} named after it`
+    : `${name} — a door, so it stands alone under its id`;
+  $("bhv-count").textContent = isDoor
+    ? doorLine
+    : named
+      ? `"${name}" — ${count} element${count === 1 ? "" : "s"}`
+      : `${name} — unnamed, so it stands alone under its id`;
   renderApplied(name, applied);
 
   // The whole library, every time: a behaviour may be attached more than once,
@@ -308,8 +320,8 @@ function refreshBehavior() {
   $("bhv-add").innerHTML = library.length
     ? library.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join("")
     : `<option disabled>(none defined)</option>`;
-  $("bhv-add").disabled = !name || !library.length;
-  $("btn-bhv-add").disabled = !name || !library.length;
+  $("bhv-add").disabled = !library.length;
+  $("btn-bhv-add").disabled = !library.length;
 
   $("bhv-hint").textContent = library.length ? "" : "No behaviours defined yet.";
 }
@@ -338,6 +350,11 @@ const esc = (s) => String(s).replace(/[&<>"]/g,
  * of node names from the current room, which is knowledge the editor has and
  * the person typing does not. It edits the same key, and that key is shown in
  * the JSON too, so neither view can silently contradict the other.
+ *
+ * A door is not in a room, it joins two, so its candidates come from both of
+ * its sides. Sides left on "(auto)" are resolved at export time against the
+ * chunk volumes and are not known here, so a door with neither side set offers
+ * nothing - naming a side is what fills the picker.
  */
 function renderApplied(nodeName, applied) {
   const host = $("bhv-applied");
@@ -351,14 +368,20 @@ function renderApplied(nodeName, applied) {
     host.innerHTML = nodeName ? '<div class="muted">none attached</div>' : "";
     return;
   }
-  const chunk = entryOf(state.selection[0])?.chunk;
-  const candidates = nodeNamesInChunk(chunk, nodeName);
+  const entry = entryOf(state.selection[0]);
+  const rooms = entry?.type === "door"
+    ? [entry.chunkA, entry.chunkB]
+    : [entry?.chunk];
+  const candidates = nodeNamesInChunk(rooms, nodeName);
+  const empty = entry?.type === "door"
+    ? "(name a side to choose from its room)"
+    : "(nothing else named in this room)";
   const picker = (kind, label, options, chosen, at) => {
     const opts = options.length
       ? options.map((n) =>
         `<option value="${esc(n)}"${chosen.includes(n) ? " selected" : ""}>${esc(n)}</option>`)
         .join("")
-      : `<option disabled>(nothing else named in this room)</option>`;
+      : `<option disabled>${esc(empty)}</option>`;
     return `<div class="linked"><div class="lbl">${label}</div>`
       + `<select multiple size="4" data-${kind}="${at}">${opts}</select></div>`;
   };
@@ -451,7 +474,7 @@ function behaviorParamsHint(behaviorName) {
 
 function selectedName() {
   const e = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
-  return e && !e.type ? nodeNameOf(e) : "";
+  return entityNameOf(e);
 }
 
 $("btn-bhv-add").addEventListener("click", () => {
@@ -1648,6 +1671,21 @@ $("run-behaviors").addEventListener("change", (e) => {
   else setStatus(`behaviours on — nothing in the ship has an animation to play${hiddenNote}`);
 });
 
+/**
+ * Whether **Start demo** compresses the ship on the way out.
+ *
+ * An editor preference like the ones above: saved with the ship, off the undo
+ * stack, reset by Reset to defaults. Nothing happens when it changes - it is
+ * read at the moment a publish starts - so the status line is the whole
+ * feedback, and it says what the choice costs rather than merely echoing it.
+ */
+$("ship-optimize").addEventListener("change", (e) => {
+  state.shipOptimize = e.target.checked;
+  setStatus(e.target.checked
+    ? "ship optimization on — Start demo will compress textures and geometry, which takes a while"
+    : "ship optimization off — Start demo will publish the ship uncompressed");
+});
+
 // Keyboard shortcuts are ignored while a form control has focus, so a toolbar
 // control that keeps focus after being changed silently kills the numpad keys.
 for (const el of document.querySelectorAll("#toolbar select, #toolbar input")) {
@@ -1686,6 +1724,7 @@ function refreshEditorPrefs() {
   setBigPalette(state.bigPalette);
   $("stray-chunk-check").checked = !!state.strayChunkCheck;
   $("run-behaviors").checked = !!state.runBehaviors;
+  $("ship-optimize").checked = !!state.shipOptimize;
   applyVisibility();                  // Run behaviours decides what is on screen
   syncBehaviorAnimations();           // the preference it reads has just moved
   validate();                         // the check it governs is a live one
@@ -2167,6 +2206,7 @@ export async function autoSaveNow() {
 
 $("btn-save").addEventListener("click", doSave);
 $("btn-load").addEventListener("click", doLoad);
+$("btn-demo").addEventListener("click", doStartDemo);
 
 /**
  * The same guard for closing or reloading the tab.
@@ -2199,6 +2239,7 @@ addEventListener("beforeunload", (e) => {
  */
 async function doSave() {
   let saved;
+  let pruned = [];
   // Read before writing. A save is the moment a mistake becomes the file
   // everyone else reads, and a piece left in the wrong chunk is invisible until
   // it pops in and out with the wrong room in the game. Reported, never
@@ -2213,6 +2254,10 @@ async function doSave() {
     // a save is also the moment you would expect nothing to be lost - so what
     // is on it goes to its own store now rather than only on the way out.
     persistBench();
+    // The other half of that thought: what nothing carries any more goes, so
+    // the file does not accumulate behaviours under names that were renamed or
+    // deleted. On the undo stack, and named below, in case one was wanted.
+    pruned = pruneOrphanEntities();
     const r = await saveLayout();
     markSaved();
     const coll = r.collisionError
@@ -2225,13 +2270,24 @@ async function doSave() {
   const warning = strays.length
     ? ` — check chunks: ${strays.join("; ")}`
     : "";
+  // Named, not counted: "dropped 4 entries" is only alarming, and the whole
+  // point of saying anything is that you can tell at a glance whether one of
+  // them was a name you were about to use again. The console has all of them
+  // however many there are, since the status line is one line.
+  if (pruned.length) console.info("dropped unused behaviour entries:", pruned.join(", "));
+  const shown = pruned.slice(0, 4).join(", ");
+  const rest = pruned.length > 4 ? `, +${pruned.length - 4} more` : "";
+  const tidied = pruned.length
+    ? ` — dropped ${pruned.length} unused behaviour `
+      + `${pruned.length === 1 ? "entry" : "entries"}: ${shown}${rest}`
+    : "";
   try {
     setStatus(`${saved} — exporting glb…`);
     const r = await exportGlb();
-    setStatus(`${saved}, ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}${warning}`);
+    setStatus(`${saved}, ${(r.bytes / 1048576).toFixed(1)} MB → ${r.path}${tidied}${warning}`);
   } catch (e) {
     console.error(e);
-    setStatus(`${saved} — glb NOT written: ${e.message}${warning}`);
+    setStatus(`${saved} — glb NOT written: ${e.message}${tidied}${warning}`);
   }
 }
 
@@ -2252,6 +2308,55 @@ async function doLoad() {
       : "nothing to load (no tool-written manifest yet)");
     refreshChunks();
   } catch (e) { setStatus("load failed: " + e.message); }
+}
+
+/**
+ * Publish the ship into the demo, then open it.
+ *
+ * What runs is `sync-ship.ts`, the same script that would be run by hand: it
+ * carries the export folder over to `lab/public/aquanova`, which is where the
+ * game reads its ship from. So what the demo shows is the ship **as last
+ * saved** - this deliberately does not save for you, because a publish is a
+ * read of the project on disk and quietly writing the viewport into it first
+ * would make the button do two very different things. A dirty scene is said out
+ * loud instead, before the wait rather than after it.
+ *
+ * The tab is opened only on success, and reused by name, so repeated publishes
+ * refresh one demo tab instead of collecting them. A failure leaves the whole
+ * script transcript in the console, which is the only place a half-finished
+ * publish can be read from.
+ */
+async function doStartDemo() {
+  const dirty = isDirty();
+  try {
+    // The label is the whole feedback for the length of the run: the busy
+    // overlay is over the status bar, and this is a wait measured in seconds at
+    // best. So it says which ship is being published, not just that one is.
+    const label = dirty
+      ? "publishing the SAVED ship — your unsaved changes are not in it…"
+      : (state.shipOptimize ? "publishing the ship, optimized — this takes a while…" : "publishing the ship…");
+    // whileBusy is what the autosave and the capture check before touching the
+    // export folder: the script is reading it, and a save landing halfway
+    // through would publish half of each ship. It also makes the toolbar inert,
+    // which is what stops a second click starting a second publish.
+    const result = await whileBusy(label, () => syncShip(state.shipOptimize));
+    if (result.output) console.log(result.output);
+    if (!result.ok) {
+      const why = result.error || (result.code != null ? `sync-ship.ts exited with code ${result.code}` : "unknown error");
+      setStatus(`demo NOT started — ${why}${result.output ? " (the script's output is in the console)" : ""}`);
+      return;
+    }
+    // Named, so this is the same tab every time.
+    const tab = window.open(result.url, "aquanova-demo");
+    const how = result.optimized ? "optimized" : "unoptimized";
+    if (!tab) setStatus(`ship published (${how}) — the browser blocked the tab, open ${result.url} yourself`);
+    else setStatus(dirty
+      ? `ship published (${how}) and demo opened — showing the SAVED ship, not your unsaved changes`
+      : `ship published (${how}) — demo opened at ${result.url}`);
+  } catch (e) {
+    console.error(e);
+    setStatus("demo NOT started: " + e.message);
+  }
 }
 
 // -------------------------------------------------- the environment probes
@@ -3636,11 +3741,13 @@ $("btn-cfg-reset").addEventListener("click", () => {
   // rows follow when you move them by hand.
   if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT
     || state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT
-    || state.runBehaviors !== RUN_BEHAVIORS_DEFAULT) {
+    || state.runBehaviors !== RUN_BEHAVIORS_DEFAULT
+    || state.shipOptimize !== SHIP_OPTIMIZE_DEFAULT) {
     setVeilAlpha(VEIL_ALPHA_DEFAULT);
     state.bigPalette = BIG_PALETTE_DEFAULT;
     state.strayChunkCheck = STRAY_CHUNK_CHECK_DEFAULT;
     state.runBehaviors = RUN_BEHAVIORS_DEFAULT;
+    state.shipOptimize = SHIP_OPTIMIZE_DEFAULT;
     changed = true;
   }
   refreshEditorPrefs();
