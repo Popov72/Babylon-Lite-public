@@ -2,10 +2,13 @@
 // grab/drop, hover outline, wheel rotate/scale, grid elevation and axis modes.
 
 import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { toolUrl } from "./target.mjs";
 const require = createRequire("D:/alexis/TombRaider/Popov72/Babylon.js/package.json");
 const { chromium } = require("playwright");
 
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 const URL = toolUrl();
 
 const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -13589,7 +13592,9 @@ await page.evaluate(async () => {
 await page.fill("#palette-search", "");
 await page.waitForTimeout(400);
 
-await page.screenshot({ path: "test/shot-ux.png" });
+// Beside this file, not beside the launch directory - see the note in
+// smoke.mjs. `URL` above shadows the global constructor, hence HERE.
+await page.screenshot({ path: path.join(HERE, "shot-ux.png") });
 
 console.log(results.join("\n"));
 console.log("\nfailures:", results.filter((r) => r.startsWith("FAIL")).length);console.log("errors  :", errors.length ? [...new Set(errors)].join("\n  ") : "(none)");
