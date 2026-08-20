@@ -1,12 +1,12 @@
-"""Blender add-on exporting native Mantaflow liquid setups as Babylon Lite JSON."""
+"""Fluid scene exporter for native and add-on simulation setups."""
 
 bl_info = {
     "name": "Babylon Lite Fluid JSON",
     "author": "Babylon Lite contributors",
-    "version": (2, 9, 2),
+    "version": (3, 0, 0),
     "blender": (4, 0, 0),
     "location": "Properties > Scene > Babylon Lite Fluid; File > Export",
-    "description": "Export a native Mantaflow liquid setup to Babylon Lite JSON",
+    "description": "Export a native or add-on fluid setup to Babylon Lite JSON",
     "category": "Import-Export",
 }
 
@@ -31,6 +31,8 @@ MAX_FLUID_POLYGON_POINTS = 256
 MAX_SDF_VOXELS = 16 * 1024 * 1024
 PBF_BASE_CELL_SIZE = 0.4
 PBF_PARTICLE_SIZE_CALIBRATION = 2.1333333333333333
+FLIP_BASE_CELL_SIZE = 0.25
+FLIP_MARKERS_PER_CELL = 8
 BLITE_INFLOW_VOLUME_RATE = 20.0
 
 
@@ -58,14 +60,29 @@ def flow_settings(obj):
     return modifier.flow_settings if modifier is not None else None
 
 
+def flip_object_type(obj):
+    props = getattr(obj, "flip_fluid", None)
+    return getattr(props, "object_type", "TYPE_NONE") if props is not None and getattr(props, "is_active", False) else "TYPE_NONE"
+
+
+def is_flip_fluids_domain(obj):
+    return flip_object_type(obj) == "TYPE_DOMAIN"
+
+
+def is_flip_fluids_flow(obj):
+    return flip_object_type(obj) in {"TYPE_FLUID", "TYPE_INFLOW", "TYPE_OUTFLOW"}
+
+
 def is_collision_object(obj):
+    if flip_object_type(obj) == "TYPE_OBSTACLE":
+        return bool(getattr(obj.flip_fluid.obstacle, "is_enabled", True))
     modifier = fluid_modifier(obj, "EFFECTOR")
     settings = modifier.effector_settings if modifier is not None else None
     return settings is not None and settings.effector_type == "COLLISION" and settings.use_effector
 
 
 def is_flow_object(obj):
-    return flow_settings(obj) is not None and not is_collision_object(obj)
+    return (is_flip_fluids_flow(obj) or flow_settings(obj) is not None) and not is_collision_object(obj)
 
 
 def local_size(obj):
@@ -119,11 +136,13 @@ def find_domain(scene):
         if obj is None or obj.name in seen:
             continue
         seen.add(obj.name)
+        if is_flip_fluids_domain(obj):
+            return obj
         modifier = fluid_modifier(obj, "DOMAIN")
         settings = modifier.domain_settings if modifier is not None else None
         if settings is not None and getattr(settings, "domain_type", "") == "LIQUID":
             return obj
-    raise ValueError("No liquid Fluid Domain object was found")
+    raise ValueError("No native or add-on liquid Domain object was found")
 
 
 def clamp(value, minimum, maximum):
@@ -131,6 +150,51 @@ def clamp(value, minimum, maximum):
 
 
 def derived_domain_values(scene, domain, grid_size):
+    if is_flip_fluids_domain(domain):
+        domain_props = domain.flip_fluid.domain
+        simulation = domain_props.simulation
+        advanced = domain_props.advanced
+        world = domain_props.world
+        resolution = max(1, int(simulation.resolution))
+        cell_size = max(grid_size) / resolution
+        raw_particle_size = cell_size / FLIP_BASE_CELL_SIZE
+        particle_size = clamp(raw_particle_size, 0.1, 8)
+        cells = [max(1, int(math.ceil(axis / cell_size))) for axis in grid_size]
+        raw_particle_count = cells[0] * cells[1] * cells[2] * FLIP_MARKERS_PER_CELL
+        particle_count = max(1, int(raw_particle_count))
+        gravity_vector = Vector(world.gravity)
+        if getattr(world, "gravity_type", "GRAVITY_TYPE_SCENE") == "GRAVITY_TYPE_SCENE":
+            gravity_vector = Vector(scene.gravity) if scene.use_gravity else Vector((0, 0, 0))
+        time_steps = advanced.min_max_time_steps_per_frame
+        min_substeps = int(clamp(int(time_steps.value_min), 1, 16))
+        max_substeps = int(clamp(max(min_substeps, int(time_steps.value_max)), 1, 32))
+        return {
+            "method": "FLIP",
+            "particle_count": particle_count,
+            "raw_particle_count": raw_particle_count,
+            "particle_size": particle_size,
+            "raw_particle_size": raw_particle_size,
+            "cell_size": cell_size,
+            "cells": cells,
+            "resolution": resolution,
+            "markers_per_cell": FLIP_MARKERS_PER_CELL,
+            "physics": {
+                "gravity": clamp(float(-gravity_vector.z), 0, 200),
+                "flipRatio": clamp(1.0 - float(advanced.PICFLIP_ratio), 0, 1),
+                "kinematicViscosity": 0,
+                "surfaceTension": 0,
+                "minSubsteps": min_substeps,
+                "maxSubsteps": max_substeps,
+                "cflNumber": clamp(float(getattr(advanced, "CFL_condition_number", 2)), 0, 10),
+                "restitution": 0,
+                "velocityDamping": 0,
+                "pressureIterations": int(clamp(int(advanced.pressure_solver_max_iterations), 1, 100)),
+                "pressureRelaxation": 0.8,
+                "viscosityIterations": 12,
+                "maxSubDtMs": 8.4,
+            },
+        }
+
     modifier = fluid_modifier(domain, "DOMAIN")
     settings = modifier.domain_settings if modifier is not None else None
     if settings is None:
@@ -143,7 +207,7 @@ def derived_domain_values(scene, domain, grid_size):
     cells = [max(1, int(math.ceil(axis / cell_size))) for axis in grid_size]
     explicit_limit = max(0, int(settings.sys_particle_maximum))
     raw_particle_count = explicit_limit or cells[0] * cells[1] * cells[2] * max(1, int(settings.particle_max))
-    particle_count = int(clamp(raw_particle_count, 1, 1000000))
+    particle_count = max(1, int(raw_particle_count))
 
     viscosity = 0.08
     if settings.use_diffusion:
@@ -160,12 +224,14 @@ def derived_domain_values(scene, domain, grid_size):
     }
 
     return {
+        "method": "PBF",
         "particle_count": particle_count,
         "raw_particle_count": raw_particle_count,
         "particle_size": particle_size,
         "raw_particle_size": raw_particle_size,
         "cell_size": cell_size,
         "cells": cells,
+        "resolution": resolution,
         "physics": physics,
     }
 
@@ -178,11 +244,9 @@ def extract_flows(scene, grid_position):
     domain_bounds = authored_domain_bounds(domain)
     domain_size = domain_bounds[1] - domain_bounds[0]
     grid_size = [float(domain_size.x), float(domain_size.z), float(domain_size.y)]
-    domain_settings = fluid_modifier(domain, "DOMAIN").domain_settings
-    mantaflow_cell_size = max(grid_size) / max(1, int(domain_settings.resolution_max))
-    flow_objects = [obj for obj in scene.objects if not is_collision_object(obj) and flow_settings(obj) is not None and flow_settings(obj).flow_type == "LIQUID"]
+    derived = derived_domain_values(scene, domain, grid_size)
+    flow_objects = [obj for obj in scene.objects if is_flow_object(obj)]
     for obj in flow_objects:
-        settings = flow_settings(obj)
         flow_id = object_id(obj)
         suffix = 2
         base_id = flow_id
@@ -190,54 +254,80 @@ def extract_flows(scene, grid_position):
             flow_id = f"{base_id}-{suffix}"
             suffix += 1
         object_ids[obj.name] = flow_id
-        behavior = settings.flow_behavior
-        if behavior == "OUTFLOW":
-            pending_sinks.append((obj, settings))
+        flip_type = flip_object_type(obj)
+        if flip_type == "TYPE_OUTFLOW":
+            pending_sinks.append((obj, obj.flip_fluid.outflow, "FLIP"))
             continue
-        use_initial_velocity = bool(settings.use_initial_velocity)
-        velocity = Vector(settings.velocity_coord) if use_initial_velocity else Vector((0, 0, 0))
+        if flip_type in {"TYPE_FLUID", "TYPE_INFLOW"}:
+            settings = obj.flip_fluid.fluid if flip_type == "TYPE_FLUID" else obj.flip_fluid.inflow
+            behavior = "initial" if flip_type == "TYPE_FLUID" else "inflow"
+            velocity = Vector(settings.initial_velocity if flip_type == "TYPE_FLUID" else settings.inflow_velocity)
+            enabled = True if flip_type == "TYPE_FLUID" else bool(settings.is_enabled)
+            append_velocity = bool(settings.append_object_velocity)
+            velocity_factor = float(settings.append_object_velocity_influence)
+            sampling = "volume"
+        else:
+            settings = flow_settings(obj)
+            if settings is None or getattr(settings, "flow_type", "") != "LIQUID":
+                continue
+            if settings.flow_behavior == "OUTFLOW":
+                pending_sinks.append((obj, settings, "MANTA"))
+                continue
+            behavior = "initial" if settings.flow_behavior == "GEOMETRY" else "inflow"
+            use_initial_velocity = bool(settings.use_initial_velocity)
+            velocity = Vector(settings.velocity_coord) if use_initial_velocity else Vector((0, 0, 0))
+            enabled = behavior == "initial" or bool(getattr(settings, "use_inflow", True))
+            append_velocity = use_initial_velocity
+            velocity_factor = float(settings.velocity_factor)
+            sampling = "surface" if settings.use_plane_init else "volume"
         transform = transform_for(obj, grid_position)
         shape = shape_for(obj)
         emitter = {
             "id": flow_id,
             "name": obj.name,
-            "enabled": behavior == "GEOMETRY" or bool(getattr(settings, "use_inflow", True)),
-            "behavior": "initial" if behavior == "GEOMETRY" else "inflow",
+            "enabled": enabled,
+            "behavior": behavior,
             "transform": transform,
             "shape": shape,
-            "sampling": "surface" if settings.use_plane_init else "volume",
+            "sampling": sampling,
             "velocity": blite_vec(velocity),
             "velocitySpace": "world",
             "sourceNode": obj.name,
             "spread": 0,
         }
-        if use_initial_velocity:
-            emitter["sourceVelocityFactor"] = float(settings.velocity_factor)
+        if append_velocity:
+            emitter["sourceVelocityFactor"] = velocity_factor
+        if flip_type == "TYPE_NONE" and bool(settings.use_initial_velocity):
             emitter["normalVelocity"] = float(settings.velocity_normal)
-        if behavior != "GEOMETRY":
+        if behavior == "inflow":
             emitter["volumeRate"] = BLITE_INFLOW_VOLUME_RATE
         emitters.append(emitter)
 
-    inflow_ids = [emitter["id"] for emitter in emitters if emitter["behavior"] == "inflow" and emitter["enabled"]]
     sinks = []
-    for obj, settings in pending_sinks:
+    for obj, settings, source_kind in pending_sinks:
         transform = transform_for(obj, grid_position)
         shape = shape_for(obj)
-        surface_margin = max(0.0, float(settings.surface_distance)) * mantaflow_cell_size
-        if surface_margin > 0:
+        if source_kind == "MANTA":
+            surface_margin = max(0.0, float(settings.surface_distance)) * derived["cell_size"]
             shape["size"] = [
                 size + 2 * surface_margin / max(abs(transform["scale"][index]), 1e-6)
                 for index, size in enumerate(shape["size"])
             ]
+            enabled = bool(getattr(settings, "use_inflow", True))
+        else:
+            enabled = bool(settings.is_enabled and settings.remove_fluid)
         sink = {
             "id": object_ids[obj.name],
             "name": obj.name,
-            "enabled": bool(getattr(settings, "use_inflow", True)),
+            "enabled": enabled,
             "transform": transform,
             "shape": shape,
             "mode": "delete",
             "targets": [],
         }
+        if source_kind == "FLIP" and settings.enable_gradual_outflow:
+            world_volume = math.prod(shape["size"][index] * abs(transform["scale"][index]) for index in range(3))
+            sink["volumeRate"] = world_volume * max(0.0, float(settings.outflow_rate))
         sinks.append(sink)
     return emitters, sinks
 
@@ -398,11 +488,13 @@ def validate_setup(context):
     for obj in scene.objects:
         if is_collision_object(obj):
             continue
+        flip_type = flip_object_type(obj)
         settings = flow_settings(obj)
-        if settings is None or getattr(settings, "flow_type", "") != "LIQUID":
+        if not is_flip_fluids_flow(obj) and (settings is None or getattr(settings, "flow_type", "") != "LIQUID"):
             continue
         liquid_flows.append((obj, settings))
-        if settings.flow_behavior == "OUTFLOW":
+        is_outflow = flip_type == "TYPE_OUTFLOW" or (settings is not None and settings.flow_behavior == "OUTFLOW")
+        if is_outflow:
             sink_count += 1
         else:
             emitter_count += 1
@@ -415,7 +507,8 @@ def validate_setup(context):
             if not bounds_overlap(flow_bounds, summary["domain_bounds"]):
                 errors.append(f"{obj.name}: flow object is outside the liquid domain")
             elif (
-                settings.flow_behavior == "OUTFLOW"
+                flip_type == "TYPE_NONE"
+                and settings.flow_behavior == "OUTFLOW"
                 and flow_bounds[1].z + max(0.0, float(settings.surface_distance)) * summary["derived"]["cell_size"]
                 <= summary["domain_bounds"][0].z + summary["derived"]["cell_size"] * 2
             ):
@@ -429,14 +522,14 @@ def validate_setup(context):
         errors.append(f"Fluid flow supports at most {MAX_FLUID_SINKS} sinks")
     if emitter_count == 0:
         warnings.append("No liquid initial-volume or inflow objects were found")
-    domain_settings = fluid_modifier(summary["domain"], "DOMAIN").domain_settings
     derived = summary["derived"]
-    if derived["particle_count"] != derived["raw_particle_count"]:
-        warnings.append(f"Derived particle capacity {derived['raw_particle_count']:,} will be clamped to {derived['particle_count']:,}")
     if abs(derived["particle_size"] - derived["raw_particle_size"]) > 1e-8:
-        warnings.append(f"Derived physics particle size {derived['raw_particle_size']:.3g} will be clamped to {derived['particle_size']:.3g}")
-    if abs(domain_settings.gravity.x) > 1e-5 or abs(domain_settings.gravity.y) > 1e-5 or domain_settings.gravity.z > 1e-5:
-        warnings.append("Babylon Lite currently uses only the downward Blender Z gravity component")
+        label = "FLIP cell-size compatibility scale" if derived["method"] == "FLIP" else "physics particle size"
+        warnings.append(f"Derived {label} {derived['raw_particle_size']:.3g} will be clamped to {derived['particle_size']:.3g}")
+    if derived["method"] == "PBF":
+        domain_settings = fluid_modifier(summary["domain"], "DOMAIN").domain_settings
+        if abs(domain_settings.gravity.x) > 1e-5 or abs(domain_settings.gravity.y) > 1e-5 or domain_settings.gravity.z > 1e-5:
+            warnings.append("Babylon Lite currently uses only the downward source-scene Z gravity component")
     unsupported_lights = [
         obj.name
         for obj in scene.objects
@@ -497,14 +590,40 @@ def source_snapshot(scene, domain):
     flows = {}
     effectors = {}
     for obj in scene.objects:
+        flip_type = flip_object_type(obj)
+        if flip_type == "TYPE_FLUID":
+            flows[obj.name] = settings_snapshot(obj.flip_fluid.fluid)
+            continue
+        if flip_type == "TYPE_INFLOW":
+            flows[obj.name] = settings_snapshot(obj.flip_fluid.inflow)
+            continue
+        if flip_type == "TYPE_OUTFLOW":
+            flows[obj.name] = settings_snapshot(obj.flip_fluid.outflow)
+            continue
+        if flip_type == "TYPE_OBSTACLE":
+            effectors[obj.name] = settings_snapshot(obj.flip_fluid.obstacle)
+            continue
         flow = flow_settings(obj)
         if flow is not None and flow.flow_type == "LIQUID":
             flows[obj.name] = settings_snapshot(flow)
         modifier = fluid_modifier(obj, "EFFECTOR")
         if modifier is not None and modifier.effector_settings is not None:
             effectors[obj.name] = settings_snapshot(modifier.effector_settings)
+    if is_flip_fluids_domain(domain):
+        dprops = domain.flip_fluid.domain
+        domain_settings = {
+            "simulation": settings_snapshot(dprops.simulation),
+            "advanced": settings_snapshot(dprops.advanced),
+            "world": settings_snapshot(dprops.world),
+            "surface": settings_snapshot(dprops.surface),
+            "whitewater": settings_snapshot(dprops.whitewater),
+        }
+        application = "FLIP add-on"
+    else:
+        domain_settings = settings_snapshot(fluid_modifier(domain, "DOMAIN").domain_settings)
+        application = "Native fluid"
     return {
-        "application": "Blender",
+        "application": application,
         "version": bpy.app.version_string,
         "settings": {
             "timeline": {
@@ -514,7 +633,7 @@ def source_snapshot(scene, domain):
                 "fpsBase": scene.render.fps_base,
             },
             "collisionSdfResolution": scene.blitefluid_sdf_resolution,
-            "domain": settings_snapshot(fluid_modifier(domain, "DOMAIN").domain_settings),
+            "domain": domain_settings,
             "flows": flows,
             "effectors": effectors,
         },
@@ -523,20 +642,36 @@ def source_snapshot(scene, domain):
 
 def default_preset(scene, grid_position, grid_size, emitters, sinks):
     domain = find_domain(scene)
-    settings = fluid_modifier(domain, "DOMAIN").domain_settings
     derived = derived_domain_values(scene, domain, grid_size)
-    foam_enabled = bool(settings.use_spray_particles or settings.use_bubble_particles or settings.use_foam_particles)
-    bubbles_enabled = bool(settings.use_bubble_particles)
+    if is_flip_fluids_domain(domain):
+        settings = domain.flip_fluid.domain
+        foam_enabled = bool(getattr(settings.whitewater, "enable_whitewater_simulation", False))
+        bubbles_enabled = foam_enabled
+        simulation_time_scale = clamp(float(settings.simulation.time_scale), 0.01, 100)
+        initial_volume = sum(
+            math.prod(emitter["shape"]["size"][index] * abs(emitter["transform"]["scale"][index]) for index in range(3))
+            for emitter in emitters
+            if emitter["enabled"] and emitter["behavior"] == "initial" and emitter["sampling"] == "volume" and emitter["shape"]["type"] == "box"
+        )
+        initial_markers = int(math.ceil(initial_volume / (derived["cell_size"] ** 3) * derived["markers_per_cell"])) if initial_volume > 0 else 0
+        has_inflow = any(emitter["enabled"] and emitter["behavior"] == "inflow" for emitter in emitters)
+        particle_count = max(initial_markers, 80000 if has_inflow else 1)
+    else:
+        settings = fluid_modifier(domain, "DOMAIN").domain_settings
+        foam_enabled = bool(settings.use_spray_particles or settings.use_bubble_particles or settings.use_foam_particles)
+        bubbles_enabled = bool(settings.use_bubble_particles)
+        simulation_time_scale = clamp(float(settings.time_scale), 0.01, 100)
+        particle_count = derived["particle_count"]
     preset = {
-        "formatVersion": 9,
-        "meta": {"demo": "blender", "method": "PBF"},
+        "formatVersion": 11,
+        "meta": {"demo": "blender", "method": derived["method"]},
         "source": source_snapshot(scene, domain),
         "physics": derived["physics"],
         "demoParams": {},
         "demoState": {},
         "simulationDuration": 0,
         "alphaDecay": 0,
-        "simulationTimeScale": clamp(float(settings.time_scale), 0.01, 100),
+        "simulationTimeScale": simulation_time_scale,
         "emitters": emitters,
         "sinks": sinks,
         "showContainer": False,
@@ -548,8 +683,16 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks):
         "physicsParticleSize": derived["particle_size"],
         "gridPosition": grid_position,
         "gridSize": grid_size,
+        **(
+            {
+                "gridResolution": derived["resolution"],
+                "markersPerCell": derived["markers_per_cell"],
+            }
+            if derived["method"] == "FLIP"
+            else {}
+        ),
         "showGridBounds": False,
-        "particleCount": derived["particle_count"],
+        "particleCount": particle_count,
         "material": 0,
         "render": {
             "renderAsSpheres": False,
@@ -683,17 +826,17 @@ def ensure_fluid_role(context, obj, role):
     context.view_layer.update()
     if role == "DOMAIN":
         if modifier.domain_settings is None:
-            raise ValueError("Blender did not initialize liquid domain settings")
+            raise ValueError("The host application did not initialize liquid domain settings")
         modifier.domain_settings.domain_type = "LIQUID"
     elif role == "COLLIDER":
         if modifier.effector_settings is None:
-            raise ValueError("Blender did not initialize fluid effector settings")
+            raise ValueError("The host application did not initialize fluid effector settings")
         modifier.effector_settings.effector_type = "COLLISION"
         if modifier.effector_settings.surface_distance <= 0:
             modifier.effector_settings.surface_distance = 1.5
     elif role != "COLLIDER":
         if modifier.flow_settings is None:
-            raise ValueError("Blender did not initialize liquid flow settings")
+            raise ValueError("The host application did not initialize liquid flow settings")
         modifier.flow_settings.flow_type = "LIQUID"
         modifier.flow_settings.flow_behavior = {"INITIAL": "GEOMETRY", "INFLOW": "INFLOW", "SINK": "OUTFLOW"}[role]
         if role in {"INFLOW", "SINK"}:

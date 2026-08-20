@@ -247,7 +247,7 @@ export function createParticleRenderTask(
             });
             pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
-            pass.draw(6, currentSim.count);
+            pass.draw(6, currentSim.renderCount ?? currentSim.count);
             pass.end();
             engine._currentEncoder.popDebugGroup();
             return 1;

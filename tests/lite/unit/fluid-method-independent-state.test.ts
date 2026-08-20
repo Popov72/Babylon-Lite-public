@@ -75,4 +75,19 @@ describe("method-independent fluid authoring state", () => {
         expect(merged.renderMode).toBe("spheres");
         expect(merged.schema.gravity).toBe(3.25);
     });
+
+    it("retains FLIP pressure and transfer controls while carrying shared gravity", () => {
+        const target = {
+            ...state({ gravity: 9.8, flipRatio: 0.95, pressureIterations: 40, pressureRelaxation: 0.8 }),
+            gridResolution: 192,
+            markersPerCell: 8,
+        };
+        const shared = state({ gravity: 2.5, relaxation: 70 });
+
+        const merged = carryMethodIndependentState(target, shared);
+
+        expect(merged.schema).toEqual({ gravity: 2.5, flipRatio: 0.95, pressureIterations: 40, pressureRelaxation: 0.8 });
+        expect(merged.gridResolution).toBe(192);
+        expect(merged.markersPerCell).toBe(8);
+    });
 });

@@ -27,6 +27,8 @@ export interface PhysSchemaEntry {
     max: number;
     step: number;
     value: number;
+    /** Optional visual group used to separate material, timestep, collision, and numerical controls. */
+    group?: "liquid" | "timestep" | "collision" | "advanced";
     /** One-line explanation shown in a hover tooltip behind an "i" next to the label. */
     info?: string;
 }
@@ -102,6 +104,129 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             step: 0.05,
             value: 0,
             info: "Phantom density contributed by walls, compensating the SPH density deficit there. Above zero it stops particles piling up against a boundary, at the cost of a thin gap. 0 disables the correction entirely.",
+        },
+    ],
+    FLIP: [
+        {
+            key: "gravity",
+            label: "Gravity",
+            min: 0,
+            max: 200,
+            step: 0.1,
+            value: 9.8,
+            group: "liquid",
+            info: "Downward acceleration applied on the MAC grid, in world units per second squared.",
+        },
+        {
+            key: "flipRatio",
+            label: "FLIP ratio",
+            min: 0,
+            max: 1,
+            step: 0.01,
+            value: 0.95,
+            info: "Blend between dissipative PIC velocity (0) and energy-preserving FLIP velocity change (1). Values near 1 retain splashes and vortices; lower values suppress noise.",
+        },
+        {
+            key: "kinematicViscosity",
+            label: "Kinematic viscosity",
+            min: 0,
+            max: 5,
+            step: 0.01,
+            value: 0,
+            info: "Physical diffusion of velocity gradients on the MAC grid, in world-units squared per second. 0 disables the implicit viscosity solve.",
+        },
+        {
+            key: "surfaceTension",
+            label: "Surface tension",
+            min: 0,
+            max: 5,
+            step: 0.01,
+            value: 0,
+            info: "Cohesion force applied at the liquid-air interface. Higher values form rounder drops and beads and may require more substeps through the capillary stability limit.",
+        },
+        {
+            key: "minSubsteps",
+            label: "Minimum substeps",
+            min: 1,
+            max: 16,
+            step: 1,
+            value: 1,
+            group: "timestep",
+            info: "Minimum FLIP steps per rendered frame. Increase this when forces, viscosity, or collisions need more temporal accuracy even at low velocity.",
+        },
+        {
+            key: "maxSubsteps",
+            label: "Maximum substeps",
+            min: 1,
+            max: 32,
+            step: 1,
+            value: 8,
+            info: "Maximum adaptive FLIP steps per rendered frame. This bounds GPU cost when CFL or surface tension requests very small timesteps.",
+        },
+        {
+            key: "cflNumber",
+            label: "CFL number",
+            min: 0,
+            max: 10,
+            step: 0.1,
+            value: 2,
+            info: "Maximum grid cells the fastest marker may travel per substep. Lower values improve collision and free-surface accuracy; 0 disables adaptive CFL for legacy behavior.",
+        },
+        {
+            key: "restitution",
+            label: "Restitution (bounce)",
+            min: 0,
+            max: 1,
+            step: 0.05,
+            value: 0,
+            group: "collision",
+            info: "Fraction of inward normal velocity reflected when a particle hits the domain or scene SDF. 0 removes penetration without bounce; 1 is elastic.",
+        },
+        {
+            key: "velocityDamping",
+            label: "Velocity damping",
+            min: 0,
+            max: 10,
+            step: 0.05,
+            value: 0,
+            group: "advanced",
+            info: "Non-physical exponential drag applied uniformly to marker velocity. This is separate from viscosity and should normally remain 0.",
+        },
+        {
+            key: "pressureIterations",
+            label: "Pressure iterations",
+            min: 1,
+            max: 100,
+            step: 1,
+            value: 40,
+            info: "Weighted-Jacobi iterations used to project the MAC grid to an approximately divergence-free velocity field. More iterations improve incompressibility at proportional GPU cost.",
+        },
+        {
+            key: "pressureRelaxation",
+            label: "Pressure relaxation",
+            min: 0.1,
+            max: 1,
+            step: 0.01,
+            value: 0.8,
+            info: "Weighted-Jacobi relaxation factor. This is an implementation-level control and may be removed when the pressure solver moves to PCG or multigrid.",
+        },
+        {
+            key: "viscosityIterations",
+            label: "Viscosity iterations",
+            min: 1,
+            max: 40,
+            step: 1,
+            value: 12,
+            info: "Jacobi iterations for the implicit viscosity solve. This has no GPU cost when Kinematic viscosity is 0.",
+        },
+        {
+            key: "maxSubDtMs",
+            label: "Hard max sub-step (ms)",
+            min: 1,
+            max: 20,
+            step: 0.1,
+            value: 8.4,
+            info: "Absolute timestep safety cap applied in addition to CFL and surface-tension limits.",
         },
     ],
     "MLS-MPM": [
@@ -337,6 +462,7 @@ export interface FluidFoamValues {
 /** Snapshot of every control the component owns (for pair-state capture / export). */
 export interface FluidControlValues {
     method: string;
+    material: number;
     schema: Record<string, number>;
     simulationDuration: number;
     alphaDecay: number;
@@ -349,6 +475,8 @@ export interface FluidControlValues {
     gridPosition: [number, number, number];
     gridSize: [number, number, number];
     cellSize: number;
+    gridResolution: number;
+    markersPerCell: number;
     showGridBounds: boolean;
     count: number;
     renderMode: "surface" | "spheres";
@@ -377,6 +505,8 @@ export interface FluidControlValues {
 /** Initial value for every control. */
 export interface FluidControlsInitial {
     method: string;
+    /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
+    material?: number;
     count: number;
     /** Simulated seconds before particles begin fading. Zero runs indefinitely. */
     simulationDuration?: number;
@@ -389,6 +519,10 @@ export interface FluidControlsInitial {
     gridSize?: [number, number, number];
     /** Derived world-space cubic cell size. */
     cellSize?: number;
+    /** FLIP grid divisions along the longest domain side. */
+    gridResolution?: number;
+    /** FLIP marker samples represented by one full MAC cell. */
+    markersPerCell?: number;
     /** Initial visibility of the simulation-domain wireframe. */
     showGridBounds?: boolean;
     color: string;
@@ -430,6 +564,7 @@ export interface FluidControlsInitial {
 /** Host effect callbacks — the component fires these; the host applies the effect. */
 export interface FluidControlsCallbacks {
     onMethod?(method: string): void;
+    onMaterial?(material: number): void;
     onParticleCount?(count: number): void;
     onSimulationDuration?(seconds: number): void;
     onAlphaDecay?(seconds: number): void;
@@ -455,6 +590,9 @@ export interface FluidControlsCallbacks {
     onDebug?(mode: FluidDebug): void;
     onPhysicsParam?(key: string, value: number): void;
     onPhysScale?(scale: number): void;
+    onGridResolution?(resolution: number): void;
+    onMarkersPerCell?(markersPerCell: number): void;
+    onFlipParticleCapacity?(capacity: number): void;
     /** Return an error message to reject proposed grid settings without installing them. */
     onGridSettings?(position: [number, number, number], size: [number, number, number]): string | void;
     onGridGizmo?(visible: boolean): void;
@@ -529,6 +667,8 @@ export interface FluidControlsOptions {
     /** "Physics particle size" slider range (defaults 0.5 … 3). */
     physScaleMin?: number;
     physScaleMax?: number;
+    /** Maximum legal FLIP particle capacity for the current WebGPU device. */
+    flipParticleCapacityMax?: number;
     /** Host effect callbacks. */
     on: FluidControlsCallbacks;
     /** Override the outer panel `cssText` (default = the fluid demo's right-side panel). */
@@ -561,8 +701,10 @@ export interface FluidControlsHandle {
 
     // ── Programmatic setters (see the module contract for which fire callbacks) ──
     setMethod(method: string): void;
+    setMaterial(material: number): void;
     setParticleCount(count: number): void;
     setActiveParticleCount(count: number): void;
+    setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void;
     setSimulationDuration(seconds: number): void;
     setAlphaDecay(seconds: number): void;
     setRenderMode(spheres: boolean): void;
@@ -585,6 +727,10 @@ export interface FluidControlsHandle {
     setDebug(mode: string): void;
     setPhysics(schema: Record<string, number>): void;
     setPhysScale(scale: number): void;
+    setGridResolution(resolution: number): void;
+    setMarkersPerCell(markersPerCell: number): void;
+    setFlipParticleCapacity(capacity: number): void;
+    setMarkerDensityWarning(message: string): void;
     setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void;
     setGridStatus(message: string): void;
     setShowGridBounds(visible: boolean): void;
@@ -717,7 +863,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         return [h, body];
     };
 
-    // ── GENERAL: method + particles ─────────────────────────────────────────
+    // ── GENERAL: method + PB-MPM material + particles ───────────────────────
     const methodTitle = document.createElement("div");
     methodTitle.textContent = "Fluid method";
     methodTitle.style.cssText = "font-weight:600;margin-bottom:6px;";
@@ -730,7 +876,39 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         methodSel.appendChild(opt);
     }
     methodSel.value = init.method;
-    methodSel.onchange = () => on.onMethod?.(methodSel.value);
+
+    const materialRow = document.createElement("div");
+    materialRow.style.cssText = "margin:2px 0 8px;";
+    const materialTitle = document.createElement("div");
+    materialTitle.textContent = "PB-MPM material";
+    materialTitle.style.cssText = "font-weight:600;margin-bottom:6px;";
+    const materialSel = document.createElement("select");
+    materialSel.style.cssText = SELECT_STYLE;
+    for (const material of [
+        { value: 0, label: "Liquid" },
+        { value: 1, label: "Elastic (jelly)" },
+        { value: 2, label: "Sand" },
+        { value: 3, label: "Viscoelastic" },
+    ]) {
+        const opt = document.createElement("option");
+        opt.value = String(material.value);
+        opt.textContent = material.label;
+        materialSel.appendChild(opt);
+    }
+    materialSel.value = String(init.material ?? 0);
+    materialSel.onchange = () => on.onMaterial?.(parseInt(materialSel.value, 10));
+    materialRow.append(materialTitle, materialSel);
+    const applyMaterialVisibility = (): void => {
+        materialRow.style.display = currentMethod === "PB-MPM" ? "block" : "none";
+    };
+    methodSel.onchange = () => {
+        currentMethod = methodSel.value;
+        applyMaterialVisibility();
+        applyActiveBlocksVisibility();
+        applyFlipControlVisibility();
+        on.onMethod?.(currentMethod);
+    };
+    applyMaterialVisibility();
 
     const particlesTitle = document.createElement("div");
     particlesTitle.textContent = "Particles";
@@ -760,23 +938,76 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     ensureParticleCountOption(init.count);
     particlesSel.value = String(init.count);
     particlesSel.onchange = () => on.onParticleCount?.(parseInt(particlesSel.value, 10));
-    const activeParticlesValue = document.createElement("div");
-    activeParticlesValue.style.cssText = "margin-top:4px;color:#9fb4cc;font-size:11px;";
-    const formatParticleCount = (count: number): string =>
-        count >= 1000000
-            ? `${(count / 1000000).toFixed(count % 1000000 === 0 ? 0 : 2)}M`
-            : count >= 1000
-              ? `${(count / 1000).toFixed(count % 1000 === 0 ? 0 : 1)}k`
-              : String(count);
-    let displayedActiveParticleCount = -1;
-    const setActiveParticleCount = (count: number): void => {
-        if (count === displayedActiveParticleCount) {
-            return;
+    const formatParticleCount = (count: number): string => Math.max(0, Math.floor(count)).toLocaleString("en-US");
+    const formatGpuBytes = (bytes: number): string => {
+        const value = Math.max(0, bytes);
+        if (value >= 1024 * 1024 * 1024) {
+            return (value / (1024 * 1024 * 1024)).toFixed(2) + " GiB";
         }
-        displayedActiveParticleCount = count;
-        activeParticlesValue.textContent = `Active particles: ${formatParticleCount(count)}`;
+        if (value >= 1024 * 1024) {
+            return (value / (1024 * 1024)).toFixed(1) + " MiB";
+        }
+        return (value / 1024).toFixed(1) + " KiB";
     };
-    setActiveParticleCount(init.count);
+    const particleUsageRow = document.createElement("div");
+    particleUsageRow.style.cssText = "margin:8px 0;font-size:11px;line-height:1.45;";
+    particleUsageRow.dataset.fluidParticleUsage = "true";
+    const particleUsageLabel = labelWithInfo(
+        "Particle usage",
+        "Active is the number of particles currently simulated; total is the number of allocated particle slots. In FLIP, each marker is one simulation particle. Simulation GPU memory counts buffers owned by the active solver only; the GPU panel also estimates fluid render targets."
+    );
+    particleUsageLabel.style.cssText = "display:block;margin-bottom:3px;";
+    const currentParticleUsageValue = document.createElement("div");
+    currentParticleUsageValue.style.cssText = "color:#9fb4cc;font-variant-numeric:tabular-nums;";
+    const restartParticleUsageValue = document.createElement("div");
+    restartParticleUsageValue.style.cssText = "display:none;color:#e5bd68;font-variant-numeric:tabular-nums;";
+    const particleGpuMemoryValue = document.createElement("div");
+    particleGpuMemoryValue.style.cssText = "color:#7c8aa0;font-variant-numeric:tabular-nums;";
+    const restartGpuMemoryValue = document.createElement("div");
+    restartGpuMemoryValue.style.cssText = "display:none;color:#e5bd68;font-variant-numeric:tabular-nums;";
+    particleUsageRow.append(particleUsageLabel, currentParticleUsageValue, restartParticleUsageValue, particleGpuMemoryValue, restartGpuMemoryValue);
+    let displayedActiveParticleCount = init.count;
+    let displayedParticleCount = init.count;
+    let displayedGpuBytes = 0;
+    let restartParticleUsage: { activeCount: number; totalCount: number; gpuBytes: number } | null = null;
+    const updateParticleUsage = (): void => {
+        const countLabel = currentMethod === "FLIP" ? "capacity" : "total";
+        currentParticleUsageValue.textContent =
+            "Particles:\u00a0" +
+            formatParticleCount(displayedActiveParticleCount) +
+            "\u00a0active\u00a0/\u00a0" +
+            formatParticleCount(displayedParticleCount) +
+            "\u00a0" +
+            countLabel;
+        particleGpuMemoryValue.textContent =
+            displayedGpuBytes > 0 ? "Simulation GPU memory:\u00a0" + formatGpuBytes(displayedGpuBytes) : "Simulation GPU memory:\u00a0Calculating...";
+        const restartDiffers =
+            restartParticleUsage !== null &&
+            (restartParticleUsage.activeCount !== displayedActiveParticleCount ||
+                restartParticleUsage.totalCount !== displayedParticleCount ||
+                restartParticleUsage.gpuBytes !== displayedGpuBytes);
+        restartParticleUsageValue.style.display = restartDiffers ? "block" : "none";
+        restartGpuMemoryValue.style.display = restartDiffers ? "block" : "none";
+        if (restartDiffers) {
+            restartParticleUsageValue.textContent =
+                "After restart:\u00a0" +
+                formatParticleCount(restartParticleUsage!.activeCount) +
+                "\u00a0active\u00a0/\u00a0" +
+                formatParticleCount(restartParticleUsage!.totalCount) +
+                "\u00a0" +
+                countLabel;
+            restartGpuMemoryValue.textContent = "After restart GPU memory:\u00a0" + formatGpuBytes(restartParticleUsage!.gpuBytes);
+        }
+    };
+    const setActiveParticleCount = (count: number): void => {
+        displayedActiveParticleCount = count;
+        updateParticleUsage();
+    };
+    const setParticleCapacity = (count: number): void => {
+        displayedParticleCount = count;
+        updateParticleUsage();
+    };
+    updateParticleUsage();
     const formatSeconds = (v: number): string => `${Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1)} s`;
     const simulationDurationRow = makeRenderSlider(
         "Simulation duration",
@@ -1159,6 +1390,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     debugTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
     const debugSel = document.createElement("select");
     debugSel.style.cssText = SELECT_STYLE;
+    debugSel.title = "Thickness debug views compress the additive HDR values into grayscale so dense columns remain distinguishable instead of clipping to white.";
     for (const o of [
         { value: "none", label: "None (final render)" },
         { value: "depth", label: "Depth" },
@@ -1215,6 +1447,80 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     physInput.onchange = () => on.onPhysScale?.(parseFloat(physInput.value));
     physRow.append(physHead, physInput);
+    let gridResolution = Math.max(16, Math.min(400, Math.round(init.gridResolution ?? 160)));
+    const flipResolutionRow = document.createElement("div");
+    flipResolutionRow.style.cssText = "display:none;margin:2px 0 8px;";
+    flipResolutionRow.dataset.fluidGridResolution = "true";
+    const flipResolutionHead = document.createElement("div");
+    flipResolutionHead.style.cssText = "display:flex;justify-content:space-between;";
+    const flipResolutionLabel = labelWithInfo(
+        "Resolution divisions",
+        "FLIP grid voxels along the longest side of the domain. Higher values reduce cell size and increase grid memory and marker count cubically. Changes are previewed and applied on Reset simulation."
+    );
+    const flipResolutionValue = document.createElement("span");
+    flipResolutionValue.style.cssText = "color:#9fb4cc;";
+    flipResolutionValue.textContent = String(gridResolution);
+    flipResolutionHead.append(flipResolutionLabel, flipResolutionValue);
+    const flipResolutionInput = document.createElement("input");
+    flipResolutionInput.type = "range";
+    flipResolutionInput.min = "16";
+    flipResolutionInput.max = "400";
+    flipResolutionInput.step = "1";
+    flipResolutionInput.value = String(gridResolution);
+    flipResolutionInput.style.cssText = "width:100%;";
+    flipResolutionInput.oninput = () => {
+        flipResolutionValue.textContent = flipResolutionInput.value;
+    };
+    flipResolutionInput.onchange = () => on.onGridResolution?.(parseInt(flipResolutionInput.value, 10));
+    flipResolutionRow.append(flipResolutionHead, flipResolutionInput);
+
+    let markersPerCell = Math.max(1, Math.round(init.markersPerCell ?? 8));
+    const flipMarkersRow = document.createElement("div");
+    flipMarkersRow.style.cssText = "display:none;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;";
+    const flipMarkersLabel = labelWithInfo(
+        "Markers per cell",
+        "Marker sampling density used to derive active particles from fluid volume. Eight markers per full cell form a 2 x 2 x 2 sub-cell layout. Changes are previewed and applied on Reset simulation."
+    );
+    const flipMarkersInput = document.createElement("input");
+    flipMarkersInput.type = "number";
+    flipMarkersInput.min = "1";
+    flipMarkersInput.max = "64";
+    flipMarkersInput.step = "1";
+    flipMarkersInput.value = String(markersPerCell);
+    flipMarkersInput.style.cssText = "width:72px;box-sizing:border-box;";
+    flipMarkersInput.onchange = () => {
+        markersPerCell = Math.max(1, Math.min(64, Math.round(Number.parseFloat(flipMarkersInput.value) || 8)));
+        flipMarkersInput.value = String(markersPerCell);
+        on.onMarkersPerCell?.(markersPerCell);
+    };
+    flipMarkersRow.append(flipMarkersLabel, flipMarkersInput);
+    const flipParticleCapacityMax = Math.max(1, Math.floor(opts.flipParticleCapacityMax ?? Number.MAX_SAFE_INTEGER));
+    let flipParticleCapacity = Math.max(1, Math.min(flipParticleCapacityMax, Math.round(init.count)));
+    const flipParticleCapacityRow = document.createElement("div");
+    flipParticleCapacityRow.style.cssText = "display:none;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;";
+    flipParticleCapacityRow.dataset.fluidFlipParticleCapacity = "true";
+    const flipParticleCapacityLabel = labelWithInfo(
+        "Particle capacity",
+        "Maximum FLIP markers preallocated in GPU buffers. Initial markers are derived from fluid volume; inflows append markers up to this capacity. Changes are previewed and applied on Reset simulation."
+    );
+    const flipParticleCapacityInput = document.createElement("input");
+    flipParticleCapacityInput.type = "number";
+    flipParticleCapacityInput.min = "1";
+    flipParticleCapacityInput.max = String(flipParticleCapacityMax);
+    flipParticleCapacityInput.step = "1";
+    flipParticleCapacityInput.value = String(flipParticleCapacity);
+    flipParticleCapacityInput.style.cssText = "width:108px;box-sizing:border-box;";
+    flipParticleCapacityInput.onchange = () => {
+        flipParticleCapacity = Math.max(1, Math.min(flipParticleCapacityMax, Math.round(Number.parseFloat(flipParticleCapacityInput.value) || init.count)));
+        flipParticleCapacityInput.value = String(flipParticleCapacity);
+        on.onFlipParticleCapacity?.(flipParticleCapacity);
+    };
+    flipParticleCapacityRow.append(flipParticleCapacityLabel, flipParticleCapacityInput);
+    const markerDensityStatus = document.createElement("div");
+    markerDensityStatus.style.cssText = "display:none;margin:4px 0 8px;font-size:11px;line-height:1.35;color:#ff5f56;font-weight:600;";
+    const applyMarkerDensityStatusVisibility = (): void => {
+        markerDensityStatus.style.display = currentMethod === "FLIP" && markerDensityStatus.textContent ? "block" : "none";
+    };
 
     const createGridVectorRow = (
         label: string,
@@ -1223,6 +1529,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     ): { row: HTMLElement; inputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement] } => {
         const row = document.createElement("div");
         row.style.cssText = "margin:8px 0;";
+        row.dataset.fluidGridVector = label;
         row.appendChild(labelWithInfo(label, info));
         const fields = document.createElement("div");
         fields.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:5px;";
@@ -1246,12 +1553,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     const gridPositionControl = createGridVectorRow(
         "Grid position",
-        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center. A self-contained imported Blender scene and its collision SDF translate with it; built-in demo geometry remains fixed.",
+        "World-space center of the simulation grid. Emitters and sinks use positions relative to this center. A self-contained imported scene and its collision SDF translate with it; built-in demo geometry remains fixed. FLIP changes are applied on Reset simulation.",
         init.gridPosition ?? [0, 9.5, 0]
     );
     const gridSizeControl = createGridVectorRow(
         "Grid size",
-        "Exact world-space X/Y/Z extents of the simulation domain, centered around Grid position. Changing them rebuilds and restarts the simulation.",
+        "Exact world-space X/Y/Z extents of the simulation domain, centered around Grid position. FLIP changes are previewed and applied on Reset simulation; other methods restart immediately.",
         init.gridSize ?? [40, 21, 40]
     );
     const gridStatus = document.createElement("div");
@@ -1282,7 +1589,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let gridCellSize = init.cellSize ?? 0;
     const cellSizeRow = document.createElement("div");
     cellSizeRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;";
-    const cellSizeLabel = labelWithInfo("Cell size", "Derived world-space size of one cubic simulation cell. Physics particle size controls this value.");
+    cellSizeRow.dataset.fluidCellSize = "true";
+    const cellSizeLabel = labelWithInfo(
+        "Cell size",
+        "Derived world-space size of one cubic simulation cell. FLIP derives it from Resolution divisions; other methods derive it from Physics particle size."
+    );
     const cellSizeValue = document.createElement("span");
     cellSizeValue.style.cssText = "color:#9fb4cc;font-variant-numeric:tabular-nums;";
     const updateCellSizeValue = (): void => {
@@ -1290,6 +1601,19 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     updateCellSizeValue();
     cellSizeRow.append(cellSizeLabel, cellSizeValue);
+
+    const applyFlipControlVisibility = (): void => {
+        const flip = currentMethod === "FLIP";
+        particlesTitle.style.display = flip ? "none" : "";
+        particlesSel.style.display = flip ? "none" : "";
+        physRow.style.display = flip ? "none" : "";
+        flipResolutionRow.style.display = flip ? "block" : "none";
+        flipMarkersRow.style.display = flip ? "flex" : "none";
+        flipParticleCapacityRow.style.display = flip ? "flex" : "none";
+        applyMarkerDensityStatusVisibility();
+        updateParticleUsage();
+    };
+    applyFlipControlVisibility();
 
     const gridBoundsRow = document.createElement("label");
     gridBoundsRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
@@ -1408,7 +1732,21 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     function buildSliders(name: string): void {
         sliderHost.replaceChildren();
         paramRows.clear();
+        let previousGroup: PhysSchemaEntry["group"];
+        const groupLabels: Record<NonNullable<PhysSchemaEntry["group"]>, string> = {
+            liquid: "Liquid",
+            timestep: "Time stepping",
+            collision: "Collision",
+            advanced: "Advanced numerical",
+        };
         for (const p of schemas[name] ?? []) {
+            if (p.group && p.group !== previousGroup) {
+                const heading = document.createElement("div");
+                heading.textContent = groupLabels[p.group];
+                heading.style.cssText = "font-weight:600;margin:10px 0 4px;color:#c7d7ea;";
+                sliderHost.appendChild(heading);
+            }
+            previousGroup = p.group;
             const row = document.createElement("div");
             row.style.cssText = "margin:6px 0;";
             const head = document.createElement("div");
@@ -1754,8 +2092,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hideMethod) {
         generalItems.push(methodTitle, methodSel);
     }
+    if (opts.methods.includes("PB-MPM")) {
+        generalItems.push(materialRow);
+    }
     if (!opts.hideParticles) {
-        generalItems.push(particlesTitle, particlesSel, activeParticlesValue);
+        generalItems.push(particlesTitle, particlesSel);
     }
     if (opts.showSimulationTiming) {
         generalItems.push(simulationDurationRow, alphaDecayRow);
@@ -1927,8 +2268,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
         const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
-        const gridRows = opts.showGridControls ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, gridBoundsRow, gridGizmoRow] : [];
-        const physItems = opts.hidePhysScale ? [...gridRows, ...activeBlockRows, sliderHost, resetBtn] : [physRow, ...gridRows, ...activeBlockRows, sliderHost, resetBtn];
+        const gridRows = opts.showGridControls
+            ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, particleUsageRow, gridBoundsRow, gridGizmoRow]
+            : [particleUsageRow];
+        const physItems = opts.hidePhysScale
+            ? [flipResolutionRow, flipMarkersRow, flipParticleCapacityRow, markerDensityStatus, ...gridRows, ...activeBlockRows, sliderHost, resetBtn]
+            : [physRow, flipResolutionRow, flipMarkersRow, flipParticleCapacityRow, markerDensityStatus, ...gridRows, ...activeBlockRows, sliderHost, resetBtn];
         root.append(...makeSection("Physics simulation", physItems));
     }
 
@@ -1970,8 +2315,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
         const generalHeader = makeSubHeader("General");
         const fpsRow = makeStatRow("FPS", fpsLabel).row;
-        const memRow = makeStatRow("Memory");
+        const memRow = makeStatRow("Memory estimate");
         const memValueEl = memRow.val;
+        memRow.row.title =
+            "Active solver buffers plus estimated fluid render targets. This is not total graphics-card memory and excludes scene assets, inactive solver backends, and driver overhead.";
 
         // Fluid render-target / texture bytes estimate (dominant terms only). Reads the
         // component-owned half / thickness-downscale / foam-enabled controls.
@@ -2020,7 +2367,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             fpsLabel,
             refreshMemory(simBytes: number, canvasW: number, canvasH: number): void {
                 const bytes = simBytes + estimateTextureBytes(canvasW, canvasH);
-                memValueEl.textContent = `~${(bytes / 1048576).toFixed(1)} MB`;
+                memValueEl.textContent = "~" + formatGpuBytes(bytes);
             },
             refreshTiming(res): void {
                 if (!res) {
@@ -2044,13 +2391,33 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setMethod(method: string): void {
             currentMethod = method;
             methodSel.value = method;
+            applyMaterialVisibility();
             applyActiveBlocksVisibility();
+            applyFlipControlVisibility();
+        },
+        setMaterial(material: number): void {
+            materialSel.value = String(material);
         },
         setParticleCount(count: number): void {
             ensureParticleCountOption(count);
             particlesSel.value = String(count);
+            setParticleCapacity(count);
         },
         setActiveParticleCount,
+        setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void {
+            displayedActiveParticleCount = Math.max(0, Math.floor(activeCount));
+            displayedParticleCount = Math.max(1, Math.floor(totalCount));
+            displayedGpuBytes = Math.max(0, gpuBytes);
+            restartParticleUsage =
+                restartActiveCount !== undefined && restartTotalCount !== undefined && restartGpuBytes !== undefined
+                    ? {
+                          activeCount: Math.max(0, Math.floor(restartActiveCount)),
+                          totalCount: Math.max(1, Math.floor(restartTotalCount)),
+                          gpuBytes: Math.max(0, restartGpuBytes),
+                      }
+                    : null;
+            updateParticleUsage();
+        },
         setSimulationDuration(seconds: number): void {
             simulationDurationRow.set(seconds);
         },
@@ -2144,6 +2511,23 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             physInput.value = String(scale);
             physVal.textContent = `${scale.toFixed(2)}\u00d7`;
         },
+        setGridResolution(resolution: number): void {
+            gridResolution = Math.max(16, Math.min(400, Math.round(resolution)));
+            flipResolutionInput.value = String(gridResolution);
+            flipResolutionValue.textContent = String(gridResolution);
+        },
+        setMarkersPerCell(value: number): void {
+            markersPerCell = Math.max(1, Math.min(64, Math.round(value)));
+            flipMarkersInput.value = String(markersPerCell);
+        },
+        setFlipParticleCapacity(capacity: number): void {
+            flipParticleCapacity = Math.max(1, Math.min(flipParticleCapacityMax, Math.round(capacity)));
+            flipParticleCapacityInput.value = String(flipParticleCapacity);
+        },
+        setMarkerDensityWarning(message: string): void {
+            markerDensityStatus.textContent = message;
+            applyMarkerDensityStatusVisibility();
+        },
         setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void {
             for (let i = 0; i < 3; i++) {
                 gridPositionControl.inputs[i]!.value = String(position[i]);
@@ -2217,6 +2601,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             }
             return {
                 method: currentMethod,
+                material: parseInt(materialSel.value, 10),
                 schema,
                 simulationDuration: simulationDurationRow.get(),
                 alphaDecay: alphaDecayRow.get(),
@@ -2229,8 +2614,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 gridPosition: readGridVector(gridPositionControl.inputs),
                 gridSize: readGridVector(gridSizeControl.inputs),
                 cellSize: gridCellSize,
+                gridResolution,
+                markersPerCell,
                 showGridBounds: gridBoundsChk.checked,
-                count: parseInt(particlesSel.value, 10),
+                count: currentMethod === "FLIP" ? flipParticleCapacity : parseInt(particlesSel.value, 10),
                 renderMode: renderChk.checked ? "spheres" : "surface",
                 refraction: surfRefraction,
                 specular: surfSpecular,

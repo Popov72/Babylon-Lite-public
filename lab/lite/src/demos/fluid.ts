@@ -1,4 +1,4 @@
-// Fluid demo — GPU fluid simulation (PBF / MLS-MPM / PB-MPM) with SDF scene collision.
+// Fluid demo — GPU fluid simulation (PBF / FLIP / MLS-MPM / PB-MPM) with SDF scene collision.
 //
 // This module is the GENERIC CORE. It owns the engine/scene/camera, the shared
 // scene-SDF UBO + hole ring, both sims + their lifecycle, the render tasks
@@ -68,9 +68,10 @@ import {
     updateLineSystem,
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
+import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim.js";
 import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink, FluidTransform } from "babylon-lite";
 import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_SINKS } from "babylon-lite/fluid/sim-common.js";
+import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_SINKS } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
@@ -98,10 +99,20 @@ import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationSt
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
+    FLIP_DEFAULT_MARKERS_PER_CELL,
+    FLIP_HIGH_MARKERS_PER_CELL,
+    FLIP_MAX_SCALE,
+    FLIP_MIN_SCALE,
+    flipMarkersPerAuthoredCell,
+    flipParticleCountForVolume,
+    GRID_RESOLUTION_MAX,
+    GRID_RESOLUTION_MIN,
     gridBounds,
     gridCellsForSize,
     gridPositionForBounds,
+    gridResolutionForScale,
     gridSizeForBounds,
+    highestFittingGridResolution,
     MPM_MAX_SCALE,
     MPM_MIN_SCALE,
     PBF_MAX_SCALE,
@@ -110,6 +121,7 @@ import {
     PBMPM_MIN_SCALE,
     PHYS_MAX_SCALE,
     PHYS_MIN_SCALE,
+    scaleForGridResolution,
     scaleLimitsForMethod,
 } from "./fluid/grid-settings.js";
 import { screenRay } from "./fluid/pick.js";
@@ -127,23 +139,17 @@ import { createWhiteboardDemo } from "./fluid/scenes/whiteboard.js";
 // GPU particle buffers, so the dropdown disposes and rebuilds both backends.
 const PARTICLE_COUNTS = [40000, 80000, 120000, 150000, 200000, 300000, 500000, 750000, 1000000, 1200000, 1500000, 1800000, 2000000];
 const DEFAULT_PARTICLE_COUNT = 80000;
+const DEFAULT_PARTICLE_BYTES_PER_SLOT = 144;
+const FLIP_PARTICLE_BYTES_PER_SLOT = 40;
+const INACTIVE_GRID_RESOLUTION = 64;
 
 // World-space radius of the interactive Shift+RMB push force (mouse-stir). Shared
 // by every demo now the force is core-owned.
 const FORCE_RADIUS = 3.5;
 const clampScale = (s: number, lo: number, hi: number): number => Math.min(Math.max(s, lo), hi);
-const PBMPM_MATERIALS = [
-    { value: 0, label: "Liquid" },
-    { value: 1, label: "Elastic (jelly)" },
-    { value: 2, label: "Sand" },
-    { value: 3, label: "Viscoelastic" },
-];
 // Material 2 = sand. Sand renders as opaque grainy spheres (no water surface) with no velocity
 // brightening (uniform grains); its colour comes from the per-material sand preset.
 const PBMPM_SAND_MATERIAL = 2;
-// Only demos with closed solver bounds expose the PB-MPM material selector; open flow/jet showcases
-// remain liquid-only.
-const MATERIAL_DEMO_KEYS = ["box", "whiteboard"];
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -351,7 +357,7 @@ async function main(): Promise<void> {
     const BOUNDS_MIN: [number, number, number] = [-20, 0, -20];
     const BOUNDS_MAX: [number, number, number] = [20, 20, 20];
     const defaultDomainBounds = (method: string, scale = 1): FluidDomainBounds => ({
-        min: [-20 * scale, (method === "PBF" ? 0 : -1) * scale, -20 * scale],
+        min: [-20 * scale, (method === "PBF" || method === "FLIP" ? 0 : -1) * scale, -20 * scale],
         max: BOUNDS_MAX.map((value) => value * scale) as [number, number, number],
     });
     const defaultGridSettings = (method: string, scale = 1): FluidGridSettings => {
@@ -364,6 +370,30 @@ async function main(): Promise<void> {
         a === undefined || b === undefined ? a === b : a.position.every((value, index) => value === b.position[index]) && a.size.every((value, index) => value === b.size[index]);
     const GRID_CELLS_MAX = 2048;
     const GRID_CELL_COUNT_MAX = Math.floor(engine._device.limits.maxStorageBufferBindingSize / 16);
+    const particleBufferLimit = Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize);
+    const particleBytesPerSlot = (method: string): number => (method === "FLIP" ? FLIP_PARTICLE_BYTES_PER_SLOT : DEFAULT_PARTICLE_BYTES_PER_SLOT);
+    const deviceParticleCapacityForMethod = (method: string): number => Math.floor(particleBufferLimit / particleBytesPerSlot(method));
+    const syncDeviceParticleCapacity = (method: string): void => {
+        canvas.dataset.deviceParticleCapacity = String(deviceParticleCapacityForMethod(method));
+        canvas.dataset.deviceParticleBytesPerSlot = String(particleBytesPerSlot(method));
+        canvas.dataset.deviceParticleBufferLimitBytes = String(particleBufferLimit);
+    };
+    syncDeviceParticleCapacity("PBF");
+    const particleAllocationError = (count: number, method: string): string | undefined => {
+        const bytesPerSlot = particleBytesPerSlot(method);
+        const deviceParticleCapacity = deviceParticleCapacityForMethod(method);
+        return count > deviceParticleCapacity
+            ? "Particle allocation requires " +
+                  ((count * bytesPerSlot) / (1024 * 1024)).toFixed(1) +
+                  " MiB for " +
+                  method +
+                  " particle buffers; this WebGPU device supports at most " +
+                  (particleBufferLimit / (1024 * 1024)).toFixed(1) +
+                  " MiB (" +
+                  deviceParticleCapacity.toLocaleString() +
+                  " particles)."
+            : undefined;
+    };
     const gridCellsForSettings = (grid: FluidGridSettings, method: string, physicsSize: number): [number, number, number] =>
         gridCellsForSize(grid.size, cellSizeForPhysicsScale(method, physicsSize));
     const gridAllocationError = (grid: FluidGridSettings, method: string, physicsSize: number): string | undefined => {
@@ -373,6 +403,18 @@ async function main(): Promise<void> {
             return `Grid size requires ${cells[oversizedAxis]!.toLocaleString()} cells on ${"XYZ"[oversizedAxis]} at the current Physics particle size; maximum is ${GRID_CELLS_MAX.toLocaleString()}.`;
         }
         const totalCells = cells[0] * cells[1] * cells[2];
+        if (method === "FLIP") {
+            const totalFaces = (cells[0] + 1) * cells[1] * cells[2] + cells[0] * (cells[1] + 1) * cells[2] + cells[0] * cells[1] * (cells[2] + 1);
+            const faceBytes = totalFaces * 8;
+            const maxBytes = Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize);
+            if (faceBytes > maxBytes) {
+                return `Grid size requires ${(faceBytes / (1024 * 1024)).toFixed(1)} MiB per FLIP MAC buffer at the current Physics particle size; this device supports at most ${(
+                    maxBytes /
+                    (1024 * 1024)
+                ).toFixed(1)} MiB.`;
+            }
+            return undefined;
+        }
         return totalCells > GRID_CELL_COUNT_MAX
             ? `Grid size requires ${totalCells.toLocaleString()} cells at the current Physics particle size; this device supports at most ${GRID_CELL_COUNT_MAX.toLocaleString()}.`
             : undefined;
@@ -387,11 +429,14 @@ async function main(): Promise<void> {
     let gridSettings: FluidGridSettings | undefined;
     let builtGridSettings: FluidGridSettings | undefined;
     let builtGridMethod = methodName;
+    let builtPhysicsScale = 1;
     let activeDemo: FluidDemo | null = null;
     let importedCollisionActive = false;
     let builtWithGridFloor = false;
     let showGridBounds = false;
     let showGridGizmo = false;
+    let flipMarkersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL;
+    let builtFlipMarkersPerCell = flipMarkersPerCell;
 
     // Seed box scaled with the physics particle size. The fixed spawn box only
     // matches the rest density at 1×; at other sizes the seed is far under-dense
@@ -415,7 +460,16 @@ async function main(): Promise<void> {
     // resize the GPU buffers (the only way to change count is to reallocate). The
     // capsule tank geometry seeds the sims' built-in fallback confinement (a legacy
     // default; the demo's injected sceneSdf always overrides it).
-    function createSims(count: number, scale: number): { pbf: FluidSim; mpm: FluidSim; pbmpm: FluidSim } {
+    function createSims(count: number, scale: number): { pbf: FluidSim; flip: FluidSim; mpm: FluidSim; pbmpm: FluidSim } {
+        const allocationError = particleAllocationError(count, methodName);
+        if (allocationError) {
+            throw new RangeError(allocationError);
+        }
+        const inactiveCount = Math.min(count, DEFAULT_PARTICLE_COUNT);
+        const pbfCount = methodName === "PBF" ? count : inactiveCount;
+        const flipCount = methodName === "FLIP" ? count : inactiveCount;
+        const mpmCount = methodName === "MLS-MPM" ? count : inactiveCount;
+        const pbmpmCount = methodName === "PB-MPM" ? count : inactiveCount;
         // `scale` is the physics particle-size multiplier. The particle COUNT is
         // the user's choice and stays fixed, so each particle is a bigger (or
         // smaller) blob of fluid and the liquid VOLUME scales with the size: the
@@ -430,14 +484,20 @@ async function main(): Promise<void> {
         //     stays fixed so the per-particle volume = dx³/restDensity grows ∝ scale³.
         // Extreme scale values remain opt-in because timestep and density settings
         // may also need adjustment.
-        const pbfScale = clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE);
-        const mpmScale = clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE);
-        const pbmpmScale = clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE);
+        const pbfScale = methodName === "PBF" ? clampScale(scale, PBF_MIN_SCALE, PBF_MAX_SCALE) : 1;
+        const flipScale = methodName === "FLIP" ? clampScale(scale, FLIP_MIN_SCALE, FLIP_MAX_SCALE) : 1;
+        const mpmScale = methodName === "MLS-MPM" ? clampScale(scale, MPM_MIN_SCALE, MPM_MAX_SCALE) : 1;
+        const pbmpmScale = methodName === "PB-MPM" ? clampScale(scale, PBMPM_MIN_SCALE, PBMPM_MAX_SCALE) : 1;
         const ds = domainScale;
         const scaleTriple = (t: [number, number, number]): [number, number, number] => [t[0] * ds, t[1] * ds, t[2] * ds];
         const explicitGrid = gridSettings !== undefined;
         const explicitBounds = gridSettings ? gridBounds(gridSettings.position, gridSettings.size) : undefined;
         const cellSize = explicitGrid ? cellSizeForPhysicsScale(methodName, scale) : undefined;
+        const inactiveCellSize = gridSettings ? Math.max(...gridSettings.size) / INACTIVE_GRID_RESOLUTION : undefined;
+        const pbfCellSize = methodName === "PBF" ? cellSize : inactiveCellSize;
+        const flipCellSize = methodName === "FLIP" ? cellSize : inactiveCellSize;
+        const mpmCellSize = methodName === "MLS-MPM" ? cellSize : inactiveCellSize;
+        const pbmpmCellSize = methodName === "PB-MPM" ? cellSize : inactiveCellSize;
         if (gridSettings) {
             const allocationError = gridAllocationError(gridSettings, methodName, scale);
             if (allocationError) {
@@ -451,15 +511,16 @@ async function main(): Promise<void> {
         const useGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         const pbfGroundY = useGridFloor ? pbfBoundsMin[1] : 0;
         const mpmGroundY = useGridFloor ? mpmBoundsMin[1] : 0;
-        canvas.dataset.simulationGroundY = String(methodName === "PBF" ? pbfGroundY : mpmGroundY);
+        canvas.dataset.simulationGroundY = String(methodName === "PBF" || methodName === "FLIP" ? pbfGroundY : mpmGroundY);
         const pbfSpawn = scaledSpawn(pbfScale);
+        const flipSpawn = scaledSpawn(flipScale);
         const mpmSpawn = scaledSpawn(mpmScale);
         const pbmpmSpawn = scaledSpawn(pbmpmScale);
         // Backend 1 — Position Based Fluids (the original solver).
         const pbf = createPbfSim(engine, {
-            count,
+            count: pbfCount,
             particleRadius: 0.09 * pbfScale * (explicitGrid ? 1 : ds),
-            smoothingRadius: cellSize ?? 0.4 * pbfScale * ds,
+            smoothingRadius: pbfCellSize ?? 0.4 * pbfScale * (explicitGrid ? 1 : ds),
             spawnMin: explicitGrid ? pbfSpawn.min : scaleTriple(pbfSpawn.min),
             spawnMax: explicitGrid ? pbfSpawn.max : scaleTriple(pbfSpawn.max),
             capsuleA: CAP_A,
@@ -473,9 +534,34 @@ async function main(): Promise<void> {
             relaxation: 50 / (pbfScale * pbfScale),
         });
 
-        // Backend 2 — MLS-MPM (grid-transfer; scales to far more particles).
+        // Backend 2 — FLIP (marker particles + incompressible staggered MAC grid).
+        const flip = createFlipSim(engine, {
+            count: flipCount,
+            particleRadius: 0.09 * flipScale * (explicitGrid ? 1 : ds),
+            markersPerCell: flipMarkersPerCell,
+            spawnMin: explicitGrid ? flipSpawn.min : scaleTriple(flipSpawn.min),
+            spawnMax: explicitGrid ? flipSpawn.max : scaleTriple(flipSpawn.max),
+            groundY: pbfGroundY,
+            boundsMin: pbfBoundsMin,
+            boundsMax: pbfBoundsMax,
+            dx: flipCellSize ?? 0.25 * flipScale * (explicitGrid ? 1 : ds),
+            gravity: 9.8,
+            flipRatio: 0.95,
+            pressureIterations: 40,
+            pressureRelaxation: 0.8,
+            velocityDamping: 0,
+            kinematicViscosity: 0,
+            viscosityIterations: 12,
+            surfaceTension: 0,
+            restitution: 0,
+            minSubsteps: 1,
+            maxSubsteps: 8,
+            cflNumber: 2,
+        });
+
+        // Backend 3 — MLS-MPM (grid-transfer; scales to far more particles).
         const mpm = createMlsMpmSim(engine, {
-            count,
+            count: mpmCount,
             particleRadius: 0.09 * mpmScale * (explicitGrid ? 1 : ds),
             spawnMin: explicitGrid ? mpmSpawn.min : scaleTriple(mpmSpawn.min),
             spawnMax: explicitGrid ? mpmSpawn.max : scaleTriple(mpmSpawn.max),
@@ -492,7 +578,7 @@ async function main(): Promise<void> {
             // The -1 floor offset scales with the domain too so the grid dims stay constant.
             boundsMin: mpmBoundsMin,
             boundsMax: mpmBoundsMax,
-            dx: cellSize ?? 0.22 * mpmScale * ds,
+            dx: mpmCellSize ?? 0.22 * mpmScale * (explicitGrid ? 1 : ds),
             restDensity: 3,
             stiffness: 350,
             gravity: 9.8,
@@ -514,16 +600,16 @@ async function main(): Promise<void> {
             },
         });
 
-        // Backend 3 — Position-Based MPM (liquid-only PB-MPM phase 1).
+        // Backend 4 — Position-Based MPM.
         const pbmpm = createPbMpmSim(engine, {
-            count,
+            count: pbmpmCount,
             particleRadius: 0.09 * pbmpmScale * (explicitGrid ? 1 : ds),
             spawnMin: explicitGrid ? pbmpmSpawn.min : scaleTriple(pbmpmSpawn.min),
             spawnMax: explicitGrid ? pbmpmSpawn.max : scaleTriple(pbmpmSpawn.max),
             groundY: mpmGroundY,
             boundsMin: mpmBoundsMin,
             boundsMax: mpmBoundsMax,
-            dx: cellSize ?? 0.22 * pbmpmScale * ds,
+            dx: pbmpmCellSize ?? 0.22 * pbmpmScale * (explicitGrid ? 1 : ds),
             gravity: 9.8,
             substeps: 3,
             iterations: 5,
@@ -537,10 +623,14 @@ async function main(): Promise<void> {
             restitution: 0,
         });
 
-        return { pbf, mpm, pbmpm };
+        return { pbf, flip, mpm, pbmpm };
     }
 
     let particleCount = DEFAULT_PARTICLE_COUNT;
+    // FLIP may allocate only the particles needed by `initial` emitters, but an
+    // inflow still needs the authored capacity restored when its behavior is
+    // switched back. Keep that request separate from the current solver allocation.
+    let flipParticleCapacityRequest = DEFAULT_PARTICLE_COUNT;
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
     let pbmpmMaterial = 0;
     let mpmActiveBlocks = false;
@@ -548,7 +638,7 @@ async function main(): Promise<void> {
     const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
     let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, Math.max(1000, Math.round((DEFAULT_PARTICLE_COUNT * 27 * 1.5) / 64000) * 1000));
     let mpmFusedBlockDiscovery = false;
-    let { pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
+    let { pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, physicsScale);
     let activeSim: FluidSim = pbfSim;
     let quality: Quality = DEFAULT_QUALITY; // low/middle/high preset tier (panel dropdown)
     /** Demos the user has already opened once, so FluidDemo.defaultMethod/defaultQuality are
@@ -558,22 +648,13 @@ async function main(): Promise<void> {
         if (name === "PBF") {
             return pbfSim;
         }
+        if (name === "FLIP") {
+            return flipSim;
+        }
         if (name === "PB-MPM") {
             return pbmpmSim;
         }
         return mpmSim;
-    }
-    let pbmpmMaterialRow: HTMLElement | null = null;
-    let pbmpmMaterialSel: HTMLSelectElement | null = null;
-    function refreshPbMpmMaterialUi(): void {
-        if (pbmpmMaterialRow) {
-            // Material selector only for PB-MPM on demos with closed solver bounds.
-            const show = methodName === "PB-MPM" && !!activeDemo && MATERIAL_DEMO_KEYS.includes(activeDemo.key);
-            pbmpmMaterialRow.style.display = show ? "block" : "none";
-        }
-        if (pbmpmMaterialSel) {
-            pbmpmMaterialSel.value = String(pbmpmMaterial);
-        }
     }
     // Interactive push force (Shift+RMB mouse-stir): a ready-made injectable force
     // field shared by both backends. The frame loop drives it via setRay + toggles
@@ -582,6 +663,14 @@ async function main(): Promise<void> {
     const rayForce = createRayForce(engine._device);
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
+    let initialEmitterParticleCountValue: HTMLElement | null = null;
+    let initialEmitterParticleCountId: string | null = null;
+    const initialFlowSignature = (flow: FluidFlowConfig): string =>
+        JSON.stringify({
+            initialEmittersFillCapacity: flow.initialEmittersFillCapacity ?? false,
+            emitters: flow.emitters.filter((emitter) => emitter.behavior === "initial"),
+        });
+    let builtInitialFlowSignature = initialFlowSignature(activeFlow);
     interface ImportedEmitterSourceBinding {
         emitterId: string;
         node: SceneNode;
@@ -627,7 +716,7 @@ async function main(): Promise<void> {
     // Foam (diffuse-particle) renderer — draws the active sim's spray/foam/bubble pool
     // as sprites OVER the composited fluid surface (added after surfaceTask), depth-
     // tested against the shared scene depth so opaque geometry occludes it. Only the
-    // PBF backend generates foam for now (setFoam is a no-op / undefined on MLS-MPM).
+    // for every backend that exposes setFoam()/diffuse.
     const foamTask = createFoamRenderTask(engine, scene, {
         colorRT: postRT,
         depthRT,
@@ -909,6 +998,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function applyProfiler(): void {
         const p = timingEnabled ? profiler : null;
         pbfSim.setProfiler?.(p);
+        flipSim.setProfiler?.(p);
         mpmSim.setProfiler?.(p);
         pbmpmSim.setProfiler?.(p);
         particleTask.setProfiler(p);
@@ -1252,12 +1342,224 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         sinks: flow.sinks.map((sink) => withFlowPosition(sink, worldToGridLocal(sink.transform.position, position))),
         ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
     });
+    const calculateFlipParticlePlan = (
+        requested: number,
+        scale: number,
+        markersPerCell: number,
+        flow: FluidFlowConfig,
+        cellSizeMultiplier: number
+    ): { active: number; total: number; required: number } => {
+        const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
+        if (flow.initialEmittersFillCapacity) {
+            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
+        }
+        const initial = flow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
+        if (initial.some((emitter) => emitter.sampling !== "volume")) {
+            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
+        }
+        const authoredVolume = initial.reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
+        const cellSize = cellSizeForPhysicsScale("FLIP", scale) * cellSizeMultiplier;
+        const derived = Math.min(Number.MAX_SAFE_INTEGER, flipParticleCountForVolume(authoredVolume, cellSize, markersPerCell));
+        return { active: Math.min(requestedCapacity, derived), total: requestedCapacity, required: derived };
+    };
+    const flipParticlePlan = (
+        requested: number,
+        scale: number,
+        flow = activeFlow,
+        explicitGrid = gridSettings !== undefined
+    ): { active: number; total: number; required: number } => {
+        if (methodName !== "FLIP") {
+            const requestedCapacity = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Math.round(requested)));
+            return { active: requestedCapacity, total: requestedCapacity, required: requestedCapacity };
+        }
+        return calculateFlipParticlePlan(requested, scale, flipMarkersPerCell, flow, explicitGrid ? 1 : domainScale);
+    };
+    function flipInitialEmitterParticleCounts(): Map<string, number> {
+        const counts = new Map(activeFlow.emitters.map((emitter) => [emitter.id, 0]));
+        if (methodName !== "FLIP") {
+            return counts;
+        }
+        const resetCounts = activeSim.initialEmitterParticleCounts;
+        const resetMatchesCurrentPlan =
+            initialFlowSignature(activeFlow) === builtInitialFlowSignature &&
+            gridSettingsEqual(gridSettings, builtGridSettings) &&
+            builtGridMethod === "FLIP" &&
+            builtPhysicsScale === physicsScale &&
+            builtDomainScale === domainScale &&
+            builtFlipMarkersPerCell === flipMarkersPerCell &&
+            activeSim.count === flipParticleCapacityRequest;
+        if (resetCounts && resetMatchesCurrentPlan) {
+            for (const emitter of activeFlow.emitters) {
+                counts.set(emitter.id, resetCounts.get(emitter.id) ?? 0);
+            }
+            return counts;
+        }
+        const initial = activeFlow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
+        const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
+        const totalVolume = volumes.reduce((sum, volume) => sum + volume, 0);
+        if (!(totalVolume > 0)) {
+            return counts;
+        }
+        const activeCount = flipParticlePlan(flipParticleCapacityRequest, physicsScale).active;
+        const allocations = volumes.map((volume, index) => {
+            const exact = (activeCount * volume) / totalVolume;
+            return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
+        });
+        const remainderCount = activeCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
+        const ranked = [...allocations].sort((a, b) => {
+            const remainder = b.remainder - a.remainder;
+            if (remainder !== 0) {
+                return remainder;
+            }
+            const aid = initial[a.index]!.id;
+            const bid = initial[b.index]!.id;
+            return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
+        });
+        for (let index = 0; index < remainderCount; index++) {
+            ranked[index]!.count++;
+        }
+        for (const allocation of allocations) {
+            counts.set(initial[allocation.index]!.id, allocation.count);
+        }
+        return counts;
+    }
+    function refreshInitialEmitterParticleCount(): void {
+        if (!initialEmitterParticleCountValue || !initialEmitterParticleCountId) {
+            delete canvas.dataset.selectedInitialEmitterParticleCount;
+            return;
+        }
+        const count = flipInitialEmitterParticleCounts().get(initialEmitterParticleCountId) ?? 0;
+        initialEmitterParticleCountValue.textContent = count.toLocaleString();
+        canvas.dataset.selectedInitialEmitterParticleCount = String(count);
+    }
+    const flipParticleCapacity = (requested: number, scale: number, flow = activeFlow, explicitGrid = gridSettings !== undefined): number => {
+        return flipParticlePlan(requested, scale, flow, explicitGrid).total;
+    };
+    const requestedParticleCount = (): number => (methodName === "FLIP" ? flipParticleCapacityRequest : particleCount);
+    function fitFlipResolutionToDevice(): { requestedResolution: number; fittedResolution: number; scale: number } {
+        const grid = effectiveGridSettings("FLIP");
+        const longestSide = Math.max(...grid.size);
+        const requestedResolution = gridResolutionForScale("FLIP", physicsScale, longestSide);
+        const deviceParticleCapacity = deviceParticleCapacityForMethod("FLIP");
+        if (flipParticleCapacityRequest > deviceParticleCapacity) {
+            throw new RangeError(
+                "Particle capacity is " +
+                    flipParticleCapacityRequest.toLocaleString() +
+                    "; this WebGPU device supports at most " +
+                    deviceParticleCapacity.toLocaleString() +
+                    " FLIP particles."
+            );
+        }
+        const fits = (resolution: number): boolean => {
+            const scale = scaleForGridResolution("FLIP", resolution, longestSide);
+            const plan = flipParticlePlan(flipParticleCapacityRequest, scale);
+            return plan.required <= plan.total && gridAllocationError(grid, "FLIP", scale) === undefined;
+        };
+        const fittedResolution = highestFittingGridResolution(requestedResolution, GRID_RESOLUTION_MIN, fits);
+        if (fittedResolution === undefined) {
+            const minimumScale = scaleForGridResolution("FLIP", GRID_RESOLUTION_MIN, longestSide);
+            const minimumPlan = flipParticlePlan(flipParticleCapacityRequest, minimumScale);
+            const gridError = gridAllocationError(grid, "FLIP", minimumScale);
+            throw new RangeError(
+                gridError ??
+                    "The minimum Resolution divisions value still requires " +
+                        minimumPlan.required.toLocaleString() +
+                        " initial particles; Particle capacity is " +
+                        minimumPlan.total.toLocaleString() +
+                        " particles."
+            );
+        }
+        return {
+            requestedResolution,
+            fittedResolution,
+            scale: scaleForGridResolution("FLIP", fittedResolution, longestSide),
+        };
+    }
+    function flipPendingCapacityStatus(): string {
+        if (methodName !== "FLIP") {
+            return "";
+        }
+        const grid = effectiveGridSettings("FLIP");
+        const longestSide = Math.max(...grid.size);
+        const requestedResolution = gridResolutionForScale("FLIP", physicsScale, longestSide);
+        const requestedPlan = flipParticlePlan(flipParticleCapacityRequest, physicsScale);
+        const deviceParticleCapacity = deviceParticleCapacityForMethod("FLIP");
+        if (requestedPlan.total <= deviceParticleCapacity && requestedPlan.required <= requestedPlan.total && gridAllocationError(grid, "FLIP", physicsScale) === undefined) {
+            return "";
+        }
+        try {
+            const fit = fitFlipResolutionToDevice();
+            const reason =
+                requestedPlan.required > requestedPlan.total
+                    ? "The initial fluid requires " +
+                      requestedPlan.required.toLocaleString() +
+                      " particles, but Particle capacity is " +
+                      requestedPlan.total.toLocaleString() +
+                      ". "
+                    : "This configuration exceeds this WebGPU device's grid capacity. ";
+            return (
+                reason +
+                "When the simulation is restarted, Resolution divisions will be adjusted from\u00a0" +
+                requestedResolution.toLocaleString() +
+                "\u00a0to\u00a0" +
+                fit.fittedResolution.toLocaleString() +
+                " to stay inside the limits."
+            );
+        } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+        }
+    }
+    function refreshParticleUsageStatus(activeCount = activeSim.activeCount ?? activeSim.count): void {
+        refreshInitialEmitterParticleCount();
+        canvas.dataset.simulationGpuBytes = String(activeSim.gpuBytes);
+        if (methodName !== "FLIP") {
+            controls.setParticleUsage(activeCount, activeSim.count, activeSim.gpuBytes);
+            delete canvas.dataset.restartParticleCount;
+            delete canvas.dataset.restartParticleCapacity;
+            delete canvas.dataset.restartParticleRequired;
+            delete canvas.dataset.restartSimulationGpuBytes;
+            return;
+        }
+        const plan = flipParticlePlan(flipParticleCapacityRequest, physicsScale);
+        const effectiveGrid = effectiveGridSettings();
+        const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
+        const gridDim = gridCellsForSize(effectiveGrid.size, cellSize);
+        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim);
+        const gridRestartPending =
+            physicsScale !== builtPhysicsScale ||
+            !gridSettingsEqual(gridSettings, builtGridSettings) ||
+            builtGridMethod !== methodName ||
+            flipMarkersPerCell !== builtFlipMarkersPerCell;
+        const restartPreviewPending =
+            gridRestartPending || initialFlowSignature(activeFlow) !== builtInitialFlowSignature || plan.total !== activeSim.count || restartGpuBytes !== activeSim.gpuBytes;
+        controls.setParticleUsage(
+            activeCount,
+            activeSim.count,
+            activeSim.gpuBytes,
+            restartPreviewPending ? plan.active : undefined,
+            restartPreviewPending ? plan.total : undefined,
+            restartPreviewPending ? restartGpuBytes : undefined
+        );
+        canvas.dataset.gridRestartPending = String(gridRestartPending);
+        canvas.dataset.restartParticleCount = String(plan.active);
+        canvas.dataset.restartParticleCapacity = String(plan.total);
+        canvas.dataset.restartParticleRequired = String(plan.required);
+        canvas.dataset.restartSimulationGpuBytes = String(restartGpuBytes);
+    }
     function setInstalledFlow(): void {
         pbfSim.setFlow(installedFlow);
+        flipSim.setFlow(installedFlow);
         mpmSim.setFlow(installedFlow);
         pbmpmSim.setFlow(installedFlow);
     }
     function applyFlow(): void {
+        if (methodName === "FLIP") {
+            const capacity = flipParticleCapacity(flipParticleCapacityRequest, physicsScale);
+            if (capacity !== particleCount) {
+                rebuildSims(flipParticleCapacityRequest, physicsScale);
+                return;
+            }
+        }
         installedFlow = flowToWorld(activeFlow);
         setInstalledFlow();
         if (!importedScene) {
@@ -1265,6 +1567,30 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         canvas.dataset.emitterCount = String(activeFlow.emitters.length);
         canvas.dataset.sinkCount = String(activeFlow.sinks.length);
+    }
+    let lastMarkerDensityWarning = "";
+    function updateFlipMarkerDensityWarning(activeCount: number): void {
+        let message = "";
+        if (methodName === "FLIP" && !installedFlow.emitters.some((emitter) => emitter.enabled && emitter.behavior === "inflow")) {
+            const authoredVolume = installedFlow.emitters
+                .filter((emitter) => emitter.enabled && emitter.behavior === "initial" && emitter.sampling === "volume")
+                .reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0);
+            const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
+            const markersPerCell = flipMarkersPerAuthoredCell(activeCount, cellSize, authoredVolume);
+            if (markersPerCell > FLIP_HIGH_MARKERS_PER_CELL) {
+                message =
+                    "High FLIP marker density:\u00a0about\u00a0" +
+                    markersPerCell.toFixed(1) +
+                    "\u00a0markers per authored MAC cell.\u00a0Above\u00a0" +
+                    FLIP_HIGH_MARKERS_PER_CELL +
+                    ",\u00a0extra markers mostly add GPU cost and Beer-Lambert darkness rather than simulation detail. Reduce Markers per cell.";
+            }
+        }
+        if (message !== lastMarkerDensityWarning) {
+            lastMarkerDensityWarning = message;
+            controls.setMarkerDensityWarning(message);
+            canvas.dataset.flipMarkerDensityWarning = message ? "true" : "false";
+        }
     }
     function updateInstalledFlowObject(kind: "emitter" | "sink", object: FluidEmitter | FluidSink): void {
         const position = effectiveGridSettings().position;
@@ -1301,9 +1627,43 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     }
 
     function resetActiveFlow(clearHoles: boolean, preserveSceneAnimations = false): void {
+        let resolutionAdjustment = "";
+        if (methodName === "FLIP") {
+            const fit = fitFlipResolutionToDevice();
+            if (fit.fittedResolution < fit.requestedResolution) {
+                physicsScale = fit.scale;
+                controls.setGridResolution(fit.fittedResolution);
+                resolutionAdjustment =
+                    "Resolution divisions adjusted:\u00a0" +
+                    fit.requestedResolution.toLocaleString() +
+                    "\u00a0→\u00a0" +
+                    fit.fittedResolution.toLocaleString() +
+                    " to fit this WebGPU device.";
+                syncGridControls();
+                refreshParticleUsageStatus();
+            }
+        }
+        const pendingGridRebuild =
+            methodName === "FLIP" &&
+            (physicsScale !== builtPhysicsScale ||
+                !gridSettingsEqual(gridSettings, builtGridSettings) ||
+                builtGridMethod !== methodName ||
+                flipMarkersPerCell !== builtFlipMarkersPerCell);
+        if (pendingGridRebuild) {
+            syncImportedMeshAnimations(!preserveSceneAnimations);
+            rebuildSims(requestedParticleCount(), physicsScale);
+            if (resolutionAdjustment) {
+                controls.setGridStatus(resolutionAdjustment);
+            }
+            if (clearHoles) {
+                clearSceneHoles();
+            }
+            return;
+        }
         applyFlow();
         syncImportedMeshAnimations(!preserveSceneAnimations);
         activeSim.reset();
+        builtInitialFlowSignature = initialFlowSignature(activeFlow);
         restartSimulationLifecycle();
         if (clearHoles) {
             clearSceneHoles();
@@ -1377,6 +1737,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.mlsContainerHi;
         }
         pbfSim.setSceneSdf(sdf);
+        flipSim.setSceneSdf(sdf);
         mpmSim.setSceneSdf(mlsSdf);
         pbmpmSim.setSceneSdf(sdf);
         applyFlow();
@@ -1425,7 +1786,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         if (restoreDemo && activeDemo) {
             const usesGridFloor = activeDemo.useGridFloor === true;
             if (builtWithGridFloor !== usesGridFloor) {
-                rebuildSims(particleCount, physicsScale);
+                rebuildSims(requestedParticleCount(), physicsScale);
             } else {
                 applySceneSdf();
             }
@@ -1527,7 +1888,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function useImportedFluidBundleBasis(asset: AssetContainer): SceneNode {
         const root = asset.entities[0];
         if (!root || "lightType" in root || root.name !== "__root__") {
-            throw new Error("Imported Blender fluid GLB has no transform root.");
+            throw new Error("Imported fluid GLB has no transform root.");
         }
         root.scaling.x = Math.abs(root.scaling.x);
         return root;
@@ -1693,6 +2054,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 delete emitter.sourceVelocity;
             }
             pbfSim.updateFlowEmitter(emitter);
+            flipSim.updateFlowEmitter(emitter);
             mpmSim.updateFlowEmitter(emitter);
             pbmpmSim.updateFlowEmitter(emitter);
             binding.lastPosition = position;
@@ -1761,29 +2123,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const demoQualityRow = document.createElement("div");
     demoQualityRow.style.cssText = "display:flex;gap:6px;margin-bottom:8px;";
     demoQualityRow.append(containerSel, qualitySel);
-    pbmpmMaterialRow = document.createElement("div");
-    pbmpmMaterialRow.style.cssText = "display:none;margin:2px 0 8px;";
-    const pbmpmMaterialLabel = document.createElement("div");
-    pbmpmMaterialLabel.textContent = "Material";
-    pbmpmMaterialLabel.style.cssText = "font-weight:600;margin-bottom:6px;";
-    pbmpmMaterialSel = document.createElement("select");
-    pbmpmMaterialSel.style.cssText = DEMO_SEL_CSS;
-    for (const mat of PBMPM_MATERIALS) {
-        const opt = document.createElement("option");
-        opt.value = String(mat.value);
-        opt.textContent = mat.label;
-        pbmpmMaterialSel.appendChild(opt);
-    }
-    pbmpmMaterialSel.value = String(pbmpmMaterial);
-    pbmpmMaterialSel.onchange = () => {
-        // Each PB-MPM material is its own pair (physics + render + colour differ), so switching material
-        // snapshots the current material's state and loads the target material's preset/state — exactly
-        // like switching quality. The render mode + colour then come from that material's preset.
-        const m = parseInt(pbmpmMaterialSel!.value, 10);
-        switchPair(activeDemo!, methodName, quality, m);
-    };
-    pbmpmMaterialRow.append(pbmpmMaterialLabel, pbmpmMaterialSel);
-
     // Environment picker — applies to EVERY demo, overriding its own `envUrl` default.
     const envRow = document.createElement("div");
     envRow.style.cssText = "margin-bottom:8px;";
@@ -1939,8 +2278,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         showSimulationTiming: true,
         physScaleMin: PHYS_MIN_SCALE,
         physScaleMax: PHYS_MAX_SCALE,
+        flipParticleCapacityMax: deviceParticleCapacityForMethod("FLIP"),
         initial: {
             method: methodName,
+            material: pbmpmMaterial,
             count: DEFAULT_PARTICLE_COUNT,
             simulationDuration,
             alphaDecay: simulationAlphaDecay,
@@ -1948,6 +2289,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             gridPosition: [...initialGridSettings.position],
             gridSize: [...initialGridSettings.size],
             cellSize: cellSizeForPhysicsScale(methodName, physicsScale) * domainScale,
+            gridResolution: gridResolutionForScale(methodName, physicsScale, Math.max(...initialGridSettings.size)),
+            markersPerCell: flipMarkersPerCell,
             showGridBounds,
             color: "#16a3c3", // matches the default FLUID_COLOR
             absorption: 1,
@@ -2003,6 +2346,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"], supported: profiler !== null },
         on: {
             onMethod: (name) => switchPair(activeDemo!, name),
+            onMaterial: (material) => switchPair(activeDemo!, methodName, quality, material),
             onParticleCount: (n) => setParticleCount(n),
             onSimulationDuration: (seconds) => {
                 simulationDuration = seconds;
@@ -2047,6 +2391,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             },
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
             onPhysScale: (s) => setPhysicsScale(s),
+            onGridResolution: (resolution) => setGridResolution(resolution),
+            onMarkersPerCell: (markersPerCell) => setMarkersPerCell(markersPerCell),
+            onFlipParticleCapacity: (capacity) => setFlipParticleCapacity(capacity),
             onGridSettings: (position, size) => setGridSettings({ position, size }),
             onGridGizmo: (visible) => setGridGizmoVisible(visible),
             onShowGridBounds: (visible) => {
@@ -2131,15 +2478,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
-    controls.demoSlot.append(
-        ...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, pbmpmMaterialRow, demoParamsHost, controls.containerToggleRow!])
-    );
+    controls.demoSlot.append(...controls.makeSection("Demo", [demoQualityRow, envRow, envRotRow, envIntRow, msaaRow, demoParamsHost, controls.containerToggleRow!]));
 
     const emitterFlowHost = document.createElement("div");
     const sinkFlowHost = document.createElement("div");
     controls.root.append(...controls.makeSection("Emitters", [emitterFlowHost]), ...controls.makeSection("Sinks", [sinkFlowHost]));
 
-    // ── Preset / Blender JSON import and parameter export ────────────────────
+    // ── Preset / self-contained JSON import and parameter export ─────────────
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export parameters";
     exportBtn.style.cssText = "width:100%;padding:5px;cursor:pointer;background:#26415f;color:#eef3f8;border:1px solid #3a567a;border-radius:4px;";
@@ -2169,7 +2514,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         URL.revokeObjectURL(url);
     }
     exportBtn.onclick = exportParameters;
-    const supportedMethods = new Set(["PBF", "MLS-MPM", "PB-MPM"]);
+    const supportedMethods = new Set(["PBF", "FLIP", "MLS-MPM", "PB-MPM"]);
     function applyImportedPreset(json: FluidExportJson, switchMethod: boolean): void {
         const importedMethod = json.meta?.method;
         if (!importedMethod || !supportedMethods.has(importedMethod)) {
@@ -2269,7 +2614,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             canvas.dataset.importedPlayingAnimationCount = String(asset.animationGroups?.filter((group) => group.isPlaying).length ?? 0);
             applyImportedPreset(bundle.preset, false);
             if (targetDemo.key === "whiteboard") {
-                frameImportedWhiteboardScene();
+                const importedCamera = bundle.preset.camera;
+                if (!importedCamera?.target) {
+                    const authoredOrbit = importedCamera ? { alpha: cam.alpha, beta: cam.beta, radius: cam.radius } : null;
+                    frameImportedWhiteboardScene();
+                    if (authoredOrbit) {
+                        cam.alpha = authoredOrbit.alpha;
+                        cam.beta = authoredOrbit.beta;
+                        cam.radius = authoredOrbit.radius;
+                    }
+                }
             }
             nextImported.sourceBindings = createImportedEmitterSourceBindings(asset);
             updateImportedEmitterSources(nextImported, 0);
@@ -2323,6 +2677,89 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             ? 40_000
             : count;
     };
+    const applyImportedParticleWarning = (json: FluidExportJson): void => {
+        if (json.meta?.method !== "FLIP" || (json.formatVersion ?? 0) < 10 || !Array.isArray(json.emitters)) {
+            json.particleCount = importedParticleCount(json.particleCount);
+            return;
+        }
+        const partial = presetFromExportJson(json);
+        const flow: FluidFlowConfig = {
+            emitters: partial.emitters ?? [],
+            sinks: partial.sinks ?? [],
+            ...(partial.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: partial.initialEmittersFillCapacity } : {}),
+        };
+        const initial = flow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
+        if (
+            flow.initialEmittersFillCapacity ||
+            initial.length === 0 ||
+            initial.some((emitter) => emitter.sampling !== "volume") ||
+            !partial.grid ||
+            partial.physScale === undefined ||
+            partial.gridResolution === undefined ||
+            partial.markersPerCell === undefined
+        ) {
+            json.particleCount = importedParticleCount(json.particleCount);
+            return;
+        }
+        const plan = calculateFlipParticlePlan(json.particleCount, partial.physScale, partial.markersPerCell, flow, 1);
+        const longestSide = Math.max(...partial.grid.size);
+        const cellSize = longestSide / partial.gridResolution;
+        const particleVolume = (cellSize * cellSize * cellSize) / partial.markersPerCell;
+        const worldFlow: FluidFlowConfig = {
+            emitters: flow.emitters.map((emitter) => ({
+                ...emitter,
+                transform: {
+                    ...emitter.transform,
+                    position: emitter.transform.position.map((value, axis) => value + partial.grid!.position[axis]!) as [number, number, number],
+                },
+            })),
+            sinks: flow.sinks,
+        };
+        const halfSize = partial.grid.size.map((value) => value * 0.5) as [number, number, number];
+        const bounds = {
+            min: partial.grid.position.map((value, axis) => value - halfSize[axis]!) as [number, number, number],
+            max: partial.grid.position.map((value, axis) => value + halfSize[axis]!) as [number, number, number],
+        };
+        const required = countFluidInitialParticles(plan.required, worldFlow, particleVolume, bounds, true)?.activeCount ?? plan.required;
+        const importedCapacity = Math.max(json.particleCount, required);
+        if (required <= 100_000) {
+            json.particleCount = Math.max(required, importedParticleCount(importedCapacity));
+            return;
+        }
+        const safeCount = 40_000;
+        const acceptedVolume = required * particleVolume;
+        const fittedResolution = highestFittingGridResolution(partial.gridResolution, GRID_RESOLUTION_MIN, (resolution) => {
+            const fittedCellSize = longestSide / resolution;
+            return flipParticleCountForVolume(acceptedVolume, fittedCellSize, partial.markersPerCell!) <= safeCount;
+        });
+        const requested = required.toLocaleString("en-US");
+        const safeAction =
+            fittedResolution === undefined
+                ? "use 40,000 particles instead"
+                : "reduce Resolution divisions from " + partial.gridResolution.toLocaleString("en-US") + " to " + fittedResolution.toLocaleString("en-US");
+        const useSafeSettings = window.confirm(
+            "High particle count: " +
+                requested +
+                "\n\nThis fluid JSON will generate " +
+                requested +
+                " particles from its initial fluid volume, Resolution divisions, and Markers per cell. This may use substantial GPU memory or make the dashboard unstable.\n\nPlay it safe and " +
+                safeAction +
+                "?\n\nOK: " +
+                safeAction +
+                "\nCancel: keep " +
+                requested
+        );
+        if (!useSafeSettings) {
+            json.particleCount = importedCapacity;
+            return;
+        }
+        json.particleCount = safeCount;
+        if (fittedResolution !== undefined) {
+            json.gridResolution = fittedResolution;
+        } else {
+            json.initialEmittersFillCapacity = true;
+        }
+    };
     importInput.onchange = async () => {
         const file = importInput.files?.[0];
         importInput.value = "";
@@ -2339,12 +2776,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             const parsed = JSON.parse(contents) as Partial<FluidExportJson>;
             if (parsed.scene) {
                 const bundle = parseBlenderFluidJson(contents);
-                bundle.preset.particleCount = importedParticleCount(bundle.preset.particleCount);
+                applyImportedParticleWarning(bundle.preset);
                 await installImportedBundle(bundle, generation, targetDemo);
                 return;
             }
             if (typeof parsed.particleCount === "number") {
-                parsed.particleCount = importedParticleCount(parsed.particleCount);
+                applyImportedParticleWarning(parsed as FluidExportJson);
             }
             clearImportedScene(true);
             if (Array.isArray(parsed.emitters) && !parsed.render) {
@@ -2841,6 +3278,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             syncFlowWireframe("sink");
             syncFlowGizmo();
         }
+        refreshParticleUsageStatus();
+        controls.setGridStatus(flipPendingCapacityStatus());
     };
     const updateLiveFlowObject = (kind: FlowObjectKind, object: FluidEmitter | FluidSink, rebuildEditor = true): void => {
         updateInstalledFlowObject(kind, object);
@@ -2856,6 +3295,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const flowField = (label: string, control: HTMLElement, info?: string): HTMLElement => {
         const row = document.createElement("label");
         row.style.cssText = "display:grid;grid-template-columns:105px 1fr;align-items:center;gap:6px;margin:4px 0;";
+        row.dataset.flowFieldLabel = label;
         const text = document.createElement("span");
         text.textContent = label;
         if (info) {
@@ -3329,6 +3769,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return editor;
     };
     const refreshEmitterUI = (): void => {
+        initialEmitterParticleCountValue = null;
+        initialEmitterParticleCountId = null;
+        delete canvas.dataset.selectedInitialEmitterParticleCount;
         const fillCapacity = document.createElement("input");
         fillCapacity.type = "checkbox";
         fillCapacity.checked = activeFlow.initialEmittersFillCapacity === true;
@@ -3365,11 +3808,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 sourceNode.title = emitter.sourceNode;
                 editor.appendChild(flowField("Source mesh", sourceNode, "Imported GLB node whose animated world transform drives this analytical emitter."));
             }
-            const unlimited = document.createElement("input");
-            unlimited.type = "checkbox";
-            unlimited.checked = emitter.volumeRate === undefined;
-            unlimited.onchange = () => {
-                emitter.volumeRate = unlimited.checked ? undefined : 1;
+            const rateToggle = document.createElement("input");
+            rateToggle.type = "checkbox";
+            const usesOccupancyRefill = methodName === "FLIP";
+            rateToggle.checked = usesOccupancyRefill ? emitter.volumeRate !== undefined : emitter.volumeRate === undefined;
+            rateToggle.onchange = () => {
+                const rateLimited = usesOccupancyRefill ? rateToggle.checked : !rateToggle.checked;
+                emitter.volumeRate = rateLimited ? (emitter.volumeRate ?? 1) : undefined;
                 updateLiveFlowObject("emitter", emitter);
             };
             editor.prepend(
@@ -3388,6 +3833,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                     })
                 )
             );
+            if (methodName === "FLIP" && emitter.behavior === "initial") {
+                const particleCount = document.createElement("output");
+                particleCount.style.cssText = "font-variant-numeric:tabular-nums;";
+                particleCount.dataset.fluidInitialEmitterParticleCount = emitter.id;
+                initialEmitterParticleCountValue = particleCount;
+                initialEmitterParticleCountId = emitter.id;
+                editor.prepend(
+                    flowField(
+                        "FLIP particles",
+                        particleCount,
+                        "Read-only marker allocation accepted for this Initial emitter after Reset simulation, including clipping to the FLIP domain, grid cell size, Markers per cell, other Initial emitters, and Particle capacity."
+                    )
+                );
+                refreshInitialEmitterParticleCount();
+            }
             if (emitter.behavior === "inflow") {
                 editor.appendChild(
                     flowField(
@@ -3404,7 +3864,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                         "Simulation-time seconds to wait after reset before this Inflow emits or accepts recycled particles."
                     )
                 );
-                editor.appendChild(flowField("Unlimited", unlimited));
+                editor.appendChild(
+                    flowField(
+                        usesOccupancyRefill ? "Limit volume rate" : "Unlimited",
+                        rateToggle,
+                        usesOccupancyRefill
+                            ? "When disabled, FLIP refills empty marker space inside the emitter shape. Enable this to cap the replenished liquid volume per simulation second; emission velocity remains independent."
+                            : undefined
+                    )
+                );
                 if (emitter.volumeRate !== undefined) {
                     editor.appendChild(
                         flowField(
@@ -3417,7 +3885,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                                 },
                                 0.1,
                                 0
-                            )
+                            ),
+                            usesOccupancyRefill
+                                ? "Maximum world-space liquid volume replenished per simulation second. The actual amount may be lower when the emitter region is already full."
+                                : undefined
                         )
                     );
                 }
@@ -3429,7 +3900,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                         emitter.velocity = value;
                         updateLiveFlowObject("emitter", emitter, false);
                     }),
-                    "Authored launch velocity added to every emitted particle. This is Blender's Initial Velocity X/Y/Z, not the Source mesh's motion."
+                    "Authored launch velocity added to every emitted particle. This value is independent of the source mesh's motion."
                 ),
                 flowField(
                     "Velocity space",
@@ -3564,6 +4035,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         syncFlowWireframe("emitter");
         syncFlowWireframe("sink");
         syncFlowGizmo();
+        refreshParticleUsageStatus();
     }
 
     // Apply a solver parameter, folding in the physics particle-size coupling.
@@ -3588,6 +4060,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function applyMethod(name: string): void {
         activeSim = simForMethod(name);
         methodName = name;
+        syncDeviceParticleCapacity(name);
         if (name === "PB-MPM") {
             pbmpmSim.setMaterial?.(pbmpmMaterial);
         }
@@ -3601,6 +4074,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         applyFlow();
         activeSim.reset();
+        builtInitialFlowSignature = initialFlowSignature(activeFlow);
         restartSimulationLifecycle();
         clearSceneHoles();
         particleTask.setSim(activeSim);
@@ -3611,11 +4085,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.rebuildPhysics(name); // rebuild the physics-slider block for the new method
         // Show only the physics sliders the current method/material uses (PB-MPM branches on material).
         controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
-        refreshPbMpmMaterialUi();
+        controls.setMaterial(pbmpmMaterial);
         canvas.dataset.method = methodName;
         canvas.dataset.activeBlocks = mpmActiveBlocks ? "true" : "false";
         canvas.dataset.pagedGrid = mpmPagedGrid ? "true" : "false";
         canvas.dataset.fusedBlockDiscovery = mpmFusedBlockDiscovery ? "true" : "false";
+        refreshFlowUI();
     }
     // Toggle between the sphere-impostor renderer and the screen-space surface.
     // Default is the fluid surface; the checkbox switches to spheres.
@@ -3652,7 +4127,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // the new count, then re-applying the current demo and method (which re-seeds
     // and rebinds the renderer).
     function setParticleCount(n: number): void {
-        if (n === particleCount) {
+        if (n === requestedParticleCount()) {
             return;
         }
         rebuildSims(n, physicsScale);
@@ -3662,12 +4137,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const effectiveGrid = gridSettings ?? defaultGridSettings(methodName, domainScale);
         const cellSize = cellSizeForPhysicsScale(methodName, physicsScale) * (gridSettings ? 1 : domainScale);
         const cells = gridCellsForSize(effectiveGrid.size, cellSize);
+        const gridResolution = gridResolutionForScale(methodName, physicsScale, Math.max(...effectiveGrid.size));
         controls.setGridSettings([...effectiveGrid.position], [...effectiveGrid.size], cellSize);
+        controls.setGridResolution(gridResolution);
+        controls.setMarkersPerCell(flipMarkersPerCell);
         controls.setShowGridBounds(showGridBounds);
         canvas.dataset.gridPosition = effectiveGrid.position.join(",");
         canvas.dataset.gridSize = effectiveGrid.size.join(",");
         canvas.dataset.gridCells = cells.join(",");
         canvas.dataset.gridCellSize = String(cellSize);
+        canvas.dataset.gridResolution = String(gridResolution);
+        canvas.dataset.flipMarkersPerCell = String(flipMarkersPerCell);
         canvas.dataset.gridExplicit = String(gridSettings !== undefined);
         canvas.dataset.physicsParticleSize = String(physicsScale);
         canvas.dataset.showGridBounds = String(showGridBounds);
@@ -3687,35 +4167,85 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 return;
             }
         }
-        rebuildSims(particleCount, nextScale);
+        rebuildSims(requestedParticleCount(), nextScale);
+    }
+
+    function setGridResolution(resolution: number): void {
+        const grid = effectiveGridSettings("FLIP");
+        const nextScale = scaleForGridResolution("FLIP", resolution, Math.max(...grid.size));
+        physicsScale = nextScale;
+        syncGridControls();
+        refreshParticleUsageStatus();
+        controls.setGridStatus(flipPendingCapacityStatus());
+    }
+
+    function setMarkersPerCell(value: number): void {
+        const next = Math.max(1, Math.min(64, Math.round(value)));
+        if (next === flipMarkersPerCell) {
+            return;
+        }
+        flipMarkersPerCell = next;
+        syncGridControls();
+        refreshParticleUsageStatus();
+        controls.setGridStatus(flipPendingCapacityStatus());
+    }
+
+    function setFlipParticleCapacity(value: number): void {
+        const next = Math.max(1, Math.min(deviceParticleCapacityForMethod("FLIP"), Math.round(value)));
+        if (next === flipParticleCapacityRequest) {
+            controls.setFlipParticleCapacity(next);
+            return;
+        }
+        flipParticleCapacityRequest = next;
+        controls.setFlipParticleCapacity(next);
+        refreshParticleUsageStatus();
+        controls.setGridStatus(flipPendingCapacityStatus());
     }
 
     function setGridSettings(next: FluidGridSettings): string | void {
         if (!validGridSettings(next)) {
             return "Grid position must be finite and Grid size must contain positive finite world-space dimensions.";
         }
-        const allocationError = gridAllocationError(next, methodName, physicsScale);
-        if (allocationError) {
-            return allocationError;
+        const nextScale = methodName === "FLIP" ? scaleForGridResolution("FLIP", controls.getValues().gridResolution, Math.max(...next.size)) : physicsScale;
+        if (methodName !== "FLIP") {
+            const allocationError = gridAllocationError(next, methodName, nextScale);
+            if (allocationError) {
+                return allocationError;
+            }
         }
         if (gridSettingsEqual(next, gridSettings)) {
             syncGridControls();
             return;
         }
         gridSettings = cloneGridSettings(next);
-        rebuildSims(particleCount, physicsScale);
+        if (methodName !== "FLIP") {
+            rebuildSims(particleCount, nextScale);
+            return;
+        }
+        physicsScale = nextScale;
+        syncGridControls();
+        syncGridBoundsWireframe();
+        syncGridGizmo();
+        refreshParticleUsageStatus();
+        return flipPendingCapacityStatus() || undefined;
     }
 
     // Rebuild all sims at a new particle count, physics size and active grid.
     function rebuildSims(count: number, scale: number): void {
-        particleCount = count;
+        if (methodName === "FLIP") {
+            flipParticleCapacityRequest = Math.max(1, Math.round(count));
+        }
+        particleCount = flipParticleCapacity(count, scale);
         physicsScale = scale;
         pbfSim.dispose();
+        flipSim.dispose();
         mpmSim.dispose();
         pbmpmSim.dispose();
-        ({ pbf: pbfSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(count, scale));
+        ({ pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, scale));
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
+        builtPhysicsScale = scale;
+        builtFlipMarkersPerCell = flipMarkersPerCell;
         builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
@@ -3725,8 +4255,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         syncFlowWireframe("emitter");
         syncFlowWireframe("sink");
         syncFlowGizmo();
-        canvas.dataset.particleCount = String(count);
-        controls.setParticleCount(count); // sync the Particles dropdown (no rebuild re-entry)
+        canvas.dataset.particleCount = String(particleCount);
+        canvas.dataset.flipParticleCapacityRequest = String(flipParticleCapacityRequest);
+        controls.setParticleCount(particleCount); // sync the Particles dropdown (no rebuild re-entry)
+        controls.setFlipParticleCapacity(flipParticleCapacityRequest);
         controls.setPhysScale(scale); // sync the physics-size slider + its read-out (no side effect)
     }
 
@@ -3754,6 +4286,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         absorption: initialValues.absorption,
         size: initialValues.size,
         physScale: physicsScale,
+        gridResolution: initialValues.gridResolution,
+        markersPerCell: initialValues.markersPerCell,
         count: particleCount,
         renderMode: initialValues.renderMode,
         refraction: initialValues.refraction,
@@ -3802,6 +4336,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             absorption: RENDER_DEFAULTS.absorption,
             size: RENDER_DEFAULTS.size,
             physScale: RENDER_DEFAULTS.physScale,
+            gridResolution: method === "FLIP" ? RENDER_DEFAULTS.gridResolution : undefined,
+            markersPerCell: method === "FLIP" ? RENDER_DEFAULTS.markersPerCell : undefined,
             showGridBounds: false,
             count: RENDER_DEFAULTS.count,
             material: method === "PB-MPM" ? material : undefined,
@@ -3858,6 +4394,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             absorption: p.absorption ?? base.absorption,
             size: p.size ?? base.size,
             physScale: p.physScale ?? base.physScale,
+            gridResolution: p.gridResolution ?? base.gridResolution,
+            markersPerCell: p.markersPerCell ?? base.markersPerCell,
             grid: presetGrid,
             showGridBounds: p.showGridBounds ?? base.showGridBounds,
             count: p.count ?? base.count,
@@ -3917,11 +4455,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             absorption: v.absorption,
             size: v.size,
             physScale: physicsScale,
+            gridResolution: method === "FLIP" ? controls.getValues().gridResolution : undefined,
+            markersPerCell: method === "FLIP" ? flipMarkersPerCell : undefined,
             grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
             showGridBounds,
-            count: particleCount,
+            count: method === "FLIP" ? flipParticleCapacityRequest : particleCount,
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
-            camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius },
+            camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: [cam.target.x, cam.target.y, cam.target.z] },
             renderMode: v.renderMode,
             refraction: v.refraction,
             specular: v.specular,
@@ -3959,7 +4499,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             throw new Error("Invalid fluid grid: position must be finite and size must be positive.");
         }
         const [minScale, maxScale] = scaleLimitsForMethod(methodName);
-        const nextPhysicsScale = Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
+        const resolutionGrid = nextGridSettings ?? defaultGridSettings(methodName, domainScale);
+        const nextGridResolution =
+            methodName === "FLIP"
+                ? Math.max(
+                      GRID_RESOLUTION_MIN,
+                      Math.min(GRID_RESOLUTION_MAX, Math.round(st.gridResolution ?? gridResolutionForScale("FLIP", st.physScale, Math.max(...resolutionGrid.size))))
+                  )
+                : gridResolutionForScale(methodName, st.physScale, Math.max(...resolutionGrid.size));
+        const nextPhysicsScale =
+            methodName === "FLIP"
+                ? scaleForGridResolution("FLIP", nextGridResolution, Math.max(...resolutionGrid.size))
+                : Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
+        const nextMarkersPerCell = methodName === "FLIP" ? Math.max(1, Math.min(64, Math.round(st.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL))) : flipMarkersPerCell;
+        const markersPerCellChanged = methodName === "FLIP" && nextMarkersPerCell !== flipMarkersPerCell;
         if (nextGridSettings) {
             const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale);
             if (allocationError) {
@@ -3971,6 +4524,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         // target method here — switchPair set it before calling loadPairState).
         controls.setMethod(methodName);
         controls.setPhysics(st.schema);
+        controls.setGridResolution(nextGridResolution);
+        controls.setMarkersPerCell(nextMarkersPerCell);
         controls.setSimulationDuration(st.simulationDuration ?? 0);
         controls.setAlphaDecay(st.alphaDecay ?? 2);
         simulationTimeScale = Math.min(100, Math.max(0.01, st.simulationTimeScale ?? 1));
@@ -3978,7 +4533,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (typeof st.material === "number") {
             pbmpmMaterial = st.material;
         }
-        refreshPbMpmMaterialUi();
+        controls.setMaterial(pbmpmMaterial);
         loadingPairState = true;
         try {
             for (const k of Object.keys(st.demoParams)) {
@@ -4114,16 +4669,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         mpmPagedGrid = nextPagedGrid;
         mpmPagedGridMaxPages = nextPagedGridMaxPages;
         mpmFusedBlockDiscovery = nextFusedBlockDiscovery;
+        flipMarkersPerCell = nextMarkersPerCell;
         const gridChanged = !gridSettingsEqual(nextGridSettings, gridSettings) || !gridSettingsEqual(nextGridSettings, builtGridSettings);
         gridSettings = nextGridSettings;
+        const allocationChanged = methodName === "FLIP" && flipParticleCapacity(st.count, nextPhysicsScale) !== particleCount;
         if (
-            st.count !== particleCount ||
+            st.count !== requestedParticleCount() ||
+            allocationChanged ||
             nextPhysicsScale !== physicsScale ||
+            nextPhysicsScale !== builtPhysicsScale ||
             domainScale !== builtDomainScale ||
             gridChanged ||
-            (gridSettings !== undefined && builtGridMethod !== methodName) ||
+            builtGridMethod !== methodName ||
             builtWithGridFloor !== (importedCollisionActive || demo.useGridFloor === true) ||
-            activeBlocksChanged
+            activeBlocksChanged ||
+            markersPerCellChanged ||
+            nextMarkersPerCell !== builtFlipMarkersPerCell
         ) {
             rebuildSims(st.count, nextPhysicsScale);
         } else {
@@ -4131,8 +4692,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             applyMethod(methodName);
             syncGridControls();
         }
-        controls.setParticleCount(st.count);
+        controls.setParticleCount(particleCount);
+        controls.setFlipParticleCapacity(flipParticleCapacityRequest);
         controls.setPhysScale(nextPhysicsScale);
+        controls.setGridResolution(nextGridResolution);
+        controls.setMarkersPerCell(nextMarkersPerCell);
         refreshDemoParams();
         refreshFlowUI();
         // Apply the pair's camera framing (preset default on first visit, or the
@@ -4141,6 +4705,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             cam.alpha = st.camera.alpha;
             cam.beta = st.camera.beta;
             cam.radius = st.camera.radius;
+            if (st.camera.target) {
+                cam.target.x = st.camera.target[0];
+                cam.target.y = st.camera.target[1];
+                cam.target.z = st.camera.target[2];
+            }
+            canvas.dataset.cameraAlpha = String(cam.alpha);
+            canvas.dataset.cameraBeta = String(cam.beta);
+            canvas.dataset.cameraRadius = String(cam.radius);
+            canvas.dataset.cameraTarget = [cam.target.x, cam.target.y, cam.target.z].join(",");
         }
     }
     // Switch to a (demo, method) pair: snapshot the pair we're leaving, set up the
@@ -4211,9 +4784,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         canvas.dataset.qualityPresets = String(usesQualityPresets);
         controls.containerToggleRow!.style.display = nextDemo.setContainerVisible ? "" : "none";
         canvas.dataset.demo = nextDemo.key;
-        // PB-MPM keeps a SEPARATE pair (physics/render/colour) per material on demos with closed solver
-        // bounds. Open flow demos are liquid-only, so their key carries no material axis.
-        const withMaterial = nextMethod === "PB-MPM" && MATERIAL_DEMO_KEYS.includes(nextDemo.key);
+        // PB-MPM keeps a separate physics/render/colour pair per material for every fluid demo.
+        const withMaterial = nextMethod === "PB-MPM";
         if (nextMethod === "PB-MPM") {
             pbmpmMaterial = withMaterial ? nextMaterial : 0;
         }
@@ -4258,6 +4830,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             activeFlow = flowToGridLocal(activeDemo!.flow());
             applyFlow();
             activeSim.reset();
+            builtInitialFlowSignature = initialFlowSignature(activeFlow);
             restartSimulationLifecycle();
             refreshFlowUI();
         },
@@ -4291,13 +4864,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 }
                 gridSettings = nextGridSettings;
                 domainScale = s;
-                rebuildSims(particleCount, nextPhysicsScale);
+                rebuildSims(requestedParticleCount(), nextPhysicsScale);
                 return;
             }
             // Gridless presets retain the historical hidden scale on bounds, cell size,
             // particle radius and spawn so existing demos (notably Waterfall) are unchanged.
             domainScale = s;
-            rebuildSims(particleCount, physicsScale);
+            rebuildSims(requestedParticleCount(), physicsScale);
         },
         setBloom: (cfg: { enabled: boolean; intensity: number; threshold: number }) => {
             bloomEnabled = cfg.enabled;
@@ -4486,8 +5059,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             }
         }
         const activeParticleCount = activeSim.activeCount ?? activeSim.count;
-        controls.setActiveParticleCount(activeParticleCount);
+        refreshParticleUsageStatus(activeParticleCount);
         canvas.dataset.activeParticleCount = String(activeParticleCount);
+        updateFlipMarkerDensityWarning(activeParticleCount);
     });
 
     // ── Input dispatch ────────────────────────────────────────────────────
@@ -4594,7 +5168,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // the page applies it with no bundle rebuild.
     await loadQualityPresets(
         demos.filter((demo) => demo.usesQualityPresets !== false).map((demo) => demo.key),
-        MATERIAL_DEMO_KEYS
+        demos.filter((demo) => demo.usesQualityPresets !== false).map((demo) => demo.key)
     );
     switchPair(boxDemo, "MLS-MPM", quality); // box + MLS-MPM at the default quality
     visitedDemos.add(boxDemo.key); // the start-up demo counts as visited

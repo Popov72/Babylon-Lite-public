@@ -4,13 +4,13 @@
 
 ## Purpose
 
-Export a native Blender Mantaflow liquid setup as one self-contained Babylon Lite fluid preset. The add-on does not expose a second simulation UI: Blender's domain, flow, effector, timeline, mesh, and secondary-particle controls are the authoring source, and the Scene-properties panel contains one **Export Babylon Lite Fluid JSON** button.
+Export either a native liquid setup or a third-party FLIP add-on setup as one self-contained Babylon Lite fluid preset. The exporter detects the active domain type. Add-on FLIP domains map to Babylon Lite's FLIP backend; native domains retain the calibrated PBF compatibility mapping.
 
 The export is a live simulation description, not a baked animation. Babylon Lite recreates the liquid with its PBF solver.
 
 ## Format
 
-Format 9 extends the existing `FluidExportJson` used by the demo and quality presets. It retains format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, and format 8's optional Blender Initial Velocity fields, then adds a stable emitter-to-GLB-node binding:
+Format 11 uses the final FLIP parameter schema and retains format 10's FLIP-native resolution and marker-density fields. It also retains format 6's embedded scene payload, format 7's explicit sink lifecycle behavior, format 8's optional Blender Initial Velocity fields, and format 9's stable emitter-to-GLB-node binding:
 
 ```ts
 export interface FluidExportJson {
@@ -22,6 +22,8 @@ export interface FluidExportJson {
         settings?: Record<string, unknown>;
     };
     simulationTimeScale?: number;
+    gridResolution?: number;
+    markersPerCell?: number;
     emitters?: Array<{
         velocity: [number, number, number];
         sourceNode?: string;
@@ -48,7 +50,7 @@ export interface FluidExportJson {
 }
 ```
 
-`scene.glb` is a base64 self-contained GLB containing every visible Blender presentation mesh and supported punctual light, including flow objects and effectors but excluding the liquid Domain control volume. `scene.collision` is the base64 binary SDF payload. `scene.anchorPosition` records the grid position at which those immutable payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Self-contained Blender exports use format 6 through 9; format 6 sinks are migrated to recycle mode.
+`scene.glb` is a base64 self-contained GLB containing every visible Blender presentation mesh and supported punctual light, including flow objects and effectors but excluding the liquid Domain control volume. `scene.collision` is the base64 binary SDF payload. `scene.anchorPosition` records the grid position at which those immutable payload coordinates were authored, allowing a moved imported bundle to be exported and imported again without losing alignment. Files without it use their top-level `gridPosition`. Parameter-only presets omit `scene`. Self-contained Blender exports use format 6 through 11; format 6 sinks are migrated to recycle mode. FLIP exports use `gridResolution` as divisions along the longest domain side and default `markersPerCell` to `8`.
 
 The embedded collision payload is little-endian:
 
@@ -68,7 +70,7 @@ offset  type      meaning
 64..    f32[]     signed distances, X-fastest
 ```
 
-## Native Blender Authoring
+## Blender Authoring
 
 Use Blender's **Physics Properties > Fluid** controls:
 
@@ -111,6 +113,28 @@ Babylon Lite uses PBF because Mantaflow's FLIP/APIC liquid is an incompressible 
 | `use_mesh`, mesh particle radius/smoothing             | surface render settings                               |
 | Foam, Spray, or Bubbles enabled                        | `foam.enableFoam`                                     |
 | Bubbles enabled                                        | `foam.subsurfaceBubbleStrength = 0.2`                 |
+
+## Add-on FLIP Mapping
+
+The exporter recognizes objects whose `flip_fluid.object_type` is `TYPE_DOMAIN`, `TYPE_FLUID`, `TYPE_INFLOW`, `TYPE_OUTFLOW`, or `TYPE_OBSTACLE`.
+
+| Add-on setting or concept          | Babylon Lite field                                    |
+| ---------------------------------- | ----------------------------------------------------- |
+| Domain bounds                      | `gridPosition`, `gridSize`                            |
+| Simulation `resolution`            | `gridResolution`                                      |
+| Standard 2 x 2 x 2 marker layout   | `markersPerCell = 8`                                  |
+| PIC/FLIP ratio                     | `flipRatio = 1 - PICFLIP_ratio`                       |
+| Pressure solver maximum iterations | `pressureIterations`, clamped to the WebGPU range     |
+| Minimum/maximum frame substeps     | `minSubsteps`, `maxSubsteps`                          |
+| CFL condition number               | `cflNumber`                                           |
+| Fluid object                       | Initial volume emitter                                |
+| Inflow object                      | Continuous inflow emitter                             |
+| Outflow object                     | Delete sink; gradual rate maps to world volume/second |
+| Obstacle object                    | Collision SDF contributor                             |
+| Initial/inflow velocity            | Emitter launch velocity                               |
+| Add object velocity                | Animated `sourceNode` velocity and influence          |
+
+For FLIP presets, active initial markers are derived from authored initial-fluid volume, cell size, and markers per cell. `particleCount` remains GPU capacity, primarily providing dormant slots for inflows.
 
 For an unparented Domain without constraints, cage bounds use the authored `matrix_basis`. Blender normally keeps it identical to `matrix_world`, but saved Mantaflow scenes can retain the intended location and scale in `matrix_basis` while exposing a stale identity `matrix_world`. Parented or constrained Domains continue to use `matrix_world` so inherited and evaluated transforms remain authoritative.
 

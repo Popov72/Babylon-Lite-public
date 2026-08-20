@@ -105,11 +105,13 @@ export interface PairState {
     domain?: FluidDomainBounds;
     /** Legacy format <=3 divisions along the longest domain axis. */
     gridResolution?: number;
+    /** FLIP marker sampling density. Eight markers form a 2 x 2 x 2 sub-cell layout. */
+    markersPerCell?: number;
     count: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
-    /** Optional authored ArcRotate camera framing (alpha/beta/radius). */
-    camera?: { alpha: number; beta: number; radius: number };
+    /** Optional authored ArcRotate camera framing. */
+    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
     // ── Surface-render settings (per-pair, restored on switch). All optional so old
     //    presets/states without them fall back to the core render defaults. ──
     renderMode?: "surface" | "spheres";

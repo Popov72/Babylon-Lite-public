@@ -10,7 +10,15 @@
 
 import type { FluidEmitter, FluidSink } from "babylon-lite";
 import type { DemoStateValue, FluidDomainBounds, PairState } from "./demo.js";
-import { cellSizeForPhysicsScale, gridPositionForBounds, gridSizeForBounds, gridWorldSize } from "./grid-settings.js";
+import {
+    FLIP_DEFAULT_MARKERS_PER_CELL,
+    cellSizeForPhysicsScale,
+    gridPositionForBounds,
+    gridResolutionForScale,
+    gridSizeForBounds,
+    gridWorldSize,
+    scaleForGridResolution,
+} from "./grid-settings.js";
 
 function truncateToThreeDecimals(value: number): number {
     return Math.trunc(value * 1000) / 1000;
@@ -62,15 +70,17 @@ export interface FluidExportJson {
     gridCells?: [number, number, number];
     /** Legacy format <=3 simulation-domain AABB. */
     domain?: FluidDomainBounds;
-    /** Legacy format <=3 longest-axis resolution. */
+    /** FLIP grid divisions along the longest domain axis; legacy formats <=3 also used this field. */
     gridResolution?: number;
+    /** FLIP marker sampling density. Defaults to a 2 x 2 x 2 sub-cell layout. */
+    markersPerCell?: number;
     /** Display the active solver domain wireframe. */
     showGridBounds?: boolean;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
-    /** Optional camera framing — omitted for pure-default pairs that pin no viewpoint. */
-    camera?: { alpha: number; beta: number; radius: number };
+    /** Optional ArcRotate camera framing — omitted for pure-default pairs that pin no viewpoint. */
+    camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
     /**
      * Liquefaction hand-off impulse — the burst applied when a melted prop becomes fluid.
      *
@@ -141,7 +151,7 @@ export interface FluidExportJson {
         foamDebug: string;
         foamSize: number;
     };
-    /** Self-contained Blender scene payload. Omitted by parameter-only presets. */
+    /** Self-contained imported scene payload. Omitted by parameter-only presets. */
     scene?: {
         encoding: "base64";
         glb: string;
@@ -156,7 +166,7 @@ export interface FluidExportJson {
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
     const f = ps.foam;
     return {
-        formatVersion: 9,
+        formatVersion: 11,
         meta: { demo, method },
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
@@ -176,6 +186,12 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.fusedBlockDiscovery !== undefined ? { fusedBlockDiscovery: ps.fusedBlockDiscovery } : {}),
         physicsParticleSize: ps.physScale,
         ...(ps.grid ? { gridPosition: [...ps.grid.position], gridSize: [...ps.grid.size] } : {}),
+        ...(method === "FLIP"
+            ? {
+                  gridResolution: ps.gridResolution ?? gridResolutionForScale("FLIP", ps.physScale, ps.grid ? Math.max(...ps.grid.size) : undefined),
+                  markersPerCell: ps.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL,
+              }
+            : {}),
         showGridBounds: ps.showGridBounds ?? false,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
@@ -234,15 +250,17 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
     const hasGridDefinition = j.gridPosition !== undefined || j.gridSize !== undefined || j.gridCells !== undefined || j.domain !== undefined || j.gridResolution !== undefined;
     const meshScale = j.demoParams.meshScale ?? 1;
     const legacyParticleScale = hasGridDefinition && (j.formatVersion ?? 0) < 3 && j.meta.demo === "marbleTower" ? meshScale : 1;
-    const physScale = j.physicsParticleSize * legacyParticleScale;
+    const legacyPhysScale = j.physicsParticleSize * legacyParticleScale;
     const legacyBounds: FluidDomainBounds =
         j.domain ??
-        (j.meta.method === "PBF"
+        (j.meta.method === "PBF" || j.meta.method === "FLIP"
             ? { min: [-20 * meshScale, 0, -20 * meshScale], max: [20 * meshScale, 20 * meshScale, 20 * meshScale] }
             : { min: [-20 * meshScale, -1 * meshScale, -20 * meshScale], max: [20 * meshScale, 20 * meshScale, 20 * meshScale] });
     const gridPosition: [number, number, number] = j.gridPosition ? [...j.gridPosition] : gridPositionForBounds(legacyBounds);
-    const cellSize = cellSizeForPhysicsScale(j.meta.method, physScale);
-    const gridSize: [number, number, number] = j.gridSize ? [...j.gridSize] : j.gridCells ? gridWorldSize(j.gridCells, cellSize) : gridSizeForBounds(legacyBounds);
+    const legacyCellSize = cellSizeForPhysicsScale(j.meta.method, legacyPhysScale);
+    const gridSize: [number, number, number] = j.gridSize ? [...j.gridSize] : j.gridCells ? gridWorldSize(j.gridCells, legacyCellSize) : gridSizeForBounds(legacyBounds);
+    const currentFlipResolution = j.meta.method === "FLIP" && (j.formatVersion ?? 0) >= 10 && j.gridResolution !== undefined;
+    const physScale = currentFlipResolution ? scaleForGridResolution("FLIP", j.gridResolution!, Math.max(...gridSize)) : legacyPhysScale;
     const localizeFlow = <T extends FluidEmitter | FluidSink>(objects: T[] | undefined): T[] | undefined => {
         if (!objects) {
             return undefined;
@@ -287,6 +305,12 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         absorption: r.absorption,
         size: r.particleSize,
         physScale,
+        ...(j.meta.method === "FLIP"
+            ? {
+                  gridResolution: currentFlipResolution ? j.gridResolution : gridResolutionForScale("FLIP", physScale, Math.max(...gridSize)),
+                  markersPerCell: j.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL,
+              }
+            : {}),
         ...(hasGridDefinition ? { grid: { position: gridPosition, size: gridSize } } : {}),
         showGridBounds: j.showGridBounds ?? false,
         count: j.particleCount,

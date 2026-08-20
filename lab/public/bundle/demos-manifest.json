@@ -62,5 +62,9 @@
   "aquanova": {
     "rawKB": 704.3,
     "gzipKB": 241.4
+  },
+  "fluid": {
+    "rawKB": 769,
+    "gzipKB": 243.4
   }
 }

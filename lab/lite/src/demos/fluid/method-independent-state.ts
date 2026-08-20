@@ -18,6 +18,8 @@ export function carryMethodIndependentState(target: PairState, shared: PairState
         demoState: target.demoState ? structuredClone(target.demoState) : undefined,
         ...(options.retainTargetPresentation ? { color: target.color, renderMode: target.renderMode } : {}),
         material: target.material,
+        gridResolution: target.gridResolution,
+        markersPerCell: target.markersPerCell,
         activeBlocks: target.activeBlocks,
         pagedGrid: target.pagedGrid,
         pagedGridMaxPages: target.pagedGridMaxPages,

@@ -63,7 +63,7 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
 
     const canvas = page.locator("canvas");
     const demoSelect = page.locator('select:has(option[value="whiteboard"])');
-    const methodSelect = page.locator('select:has(option[value="PBF"]):has(option[value="MLS-MPM"]):has(option[value="PB-MPM"])');
+    const methodSelect = page.locator('select:has(option[value="PBF"]):has(option[value="FLIP"]):has(option[value="MLS-MPM"]):has(option[value="PB-MPM"])');
     const qualitySelect = page.locator('select:has(option[value="low"]):has(option[value="middle"]):has(option[value="high"])');
     const controlsPanel = page.locator('div[style*="resize: both"]').first();
 
@@ -152,9 +152,38 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(sourceFactor).toHaveValue("0.75");
     await expect(normalVelocity).toHaveValue("-1.25");
 
+    await methodSelect.selectOption("FLIP");
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+    await expect(canvas).toHaveAttribute("data-emitter-count", "1");
+    await expect(canvas).toHaveAttribute("data-sink-count", "1");
+    await expect(canvas).toHaveAttribute("data-grid-position", "2,4,-3");
+    await expect(canvas).toHaveAttribute("data-grid-size", "10,8,12");
+    await expect(canvas).toHaveAttribute("data-physics-particle-size", "0.48");
+    await expect(canvas).toHaveAttribute("data-gravity", "3.2");
+    await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
+    await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
+    await expect(page.getByText(/^FLIP ratio/)).toBeVisible();
+    await expect(page.getByText(/^Relaxation ε/)).toHaveCount(0);
+    const limitVolumeRate = page.locator('[data-flow-field-label="Limit volume rate"] input[type="checkbox"]');
+    await expect(limitVolumeRate).toBeVisible();
+    await expect(limitVolumeRate).not.toBeChecked();
+    await page
+        .locator('[data-flow-field-label="Behavior"]')
+        .filter({ has: page.locator('option[value="initial"]') })
+        .locator("select")
+        .selectOption("initial");
+    const initialEmitterParticleCount = page.locator("[data-fluid-initial-emitter-particle-count]");
+    await expect(initialEmitterParticleCount).toBeVisible();
+    await setRangeByInfo(page, "FLIP grid voxels along the longest side", 100);
+    await expect(initialEmitterParticleCount).toHaveText("4,630");
+    await expect(canvas).toHaveAttribute("data-selected-initial-emitter-particle-count", "4630");
+    await setRangeByInfo(page, "FLIP grid voxels along the longest side", 50);
+    await expect(initialEmitterParticleCount).toHaveText("579");
+    await expect(canvas).toHaveAttribute("data-selected-initial-emitter-particle-count", "579");
+
     await methodSelect.selectOption("PB-MPM");
     await expect(canvas).toHaveAttribute("data-method", "PB-MPM");
-    const materialSelect = page.getByText("Material", { exact: true }).locator("..").locator("select");
+    const materialSelect = page.getByText("PB-MPM material", { exact: true }).locator("..").locator("select");
     await expect(materialSelect).toBeVisible();
     await expect(materialSelect).toHaveValue("0");
     await materialSelect.selectOption("2");

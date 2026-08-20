@@ -17,7 +17,7 @@ export const QUALITIES: Quality[] = ["low", "middle", "high"];
 export const DEFAULT_QUALITY: Quality = "middle";
 
 /** Internal method name → filename slug. */
-const METHOD_TO_SLUG: Record<string, string> = { PBF: "sph", "MLS-MPM": "mlsmpm", "PB-MPM": "pbmpm" };
+const METHOD_TO_SLUG: Record<string, string> = { PBF: "sph", FLIP: "flip", "MLS-MPM": "mlsmpm", "PB-MPM": "pbmpm" };
 const METHODS = Object.keys(METHOD_TO_SLUG);
 
 /** PB-MPM material enum value → filename slug (index = material value: 0 liquid, 1 elastic, 2 sand, 3 visco). */

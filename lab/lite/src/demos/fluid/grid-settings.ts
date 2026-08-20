@@ -2,6 +2,8 @@ export const PHYS_MIN_SCALE = 0.1;
 export const PHYS_MAX_SCALE = 8;
 export const PBF_MIN_SCALE = 0.1;
 export const PBF_MAX_SCALE = 8;
+export const FLIP_MIN_SCALE = 0.1;
+export const FLIP_MAX_SCALE = 8;
 export const MPM_MIN_SCALE = 0.1;
 export const MPM_MAX_SCALE = 8;
 export const PBMPM_MIN_SCALE = 0.1;
@@ -9,13 +11,28 @@ export const PBMPM_MAX_SCALE = 8;
 
 export const GRID_DOMAIN_LONGEST = 40;
 export const GRID_RESOLUTION_MIN = 16;
-export const GRID_RESOLUTION_MAX = 2048;
+export const GRID_RESOLUTION_MAX = 400;
+export const FLIP_DEFAULT_MARKERS_PER_CELL = 8;
+export const FLIP_HIGH_MARKERS_PER_CELL = 16;
 
 const PBF_BASE_CELL_SIZE = 0.4;
+const FLIP_BASE_CELL_SIZE = 0.25;
 const MPM_BASE_CELL_SIZE = 0.22;
 
-const baseCellSizeForMethod = (method: string): number => (method === "PBF" ? PBF_BASE_CELL_SIZE : MPM_BASE_CELL_SIZE);
+const baseCellSizeForMethod = (method: string): number => (method === "PBF" ? PBF_BASE_CELL_SIZE : method === "FLIP" ? FLIP_BASE_CELL_SIZE : MPM_BASE_CELL_SIZE);
 export const cellSizeForPhysicsScale = (method: string, scale: number): number => baseCellSizeForMethod(method) * scale;
+export function flipMarkersPerAuthoredCell(activeParticles: number, cellSize: number, authoredVolume: number): number {
+    if (!(activeParticles > 0) || !(cellSize > 0) || !(authoredVolume > 0)) {
+        return 0;
+    }
+    return (activeParticles * cellSize ** 3) / authoredVolume;
+}
+export function flipParticleCountForVolume(authoredVolume: number, cellSize: number, markersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL): number {
+    if (!(authoredVolume > 0) || !(cellSize > 0) || !(markersPerCell > 0)) {
+        return 0;
+    }
+    return Math.ceil((authoredVolume / cellSize ** 3) * markersPerCell);
+}
 export const physicsScaleForCellSize = (method: string, cellSize: number): number => cellSize / baseCellSizeForMethod(method);
 export const gridWorldSize = (cells: readonly [number, number, number], cellSize: number): [number, number, number] => [
     cells[0] * cellSize,
@@ -51,7 +68,13 @@ export const gridCellsForBounds = (bounds: { min: readonly [number, number, numb
     gridCellsForSize(gridSizeForBounds(bounds), cellSize);
 const baseGridResolutionForMethod = (method: string, domainLongest = GRID_DOMAIN_LONGEST): number => domainLongest / baseCellSizeForMethod(method);
 export const scaleLimitsForMethod = (method: string): [number, number] =>
-    method === "PBF" ? [PBF_MIN_SCALE, PBF_MAX_SCALE] : method === "PB-MPM" ? [PBMPM_MIN_SCALE, PBMPM_MAX_SCALE] : [MPM_MIN_SCALE, MPM_MAX_SCALE];
+    method === "PBF"
+        ? [PBF_MIN_SCALE, PBF_MAX_SCALE]
+        : method === "FLIP"
+          ? [FLIP_MIN_SCALE, FLIP_MAX_SCALE]
+          : method === "PB-MPM"
+            ? [PBMPM_MIN_SCALE, PBMPM_MAX_SCALE]
+            : [MPM_MIN_SCALE, MPM_MAX_SCALE];
 
 export function gridResolutionLimitsForMethod(method: string, domainLongest = GRID_DOMAIN_LONGEST): [number, number] {
     const [minScale, maxScale] = scaleLimitsForMethod(method);
@@ -79,4 +102,25 @@ export function gridResolutionForScale(method: string, scale: number, domainLong
 
 export function cellSizeForGridResolution(resolution: number, domainLongest = GRID_DOMAIN_LONGEST): number {
     return domainLongest / resolution;
+}
+
+export function highestFittingGridResolution(requestedResolution: number, minimumResolution: number, fits: (resolution: number) => boolean): number | undefined {
+    const minimum = Math.max(1, Math.ceil(minimumResolution));
+    const requested = Math.max(minimum, Math.floor(requestedResolution));
+    if (!fits(minimum)) {
+        return undefined;
+    }
+    let low = minimum;
+    let high = requested;
+    let best = minimum;
+    while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        if (fits(middle)) {
+            best = middle;
+            low = middle + 1;
+        } else {
+            high = middle - 1;
+        }
+    }
+    return best;
 }

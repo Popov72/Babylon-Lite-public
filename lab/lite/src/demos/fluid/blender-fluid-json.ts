@@ -16,7 +16,6 @@ const SDF_HEADER_BYTES = 64;
 const MAX_ENTRY_BYTES = 512 * 1024 * 1024;
 const MAX_SDF_VOXELS = 16 * 1024 * 1024;
 const MAX_JSON_BYTES = 768 * 1024 * 1024;
-const MAX_PARTICLE_COUNT = 2_000_000;
 const MAX_GRID_AXIS_CELLS = 2048;
 const MAX_GRID_CELL_COUNT = 8 * 1024 * 1024;
 const MAX_ABS_POSITION = 1_000_000;
@@ -27,7 +26,7 @@ const MAX_DELAY = 86_400;
 const MAX_TEXT_LENGTH = 256;
 const MAX_TARGETS = MAX_FLUID_EMITTERS;
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
-const METHODS = new Set(["PBF", "MLS-MPM", "PB-MPM"]);
+const METHODS = new Set(["PBF", "FLIP", "MLS-MPM", "PB-MPM"]);
 const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> = {
     PBF: {
         gravity: [0, 200],
@@ -37,6 +36,21 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         iterations: [1, 8],
         restDensity: [100, 2000],
         boundaryDensity: [0, 1],
+    },
+    FLIP: {
+        gravity: [0, 200],
+        flipRatio: [0, 1],
+        kinematicViscosity: [0, 5],
+        surfaceTension: [0, 5],
+        minSubsteps: [1, 16],
+        maxSubsteps: [1, 32],
+        cflNumber: [0, 10],
+        restitution: [0, 1],
+        velocityDamping: [0, 10],
+        pressureIterations: [1, 100],
+        pressureRelaxation: [0.1, 1],
+        viscosityIterations: [1, 40],
+        maxSubDtMs: [1, 20],
     },
     "MLS-MPM": {
         gravity: [0, 200],
@@ -82,7 +96,7 @@ export interface BlenderFluidCollision {
 export function scenePayloadFromBlenderFluidJson(scene: BlenderFluidScene): NonNullable<FluidExportJson["scene"]> {
     const payload = scene.preset.scene;
     if (!payload) {
-        fail("self-contained Blender JSON is missing scene data");
+        fail("self-contained fluid JSON is missing scene data");
     }
     return {
         encoding: "base64",
@@ -465,8 +479,16 @@ function validateFoam(value: unknown): void {
 
 function validatePreset(value: unknown): FluidExportJson {
     const preset = record(value, "manifest.preset");
-    if (preset.formatVersion !== 5 && preset.formatVersion !== 6 && preset.formatVersion !== 7 && preset.formatVersion !== 8 && preset.formatVersion !== 9) {
-        fail("manifest preset must use formatVersion 5, 6, 7, 8, or 9");
+    if (
+        preset.formatVersion !== 5 &&
+        preset.formatVersion !== 6 &&
+        preset.formatVersion !== 7 &&
+        preset.formatVersion !== 8 &&
+        preset.formatVersion !== 9 &&
+        preset.formatVersion !== 10 &&
+        preset.formatVersion !== 11
+    ) {
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, or 11");
     }
     const meta = record(preset.meta, "manifest.preset.meta");
     if (meta.demo !== "blender") {
@@ -480,10 +502,15 @@ function validatePreset(value: unknown): FluidExportJson {
     numericRecord(preset.demoParams, "manifest.preset.demoParams");
     validateDemoState(preset.demoState);
     const particleSize = finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE);
-    integer(preset.particleCount, "manifest.preset.particleCount", 1, MAX_PARTICLE_COUNT);
+    integer(preset.particleCount, "manifest.preset.particleCount", 1, Number.MAX_SAFE_INTEGER);
     vector(preset.gridPosition, "manifest.preset.gridPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
     const gridSize = vector(preset.gridSize, "manifest.preset.gridSize", 3, Number.MIN_VALUE, MAX_EXTENT) as [number, number, number];
-    const cells = gridCellsForSize(gridSize, cellSizeForPhysicsScale(method, particleSize));
+    const resolution = method === "FLIP" && preset.gridResolution !== undefined ? integer(preset.gridResolution, "manifest.preset.gridResolution", 16, 2048) : undefined;
+    if (preset.markersPerCell !== undefined) {
+        integer(preset.markersPerCell, "manifest.preset.markersPerCell", 1, 64);
+    }
+    const cellSize = resolution ? Math.max(...gridSize) / resolution : cellSizeForPhysicsScale(method, particleSize);
+    const cells = gridCellsForSize(gridSize, cellSize);
     if (cells.some((count) => count > MAX_GRID_AXIS_CELLS) || cells[0] * cells[1] * cells[2] > MAX_GRID_CELL_COUNT) {
         fail("manifest preset grid exceeds the supported allocation limits");
     }
@@ -549,6 +576,9 @@ function validatePreset(value: unknown): FluidExportJson {
         finiteNumber(camera.alpha, "manifest.preset.camera.alpha", -1_000_000, 1_000_000);
         finiteNumber(camera.beta, "manifest.preset.camera.beta", -1_000_000, 1_000_000);
         finiteNumber(camera.radius, "manifest.preset.camera.radius", Number.MIN_VALUE, MAX_EXTENT);
+        if (camera.target !== undefined) {
+            vector(camera.target, "manifest.preset.camera.target", 3, -MAX_EXTENT, MAX_EXTENT);
+        }
     }
     validateRender(preset.render);
     validateFoam(preset.foam);
@@ -638,7 +668,7 @@ export function parseBlenderFluidCollision(bytes: Uint8Array): BlenderFluidColli
     return { dims, origin, cellSize, distances };
 }
 
-/** Parse the self-contained format-6/7/8/9 JSON emitted by the Blender add-on. */
+/** Parse a self-contained format-6 through format-10 fluid JSON export. */
 export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
     if (contents.length > MAX_JSON_BYTES) {
         fail("JSON export exceeds the 768 MiB limit");
@@ -650,8 +680,15 @@ export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
         fail("export is not valid JSON");
     }
     const preset = validatePreset(value);
-    if (preset.formatVersion !== 6 && preset.formatVersion !== 7 && preset.formatVersion !== 8 && preset.formatVersion !== 9) {
-        fail("self-contained Blender JSON must use formatVersion 6, 7, 8, or 9");
+    if (
+        preset.formatVersion !== 6 &&
+        preset.formatVersion !== 7 &&
+        preset.formatVersion !== 8 &&
+        preset.formatVersion !== 9 &&
+        preset.formatVersion !== 10 &&
+        preset.formatVersion !== 11
+    ) {
+        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, or 11");
     }
     const scene = record(preset.scene, "manifest.preset.scene");
     if (scene.encoding !== "base64") {

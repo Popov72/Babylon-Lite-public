@@ -124,7 +124,7 @@ function validPreset(): FluidExportJson {
 }
 
 function selfContainedJson(preset: FluidExportJson): string {
-    preset.formatVersion = 9;
+    preset.formatVersion = 11;
     for (const sink of preset.sinks ?? []) {
         sink.mode ??= "recycle";
     }
@@ -211,6 +211,43 @@ describe("Blender fluid JSON", () => {
         expect(emitter.delayBeforeStart).toBe(5);
     });
 
+    it("parses FLIP physics and preserves the selected method", () => {
+        const preset = validPreset();
+        preset.formatVersion = 11;
+        preset.meta.method = "FLIP";
+        preset.gridResolution = 160;
+        preset.markersPerCell = 8;
+        preset.physics = {
+            gravity: 9.8,
+            flipRatio: 0.95,
+            kinematicViscosity: 0,
+            surfaceTension: 0,
+            minSubsteps: 2,
+            maxSubsteps: 8,
+            cflNumber: 2,
+            restitution: 0,
+            velocityDamping: 0,
+            pressureIterations: 40,
+            pressureRelaxation: 0.8,
+            viscosityIterations: 12,
+            maxSubDtMs: 8.4,
+        };
+
+        const parsed = parseBlenderFluidJson(selfContainedJson(preset)).preset;
+
+        expect(parsed.meta.method).toBe("FLIP");
+        expect(parsed.physics).toEqual(preset.physics);
+        expect(parsed.gridResolution).toBe(160);
+        expect(parsed.markersPerCell).toBe(8);
+    });
+
+    it("accepts particle counts above the former fixed ceiling", () => {
+        const preset = validPreset();
+        preset.particleCount = 2_500_000;
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.particleCount).toBe(2_500_000);
+    });
+
     it.each(["", "none"])('normalizes legacy foamDebug "%s" to "off"', (foamDebug) => {
         const preset = validPreset();
         preset.foam!.foamDebug = foamDebug;
@@ -236,8 +273,54 @@ describe("Blender fluid JSON", () => {
     it.each([
         ["unknown bundle demo", (preset: FluidExportJson) => (preset.meta.demo = "waterfall"), 'meta.demo must be "blender"'],
         ["unknown solver method", (preset: FluidExportJson) => (preset.meta.method = "SPH"), "meta.method"],
-        ["unbounded particle count", (preset: FluidExportJson) => (preset.particleCount = 2_000_001), "particleCount"],
+        ["unsafe particle count", (preset: FluidExportJson) => (preset.particleCount = Number.MAX_SAFE_INTEGER + 1), "particleCount"],
         ["unbounded physics particle size", (preset: FluidExportJson) => (preset.physicsParticleSize = 9), "physicsParticleSize"],
+        [
+            "unbounded FLIP grid resolution",
+            (preset: FluidExportJson) => {
+                preset.meta.method = "FLIP";
+                preset.physics = {
+                    gravity: 9.8,
+                    flipRatio: 0.95,
+                    kinematicViscosity: 0,
+                    surfaceTension: 0,
+                    minSubsteps: 2,
+                    maxSubsteps: 8,
+                    cflNumber: 2,
+                    restitution: 0,
+                    velocityDamping: 0,
+                    pressureIterations: 40,
+                    pressureRelaxation: 0.8,
+                    viscosityIterations: 12,
+                    maxSubDtMs: 8.4,
+                };
+                preset.gridResolution = 2049;
+            },
+            "gridResolution",
+        ],
+        [
+            "unbounded markers per cell",
+            (preset: FluidExportJson) => {
+                preset.meta.method = "FLIP";
+                preset.physics = {
+                    gravity: 9.8,
+                    flipRatio: 0.95,
+                    kinematicViscosity: 0,
+                    surfaceTension: 0,
+                    minSubsteps: 2,
+                    maxSubsteps: 8,
+                    cflNumber: 2,
+                    restitution: 0,
+                    velocityDamping: 0,
+                    pressureIterations: 40,
+                    pressureRelaxation: 0.8,
+                    viscosityIterations: 12,
+                    maxSubDtMs: 8.4,
+                };
+                preset.markersPerCell = 65;
+            },
+            "markersPerCell",
+        ],
         ["negative simulation duration", (preset: FluidExportJson) => (preset.simulationDuration = -1), "simulationDuration"],
         ["unbounded alpha decay", (preset: FluidExportJson) => (preset.alphaDecay = 11), "alphaDecay"],
         ["unbounded simulation time scale", (preset: FluidExportJson) => (preset.simulationTimeScale = 101), "simulationTimeScale"],

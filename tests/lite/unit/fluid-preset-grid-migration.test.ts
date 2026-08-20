@@ -52,10 +52,11 @@ describe("fluid preset grid migration", () => {
         const state = pairState();
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
+        state.camera = { alpha: 0.25, beta: 1.1, radius: 18, target: [2, 3, 4] };
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
-        expect(exported.formatVersion).toBe(9);
+        expect(exported.formatVersion).toBe(11);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
         expect(exported.simulationDuration).toBe(12);
@@ -63,6 +64,39 @@ describe("fluid preset grid migration", () => {
         expect(imported.grid).toEqual(state.grid);
         expect(imported.simulationDuration).toBe(12);
         expect(imported.alphaDecay).toBe(2.5);
+        expect(exported.camera).toEqual(state.camera);
+        expect(imported.camera).toEqual(state.camera);
+    });
+
+    it("round-trips FLIP resolution divisions and marker density", () => {
+        const state = pairState();
+        state.physScale = 0.5;
+        state.gridResolution = 80;
+        state.markersPerCell = 8;
+        const exported = exportJsonFromPairState("box", "FLIP", state);
+        const imported = presetFromExportJson(exported);
+
+        expect(exported.gridResolution).toBe(80);
+        expect(exported.markersPerCell).toBe(8);
+        expect(imported.gridResolution).toBe(80);
+        expect(imported.markersPerCell).toBe(8);
+        expect(imported.physScale).toBeCloseTo(0.66);
+    });
+
+    it("round-trips current FLIP timestep and material controls", () => {
+        const state = pairState();
+        state.schema = {
+            velocityDamping: 0.1,
+            kinematicViscosity: 0.25,
+            viscosityIterations: 16,
+            surfaceTension: 0.4,
+            minSubsteps: 2,
+            maxSubsteps: 12,
+            cflNumber: 1.5,
+            maxSubDtMs: 6,
+        };
+
+        expect(presetFromExportJson(exportJsonFromPairState("box", "FLIP", state)).schema).toEqual(state.schema);
     });
 
     it("defaults legacy lifecycle settings to indefinite with a two-second decay", () => {

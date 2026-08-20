@@ -102,16 +102,6 @@ function preset(gridSize: [number, number, number], particleCount: number, emitt
     };
 }
 
-function formatParticleCount(count: number): string {
-    if (count >= 1_000_000) {
-        return `${(count / 1_000_000).toFixed(count % 1_000_000 === 0 ? 0 : 2)}M`;
-    }
-    if (count >= 1_000) {
-        return `${(count / 1_000).toFixed(count % 1_000 === 0 ? 0 : 1)}k`;
-    }
-    return String(count);
-}
-
 function positiveXAnimationGlb(): Buffer {
     const binary = Buffer.alloc(32);
     binary.writeFloatLE(0, 0);
@@ -171,7 +161,7 @@ function jsonExport(
     sourceNode?: string
 ): Buffer {
     const data = preset(gridSize, particleCount, emitterCount, gridPosition) as Record<string, unknown>;
-    data.formatVersion = 9;
+    data.formatVersion = 11;
     data.simulationTimeScale = 0.75;
     (data.foam as Record<string, unknown>).foamDebug = foamDebug;
     if (sourceNode) {
@@ -190,6 +180,45 @@ function jsonExport(
     };
     return Buffer.from(JSON.stringify(data));
 }
+
+test("Whiteboard restores the camera orbit and target from a fluid preset", async ({ page }) => {
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
+    const data = preset([10, 8, 12], 5_000, 0, [0, 4, 0]) as Record<string, unknown>;
+    data.formatVersion = 11;
+    data.meta = { demo: "whiteboard", method: "PBF" };
+    data.camera = { alpha: 0.35, beta: 1.2, radius: 22, target: [3, 4, 5] };
+
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "whiteboard-camera.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(data)),
+    });
+
+    const canvas = page.locator("canvas");
+    await expect(canvas).toHaveAttribute("data-camera-alpha", "0.35");
+    await expect(canvas).toHaveAttribute("data-camera-beta", "1.2");
+    await expect(canvas).toHaveAttribute("data-camera-radius", "22");
+    await expect(canvas).toHaveAttribute("data-camera-target", "3,4,5");
+});
+
+test("FLIP initial-emitter information uses the domain-clipped reset allocation", async ({ page }) => {
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "clipped-initial.json",
+        mimeType: "application/json",
+        buffer: flipClippedInitialPreset(),
+    });
+
+    const canvas = page.locator("canvas");
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count"))).toBe(32_768);
+    await expect(page.locator("[data-fluid-initial-emitter-particle-count]")).toHaveText("32,768");
+    await expect(canvas).toHaveAttribute("data-selected-initial-emitter-particle-count", "32768");
+});
 
 function lifecycleFlow(kind: "delete" | "inflow"): Buffer {
     const transform = { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
@@ -235,43 +264,167 @@ function lifecycleFlow(kind: "delete" | "inflow"): Buffer {
     );
 }
 
-function lifecyclePreset(method: "PBF" | "MLS-MPM" | "PB-MPM", kind: "delete" | "inflow"): Buffer {
+function lifecyclePreset(method: "PBF" | "FLIP" | "MLS-MPM" | "PB-MPM", kind: "delete" | "inflow"): Buffer {
     const data = preset([12, 10, 14], 5_000, 0) as Record<string, unknown>;
     data.formatVersion = 9;
     data.meta = { demo: "blender", method };
     data.physics =
         method === "PBF"
             ? { gravity: 9.8, viscosity: 0.08, relaxation: 50, scorr: 0.02, iterations: 3, restDensity: 341, boundaryDensity: 0 }
-            : method === "MLS-MPM"
+            : method === "FLIP"
               ? {
                     gravity: 9.8,
-                    stiffness: 80,
-                    viscosity: 0.01,
-                    restDensity: 4,
-                    damping: 0.999,
-                    affineDamping: 0.99,
-                    groundDamp: 0.9,
-                    groundDampHeight: 0.5,
+                    flipRatio: 0.95,
+                    kinematicViscosity: 0,
+                    surfaceTension: 0,
+                    minSubsteps: 1,
+                    maxSubsteps: 8,
+                    cflNumber: 2,
                     restitution: 0.1,
-                    substeps: 1,
+                    velocityDamping: 0,
+                    pressureIterations: 20,
+                    pressureRelaxation: 0.8,
+                    viscosityIterations: 12,
                     maxSubDtMs: 16.7,
                 }
-              : {
-                    gravity: 9.8,
-                    iterations: 1,
-                    liquidRelaxation: 0.1,
-                    liquidViscosity: 0,
-                    elasticityRatio: 1,
-                    elasticRelaxation: 1,
-                    frictionAngle: 60,
-                    plasticity: 0.8,
-                    restitution: 0.1,
-                    substeps: 1,
-                    maxSubDtMs: 16.7,
-                };
+              : method === "MLS-MPM"
+                ? {
+                      gravity: 9.8,
+                      stiffness: 80,
+                      viscosity: 0.01,
+                      restDensity: 4,
+                      damping: 0.999,
+                      affineDamping: 0.99,
+                      groundDamp: 0.9,
+                      groundDampHeight: 0.5,
+                      restitution: 0.1,
+                      substeps: 1,
+                      maxSubDtMs: 16.7,
+                  }
+                : {
+                      gravity: 9.8,
+                      iterations: 1,
+                      liquidRelaxation: 0.1,
+                      liquidViscosity: 0,
+                      elasticityRatio: 1,
+                      elasticRelaxation: 1,
+                      frictionAngle: 60,
+                      plasticity: 0.8,
+                      restitution: 0.1,
+                      substeps: 1,
+                      maxSubDtMs: 16.7,
+                  };
     const flow = JSON.parse(lifecycleFlow(kind).toString()) as { emitters: unknown[]; sinks: unknown[] };
     data.emitters = flow.emitters;
     data.sinks = flow.sinks;
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipScenePreset(): Buffer {
+    const data = JSON.parse(jsonExport([12, 10, 14], 5_000, 1, [3, 4, 5]).toString()) as Record<string, unknown>;
+    data.formatVersion = 11;
+    data.meta = { demo: "blender", method: "FLIP" };
+    data.gridResolution = 56;
+    data.markersPerCell = 8;
+    data.physics = {
+        gravity: 9.8,
+        flipRatio: 0.95,
+        kinematicViscosity: 0,
+        surfaceTension: 0,
+        minSubsteps: 1,
+        maxSubsteps: 8,
+        cflNumber: 2,
+        restitution: 0.1,
+        velocityDamping: 0,
+        pressureIterations: 20,
+        pressureRelaxation: 0.8,
+        viscosityIterations: 12,
+        maxSubDtMs: 16.7,
+    };
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipHighDensityPreset(): Buffer {
+    const data = JSON.parse(flipScenePreset().toString()) as Record<string, unknown>;
+    delete data.scene;
+    data.markersPerCell = 32;
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipLowDensityPreset(): Buffer {
+    const data = JSON.parse(flipHighDensityPreset().toString()) as Record<string, unknown>;
+    data.markersPerCell = 8;
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipClippedInitialPreset(): Buffer {
+    const data = JSON.parse(flipScenePreset().toString()) as Record<string, unknown>;
+    delete data.scene;
+    data.meta = { demo: "whiteboard", method: "FLIP" };
+    data.particleCount = 64;
+    data.gridPosition = [0, 0, 0];
+    data.gridSize = [2, 2, 2];
+    data.gridResolution = 16;
+    data.emitters = [
+        {
+            id: "initial",
+            name: "Initial",
+            enabled: true,
+            behavior: "initial",
+            transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "box", size: [4, 4, 4] },
+            sampling: "volume",
+            velocity: [0, 0, 0],
+            velocitySpace: "world",
+            spread: 0,
+        },
+    ];
+    data.sinks = [];
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipClippedHighCountPreset(): Buffer {
+    const data = JSON.parse(flipClippedInitialPreset().toString()) as Record<string, unknown>;
+    data.particleCount = 600_000;
+    data.gridSize = [4, 4, 4];
+    data.gridResolution = 40;
+    const emitter = (data.emitters as Array<Record<string, unknown>>)[0]!;
+    emitter.shape = { type: "box", size: [6, 6, 6] };
+    return Buffer.from(JSON.stringify(data));
+}
+
+function flipInflowOnlyPreset(): Buffer {
+    const data = JSON.parse(flipScenePreset().toString()) as Record<string, unknown>;
+    data.particleCount = 80_000;
+    data.gridPosition = [0, 3, 0];
+    data.gridSize = [10.5, 6, 10.5];
+    data.gridResolution = 82;
+    data.emitters = [
+        {
+            id: "inflow",
+            name: "Inflow",
+            enabled: true,
+            behavior: "inflow",
+            transform: { position: [0.64, 1.5, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "box", size: [2, 1, 2] },
+            sampling: "volume",
+            velocity: [3, 0, 0],
+            velocitySpace: "world",
+            spread: 0,
+            volumeRate: 8,
+        },
+    ];
+    data.sinks = [
+        {
+            id: "sink",
+            name: "Sink",
+            enabled: true,
+            mode: "delete",
+            transform: { position: [0, -2.7, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+            shape: { type: "box", size: [11.75, 1.25, 11.75] },
+            targets: [],
+        },
+    ];
     return Buffer.from(JSON.stringify(data));
 }
 
@@ -348,7 +501,7 @@ test("Whiteboard imports, re-exports, replaces, and clears Blender fluid JSON", 
     await anisotropic.check();
     await page.waitForTimeout(1_000);
     expect(errors.filter((message) => /WGSL|palpha|pipeline/i.test(message))).toEqual([]);
-    const activeParticleCounter = page.getByText(/^Active particles:/).first();
+    const activeParticleCounter = page.locator('[data-fluid-particle-usage="true"] > div').first();
     await expect(activeParticleCounter).toBeVisible();
     await page.keyboard.press("p");
     await expect(page.locator("canvas")).toHaveAttribute("data-paused", "true");
@@ -356,7 +509,7 @@ test("Whiteboard imports, re-exports, replaces, and clears Blender fluid JSON", 
     await expect
         .poll(async () => {
             const count = Number(await page.locator("canvas").getAttribute("data-active-particle-count"));
-            return (await activeParticleCounter.textContent())?.replace(/\s/g, "") === `Activeparticles:${formatParticleCount(count)}`;
+            return (await activeParticleCounter.textContent())?.replace(/\s/g, "").startsWith(`Particles:${count.toLocaleString("en-US")}active/`) === true;
         })
         .toBe(true);
 
@@ -483,6 +636,279 @@ test("Whiteboard imports, re-exports, replaces, and clears Blender fluid JSON", 
     expect(errors.filter((message) => /destroyed|validation|out of memory|failed to import|WGSL|palpha|pipeline/i.test(message))).toEqual([]);
 });
 
+test("FLIP runs with an imported SDF collision grid", async ({ page }) => {
+    test.setTimeout(120_000);
+    const errors: string[] = [];
+    page.on("console", (message) => {
+        if (message.type() === "error" || message.type() === "warning") {
+            errors.push(message.text());
+        }
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto("/demo-fluid.html?demo=box&method=PBF&quality=low");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    const canvas = page.locator("canvas");
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "flip-scene.json",
+        mimeType: "application/json",
+        buffer: flipScenePreset(),
+    });
+
+    await expect
+        .poll(
+            async () =>
+                errors.filter((message) => /destroyed|validation|out of memory|failed to import|shader|device|WGSL|pipeline/i.test(message)).join("\n") ||
+                ((await canvas.getAttribute("data-imported-bundle")) === "true" ? "imported" : "waiting"),
+            { timeout: 30_000 }
+        )
+        .toBe("imported");
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+    const particleBufferLimit = Number(await canvas.getAttribute("data-device-particle-buffer-limit-bytes"));
+    await expect(canvas).toHaveAttribute("data-device-particle-bytes-per-slot", "40");
+    await expect(canvas).toHaveAttribute("data-device-particle-capacity", String(Math.floor(particleBufferLimit / 40)));
+    await expect(canvas).toHaveAttribute("data-imported-collision-dims", "3,4,5");
+    await expect(canvas).toHaveAttribute("data-grid-resolution", "56");
+    await expect(canvas).toHaveAttribute("data-flip-markers-per-cell", "8");
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 15_000 }).toBe(32_768);
+    await expect(page.getByText(/^Resolution divisions/)).toBeVisible();
+    await expect(page.getByText(/^Markers per cell/)).toBeVisible();
+    await expect(page.getByText(/^Particle capacity/)).toBeVisible();
+    await expect(page.getByText(/^Physics particle size/)).toBeHidden();
+    await expect(page.getByText(/^Particle usage/)).toBeVisible();
+    await expect(page.getByText(/^Particles:\s*32,768\s*active\s*\/\s*32,768\s*capacity$/)).toBeVisible();
+    await expect(page.getByText(/^Simulation GPU memory:\s*\d/)).toBeVisible();
+    await expect(page.locator('[data-fluid-cell-size="true"] + [data-fluid-particle-usage="true"]')).toBeVisible();
+    const currentParticleText = page.locator('[data-fluid-particle-usage="true"] > div').nth(0);
+    const currentMemoryText = page.locator('[data-fluid-particle-usage="true"] > div').nth(2);
+    expect(await currentParticleText.evaluate((element) => element.textContent)).toBe("Particles:\u00a032,768\u00a0active\u00a0/\u00a032,768\u00a0capacity");
+    expect(await currentMemoryText.evaluate((element) => element.textContent)).toMatch(/^Simulation GPU memory:\u00a0\d+\.\d MiB$/);
+
+    const currentGpuBytes = Number(await canvas.getAttribute("data-simulation-gpu-bytes"));
+    const gridSizeZ = page.locator('[data-fluid-grid-vector="Grid size"] input').nth(2);
+    await gridSizeZ.fill("12");
+    await gridSizeZ.press("Enter");
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-restart-particle-required", "52035");
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", String(currentGpuBytes));
+    await expect(page.getByText(/^After restart:\s*32,768\s*active\s*\/\s*32,768\s*capacity$/)).toBeVisible();
+
+    await gridSizeZ.fill("14");
+    await gridSizeZ.press("Enter");
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "false");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+
+    const resolutionInput = page.locator('[data-fluid-grid-resolution="true"] input[type="range"]');
+    await resolutionInput.evaluate((input) => {
+        (input as HTMLInputElement).value = "64";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-grid-resolution", "64");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-restart-particle-required", "48914");
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", String(currentGpuBytes));
+
+    await resolutionInput.evaluate((input) => {
+        (input as HTMLInputElement).value = "256";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-restart-particle-required", "3130443");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "32768");
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+
+    await resolutionInput.evaluate((input) => {
+        (input as HTMLInputElement).value = "400";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(canvas).toHaveAttribute("data-grid-resolution", "400");
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-restart-particle-required", "11941691");
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+    await expect(page.getByText(/When the simulation is restarted, Resolution divisions will be adjusted from\s*400\s*to\s*\d+/)).toBeVisible();
+
+    await resolutionInput.evaluate((input) => {
+        (input as HTMLInputElement).value = "56";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "false");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(page.getByText(/When the simulation is restarted, Resolution divisions will be adjusted/)).toBeHidden();
+
+    const particleCapacityInput = page.locator('[data-fluid-flip-particle-capacity="true"] input');
+    await particleCapacityInput.fill("65536");
+    await particleCapacityInput.press("Enter");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "32768");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "65536");
+    await expect(page.getByText(/^After restart:\s*32,768\s*active\s*\/\s*65,536\s*capacity$/)).toBeVisible();
+    await expect.poll(async () => Number(await canvas.getAttribute("data-restart-simulation-gpu-bytes"))).toBeGreaterThan(currentGpuBytes);
+    await expect(canvas).toHaveAttribute("data-particle-count", "32768");
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-particle-count", "65536");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 15_000 }).toBe(32_768);
+    await expect(page.getByText(/^Particles:\s*32,768\s*active\s*\/\s*65,536\s*capacity$/)).toBeVisible();
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+
+    const emitterSizeX = page.locator('[data-flow-field-label="Size"] input').first();
+    const capacityGpuBytes = await canvas.getAttribute("data-simulation-gpu-bytes");
+    await emitterSizeX.fill("8");
+    await emitterSizeX.press("Enter");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "65536");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "65536");
+    await expect(page.getByText(/^After restart:\s*65,536\s*active\s*\/\s*65,536\s*capacity$/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-particle-count", "65536");
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", capacityGpuBytes!);
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 15_000 }).toBe(65_536);
+    await expect(page.getByText(/^Particles:\s*65,536\s*active\s*\/\s*65,536\s*capacity$/)).toBeVisible();
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+
+    const markersPerCellInput = page
+        .getByText(/^Markers per cell/)
+        .locator("..")
+        .locator('input[type="number"]');
+    const postEmitterGpuBytes = await canvas.getAttribute("data-simulation-gpu-bytes");
+    await markersPerCellInput.fill("16");
+    await markersPerCellInput.press("Enter");
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-flip-markers-per-cell", "16");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "65536");
+    await expect(canvas).toHaveAttribute("data-restart-particle-required", "131072");
+    await expect(canvas).toHaveAttribute("data-particle-count", "65536");
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", postEmitterGpuBytes!);
+    await expect(page.getByText(/initial fluid requires 131,072 particles, but Particle capacity is 65,536/)).toBeVisible();
+
+    await particleCapacityInput.fill("131072");
+    await particleCapacityInput.press("Enter");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "131072");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "131072");
+    await expect(page.getByText(/^After restart:\s*131,072\s*active\s*\/\s*131,072\s*capacity$/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "false");
+    await expect(canvas).toHaveAttribute("data-particle-count", "131072");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 15_000 }).toBe(131_072);
+    await expect(page.getByText(/^Particles:\s*131,072\s*active\s*\/\s*131,072\s*capacity$/)).toBeVisible();
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+
+    const gridPositionX = page.locator('[data-fluid-grid-vector="Grid position"] input').first();
+    await gridPositionX.fill("2.5");
+    await gridPositionX.press("Enter");
+    await expect(canvas).toHaveAttribute("data-grid-position", "2.5,5,-2");
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "true");
+    await expect(canvas).toHaveAttribute("data-imported-collision-origin", "-5,-4,-3");
+    await expect(canvas).toHaveAttribute("data-imported-scene-offset", "0,0,0");
+    await expect(canvas).toHaveAttribute("data-particle-count", "131072");
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-grid-restart-pending", "false");
+    await expect(canvas).toHaveAttribute("data-imported-collision-origin", "-3.5,-4,-3");
+    await expect(canvas).toHaveAttribute("data-imported-scene-offset", "1.5,0,0");
+    await expect(canvas).toHaveAttribute("data-particle-count", "131072");
+
+    const bounds = await canvas.boundingBox();
+    expect(bounds).not.toBeNull();
+    await page.keyboard.down("Shift");
+    await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2);
+    await page.mouse.down({ button: "right" });
+    await page.waitForTimeout(25);
+    await page.mouse.move(bounds!.x + bounds!.width / 2 + 50, bounds!.y + bounds!.height / 2, { steps: 4 });
+    await page.waitForTimeout(250);
+    await page.mouse.up({ button: "right" });
+    await page.keyboard.up("Shift");
+    await page.waitForTimeout(250);
+    expect(errors.filter((message) => /destroyed|validation|out of memory|failed to import|shader|device|WGSL|pipeline/i.test(message))).toEqual([]);
+});
+
+test("FLIP inflow-only imports report emitted particles instead of legacy capacity", async ({ page }) => {
+    await page.goto("/demo-fluid.html?demo=whiteboard&method=PBF&quality=low");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    const canvas = page.locator("canvas");
+    await page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "fluid-whiteboard-FLIP.json",
+        mimeType: "application/json",
+        buffer: flipInflowOnlyPreset(),
+    });
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count"))).toBeGreaterThan(0);
+    const activeCount = Number(await canvas.getAttribute("data-active-particle-count"));
+    expect(activeCount).toBeLessThan(80_000);
+    await expect(page.getByText(/^Particles:\s*[\d,]+\s*active\s*\/\s*80,000\s*capacity$/)).toBeVisible();
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+    await expect(page.locator('[data-fluid-flip-particle-capacity="true"] input')).toHaveValue("80000");
+
+    const behavior = () => page.locator('[data-flow-field-label="Behavior"] select').first();
+    const gpuBytes = await canvas.getAttribute("data-simulation-gpu-bytes");
+    await behavior().selectOption("initial");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "15242");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "80000");
+    await expect(page.getByText(/^After restart:\s*15,242\s*active\s*\/\s*80,000\s*capacity$/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-particle-count", "80000");
+    await expect(canvas).toHaveAttribute("data-flip-particle-capacity-request", "80000");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count"))).toBe(15_242);
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", gpuBytes!);
+
+    await behavior().selectOption("inflow");
+    await expect(canvas).toHaveAttribute("data-restart-particle-count", "0");
+    await expect(canvas).toHaveAttribute("data-restart-particle-capacity", "80000");
+    await expect(page.getByText(/^After restart:\s*0\s*active\s*\/\s*80,000\s*capacity$/)).toBeVisible();
+
+    await page.getByRole("button", { name: "Reset simulation" }).click();
+    await expect(canvas).toHaveAttribute("data-particle-count", "80000");
+    await expect(canvas).toHaveAttribute("data-flip-particle-capacity-request", "80000");
+    await expect(canvas).toHaveAttribute("data-simulation-gpu-bytes", gpuBytes!);
+    await expect(page.getByText(/^After restart:/)).toBeHidden();
+});
+
+test("FLIP warns when marker density exceeds useful MAC-grid sampling", async ({ page }) => {
+    await page.goto("/demo-fluid.html?demo=box&method=PBF&quality=low");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    const canvas = page.locator("canvas");
+    const input = page.locator('input[type="file"][accept*=".json"]');
+    const highCountDialogPromise = page.waitForEvent("dialog");
+    const highDensityImport = input.setInputFiles({
+        name: "flip-high-density.json",
+        mimeType: "application/json",
+        buffer: flipHighDensityPreset(),
+    });
+    const highCountDialog = await highCountDialogPromise;
+    expect(highCountDialog.message()).toContain("131,072");
+    expect(highCountDialog.message()).toContain("Resolution divisions from 56 to 37");
+    await highCountDialog.accept();
+    await highDensityImport;
+
+    await expect(canvas).toHaveAttribute("data-method", "FLIP");
+    await expect(canvas).toHaveAttribute("data-particle-count", "40000");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count"))).toBe(37_806);
+    await expect(canvas).toHaveAttribute("data-flip-marker-density-warning", "true");
+    const warning = page.getByText(/^High FLIP marker density:/);
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveCSS("color", "rgb(255, 95, 86)");
+    expect(await warning.textContent()).toContain("density:\u00a0about\u00a032.0\u00a0markers");
+    expect(await warning.textContent()).toContain("cell.\u00a0Above\u00a016,\u00a0extra");
+    expect(await warning.textContent()).toContain("Reduce Markers per cell.");
+
+    await input.setInputFiles({
+        name: "flip-low-density.json",
+        mimeType: "application/json",
+        buffer: flipLowDensityPreset(),
+    });
+    await expect(canvas).toHaveAttribute("data-flip-marker-density-warning", "false");
+    await expect(warning).toBeHidden();
+});
+
 test("deletes and independently emits particles in every solver", async ({ page }) => {
     test.setTimeout(180_000);
     const errors: string[] = [];
@@ -498,7 +924,7 @@ test("deletes and independently emits particles in every solver", async ({ page 
     const canvas = page.locator("canvas");
     const input = page.locator('input[type="file"][accept*=".json"]');
 
-    for (const method of ["PB-MPM", "PBF", "MLS-MPM"] as const) {
+    for (const method of ["PB-MPM", "PBF", "FLIP", "MLS-MPM"] as const) {
         await test.step(method, async () => {
             await input.setInputFiles({ name: `${method}-delete.json`, mimeType: "application/json", buffer: lifecyclePreset(method, "delete") });
             await expect(canvas).toHaveAttribute("data-method", method);
@@ -554,4 +980,22 @@ test("warns before importing a high particle count", async ({ page }) => {
     await keepDialog.dismiss();
     await keepImport;
     await expect(page.locator("canvas")).toHaveAttribute("data-particle-count", "100002");
+});
+
+test("FLIP import warning reports the domain-clipped initial count", async ({ page }) => {
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+    await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
+
+    const dialogPromise = page.waitForEvent("dialog");
+    const importPromise = page.locator('input[type="file"][accept*=".json"]').setInputFiles({
+        name: "flip-clipped-high.json",
+        mimeType: "application/json",
+        buffer: flipClippedHighCountPreset(),
+    });
+    const dialog = await dialogPromise;
+    expect(dialog.message()).toContain("512,000");
+    expect(dialog.message()).not.toContain("1,728,000");
+    await dialog.accept();
+    await importPromise;
 });

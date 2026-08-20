@@ -87,6 +87,7 @@ struct VOut {
     @location(1) @interpolate(flat) kind: f32,
     @location(2) @interpolate(flat) gain: f32,
     @location(3) @interpolate(flat) eyeZ: f32,
+    @location(4) @interpolate(flat) centreUv: vec2<f32>,
 };
 
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
@@ -101,6 +102,7 @@ struct VOut {
         o.kind = 0.0;
         o.gain = 0.0;
         o.eyeZ = 0.0;
+        o.centreUv = vec2<f32>(0.0);
         return o;
     }
     let kind = u32(d.v.w + 0.5);
@@ -114,7 +116,11 @@ struct VOut {
         sz = baseSize * 1.1;
         gain = u.gains.z;
     }
-    let centreEyeZ = (u.view * vec4<f32>(d.p.xyz, 1.0)).z;
+    gain *= smoothstep(0.0, 0.3, d.p.w);
+    let centreEye = (u.view * vec4<f32>(d.p.xyz, 1.0)).xyz;
+    let centreEyeZ = centreEye.z;
+    let centreClip = u.proj * vec4<f32>(centreEye, 1.0);
+    let centreNdc = centreClip.xy / centreClip.w;
     // Minimum screen footprint. A splat projecting to less than a pixel only ever lights the
     // one accumulation texel its centre lands in, and it does so at full strength — so distant
     // mist stops being mist and turns into hard, aliased white dots (very visible once the
@@ -134,6 +140,7 @@ struct VOut {
     o.kind = f32(kind);
     o.gain = gain;
     o.eyeZ = centreEyeZ;   // particle-centre eye Z
+    o.centreUv = vec2<f32>(centreNdc.x * 0.5 + 0.5, 0.5 - centreNdc.y * 0.5);
     return o;
 }
 
@@ -163,11 +170,52 @@ struct VOut {
         // Bubble: only when submerged (behind the surface, water in front).
         if (hasWater && i.eyeZ > surfZ - u.texel.z) { outc.g = w; }
     } else if (kind == 0u) {
-        // Spray: droplets in the air -> always the surface froth channel.
-        if (inFront) { outc.b = w; }
+        // Spray becomes visible over water only after separating clearly from the
+        // reconstructed surface. This avoids low-occupancy boundary jitter flashing
+        // near-surface particles across the liquid sides.
+        if (!hasWater) {
+            outc.b = w;
+        } else {
+            let separation = surfZ - i.eyeZ;
+            outc.b = w * smoothstep(u.texel.z, 2.0 * u.texel.z, separation);
+        }
     } else {
-        // Foam: on/at the surface froth channel when at or in front of it.
-        if (inFront) { outc.r = w; }
+        // Follow the local tangent plane of the reconstructed liquid surface. Comparing
+        // every fragment with the one constant particle-centre depth creates a moving
+        // intersection contour on sloped waves, especially for large foam splats.
+        let centreZ = textureSampleLevel(surfDepth, surfSamp, i.centreUv, 0.0).r;
+        if (hasWater && centreZ < 1e5) {
+            let leftZ = textureSampleLevel(surfDepth, surfSamp, i.centreUv - vec2<f32>(u.texel.x, 0.0), 0.0).r;
+            let rightZ = textureSampleLevel(surfDepth, surfSamp, i.centreUv + vec2<f32>(u.texel.x, 0.0), 0.0).r;
+            let downZ = textureSampleLevel(surfDepth, surfSamp, i.centreUv - vec2<f32>(0.0, u.texel.y), 0.0).r;
+            let upZ = textureSampleLevel(surfDepth, surfSamp, i.centreUv + vec2<f32>(0.0, u.texel.y), 0.0).r;
+            var gradient = vec2<f32>(0.0);
+            var orientationWeight = 0.0;
+            if (leftZ < 1e5 && rightZ < 1e5) { gradient.x = 0.5 * (rightZ - leftZ); }
+            if (downZ < 1e5 && upZ < 1e5) { gradient.y = 0.5 * (upZ - downZ); }
+            if (leftZ < 1e5 && rightZ < 1e5 && downZ < 1e5 && upZ < 1e5) {
+                let leftUv = i.centreUv - vec2<f32>(u.texel.x, 0.0);
+                let rightUv = i.centreUv + vec2<f32>(u.texel.x, 0.0);
+                let downUv = i.centreUv - vec2<f32>(0.0, u.texel.y);
+                let upUv = i.centreUv + vec2<f32>(0.0, u.texel.y);
+                let leftNdc = vec2<f32>(leftUv.x * 2.0 - 1.0, 1.0 - leftUv.y * 2.0);
+                let rightNdc = vec2<f32>(rightUv.x * 2.0 - 1.0, 1.0 - rightUv.y * 2.0);
+                let downNdc = vec2<f32>(downUv.x * 2.0 - 1.0, 1.0 - downUv.y * 2.0);
+                let upNdc = vec2<f32>(upUv.x * 2.0 - 1.0, 1.0 - upUv.y * 2.0);
+                let leftPos = vec3<f32>(leftNdc.x * leftZ / u.proj[0].x, leftNdc.y * leftZ / u.proj[1].y, leftZ);
+                let rightPos = vec3<f32>(rightNdc.x * rightZ / u.proj[0].x, rightNdc.y * rightZ / u.proj[1].y, rightZ);
+                let downPos = vec3<f32>(downNdc.x * downZ / u.proj[0].x, downNdc.y * downZ / u.proj[1].y, downZ);
+                let upPos = vec3<f32>(upNdc.x * upZ / u.proj[0].x, upNdc.y * upZ / u.proj[1].y, upZ);
+                let surfaceNormal = normalize(cross(rightPos - leftPos, upPos - downPos));
+                let worldUpView = normalize((u.view * vec4<f32>(0.0, 1.0, 0.0, 0.0)).xyz);
+                orientationWeight = smoothstep(0.25, 0.65, abs(dot(surfaceNormal, worldUpView)));
+            }
+            let centrePixel = i.centreUv / u.texel.xy;
+            let expectedZ = centreZ + dot(gradient, fragXY - centrePixel);
+            let centreWeight = 1.0 - smoothstep(u.texel.z, 2.0 * u.texel.z, abs(i.eyeZ - centreZ));
+            let patchWeight = 1.0 - smoothstep(0.5 * u.texel.z, u.texel.z, abs(surfZ - expectedZ));
+            outc.r = w * centreWeight * patchWeight * orientationWeight;
+        }
     }
     return outc;
 }`;
@@ -501,7 +549,7 @@ export function createFoamRenderTask(
         splatData[43] = engine.canvas.width / Math.max(1, accW); // accum→scene res ratio (1 at full res)
         splatData[44] = 1 / Math.max(1, accW);
         splatData[45] = 1 / Math.max(1, accH);
-        splatData[46] = r * 4; // surfBias (eye-Z tolerance for "on the surface")
+        splatData[46] = r * 1.5; // surfBias (eye-Z half-band for surface foam)
         splatData[47] = 0.02; // sceneBias (eye-Z bias vs opaque geometry)
         splatData[48] = 1.4; // sprayGain
         splatData[49] = 1.0; // foamGain

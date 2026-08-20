@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Provide one solver-independent lifecycle for PBF, MLS-MPM, and PB-MPM particles:
+Provide one solver-independent lifecycle for PBF, FLIP, MLS-MPM, and PB-MPM particles:
 
 - `count` is immutable GPU capacity.
 - `activeCount` is the number of particles currently participating in simulation and rendering.
@@ -59,7 +59,7 @@ interface FluidSink {
 
 Advanced initial velocity is opt-in per emitter. `velocity` and `sourceVelocity * sourceVelocityFactor` are combined on the CPU before upload. `normalVelocity` reuses the otherwise-unused fourth shape-parameter float, so the GPU emitter record remains 128 bytes and the flow buffer does not grow. The launch shader computes an analytical shape normal only when `normalVelocity` is nonzero. Emitters that omit the optional fields retain the existing launch path and memory footprint.
 
-The fluid controls panel is user-resizable in both axes within the viewport. Compact emitter/sink numeric editors use locale-independent decimal text entry and commit on change, accepting either `.` or `,` while retaining their previous value when parsing or range validation fails.
+The fluid controls panel is user-resizable in both axes within the viewport. Its shared General section owns method selection and the PB-MPM Material selector, so every host using the shared panel exposes the same Liquid, Elastic, Sand, and Viscoelastic choices when PB-MPM is active. Compact emitter/sink numeric editors use locale-independent decimal text entry and commit on change, accepting either `.` or `,` while retaining their previous value when parsing or range validation fails.
 
 ## GPU Lifecycle State
 
@@ -122,6 +122,13 @@ Simulation and emission remain fully GPU-driven. A small double-buffered asynchr
 - The GPU active count is copied into the existing simulation-count uniform before sorted constraint passes.
 - Deleted slots are parked off-screen immediately.
 
+### FLIP
+
+- P2G, force, and G2P passes test lifecycle state.
+- Delete sinks park freed slots off-screen; emitters initialize particle position and velocity directly.
+- Warm-up restores retained seed position and velocity before changing a reserved slot to active.
+- Cell marking and MAC-grid transfer include active slots only.
+
 ### MLS-MPM
 
 - Particle histogram, force, G2P, and render-copy passes test lifecycle state.
@@ -147,6 +154,7 @@ Simulation and emission remain fully GPU-driven. A small double-buffered asynchr
 
 - `packages/babylon-lite/src/fluid/sim-common.ts`
 - `packages/babylon-lite/src/fluid/pbf-sim.ts`
+- `packages/babylon-lite/src/fluid/flip-sim.ts`
 - `packages/babylon-lite/src/fluid/mls-mpm-sim.ts`
 - `packages/babylon-lite/src/fluid/pbmpm-sim.ts`
 - `lab/lite/src/demos/fluid/blender-fluid-json.ts`

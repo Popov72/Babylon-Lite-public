@@ -82,6 +82,7 @@ import {
 } from "./ship-manifest.js";
 import type { ShipBehavior, ShipBehaviorLibrary, ShipEntities, ShipEnvironment } from "./ship-manifest.js";
 import type { LiquefyState } from "./liquefy-plugin.js";
+import { createFlipSim } from "babylon-lite/fluid/flip-sim.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
@@ -174,14 +175,6 @@ const FOE_SETS = [
     { key: "props", label: "Sample props (default)" },
     { key: "ship", label: "Aquanova ship meshes" },
 ] as const;
-
-// PB-MPM material (0 liquid, 1 elastic, 2 sand, 3 viscoelastic). Only PB-MPM branches on it.
-const PBMPM_MATERIAL_LABELS: [string, number][] = [
-    ["Liquid", 0],
-    ["Elastic", 1],
-    ["Sand", 2],
-    ["Viscoelastic", 3],
-];
 
 // Impulse force field: an EXPLOSION FROM THE INSIDE. Every particle inside the blast radius is
 // pushed radially OUTWARD from the volume centre (push.w, ~uniform through the core), plus a uniform
@@ -302,33 +295,63 @@ async function main(): Promise<void> {
         camYaw = Math.atan2(dx, dz);
         camPitch = Math.atan2(dy, Math.hypot(dx, dz));
     }
+    let camYawTarget = camYaw;
+    let camPitchTarget = camPitch;
+    const camVelocity = { x: 0, y: 0, z: 0 };
     const camKeys = new Set<string>();
     let looking = false;
+    let paused = false;
+    canvas.dataset.paused = "false";
     const LOOK_SENS = 1 / 350;
+    const LOOK_ACCELERATION = 28;
+    const MOVE_ACCELERATION = 11;
+    const releaseLook = (): void => {
+        looking = false;
+        if (document.pointerLockElement === canvas) document.exitPointerLock();
+    };
     canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // RMB is the look button
     canvas.addEventListener("pointerdown", (e) => {
         if (e.button !== 2) return;
         looking = true;
-        canvas.setPointerCapture(e.pointerId);
+        if (document.pointerLockElement !== canvas) void canvas.requestPointerLock();
     });
-    canvas.addEventListener("pointerup", (e) => {
+    window.addEventListener("pointerup", (e) => {
         if (e.button !== 2) return;
-        looking = false;
-        if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+        releaseLook();
     });
-    canvas.addEventListener("pointermove", (e) => {
+    canvas.addEventListener("pointercancel", releaseLook);
+    document.addEventListener("pointerlockchange", () => {
+        if (document.pointerLockElement !== canvas) looking = false;
+    });
+    document.addEventListener("pointermove", (e) => {
         if (!looking) return;
-        camYaw += e.movementX * LOOK_SENS;
-        camPitch = Math.max(-1.45, Math.min(1.45, camPitch - e.movementY * LOOK_SENS));
+        camYawTarget += e.movementX * LOOK_SENS;
+        camPitchTarget = Math.max(-1.45, Math.min(1.45, camPitchTarget - e.movementY * LOOK_SENS));
     });
     window.addEventListener("keydown", (e) => {
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+        if (e.code === "KeyP") {
+            if (!e.repeat) {
+                paused = !paused;
+                canvas.dataset.paused = paused ? "true" : "false";
+            }
+            return;
+        }
         camKeys.add(e.code);
     });
     window.addEventListener("keyup", (e) => camKeys.delete(e.code));
-    window.addEventListener("blur", () => camKeys.clear());
+    window.addEventListener("blur", () => {
+        camKeys.clear();
+        releaseLook();
+        camVelocity.x = 0;
+        camVelocity.y = 0;
+        camVelocity.z = 0;
+    });
     const updateCamera = (deltaMs: number): void => {
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
+        const lookFactor = 1 - Math.exp(-dt * LOOK_ACCELERATION);
+        camYaw += (camYawTarget - camYaw) * lookFactor;
+        camPitch += (camPitchTarget - camPitch) * lookFactor;
         const cy = Math.cos(camYaw),
             sy = Math.sin(camYaw);
         const cp = Math.cos(camPitch),
@@ -336,12 +359,14 @@ async function main(): Promise<void> {
         const fwdZ = (camKeys.has("KeyW") ? 1 : 0) - (camKeys.has("KeyS") ? 1 : 0);
         const strafe = (camKeys.has("KeyD") ? 1 : 0) - (camKeys.has("KeyA") ? 1 : 0);
         const rise = (camKeys.has("Space") ? 1 : 0) - (camKeys.has("KeyC") ? 1 : 0);
-        if (fwdZ || strafe || rise) {
-            const spd = cam.speed * (camKeys.has("ShiftLeft") || camKeys.has("ShiftRight") ? 4 : 1) * dt;
-            cam.position.x += (sy * cp * fwdZ + cy * strafe) * spd;
-            cam.position.y += (sp * fwdZ + rise) * spd;
-            cam.position.z += (cy * cp * fwdZ - sy * strafe) * spd;
-        }
+        const speed = cam.speed * (camKeys.has("ShiftLeft") || camKeys.has("ShiftRight") ? 4 : 1);
+        const moveFactor = 1 - Math.exp(-dt * MOVE_ACCELERATION);
+        camVelocity.x += ((sy * cp * fwdZ + cy * strafe) * speed - camVelocity.x) * moveFactor;
+        camVelocity.y += ((sp * fwdZ + rise) * speed - camVelocity.y) * moveFactor;
+        camVelocity.z += ((cy * cp * fwdZ - sy * strafe) * speed - camVelocity.z) * moveFactor;
+        cam.position.x += camVelocity.x * dt;
+        cam.position.y += camVelocity.y * dt;
+        cam.position.z += camVelocity.z * dt;
         cam.target.x = cam.position.x + sy * cp;
         cam.target.y = cam.position.y + sp;
         cam.target.z = cam.position.z + cy * cp;
@@ -869,6 +894,11 @@ async function main(): Promise<void> {
         const dir = startEntity?.ref.direction;
         camYaw = dir && (dir[0] || dir[2]) ? Math.atan2(-dir[0]!, dir[2]!) : -Math.PI / 2;
         camPitch = 0;
+        camYawTarget = camYaw;
+        camPitchTarget = camPitch;
+        camVelocity.x = 0;
+        camVelocity.y = 0;
+        camVelocity.z = 0;
         // eslint-disable-next-line no-console
         console.warn(`[liquefactor] ship foes: ${found.length} mesh(es), ibl ${iblStrength}`);
     }
@@ -1239,6 +1269,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const gridSize: [number, number, number] = [0, 0, 0];
     let currentMethod = "MLS-MPM";
     let currentMaterial = 0;
+    let mpmActiveBlocks = false;
+    let mpmPagedGrid = false;
+    const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
+    let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, 40000);
+    let mpmFusedBlockDiscovery = false;
 
     const LIQ_SCHEMAS: Record<string, PhysSchemaEntry[]> = Object.fromEntries(
         Object.entries(DEFAULT_FLUID_SCHEMAS).map(([m, entries]) => [m, entries.map((e) => (m === "PBF" && e.key === "viscosity" ? { ...e, value: 0.35 } : { ...e }))])
@@ -1263,7 +1298,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         wMin: readonly [number, number, number],
         wMax: readonly [number, number, number]
     ): void {
-        const dx = Math.max(radius * 2.4, 0.18);
+        const dx = Math.max(radius * (currentMethod === "FLIP" ? 0.25 / 0.09 : 2.4), 0.18);
         const phys = physValues[currentMethod]!;
         const cx = (wMin[0] + wMax[0]) / 2;
         const cz = (wMin[2] + wMax[2]) / 2;
@@ -1298,6 +1333,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 iterations: phys.iterations,
                 restDensity: phys.restDensity,
                 boundaryDensity: phys.boundaryDensity,
+            });
+        } else if (currentMethod === "FLIP") {
+            sim = createFlipSim(engine, {
+                count,
+                particleRadius: radius,
+                initialPositions: positions,
+                boundsMin,
+                boundsMax,
+                dx,
+                groundY: GROUND_Y,
+                gravity: phys.gravity,
+                flipRatio: phys.flipRatio,
+                pressureIterations: phys.pressureIterations,
+                pressureRelaxation: phys.pressureRelaxation,
+                velocityDamping: phys.velocityDamping,
+                kinematicViscosity: phys.kinematicViscosity,
+                viscosityIterations: phys.viscosityIterations,
+                surfaceTension: phys.surfaceTension,
+                restitution: phys.restitution,
+                minSubsteps: phys.minSubsteps,
+                maxSubsteps: phys.maxSubsteps,
+                cflNumber: phys.cflNumber,
+                ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
             });
         } else if (currentMethod === "PB-MPM") {
             sim = createPbMpmSim(engine, {
@@ -1341,6 +1399,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 groundDamp: phys.groundDamp,
                 groundDampHeight: phys.groundDampHeight,
                 restitution: phys.restitution,
+                activeBlocks: mpmActiveBlocks,
+                pagedGrid: mpmPagedGrid,
+                pagedGridMaxPages: mpmPagedGridMaxPages,
+                fusedBlockDiscovery: mpmFusedBlockDiscovery,
+                onPagedGridOverflow: (requiredPages, capacity) => {
+                    const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated.`;
+                    controls.setPagedGridStatus(message, true);
+                    console.error(`[Liquefactor MLS-MPM] ${message}`);
+                },
             });
         }
         sim.setSceneSdf(groundSdf);
@@ -1807,8 +1874,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const subtitle = document.createElement("div");
     subtitle.textContent =
         FOE_SET === "ship"
-            ? "WASD/Space/C to fly · RMB-drag to look · click a node → its own fluid sim"
-            : "WASD/Space/C to fly · RMB-drag to look · click a foe → its own fluid sim";
+            ? "WASD/Space/C to fly · RMB-drag to look · P pause · click a node → its own fluid sim"
+            : "WASD/Space/C to fly · RMB-drag to look · P pause · click a foe → its own fluid sim";
     subtitle.style.cssText = "color:#8fa4bc;margin-bottom:10px;";
 
     function labelledRow(text: string, control: HTMLElement): HTMLDivElement {
@@ -1876,26 +1943,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         location.href = url.toString();
     };
     const foeRow = labelledRow("Foes", foeSelect);
-
-    // PB-MPM material selector (only meaningful for PB-MPM; applied to the next shot).
-    const materialSelect = document.createElement("select");
-    styleSelect(materialSelect);
-    for (const [label, value] of PBMPM_MATERIAL_LABELS) {
-        const opt = document.createElement("option");
-        opt.value = String(value);
-        opt.textContent = label;
-        materialSelect.append(opt);
-    }
-    materialSelect.value = String(currentMaterial);
-    const materialRow = labelledRow("PB-MPM material", materialSelect);
-    materialSelect.onchange = () => {
-        currentMaterial = parseInt(materialSelect.value, 10) || 0;
-        for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
-        refreshPhysicsParamVisibility();
-    };
-    const refreshMaterialRow = (): void => {
-        materialRow.style.display = currentMethod === "PB-MPM" ? "" : "none";
-    };
 
     // Particle radius slider.
     const radiusInput = document.createElement("input");
@@ -2133,7 +2180,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         canvas.dataset.method = method;
         controls.setMethod(method);
         controls.rebuildPhysics(method);
-        refreshMaterialRow();
         refreshPhysicsParamVisibility();
     }
 
@@ -2148,10 +2194,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         hideGpuTiming: false,
         panelStyle: PANEL_STYLE,
         schemas: LIQ_SCHEMAS,
-        methods: ["PBF", "MLS-MPM", "PB-MPM"],
+        methods: Object.keys(LIQ_SCHEMAS),
         particleCounts: [],
+        showActiveBlocks: true,
         initial: {
             method: currentMethod,
+            material: currentMaterial,
             count: 0,
             physScale: 1,
             color: DEF_COLOR,
@@ -2159,6 +2207,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             size: DEF_SIZE,
             refraction: DEF_REFRACTION,
             specular: DEF_SPECULAR,
+            reflectionExposure: 1,
+            reflectionContrast: 1.1,
+            reflectivity: 0.02,
             depthBlur: DEF_DEPTH_BLUR,
             depthBlurThreshold: DEF_DEPTH_BLUR_THRESHOLD,
             thicknessBlur: DEF_THICKNESS_BLUR,
@@ -2168,6 +2219,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             narrowDelta: DEF_NARROW_DELTA,
             narrowMu: DEF_NARROW_MU,
             anisotropic: false,
+            anisoSurfScale: 0.5,
+            activeBlocks: mpmActiveBlocks,
+            pagedGrid: mpmPagedGrid,
+            pagedGridMaxPages: mpmPagedGridMaxPages,
+            fusedBlockDiscovery: mpmFusedBlockDiscovery,
             renderMode: "surface",
             debug: "none",
             showContainer: true,
@@ -2196,18 +2252,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         gpu: { stages: ["Simulation", "Surface"], supported: profiler !== null },
         on: {
             onMethod: (m) => switchMethod(m),
+            onMaterial: (material) => {
+                currentMaterial = material;
+                for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
+                refreshPhysicsParamVisibility();
+            },
             onRenderMode: () => {}, // surface only in the multi-target demo
             onColor: (rgb) => surfaceTask.setFluidColor(rgb),
             onAbsorption: (v) => surfaceTask.setAbsorption(v),
             onParticleSize: (s) => surfaceTask.setSizeScale(s),
             onRefraction: (v) => surfaceTask.setRefractionStrength(v),
             onSpecular: (v) => surfaceTask.setSpecularPower(v),
+            onReflection: (exposure, contrast) => surfaceTask.setEnvReflection(exposure, contrast),
+            onReflectivity: (v) => surfaceTask.setFresnelF0(v),
             onDepthBlur: (size, threshold) => surfaceTask.setDepthBlur(size, threshold),
             onThicknessBlur: (v) => surfaceTask.setThicknessBlur(v),
             onHalf: (on) => surfaceTask.setHalfRender(on),
             onSurfaceFilter: (m) => surfaceTask.setSurfaceFilter(m),
             onNarrowRange: (delta, mu) => surfaceTask.setNarrowRange(delta, mu),
+            onAnisotropic: (enabled) => surfaceTask.setAnisotropic(enabled),
+            onAnisotropySurfScale: (share) => surfaceTask.setAnisotropySurfScale(share),
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
+            onActiveBlocks: (enabled) => {
+                mpmActiveBlocks = enabled;
+            },
+            onPagedGrid: (enabled) => {
+                mpmPagedGrid = enabled;
+                controls.setPagedGridStatus("");
+            },
+            onPagedGridMaxPages: (pages) => {
+                mpmPagedGridMaxPages = Math.min(maxPagedGridPages, pages);
+                controls.setPagedGridMaxPages(mpmPagedGridMaxPages);
+                controls.setPagedGridStatus("");
+            },
+            onFusedBlockDiscovery: (enabled) => {
+                mpmFusedBlockDiscovery = enabled;
+            },
             // Physics sliders apply LIVE to every running sim AND seed the next shot.
             onPhysicsParam: (key, value) => {
                 physValues[currentMethod]![key] = value;
@@ -2240,10 +2320,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             size: v.size,
             physScale: 1,
             count: 0,
-            material: currentMethod === "PB-MPM" ? currentMaterial : undefined,
+            material: currentMethod === "PB-MPM" ? v.material : undefined,
             renderMode: "surface",
             refraction: v.refraction,
             specular: v.specular,
+            reflectionExposure: v.reflectionExposure,
+            reflectionContrast: v.reflectionContrast,
+            reflectivity: v.reflectivity,
             depthBlur: v.depthBlur,
             depthBlurThreshold: v.depthBlurThreshold,
             thicknessBlur: v.thicknessBlur,
@@ -2252,6 +2335,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             narrowMu: v.narrowMu,
             anisotropic: v.anisotropic,
             anisoSurfScale: v.anisoSurfScale,
+            activeBlocks: currentMethod === "MLS-MPM" ? v.activeBlocks : undefined,
+            pagedGrid: currentMethod === "MLS-MPM" ? v.pagedGrid : undefined,
+            pagedGridMaxPages: currentMethod === "MLS-MPM" ? v.pagedGridMaxPages : undefined,
+            fusedBlockDiscovery: currentMethod === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
             foam: v.foam,
             demoState: {},
             showContainer: v.showContainer,
@@ -2272,8 +2359,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         if (typeof p.material === "number" && currentMethod === "PB-MPM") {
             currentMaterial = p.material;
-            materialSelect.value = String(currentMaterial);
+            controls.setMaterial(currentMaterial);
             for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
+        }
+        if (currentMethod === "MLS-MPM") {
+            mpmPagedGrid = p.pagedGrid ?? mpmPagedGrid;
+            mpmActiveBlocks = mpmPagedGrid || (p.activeBlocks ?? mpmActiveBlocks);
+            mpmPagedGridMaxPages = Math.min(maxPagedGridPages, p.pagedGridMaxPages ?? mpmPagedGridMaxPages);
+            mpmFusedBlockDiscovery = p.fusedBlockDiscovery ?? mpmFusedBlockDiscovery;
+            controls.setActiveBlocks(mpmActiveBlocks);
+            controls.setPagedGrid(mpmPagedGrid);
+            controls.setPagedGridMaxPages(mpmPagedGridMaxPages);
+            controls.setFusedBlockDiscovery(mpmFusedBlockDiscovery);
+            controls.setPagedGridStatus("");
         }
         // Particle radius rides in demoParams. It's a construction-time param (like the slider, it can't
         // change a running sim) so restore the value + its slider; it takes effect on the next spawn.
@@ -2296,11 +2394,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (p.size !== undefined) controls.setParticleSize(p.size);
         if (p.refraction !== undefined) controls.setRefraction(p.refraction);
         if (p.specular !== undefined) controls.setSpecular(p.specular);
+        if (p.reflectionExposure !== undefined || p.reflectionContrast !== undefined) {
+            const current = controls.getValues();
+            controls.setReflection(p.reflectionExposure ?? current.reflectionExposure, p.reflectionContrast ?? current.reflectionContrast);
+        }
+        if (p.reflectivity !== undefined) controls.setReflectivity(p.reflectivity);
         if (p.depthBlur !== undefined && p.depthBlurThreshold !== undefined) controls.setDepthBlur(p.depthBlur, p.depthBlurThreshold);
         if (p.thicknessBlur !== undefined) controls.setThicknessBlur(p.thicknessBlur);
         if (p.half !== undefined) controls.setHalf(p.half);
         if (p.surfaceFilter !== undefined) controls.setSurfaceFilter(p.surfaceFilter);
         if (p.narrowDelta !== undefined && p.narrowMu !== undefined) controls.setNarrowRange(p.narrowDelta, p.narrowMu);
+        if (p.anisotropic !== undefined) controls.setAnisotropic(p.anisotropic);
+        if (p.anisoSurfScale !== undefined) controls.setAnisotropySurfScale(p.anisoSurfScale);
         if (p.thicknessDownscale !== undefined) controls.setThicknessDownscale(p.thicknessDownscale);
         // Impulse — intensity + direction ride in their own block (absent in files written before it
         // existed, and in fluid-demo presets, which leaves the current values alone).
@@ -2335,7 +2440,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             showGridSize();
         }
-        refreshMaterialRow();
         refreshPhysicsParamVisibility();
     }
     const exportBtn = document.createElement("button");
@@ -2390,7 +2494,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         foeRow,
         labelledRow("Sampling mode", modeSelect),
         envRow,
-        materialRow,
         radiusRow,
         fillRow,
         impulseRow,
@@ -2412,7 +2515,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     canvas.dataset.timing = profiler ? "on" : "unavailable";
     canvas.dataset.method = currentMethod;
-    refreshMaterialRow();
     refreshPhysicsParamVisibility();
     setStatus();
 
@@ -2426,6 +2528,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         usesWorker: () => workerPool.length > 0,
         workerCount: () => workerPool.length,
         getTotalParticles: () => virtualSim.count,
+        paused: () => paused,
+        setPaused: (value: boolean) => {
+            paused = value;
+            canvas.dataset.paused = paused ? "true" : "false";
+        },
+        getLifecycle: (key: string) => {
+            const inst = instances.find((i) => i.key === key);
+            return inst
+                ? {
+                      phase: inst.phase,
+                      frontR: inst.liquefyState.frontR,
+                      fluidElapsed: inst.fluidElapsed,
+                      fadeElapsed: inst.fadeElapsed,
+                      impulseRemaining: inst.impulseRemaining,
+                  }
+                : null;
+        },
         getInstancePos: (key: string) => {
             const inst = instances.find((i) => i.key === key);
             return inst ? ([inst.root.position.x, inst.root.position.y, inst.root.position.z] as [number, number, number]) : null;
@@ -2452,6 +2571,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             const dz = tz - pz;
             camYaw = Math.atan2(dx, dz);
             camPitch = Math.atan2(dy, Math.hypot(dx, dz));
+            camYawTarget = camYaw;
+            camPitchTarget = camPitch;
+            camVelocity.x = 0;
+            camVelocity.y = 0;
+            camVelocity.z = 0;
         },
         liquefyKey: (key: string): boolean => {
             const inst = instances.find((i) => i.key === key);
@@ -2637,39 +2761,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         updateAnimationManager(animManager, deltaMs); // advance the model's walk (skeleton pose)
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         const growDt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
-        for (const inst of instances) {
-            if (inst.wriggling) applyWriggle(inst); // pain shake — active from click through the dissolve
-            if (inst.phase === "dissolving") {
-                inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + (FOE_SET === "ship" ? LIQUEFY_SPEED_SHIP : LIQUEFY_SPEED) * growDt, inst.maxR);
-                bumpUbo(inst);
-                if (!inst.dissolved && inst.liquefyState.frontR >= inst.maxR) {
-                    // Solid gone, but hold here (fully clipped, water still frozen) until every member
-                    // of the shot has melted, so the whole group erupts on one frame.
-                    inst.dissolved = true;
-                    eruptIfReady(inst.shot);
-                }
-            } else if (inst.phase === "fluid" || inst.phase === "fading") {
-                // Dispose BEFORE stepping so we never destroy a sim's buffers after having
-                // already encoded a step into this frame's (not-yet-submitted) encoder.
-                if (inst.phase === "fading") {
-                    inst.fadeElapsed += dt;
-                    if (inst.fadeElapsed >= FADE_DUR) {
-                        disposeInstanceSim(inst);
-                        liveShots = Math.max(0, liveShots - 1);
-                        setStatus();
-                        continue;
+        if (!paused) {
+            for (const inst of instances) {
+                if (inst.wriggling) applyWriggle(inst); // pain shake — active from click through the dissolve
+                if (inst.phase === "dissolving") {
+                    inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + (FOE_SET === "ship" ? LIQUEFY_SPEED_SHIP : LIQUEFY_SPEED) * growDt, inst.maxR);
+                    bumpUbo(inst);
+                    if (!inst.dissolved && inst.liquefyState.frontR >= inst.maxR) {
+                        // Solid gone, but hold here (fully clipped, water still frozen) until every member
+                        // of the shot has melted, so the whole group erupts on one frame.
+                        inst.dissolved = true;
+                        eruptIfReady(inst.shot);
                     }
-                }
-                inst.sim?.step(engine._currentEncoder, dt);
-                if (inst.impulseRemaining > 0) {
-                    inst.impulseRemaining = Math.max(0, inst.impulseRemaining - dt);
-                    if (inst.impulseRemaining === 0) inst.sim?.setForceField(null);
-                }
-                if (inst.phase === "fluid") {
-                    inst.fluidElapsed += dt;
-                    if (inst.fluidElapsed >= LIFETIME) {
-                        beginFade(inst);
-                        setStatus();
+                } else if (inst.phase === "fluid" || inst.phase === "fading") {
+                    // Dispose BEFORE stepping so we never destroy a sim's buffers after having
+                    // already encoded a step into this frame's (not-yet-submitted) encoder.
+                    if (inst.phase === "fading") {
+                        inst.fadeElapsed += dt;
+                        if (inst.fadeElapsed >= FADE_DUR) {
+                            disposeInstanceSim(inst);
+                            liveShots = Math.max(0, liveShots - 1);
+                            setStatus();
+                            continue;
+                        }
+                    }
+                    inst.sim?.step(engine._currentEncoder, dt);
+                    if (inst.impulseRemaining > 0) {
+                        inst.impulseRemaining = Math.max(0, inst.impulseRemaining - dt);
+                        if (inst.impulseRemaining === 0) inst.sim?.setForceField(null);
+                    }
+                    if (inst.phase === "fluid") {
+                        inst.fluidElapsed += dt;
+                        if (inst.fluidElapsed >= LIFETIME) {
+                            beginFade(inst);
+                            setStatus();
+                        }
                     }
                 }
             }
@@ -2709,7 +2835,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (fpsAccumMs >= 500) {
             const gpu = controls.gpu;
             if (gpu) {
-                gpu.fpsLabel.textContent = `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
+                gpu.fpsLabel.textContent = paused ? "paused" : `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
                 gpu.refreshTiming(profiler ? profiler.results() : null);
                 let simBytes = 0;
                 for (const inst of instances) if (inst.sim) simBytes += inst.sim.gpuBytes;

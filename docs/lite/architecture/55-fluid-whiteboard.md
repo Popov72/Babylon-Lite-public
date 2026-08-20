@@ -32,7 +32,7 @@ Its base scene SDF is empty space (`sceneSdf > 0` everywhere), its flow graph co
 
 MLS-MPM additionally receives an invisible analytical box container. Its six inner faces sit half a cell inside the solver's mandatory two-cell/upper-three-cell stencil clamp, so the SDF collision response occurs before the hard position clamp. The box tracks Grid position, Grid size, and Physics particle size. Imported Blender collision SDFs are intersected with the same container free space; PBF and PB-MPM retain their existing boundaries.
 
-When PB-MPM is selected, Whiteboard exposes the standard Material selector for Liquid, Elastic, Sand, and Viscoelastic. Each material retains its own PB-MPM physics and presentation state while sharing Whiteboard's solver-independent authoring state. A new Sand state uses the Box demo's sand presentation defaults: `#c2b280` and sphere rendering. Later color/render edits remain local to that material.
+The shared General controls expose the standard PB-MPM Material selector for Liquid, Elastic, Sand, and Viscoelastic whenever PB-MPM is selected. Every fluid demo therefore uses the same selector and state path. Each Whiteboard material retains its own PB-MPM physics and presentation state while sharing Whiteboard's solver-independent authoring state. A new Sand state uses the Box demo's sand presentation defaults: `#c2b280` and sphere rendering. Later color/render edits remain local to that material.
 
 ## Method Switching
 
@@ -50,6 +50,7 @@ Shared state includes emitters, sinks, initial-fill behavior, particle capacity,
 Target-method-only fields are:
 
 - physics schema entries other than `gravity`;
+- FLIP pressure-projection, FLIP/PIC blend, damping, and timestep controls;
 - PB-MPM material;
 - MLS-MPM active-block, paged-grid, page-capacity, and fused-discovery controls.
 

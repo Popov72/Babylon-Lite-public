@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { presetFromExportJson, type FluidExportJson } from "../../../lab/lite/src/demos/fluid/preset-io";
 import {
     allocateFluidInflowCapacity,
+    countFluidInitialParticles,
     createFluidFlowState,
     createFluidInitialParticles,
     fluidPerParticleRecycleProbability,
@@ -95,6 +96,14 @@ describe("fluid flow reset seeding", () => {
         expect(particles!.positions).toHaveLength(128 * 3);
     });
 
+    it("can reserve dormant capacity while deriving an initial-only active prefix", () => {
+        const config: FluidFlowConfig = { emitters: [emitter("initial", "initial", [2, 3, 4])], sinks: [] };
+        const particles = createFluidInitialParticles(128, config, 1, undefined, true);
+
+        expect(particles!.activeCount).toBe(8);
+        expect(particles!.positions).toHaveLength(8 * 3);
+    });
+
     it("combines authored, source, and analytical normal velocity only when configured", () => {
         const source: FluidEmitter = {
             ...emitter("initial", "initial", [0, 0, 0]),
@@ -167,8 +176,15 @@ describe("fluid flow reset seeding", () => {
         source.shape.size = [4, 4, 4];
 
         const particles = createFluidInitialParticles(64, { emitters: [source], sinks: [], initialEmittersFillCapacity: true }, 1, { min: [-1, -1, -1], max: [1, 1, 1] })!;
+        const counts = countFluidInitialParticles(64, { emitters: [source], sinks: [], initialEmittersFillCapacity: true }, 1, {
+            min: [-1, -1, -1],
+            max: [1, 1, 1],
+        })!;
 
         expect(particles.activeCount).toBe(8);
+        expect(counts.activeCount).toBe(particles.activeCount);
+        expect(counts.emitterCounts.get("initial")).toBe(8);
+        expect(particles.emitterCounts.get("initial")).toBe(8);
         expectInsideBox(particles.positions, [0, 0, 0]);
         for (const coordinate of particles.positions) {
             expect(Math.abs(coordinate)).toBe(0.5);
@@ -402,15 +418,15 @@ describe("fluid volume budgets", () => {
         };
         setFluidFlowConfig(state, { emitters: [source], sinks: [] });
 
-        expect(prepareFluidFlowFrame(state, 1).emitActive).toBe(false);
+        expect(prepareFluidFlowFrame(state, 1)).toMatchObject({ emitActive: false, emitCount: 0, emitUnlimited: false });
         expect(state.u32[36]).toBe(0);
         expect(state.counterData[1]).toBe(0);
-        expect(prepareFluidFlowFrame(state, 1).emitActive).toBe(true);
+        expect(prepareFluidFlowFrame(state, 1)).toMatchObject({ emitActive: true, emitCount: 5, emitUnlimited: false });
         expect(state.u32[36]).toBe(1);
         expect(state.counterData[1]).toBe(5);
 
         resetFluidFlowState(state);
-        expect(prepareFluidFlowFrame(state, 0.5).emitActive).toBe(false);
+        expect(prepareFluidFlowFrame(state, 0.5)).toMatchObject({ emitActive: false, emitCount: 0, emitUnlimited: false });
         expect(state.elapsedSeconds).toBe(0.5);
     });
 });
@@ -480,7 +496,7 @@ describe("legacy emitter compatibility", () => {
         expect(state.f32[8 + 32 + 15]).toBe(8);
 
         const frame = prepareFluidFlowFrame(state, 0.1);
-        expect(frame).toEqual({ flowActive: true, deleteActive: true, emitActive: false });
+        expect(frame).toEqual({ flowActive: true, deleteActive: true, emitActive: false, emitCount: 0, emitUnlimited: false });
         expect(state.u32[2]).toBe(20);
         expect(state.f32[4]).toBeCloseTo(0.1);
 

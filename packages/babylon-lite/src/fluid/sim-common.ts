@@ -25,12 +25,21 @@ export interface FluidSim {
     readonly count: number;
     /** Number of particles currently participating in simulation and rendering. */
     readonly activeCount?: number;
+    /** Exact reset-time marker allocation accepted for each Initial emitter. */
+    readonly initialEmitterParticleCounts?: ReadonlyMap<string, number>;
+    /** Contiguous active prefix safe for direct instanced rendering. Omitted when active
+     *  slots may contain holes, in which case renderers must draw the full capacity. */
+    readonly renderCount?: number;
     readonly particleRadius: number;
     /** Optional multiplier on the screen-space surface impostor size (and the
      *  bilateral-blur kernel derived from it). Backends whose particles settle at
      *  wider spacing (e.g. MLS-MPM) need bigger, more-overlapping impostors to
      *  render a smooth surface instead of visible individual spheres. Default 1. */
     readonly surfaceSizeScale?: number;
+    /** Optional multiplier for one marker's thickness contribution. Default 1. */
+    readonly surfaceThicknessScale?: number;
+    /** Reject sparse front markers before screen-space surface reconstruction. */
+    readonly surfaceRejectSparseMarkers?: boolean;
     /** vec4<f32>-per-particle position buffer (STORAGE). Read by the renderer. */
     readonly positionBuffer: GPUBuffer;
     /** vec4<f32>-per-particle WORLD velocity buffer (STORAGE), same indexing as
@@ -74,8 +83,8 @@ export interface FluidSim {
      *  path costs nothing: no force buffer is bound and the injected default force is
      *  a no-op the compiler folds away. Mirrors `setSceneSdf`. */
     setForceField(spec: ForceFieldSpec | null): void;
-    /** Enable/disable the diffuse-particle (spray/foam/bubbles) system. Optional: both the
-     *  PBF and MLS-MPM backends implement it. Pass a config to enable (the pool + the compute
+    /** Enable/disable the diffuse-particle (spray/foam/bubbles) system. Optional: supported
+     *  fluid backends implement it. Pass a config to enable (the pool + the compute
      *  passes are allocated/compiled lazily on the first call), or null to disable (the foam
      *  passes are skipped, nothing renders). Generation follows the Ihmsen 2012 potentials. */
     setFoam?(cfg: FoamConfig | null): void;
@@ -140,7 +149,7 @@ export interface FoamConfig {
     poolCapMax?: number;
 }
 
-// Shared foam (diffuse-particle) WGSL, injected by BOTH backends. Defines the per-frame
+// Shared foam (diffuse-particle) WGSL, injected by the supporting backends. Defines the per-frame
 // `Foam` UBO (tuning knobs), the 32-byte `Diffuse` slot struct the foam renderer reads,
 // the radial hat kernel W (used by the PBF neighbour gathers), the [0,1] clamp map Φ, and
 // a hash PRNG. The `Diffuse` slot layout is FIXED — the foam renderer reads the pool, so
@@ -149,7 +158,7 @@ export interface FoamConfig {
 //   FoamParams UBO layout (16 floats / 64 bytes):
 //     [0..3]  tauTaMin, tauTaMax, tauWcMin, tauWcMax
 //     [4..7]  tauKMin, tauKMax, kTa, kWc
-//     [8..11] kb, kd, rv, _pad0
+//     [8..11] kb, kd, rv, frameDt
 //     [12..15] tMin, tMax, frameSeed(u32), _pad1
 export const FOAM_BYTES = 64;
 
@@ -157,7 +166,7 @@ export const FOAM_COMMON_WGSL = /* wgsl */ `
 struct Foam {
     tauTaMin: f32, tauTaMax: f32, tauWcMin: f32, tauWcMax: f32,
     tauKMin: f32, tauKMax: f32, kTa: f32, kWc: f32,
-    kb: f32, kd: f32, rv: f32, _pad0: f32,
+    kb: f32, kd: f32, rv: f32, frameDt: f32,
     tMin: f32, tMax: f32, frameSeed: u32, _pad1: u32,
 };
 struct Diffuse { p: vec4<f32>, v: vec4<f32> };
@@ -215,7 +224,7 @@ fn main() {
     atomicStore(&state[1u + oldSide], 0u);
 }`;
 
-/** Fields common to BOTH backends. Method-specific tuning lives in the per-solver
+/** Fields common to all fluid backends. Method-specific tuning lives in the per-solver
  *  `PbfOptions` / `MlsMpmOptions`, which each extend this. */
 export interface FluidSimBaseOptions {
     /** Particle count. */
@@ -352,7 +361,7 @@ export interface FluidEmitter {
     /** Optional speed along the analytical shape's outward normal. */
     normalVelocity?: number;
     spread: number;
-    /** Inflow world-volume/second. Omitted means unlimited. Ignored by initial emitters. */
+    /** Optional maximum inflow replenishment in world-volume/second. Omitted means uncapped. Ignored by initial emitters. */
     volumeRate?: number;
     /** Simulation-time seconds before an Inflow starts. Ignored by initial emitters. Defaults to 0. */
     delayBeforeStart?: number;
@@ -1073,34 +1082,151 @@ function createFluidInitialLattice(emitter: FluidEmitter, count: number, worldVo
     return Array.from({ length: count }, (_, index) => candidates[Math.floor(((index + 0.5) * candidates.length) / count)]!);
 }
 
+function countFluidInitialLattice(emitter: FluidEmitter, count: number, worldVolume: number, worldBounds?: FluidInitialBounds): number {
+    if (count <= 0 || !(worldVolume > 0)) {
+        return 0;
+    }
+    const scale = emitter.transform.scale.map(absFinite) as FluidVec3;
+    if (scale.some((value) => value === 0)) {
+        return count;
+    }
+    const bounds = localShapeBounds(emitter.shape);
+    const extents: FluidVec3 = [bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1], bounds.max[2] - bounds.min[2]];
+    const center: FluidVec3 = [(bounds.min[0] + bounds.max[0]) * 0.5, (bounds.min[1] + bounds.max[1]) * 0.5, (bounds.min[2] + bounds.max[2]) * 0.5];
+    const polygon = emitter.shape.type === "polygonPrism" ? preparePolygon(emitter.shape.points) : undefined;
+    let worldSpacing = Math.cbrt(worldVolume / count);
+    let acceptedCount = 0;
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const spacing: FluidVec3 = [worldSpacing / scale[0], worldSpacing / scale[1], worldSpacing / scale[2]];
+        const dimensions: FluidVec3 = [
+            Math.max(1, Math.ceil(extents[0] / spacing[0] - 1e-8)),
+            Math.max(1, Math.ceil(extents[1] / spacing[1] - 1e-8)),
+            Math.max(1, Math.ceil(extents[2] / spacing[2] - 1e-8)),
+        ];
+        const start: FluidVec3 = [
+            center[0] - ((dimensions[0] - 1) * spacing[0]) / 2,
+            center[1] - ((dimensions[1] - 1) * spacing[1]) / 2,
+            center[2] - ((dimensions[2] - 1) * spacing[2]) / 2,
+        ];
+        acceptedCount = 0;
+        let unclippedCount = 0;
+        for (let y = 0; y < dimensions[1]; y++) {
+            for (let z = 0; z < dimensions[2]; z++) {
+                for (let x = 0; x < dimensions[0]; x++) {
+                    const point: FluidVec3 = [start[0] + x * spacing[0], start[1] + y * spacing[1], start[2] + z * spacing[2]];
+                    if (!localShapeContains(emitter.shape, point, polygon)) {
+                        continue;
+                    }
+                    unclippedCount++;
+                    if (!worldBounds || fluidPointInsideBounds(transformFluidPoint(emitter.transform, point), worldBounds)) {
+                        acceptedCount++;
+                    }
+                }
+            }
+        }
+        if (unclippedCount >= count) {
+            break;
+        }
+        worldSpacing *= 0.96;
+    }
+    return worldBounds ? Math.min(count, acceptedCount) : count;
+}
+
+export interface FluidInitialParticleCounts {
+    activeCount: number;
+    emitterCounts: ReadonlyMap<string, number>;
+}
+
+/** Counts reset-time Initial markers without allocating position or velocity arrays. */
+export function countFluidInitialParticles(
+    count: number,
+    config: FluidFlowConfig | null,
+    particleVolume = 1,
+    bounds?: FluidInitialBounds,
+    deriveInitialCount = false
+): FluidInitialParticleCounts | null {
+    if (!config) {
+        return null;
+    }
+    const enabled = config.emitters.slice(0, MAX_FLUID_EMITTERS).filter((emitter) => emitter.enabled);
+    const initial = enabled.filter((emitter) => emitter.behavior === "initial");
+    const emitterCounts = new Map(initial.map((emitter) => [emitter.id, 0]));
+    if (initial.length === 0) {
+        return { activeCount: 0, emitterCounts };
+    }
+    const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
+    const total = volumes.reduce((sum, value) => sum + value, 0);
+    if (!(total > 0)) {
+        return { activeCount: 0, emitterCounts };
+    }
+    const hasInflow = enabled.some((emitter) => emitter.behavior === "inflow");
+    const deriveCount = (hasInflow || deriveInitialCount) && !config.initialEmittersFillCapacity;
+    const requestedActiveCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
+    const allocations = volumes.map((volume, index) => {
+        const exact = (requestedActiveCount * volume) / total;
+        return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
+    });
+    const left = requestedActiveCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
+    const ranked = [...allocations].sort((a, b) => {
+        const remainder = b.remainder - a.remainder;
+        if (remainder !== 0) {
+            return remainder;
+        }
+        const aid = initial[a.index]!.id;
+        const bid = initial[b.index]!.id;
+        return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
+    });
+    for (let index = 0; index < left; index++) {
+        ranked[index]!.count++;
+    }
+    let activeCount = 0;
+    for (const allocation of allocations) {
+        const emitter = initial[allocation.index]!;
+        const accepted = emitter.sampling === "volume" ? countFluidInitialLattice(emitter, allocation.count, volumes[allocation.index]!, bounds) : allocation.count;
+        emitterCounts.set(emitter.id, accepted);
+        activeCount += accepted;
+    }
+    return { activeCount, emitterCounts };
+}
+
 export interface FluidInitialParticles {
     positions: Float32Array;
     velocities: Float32Array;
     activeCount: number;
+    emitterCounts: ReadonlyMap<string, number>;
 }
 
 /** Returns reset-time initial particles, or null to preserve legacy spawn-box seeding.
- *  Initial-only graphs activate the complete selected pool. By default, graphs with enabled
- *  inflows activate only the initial volumes' demand and reserve the remaining slots for inflow.
+ *  By default, initial-only graphs activate the complete selected pool. Graphs with enabled
+ *  inflows, and callers that request volume-derived seeding, activate only the initial volumes'
+ *  demand and reserve the remaining slots for inflow.
  *  `initialEmittersFillCapacity` explicitly fills the complete pool instead.
  *  An inflow-only graph deliberately returns an empty active prefix so subsequent frames can
  *  activate dormant slots at the authored inflow rate. */
-export function createFluidInitialParticles(count: number, config: FluidFlowConfig | null, particleVolume = 1, bounds?: FluidInitialBounds): FluidInitialParticles | null {
+export function createFluidInitialParticles(
+    count: number,
+    config: FluidFlowConfig | null,
+    particleVolume = 1,
+    bounds?: FluidInitialBounds,
+    deriveInitialCount = false
+): FluidInitialParticles | null {
     if (!config) {
         return null;
     }
     const enabled = (config?.emitters.slice(0, MAX_FLUID_EMITTERS) ?? []).filter((emitter) => emitter.enabled);
     const initial = enabled.filter((emitter) => emitter.behavior === "initial");
     const hasInflow = enabled.some((emitter) => emitter.behavior === "inflow");
+    const emitterCounts = new Map(initial.map((emitter) => [emitter.id, 0]));
     if (initial.length === 0) {
-        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
+        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0, emitterCounts };
     }
     const volumes = initial.map((emitter) => fluidShapeVolume(emitter.shape, emitter.transform));
     const total = volumes.reduce((sum, value) => sum + value, 0);
     if (!(total > 0)) {
-        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0 };
+        return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0, emitterCounts };
     }
-    const activeCount = hasInflow && !config?.initialEmittersFillCapacity ? Math.min(count, Math.max(0, Math.floor(total / Math.max(particleVolume, 1e-12)))) : count;
+    const deriveCount = (hasInflow || deriveInitialCount) && !config?.initialEmittersFillCapacity;
+    const activeCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
     const allocations = volumes.map((volume, index) => {
         const exact = (activeCount * volume) / total;
         return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
@@ -1123,6 +1249,7 @@ export function createFluidInitialParticles(count: number, config: FluidFlowConf
     let cursor = 0;
     for (const allocation of allocations) {
         const emitter = initial[allocation.index]!;
+        const emitterStart = cursor;
         const localPoints = emitter.sampling === "volume" ? createFluidInitialLattice(emitter, allocation.count, volumes[allocation.index]!, bounds) : undefined;
         const launchCount = localPoints?.length ?? allocation.count;
         for (let i = 0; i < launchCount; i++) {
@@ -1148,11 +1275,13 @@ export function createFluidInitialParticles(count: number, config: FluidFlowConf
             positions[cursor] = point[2];
             velocities[cursor++] = velocity[2];
         }
+        emitterCounts.set(emitter.id, (cursor - emitterStart) / 3);
     }
     return {
         positions: cursor === positions.length ? positions : positions.slice(0, cursor),
         velocities: cursor === velocities.length ? velocities : velocities.slice(0, cursor),
         activeCount: cursor / 3,
+        emitterCounts,
     };
 }
 
@@ -1210,6 +1339,10 @@ export interface FluidFlowFrame {
     readonly flowActive: boolean;
     readonly deleteActive: boolean;
     readonly emitActive: boolean;
+    /** Number of finite-rate particles requested this frame, capped to capacity. */
+    readonly emitCount: number;
+    /** True when at least one started inflow has no finite volume-rate limit. */
+    readonly emitUnlimited: boolean;
 }
 
 interface FluidActiveCountReadback {
@@ -1317,7 +1450,7 @@ function packFluidShape(f32: Float32Array, u32: Uint32Array, offset: number, tra
     }
 }
 
-export function createFluidFlowState(device: GPUDevice, particleCount: number, particleRadius: number): FluidFlowState {
+export function createFluidFlowState(device: GPUDevice, particleCount: number, particleRadius: number, particleVolume?: number): FluidFlowState {
     const data = new ArrayBuffer(FLUID_FLOW_BYTES);
     const capacity = Math.max(1, Math.floor(particleCount));
     const state: FluidFlowState = {
@@ -1333,7 +1466,7 @@ export function createFluidFlowState(device: GPUDevice, particleCount: number, p
         f32: new Float32Array(data),
         u32: new Uint32Array(data),
         counterData: new Uint32Array(FLOW_EMITTER_COUNTER_U32 + MAX_FLUID_SINKS),
-        particleVolume: Math.max(fluidParticleVolume(particleRadius), 1e-12),
+        particleVolume: Math.max(particleVolume ?? fluidParticleVolume(particleRadius), 1e-12),
         capacity,
         config: null,
         legacyEmitter: null,
@@ -1586,7 +1719,7 @@ export function resetFluidFlowState(state: FluidFlowState): void {
  *  Unmet whole-particle capacity is discarded each frame rather than accumulated. */
 export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, velocityScale = 1): FluidFlowFrame {
     if (!state.active && !state.emitterActive.some(Boolean)) {
-        return { flowActive: false, deleteActive: false, emitActive: false };
+        return { flowActive: false, deleteActive: false, emitActive: false, emitCount: 0, emitUnlimited: false };
     }
     if (state.legacyEmitter) {
         state.u32[2] = state.capacity;
@@ -1596,7 +1729,7 @@ export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, velocit
         state.counterData.fill(0);
         state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
         state.device.queue.writeBuffer(state.counterBuffer, 0, state.counterData);
-        return { flowActive: state.active, deleteActive: state.active, emitActive: false };
+        return { flowActive: state.active, deleteActive: state.active, emitActive: false, emitCount: 0, emitUnlimited: false };
     }
     const emitterBudgets = new Uint32Array(MAX_FLUID_EMITTERS);
     const emitterStarted = new Array<boolean>(state.emitterRates.length).fill(false);
@@ -1650,8 +1783,24 @@ export function prepareFluidFlowFrame(state: FluidFlowState, dt: number, velocit
     }
     state.device.queue.writeBuffer(state.uniformBuffer, 0, state.data);
     state.device.queue.writeBuffer(state.counterBuffer, 0, state.counterData);
-    const emitActive = emitterStarted.some(Boolean);
-    return { flowActive: state.active || emitActive, deleteActive: state.active, emitActive };
+    let emitCount = 0;
+    let emitUnlimited = false;
+    for (let i = 0; i < emitterBudgets.length; i++) {
+        if (!emitterStarted[i]) {
+            continue;
+        }
+        const budget = emitterBudgets[i]!;
+        if (budget === UNLIMITED_FLOW_BUDGET) {
+            emitUnlimited = true;
+        } else {
+            emitCount = Math.min(state.capacity, emitCount + budget);
+        }
+    }
+    if (emitUnlimited) {
+        emitCount = state.capacity;
+    }
+    const emitActive = emitCount > 0;
+    return { flowActive: state.active || emitActive, deleteActive: state.active, emitActive, emitCount, emitUnlimited };
 }
 
 export function disposeFluidFlowState(state: FluidFlowState): void {
@@ -1670,6 +1819,11 @@ export function fluidFlowGpuBytes(state: FluidFlowState): number {
         state.lifecycleBuffer.size +
         (state.activeCountReadback?.buffers.reduce((total, buffer) => total + buffer.size, 0) ?? 0)
     );
+}
+
+export function estimateFluidFlowGpuBytes(capacity: number, activeCountReadback = true): number {
+    const particleCapacity = Math.max(1, Math.floor(capacity));
+    return FLUID_FLOW_BYTES + FLUID_FLOW_COUNTER_BYTES + (FLUID_LIFECYCLE_HEADER_U32 + particleCapacity) * 4 + (activeCountReadback ? 8 : 0);
 }
 
 export interface FluidWarmupState {
