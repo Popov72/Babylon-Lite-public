@@ -112,6 +112,8 @@ export interface PairState {
     material?: number;
     /** Optional authored ArcRotate camera framing. */
     camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
+    /** Optional authored FreeCamera pose. Kept separate because position/target do not map to ArcRotate alpha/beta/radius. */
+    freeCamera?: { position: [number, number, number]; target: [number, number, number] };
     // ── Surface-render settings (per-pair, restored on switch). All optional so old
     //    presets/states without them fall back to the core render defaults. ──
     renderMode?: "surface" | "spheres";

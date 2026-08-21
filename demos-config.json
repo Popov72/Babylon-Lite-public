@@ -7,9 +7,9 @@
         "mobile": false
     },
     {
-        "slug": "liquefactor",
-        "name": "Liquefactor",
-        "description": "Liquefy an enemy mesh into GPU fluid by sampling its interior volume into particles: the new volume sampler fills a procedural shape with particles that occupy its exact form, then MLS-MPM melts the fill into a flowing puddle on the ground.",
+        "slug": "aquanova-fluid-sim",
+        "name": "AquanovaFluidSim",
+        "description": "Author and audition mesh-liquefaction and fluid simulations inside the Aquanova ship, with shared emitters, sinks, foam, collisions, and manifest-backed presets.",
         "tags": ["compute", "simulation", "showcase"],
         "mobile": false
     },

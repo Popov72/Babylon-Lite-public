@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import { resolve } from "path";
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import type { IncomingMessage, ServerResponse } from "http";
 import { spawn } from "child_process";
 import { mapBabylonImport, type CompatTarget } from "../packages/babylon-lite-compat/src/bundler-resolve.js";
 
@@ -28,6 +29,131 @@ function readJson<T>(path: string, fallback: T): T {
 
 function escapeHtml(value: string): string {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function aquanovaFluidSimPlugin(): Plugin {
+    const manifestPath = resolve(__dirname, "public/aquanova/ship_manifest.json");
+    const presetDir = resolve(__dirname, "public/aquanova/fluidSim");
+    const normalizeName = (value: string): string => value.replace(/\.json$/i, "").toLowerCase();
+    const validName = (value: string): boolean => /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
+    const readManifest = (): Record<string, unknown> & { fluidSim?: string[]; savedAt?: string } =>
+        JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown> & { fluidSim?: string[]; savedAt?: string };
+    const namesFromManifest = (manifest: { fluidSim?: string[] }): string[] => Array.from(new Set((manifest.fluidSim ?? []).map(normalizeName).filter(validName)));
+    const sendJson = (res: ServerResponse, status: number, value: unknown): void => {
+        res.statusCode = status;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store");
+        res.end(JSON.stringify(value));
+    };
+    const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const rawChunk of req) {
+            const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+            size += chunk.length;
+            if (size > 16 * 1024 * 1024) {
+                throw new Error("Preset exceeds the 16 MB authoring limit.");
+            }
+            chunks.push(chunk);
+        }
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("Preset body must be a JSON object.");
+        }
+        return parsed as Record<string, unknown>;
+    };
+    const writeJsonAtomic = (path: string, value: unknown): void => {
+        const tempPath = `${path}.tmp`;
+        writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+        renameSync(tempPath, path);
+    };
+    const writeManifestFluidSims = (names: readonly string[]): void => {
+        const source = readFileSync(manifestPath, "utf8");
+        const replacement = `"fluidSim": [${names.length ? `\n${names.map((name) => `    ${JSON.stringify(name)}`).join(",\n")}\n  ` : ""}]`;
+        const next = source.replace(/"fluidSim"\s*:\s*\[[^\]]*\]/, replacement);
+        if (next === source) throw new Error("ship_manifest.json does not contain a fluidSim array.");
+        const tempPath = `${manifestPath}.tmp`;
+        writeFileSync(tempPath, next, "utf8");
+        renameSync(tempPath, manifestPath);
+    };
+
+    return {
+        name: "aquanova-fluid-sim-authoring",
+        configureServer(server) {
+            server.middlewares.use(async (req, res, next) => {
+                const pathname = (req.url ?? "").split("?")[0];
+                const match = pathname.match(/^\/lab-api\/aquanova-fluid-sims(?:\/([^/]+))?$/);
+                if (!match) {
+                    next();
+                    return;
+                }
+                try {
+                    const encodedName = match[1];
+                    if (req.method === "GET" && !encodedName) {
+                        sendJson(res, 200, { names: namesFromManifest(readManifest()) });
+                        return;
+                    }
+                    if (!encodedName) {
+                        sendJson(res, 405, { error: "A simulation name is required." });
+                        return;
+                    }
+                    const name = normalizeName(decodeURIComponent(encodedName));
+                    if (!validName(name)) {
+                        sendJson(res, 400, { error: "Simulation names may only contain letters, numbers, hyphens, and underscores." });
+                        return;
+                    }
+                    const presetPath = resolve(presetDir, `${name}.json`);
+                    if (req.method === "PUT") {
+                        const preset = await readJsonBody(req);
+                        const manifest = readManifest();
+                        const names = namesFromManifest(manifest);
+                        const isNew = !names.includes(name);
+                        if (isNew) {
+                            names.push(name);
+                            manifest.fluidSim = [...names];
+                        }
+                        mkdirSync(presetDir, { recursive: true });
+                        const previousPreset = existsSync(presetPath) ? readFileSync(presetPath) : null;
+                        try {
+                            writeJsonAtomic(presetPath, preset);
+                            if (isNew) writeManifestFluidSims(manifest.fluidSim ?? []);
+                        } catch (error) {
+                            if (previousPreset) {
+                                writeFileSync(presetPath, previousPreset);
+                            } else if (existsSync(presetPath)) {
+                                unlinkSync(presetPath);
+                            }
+                            throw error;
+                        }
+                        sendJson(res, 200, { name, names });
+                        return;
+                    }
+                    if (req.method === "DELETE") {
+                        if (!existsSync(presetPath)) {
+                            sendJson(res, 404, { error: `Simulation "${name}" does not exist.` });
+                            return;
+                        }
+                        const manifest = readManifest();
+                        const previousNames = manifest.fluidSim ?? [];
+                        const names = namesFromManifest(manifest).filter((entry) => entry !== name);
+                        manifest.fluidSim = names;
+                        writeManifestFluidSims(manifest.fluidSim);
+                        try {
+                            unlinkSync(presetPath);
+                        } catch (error) {
+                            writeManifestFluidSims(previousNames);
+                            throw error;
+                        }
+                        sendJson(res, 200, { name, names });
+                        return;
+                    }
+                    sendJson(res, 405, { error: `Method ${req.method ?? "unknown"} is not supported.` });
+                } catch (err) {
+                    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+                }
+            });
+        },
+    };
 }
 
 /**
@@ -885,7 +1011,7 @@ function compatScenesPlugin(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [pagesDemoPlugin(), compatScenesPlugin(), demoSourcePlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
+    plugins: [pagesDemoPlugin(), aquanovaFluidSimPlugin(), compatScenesPlugin(), demoSourcePlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
     optimizeDeps: {
         // BJS uses prototype-patching side-effect imports (e.g. abstractEngine.dom.js).
         // babylon-lite uses ?raw WGSL imports that esbuild can't handle.

@@ -81,6 +81,8 @@ export interface FluidExportJson {
     material?: number;
     /** Optional ArcRotate camera framing — omitted for pure-default pairs that pin no viewpoint. */
     camera?: { alpha: number; beta: number; radius: number; target?: [number, number, number] };
+    /** Optional FreeCamera pose, stored separately from the incompatible ArcRotate representation. */
+    freeCamera?: { position: [number, number, number]; target: [number, number, number] };
     /**
      * Liquefaction hand-off impulse — the burst applied when a melted prop becomes fluid.
      *
@@ -96,15 +98,12 @@ export interface FluidExportJson {
     /**
      * Simulation domain size in world units — the FULL extent, not a half-width.
      *
-     * The grid is centred on the sampled prop in X/Z and sits on the ground in Y, so `x`/`z` are how
-     * far the puddle can spread before it piles against the domain wall and `y` is the headroom above
-     * the floor. Any axis left at 0 (or absent) falls back to the demo's automatic size, derived from
-     * the prop's own footprint. `y` is a MINIMUM: it is raised when needed to clear the prop, since a
-     * box stopping below the prop would leave the seeded particles outside the domain. Pinning this
-     * matters for cross-demo parity: the domain wall is a hard boundary, so the same prop in a small
-     * grid and a large grid settles into visibly different shapes even with identical physics.
+     * `position` is optional for compatibility with older Liquefactor/Aquanova files, which centred
+     * the grid automatically. Pinning the domain matters for cross-demo parity: the wall is a hard
+     * boundary, so the same prop in a small grid and a large grid settles into visibly different
+     * shapes even with identical physics.
      */
-    grid?: { x: number; y: number; z: number };
+    grid?: { x: number; y: number; z: number; position?: [number, number, number] };
     render: {
         renderAsSpheres: boolean;
         waterColor: string;
@@ -178,7 +177,7 @@ export interface FluidExportJson {
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
     const f = ps.foam;
     return {
-        formatVersion: 11,
+        formatVersion: 12,
         meta: { demo, method },
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
@@ -208,6 +207,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
+        ...(ps.freeCamera ? { freeCamera: { position: [...ps.freeCamera.position], target: [...ps.freeCamera.target] } } : {}),
         render: {
             renderAsSpheres: ps.renderMode === "spheres",
             waterColor: ps.color,
@@ -340,6 +340,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         count: j.particleCount,
         material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),
+        ...(j.freeCamera ? { freeCamera: { position: [...j.freeCamera.position], target: [...j.freeCamera.target] } } : {}),
         renderMode: r.renderAsSpheres ? "spheres" : "surface",
         refraction: r.refractionStrength,
         specular: r.specularPower,

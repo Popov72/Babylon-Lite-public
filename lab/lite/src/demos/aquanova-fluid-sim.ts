@@ -1,10 +1,10 @@
-// Liquefactor demo — MULTI-TARGET shooting gallery with concurrent GPU fluid sims.
+// AquanovaFluidSim — author and audition mesh-liquefaction and fluid simulations in the Aquanova ship.
 //
 // Three "enemy" meshes float over the ground. Click one to LIQUEFY it: its surface
 // dissolves radially from the hit point (the material clips inside a growing world-space
 // "front"), the interior is CPU volume-sampled into particles, and an independent GPU
-// fluid sim (grid centred on THAT mesh, at ground level) launches the blob upward and
-// melts it into a puddle. Multiple meshes can be dissolving / running at the same time —
+// fluid sim in the shared world-space domain launches the blob upward and melts it into
+// a puddle. Multiple meshes can be dissolving / running at the same time —
 // each mesh owns its own sim (grid, particle count, physics). A few seconds after a mesh
 // liquefies, its sim fades away (sinks through the floor) and the mesh is gone for good.
 // "Restart" stops every sim and restores all three solid meshes.
@@ -20,12 +20,18 @@ import {
     addAnimationGroups,
     addTask,
     addToScene,
+    attachPositionGizmoToNode,
+    attachRotationGizmoToNode,
+    attachScaleGizmoToNode,
     computeDeformedPositions,
     createAnimationManager,
     createFreeCamera,
     createHavokWorld,
+    createLineMaterial,
+    createLineSystem,
     createPhysicsBody,
     createPhysicsShape,
+    createPositionGizmo,
     createDirectionalLight,
     createEngine,
     createGpuPicker,
@@ -33,9 +39,12 @@ import {
     createHemisphericLight,
     createRenderTarget,
     createRenderTask,
+    createRotationGizmo,
     createSceneContext,
+    createScaleGizmo,
     createStandardMaterial,
     createTransformNode,
+    createUtilityLayer,
     enableMaterialPlugins,
     getPhysicsBodyLinearVelocity,
     getProjectionMatrix,
@@ -54,16 +63,22 @@ import {
     loadEnvironment,
     loadHdrEnvironment,
     loadGltf,
+    markMaterialUboDirty,
     onBeforeRender,
     pauseAnimation,
     pickAsync,
     playAnimation,
     registerScene,
+    registerUtilityLayer,
     setMeshVisible,
+    setPositionGizmoLocalCoordinates,
+    setRotationGizmoLocalCoordinates,
+    setScaleGizmoLocalCoordinates,
     startEngine,
+    updateLineSystem,
     updateAnimationManager,
 } from "babylon-lite";
-import type { AnimationGroup, EnvironmentTextures, Material, Mesh, PhysicsBody, PhysicsWorld, Renderable, SceneNode } from "babylon-lite";
+import type { AnimationGroup, EnvironmentTextures, FluidFlowConfig, FluidShape, Material, Mesh, PhysicsBody, PhysicsWorld, Renderable, SceneNode } from "babylon-lite";
 import HavokPhysics from "@babylonjs/havok";
 import { createLiquefyPlugin } from "./liquefy-plugin.js";
 import { buildLitParticleColors } from "./particle-lit-colors.js";
@@ -82,12 +97,16 @@ import {
 } from "./ship-manifest.js";
 import type { ShipBehavior, ShipBehaviorLibrary, ShipEntities, ShipEnvironment } from "./ship-manifest.js";
 import type { LiquefyState } from "./liquefy-plugin.js";
-import { createFlipSim } from "babylon-lite/fluid/flip-sim.js";
+import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
-import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import { fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
+import type { FluidSim, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
+import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
+import type { FoamDebugTexture } from "babylon-lite/fluid/foam-render.js";
 import { fillMeshParticles } from "./particle-fill.js";
 import type { MeshFillStrategy, MeshParticleFill } from "./particle-fill.js";
 import type { VolumeSamplingMode } from "babylon-lite/fluid/volume-sampling/index.js";
@@ -98,9 +117,16 @@ import { createFluidProfiler } from "./fluid/gpu-profiler.js";
 import type { FluidProfilerImpl } from "./fluid/gpu-profiler.js";
 import { exportJsonFromPairState, presetFromExportJson } from "./fluid/preset-io.js";
 import type { FluidExportJson } from "./fluid/preset-io.js";
-import type { PairState } from "./fluid/demo.js";
-import { gridFloorY, gridTopY } from "./fluid/grid-bounds.js";
+import type { PairState, PendingForce } from "./fluid/demo.js";
+import { createFluidFlowEditor } from "./fluid/flow-editor.js";
+import type { FluidFlowEditor, FluidFlowObjectKind } from "./fluid/flow-editor.js";
+import { flipParticleCountForVolume } from "./fluid/grid-settings.js";
+import { screenRay } from "./fluid/pick.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
+import { collisionShapesForModule, worldShapesForMatrix } from "./aquanova/collision-shapes.js";
+import type { ShipCollisionShape, WorldCollisionShape } from "./aquanova/collision-shapes.js";
+import { packPrimitives, primBufferBytes, PRIMITIVES_WGSL } from "./aquanova/collision-field.js";
+import type { FluidPrimitive } from "./aquanova/collision-field.js";
 
 // Box-preset render defaults (fluid/scenes/box.ts MLS-MPM preset).
 const DEF_COLOR = "#16a3c3";
@@ -118,18 +144,14 @@ const DEF_SURFACE_FILTER: "bilateral" | "narrowRange" = "narrowRange";
 const DEF_NARROW_DELTA = 10;
 const DEF_NARROW_MU = 1;
 
-// Which foe set the demo auditions, read from the URL. Declared up here because scene sizing below
-// branches on it.
-const FOE_SET: string = new URLSearchParams(location.search).get("foes") === "ship" ? "ship" : "props";
 /** Ship mode auditions the Aquanova meshes, and deliberately reproduces that demo's scene setup
  *  (grading, lighting, environment build, camera clip range, puddle spread) so the two can be
  *  compared frame by frame. The gallery keeps its own presentation. */
-const SHIP_MODE = FOE_SET === "ship";
+const SHIP_MODE = true;
 
 // World layout. Foes rest on the ground plane at y = 0; each sim grid drops one unit below
 // ground so the ground BC isn't fighting the grid's own border.
 const GROUND_Y = 0;
-const SPREAD_MARGIN = 9; // extra half-width (world units) around a mesh footprint for puddle spread
 const LIQUEFY_SPEED = 6; // dissolve front growth (world units / s)
 // Ship modules are dense and read as architecture rather than a single prop, so the dissolve front
 // sweeping across them at gallery speed looks like a pop rather than a melt — run it a third as fast.
@@ -144,38 +166,19 @@ const IMPULSE_RADIAL_BASE = 18; // outward explosion accel from the volume centr
 const IMPULSE_DIR_BASE = 6;
 const IMPULSE_DEFAULT_DIR: readonly [number, number, number] = [0, 1, 0]; // straight up — the original lift
 const MAX_TOTAL = 600000; // combined render-buffer capacity (particles across all live sims)
+const DEFAULT_FORCE_STRENGTH = 0.5;
+const DEFAULT_FORCE_RADIUS = 3.5;
 
 // Studio HDR environment — drives the fluid-surface reflections + the skybox background.
 const ENV_STUDIO_URL = "https://playground.babylonjs.com/textures/environment.env";
 const SUN_DIR: [number, number, number] = [-0.4, -0.82, -0.45];
 
-// Textured glTF foes — each is loaded, auto-fit to a common size, sat on the ground, and (when the
-// model is skinned/animated) played + sampled in its CURRENT deformed pose. Their diffuse textures
-// drive the per-particle "Use mesh colours" render. Alien + CesiumMan are animated (skinned).
-const MODEL_FOES: { key: string; url: string; x: number; z?: number; ry?: number; surfaceOnly?: boolean; scale?: number }[] = [
-    { key: "alien", url: "https://playground.babylonjs.com/scenes/Alien/Alien.gltf", x: -15, z: 6 },
-    { key: "barrel", url: "https://assets.babylonjs.com/meshes/ExplodingBarrel.glb", x: -5, z: 6, ry: -Math.PI / 2, surfaceOnly: true },
-    { key: "house", url: "https://assets.babylonjs.com/meshes/haunted_house.glb", x: 5, z: 6, surfaceOnly: true, scale: 4 },
-    { key: "cesium", url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb", x: 15, z: 6 },
-];
 const MODEL_TARGET_SIZE = 7; // auto-fit: scale each model so its largest dimension ≈ this many world units
 
-// ── Foe set: the sample models, or the Aquanova ship's own liquefiable meshes ──────────────────
-// `?foes=ship` swaps the gallery for the EXACT ship the Aquanova demo liquefies (ship.glb at its
-// authored scale, every mesh made a foe). Same geometry, materials and trim atlas as Aquanova, but
-// under Liquefactor's lighting, camera and controls — so the water look can be compared directly
-// between the two demos.
-//
-// This is a URL param rather than a live toggle on purpose: the radial-clip liquefy plugin only
-// materialises for meshes present in the INITIAL scene build (see loadModelInstance), so foes
-// cannot be swapped after boot without leaving them invisible. The picker below reloads the page.
+// Use the exact Aquanova ship, manifest, and authored scale so results can be compared directly
+// with the game runtime.
 const SHIP_URL = "/aquanova/ship.glb";
 const SHIP_MANIFEST_URL = "/aquanova/ship_manifest.json";
-const FOE_SETS = [
-    { key: "props", label: "Sample props (default)" },
-    { key: "ship", label: "Aquanova ship meshes" },
-] as const;
-
 // Impulse force field: an EXPLOSION FROM THE INSIDE. Every particle inside the blast radius is
 // pushed radially OUTWARD from the volume centre (push.w, ~uniform through the core), plus a uniform
 // push along a configurable direction (push.xyz, already scaled: unit direction × base × intensity)
@@ -224,7 +227,9 @@ interface Instance {
     readonly liquefyState: LiquefyState;
     readonly impulseBuffer: GPUBuffer;
     readonly impulseSpec: ForceFieldSpec;
+    readonly collisionOwnerId: string | null;
     sim: FluidSim | null;
+    collisionBuffer: GPUBuffer | null;
     phase: InstancePhase;
     sampling: boolean; // true while the worker is volume-sampling this foe (before dissolve starts)
     shell: boolean; // which path produced the CURRENT particles: surface shell (true) or volume fill (false)
@@ -252,6 +257,15 @@ interface Instance {
     wriggleWaterScratch: Float32Array | null;
 }
 
+interface ManualRun {
+    sim: FluidSim;
+    collisionBuffer: GPUBuffer | null;
+    colorBuffer: GPUBuffer;
+    center: [number, number, number];
+    method: string;
+    configurationSignature: string;
+}
+
 async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 
@@ -270,6 +284,7 @@ async function main(): Promise<void> {
 
     const engine = await createEngine(canvas, { msaaSamples: 1, requiredLimits });
     const scene = createSceneContext(engine, { defaultRenderTask: false });
+    const gridPosition: [number, number, number] = [0, 10, 0];
 
     // Free-fly camera: WASD strafes in the view plane, Space/C rise and fall, and RIGHT-drag looks
     // around — LMB stays free for shooting. An arc-rotate camera made the ship interior a chore to
@@ -280,8 +295,27 @@ async function main(): Promise<void> {
     // Ship mode matches Aquanova's clip range so depth precision (and therefore any depth-derived
     // shading) is identical between the two demos.
     cam.farPlane = SHIP_MODE ? 400 : 200;
-    cam.speed = FOE_SET === "ship" ? 8.8 : 36; // the ship interior is metres across, the gallery tens
+    cam.speed = 8.8;
     scene.camera = cam;
+
+    const cameraPositionHud = document.createElement("div");
+    cameraPositionHud.id = "liq-camera-position";
+    cameraPositionHud.style.cssText =
+        "position:fixed;right:12px;bottom:12px;z-index:20;pointer-events:none;padding:5px 8px;border:1px solid rgba(143,164,188,0.45);border-radius:5px;" +
+        "background:rgba(12,16,24,0.78);color:#dfe6ee;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',monospace;white-space:pre;";
+    const cameraPositionLine = document.createElement("div");
+    const cameraGridRelativeLine = document.createElement("div");
+    cameraPositionHud.append(cameraPositionLine, cameraGridRelativeLine);
+    document.body.appendChild(cameraPositionHud);
+    const updateCameraPositionHud = (): void => {
+        const camera = [cam.position.x, cam.position.y, cam.position.z];
+        const relative = camera.map((value, axis) => value - gridPosition[axis]!) as [number, number, number];
+        cameraPositionLine.textContent = `Camera ${camera.map((value) => value.toFixed(2)).join(", ")}`;
+        cameraGridRelativeLine.textContent = `Grid relative ${relative.map((value) => value.toFixed(2)).join(", ")}`;
+        canvas.dataset.cameraPosition = `${cam.position.x},${cam.position.y},${cam.position.z}`;
+        canvas.dataset.cameraGridRelative = relative.join(",");
+    };
+    updateCameraPositionHud();
 
     // Yaw/pitch are the camera's own state; we drive them from RMB drag and rebuild `target` each
     // frame. `position`/`target` are ObservableVec3 — assign COMPONENTS, never replace the objects,
@@ -300,6 +334,12 @@ async function main(): Promise<void> {
     const camVelocity = { x: 0, y: 0, z: 0 };
     const camKeys = new Set<string>();
     let looking = false;
+    let forceDragging = false;
+    let forcePointerId = -1;
+    let forceLastX = 0;
+    let forceLastY = 0;
+    let forceLastT = 0;
+    let pendingForce: PendingForce | null = null;
     let paused = false;
     canvas.dataset.paused = "false";
     const LOOK_SENS = 1 / 350;
@@ -312,18 +352,30 @@ async function main(): Promise<void> {
     canvas.addEventListener("contextmenu", (e) => e.preventDefault()); // RMB is the look button
     canvas.addEventListener("pointerdown", (e) => {
         if (e.button !== 2) return;
+        if (beginManualForceDrag(e)) return;
         looking = true;
         if (document.pointerLockElement !== canvas) void canvas.requestPointerLock();
     });
     window.addEventListener("pointerup", (e) => {
         if (e.button !== 2) return;
+        if (forceDragging) {
+            endManualForceDrag(e.pointerId);
+        } else {
+            releaseLook();
+        }
+    });
+    canvas.addEventListener("pointercancel", (e) => {
+        endManualForceDrag(e.pointerId);
         releaseLook();
     });
-    canvas.addEventListener("pointercancel", releaseLook);
     document.addEventListener("pointerlockchange", () => {
         if (document.pointerLockElement !== canvas) looking = false;
     });
     document.addEventListener("pointermove", (e) => {
+        if (forceDragging) {
+            updateManualForceDrag(e);
+            return;
+        }
         if (!looking) return;
         camYawTarget += e.movementX * LOOK_SENS;
         camPitchTarget = Math.max(-1.45, Math.min(1.45, camPitchTarget - e.movementY * LOOK_SENS));
@@ -337,11 +389,18 @@ async function main(): Promise<void> {
             }
             return;
         }
+        if (e.code === "KeyR") {
+            if (!e.repeat) {
+                runPrimarySimulationAction();
+            }
+            return;
+        }
         camKeys.add(e.code);
     });
     window.addEventListener("keyup", (e) => camKeys.delete(e.code));
     window.addEventListener("blur", () => {
         camKeys.clear();
+        endManualForceDrag();
         releaseLook();
         camVelocity.x = 0;
         camVelocity.y = 0;
@@ -370,16 +429,33 @@ async function main(): Promise<void> {
         cam.target.x = cam.position.x + sy * cp;
         cam.target.y = cam.position.y + sp;
         cam.target.z = cam.position.z + cy * cp;
+        updateCameraPositionHud();
+    };
+    const applyFreeCameraPose = (position: readonly [number, number, number], target: readonly [number, number, number]): void => {
+        cam.position.set(position[0], position[1], position[2]);
+        cam.target.set(target[0], target[1], target[2]);
+        const dx = target[0] - position[0];
+        const dy = target[1] - position[1];
+        const dz = target[2] - position[2];
+        if (Math.hypot(dx, dy, dz) > 1e-6) {
+            camYaw = Math.atan2(dx, dz);
+            camPitch = Math.atan2(dy, Math.hypot(dx, dz));
+            camYawTarget = camYaw;
+            camPitchTarget = camPitch;
+        }
+        camVelocity.x = 0;
+        camVelocity.y = 0;
+        camVelocity.z = 0;
+        updateCameraPositionHud();
     };
 
     // Ship mode is lit purely by the HDRI, exactly as Aquanova is. The lights are not merely dimmed —
     // they are never registered, because a PBR material compiled with lights present renders brighter
     // than one compiled without, regardless of intensity.
     const hemiLight = createHemisphericLight([0.2, 1, 0.3], 0.8);
-    if (FOE_SET !== "ship") addToScene(scene, hemiLight);
+    // Aquanova relies on environment and authored lights rather than gallery fill lights.
     const sun = createDirectionalLight(SUN_DIR, 2.0);
     sun.position.set(12, 20, 10);
-    if (FOE_SET !== "ship") addToScene(scene, sun);
 
     const ground = createGround(engine, { width: 60, height: 60, subdivisions: 1 });
     const groundMat = createStandardMaterial();
@@ -414,58 +490,9 @@ async function main(): Promise<void> {
     const instanceOf = (m: unknown): Instance | undefined => meshToInstance.get(m as Mesh);
     const animManager = createAnimationManager({ engine });
 
-    // Load a textured glTF model as a foe: parent it under an auto-fit root (scaled so its largest
-    // dimension ≈ MODEL_TARGET_SIZE, centred on cfg.x and sat on the ground), attach the radial-clip
-    // liquefy plugin per PBR material, play its first animation if any, and capture its diffuse
-    // texture for per-particle colouring. Sampled in its CURRENT deformed pose on a shot.
-    async function loadModelInstance(cfg: { key: string; url: string; x: number; z?: number; ry?: number; surfaceOnly?: boolean; scale?: number }): Promise<void> {
-        let asset;
-        try {
-            asset = await loadGltf(engine, cfg.url);
-        } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn(`[liquefactor] ${cfg.key} load failed`, err);
-            return;
-        }
-        const liquefyState: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: 0.6, enabled: false };
-        const ry = cfg.ry ?? 0; // optional Y spin so a labelled face (e.g. the barrel logo) points at the camera
-        const root = createTransformNode(`${cfg.key}_root`, 0, 0, 0, 0, Math.sin(ry / 2), 0, Math.cos(ry / 2), 1, 1, 1);
-        const meshes: Mesh[] = [];
-        const materials = new Set<Material>();
-        for (const e of asset.entities) {
-            if (!("position" in e)) continue; // skip non-node entities (e.g. lights)
-            e.parent = root;
-            root.children.push(e);
-            collectFoeMeshes(e, meshes, materials, liquefyState);
-        }
-        if (meshes.length === 0) {
-            // eslint-disable-next-line no-console
-            console.warn(`[liquefactor] ${cfg.key} has no CPU-geometry meshes`);
-            return;
-        }
-        const anim = asset.animationGroups?.find((g) => /walk|run|idle/i.test(g.name)) ?? asset.animationGroups?.[0] ?? null;
-        registerFoeInstance(cfg, root, meshes, materials, liquefyState, anim);
-    }
-
-    // Walk a loaded subtree, gathering its CPU-geometry meshes + materials and attaching the
-    // radial-clip liquefy plugin. Shared by the per-model loader and the ship-mesh loader.
-    function collectFoeMeshes(node: SceneNode, meshes: Mesh[], materials: Set<Material>, liquefyState: LiquefyState): void {
-        if (isMeshNode(node) && node._cpuPositions && node._cpuIndices) {
-            meshes.push(node);
-            // Attach the radial-clip liquefy plugin (PBR host). This works on SKINNED models
-            // because they are materialized in the INITIAL scene build (loaded before registerScene);
-            // a dynamic post-boot add leaves the plugin UBO uninitialised and the mesh invisible.
-            if (node.material && isPbrMaterial(node.material) && !node.material.plugins?.some((p) => p.name === "liquefy")) {
-                node.material.plugins = [...(node.material.plugins ?? []), createLiquefyPlugin(() => liquefyState, "pbr")];
-            }
-            if (node.material) materials.add(node.material);
-        }
-        for (const c of node.children ?? []) collectFoeMeshes(c, meshes, materials, liquefyState);
-    }
-
     // Fit an assembled foe root onto the gallery row and register it as a live Instance.
     function registerFoeInstance(
-        cfg: { key: string; x: number; z?: number; surfaceOnly?: boolean; scale?: number; inPlace?: boolean },
+        cfg: { key: string; x: number; z?: number; surfaceOnly?: boolean; scale?: number; inPlace?: boolean; collisionOwnerId?: string | null },
         root: SceneNode,
         meshes: Mesh[],
         materials: Set<Material>,
@@ -558,7 +585,9 @@ async function main(): Promise<void> {
             liquefyState,
             impulseBuffer,
             impulseSpec,
+            collisionOwnerId: cfg.collisionOwnerId ?? null,
             sim: null,
+            collisionBuffer: null,
             phase: "solid",
             sampling: false,
             shell: false,
@@ -592,15 +621,16 @@ async function main(): Promise<void> {
     // own panel — auditioning settings is the point of this demo.
     const behaviorOfInstance = new Map<Instance, ShipBehavior>();
     const instancesByNodeName = new Map<string, Instance[]>();
+    const shipCollisionPlacements: Array<{ id: string; node: SceneNode; shapes: ShipCollisionShape | readonly ShipCollisionShape[] }> = [];
     // Display roots driven by a Havok body (one per `dynamic` node). `rest` is the spawn pose, which
     // Restart teleports the body back to.
     const dynDisplays: { proxy: SceneNode; body: PhysicsBody; disp: SceneNode; rest: [number, number, number] }[] = [];
     let physWorld: PhysicsWorld | null = null;
 
-    // ── Aquanova ship foes (?foes=ship) ──────────────────────────────────────
+    // ── Aquanova ship meshes ─────────────────────────────────────────────────
     // Load the FULL ship.glb exactly as Aquanova does and make every ship mesh a foe, IN PLACE inside
     // the ship. Geometry, materials, trim atlas, world transforms and the particle-fill path are all
-    // identical to Aquanova, so the only variables left are Liquefactor's lighting, camera and fluid
+    // identical to Aquanova, so the only variables left are this demo's lighting, camera and fluid
     // controls. ship_manifest.json's `entities` names are used only to pick which room to frame.
     async function loadShipFoes(): Promise<void> {
         await shipManifestReady;
@@ -631,7 +661,7 @@ async function main(): Promise<void> {
             asset = await loadGltf(engine, SHIP_URL);
         } catch (err) {
             // eslint-disable-next-line no-console
-            console.warn("[liquefactor] ship.glb load failed", err);
+            console.warn("[aquanova-fluid-sim] ship.glb load failed", err);
             return;
         }
         const shipRoot = createTransformNode("ship_root", 0, 0, 0, 0, 0, 0, 1, 1, 1);
@@ -642,22 +672,45 @@ async function main(): Promise<void> {
         }
         addToScene(scene, shipRoot);
 
+        const collectCollisionPlacements = (node: SceneNode): void => {
+            const extras = node.metadata?.gltf?.extras as { id?: string; module?: string } | undefined;
+            if (extras?.id && extras.module) {
+                const shapes = collisionShapesForModule(shipManifest?.moduleCollision, extras.module);
+                if (shapes) {
+                    shipCollisionPlacements.push({ id: extras.id, node, shapes });
+                }
+            }
+            for (const child of node.children ?? []) {
+                collectCollisionPlacements(child);
+            }
+        };
+        collectCollisionPlacements(shipRoot);
+        canvas.dataset.collisionPlacements = String(shipCollisionPlacements.length);
+
         // Match Aquanova's material setup on the ship:
         //  • Drop KHR_materials_transmission. Both demos composite the fluid surface into the swapchain
         //    AFTER the scene renders, but transmission retargets the scene task to an offscreen HDR
         //    buffer and appends a tonemap pass that would hide the water. (It also keeps the refraction
-        //    fragment out of the composed shader, which otherwise collides with Liquefactor's punctual
+        //    fragment out of the composed shader, which otherwise collides with punctual
         //    lights and aborts the material build.)
         //  • environmentIntensity from the manifest's dynamic value — this demo loads the authored
         //    unbaked ship, so it should match Aquanova's dynamic/unbaked materials.
         const seenMats = new Set<object>();
+        const specularAA = shipManifest?.environment?.specularAA ?? false;
+        const roughnessScale =
+            typeof shipManifest?.environment?.reflectionRoughness === "number" && Number.isFinite(shipManifest.environment.reflectionRoughness)
+                ? shipManifest.environment.reflectionRoughness
+                : 1;
         const prepMaterials = (node: SceneNode): void => {
             const mat = (node as Mesh).material;
             if (mat && isPbrMaterial(mat) && !seenMats.has(mat)) {
                 seenMats.add(mat);
                 const ss = (mat as unknown as { subsurface?: { refraction?: unknown } }).subsurface;
                 if (ss?.refraction) ss.refraction = undefined;
-                (mat as unknown as { environmentIntensity?: number }).environmentIntensity = iblStrength;
+                mat.environmentIntensity = iblStrength;
+                mat.enableSpecularAA = specularAA;
+                mat.roughnessFactor = (mat.roughnessFactor ?? 1) * roughnessScale;
+                markMaterialUboDirty(mat);
             }
             for (const c of node.children ?? []) prepMaterials(c);
         };
@@ -684,7 +737,7 @@ async function main(): Promise<void> {
         walk(shipRoot, shipRoot);
         if (!found.length) {
             // eslint-disable-next-line no-console
-            console.warn("[liquefactor] ship.glb contained no sampleable meshes");
+            console.warn("[aquanova-fluid-sim] ship.glb contained no sampleable meshes");
             return;
         }
 
@@ -708,6 +761,17 @@ async function main(): Promise<void> {
         const markerNames = new Set(
             [PLAYER_START_BEHAVIOR, WEAPON_START_BEHAVIOR].map((bh) => findEntityWithBehavior(shipManifest?.entities, bh)?.name).filter((v): v is string => !!v)
         );
+        const placementIdForNode = (node: SceneNode): string | null => {
+            let current: SceneNode | null = node;
+            while (current) {
+                const id = (current.metadata?.gltf?.extras as { id?: string } | undefined)?.id;
+                if (id) {
+                    return id;
+                }
+                current = current.parent as SceneNode | null;
+            }
+            return null;
+        };
         for (const { mesh, parent, owner } of found) {
             if (markerNames.has(owner.name)) {
                 setMeshVisible(mesh, false);
@@ -735,7 +799,7 @@ async function main(): Promise<void> {
                 } as unknown as Material;
             }
             if (mesh.material) materials.add(mesh.material);
-            registerFoeInstance({ key: `${owner.name}#${n}`, x: 0, inPlace: true }, root, [mesh], materials, liquefyState, null);
+            registerFoeInstance({ key: `${owner.name}#${n}`, x: 0, inPlace: true, collisionOwnerId: placementIdForNode(owner) }, root, [mesh], materials, liquefyState, null);
             // Group the instance with the other primitives of its node so a shot melts the node whole,
             // and index it by node name so the manifest's `linked` lists resolve.
             const inst = instances[instances.length - 1]!;
@@ -769,7 +833,7 @@ async function main(): Promise<void> {
                 // A missing/broken WASM must not cost the demo its ship: fall through with everything
                 // static instead of aborting the rest of the ship setup (ground, lights, camera).
                 // eslint-disable-next-line no-console
-                console.warn("[liquefactor] Havok unavailable — dynamic behaviours stay static", err);
+                console.warn("[aquanova-fluid-sim] Havok unavailable — dynamic behaviours stay static", err);
             }
         }
         if (physWorld) {
@@ -851,7 +915,7 @@ async function main(): Promise<void> {
                 }
             });
             // eslint-disable-next-line no-console
-            console.warn(`[liquefactor] havok: ${cn} colliders, ${dynDisplays.length} dynamic node(s)`);
+            console.warn(`[aquanova-fluid-sim] havok: ${cn} colliders, ${dynDisplays.length} dynamic node(s)`);
         }
 
         // The gallery ground would slice through the ship's decks — the ship brings its own floors.
@@ -900,7 +964,7 @@ async function main(): Promise<void> {
         camVelocity.y = 0;
         camVelocity.z = 0;
         // eslint-disable-next-line no-console
-        console.warn(`[liquefactor] ship foes: ${found.length} mesh(es), ibl ${iblStrength}`);
+        console.warn(`[aquanova-fluid-sim] ship meshes: ${found.length} mesh(es), ibl ${iblStrength}`);
     }
 
     const picker = createGpuPicker(scene);
@@ -973,6 +1037,91 @@ async function main(): Promise<void> {
     surfaceTask.setParticleAlpha(combinedAlpha);
     surfaceTask.setParticleColor(combinedColor);
     addTask(scene, surfaceTask);
+
+    const foamTask = createFoamRenderTask(engine, scene, {
+        colorRT: engine.scRT,
+        depthRT,
+        camera: cam,
+        sim: virtualSim as unknown as FluidSim,
+        getSurfaceDepth: () => surfaceTask.surfaceDepthView(),
+    });
+    const executeFoam = foamTask.execute?.bind(foamTask);
+    foamTask.execute = (): number => {
+        if (!controls.getValues().foam.enabled) {
+            return 0;
+        }
+        let passes = 0;
+        for (const sim of runningSims()) {
+            if (!sim.diffuse) {
+                continue;
+            }
+            foamTask.setSim(sim);
+            passes += executeFoam?.() ?? 0;
+        }
+        return passes;
+    };
+    foamTask.setProfiler(profiler);
+    addTask(scene, foamTask);
+
+    function runningSims(): FluidSim[] {
+        const sims = instances.flatMap((inst) => (inst.sim ? [inst.sim] : []));
+        if (manualRun) {
+            sims.push(manualRun.sim);
+        }
+        return sims;
+    }
+
+    function currentFoamConfig(): FoamConfig {
+        const f = controls.getValues().foam;
+        return {
+            activeParticles: true,
+            generateSpray: f.generateSpray,
+            generateFoam: f.generateFoam,
+            generateBubbles: f.generateBubbles,
+            kTa: f.kTa,
+            kWc: f.kWc,
+            kTurb: f.kTurb,
+            energySpeedMin: f.energySpeedMin,
+            energySpeedMax: f.energySpeedMax,
+            curvatureMin: f.curvatureMin,
+            curvatureMax: f.curvatureMax,
+            turbulenceMin: f.turbulenceMin,
+            turbulenceMax: f.turbulenceMax,
+            foamLayerDepth: f.foamLayerDepth,
+            sprayDrag: f.sprayDrag,
+            kb: f.kb,
+            kd: f.kd,
+            tMin: f.tMin,
+            tMax: f.tMax,
+            poolScale: f.poolScale,
+        };
+    }
+
+    function applyFoamToSim(sim: FluidSim): void {
+        const f = controls.getValues().foam;
+        sim.setFoam?.(f.enabled ? currentFoamConfig() : null);
+    }
+
+    function pushFoam(): void {
+        for (const sim of runningSims()) {
+            applyFoamToSim(sim);
+        }
+        foamTask.setEnabled(controls.getValues().foam.enabled);
+    }
+
+    function fillManualColor(run: ManualRun, color = controls.getValues().color): void {
+        const rgb = hexToRgb(color);
+        const capacity = run.colorBuffer.size / 16;
+        const colors = new Float32Array(capacity * 4);
+        for (let i = 0; i < capacity; i++) {
+            const offset = i * 4;
+            colors[offset] = rgb[0];
+            colors[offset + 1] = rgb[1];
+            colors[offset + 2] = rgb[2];
+            colors[offset + 3] = 1;
+        }
+        device.queue.writeBuffer(run.colorBuffer, 0, colors);
+    }
 
     // Per-particle colour: for each DISTINCT sub-mesh texture, a compute pass samples that texture at
     // the particle's UV (from the worker) for the particles that belong to it (texIdx == T), gamma-
@@ -1146,20 +1295,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         behaviors?: ShipBehaviorLibrary; // behaviour name → definition
         entities?: ShipEntities; // mesh name → assigned behaviours
         chunks?: { aabb: { min: number[]; max: number[] } | null }[];
+        moduleCollision?: Readonly<Record<string, ShipCollisionShape | readonly ShipCollisionShape[]>>;
+        fluidSim?: string[];
     }
     let shipManifest: ShipManifestData | null = null;
-    const shipManifestReady: Promise<void> =
-        FOE_SET === "ship"
-            ? fetch(SHIP_MANIFEST_URL)
-                  .then((r) => r.json() as Promise<ShipManifestData>)
-                  .then((j) => {
-                      shipManifest = j;
-                  })
-                  .catch((err: unknown) => {
-                      // eslint-disable-next-line no-console
-                      console.warn("[liquefactor] ship manifest load failed", err);
-                  })
-            : Promise.resolve();
+    const shipManifestReady = fetch(SHIP_MANIFEST_URL)
+        .then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json() as Promise<ShipManifestData>;
+        })
+        .then((j) => {
+            shipManifest = j;
+        })
+        .catch((err: unknown) => {
+            // eslint-disable-next-line no-console
+            console.warn("[aquanova-fluid-sim] ship manifest load failed", err);
+        });
 
     // Audition backdrops for the fluid-surface reflections + skybox. Switching environments updates
     // diffuse IBL + fluid reflections live; foe specular reflections stay on the startup cube.
@@ -1177,8 +1328,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let currentEnvKey = "studio";
     // Ship mode retains its manifest grading instead of the environment-gallery grading.
     const SHIP_CONTRAST = 1.05;
-    const gradedExposure = (v: number): number => (FOE_SET === "ship" ? resolveExposure(shipManifest?.environment?.exposure) : v);
-    const gradedContrast = (v: number): number => (FOE_SET === "ship" ? SHIP_CONTRAST : v);
+    const gradedExposure = (_v: number): number => resolveExposure(shipManifest?.environment?.exposure);
+    const gradedContrast = (_v: number): number => SHIP_CONTRAST;
     const makeEnvSlot = (env: EnvironmentTextures, exposure: number, contrast: number): EnvSlot => {
         // The skybox snapshots scene.imageProcessing at build time, so grade FIRST.
         scene.imageProcessing.exposure = gradedExposure(exposure);
@@ -1200,17 +1351,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             scene.imageProcessing.toneMappingEnabled = true;
             // Ship mode uses the view transform named in the manifest (Aquanova reads the same
             // field); the gallery keeps the default transform.
-            if (FOE_SET === "ship") {
-                const tone = resolveToneMapping(shipManifest?.environment?.toneMapping);
-                scene.imageProcessing.toneMappingEnabled = tone !== null;
-                if (tone) scene.imageProcessing.toneMapping = tone;
-            }
+            const tone = resolveToneMapping(shipManifest?.environment?.toneMapping);
+            scene.imageProcessing.toneMappingEnabled = tone !== null;
+            if (tone) scene.imageProcessing.toneMapping = tone;
             const slot = makeEnvSlot(env, c.exposure, c.contrast);
             envSlots.set(c.key, slot);
             return slot;
         } catch (err) {
             // eslint-disable-next-line no-console
-            console.warn(`[liquefactor] env "${c.key}" failed to load (${c.url})`, err);
+            console.warn(`[aquanova-fluid-sim] env "${c.key}" failed to load (${c.url})`, err);
             envSlots.set(c.key, null);
             return null;
         }
@@ -1262,18 +1411,144 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
      *  sampled volume (the old behaviour), which makes the falloff scale with the prop instead of
      *  being a fixed distance. */
     let impulseRadius = 0;
-    /** Simulation domain size in world units (FULL extent, not a half-width), per axis. 0 = derive it
-     *  from the prop's footprint via {@link SPREAD_MARGIN}. Exported so Aquanova uses the same box —
-     *  the domain wall is a hard boundary, so a prop tuned here only behaves the same there if the
-     *  grid matches. */
-    const gridSize: [number, number, number] = [0, 0, 0];
+    /** Shared world-space simulation domain used by both mesh and manual starts. */
+    const gridSize: [number, number, number] = [40, 20, 40];
+    let showGridBounds = false;
+    let showGridGizmo = false;
     let currentMethod = "MLS-MPM";
     let currentMaterial = 0;
+    let flipGridResolution = 160;
+    let flipMarkersPerCell = 8;
+    let flipParticleCapacityRequest: number | null = null;
     let mpmActiveBlocks = false;
     let mpmPagedGrid = false;
     const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
     let mpmPagedGridMaxPages = Math.min(maxPagedGridPages, 40000);
     let mpmFusedBlockDiscovery = false;
+    let collisionNeighborhoodRadius = 12;
+    type SimulationType = "mesh" | "fluid";
+    let simulationType: SimulationType = "mesh";
+    let manualRun: ManualRun | null = null;
+    let manualForceStrength = DEFAULT_FORCE_STRENGTH;
+    let manualForceRadius = DEFAULT_FORCE_RADIUS;
+    const rayForce = createRayForce(device);
+    let activeFlow: FluidFlowConfig = {
+        emitters: [
+            {
+                id: "manual-source-1",
+                name: "Manual source",
+                enabled: true,
+                behavior: "initial",
+                transform: { position: [0, 3, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+                shape: { type: "box", size: [3, 3, 3] },
+                sampling: "volume",
+                velocity: [0, 0, 0],
+                velocitySpace: "world",
+                spread: 0,
+            },
+        ],
+        sinks: [],
+    };
+    let refreshFlowControls = (): void => {};
+    let refreshFlipParticleCapacity = (): void => {};
+    const simulationCellSize = (particleRadius = radiusValue): number =>
+        currentMethod === "FLIP" ? Math.max(...gridSize) / flipGridResolution : Math.max(particleRadius * 2.4, 0.18);
+    const simulationBounds = (center: readonly [number, number, number] = gridPosition): { min: [number, number, number]; max: [number, number, number] } => ({
+        min: [center[0] - gridSize[0] * 0.5, center[1] - gridSize[1] * 0.5, center[2] - gridSize[2] * 0.5],
+        max: [center[0] + gridSize[0] * 0.5, center[1] + gridSize[1] * 0.5, center[2] + gridSize[2] * 0.5],
+    });
+    const flowInWorldSpace = (flow: FluidFlowConfig): FluidFlowConfig => {
+        const result = structuredClone(flow);
+        for (const emitter of result.emitters) {
+            emitter.transform.position = emitter.transform.position.map((value, axis) => value + gridPosition[axis]!) as [number, number, number];
+        }
+        for (const sink of result.sinks) {
+            sink.transform.position = sink.transform.position.map((value, axis) => value + gridPosition[axis]!) as [number, number, number];
+        }
+        return result;
+    };
+    const initialFlowSignature = (flow: FluidFlowConfig): string =>
+        JSON.stringify({
+            initialEmittersFillCapacity: flow.initialEmittersFillCapacity ?? false,
+            emitters: flow.emitters.filter((emitter) => emitter.behavior === "initial"),
+        });
+    const manualConfigurationSignature = (): string =>
+        JSON.stringify({
+            method: currentMethod,
+            gridPosition,
+            gridSize,
+            flipGridResolution,
+            flipMarkersPerCell,
+            flipParticleCapacityRequest,
+            initialFlow: initialFlowSignature(activeFlow),
+        });
+
+    function beginManualForceDrag(event: PointerEvent): boolean {
+        if (event.button !== 2 || !event.shiftKey || simulationType !== "fluid" || !manualRun) {
+            return false;
+        }
+        forceDragging = true;
+        forcePointerId = event.pointerId;
+        forceLastX = event.clientX;
+        forceLastY = event.clientY;
+        forceLastT = performance.now();
+        canvas.setPointerCapture(event.pointerId);
+        canvas.dataset.forceDragging = "true";
+        return true;
+    }
+
+    function updateManualForceDrag(event: PointerEvent): void {
+        if (!forceDragging || event.pointerId !== forcePointerId || !manualRun) {
+            return;
+        }
+        const dx = event.clientX - forceLastX;
+        const dy = event.clientY - forceLastY;
+        const now = performance.now();
+        const dtMs = Math.max(now - forceLastT, 1);
+        forceLastX = event.clientX;
+        forceLastY = event.clientY;
+        forceLastT = now;
+        const speed = (Math.hypot(dx, dy) / dtMs) * 1000;
+        if (speed < 1) {
+            return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const aspect = engine.canvas.width / Math.max(1, engine.canvas.height);
+        const ray = screenRay(getViewProjectionMatrix(cam, aspect), event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height);
+        if (!ray) {
+            return;
+        }
+        const world = cam.worldMatrix;
+        let pushX = world[0]! * dx - world[4]! * dy;
+        let pushY = world[1]! * dx - world[5]! * dy;
+        let pushZ = world[2]! * dx - world[6]! * dy;
+        const length = Math.hypot(pushX, pushY, pushZ) || 1;
+        pushX /= length;
+        pushY /= length;
+        pushZ /= length;
+        pendingForce = {
+            origin: ray.origin,
+            dir: ray.dir,
+            push: [pushX, pushY, pushZ],
+            radius: manualForceRadius,
+            accel: speed * manualForceStrength,
+        };
+    }
+
+    function endManualForceDrag(pointerId = forcePointerId): void {
+        if (!forceDragging) {
+            return;
+        }
+        forceDragging = false;
+        pendingForce = null;
+        rayForce.clear();
+        manualRun?.sim.setForceField(null);
+        if (pointerId >= 0 && canvas.hasPointerCapture(pointerId)) {
+            canvas.releasePointerCapture(pointerId);
+        }
+        forcePointerId = -1;
+        canvas.dataset.forceDragging = "false";
+    }
 
     const LIQ_SCHEMAS: Record<string, PhysSchemaEntry[]> = Object.fromEntries(
         Object.entries(DEFAULT_FLUID_SCHEMAS).map(([m, entries]) => [m, entries.map((e) => (m === "PBF" && e.key === "viscosity" ? { ...e, value: 0.35 } : { ...e }))])
@@ -1289,39 +1564,110 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // ── Per-instance sim construction (grid centred on the sampled foe, at ground) ──
-    function buildInstanceSim(
-        inst: Instance,
-        positions: Float32Array,
-        count: number,
-        radius: number,
-        wMin: readonly [number, number, number],
-        wMax: readonly [number, number, number]
-    ): void {
-        const dx = Math.max(radius * (currentMethod === "FLIP" ? 0.25 / 0.09 : 2.4), 0.18);
+    const worldShapeToFluidPrimitive = (shape: WorldCollisionShape): FluidPrimitive => {
+        if (shape.kind === "box") {
+            return {
+                kind: "box",
+                a: shape.centre,
+                b: shape.halfExtents ?? [0, 0, 0],
+                rotation: shape.rotation,
+            };
+        }
+        if (shape.kind === "sphere") {
+            return { kind: "sphere", a: shape.centre, radius: shape.radius ?? 0 };
+        }
+        return {
+            kind: shape.kind,
+            a: shape.pointA ?? shape.centre,
+            b: shape.pointB ?? shape.centre,
+            radius: shape.radius ?? 0,
+        };
+    };
+    const shapeIntersectsSphere = (shape: WorldCollisionShape, center: readonly [number, number, number], radius: number): boolean => {
+        let sx = shape.centre[0];
+        let sy = shape.centre[1];
+        let sz = shape.centre[2];
+        let ex = shape.radius ?? 0;
+        let ey = ex;
+        let ez = ex;
+        if (shape.kind === "box") {
+            const h = shape.halfExtents ?? [0, 0, 0];
+            const q = shape.rotation ?? [0, 0, 0, 1];
+            const [x, y, z, w] = q;
+            const m00 = 1 - 2 * (y * y + z * z);
+            const m01 = 2 * (x * y - z * w);
+            const m02 = 2 * (x * z + y * w);
+            const m10 = 2 * (x * y + z * w);
+            const m11 = 1 - 2 * (x * x + z * z);
+            const m12 = 2 * (y * z - x * w);
+            const m20 = 2 * (x * z - y * w);
+            const m21 = 2 * (y * z + x * w);
+            const m22 = 1 - 2 * (x * x + y * y);
+            ex = Math.abs(m00) * h[0] + Math.abs(m01) * h[1] + Math.abs(m02) * h[2];
+            ey = Math.abs(m10) * h[0] + Math.abs(m11) * h[1] + Math.abs(m12) * h[2];
+            ez = Math.abs(m20) * h[0] + Math.abs(m21) * h[1] + Math.abs(m22) * h[2];
+        } else if (shape.kind === "capsule" || shape.kind === "cylinder") {
+            const a = shape.pointA ?? shape.centre;
+            const b = shape.pointB ?? shape.centre;
+            sx = (a[0] + b[0]) * 0.5;
+            sy = (a[1] + b[1]) * 0.5;
+            sz = (a[2] + b[2]) * 0.5;
+            ex += Math.abs(b[0] - a[0]) * 0.5;
+            ey += Math.abs(b[1] - a[1]) * 0.5;
+            ez += Math.abs(b[2] - a[2]) * 0.5;
+        }
+        const dx = Math.max(Math.abs(center[0] - sx) - ex, 0);
+        const dy = Math.max(Math.abs(center[1] - sy) - ey, 0);
+        const dz = Math.max(Math.abs(center[2] - sz) - ez, 0);
+        return dx * dx + dy * dy + dz * dz <= radius * radius;
+    };
+    const createNeighborhoodSdf = (
+        center: readonly [number, number, number],
+        excludePlacementId: string | null
+    ): { spec: SceneSdfSpec; buffer: GPUBuffer | null; count: number } => {
+        if (collisionNeighborhoodRadius <= 0) {
+            return { spec: groundSdf, buffer: null, count: 0 };
+        }
+        const primitives = shipCollisionPlacements
+            .filter((placement) => placement.id !== excludePlacementId)
+            .flatMap((placement) => worldShapesForMatrix(placement.node.worldMatrix, placement.shapes))
+            .filter((shape) => shapeIntersectsSphere(shape, center, collisionNeighborhoodRadius))
+            .map(worldShapeToFluidPrimitive);
+        if (primitives.length === 0) {
+            return { spec: groundSdf, buffer: null, count: 0 };
+        }
+        const packed = new Float32Array(primBufferBytes(primitives.length) / 4);
+        packPrimitives(packed, primitives);
+        const buffer = device.createBuffer({
+            label: "liq-neighborhood-collision",
+            size: packed.byteLength,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(buffer, 0, packed);
+        return {
+            spec: {
+                struct: groundSdf.struct,
+                sdf: `${PRIMITIVES_WGSL}
+fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    return min(pt.y - sceneSdfParams.ground.x, primitivesSdf(pt, dt));
+}`,
+                buffer: groundSdfBuffer,
+                sdfGrid: buffer,
+            },
+            buffer,
+            count: primitives.length,
+        };
+    };
+
+    function createConfiguredSim(count: number, radius: number, boundsMin: [number, number, number], boundsMax: [number, number, number], positions?: Float32Array): FluidSim {
+        const dx = simulationCellSize(radius);
         const phys = physValues[currentMethod]!;
-        const cx = (wMin[0] + wMax[0]) / 2;
-        const cz = (wMin[2] + wMax[2]) / 2;
-        const autoHalf = Math.max(wMax[0] - wMin[0], wMax[2] - wMin[2]) / 2 + SPREAD_MARGIN;
-        const halfX = gridSize[0] > 0 ? gridSize[0] / 2 : autoHalf;
-        const halfZ = gridSize[2] > 0 ? gridSize[2] / 2 : autoHalf;
-        const floorY = gridFloorY(GROUND_Y, dx);
-        const topY = gridTopY(floorY, gridSize[1], wMax[1], dx, Math.max(wMax[1] + 3, 8));
-        const boundsMin: [number, number, number] = [cx - halfX, floorY, cz - halfZ];
-        const boundsMax: [number, number, number] = [cx + halfX, topY, cz + halfZ];
-        // eslint-disable-next-line no-console
-        console.log(
-            `[liquefactor] sim grid: ${(halfX * 2).toFixed(2)}×${(topY - floorY).toFixed(2)}×${(halfZ * 2).toFixed(2)} m ` +
-                `(${Math.ceil((halfX * 2) / dx)}×${Math.ceil((topY - floorY) / dx)}×${Math.ceil((halfZ * 2) / dx)} cells @ dx ${dx.toFixed(3)}), particles: ${count}`
-        );
-        let sim: FluidSim;
         if (currentMethod === "PBF") {
-            const pbfH = Math.max(radius * 4.0, 0.3);
-            sim = createPbfSim(engine, {
+            return createPbfSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions,
-                smoothingRadius: pbfH,
+                ...(positions ? { initialPositions: positions } : {}),
+                smoothingRadius: Math.max(radius * 4.0, 0.3),
                 boundsMin,
                 boundsMax,
                 groundY: GROUND_Y,
@@ -1334,34 +1680,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 restDensity: phys.restDensity,
                 boundaryDensity: phys.boundaryDensity,
             });
-        } else if (currentMethod === "FLIP") {
-            sim = createFlipSim(engine, {
+        }
+        if (currentMethod === "FLIP") {
+            return createFlipSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions,
+                ...(positions ? { initialPositions: positions } : {}),
                 boundsMin,
                 boundsMax,
                 dx,
+                markersPerCell: flipMarkersPerCell,
                 groundY: GROUND_Y,
                 gravity: phys.gravity,
                 flipRatio: phys.flipRatio,
                 pressureIterations: phys.pressureIterations,
                 pressureRelaxation: phys.pressureRelaxation,
+                pressureSolver: (phys.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi",
+                multigridCycles: phys.multigridCycles,
                 velocityDamping: phys.velocityDamping,
                 kinematicViscosity: phys.kinematicViscosity,
                 viscosityIterations: phys.viscosityIterations,
                 surfaceTension: phys.surfaceTension,
+                liquidSdf: (phys.liquidSdf ?? 0) >= 0.5,
+                ghostFluid: (phys.ghostFluid ?? 0) >= 0.5,
+                fractionalSolids: (phys.fractionalSolids ?? 0) >= 0.5,
+                movingSolidBoundaries: (phys.movingSolidBoundaries ?? 0) >= 0.5,
                 restitution: phys.restitution,
                 minSubsteps: phys.minSubsteps,
                 maxSubsteps: phys.maxSubsteps,
                 cflNumber: phys.cflNumber,
                 ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
             });
-        } else if (currentMethod === "PB-MPM") {
-            sim = createPbMpmSim(engine, {
+        }
+        if (currentMethod === "PB-MPM") {
+            return createPbMpmSim(engine, {
                 count,
                 particleRadius: radius,
-                initialPositions: positions,
+                ...(positions ? { initialPositions: positions } : {}),
                 boundsMin,
                 boundsMax,
                 dx,
@@ -1379,44 +1734,71 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 plasticity: phys.plasticity,
                 restitution: phys.restitution,
             });
-        } else {
-            sim = createMlsMpmSim(engine, {
-                count,
-                particleRadius: radius,
-                initialPositions: positions,
-                boundsMin,
-                boundsMax,
-                dx,
-                groundY: GROUND_Y,
-                gravity: phys.gravity,
-                stiffness: phys.stiffness,
-                viscosity: phys.viscosity,
-                restDensity: phys.restDensity,
-                substeps: phys.substeps,
-                ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
-                damping: phys.damping,
-                affineDamping: phys.affineDamping,
-                groundDamp: phys.groundDamp,
-                groundDampHeight: phys.groundDampHeight,
-                restitution: phys.restitution,
-                activeBlocks: mpmActiveBlocks,
-                pagedGrid: mpmPagedGrid,
-                pagedGridMaxPages: mpmPagedGridMaxPages,
-                fusedBlockDiscovery: mpmFusedBlockDiscovery,
-                onPagedGridOverflow: (requiredPages, capacity) => {
-                    const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated.`;
-                    controls.setPagedGridStatus(message, true);
-                    console.error(`[Liquefactor MLS-MPM] ${message}`);
-                },
-            });
         }
-        sim.setSceneSdf(groundSdf);
+        return createMlsMpmSim(engine, {
+            count,
+            particleRadius: radius,
+            ...(positions ? { initialPositions: positions } : {}),
+            boundsMin,
+            boundsMax,
+            dx,
+            groundY: GROUND_Y,
+            gravity: phys.gravity,
+            stiffness: phys.stiffness,
+            viscosity: phys.viscosity,
+            restDensity: phys.restDensity,
+            substeps: phys.substeps,
+            ...(phys.maxSubDtMs ? { maxSubDt: phys.maxSubDtMs / 1000 } : {}),
+            damping: phys.damping,
+            affineDamping: phys.affineDamping,
+            groundDamp: phys.groundDamp,
+            groundDampHeight: phys.groundDampHeight,
+            restitution: phys.restitution,
+            activeBlocks: mpmActiveBlocks,
+            pagedGrid: mpmPagedGrid,
+            pagedGridMaxPages: mpmPagedGridMaxPages,
+            fusedBlockDiscovery: mpmFusedBlockDiscovery,
+            onPagedGridOverflow: (requiredPages, capacity) => {
+                const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated.`;
+                controls.setPagedGridStatus(message, true);
+                console.error(`[AquanovaFluidSim MLS-MPM] ${message}`);
+            },
+        });
+    }
+
+    // ── Per-instance sim construction ──
+    function buildInstanceSim(
+        inst: Instance,
+        positions: Float32Array,
+        count: number,
+        radius: number,
+        wMin: readonly [number, number, number],
+        wMax: readonly [number, number, number]
+    ): void {
+        const dx = simulationCellSize(radius);
+        const meshCenter: [number, number, number] = [(wMin[0] + wMax[0]) * 0.5, (wMin[1] + wMax[1]) * 0.5, (wMin[2] + wMax[2]) * 0.5];
+        const gridCenter: [number, number, number] = [meshCenter[0] + gridPosition[0], meshCenter[1] + gridPosition[1], meshCenter[2] + gridPosition[2]];
+        const { min: boundsMin, max: boundsMax } = simulationBounds(gridCenter);
+        // eslint-disable-next-line no-console
+        console.log(
+            `[aquanova-fluid-sim] sim grid: ${gridSize[0].toFixed(2)}×${gridSize[1].toFixed(2)}×${gridSize[2].toFixed(2)} m ` +
+                `(${Math.ceil(gridSize[0] / dx)}×${Math.ceil(gridSize[1] / dx)}×${Math.ceil(gridSize[2] / dx)} cells @ dx ${dx.toFixed(3)}), particles: ${count}`
+        );
+        const sim = createConfiguredSim(count, radius, boundsMin, boundsMax, positions);
+        const collision = createNeighborhoodSdf(meshCenter, inst.collisionOwnerId);
+        inst.collisionBuffer?.destroy();
+        inst.collisionBuffer = collision.buffer;
+        sim.setSceneSdf(collision.spec);
         sim.setProfiler?.(profiler);
+        applyFoamToSim(sim);
         inst.sim = sim;
         inst.count = count;
         inst.radius = radius;
         virtualSim.particleRadius = radius;
         virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
+        canvas.dataset.lastLiquefiedMeshCenter = meshCenter.join(",");
+        canvas.dataset.lastSimulationGridPosition = gridCenter.join(",");
+        canvas.dataset.lastCollisionPrimitiveCount = String(collision.count);
     }
 
     type SampleGeom = { positions: Float32Array; indices: Uint32Array; uvs: Float32Array | null; texIndices: Uint32Array | null; ox: number; oy: number; oz: number };
@@ -1617,10 +1999,128 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         inst.sim?.setForceField(null);
         inst.sim?.dispose();
         inst.sim = null;
+        inst.collisionBuffer?.destroy();
+        inst.collisionBuffer = null;
         inst.colorBuffer?.destroy();
         inst.colorBuffer = null;
         inst.phase = "gone";
         inst.count = 0;
+    }
+
+    function manualParticleCapacity(worldFlow = flowInWorldSpace(activeFlow)): number {
+        const enabled = worldFlow.emitters.filter((emitter) => emitter.enabled);
+        const particleVolume = Math.max((radiusValue * 2) ** 3, 1e-6);
+        const initialDemand = enabled
+            .filter((emitter) => emitter.behavior === "initial")
+            .reduce((sum, emitter) => sum + Math.ceil(fluidShapeVolume(emitter.shape, emitter.transform) / particleVolume), 0);
+        const inflowDemand = enabled.some((emitter) => emitter.behavior === "inflow") ? Math.max(initialDemand * 2, 20000) : 0;
+        const automatic = Math.max(initialDemand + inflowDemand, initialDemand || 20000);
+        const requested = currentMethod === "FLIP" ? (flipParticleCapacityRequest ?? automatic) : automatic;
+        return Math.max(1, Math.min(MAX_TOTAL, Math.max(initialDemand, requested)));
+    }
+
+    function projectedFlipParticleUsage(): { active: number; capacity: number; gpuBytes: number } {
+        const worldFlow = flowInWorldSpace(activeFlow);
+        const capacity = manualParticleCapacity(worldFlow);
+        const initial = worldFlow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
+        const active =
+            worldFlow.initialEmittersFillCapacity || initial.some((emitter) => emitter.sampling !== "volume")
+                ? capacity
+                : Math.min(
+                      capacity,
+                      flipParticleCountForVolume(
+                          initial.reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0),
+                          simulationCellSize(),
+                          flipMarkersPerCell
+                      )
+                  );
+        const dx = simulationCellSize();
+        const gridDim = gridSize.map((size) => Math.max(1, Math.ceil(size / dx))) as [number, number, number];
+        const flipPhysics = physValues["FLIP"]!;
+        const gpuBytes = estimateFlipGpuBytes(capacity, gridDim, (flipPhysics.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+            liquidSdf: (flipPhysics.liquidSdf ?? 0) >= 0.5,
+            fractionalSolids: (flipPhysics.fractionalSolids ?? 0) >= 0.5,
+        });
+        return { active, capacity, gpuBytes };
+    }
+
+    function refreshManualParticleUsage(): void {
+        if (simulationType !== "fluid") {
+            return;
+        }
+        const active = manualRun?.sim.activeCount ?? manualRun?.sim.count ?? 0;
+        const total = manualRun?.sim.count ?? 0;
+        const gpuBytes = manualRun?.sim.gpuBytes ?? 0;
+        const projection = currentMethod === "FLIP" ? projectedFlipParticleUsage() : null;
+        const pending =
+            projection !== null &&
+            (!manualRun ||
+                manualRun.method !== currentMethod ||
+                manualRun.configurationSignature !== manualConfigurationSignature() ||
+                projection.capacity !== total ||
+                projection.gpuBytes !== gpuBytes);
+        controls.setParticleUsage(
+            active,
+            total,
+            gpuBytes,
+            pending ? projection!.active : undefined,
+            pending ? projection!.capacity : undefined,
+            pending ? projection!.gpuBytes : undefined
+        );
+        canvas.dataset.activeParticleCount = String(active);
+        canvas.dataset.simulationGpuBytes = String(gpuBytes);
+        canvas.dataset.gridRestartPending = String(pending);
+        if (projection) {
+            canvas.dataset.restartParticleCount = String(projection.active);
+            canvas.dataset.restartParticleCapacity = String(projection.capacity);
+            canvas.dataset.restartSimulationGpuBytes = String(projection.gpuBytes);
+        } else {
+            delete canvas.dataset.restartParticleCount;
+            delete canvas.dataset.restartParticleCapacity;
+            delete canvas.dataset.restartSimulationGpuBytes;
+        }
+    }
+
+    function startManualSimulation(): void {
+        const worldFlow = flowInWorldSpace(activeFlow);
+        const enabled = worldFlow.emitters.filter((emitter) => emitter.enabled);
+        if (enabled.length === 0) {
+            status.textContent = "Enable at least one emitter before starting.";
+            return;
+        }
+        manualRun?.sim.dispose();
+        manualRun?.collisionBuffer?.destroy();
+        manualRun?.colorBuffer.destroy();
+        manualRun = null;
+        const center: [number, number, number] = [...gridPosition];
+        const { min: boundsMin, max: boundsMax } = simulationBounds();
+        const capacity = manualParticleCapacity(worldFlow);
+        const sim = createConfiguredSim(capacity, radiusValue, boundsMin, boundsMax);
+        sim.setFlow(worldFlow);
+        const collision = createNeighborhoodSdf(center, null);
+        sim.setSceneSdf(collision.spec);
+        sim.setProfiler?.(profiler);
+        applyFoamToSim(sim);
+        sim.reset();
+        const colorBuffer = device.createBuffer({
+            label: "liq-manual-color",
+            size: capacity * 16,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        });
+        manualRun = {
+            sim,
+            collisionBuffer: collision.buffer,
+            colorBuffer,
+            center,
+            method: currentMethod,
+            configurationSignature: manualConfigurationSignature(),
+        };
+        fillManualColor(manualRun);
+        virtualSim.particleRadius = radiusValue;
+        virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
+        canvas.dataset.lastCollisionPrimitiveCount = String(collision.count);
+        setStatus();
+        refreshManualParticleUsage();
     }
 
     // ── Shot lifecycle ───────────────────────────────────────────────────────
@@ -1676,7 +2176,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 });
                 worker.addEventListener("error", (e) => {
                     // eslint-disable-next-line no-console
-                    console.warn("[liquefactor] sample worker error", e.message);
+                    console.warn("[aquanova-fluid-sim] sample worker error", e.message);
                     const idx = workerPool.indexOf(pw);
                     if (idx >= 0) workerPool.splice(idx, 1); // drop the faulty worker; sync fallback once the pool empties
                 });
@@ -1813,11 +2313,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     function restart(): void {
+        endManualForceDrag();
         pendingSamples.clear();
+        manualRun?.sim.dispose();
+        manualRun?.collisionBuffer?.destroy();
+        manualRun?.colorBuffer.destroy();
+        manualRun = null;
         for (const inst of instances) {
             inst.sim?.setForceField(null);
             inst.sim?.dispose();
             inst.sim = null;
+            inst.collisionBuffer?.destroy();
+            inst.collisionBuffer = null;
             inst.colorBuffer?.destroy();
             inst.colorBuffer = null;
             inst.phase = "solid";
@@ -1860,23 +2367,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         virtualSim.count = 0;
         invalidateFilteredSceneTasks();
         setStatus();
+        refreshManualParticleUsage();
+    }
+
+    function runPrimarySimulationAction(): void {
+        if (simulationType === "fluid") {
+            if (manualRun) {
+                restart();
+            } else {
+                startManualSimulation();
+            }
+            return;
+        }
+        restart();
     }
 
     // ── Control panel ────────────────────────────────────────────────────────
     const PANEL_STYLE =
         "position:fixed;top:12px;left:12px;z-index:10;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;" +
         "font-size:0.8rem;color:#dfe6ee;background:rgba(12,16,24,0.82);padding:12px 14px;border-radius:10px;" +
-        "width:232px;max-height:92vh;overflow-y:auto;box-shadow:0 6px 22px rgba(0,0,0,0.4);";
+        "width:280px;height:calc(100vh - 48px);min-width:232px;min-height:240px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);" +
+        "box-shadow:0 6px 22px rgba(0,0,0,0.4);";
 
     const title = document.createElement("div");
-    title.textContent = "Liquefactor";
-    title.style.cssText = "font-weight:700;font-size:0.95rem;margin-bottom:2px;";
-    const subtitle = document.createElement("div");
-    subtitle.textContent =
-        FOE_SET === "ship"
-            ? "WASD/Space/C to fly · RMB-drag to look · P pause · click a node → its own fluid sim"
-            : "WASD/Space/C to fly · RMB-drag to look · P pause · click a foe → its own fluid sim";
-    subtitle.style.cssText = "color:#8fa4bc;margin-bottom:10px;";
+    title.textContent = "AquanovaFluidSim";
+    title.style.cssText = "font-weight:700;font-size:0.95rem;margin-bottom:8px;";
+    const helperText = document.querySelector<HTMLElement>(".hint");
+    const updateHelperText = (): void => {
+        if (!helperText) return;
+        helperText.textContent =
+            simulationType === "mesh"
+                ? "WASD + Space/C: fly · RMB-drag: look · P: pause · R: restart · LMB: liquefy a ship mesh"
+                : "WASD + Space/C: fly · RMB-drag: look · Shift+RMB-drag: push fluid · P: pause · R: stop/start";
+    };
+    updateHelperText();
 
     function labelledRow(text: string, control: HTMLElement): HTMLDivElement {
         const row = document.createElement("div");
@@ -1890,6 +2414,51 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     function styleSelect(sel: HTMLSelectElement): void {
         sel.style.cssText = "width:100%;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
     }
+    const simulationTypeSelect = document.createElement("select");
+    styleSelect(simulationTypeSelect);
+    for (const [value, label] of [
+        ["mesh", "Mesh liquefaction"],
+        ["fluid", "Fluid"],
+    ] as [SimulationType, string][]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        simulationTypeSelect.append(option);
+    }
+    simulationTypeSelect.value = simulationType;
+    let setSimulationType = (value: SimulationType): void => {
+        simulationType = value;
+        simulationTypeSelect.value = value;
+        updateHelperText();
+    };
+    simulationTypeSelect.onchange = () => setSimulationType(simulationTypeSelect.value as SimulationType);
+    const simulationTypeRow = labelledRow("Simulation type", simulationTypeSelect);
+
+    const fluidSimSelect = document.createElement("select");
+    fluidSimSelect.id = "aquanova-fluid-sim-preset";
+    styleSelect(fluidSimSelect);
+    const fluidSimRow = labelledRow("Simulation", fluidSimSelect);
+    const fluidSimNameInput = document.createElement("input");
+    fluidSimNameInput.type = "text";
+    fluidSimNameInput.placeholder = "new-simulation";
+    fluidSimNameInput.style.cssText = "box-sizing:border-box;width:100%;padding:4px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;margin-bottom:5px;";
+    const fluidSimButtons = document.createElement("div");
+    fluidSimButtons.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px;";
+    const makePresetButton = (text: string): HTMLButtonElement => {
+        const button = document.createElement("button");
+        button.textContent = text;
+        button.style.cssText = "padding:5px 3px;border:0;border-radius:5px;cursor:pointer;background:#33465c;color:#fff;font-weight:600;";
+        return button;
+    };
+    const fluidSimCreateButton = makePresetButton("Create");
+    const fluidSimUpdateButton = makePresetButton("Update");
+    const fluidSimDeleteButton = makePresetButton("Delete");
+    fluidSimDeleteButton.style.background = "#693747";
+    fluidSimButtons.append(fluidSimCreateButton, fluidSimUpdateButton, fluidSimDeleteButton);
+    const fluidSimStatus = document.createElement("div");
+    fluidSimStatus.style.cssText = "min-height:1.1em;margin-bottom:8px;color:#8fa4bc;";
+    const fluidSimAuthoring = document.createElement("div");
+    fluidSimAuthoring.append(fluidSimNameInput, fluidSimButtons, fluidSimStatus);
 
     // Sampling mode selector.
     const modeSelect = document.createElement("select");
@@ -1905,45 +2474,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         modeValue = modeSelect.value as VolumeSamplingMode;
     };
 
-    // Environment picker — swaps the skybox + fluid-surface reflection cube (audition backdrops;
-    // "Bank vault" is the Aquanova HDRI, for comparing the water look under identical lighting).
-    const envSelect = document.createElement("select");
-    styleSelect(envSelect);
-    for (const c of ENV_CHOICES) {
-        const opt = document.createElement("option");
-        opt.value = c.key;
-        opt.textContent = c.label;
-        envSelect.append(opt);
-    }
-    envSelect.value = currentEnvKey;
-    envSelect.onchange = () => {
-        void applyEnv(envSelect.value);
-    };
-    const envRow = labelledRow("Environment", envSelect);
-
-    // Foe-set picker — see FOE_SET: swaps between the sample models and the Aquanova ship's own
-    // liquefiable meshes. Reloads the page because the liquefy plugin only materialises for meshes
-    // present in the initial scene build.
-    const foeSelect = document.createElement("select");
-    styleSelect(foeSelect);
-    for (const f of FOE_SETS) {
-        const opt = document.createElement("option");
-        opt.value = f.key;
-        opt.textContent = f.label;
-        foeSelect.append(opt);
-    }
-    foeSelect.value = FOE_SET;
-    foeSelect.onchange = () => {
-        const url = new URL(location.href);
-        if (foeSelect.value === "ship") {
-            url.searchParams.set("foes", "ship");
-        } else {
-            url.searchParams.delete("foes");
-        }
-        location.href = url.toString();
-    };
-    const foeRow = labelledRow("Foes", foeSelect);
-
     // Particle radius slider.
     const radiusInput = document.createElement("input");
     radiusInput.type = "range";
@@ -1958,6 +2488,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     radiusInput.oninput = () => {
         radiusValue = parseFloat(radiusInput.value);
         radiusVal.textContent = radiusValue.toFixed(3);
+        controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
+        refreshFlipParticleCapacity();
     };
     const radiusLabelWrap = document.createElement("div");
     radiusLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
@@ -2083,51 +2615,82 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     impulseRadiusRow.style.cssText = "margin-bottom:8px;";
     impulseRadiusRow.append(radiusImpLabelWrap, radiusImpInput);
 
-    // Grid size — the simulation domain, in world units, as a FULL extent per axis. The domain wall is
-    // a hard boundary, so this decides how far a puddle may spread (X/Z) and how much headroom a burst
-    // has (Y). 0 on an axis keeps the automatic size derived from the prop's footprint. Exported so
-    // Aquanova builds the same box; without it a prop tuned here spreads differently there.
-    const gridInputs: HTMLInputElement[] = [];
-    const gridFieldRow = document.createElement("div");
-    gridFieldRow.style.cssText = "display:flex;gap:4px;";
-    for (let axis = 0; axis < 3; axis++) {
-        const box = document.createElement("input");
-        box.type = "number";
-        box.id = `liq-grid-${"xyz"[axis]}`;
-        box.min = "0";
-        box.step = "0.5";
-        box.value = String(gridSize[axis]);
-        box.title = `Simulation domain size on ${"XYZ"[axis]} in world units (full extent). 0 = automatic.${axis === 1 ? " Y is a minimum — raised when needed to clear the prop." : ""}`;
-        box.style.cssText = "width:100%;min-width:0;background:#1b2430;color:#dbe6f2;border:1px solid #33465c;border-radius:3px;padding:2px 4px;";
-        box.oninput = () => {
-            const v = parseFloat(box.value);
-            gridSize[axis] = isFinite(v) && v > 0 ? v : 0;
-            showGridHint();
-        };
-        gridInputs.push(box);
-        gridFieldRow.append(box);
-    }
-    /** Push `gridSize` back into the three boxes (after an import). */
-    const showGridSize = (): void => {
-        for (let axis = 0; axis < 3; axis++) gridInputs[axis]!.value = String(gridSize[axis]);
-        showGridHint();
+    const collisionRadiusInput = document.createElement("input");
+    collisionRadiusInput.type = "range";
+    collisionRadiusInput.min = "0";
+    collisionRadiusInput.max = "40";
+    collisionRadiusInput.step = "0.5";
+    collisionRadiusInput.value = String(collisionNeighborhoodRadius);
+    collisionRadiusInput.style.cssText = "width:100%;";
+    const collisionRadiusValue = document.createElement("span");
+    collisionRadiusValue.style.cssText = "color:#9fb4cc;float:right;";
+    const showCollisionRadius = (): void => {
+        collisionRadiusValue.textContent = collisionNeighborhoodRadius > 0 ? `${collisionNeighborhoodRadius.toFixed(1)} m` : "off";
     };
-    const gridLabelWrap = document.createElement("div");
-    gridLabelWrap.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
-    gridLabelWrap.append(document.createTextNode("Grid size (x, y, z) m"));
-    gridLabelWrap.title =
-        "Simulation domain, full extent in world units. Centred on the prop in X/Z, resting on the ground in Y. Y is a minimum — it is raised when needed to clear the prop. 0 on an axis = automatic (from the prop's footprint). Takes effect on the next liquefaction.";
-    const gridHint = document.createElement("span");
-    gridHint.style.cssText = "color:#9fb4cc;float:right;";
-    const showGridHint = (): void => {
-        const autoAxes = ["x", "y", "z"].filter((_, i) => gridSize[i]! <= 0);
-        gridHint.textContent = autoAxes.length === 3 ? "auto" : autoAxes.length ? `auto: ${autoAxes.join(", ")}` : "";
+    showCollisionRadius();
+    collisionRadiusInput.oninput = () => {
+        collisionNeighborhoodRadius = parseFloat(collisionRadiusInput.value);
+        showCollisionRadius();
     };
-    showGridHint();
-    gridLabelWrap.append(gridHint);
-    const gridRow = document.createElement("div");
-    gridRow.style.cssText = "margin-bottom:8px;";
-    gridRow.append(gridLabelWrap, gridFieldRow);
+    const collisionRadiusLabel = document.createElement("div");
+    collisionRadiusLabel.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    collisionRadiusLabel.append(document.createTextNode("Collision neighborhood"), collisionRadiusValue);
+    collisionRadiusLabel.title = "Radius of the sphere used to select authored ship collision primitives whenever a simulation starts.";
+    const collisionRadiusRow = document.createElement("div");
+    collisionRadiusRow.style.cssText = "margin-bottom:8px;";
+    collisionRadiusRow.append(collisionRadiusLabel, collisionRadiusInput);
+
+    const forceStrengthInput = document.createElement("input");
+    forceStrengthInput.type = "range";
+    forceStrengthInput.id = "liq-force-strength";
+    forceStrengthInput.min = "0";
+    forceStrengthInput.max = "2";
+    forceStrengthInput.step = "0.05";
+    forceStrengthInput.value = String(manualForceStrength);
+    forceStrengthInput.style.cssText = "width:100%;";
+    const forceStrengthValue = document.createElement("span");
+    forceStrengthValue.style.cssText = "color:#9fb4cc;float:right;";
+    const showForceStrength = (): void => {
+        forceStrengthValue.textContent = `${manualForceStrength.toFixed(2)}×`;
+    };
+    showForceStrength();
+    forceStrengthInput.oninput = () => {
+        manualForceStrength = parseFloat(forceStrengthInput.value);
+        showForceStrength();
+    };
+    const forceStrengthLabel = document.createElement("div");
+    forceStrengthLabel.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    forceStrengthLabel.append(document.createTextNode("Force strength"), forceStrengthValue);
+    forceStrengthLabel.title = "Multiplier applied to mouse speed while Shift+RMB dragging.";
+    const forceStrengthRow = document.createElement("div");
+    forceStrengthRow.style.cssText = "margin-bottom:8px;";
+    forceStrengthRow.append(forceStrengthLabel, forceStrengthInput);
+
+    const forceRadiusInput = document.createElement("input");
+    forceRadiusInput.type = "range";
+    forceRadiusInput.id = "liq-force-radius";
+    forceRadiusInput.min = "0.1";
+    forceRadiusInput.max = "20";
+    forceRadiusInput.step = "0.1";
+    forceRadiusInput.value = String(manualForceRadius);
+    forceRadiusInput.style.cssText = "width:100%;";
+    const forceRadiusValue = document.createElement("span");
+    forceRadiusValue.style.cssText = "color:#9fb4cc;float:right;";
+    const showForceRadius = (): void => {
+        forceRadiusValue.textContent = `${manualForceRadius.toFixed(1)} m`;
+    };
+    showForceRadius();
+    forceRadiusInput.oninput = () => {
+        manualForceRadius = parseFloat(forceRadiusInput.value);
+        showForceRadius();
+    };
+    const forceRadiusLabel = document.createElement("div");
+    forceRadiusLabel.style.cssText = "margin-bottom:3px;color:#b6c4d6;";
+    forceRadiusLabel.append(document.createTextNode("Force influence radius"), forceRadiusValue);
+    forceRadiusLabel.title = "World-space radius around the cursor ray affected by Shift+RMB dragging.";
+    const forceRadiusRow = document.createElement("div");
+    forceRadiusRow.style.cssText = "margin-bottom:8px;";
+    forceRadiusRow.append(forceRadiusLabel, forceRadiusInput);
 
     // "Use mesh colours" — tint the water by the liquefied mesh's texture/vertex colours
     // (per-particle) instead of the uniform water colour.
@@ -2146,9 +2709,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     const restartBtn = document.createElement("button");
     restartBtn.id = "liq-restart";
-    restartBtn.textContent = "Restart (reset all foes)";
+    restartBtn.textContent = "Reset liquefaction";
     restartBtn.style.cssText = "width:100%;padding:6px;margin-top:4px;border:0;border-radius:6px;cursor:pointer;background:#4a5568;color:#fff;font-weight:600;";
-    restartBtn.onclick = () => restart();
+    restartBtn.onclick = () => runPrimarySimulationAction();
 
     const status = document.createElement("div");
     status.style.cssText = "margin-top:8px;color:#8fa4bc;min-height:1.1em;";
@@ -2163,11 +2726,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const live = instances.filter((i) => i.phase === "dissolving" || i.phase === "fluid" || i.phase === "fading");
         const shells = live.filter((i) => i.shell).length;
         const fillNote = live.length ? ` · ${live.length - shells} volume / ${shells} surface` : "";
-        status.textContent = `${solid} solid · ${active} liquefying${fillNote} · ${FOE_SET === "ship" ? "click a node" : "click a foe"}`;
+        status.textContent =
+            simulationType === "mesh"
+                ? `${solid} solid · ${active} liquefying${fillNote} · click a ship mesh`
+                : manualRun
+                  ? "fluid simulation running"
+                  : "fluid simulation stopped";
+        restartBtn.textContent = simulationType === "fluid" ? (manualRun ? "Stop simulation" : "Start simulation") : "Reset liquefaction";
+        restartBtn.style.background = simulationType === "fluid" && !manualRun ? "#245a79" : "#4a5568";
         canvas.dataset.solid = String(solid);
         canvas.dataset.active = String(active);
         canvas.dataset.shells = String(shells);
         canvas.dataset.volumes = String(live.length - shells);
+        canvas.dataset.manualRunning = manualRun ? "true" : "false";
     }
 
     function refreshPhysicsParamVisibility(): void {
@@ -2180,22 +2751,357 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         canvas.dataset.method = method;
         controls.setMethod(method);
         controls.rebuildPhysics(method);
+        controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
+        refreshFlipParticleCapacity();
         refreshPhysicsParamVisibility();
     }
+
+    type FlowPoint = { x: number; y: number; z: number };
+    type FlowWireframeSegment = readonly [FlowPoint, FlowPoint];
+    const flowPoint = (x: number, y: number, z: number): FlowPoint => ({ x, y, z });
+    const boxWireframeSegments = (min: readonly [number, number, number], max: readonly [number, number, number]): FlowWireframeSegment[] => {
+        const corners = [
+            flowPoint(min[0], min[1], min[2]),
+            flowPoint(max[0], min[1], min[2]),
+            flowPoint(max[0], min[1], max[2]),
+            flowPoint(min[0], min[1], max[2]),
+            flowPoint(min[0], max[1], min[2]),
+            flowPoint(max[0], max[1], min[2]),
+            flowPoint(max[0], max[1], max[2]),
+            flowPoint(min[0], max[1], max[2]),
+        ];
+        return [
+            [corners[0]!, corners[1]!],
+            [corners[1]!, corners[2]!],
+            [corners[2]!, corners[3]!],
+            [corners[3]!, corners[0]!],
+            [corners[4]!, corners[5]!],
+            [corners[5]!, corners[6]!],
+            [corners[6]!, corners[7]!],
+            [corners[7]!, corners[4]!],
+            [corners[0]!, corners[4]!],
+            [corners[1]!, corners[5]!],
+            [corners[2]!, corners[6]!],
+            [corners[3]!, corners[7]!],
+        ];
+    };
+    const gridBoundsSegments = (size: readonly [number, number, number]): FlowWireframeSegment[] =>
+        boxWireframeSegments([-size[0] * 0.5, -size[1] * 0.5, -size[2] * 0.5], [size[0] * 0.5, size[1] * 0.5, size[2] * 0.5]);
+    const gridBoundsWireframe = createLineSystem(engine, {
+        name: "aquanova-fluid-sim-grid-bounds",
+        lines: gridBoundsSegments(gridSize),
+        material: createLineMaterial({
+            name: "aquanova-fluid-sim-grid-bounds-material",
+            color: { r: 0.45, g: 1, b: 0.35, a: 0.85 },
+            useVertexAlpha: true,
+            depthWrite: false,
+            depthCompare: "always",
+        }),
+    });
+    gridBoundsWireframe.pickable = false;
+    gridBoundsWireframe.renderOrder = 9_999;
+    addToScene(scene, gridBoundsWireframe);
+
+    const appendPolyline = (segments: FlowWireframeSegment[], points: readonly FlowPoint[], closed = true): void => {
+        for (let i = 1; i < points.length; i++) {
+            segments.push([points[i - 1]!, points[i]!]);
+        }
+        if (closed && points.length > 2) {
+            segments.push([points[points.length - 1]!, points[0]!]);
+        }
+    };
+    const appendRing = (segments: FlowWireframeSegment[], plane: "xy" | "xz" | "yz", radius: number, center: FlowPoint = flowPoint(0, 0, 0), steps = 32): void => {
+        const points: FlowPoint[] = [];
+        for (let i = 0; i < steps; i++) {
+            const angle = (i / steps) * Math.PI * 2;
+            const a = Math.cos(angle) * radius;
+            const b = Math.sin(angle) * radius;
+            points.push(
+                plane === "xy"
+                    ? flowPoint(center.x + a, center.y + b, center.z)
+                    : plane === "xz"
+                      ? flowPoint(center.x + a, center.y, center.z + b)
+                      : flowPoint(center.x, center.y + a, center.z + b)
+            );
+        }
+        appendPolyline(segments, points);
+    };
+    const flowShapeWireframe = (shape: FluidShape): FlowWireframeSegment[] => {
+        const segments: FlowWireframeSegment[] = [];
+        if (shape.type === "box") {
+            const [hx, hy, hz] = shape.size.map((value) => value * 0.5);
+            segments.push(...boxWireframeSegments([-hx!, -hy!, -hz!], [hx!, hy!, hz!]));
+        } else if (shape.type === "sphere") {
+            appendRing(segments, "xy", shape.radius);
+            appendRing(segments, "xz", shape.radius);
+            appendRing(segments, "yz", shape.radius);
+        } else if (shape.type === "cylinder") {
+            const halfHeight = shape.height * 0.5;
+            for (const y of [-halfHeight, halfHeight]) {
+                appendRing(segments, "xz", shape.radius, flowPoint(0, y, 0));
+                if ((shape.innerRadius ?? 0) > 0) {
+                    appendRing(segments, "xz", shape.innerRadius!, flowPoint(0, y, 0));
+                }
+            }
+            const radii = shape.innerRadius && shape.innerRadius > 0 ? [shape.radius, shape.innerRadius] : [shape.radius];
+            for (const radius of radii) {
+                for (let i = 0; i < 8; i++) {
+                    const angle = (i / 8) * Math.PI * 2;
+                    const x = Math.cos(angle) * radius;
+                    const z = Math.sin(angle) * radius;
+                    segments.push([flowPoint(x, -halfHeight, z), flowPoint(x, halfHeight, z)]);
+                }
+            }
+        } else if (shape.type === "cone") {
+            const halfHeight = shape.height * 0.5;
+            if (shape.bottomRadius > 0) {
+                appendRing(segments, "xz", shape.bottomRadius, flowPoint(0, -halfHeight, 0));
+            }
+            if (shape.topRadius > 0) {
+                appendRing(segments, "xz", shape.topRadius, flowPoint(0, halfHeight, 0));
+            }
+            for (let i = 0; i < 8; i++) {
+                const angle = (i / 8) * Math.PI * 2;
+                const x = Math.cos(angle);
+                const z = Math.sin(angle);
+                segments.push([flowPoint(x * shape.bottomRadius, -halfHeight, z * shape.bottomRadius), flowPoint(x * shape.topRadius, halfHeight, z * shape.topRadius)]);
+            }
+        } else if (shape.type === "capsule") {
+            const bodyHalfHeight = Math.max(0, shape.height * 0.5 - shape.radius);
+            appendRing(segments, "xz", shape.radius, flowPoint(0, -bodyHalfHeight, 0));
+            appendRing(segments, "xz", shape.radius, flowPoint(0, bodyHalfHeight, 0));
+            const meridian: FlowPoint[] = [];
+            for (let i = 0; i <= 16; i++) {
+                const angle = Math.PI - (i / 16) * Math.PI;
+                meridian.push(flowPoint(Math.cos(angle) * shape.radius, bodyHalfHeight + Math.sin(angle) * shape.radius, 0));
+            }
+            meridian.push(flowPoint(shape.radius, -bodyHalfHeight, 0));
+            for (let i = 1; i <= 16; i++) {
+                const angle = -(i / 16) * Math.PI;
+                meridian.push(flowPoint(Math.cos(angle) * shape.radius, -bodyHalfHeight + Math.sin(angle) * shape.radius, 0));
+            }
+            appendPolyline(segments, meridian);
+            appendPolyline(
+                segments,
+                meridian.map((point) => flowPoint(0, point.y, point.x))
+            );
+        } else {
+            const halfThickness = shape.thickness * 0.5;
+            for (let i = 0; i < shape.points.length; i++) {
+                const point = shape.points[i]!;
+                const next = shape.points[(i + 1) % shape.points.length]!;
+                const bottom = flowPoint(point[0], -halfThickness, point[1]);
+                const top = flowPoint(point[0], halfThickness, point[1]);
+                segments.push([bottom, flowPoint(next[0], -halfThickness, next[1])], [top, flowPoint(next[0], halfThickness, next[1])], [bottom, top]);
+            }
+        }
+        return segments;
+    };
+    const maxFlowWireframeSegments = MAX_FLUID_POLYGON_POINTS * 3;
+    const paddedFlowWireframe = (shape?: FluidShape): FlowWireframeSegment[] => {
+        const segments = shape ? flowShapeWireframe(shape).slice(0, maxFlowWireframeSegments) : [];
+        while (segments.length < maxFlowWireframeSegments) {
+            segments.push([flowPoint(0, 0, 0), flowPoint(0, 0, 0)]);
+        }
+        return segments;
+    };
+    const createFlowWireframe = (name: string, color: { r: number; g: number; b: number; a: number }): Mesh => {
+        const mesh = createLineSystem(engine, {
+            name,
+            lines: paddedFlowWireframe(),
+            material: createLineMaterial({ name: `${name}-material`, color, useVertexAlpha: true, depthWrite: false, depthCompare: "always" }),
+        });
+        mesh.pickable = false;
+        mesh.renderOrder = 10_000;
+        addToScene(scene, mesh);
+        setMeshVisible(mesh, false);
+        return mesh;
+    };
+    const emitterFlowWireframe = createFlowWireframe("aquanova-fluid-sim-emitter-wireframe", { r: 0.1, g: 0.9, b: 1, a: 0.9 });
+    const sinkFlowWireframe = createFlowWireframe("aquanova-fluid-sim-sink-wireframe", { r: 1, g: 0.55, b: 0.1, a: 0.9 });
+    let showEmitterWireframe = false;
+    let showSinkWireframe = false;
+    let flowGizmoOwner: FluidFlowObjectKind | null = null;
+    let flowEditor: FluidFlowEditor | null = null;
+
+    const gridGizmoLayer = createUtilityLayer(engine, scene);
+    const flowPositionGizmo = createPositionGizmo(engine, gridGizmoLayer, { planarEnabled: true });
+    const flowRotationGizmo = createRotationGizmo(engine, gridGizmoLayer);
+    const flowScaleGizmo = createScaleGizmo(engine, gridGizmoLayer);
+    const gridPositionGizmo = createPositionGizmo(engine, gridGizmoLayer, { planarEnabled: true });
+    const gridScaleGizmo = createScaleGizmo(engine, gridGizmoLayer);
+    setPositionGizmoLocalCoordinates(flowPositionGizmo, false);
+    setRotationGizmoLocalCoordinates(flowRotationGizmo, true);
+    setScaleGizmoLocalCoordinates(flowScaleGizmo, true);
+    setPositionGizmoLocalCoordinates(gridPositionGizmo, false);
+    setScaleGizmoLocalCoordinates(gridScaleGizmo, true);
+    const flowPositionSubGizmos = [
+        flowPositionGizmo.xGizmo,
+        flowPositionGizmo.yGizmo,
+        flowPositionGizmo.zGizmo,
+        ...(flowPositionGizmo.xPlaneGizmo ? [flowPositionGizmo.xPlaneGizmo] : []),
+        ...(flowPositionGizmo.yPlaneGizmo ? [flowPositionGizmo.yPlaneGizmo] : []),
+        ...(flowPositionGizmo.zPlaneGizmo ? [flowPositionGizmo.zPlaneGizmo] : []),
+    ];
+    const flowRotationSubGizmos = [flowRotationGizmo.xGizmo, flowRotationGizmo.yGizmo, flowRotationGizmo.zGizmo];
+    const flowScaleSubGizmos = [flowScaleGizmo.xGizmo, flowScaleGizmo.yGizmo, flowScaleGizmo.zGizmo, flowScaleGizmo.uniformScaleGizmo];
+    const gridPositionSubGizmos = [
+        gridPositionGizmo.xGizmo,
+        gridPositionGizmo.yGizmo,
+        gridPositionGizmo.zGizmo,
+        ...(gridPositionGizmo.xPlaneGizmo ? [gridPositionGizmo.xPlaneGizmo] : []),
+        ...(gridPositionGizmo.yPlaneGizmo ? [gridPositionGizmo.yPlaneGizmo] : []),
+        ...(gridPositionGizmo.zPlaneGizmo ? [gridPositionGizmo.zPlaneGizmo] : []),
+    ];
+    const gridScaleSubGizmos = [gridScaleGizmo.xGizmo, gridScaleGizmo.yGizmo, gridScaleGizmo.zGizmo, gridScaleGizmo.uniformScaleGizmo];
+    const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
+        for (const gizmo of gizmos) {
+            for (const mesh of gizmo._visibleMeshes) {
+                setMeshVisible(mesh, visible);
+            }
+        }
+    };
+    const selectedFlowObject = (kind: FluidFlowObjectKind) => flowEditor?.getSelected(kind);
+    const syncFlowWireframe = (kind: FluidFlowObjectKind): void => {
+        const isEmitter = kind === "emitter";
+        const mesh = isEmitter ? emitterFlowWireframe : sinkFlowWireframe;
+        const visible = isEmitter ? showEmitterWireframe : showSinkWireframe;
+        const object = selectedFlowObject(kind);
+        if (!object) {
+            setMeshVisible(mesh, false);
+            return;
+        }
+        updateLineSystem(engine, mesh, { lines: paddedFlowWireframe(object.shape) });
+        const { position, rotation, scale } = object.transform;
+        mesh.position.set(position[0] + gridPosition[0], position[1] + gridPosition[1], position[2] + gridPosition[2]);
+        mesh.rotationQuaternion.set(rotation[0], rotation[1], rotation[2], rotation[3]);
+        mesh.scaling.set(scale[0], scale[1], scale[2]);
+        setMeshVisible(mesh, visible || flowGizmoOwner === kind);
+    };
+    const syncFlowTransformFromGizmo = (): void => {
+        if (!flowGizmoOwner) {
+            return;
+        }
+        const object = selectedFlowObject(flowGizmoOwner);
+        if (!object) {
+            return;
+        }
+        const mesh = flowGizmoOwner === "emitter" ? emitterFlowWireframe : sinkFlowWireframe;
+        object.transform.position = [mesh.position.x - gridPosition[0], mesh.position.y - gridPosition[1], mesh.position.z - gridPosition[2]];
+        object.transform.rotation = [mesh.rotationQuaternion.x, mesh.rotationQuaternion.y, mesh.rotationQuaternion.z, mesh.rotationQuaternion.w];
+        object.transform.scale = [mesh.scaling.x, mesh.scaling.y, mesh.scaling.z];
+        manualRun?.sim.setFlow(flowInWorldSpace(activeFlow));
+    };
+    const finishFlowGizmoDrag = (): void => {
+        syncFlowTransformFromGizmo();
+        flowEditor?.refresh();
+    };
+    for (const gizmo of flowPositionSubGizmos) {
+        gizmo.onPositionChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    for (const gizmo of flowRotationSubGizmos) {
+        gizmo.onRotationChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    for (const gizmo of flowScaleSubGizmos) {
+        gizmo.onScaleChanged.add(syncFlowTransformFromGizmo);
+        gizmo.drag.onDragEnd.add(finishFlowGizmoDrag);
+    }
+    const syncFlowGizmo = (): void => {
+        const owner = flowGizmoOwner;
+        const object = owner ? selectedFlowObject(owner) : undefined;
+        const target = owner && object ? (owner === "emitter" ? emitterFlowWireframe : sinkFlowWireframe) : null;
+        attachPositionGizmoToNode(flowPositionGizmo, target);
+        attachRotationGizmoToNode(flowRotationGizmo, target);
+        attachScaleGizmoToNode(flowScaleGizmo, target);
+        setGizmoMeshesVisible(!!target, flowPositionSubGizmos);
+        setGizmoMeshesVisible(!!target, flowRotationSubGizmos);
+        setGizmoMeshesVisible(!!target, flowScaleSubGizmos);
+        if (owner) {
+            syncFlowWireframe(owner);
+        }
+    };
+    const syncGridBoundsWireframe = (): void => {
+        updateLineSystem(engine, gridBoundsWireframe, { lines: gridBoundsSegments(gridSize) });
+        gridBoundsWireframe.position.set(gridPosition[0], gridPosition[1], gridPosition[2]);
+        gridBoundsWireframe.scaling.set(1, 1, 1);
+        setMeshVisible(gridBoundsWireframe, showGridBounds || showGridGizmo);
+        syncFlowWireframe("emitter");
+        syncFlowWireframe("sink");
+        syncFlowGizmo();
+        canvas.dataset.gridPosition = gridPosition.join(",");
+        canvas.dataset.gridSize = gridSize.join(",");
+        canvas.dataset.showGridBounds = String(showGridBounds);
+    };
+    const syncGridGizmo = (): void => {
+        attachPositionGizmoToNode(gridPositionGizmo, showGridGizmo ? gridBoundsWireframe : null);
+        attachScaleGizmoToNode(gridScaleGizmo, showGridGizmo ? gridBoundsWireframe : null);
+        setGizmoMeshesVisible(showGridGizmo, gridPositionSubGizmos);
+        setGizmoMeshesVisible(showGridGizmo, gridScaleSubGizmos);
+    };
+    function setGridSettings(position: readonly number[], size: readonly number[]): void {
+        const changed = position.some((value, axis) => value !== gridPosition[axis]) || size.some((value, axis) => value !== gridSize[axis]);
+        for (let axis = 0; axis < 3; axis++) {
+            gridPosition[axis] = position[axis]!;
+            gridSize[axis] = Math.max(0.1, size[axis]!);
+        }
+        canvas.dataset.gridPosition = gridPosition.join(",");
+        canvas.dataset.gridSize = gridSize.join(",");
+        controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
+        syncGridBoundsWireframe();
+        if (changed) {
+            if (simulationType === "mesh") {
+                restart();
+            } else {
+                refreshManualParticleUsage();
+            }
+        }
+    }
+    function setGridGizmoVisible(visible: boolean): void {
+        showGridGizmo = visible;
+        canvas.dataset.gridGizmo = String(visible);
+        syncGridBoundsWireframe();
+        syncGridGizmo();
+    }
+    const finishGridGizmoDrag = (): void => {
+        const position: [number, number, number] = [
+            Math.round(gridBoundsWireframe.position.x * 10) / 10,
+            Math.round(gridBoundsWireframe.position.y * 10) / 10,
+            Math.round(gridBoundsWireframe.position.z * 10) / 10,
+        ];
+        const size: [number, number, number] = [
+            Math.max(0.1, Math.round(Math.abs(gridSize[0] * gridBoundsWireframe.scaling.x) * 10) / 10),
+            Math.max(0.1, Math.round(Math.abs(gridSize[1] * gridBoundsWireframe.scaling.y) * 10) / 10),
+            Math.max(0.1, Math.round(Math.abs(gridSize[2] * gridBoundsWireframe.scaling.z) * 10) / 10),
+        ];
+        setGridSettings(position, size);
+        syncGridGizmo();
+    };
+    for (const gizmo of gridPositionSubGizmos) {
+        gizmo.drag.onDragEnd.add(finishGridGizmoDrag);
+    }
+    for (const gizmo of gridScaleSubGizmos) {
+        gizmo.drag.onDragEnd.add(finishGridGizmoDrag);
+    }
+    syncGridBoundsWireframe();
+    syncGridGizmo();
 
     const controls = createFluidControlsPanel({
         hideParticles: true,
         hideMethod: false,
         hideContainerToggle: true,
-        hideFoam: true,
+        hideFoam: false,
         hidePhysics: false,
         hidePhysScale: true,
-        hideDebug: true,
+        hideDebug: false,
         hideGpuTiming: false,
+        showGridControls: true,
         panelStyle: PANEL_STYLE,
         schemas: LIQ_SCHEMAS,
         methods: Object.keys(LIQ_SCHEMAS),
         particleCounts: [],
+        flipParticleCapacityMax: MAX_TOTAL,
         showActiveBlocks: true,
         initial: {
             method: currentMethod,
@@ -2224,13 +3130,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pagedGrid: mpmPagedGrid,
             pagedGridMaxPages: mpmPagedGridMaxPages,
             fusedBlockDiscovery: mpmFusedBlockDiscovery,
+            gridResolution: flipGridResolution,
+            markersPerCell: flipMarkersPerCell,
+            gridPosition: [...gridPosition],
+            gridSize: [...gridSize],
+            cellSize: simulationCellSize(),
+            showGridBounds,
             renderMode: "surface",
             debug: "none",
             showContainer: true,
             foam: {
                 enabled: false,
+                activeParticles: true,
+                generateSpray: true,
+                generateFoam: true,
+                generateBubbles: true,
                 kTa: 40,
                 kWc: 40,
+                kTurb: 0,
+                energySpeedMin: Math.sqrt(0.5),
+                energySpeedMax: Math.sqrt(40),
+                curvatureMin: 0.05,
+                curvatureMax: 1.5,
+                turbulenceMin: 0.1,
+                turbulenceMax: 2.5,
+                foamLayerDepth: 0,
+                sprayDrag: 0,
                 kb: 0.8,
                 kd: 0.5,
                 tMin: 0.3,
@@ -2249,16 +3174,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 subsurfaceColor: "#b8d1f2",
             },
         },
-        gpu: { stages: ["Simulation", "Surface"], supported: profiler !== null },
+        gpu: { stages: ["Simulation", "Surface", "Foam generate", "Foam render"], supported: profiler !== null },
         on: {
             onMethod: (m) => switchMethod(m),
             onMaterial: (material) => {
                 currentMaterial = material;
                 for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
+                if (manualRun?.method === currentMethod) manualRun.sim.setMaterial?.(currentMaterial);
                 refreshPhysicsParamVisibility();
             },
             onRenderMode: () => {}, // surface only in the multi-target demo
-            onColor: (rgb) => surfaceTask.setFluidColor(rgb),
+            onDebug: (mode) => surfaceTask.setDebug(mode),
+            onColor: (rgb) => {
+                surfaceTask.setFluidColor(rgb);
+                if (manualRun) {
+                    fillManualColor(manualRun);
+                }
+            },
             onAbsorption: (v) => surfaceTask.setAbsorption(v),
             onParticleSize: (s) => surfaceTask.setSizeScale(s),
             onRefraction: (v) => surfaceTask.setRefractionStrength(v),
@@ -2288,20 +3220,58 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             onFusedBlockDiscovery: (enabled) => {
                 mpmFusedBlockDiscovery = enabled;
             },
+            onGridResolution: (resolution) => {
+                flipGridResolution = Math.max(16, Math.min(400, Math.round(resolution)));
+                controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
+                refreshManualParticleUsage();
+            },
+            onMarkersPerCell: (markersPerCell) => {
+                flipMarkersPerCell = Math.max(1, Math.min(64, Math.round(markersPerCell)));
+                refreshManualParticleUsage();
+            },
+            onFlipParticleCapacity: (capacity) => {
+                flipParticleCapacityRequest = Math.max(1, Math.min(MAX_TOTAL, Math.round(capacity)));
+                refreshManualParticleUsage();
+            },
+            onGridSettings: (position, size) => setGridSettings(position, size),
+            onGridGizmo: (visible) => setGridGizmoVisible(visible),
+            onShowGridBounds: (visible) => {
+                showGridBounds = visible;
+                canvas.dataset.showGridBounds = String(visible);
+                syncGridBoundsWireframe();
+            },
             // Physics sliders apply LIVE to every running sim AND seed the next shot.
             onPhysicsParam: (key, value) => {
                 physValues[currentMethod]![key] = value;
                 for (const inst of instances) inst.sim?.setParam(key, value);
+                if (manualRun?.method === currentMethod) manualRun.sim.setParam(key, value);
+                refreshManualParticleUsage();
             },
-            onReset: () => {
-                const defaults = SCHEMA_DEFAULTS[currentMethod]!;
-                physValues[currentMethod] = { ...defaults };
-                for (const inst of instances) for (const [k, v] of Object.entries(defaults)) inst.sim?.setParam(k, v);
-                controls.setPhysics(defaults);
-                controls.rebuildPhysics(currentMethod);
-            },
+            onReset: () => restart(),
+            onFoamEnable: () => pushFoam(),
+            onFoamKinds: () => pushFoam(),
+            onFoamKta: () => pushFoam(),
+            onFoamKwc: () => pushFoam(),
+            onFoamAdvanced: () => pushFoam(),
+            onFoamLifetime: () => pushFoam(),
+            onFoamBuoyancy: () => pushFoam(),
+            onFoamDrag: () => pushFoam(),
+            onFoamPool: () => pushFoam(),
+            onFoamThresholds: (t0, t1) => foamTask.setThresholds(t0, t1),
+            onFoamSubsurface: (v) => foamTask.setSubsurfaceStrength(v),
+            onFoamSubColor: (rgb) => foamTask.setSubsurfaceColor(rgb),
+            onFoamSize: (v) => foamTask.setSizeScale(v),
+            onFoamBlur: (v) => foamTask.setBlurRadius(v),
+            onFoamLight: (v) => foamTask.setLightIntensity(v),
+            onFoamAmbient: (v) => foamTask.setAmbient(v),
+            onFoamAO: (v) => foamTask.setAOStrength(v),
+            onFoamNormal: (v) => foamTask.setNormalStrength(v),
+            onFoamDebugByKind: (on) => foamTask.setDebugByKind(on),
+            onFoamDebugTexture: (v) => foamTask.setDebugTexture(v),
         },
     });
+    refreshFlipParticleCapacity = () => controls.setFlipParticleCapacity(manualParticleCapacity());
+    refreshFlipParticleCapacity();
 
     // ── Export / import fluid settings ───────────────────────────────────────
     // Reuse the fluid demo's grouped JSON shape (fluid/preset-io.js): serialise the live
@@ -2312,16 +3282,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const v = controls.getValues();
         return {
             schema: { ...physValues[currentMethod]! },
-            demoParams: { particleRadius: radiusValue, useMeshColors: useMeshColors ? 1 : 0 },
+            demoParams: {
+                particleRadius: radiusValue,
+                useMeshColors: useMeshColors ? 1 : 0,
+                collisionNeighborhoodRadius,
+                forceStrength: manualForceStrength,
+                forceInfluenceRadius: manualForceRadius,
+            },
             color: v.color,
             half: v.half,
             thicknessDownscale: v.thicknessDownscale,
             absorption: v.absorption,
             size: v.size,
             physScale: 1,
-            count: 0,
+            count: currentMethod === "FLIP" ? (flipParticleCapacityRequest ?? 0) : 0,
+            gridResolution: currentMethod === "FLIP" ? flipGridResolution : undefined,
+            markersPerCell: currentMethod === "FLIP" ? flipMarkersPerCell : undefined,
             material: currentMethod === "PB-MPM" ? v.material : undefined,
-            renderMode: "surface",
+            freeCamera: {
+                position: [cam.position.x, cam.position.y, cam.position.z],
+                target: [cam.target.x, cam.target.y, cam.target.z],
+            },
+            renderMode: v.renderMode,
             refraction: v.refraction,
             specular: v.specular,
             reflectionExposure: v.reflectionExposure,
@@ -2339,8 +3321,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pagedGrid: currentMethod === "MLS-MPM" ? v.pagedGrid : undefined,
             pagedGridMaxPages: currentMethod === "MLS-MPM" ? v.pagedGridMaxPages : undefined,
             fusedBlockDiscovery: currentMethod === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
+            grid: { position: [...gridPosition], size: [...gridSize] },
+            showGridBounds: v.showGridBounds,
             foam: v.foam,
-            demoState: {},
+            emitters: structuredClone(activeFlow.emitters),
+            sinks: structuredClone(activeFlow.sinks),
+            initialEmittersFillCapacity: activeFlow.initialEmittersFillCapacity,
+            demoState: { simulationType, samplingMode: modeValue, fillStrategy },
             showContainer: v.showContainer,
         };
     }
@@ -2362,6 +3349,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             controls.setMaterial(currentMaterial);
             for (const inst of instances) inst.sim?.setMaterial?.(currentMaterial);
         }
+        if (currentMethod === "FLIP") {
+            flipGridResolution = Math.max(16, Math.min(400, Math.round(p.gridResolution ?? flipGridResolution)));
+            flipMarkersPerCell = Math.max(1, Math.min(64, Math.round(p.markersPerCell ?? flipMarkersPerCell)));
+            flipParticleCapacityRequest = typeof p.count === "number" && p.count > 0 ? Math.min(MAX_TOTAL, Math.round(p.count)) : null;
+            controls.setGridResolution(flipGridResolution);
+            controls.setMarkersPerCell(flipMarkersPerCell);
+        }
         if (currentMethod === "MLS-MPM") {
             mpmPagedGrid = p.pagedGrid ?? mpmPagedGrid;
             mpmActiveBlocks = mpmPagedGrid || (p.activeBlocks ?? mpmActiveBlocks);
@@ -2372,6 +3366,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             controls.setPagedGridMaxPages(mpmPagedGridMaxPages);
             controls.setFusedBlockDiscovery(mpmFusedBlockDiscovery);
             controls.setPagedGridStatus("");
+        }
+        if (p.emitters || p.sinks) {
+            activeFlow = {
+                emitters: structuredClone(p.emitters ?? []),
+                sinks: structuredClone(p.sinks ?? []),
+                ...(p.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: p.initialEmittersFillCapacity } : {}),
+            };
+            refreshFlowControls();
+        }
+        const importedType = p.demoState?.simulationType;
+        setSimulationType(importedType === "fluid" || importedType === "mesh" ? importedType : (p.emitters?.length ?? 0) > 0 || (p.sinks?.length ?? 0) > 0 ? "fluid" : "mesh");
+        const importedSamplingMode = p.demoState?.samplingMode;
+        if (importedSamplingMode === "dense" || importedSamplingMode === "regular" || importedSamplingMode === "kugelstadt2021") {
+            modeValue = importedSamplingMode;
+            modeSelect.value = importedSamplingMode;
+        }
+        const importedFillStrategy = p.demoState?.fillStrategy;
+        if (importedFillStrategy === "auto" || importedFillStrategy === "volume" || importedFillStrategy === "surface") {
+            fillStrategy = importedFillStrategy;
+            fillSelect.value = importedFillStrategy;
         }
         // Particle radius rides in demoParams. It's a construction-time param (like the slider, it can't
         // change a running sim) so restore the value + its slider; it takes effect on the next spawn.
@@ -2388,10 +3402,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             meshColorInput.checked = useMeshColors;
             surfaceTask.setUseParticleColor(useMeshColors);
         }
+        const collisionRadius = p.demoParams?.collisionNeighborhoodRadius;
+        if (typeof collisionRadius === "number" && isFinite(collisionRadius) && collisionRadius >= 0) {
+            collisionNeighborhoodRadius = collisionRadius;
+            collisionRadiusInput.value = String(collisionNeighborhoodRadius);
+            showCollisionRadius();
+        }
+        const forceStrength = p.demoParams?.forceStrength;
+        manualForceStrength = typeof forceStrength === "number" && isFinite(forceStrength) ? Math.max(0, Math.min(2, forceStrength)) : DEFAULT_FORCE_STRENGTH;
+        forceStrengthInput.value = String(manualForceStrength);
+        showForceStrength();
+        const forceInfluenceRadius = p.demoParams?.forceInfluenceRadius;
+        manualForceRadius = typeof forceInfluenceRadius === "number" && isFinite(forceInfluenceRadius) ? Math.max(0.1, Math.min(20, forceInfluenceRadius)) : DEFAULT_FORCE_RADIUS;
+        forceRadiusInput.value = String(manualForceRadius);
+        showForceRadius();
         // Surface render — these setters fire their host callbacks, applying LIVE to surfaceTask.
         if (p.color !== undefined) controls.setColor(p.color);
         if (p.absorption !== undefined) controls.setAbsorption(p.absorption);
         if (p.size !== undefined) controls.setParticleSize(p.size);
+        if (p.renderMode !== undefined) controls.setRenderMode(p.renderMode === "spheres");
         if (p.refraction !== undefined) controls.setRefraction(p.refraction);
         if (p.specular !== undefined) controls.setSpecular(p.specular);
         if (p.reflectionExposure !== undefined || p.reflectionContrast !== undefined) {
@@ -2399,14 +3428,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             controls.setReflection(p.reflectionExposure ?? current.reflectionExposure, p.reflectionContrast ?? current.reflectionContrast);
         }
         if (p.reflectivity !== undefined) controls.setReflectivity(p.reflectivity);
-        if (p.depthBlur !== undefined && p.depthBlurThreshold !== undefined) controls.setDepthBlur(p.depthBlur, p.depthBlurThreshold);
+        if (p.depthBlur !== undefined || p.depthBlurThreshold !== undefined) {
+            const current = controls.getValues();
+            controls.setDepthBlur(p.depthBlur ?? current.depthBlur, p.depthBlurThreshold ?? current.depthBlurThreshold);
+        }
         if (p.thicknessBlur !== undefined) controls.setThicknessBlur(p.thicknessBlur);
         if (p.half !== undefined) controls.setHalf(p.half);
         if (p.surfaceFilter !== undefined) controls.setSurfaceFilter(p.surfaceFilter);
-        if (p.narrowDelta !== undefined && p.narrowMu !== undefined) controls.setNarrowRange(p.narrowDelta, p.narrowMu);
+        if (p.narrowDelta !== undefined || p.narrowMu !== undefined) {
+            const current = controls.getValues();
+            controls.setNarrowRange(p.narrowDelta ?? current.narrowDelta, p.narrowMu ?? current.narrowMu);
+        }
         if (p.anisotropic !== undefined) controls.setAnisotropic(p.anisotropic);
         if (p.anisoSurfScale !== undefined) controls.setAnisotropySurfScale(p.anisoSurfScale);
         if (p.thicknessDownscale !== undefined) controls.setThicknessDownscale(p.thicknessDownscale);
+        if (p.foam !== undefined) {
+            controls.setFoam({ ...controls.getValues().foam, ...p.foam });
+            pushFoam();
+        }
         // Impulse — intensity + direction ride in their own block (absent in files written before it
         // existed, and in fluid-demo presets, which leaves the current values alone).
         const imp = j.impulse;
@@ -2429,33 +3468,48 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 showImpulseRadius();
             }
         }
-        // Grid size — same story: its own optional block, absent in older files, which keeps whatever
-        // the sliders currently hold rather than silently snapping back to automatic.
+        // Prefer the shared grid payload, while retaining the legacy Liquefactor/Aquanova block.
+        const nextGridPosition: [number, number, number] = p.grid ? [...p.grid.position] : [...gridPosition];
+        const nextGridSize: [number, number, number] = p.grid ? [...p.grid.size] : [...gridSize];
         const g = j.grid;
         if (g) {
             const axes = [g.x, g.y, g.z];
             for (let axis = 0; axis < 3; axis++) {
                 const v = axes[axis];
-                if (typeof v === "number" && isFinite(v) && v >= 0) gridSize[axis] = v;
+                if (typeof v === "number" && isFinite(v) && v > 0) nextGridSize[axis] = v;
             }
-            showGridSize();
+            if (Array.isArray(g.position) && g.position.length === 3 && g.position.every((value) => typeof value === "number" && isFinite(value))) {
+                nextGridPosition.splice(0, 3, ...g.position);
+            }
         }
+        setGridSettings(nextGridPosition, nextGridSize);
+        if (p.showGridBounds !== undefined) {
+            showGridBounds = p.showGridBounds;
+            controls.setShowGridBounds(showGridBounds);
+            syncGridBoundsWireframe();
+        }
+        if (p.freeCamera && p.freeCamera.position.every(isFinite) && p.freeCamera.target.every(isFinite)) {
+            applyFreeCameraPose(p.freeCamera.position, p.freeCamera.target);
+        }
+        refreshFlipParticleCapacity();
         refreshPhysicsParamVisibility();
     }
+    const buildCurrentPreset = (): FluidExportJson => {
+        const data = exportJsonFromPairState("aquanova-fluid-sim", currentMethod, liqPairState());
+        data.impulse = { intensity: impulseIntensity, direction: [impulseDir[0], impulseDir[1], impulseDir[2]], radius: impulseRadius };
+        data.grid = { x: gridSize[0], y: gridSize[1], z: gridSize[2], position: [...gridPosition] };
+        return data;
+    };
     const exportBtn = document.createElement("button");
     exportBtn.textContent = "Export";
     exportBtn.style.cssText = IO_BTN_STYLE;
     exportBtn.onclick = () => {
-        const data = exportJsonFromPairState("liquefactor", currentMethod, liqPairState());
-        // Impulse is a liquefaction concept the shared PairState has no slot for, so it is attached
-        // here. Aquanova reads the same block straight out of the setting file.
-        data.impulse = { intensity: impulseIntensity, direction: [impulseDir[0], impulseDir[1], impulseDir[2]], radius: impulseRadius };
-        data.grid = { x: gridSize[0], y: gridSize[1], z: gridSize[2] };
+        const data = buildCurrentPreset();
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `liquefactor-${currentMethod}.json`;
+        a.download = `aquanova-fluid-sim-${currentMethod}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -2471,7 +3525,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const reader = new FileReader();
         reader.onload = () => {
             try {
-                applyImportedPreset(JSON.parse(String(reader.result)) as FluidExportJson);
+                const preset = JSON.parse(String(reader.result)) as FluidExportJson;
+                restart();
+                applyImportedPreset(preset);
                 status.textContent = `Imported ${file.name}`;
             } catch (e) {
                 status.textContent = `Import failed: ${(e as Error).message}`;
@@ -2488,25 +3544,202 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ioRow.style.cssText = "display:flex;gap:6px;margin-top:6px;";
     ioRow.append(exportBtn, importBtn, importInput);
 
-    controls.demoSlot.append(
+    const normalizeFluidSimName = (name: string): string => name.replace(/\.json$/i, "").toLowerCase();
+    const isValidFluidSimName = (name: string): boolean => /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name);
+    let fluidSimNames: string[] = [];
+    const setFluidSimNames = (names: readonly string[], selected?: string): void => {
+        fluidSimNames = Array.from(new Set(names.map(normalizeFluidSimName).filter(isValidFluidSimName)));
+        const next = selected && fluidSimNames.includes(selected) ? selected : (fluidSimNames[0] ?? "");
+        fluidSimSelect.replaceChildren();
+        for (const name of fluidSimNames) {
+            const option = document.createElement("option");
+            option.value = name;
+            option.textContent = name;
+            fluidSimSelect.append(option);
+        }
+        fluidSimSelect.value = next;
+        fluidSimNameInput.value = next;
+        fluidSimSelect.disabled = fluidSimNames.length === 0;
+        fluidSimUpdateButton.disabled = fluidSimNames.length === 0;
+        fluidSimDeleteButton.disabled = fluidSimNames.length === 0;
+        canvas.dataset.fluidSimNames = fluidSimNames.join(",");
+    };
+    const readApiResponse = async (response: Response): Promise<{ name?: string; names?: string[] }> => {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string; name?: string; names?: string[] };
+        if (!response.ok) {
+            throw new Error(payload.error ?? (response.status === 404 ? "Preset authoring requires the local lab development server." : `HTTP ${response.status}`));
+        }
+        return payload;
+    };
+    const loadFluidSim = async (name: string): Promise<void> => {
+        const normalized = normalizeFluidSimName(name);
+        if (!isValidFluidSimName(normalized)) throw new Error(`Invalid simulation name "${name}".`);
+        restart();
+        const response = await fetch(`/aquanova/fluidSim/${encodeURIComponent(normalized)}.json`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Could not load "${normalized}" (HTTP ${response.status}).`);
+        applyImportedPreset((await response.json()) as FluidExportJson);
+        fluidSimSelect.value = normalized;
+        fluidSimNameInput.value = normalized;
+        fluidSimStatus.textContent = `Loaded ${normalized}`;
+        canvas.dataset.fluidSim = normalized;
+    };
+    const saveFluidSim = async (name: string, create: boolean): Promise<void> => {
+        const normalized = normalizeFluidSimName(name.trim());
+        if (!isValidFluidSimName(normalized)) {
+            throw new Error("Use 1-64 letters, numbers, hyphens, or underscores.");
+        }
+        if (create && fluidSimNames.includes(normalized)) {
+            throw new Error(`"${normalized}" already exists; use Update instead.`);
+        }
+        const result = await readApiResponse(
+            await fetch(`/lab-api/aquanova-fluid-sims/${encodeURIComponent(normalized)}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(buildCurrentPreset()),
+            })
+        );
+        setFluidSimNames(result.names ?? [...fluidSimNames, normalized], normalized);
+        if (shipManifest) shipManifest.fluidSim = [...fluidSimNames];
+        fluidSimStatus.textContent = `${create ? "Created" : "Updated"} ${normalized}`;
+        canvas.dataset.fluidSim = normalized;
+    };
+    const showFluidSimError = (error: unknown): void => {
+        fluidSimStatus.textContent = error instanceof Error ? error.message : String(error);
+        fluidSimStatus.style.color = "#f29b9b";
+    };
+    const runFluidSimAction = async (action: () => Promise<void>): Promise<void> => {
+        fluidSimStatus.style.color = "#8fa4bc";
+        try {
+            await action();
+        } catch (error) {
+            showFluidSimError(error);
+        }
+    };
+    fluidSimSelect.onchange = () => {
+        void runFluidSimAction(() => loadFluidSim(fluidSimSelect.value));
+    };
+    fluidSimCreateButton.onclick = () => {
+        void runFluidSimAction(() => saveFluidSim(fluidSimNameInput.value, true));
+    };
+    fluidSimUpdateButton.onclick = () => {
+        void runFluidSimAction(() => saveFluidSim(fluidSimSelect.value, false));
+    };
+    fluidSimDeleteButton.onclick = () => {
+        const name = fluidSimSelect.value;
+        if (!name || !window.confirm(`Delete fluid simulation "${name}"?`)) return;
+        void runFluidSimAction(async () => {
+            const result = await readApiResponse(await fetch(`/lab-api/aquanova-fluid-sims/${encodeURIComponent(name)}`, { method: "DELETE" }));
+            const nextNames = result.names ?? fluidSimNames.filter((entry) => entry !== name);
+            setFluidSimNames(nextNames);
+            if (shipManifest) shipManifest.fluidSim = [...fluidSimNames];
+            fluidSimStatus.textContent = `Deleted ${name}`;
+            if (fluidSimSelect.value) await loadFluidSim(fluidSimSelect.value);
+        });
+    };
+
+    const initialFoam = controls.getValues().foam;
+    foamTask.setThresholds(initialFoam.softness, initialFoam.density);
+    foamTask.setSubsurfaceStrength(initialFoam.subsurfaceStrength);
+    foamTask.setSubsurfaceColor(hexToRgb(initialFoam.subsurfaceColor));
+    foamTask.setSizeScale(initialFoam.size);
+    foamTask.setBlurRadius(initialFoam.blurRadius);
+    foamTask.setLightIntensity(initialFoam.lightIntensity);
+    foamTask.setAmbient(initialFoam.ambient);
+    foamTask.setAOStrength(initialFoam.aoStrength);
+    foamTask.setNormalStrength(initialFoam.normalStrength);
+    foamTask.setDebugTexture(initialFoam.debugTexture as FoamDebugTexture);
+    foamTask.setEnabled(initialFoam.enabled);
+
+    const demoSection = controls.makeSection("Demo", [
         title,
-        subtitle,
-        foeRow,
+        simulationTypeRow,
+        fluidSimRow,
+        fluidSimAuthoring,
+        collisionRadiusRow,
+        forceStrengthRow,
+        forceRadiusRow,
+        restartBtn,
+        ioRow,
+        status,
+        partCount,
+    ]);
+    const meshLiquefactionSection = controls.makeSection("Mesh liquefaction", [
         labelledRow("Sampling mode", modeSelect),
-        envRow,
         radiusRow,
         fillRow,
         impulseRow,
         impulseDirRow,
         impulseRadiusRow,
-        gridRow,
         meshColorRow,
-        restartBtn,
-        ioRow,
-        status,
-        partCount
-    );
+    ]);
+    controls.demoSlot.append(...demoSection, ...meshLiquefactionSection);
+    const emitterFlowHost = document.createElement("div");
+    const sinkFlowHost = document.createElement("div");
+    const emitterSection = controls.makeSection("Emitters", [emitterFlowHost]);
+    const sinkSection = controls.makeSection("Sinks", [sinkFlowHost]);
+    controls.root.append(...emitterSection, ...sinkSection);
+    const setHostSectionVisible = (section: HTMLElement[], visible: boolean): void => {
+        for (const element of section) element.style.display = visible ? "" : "none";
+    };
+    setSimulationType = (value: SimulationType): void => {
+        const changed = simulationType !== value;
+        simulationType = value;
+        simulationTypeSelect.value = value;
+        setHostSectionVisible(meshLiquefactionSection, value === "mesh");
+        forceStrengthRow.style.display = value === "fluid" ? "" : "none";
+        forceRadiusRow.style.display = value === "fluid" ? "" : "none";
+        setHostSectionVisible(emitterSection, value === "fluid");
+        setHostSectionVisible(sinkSection, value === "fluid");
+        controls.setSectionVisible("Foam", value === "fluid");
+        updateHelperText();
+        canvas.dataset.simulationType = value;
+        if (changed) restart();
+        setStatus();
+    };
+    flowEditor = createFluidFlowEditor({
+        emittersHost: emitterFlowHost,
+        sinksHost: sinkFlowHost,
+        flow: activeFlow,
+        onChange: (flow) => {
+            activeFlow = flow;
+            manualRun?.sim.setFlow(flowInWorldSpace(activeFlow));
+            refreshFlipParticleCapacity();
+            refreshManualParticleUsage();
+            canvas.dataset.emitterCount = String(activeFlow.emitters.length);
+            canvas.dataset.sinkCount = String(activeFlow.sinks.length);
+        },
+        onRefresh: () => {
+            syncFlowWireframe("emitter");
+            syncFlowWireframe("sink");
+            syncFlowGizmo();
+        },
+        visuals: {
+            getWireframeVisible: (kind) => (kind === "emitter" ? showEmitterWireframe : showSinkWireframe),
+            setWireframeVisible: (kind, visible) => {
+                if (kind === "emitter") {
+                    showEmitterWireframe = visible;
+                } else {
+                    showSinkWireframe = visible;
+                }
+            },
+            getGizmoVisible: (kind) => flowGizmoOwner === kind,
+            setGizmoVisible: (kind, visible) => {
+                flowGizmoOwner = visible ? kind : flowGizmoOwner === kind ? null : flowGizmoOwner;
+            },
+        },
+    });
+    refreshFlowControls = () => flowEditor?.setFlow(activeFlow);
+    refreshFlowControls();
+    setSimulationType(simulationType);
     document.body.append(controls.root);
+    await shipManifestReady;
+    const loadedShipManifest = shipManifest as ShipManifestData | null;
+    setFluidSimNames(loadedShipManifest?.fluidSim ?? []);
+    if (fluidSimSelect.value) {
+        await runFluidSimAction(() => loadFluidSim(fluidSimSelect.value));
+    } else {
+        fluidSimStatus.textContent = "No authored fluid simulations.";
+    }
     if (controls.gpu) {
         // The demo's own panel is top-left, so pin the GPU pane top-right to avoid overlap.
         controls.gpu.panel.style.left = "auto";
@@ -2519,7 +3752,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     setStatus();
 
     // ── Programmatic hooks for headless QA ───────────────────────────────────
-    (window as unknown as { __liquefactor?: unknown }).__liquefactor = {
+    const qa = {
         getInstances: () =>
             instances.map((i) => {
                 const w = i.meshes[0]!.worldMatrix as unknown as ArrayLike<number>;
@@ -2550,6 +3783,41 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             return inst ? ([inst.root.position.x, inst.root.position.y, inst.root.position.z] as [number, number, number]) : null;
         },
         restart: () => restart(),
+        startManual: () => startManualSimulation(),
+        manualRunning: () => manualRun !== null,
+        flow: () => structuredClone(activeFlow),
+        flowVisualState: () => ({
+            emitterWireframe: showEmitterWireframe,
+            sinkWireframe: showSinkWireframe,
+            gizmoOwner: flowGizmoOwner,
+            emitterVisible: emitterFlowWireframe.visible,
+            sinkVisible: sinkFlowWireframe.visible,
+        }),
+        setFlow: (flow: FluidFlowConfig) => {
+            activeFlow = structuredClone(flow);
+            refreshFlowControls();
+        },
+        collisionNeighborhoodRadius: () => collisionNeighborhoodRadius,
+        setCollisionNeighborhoodRadius: (radius: number) => {
+            collisionNeighborhoodRadius = Math.max(0, Math.min(40, radius));
+            collisionRadiusInput.value = String(collisionNeighborhoodRadius);
+            showCollisionRadius();
+        },
+        forceSettings: () => ({ strength: manualForceStrength, radius: manualForceRadius }),
+        setForceSettings: (strength: number, radius: number) => {
+            manualForceStrength = Math.max(0, Math.min(2, strength));
+            manualForceRadius = Math.max(0.1, Math.min(20, radius));
+            forceStrengthInput.value = String(manualForceStrength);
+            forceRadiusInput.value = String(manualForceRadius);
+            showForceStrength();
+            showForceRadius();
+        },
+        currentPreset: () => buildCurrentPreset(),
+        setFoamEnabled: (enabled: boolean) => {
+            controls.setFoam({ ...controls.getValues().foam, enabled });
+            pushFoam();
+        },
+        foamEnabled: () => controls.getValues().foam.enabled,
         camState: () => ({ px: cam.position.x, py: cam.position.y, pz: cam.position.z, tx: cam.target.x, ty: cam.target.y, tz: cam.target.z, yaw: camYaw, pitch: camPitch }),
         dynBodies: () =>
             dynDisplays.map((d) => ({
@@ -2590,6 +3858,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             toneMapping: scene.imageProcessing.toneMapping,
             toneMappingEnabled: scene.imageProcessing.toneMappingEnabled,
             ibl: (instances[0]?.materials[0] as unknown as { environmentIntensity?: number } | undefined)?.environmentIntensity,
+            specularAA: (instances[0]?.materials[0] as unknown as { enableSpecularAA?: boolean } | undefined)?.enableSpecularAA,
+            reflectionRoughness: shipManifest?.environment?.reflectionRoughness,
             hemi: hemiLight.intensity,
             sun: sun.intensity,
             env: currentEnvKey,
@@ -2620,18 +3890,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         },
         impulseState: (): Record<string, unknown> => ({ intensity: impulseIntensity, direction: [...impulseDir], radius: impulseRadius }),
         setGridSize: (x: number, y: number, z: number) => {
-            gridSize[0] = x;
-            gridSize[1] = y;
-            gridSize[2] = z;
-            showGridSize();
+            setGridSettings(gridPosition, [x, y, z]);
         },
-        gridState: (): number[] => [...gridSize],
-        exportPreset: (): unknown => {
-            const data = exportJsonFromPairState("liquefactor", currentMethod, liqPairState());
-            data.impulse = { intensity: impulseIntensity, direction: [impulseDir[0], impulseDir[1], impulseDir[2]], radius: impulseRadius };
-            data.grid = { x: gridSize[0], y: gridSize[1], z: gridSize[2] };
-            return data;
+        setGridPosition: (x: number, y: number, z: number) => {
+            setGridSettings([x, y, z], gridSize);
         },
+        gridState: (): Record<string, number[]> => ({ position: [...gridPosition], size: [...gridSize] }),
+        simulationType: (): SimulationType => simulationType,
+        setSimulationType: (value: SimulationType): void => setSimulationType(value),
+        fluidSimNames: (): string[] => [...fluidSimNames],
+        exportPreset: (): unknown => buildCurrentPreset(),
         importPreset: (j: FluidExportJson): void => applyImportedPreset(j),
         setUseMeshColors: (on: boolean) => {
             useMeshColors = on;
@@ -2661,12 +3929,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         shootAt: (px: number, py: number) =>
             pickAsync(picker, px, py, { filter: (m) => instanceOf(m)?.phase === "solid" && !instanceOf(m)?.sampling }).then((info) => {
                 const inst = info.pickedMesh ? instanceOf(info.pickedMesh) : undefined;
-                const onEnemy = !!info.hit && !!info.pickedPoint && !!inst && inst.phase === "solid" && !inst.sampling;
+                const onEnemy = simulationType === "mesh" && !!info.hit && !!info.pickedPoint && !!inst && inst.phase === "solid" && !inst.sampling;
                 let dissolveStarted = false;
                 if (onEnemy && info.pickedPoint) dissolveStarted = requestSample(inst!, info.pickedPoint);
                 return { hit: info.hit, onEnemy, dissolveStarted, key: inst?.key ?? null };
             }),
     };
+    (window as unknown as { __aquanovaFluidSim?: unknown }).__aquanovaFluidSim = qa;
+    (window as unknown as { __liquefactor?: unknown }).__liquefactor = qa;
 
     // Click a foe to liquefy it from the hit point. RIGHT-drag looks around, so LMB is free for
     // shooting in both modes — the old Shift gate existed only because left-drag used to orbit.
@@ -2728,7 +3998,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     canvas.addEventListener("pointerdown", (ev) => {
-        if (ev.button !== 0) return;
+        if (ev.button !== 0 || simulationType !== "mesh") return;
         const rect = canvas.getBoundingClientRect();
         const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
         const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
@@ -2765,7 +4035,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (const inst of instances) {
                 if (inst.wriggling) applyWriggle(inst); // pain shake — active from click through the dissolve
                 if (inst.phase === "dissolving") {
-                    inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + (FOE_SET === "ship" ? LIQUEFY_SPEED_SHIP : LIQUEFY_SPEED) * growDt, inst.maxR);
+                    inst.liquefyState.frontR = Math.min(inst.liquefyState.frontR + LIQUEFY_SPEED_SHIP * growDt, inst.maxR);
                     bumpUbo(inst);
                     if (!inst.dissolved && inst.liquefyState.frontR >= inst.maxR) {
                         // Solid gone, but hold here (fully clipped, water still frozen) until every member
@@ -2799,6 +4069,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     }
                 }
             }
+            if (manualRun) {
+                if (pendingForce) {
+                    rayForce.setRay(pendingForce.origin, pendingForce.dir, pendingForce.push, pendingForce.radius, pendingForce.accel);
+                    manualRun.sim.setForceField(rayForce.spec);
+                    pendingForce = null;
+                } else {
+                    manualRun.sim.setForceField(null);
+                }
+                manualRun.sim.step(engine._currentEncoder, dt);
+            }
         }
 
         // Aggregate every live sim's render positions into the combined buffer (after stepping),
@@ -2819,6 +4099,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
         }
+        if (manualRun) {
+            const n = manualRun.sim.count;
+            if (off + n <= MAX_TOTAL) {
+                engine._currentEncoder.copyBufferToBuffer(manualRun.sim.positionBuffer, 0, combinedPos, off * 16, n * 16);
+                if (useMeshColors) {
+                    engine._currentEncoder.copyBufferToBuffer(manualRun.colorBuffer, 0, combinedColor, off * 16, n * 16);
+                }
+                alphaScratch.fill(1, off, off + n);
+                off += n;
+            }
+        }
         if (off > 0) {
             // Keep the whole active range in sync so a slot reused after a fade isn't left dim.
             device.queue.writeBuffer(combinedAlpha, 0, alphaScratch, 0, off);
@@ -2826,8 +4117,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {
             virtualSim.count = 0;
         }
-        canvas.dataset.particleCount = String(off);
-        partCount.textContent = `${off.toLocaleString()} particles`;
+        const displayedCount = simulationType === "fluid" ? (manualRun?.sim.activeCount ?? manualRun?.sim.count ?? 0) : off;
+        canvas.dataset.particleCount = String(displayedCount);
+        partCount.textContent = `${displayedCount.toLocaleString()} particles`;
+        refreshManualParticleUsage();
 
         // GPU timing + memory read-outs on a ~2 Hz cadence (same as the FPS counter).
         fpsAccumMs += deltaMs;
@@ -2838,23 +4131,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 gpu.fpsLabel.textContent = paused ? "paused" : `${Math.round((fpsFrames * 1000) / fpsAccumMs)}`;
                 gpu.refreshTiming(profiler ? profiler.results() : null);
                 let simBytes = 0;
-                for (const inst of instances) if (inst.sim) simBytes += inst.sim.gpuBytes;
+                for (const inst of instances) {
+                    if (inst.sim) simBytes += inst.sim.gpuBytes;
+                    simBytes += inst.collisionBuffer?.size ?? 0;
+                }
+                if (manualRun) simBytes += manualRun.sim.gpuBytes + (manualRun.collisionBuffer?.size ?? 0) + manualRun.colorBuffer.size;
                 gpu.refreshMemory(simBytes, engine.canvas.width, engine.canvas.height);
             }
+            const foamPools = runningSims()
+                .map((sim) => sim.diffuse)
+                .filter((pool) => !!pool);
+            const foamCounts = foamPools.reduce(
+                (sum, pool) => {
+                    const counts = pool.counts;
+                    sum.total += counts?.total ?? 0;
+                    sum.spray += counts?.spray ?? 0;
+                    sum.foam += counts?.foam ?? 0;
+                    sum.bubble += counts?.bubble ?? 0;
+                    sum.capacity += pool.capacity;
+                    return sum;
+                },
+                { total: 0, spray: 0, foam: 0, bubble: 0, capacity: 0 }
+            );
+            controls.setFoamParticleCounts(foamPools.length ? foamCounts : undefined, controls.getValues().foam.enabled, foamCounts.capacity);
             fpsAccumMs = 0;
             fpsFrames = 0;
         }
     });
 
     await envReady;
-    // Load all glTF foes BEFORE the scene build so they materialize reliably (a dynamic post-boot
-    // add leaves the clip-plugin UBO uninitialised). The 39 MB haunted house dominates this wait.
-    if (FOE_SET === "ship") {
-        await loadShipFoes();
-    } else {
-        await Promise.all(MODEL_FOES.map((cfg) => loadModelInstance(cfg)));
-    }
+    // Load the full Aquanova ship before scene registration so the liquefy plugin materializes for
+    // every ship mesh.
+    await loadShipFoes();
     await registerScene(scene);
+    await registerUtilityLayer(gridGizmoLayer);
     await startEngine(engine);
 
     canvas.dataset.ready = "true";

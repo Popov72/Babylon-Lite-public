@@ -21,7 +21,10 @@ export interface FluidFlowEditorOptions {
     flow: FluidFlowConfig;
     onChange(flow: FluidFlowConfig, change: FluidFlowEditorChange): void;
     onRefresh?(): void;
-    visuals?: FluidFlowEditorVisuals;
+    /** Required so shared visual controls cannot silently disappear in one host. */
+    visuals: FluidFlowEditorVisuals;
+    /** Explicitly suppresses the Wireframe and Gizmo rows for hosts that cannot render them. */
+    hideVisualControls?: boolean;
     getEmitterRateMode?: () => "occupancy-refill" | "unlimited-toggle";
     getInitialEmitterParticleCount?: (emitter: FluidEmitter) => number | undefined;
     onInitialEmitterParticleCountDisplayed?: (count: number | undefined) => void;
@@ -446,9 +449,9 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
     const flowWireframeCheckbox = (kind: FluidFlowObjectKind): HTMLInputElement => {
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
-        checkbox.checked = options.visuals?.getWireframeVisible(kind) ?? false;
+        checkbox.checked = options.visuals.getWireframeVisible(kind);
         checkbox.onchange = () => {
-            options.visuals?.setWireframeVisible(kind, checkbox.checked);
+            options.visuals.setWireframeVisible(kind, checkbox.checked);
             options.onRefresh?.();
         };
         return checkbox;
@@ -457,9 +460,9 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
     const flowGizmoCheckbox = (kind: FluidFlowObjectKind): HTMLInputElement => {
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
-        checkbox.checked = options.visuals?.getGizmoVisible(kind) ?? false;
+        checkbox.checked = options.visuals.getGizmoVisible(kind);
         checkbox.onchange = () => {
-            options.visuals?.setGizmoVisible(kind, checkbox.checked);
+            options.visuals.setGizmoVisible(kind, checkbox.checked);
             refresh();
         };
         return checkbox;
@@ -577,7 +580,7 @@ export function createFluidFlowEditor(options: FluidFlowEditorOptions): FluidFlo
             object.enabled = enabled.checked;
             updateObject(kind, object);
         };
-        if (options.visuals) {
+        if (!options.hideVisualControls) {
             editor.append(flowField("Wireframe", flowWireframeCheckbox(kind)), flowField("Gizmo", flowGizmoCheckbox(kind)));
         }
         editor.append(

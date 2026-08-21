@@ -53,10 +53,11 @@ describe("fluid preset grid migration", () => {
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
         state.camera = { alpha: 0.25, beta: 1.1, radius: 18, target: [2, 3, 4] };
+        state.freeCamera = { position: [5, 6, 7], target: [8, 9, 10] };
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
-        expect(exported.formatVersion).toBe(11);
+        expect(exported.formatVersion).toBe(12);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
         expect(exported.simulationDuration).toBe(12);
@@ -66,6 +67,8 @@ describe("fluid preset grid migration", () => {
         expect(imported.alphaDecay).toBe(2.5);
         expect(exported.camera).toEqual(state.camera);
         expect(imported.camera).toEqual(state.camera);
+        expect(exported.freeCamera).toEqual(state.freeCamera);
+        expect(imported.freeCamera).toEqual(state.freeCamera);
     });
 
     it("round-trips FLIP resolution divisions and marker density", () => {
