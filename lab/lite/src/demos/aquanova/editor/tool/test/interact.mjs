@@ -3615,12 +3615,11 @@ await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-override i
 await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
 await page.waitForTimeout(250);
 const linkedNow = await page.evaluate(async () => {
-  const input = document.querySelector(
-    '#bhv-applied [data-behavior-key="linked"] .behavior-array-row input');
-  const list = input ? document.getElementById(input.getAttribute("list")) : null;
+  const select = document.querySelector(
+    '#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
   return {
     linked: (await import("/js/editor.js")).entityBehaviors("crate")[0].linked,
-    options: [...(list?.options ?? [])].map((option) => option.value),
+    options: [...(select?.options ?? [])].map((option) => option.value).filter(Boolean),
   };
 });
 check("the linked picker offers the other named nodes in the room",
@@ -3673,9 +3672,20 @@ check("liquefiable alone does not make a node dynamic",
 
 // Assignment parameters are typed overrides. The definition stays untouched,
 // and the manifest keeps the same wire shape.
+// A splash category is chosen from the ones the weapon defines rather than
+// typed, so one has to exist first: a category the weapon does not know plays
+// nothing at runtime, which is exactly what the list is there to prevent.
+await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  ed.setBehaviorDef("weaponLiquefactor", { sounds: { longSplash: ["waterLongSplash"] } });
+  const id = [...ed.state.placements.values()].find((p) => p.name === "crate").id;
+  ed.select([]);
+  ed.select([id]);
+});
+await page.waitForTimeout(250);
 await page.click('#bhv-applied [data-behavior-key="sound"] .behavior-override input');
-await page.fill('#bhv-applied [data-behavior-key="sound"] input[type="text"]', "longSplash");
-await page.locator('#bhv-applied [data-behavior-key="sound"] input[type="text"]').blur();
+await page.waitForTimeout(200);
+await page.selectOption('#bhv-applied [data-behavior-key="sound"] select', "longSplash");
 await page.waitForTimeout(250);
 const paramsStored = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -4413,10 +4423,9 @@ const doorAttached = await page.evaluate(async () => {
   return {
     applied: ed.entityBehaviors(id).map((b) => b.name),
     candidates: (() => {
-      const input = document.querySelector(
-        '#bhv-applied [data-behavior-key="linked"] .behavior-array-row input');
-      const list = input ? document.getElementById(input.getAttribute("list")) : null;
-      return [...(list?.options ?? [])].map((option) => option.value);
+      const select = document.querySelector(
+        '#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
+      return [...(select?.options ?? [])].map((option) => option.value).filter(Boolean);
     })(),
     exported: Object.keys(mf.buildManifest().entities || {}),
   };

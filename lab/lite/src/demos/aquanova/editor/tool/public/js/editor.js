@@ -5,6 +5,7 @@
 
 import { instantiate, getModule } from "./kit.js";
 import { patchKhronosPbrNeutralShader } from "./shader-patches.js";
+import { renameEntityReferences } from "./behavior-metadata.js";
 
 const {
   Engine, Scene, UniversalCamera, HemisphericLight, Vector3,
@@ -2597,11 +2598,18 @@ export function renameChunk(from, to) {
     if (m.chunkB === from) m.chunkB = name;
   }
   if (state.activeChunk === from) state.activeChunk = name;
+  // A chunk id is a node name too - the room holder itself - so behaviours can
+  // watch it, and they must follow it here as they do for any other rename.
+  const carried = state.entities.get(from);
+  if (carried && !state.entities.has(name)) state.entities.set(name, carried);
+  if (carried) state.entities.delete(from);
+  renameEntityRefs(from, name);
 
   applyVisibility();
   emit("chunks");
   emit("placements");
   emit("markers");
+  emit("behaviors");
   return true;
 }
 
@@ -3019,15 +3027,57 @@ export function renamePlacement(id, name) {
   e.name = next;
   const after = nodeNameOf(e);
   const carried = state.entities.get(before);
-  if (carried && before !== after && !placementsCarrying(before).length) {
-    if (!state.entities.has(after)) state.entities.set(after, carried);
-    state.entities.delete(before);
+  // Only when the old name has nothing left answering to it. While other
+  // elements still carry it, every reference to it is still correct, and the
+  // new name is simply a name nothing points at yet.
+  if (before !== after && !placementsCarrying(before).length) {
+    if (carried && !state.entities.has(after)) state.entities.set(after, carried);
+    if (carried) state.entities.delete(before);
+    renameEntityRefs(before, after);
   }
   emit("placements");
   emit("current");
   emit("behaviors");
   return true;
 }
+
+/**
+ * Follow a rename into every behaviour that named the old node.
+ *
+ * A `linked` group, a subscription's source, the target of a raised event: all
+ * of them are node names written down, and a rename that left them behind would
+ * turn a working ship into one whose faults only show at runtime, as behaviours
+ * that quietly do nothing. The schema says which fields hold a node name - see
+ * renameEntityReferences - so this cannot fall behind the behaviours the
+ * metadata file grows.
+ *
+ * No undo entry of its own: it is part of the rename, and the caller has
+ * already pushed one.
+ */
+function renameEntityRefs(before, after) {
+  if (!behaviorCatalog) return;
+  for (const [name, body] of state.behaviors) {
+    renameEntityReferences(behaviorCatalog, name, body, before, after);
+  }
+  for (const [node, list] of state.entities) {
+    for (const assignment of list) {
+      renameEntityReferences(behaviorCatalog, assignment.name, assignment, before, after);
+      // The rename can have pointed a group at its own owner, which says
+      // nothing and is the one thing `linked` may not contain.
+      if (Array.isArray(assignment.linked)) assignment.linked = cleanLinked(assignment.linked, node);
+    }
+  }
+}
+
+/**
+ * The behaviour schema, once it has been fetched.
+ *
+ * Held rather than imported because it is loaded over the network by the UI
+ * layer; until it arrives a rename still moves its entity entry, it simply has
+ * nothing to say about which fields hold node names.
+ */
+let behaviorCatalog = null;
+export function setBehaviorCatalog(catalog) { behaviorCatalog = catalog; }
 
 // ------------------------------------------------------------- behaviours
 //

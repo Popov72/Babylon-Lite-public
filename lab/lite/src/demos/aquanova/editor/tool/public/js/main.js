@@ -5,7 +5,7 @@ import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
   saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, syncShip, resolveDoorChunks, nodeNameOf,
-  liveEntityNames, pruneOrphanEntities,
+  liveEntityNames, liveEntitiesByChunk, pruneOrphanEntities,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
@@ -38,7 +38,7 @@ import {
   validEnvironmentProbeId, environmentProbeIdAvailable,
   renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
   setVeilAlpha, SKYBOX_CHUNK,
-  getBehaviorDef, setBehaviorDef, deleteBehaviorDef, behaviorNames,
+  getBehaviorDef, setBehaviorDef, deleteBehaviorDef, behaviorNames, setBehaviorCatalog,
   entityBehaviors, addEntityBehavior, removeEntityBehavior,
   setEntityParams, nodeNamesInChunk, nodesNamed, entityNameOf,
   behaviorParams, behaviorHiddenPlacements,
@@ -67,8 +67,8 @@ import {
 } from "./runtime.js";
 import { generateLocalEnvironments } from "./local-environments.js";
 import {
-  behaviorMetadata, behaviorMetadataNames, collectRaisedEventNames,
-  createBehaviorForm, defaultBehaviorDefinition, loadBehaviorMetadata,
+  behaviorFileOptions, behaviorMetadata, behaviorMetadataNames, collectRaisedEventNames,
+  createBehaviorForm, defaultBehaviorDefinition, eventsRaisedByAll, loadBehaviorMetadata,
 } from "./behavior-metadata.js";
 
 const $ = (id) => document.getElementById(id);
@@ -76,6 +76,12 @@ const alphabetical = (values) => [...values].sort((a, b) => a.localeCompare(b));
 const statusText = $("status-text");
 const statusCounts = $("status-counts");
 const behaviorCatalog = await loadBehaviorMetadata();
+// The store rewrites behaviour references when something is renamed, and needs
+// the schema to know which fields hold a node name.
+setBehaviorCatalog(behaviorCatalog);
+// One scope for the library window: it edits a definition, which belongs to no
+// room, so "anywhere on the ship" is the only honest starting point.
+const libraryScope = {};
 
 function fillBehaviorNameOptions(selected = "") {
   const names = behaviorMetadataNames(behaviorCatalog);
@@ -390,7 +396,7 @@ function renderApplied(nodeName, applied) {
       refreshBehavior();
     });
   }
-  const options = behaviorFormOptions(candidates);
+  const options = behaviorFormOptions(candidates, nodeName);
   for (const formHost of host.querySelectorAll("[data-behavior-form]")) {
     const at = Number(formHost.dataset.behaviorForm);
     const assignment = applied[at];
@@ -400,6 +406,7 @@ function renderApplied(nodeName, applied) {
       inherited: getBehaviorDef(assignment.name) ?? {},
       scope: "assignment",
       options,
+      entityScope: entityScopeFor(`${nodeName}#${at}`),
       onChange: (params, errors) => {
         if (!errors.length) setEntityParams(nodeName, at, params);
       },
@@ -407,13 +414,85 @@ function renderApplied(nodeName, applied) {
   }
 }
 
-function behaviorFormOptions(nearbyEntities = []) {
+/**
+ * How wide each form's entity pickers are looking, kept across rebuilds.
+ *
+ * The panel rebuilds its forms after every edit, so a filter held inside one
+ * would snap back to the room the moment you used it. It is a view preference
+ * rather than ship data, so it lives here and is never saved.
+ */
+const entityScopes = new Map();
+const entityScopeFor = (key) => {
+  if (!entityScopes.has(key)) entityScopes.set(key, {});
+  return entityScopes.get(key);
+};
+
+/**
+ * Everything a behaviour form may offer a list of.
+ *
+ * Vocabularies come from three places and are merged here so the form never has
+ * to know which: the metadata file (the game's own MP3s), the ship (its rooms,
+ * its elements, its sims), and the behaviours themselves (the events they
+ * raise, the sound categories the weapon defines). `eventsOfSources` is a
+ * function rather than a list because its answer depends on which sources the
+ * entry being edited has picked - see eventsRaisedByAll.
+ */
+function behaviorFormOptions(nearbyEntities = [], owner = "") {
+  const entry = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
   return {
+    ...behaviorFileOptions(behaviorCatalog),
     entities: alphabetical(new Set([...liveEntityNames(), ...state.entities.keys()])),
     nearbyEntities: alphabetical(nearbyEntities),
+    entitiesByChunk: liveEntitiesByChunk(),
+    chunks: [...state.chunks],
+    currentChunks: chunksOf(entry),
     events: collectRaisedEventNames(behaviorCatalog, state.behaviors, state.entities),
+    eventsOfSources: (sources) =>
+      eventsRaisedByAll(behaviorCatalog, state.behaviors, state.entities, sources),
+    soundCategories: soundCategoryNames(),
+    animations: animationNamesOf(owner),
     fluidSim: alphabetical(state.fluidSim),
   };
+}
+
+/** Which rooms an element counts as being in - a door spans the two it joins. */
+function chunksOf(entry) {
+  if (!entry) return [];
+  if (entry.type === "door") return [entry.chunkA, entry.chunkB].filter(Boolean);
+  return entry.chunk ? [entry.chunk] : [];
+}
+
+/**
+ * The splash categories a liquefiable element may ask for.
+ *
+ * Not a fixed list: the weapon behaviour *defines* them, so the choice offered
+ * here is whatever it currently maps. Reading them back out is what stops the
+ * two halves - the category a crate asks for and the categories the weapon
+ * knows - from being typed independently and quietly disagreeing.
+ */
+function soundCategoryNames() {
+  const names = new Set();
+  for (const [, body] of state.behaviors) {
+    for (const key of Object.keys(body?.sounds ?? {})) if (key.trim()) names.add(key.trim());
+  }
+  for (const list of state.entities.values()) {
+    for (const assignment of list) {
+      for (const key of Object.keys(assignment?.sounds ?? {})) if (key.trim()) names.add(key.trim());
+    }
+  }
+  return alphabetical(names);
+}
+
+/** The clips the kit actually shipped for whatever carries this node name. */
+function animationNamesOf(nodeName) {
+  const key = String(nodeName || "").trim();
+  if (!key) return [];
+  const names = new Set();
+  for (const p of state.placements.values()) {
+    if (nodeNameOf(p) !== key) continue;
+    for (const group of p.node?._shipAnimationGroups ?? []) if (group?.name) names.add(group.name);
+  }
+  return alphabetical(names);
 }
 
 function selectedName() {
@@ -471,6 +550,7 @@ function refreshLibrary(pick) {
     value: libSelected ? getBehaviorDef(libSelected) : defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
     scope: "definition",
     options: behaviorFormOptions(),
+    entityScope: libraryScope,
   });
   $("bhv-error").textContent = "";
   $("btn-bhv-delete").disabled = !libSelected;
@@ -486,6 +566,7 @@ $("btn-bhv-new").addEventListener("click", () => {
   $("bhv-name").disabled = false;
   libraryForm = createBehaviorForm($("bhv-fields"), {
     metadata: null, value: {}, scope: "definition", options: behaviorFormOptions(),
+    entityScope: libraryScope,
   });
   $("bhv-error").textContent = "";
   $("btn-bhv-delete").disabled = true;
@@ -499,6 +580,7 @@ $("bhv-name").addEventListener("change", () => {
     value: existing ?? defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
     scope: "definition",
     options: behaviorFormOptions(),
+    entityScope: libraryScope,
   });
 });
 

@@ -592,6 +592,20 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   display: flex; flex-direction: column; gap: 7px;
   padding: 7px; border-left: 2px solid var(--line); background: rgba(0, 0, 0, 0.08);
 }
+/* One room filter per form, not one per field: a door watched by five panels
+   would otherwise carry five identical selectors. It sits above the fields it
+   narrows, which is why it reads as a caption rather than a labelled row. */
+.behavior-scope {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px; border: 1px solid var(--line); border-radius: 3px;
+  background: rgba(0, 0, 0, 0.12);
+}
+.behavior-scope select { width: 100%; box-sizing: border-box; }
+.behavior-scope-label { color: var(--muted); font-size: 10px; }
+.behavior-picker { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* The inline "name a new one" input and its cancel button share the row. */
+.behavior-picker-new { display: flex; gap: 4px; align-items: center; min-width: 0; }
+.behavior-picker-new input[type="text"] { flex: 1 1 0; min-width: 0; }
 .behavior-nested { min-width: 0; }
 .behavior-form input[type="text"], .behavior-form input[type="number"],
 .behavior-form select { width: 100%; box-sizing: border-box; }

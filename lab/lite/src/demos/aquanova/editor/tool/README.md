@@ -269,30 +269,81 @@ volumes and is not known while editing, so a door with neither side named offers
 nothing. The list is de-duplicated, drops the node itself, and is omitted from
 the manifest when empty — the absence is what "this one stands alone" means.
 
-**Parameters** ride the applied entry beside `name`, and are edited as **raw
-JSON**, one box per attached behaviour:
+**Parameters** ride the applied entry beside `name`, and are edited as **typed
+fields generated from `public/data/behavior-definitions.json`** — one form per
+attached behaviour. The file describes every behaviour the runtime understands:
+each parameter's type, its label, its default, and — the point of the whole
+exercise — **where its list of legal values comes from**. Adding a parameter to
+a behaviour is an edit to that file, not to the panel.
 
-```jsonc
-{ "name": "player_startpos", "direction": [-1, 0, 0] }
-```
+They used to be raw JSON boxes, on the argument that the runtime owns the
+vocabulary and the editor should not guess at it. The file is that argument
+honoured properly: the vocabulary is still declared in one place, but declared
+somewhere the UI can read, so it can be offered instead of remembered.
 
-Raw JSON for the same reason the definition body is raw JSON: the **runtime**
-owns which parameters a behaviour understands. The panel used to offer three
-number fields for `direction` and nothing else — one runtime parameter promoted
-to a widget, with no way to author a second, and no way to see one that some
-other tool had written. Every key is now carried through untouched, in and out,
-by one symmetric pair of helpers (`readBehaviorExtras` / `writeBehaviorExtras`)
-shared by the manifest writer and the undo snapshot, so the two can never
-disagree about what an assignment may carry.
+**Nothing that can be listed is ever typed.** An entity name, an event name, a
+sound, an animation clip, a fluid sim, a splash category: every one of them is a
+word the ship already defines somewhere, and a word typed from memory is a word
+that can be wrong — silently, because a behaviour subscribed to an event nobody
+raises simply never fires, and nothing in the editor would have said so. So they
+are all pickers. What is left as free text is only what genuinely has no list: a
+number, a vector, and a **new** event name at the two places an event is first
+raised (`trigger`'s enter/exit events, `pickEntity`'s raised event), where the
+picker carries an extra `＋ name a new one…` entry.
 
-The box holds the entry **minus its `name`** — the name is the identity of the
-assignment, not a parameter, and a `name` typed inside is ignored. An empty box
-means "no parameters"; its placeholder shows what the definition suggests, which
-is the hint the old fields gave by pre-filling. Invalid JSON is reported under
-the box and **changes nothing**, and the text is left as typed rather than
-replaced with the stored value — that would throw away the edit in progress.
-Committed on blur, not on every keystroke: JSON is invalid for most of the time
-it takes to type one.
+A value the current list cannot account for is **never dropped** — it is shown
+as `X — not in this list` and kept until you change it. A narrowed room filter,
+a source that stopped raising an event, a name some other tool wrote: all of
+them survive being looked at.
+
+**Event subscriptions ask for the sources first, then the event.** Several
+sources on one subscription mean "any of these, they are equivalent" — the two
+halves of a fan, the five panels of a door — so the behaviour reacts whichever
+of them speaks. An event only *one* of them raises would therefore make the
+group behave differently depending on which member fired, and the event list is
+the **intersection** of what all the chosen sources raise, not the union. Change
+the sources and the event list is rebuilt; the dependency is read from the
+schema (`optionsFrom`), so the two cannot drift apart.
+
+**Entity pickers carry one room filter per form**, above the fields it narrows:
+_this room_ / _chosen rooms…_ / _anywhere on the ship_. The ship is hundreds of
+names and almost every reference is a neighbour, so it opens on the room —
+unless the entry already names something from outside it, in which case it opens
+wide rather than reporting its own data as unknown. It is a view preference: it
+is never saved, and it survives the panel rebuilding the form after each edit.
+`linked` is the exception; it is always room-locked, because linking is for
+pieces that melt together.
+
+**Renaming an element carries its references with it.** Every entity-typed
+parameter in every definition and every assignment — `linked`, an event
+`source`, a raise `target` — is rewritten in the same undo step that moves the
+entity entry, and only when the old name has nothing left answering to it. While
+other elements still carry it, every reference to it is still correct. Which
+fields hold a node name is read from the schema, so a behaviour added to the
+file later is covered without anyone remembering to come back here. Renaming a
+**chunk** does the same: a chunk id is a node name too.
+
+**No JSON is shown anywhere in the panel.** Inherited values, constants and
+defaults are all things you read rather than edit, and they are written as prose
+— `From the behaviour: quickSplash: waterQuickSplash · bigSplash:
+waterBigSplash` — because `{"quickSplash":["waterQuickSplash"]}` is a line of
+punctuation nobody should have to parse to find out which splash plays.
+
+> Which is what made **Override Sound categories** look broken on
+> `itemLiquefactor`. The checkbox was right: `weaponLiquefactor`'s *definition*
+> holds the categories, the *assignment* is bare, and an unchecked override
+> beside the inherited value is exactly that state. What was wrong was that the
+> inherited value was printed as raw JSON, so it read as noise rather than as an
+> answer.
+
+Every key not described by the file is still **carried through untouched**, in
+and out, by one symmetric pair of helpers (`readBehaviorExtras` /
+`writeBehaviorExtras`) shared by the manifest writer and the undo snapshot, so
+the two can never disagree about what an assignment may carry. The form lists
+them as `Legacy fields are preserved but not editable`, which is what the
+manifest's older spellings (`shape` for `type`, `entity`/`onEvent` for `events`)
+show up as. A `name` inside the parameters is ignored: the name is the identity
+of the assignment, not a parameter.
 
 The runtime `playAnimation` behavior accepts `{ "animation": "ClipName",
 "loop": false }`. Both parameters are optional: omitting `animation` selects
@@ -317,8 +368,9 @@ whether intersections are reported.
 Three keys are not opaque:
 
 - **`name`** — ignored, as above.
-- **`linked`** — cleaned exactly as the picker cleans it, and shown in the JSON
-  as well so neither view can silently contradict the other.
+- **`linked`** — cleaned exactly as the picker cleans it: de-duplicated, and
+  never holding the node itself, including after a rename that would have
+  pointed a group at its own owner.
 - **`direction`** — a vector, so it is mirrored between editor and glTF space.
   Stored **as typed, not normalised**: normalising on every commit would fight
   you as you type. An all-zero vector is dropped rather than written, since it

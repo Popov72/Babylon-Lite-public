@@ -1,5 +1,16 @@
 {
   "version": 1,
+  "options": {
+    "sounds": [
+      "liquefactorLiquefy",
+      "liquefactorStartShot",
+      "pickItem",
+      "stepMetallic",
+      "waterBigSplash",
+      "waterLongSplash",
+      "waterQuickSplash"
+    ]
+  },
   "behaviors": {
     "dynamic": {
       "label": "Dynamic body",
@@ -48,7 +59,10 @@
         },
         "sound": {
           "type": "string",
-          "label": "Splash sound category"
+          "optionsSource": "soundCategories",
+          "label": "Splash sound category",
+          "description": "One of the categories the Liquefactor weapon defines.",
+          "emptyHint": "No categories yet - give the Liquefactor weapon its sound categories first."
         }
       }
     },
@@ -116,10 +130,11 @@
           "values": {
             "type": "array",
             "minItems": 1,
-            "items": { "type": "string" }
+            "items": { "type": "string", "optionsSource": "sounds" }
           },
+          "keyLabel": "Category",
           "label": "Sound categories",
-          "description": "Maps a category to MP3 file names without the extension."
+          "description": "Names the categories a liquefiable element may ask for, and the MP3s each one picks from."
         }
       }
     },
@@ -149,6 +164,7 @@
             "event": {
               "type": "event",
               "optionsSource": "events",
+              "allowNew": true,
               "required": true,
               "label": "Event"
             }
@@ -156,6 +172,7 @@
         },
         "sound": {
           "type": "string",
+          "optionsSource": "sounds",
           "default": "pickItem",
           "label": "Sound"
         },
@@ -210,6 +227,7 @@
       "properties": {
         "animation": {
           "type": "string",
+          "optionsSource": "animations",
           "label": "Animation name",
           "description": "Defaults to the first animation targeting the owner."
         },
@@ -270,11 +288,13 @@
             "enterEvent": {
               "type": "event",
               "optionsSource": "events",
+              "allowNew": true,
               "label": "Enter event"
             },
             "exitEvent": {
               "type": "event",
               "optionsSource": "events",
+              "allowNew": true,
               "label": "Exit event"
             },
             "playerOnly": {
@@ -298,18 +318,21 @@
           "items": {
             "type": "object",
             "properties": {
-              "name": {
-                "type": "event",
-                "optionsSource": "events",
-                "required": true,
-                "label": "Event"
-              },
               "source": {
                 "type": "entitySource",
                 "optionsSource": "entities",
                 "required": true,
                 "label": "Sources",
-                "description": "One source is written as a string; several are written as an array."
+                "description": "Whose events are watched. One source is written as a string; several are written as an array."
+              },
+              "name": {
+                "type": "event",
+                "optionsSource": "eventsOfSources",
+                "optionsFrom": "source",
+                "required": true,
+                "label": "Event",
+                "description": "Only the events every one of the sources raises can be chosen.",
+                "emptyHint": "Choose the sources first - this offers what they all raise."
               }
             }
           }

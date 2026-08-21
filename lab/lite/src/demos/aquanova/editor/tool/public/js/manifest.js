@@ -783,16 +783,57 @@ function artMeshes(node) {
 export function liveEntityNames() {
   const live = new Set(state.chunks);
   for (const p of state.placements.values()) {
-    const name = nodeNameOf(p);
-    live.add(name);
-    artMeshes(p.node).forEach((m, i) => live.add(`${name}_primitive${i}`));
-    for (const a of p.node._shipAnimationNodes ?? []) {
-      live.add(`${name}_${a._shipAnimationSourceName}`);
-    }
+    for (const name of namesOfPlacement(p)) live.add(name);
   }
   for (const m of state.markers.values()) if (m.type === "door") live.add(m.id);
   for (const l of state.lights.values()) live.add(`LIGHT_${l.id}`);
   return live;
+}
+
+/**
+ * The same names again, filed under the room each one is in.
+ *
+ * What the behaviour panel's entity pickers narrow by, so it has to answer for
+ * exactly the set above - a name the filter cannot place would vanish from
+ * every room and only reappear under "anywhere on the ship". Beside its twin
+ * for the same reason that one sits beside the exporter.
+ *
+ * A door is filed under **both** rooms it joins: either side is a fair place to
+ * reach one from. Each chunk is filed under itself, because the holder is
+ * addressable too, and a lamp under the room of the placement it hangs on.
+ */
+export function liveEntitiesByChunk() {
+  const out = {};
+  const add = (chunk, name) => {
+    if (!chunk || !name) return;
+    (out[chunk] ??= new Set()).add(name);
+  };
+  for (const chunk of state.chunks) add(chunk, chunk);
+  for (const p of state.placements.values()) {
+    for (const name of namesOfPlacement(p)) add(p.chunk, name);
+  }
+  for (const m of state.markers.values()) {
+    if (m.type !== "door") continue;
+    add(m.chunkA, m.id);
+    add(m.chunkB, m.id);
+  }
+  for (const l of state.lights.values()) {
+    add(state.placements.get(l.owner)?.chunk, `LIGHT_${l.id}`);
+  }
+  for (const [chunk, names] of Object.entries(out)) {
+    out[chunk] = [...names].sort((a, b) => a.localeCompare(b));
+  }
+  return out;
+}
+
+function namesOfPlacement(p) {
+  const name = nodeNameOf(p);
+  const names = [name];
+  artMeshes(p.node).forEach((m, i) => names.push(`${name}_primitive${i}`));
+  for (const a of p.node._shipAnimationNodes ?? []) {
+    names.push(`${name}_${a._shipAnimationSourceName}`);
+  }
+  return names;
 }
 
 /**

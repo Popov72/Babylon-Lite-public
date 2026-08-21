@@ -38,7 +38,7 @@ export async function loadBehaviorMetadata(url = "/data/behavior-definitions.jso
       return resolved[name];
     };
     for (const name of Object.keys(raw.behaviors)) resolve(name);
-    return { version: raw.version, behaviors: resolved };
+    return { version: raw.version, behaviors: resolved, options: clone(raw.options ?? {}) };
   });
   return catalogPromise;
 }
@@ -49,6 +49,18 @@ export function behaviorMetadata(catalog, name) {
 
 export function behaviorMetadataNames(catalog) {
   return Object.keys(catalog?.behaviors ?? {}).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The option lists the metadata file ships with, keyed by `optionsSource`.
+ *
+ * Vocabularies that belong to the game rather than to the ship - the MP3s under
+ * `/aquanova/sounds/`, say - have no home in the editor's state, and typing one
+ * of them out is exactly the kind of guesswork a picker exists to remove. They
+ * live beside the schema that refers to them so the two are edited together.
+ */
+export function behaviorFileOptions(catalog) {
+  return catalog?.options ?? {};
 }
 
 export function defaultBehaviorDefinition(metadata) {
@@ -62,21 +74,141 @@ export function defaultBehaviorDefinition(metadata) {
 
 export function collectRaisedEventNames(catalog, definitions, entities) {
   const names = new Set();
-  const inspect = (behaviorName, config) => {
-    const metadata = behaviorMetadata(catalog, behaviorName);
-    for (const event of metadata?.eventsRaised ?? []) {
-      if (event.name) names.add(event.name);
-      const value = event.property ? valueAt(config, event.property.split(".")) : undefined;
-      if (typeof value === "string" && value.trim()) names.add(value.trim());
-    }
-  };
-  for (const [name, definition] of definitions) inspect(name, definition);
+  for (const [name, definition] of definitions) addRaisedEvents(catalog, name, definition, names);
   for (const list of entities.values()) {
     for (const assignment of list) {
-      inspect(assignment.name, { ...(definitions.get(assignment.name) ?? {}), ...assignment });
+      addRaisedEvents(catalog, assignment.name, effectiveConfig(definitions, assignment), names);
     }
   }
-  return [...names].sort((a, b) => a.localeCompare(b));
+  return sorted(names);
+}
+
+/**
+ * What one entity raises, rather than what the whole ship raises.
+ *
+ * A subscription names both the event and whose event it is, and those two are
+ * not independent: `startLiquefaction` from a crate that cannot be liquefied is
+ * a subscription that will never fire, and nothing in the editor would have
+ * said so. Asking the source first and offering only what it raises makes that
+ * impossible to author rather than merely discouraged.
+ */
+export function eventsRaisedBy(catalog, definitions, entities, entityName) {
+  const names = new Set();
+  for (const assignment of entities.get(String(entityName || "").trim()) ?? []) {
+    addRaisedEvents(catalog, assignment.name, effectiveConfig(definitions, assignment), names);
+  }
+  return sorted(names);
+}
+
+/**
+ * The events *every* one of these sources raises.
+ *
+ * Several sources on one subscription mean "any of these, they are equivalent"
+ * - the two halves of a fan, the five panels of a door. The behaviour reacts
+ * once whichever of them speaks, so an event only one of them raises would make
+ * the group behave differently depending on which member fired. The offer is
+ * therefore the intersection, not the union.
+ */
+export function eventsRaisedByAll(catalog, definitions, entities, sources) {
+  const list = (Array.isArray(sources) ? sources : sources ? [sources] : [])
+    .map((item) => String(item ?? "").trim()).filter(Boolean);
+  if (!list.length) return [];
+  let common = null;
+  for (const source of list) {
+    const raised = new Set(eventsRaisedBy(catalog, definitions, entities, source));
+    common = common === null ? raised : new Set([...common].filter((name) => raised.has(name)));
+    if (!common.size) break;
+  }
+  return sorted(common ?? new Set());
+}
+
+function addRaisedEvents(catalog, behaviorName, config, into) {
+  const metadata = behaviorMetadata(catalog, behaviorName);
+  for (const event of metadata?.eventsRaised ?? []) {
+    if (event.name) into.add(event.name);
+    const value = event.property ? valueAt(config, event.property.split(".")) : undefined;
+    if (typeof value === "string" && value.trim()) into.add(value.trim());
+  }
+}
+
+const effectiveConfig = (definitions, assignment) =>
+  ({ ...(definitions.get(assignment.name) ?? {}), ...assignment });
+
+const sorted = (names) => [...names].sort((a, b) => a.localeCompare(b));
+
+/** Vocabularies the ship defines: always chosen from, never typed. */
+const PICKED_TYPES = new Set(["enum", "entity", "event"]);
+/** The one option source the room filter applies to; `nearbyEntities` is already a room. */
+const SCOPED_ENTITIES = "entities";
+/** Sentinel select value that opens the "name a new one" input. */
+const NEW_VALUE = "\u0000new";
+
+/**
+ * Point every entity reference at a name that has just changed.
+ *
+ * A behaviour names the things it watches and acts on, and those names are the
+ * *old* ones the moment an element is renamed - a subscription to a source that
+ * no longer exists is a behaviour that silently never fires, and nothing in the
+ * editor would have said so. The schema already knows which fields hold an
+ * entity, so the rewrite follows it rather than a hand-kept list of key names
+ * that would fall behind the next behaviour added to the file.
+ *
+ * Mutates `config` in place and returns how many references it moved.
+ */
+export function renameEntityReferences(catalog, behaviorName, config, from, to) {
+  const before = String(from ?? "").trim();
+  const after = String(to ?? "").trim();
+  if (!before || !after || before === after || !isPlainObject(config)) return 0;
+  return rewrite(behaviorMetadata(catalog, behaviorName)?.properties ?? {}, config);
+
+  function rewrite(properties, value) {
+    let moved = 0;
+    for (const [key, schema] of Object.entries(properties)) {
+      if (!own(value, key)) continue;
+      const [next, count] = rewriteValue(schema, value[key]);
+      value[key] = next;
+      moved += count;
+    }
+    return moved;
+  }
+
+  function rewriteValue(schema, item) {
+    if (item === undefined || item === null) return [item, 0];
+    if (schema.type === "entity" || schema.type === "entitySource") {
+      if (Array.isArray(item)) {
+        let moved = 0;
+        const next = item.map((name) => {
+          if (name !== before) return name;
+          moved++;
+          return after;
+        });
+        return [next, moved];
+      }
+      return item === before ? [after, 1] : [item, 0];
+    }
+    if (schema.type === "object" && isPlainObject(item)) {
+      return [item, rewrite(schema.properties ?? {}, item)];
+    }
+    if (schema.type === "record" && isPlainObject(item)) {
+      let moved = 0;
+      for (const [key, child] of Object.entries(item)) {
+        const [next, count] = rewriteValue(schema.values ?? {}, child);
+        item[key] = next;
+        moved += count;
+      }
+      return [item, moved];
+    }
+    if (schema.type === "array" && Array.isArray(item)) {
+      let moved = 0;
+      const next = item.map((child) => {
+        const [value, count] = rewriteValue(schema.items ?? {}, child);
+        moved += count;
+        return value;
+      });
+      return [next, moved];
+    }
+    return [item, 0];
+  }
 }
 
 export function createBehaviorForm(host, {
@@ -85,10 +217,14 @@ export function createBehaviorForm(host, {
   inherited = {},
   scope = "definition",
   options = {},
+  entityScope = null,
   onChange = null,
 }) {
   let draft = clone(value) ?? {};
   let validationHost = null;
+  // Owned by the caller so it survives the panel rebuilding this form after
+  // every edit; a fresh object per form is fine for one-off uses.
+  const rooms = entityScope ?? {};
 
   const api = {
     read: () => clone(draft),
@@ -107,6 +243,80 @@ export function createBehaviorForm(host, {
     if (structural) render();
   }
 
+  /**
+   * Which rooms the entity pickers offer, and what they therefore contain.
+   *
+   * A name typed from memory is a name that can be wrong, so every entity is
+   * chosen from a list - but "every entity on the ship" is hundreds of names to
+   * scroll for the one crate in the room you are looking at. The room the
+   * element is in is the useful default, and widening it is one click away for
+   * the cases that genuinely reach across the ship, like a door watching the
+   * panels of the room next door.
+   */
+  function scopedEntities(all) {
+    if (rooms.mode === "all") return all;
+    const chosen = rooms.mode === "chosen" ? (rooms.chunks ?? []) : (options.currentChunks ?? []);
+    const byChunk = options.entitiesByChunk ?? {};
+    const keep = new Set();
+    for (const room of chosen) for (const name of byChunk[room] ?? []) keep.add(name);
+    return all.filter((name) => keep.has(name));
+  }
+
+  function choicesFor(schema, siblings) {
+    const all = optionValues(schema, options, siblings);
+    return schema?.optionsSource === SCOPED_ENTITIES ? scopedEntities(all) : all;
+  }
+
+  /**
+   * Open on the room, unless that would hide something already chosen.
+   *
+   * An entry authored across the ship must not come back reading "not in the
+   * list" merely because the panel opened on the narrowest view of it.
+   */
+  function pickInitialScope() {
+    if (rooms.mode) return;
+    rooms.mode = "all";
+    if (!options.entitiesByChunk || !(options.currentChunks ?? []).length) return;
+    rooms.mode = "chunk";
+    const visible = new Set(scopedEntities(optionValues({ optionsSource: SCOPED_ENTITIES }, options)));
+    const missing = entityValues(metadata?.properties ?? {}, draft)
+      .some((name) => !visible.has(name));
+    if (missing) rooms.mode = "all";
+  }
+
+  function renderScopeRow() {
+    const box = element("div", "behavior-scope");
+    const here = (options.currentChunks ?? []).join(", ");
+    const mode = document.createElement("select");
+    if (here) addOption(mode, "chunk", `this room (${here})`);
+    addOption(mode, "chosen", "chosen rooms…");
+    addOption(mode, "all", "anywhere on the ship");
+    mode.value = rooms.mode;
+    mode.addEventListener("change", () => {
+      rooms.mode = mode.value;
+      if (rooms.mode === "chosen" && !rooms.chunks?.length) {
+        rooms.chunks = [...(options.currentChunks ?? [])];
+      }
+      render();
+    });
+    box.append(element("span", "behavior-scope-label", "Entities from"), mode);
+    if (rooms.mode === "chosen") {
+      const picked = document.createElement("select");
+      picked.multiple = true;
+      picked.size = Math.min(6, Math.max(3, (options.chunks ?? []).length));
+      for (const chunk of options.chunks ?? []) {
+        addOption(picked, chunk, chunk);
+        picked.lastChild.selected = (rooms.chunks ?? []).includes(chunk);
+      }
+      picked.addEventListener("change", () => {
+        rooms.chunks = [...picked.selectedOptions].map((option) => option.value);
+        render();
+      });
+      box.append(picked);
+    }
+    return box;
+  }
+
   function render() {
     host.replaceChildren();
     host.className = "behavior-form";
@@ -123,6 +333,11 @@ export function createBehaviorForm(host, {
     if (unknown.length) {
       host.append(element("div", "behavior-unknown",
         `Legacy fields are preserved but not editable: ${unknown.join(", ")}`));
+    }
+    pickInitialScope();
+    if (options.entitiesByChunk && anySchema(metadata.properties ?? {},
+      (schema) => schema.optionsSource === SCOPED_ENTITIES)) {
+      host.append(renderScopeRow());
     }
     for (const [key, schema] of Object.entries(metadata.properties ?? {})) {
       if (scope === "definition" && schema.definition === false) continue;
@@ -149,7 +364,7 @@ export function createBehaviorForm(host, {
       override.append(check, document.createTextNode(
         ` Override ${schema.label ?? key}${schema.required ? " *" : ""}`));
       if (!assigned && inheritedValue !== undefined) {
-        override.title = `Inherited: ${compact(inheritedValue)}`;
+        override.title = `The behaviour already sets this to ${describe(schema, inheritedValue)}.`;
       }
       check.addEventListener("change", () => {
         if (check.checked) draft[key] = initialValue(schema, inheritedValue);
@@ -158,8 +373,9 @@ export function createBehaviorForm(host, {
       });
       wrapper.append(override);
       if (!assigned) {
-        wrapper.append(element("div", "behavior-inherited",
-          inheritedValue === undefined ? "Not set" : `Inherited: ${compact(inheritedValue)}`));
+        wrapper.append(element("div", "behavior-inherited", inheritedValue === undefined
+          ? "Not set, here or on the behaviour."
+          : `From the behaviour: ${describe(schema, inheritedValue)}`));
         return wrapper;
       }
     }
@@ -187,7 +403,7 @@ export function createBehaviorForm(host, {
   function renderValue(schema, parent, key, path, localChanged = changed) {
     if (schema.type === "constant") {
       if (!own(parent, key)) parent[key] = clone(schema.value);
-      return element("div", "behavior-constant", compact(schema.value));
+      return element("div", "behavior-constant", describe(schema, schema.value));
     }
     if (schema.type === "object") return renderObject(schema, parent, key, path, localChanged);
     if (schema.type === "array" || schema.type === "entitySource") {
@@ -201,11 +417,17 @@ export function createBehaviorForm(host, {
   function renderObject(schema, parent, key, path, localChanged) {
     const box = element("div", "behavior-object");
     if (!isPlainObject(parent[key])) parent[key] = {};
+    // A field another field's list is drawn from has to redraw that list when it
+    // changes, or the event picker would keep offering whatever the *previous*
+    // source raised. Derived from the schema so the two cannot drift apart.
+    const controls = new Set(Object.values(schema.properties ?? {})
+      .map((child) => child.optionsFrom).filter(Boolean));
     for (const [childKey, childSchema] of Object.entries(schema.properties ?? {})) {
       const row = element("div", "behavior-nested");
+      const childChanged = controls.has(childKey) ? () => localChanged(true) : localChanged;
       row.append(
         element("div", "behavior-label", `${childSchema.label ?? childKey}${childSchema.required ? " *" : ""}`),
-        renderValue(childSchema, parent[key], childKey, [...path, childKey], localChanged)
+        renderValue(childSchema, parent[key], childKey, [...path, childKey], childChanged)
       );
       if (childSchema.description) row.append(element("div", "behavior-help", childSchema.description));
       box.append(row);
@@ -213,10 +435,19 @@ export function createBehaviorForm(host, {
     return box;
   }
 
+  /**
+   * A list wherever a list is knowable, and a text box only where it is not.
+   *
+   * Entity names and event names are never typed: both are vocabularies the
+   * ship already defines, and a typo in either is a behaviour that silently
+   * does nothing at runtime. Where the vocabulary is empty the control stays a
+   * disabled picker saying why, rather than quietly turning back into a field
+   * that invites the guess this exists to prevent.
+   */
   function renderScalar(schema, parent, key, localChanged) {
     if (schema.type === "boolean") {
       const select = document.createElement("select");
-      addOption(select, "", schema.default === undefined ? "(not set)" : `(default: ${schema.default})`);
+      addOption(select, "", schema.default === undefined ? "(not set)" : `(default: ${describe(schema, schema.default)})`);
       addOption(select, "true", "Yes");
       addOption(select, "false", "No");
       select.value = own(parent, key) ? String(parent[key]) : "";
@@ -227,17 +458,9 @@ export function createBehaviorForm(host, {
       });
       return select;
     }
-    if (schema.type === "enum") {
-      const select = document.createElement("select");
-      addOption(select, "", schema.defaultLabel ?? "(not set)");
-      for (const value of schema.values ?? []) addOption(select, String(value), String(value));
-      select.value = own(parent, key) ? String(parent[key]) : "";
-      select.addEventListener("change", () => {
-        if (!select.value) delete parent[key];
-        else parent[key] = select.value;
-        localChanged();
-      });
-      return select;
+    const listed = choicesFor(schema, parent);
+    if (PICKED_TYPES.has(schema.type) || (schema.type === "string" && listed.length)) {
+      return renderPicker(schema, parent, key, localChanged, listed);
     }
     const input = document.createElement("input");
     input.type = schema.type === "number" ? "number" : "text";
@@ -245,11 +468,9 @@ export function createBehaviorForm(host, {
       input.step = "any";
       if (schema.minimum !== undefined) input.min = String(schema.minimum);
       if (schema.maximum !== undefined) input.max = String(schema.maximum);
-    } else {
-      attachDatalist(input, optionValues(schema, options), `bhv-${schema.type}`);
     }
     input.value = own(parent, key) ? String(parent[key]) : "";
-    if (!input.value && schema.default !== undefined) input.placeholder = `default: ${compact(schema.default)}`;
+    if (!input.value && schema.default !== undefined) input.placeholder = `default: ${describe(schema, schema.default)}`;
     input.addEventListener("change", () => {
       const text = input.value.trim();
       if (!text) delete parent[key];
@@ -257,6 +478,52 @@ export function createBehaviorForm(host, {
       localChanged();
     });
     return input;
+  }
+
+  function renderPicker(schema, parent, key, localChanged, listed) {
+    const box = element("div", "behavior-picker");
+    const current = own(parent, key) ? String(parent[key]) : "";
+    const select = document.createElement("select");
+    if (!schema.required || !current) {
+      addOption(select, "", schema.type === "enum" ? (schema.defaultLabel ?? "(not set)")
+        : schema.default !== undefined ? `(default: ${describe(schema, schema.default)})`
+          : "(not set)");
+    }
+    for (const value of listed) addOption(select, String(value), String(value));
+    // Never drop a value just because the current list cannot account for it -
+    // a narrowed room filter, a source that stopped raising it, a name the game
+    // knows and the ship does not. Shown, flagged, and kept until it is changed.
+    if (current && !listed.some((value) => String(value) === current)) {
+      addOption(select, current, `${current} — not in this list`);
+    }
+    if (schema.allowNew) addOption(select, NEW_VALUE, "＋ name a new one…");
+    select.value = current;
+    select.disabled = !listed.length && !current && !schema.allowNew;
+    select.addEventListener("change", () => {
+      if (select.value === NEW_VALUE) { askForNewName(); return; }
+      if (!select.value) delete parent[key];
+      else parent[key] = select.value;
+      localChanged();
+    });
+    box.append(select);
+    if (select.disabled && schema.emptyHint) box.append(element("div", "behavior-help", schema.emptyHint));
+    return box;
+
+    function askForNewName() {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = `new ${schema.label ?? schema.type}`;
+      const commit = () => {
+        const text = input.value.trim();
+        if (text) parent[key] = text;
+        localChanged(true);
+      };
+      input.addEventListener("change", commit);
+      const row = element("div", "behavior-picker-new");
+      row.append(input, smallButton("×", "Keep what was there", () => localChanged(true)));
+      box.replaceChildren(row);
+      input.focus();
+    }
   }
 
   function renderVector(schema, parent, key, localChanged) {
@@ -318,7 +585,7 @@ export function createBehaviorForm(host, {
       box.append(row);
     });
     const add = smallButton("+ Add", `Add ${schema.label ?? "item"}`, () => {
-      values.push(initialItemValue(itemSchema, options));
+      values.push(initialItemValue(itemSchema, choicesFor(itemSchema, parent)));
       setArrayValue(parent, key, schema, values);
       localChanged(true);
     });
@@ -342,7 +609,7 @@ export function createBehaviorForm(host, {
       const name = document.createElement("input");
       name.type = "text";
       name.value = recordKey;
-      name.placeholder = "Category";
+      name.placeholder = schema.keyLabel ?? "Category";
       const holder = { value: recordValue };
       const valueChanged = (structural = false) => {
         record[recordKey] = holder.value;
@@ -408,9 +675,8 @@ function initialValue(schema, inherited) {
   return "";
 }
 
-function initialItemValue(schema, options) {
-  const choices = optionValues(schema, options);
-  return choices.length ? clone(choices[0]) : initialValue(schema);
+function initialItemValue(schema, choices) {
+  return choices?.length ? clone(choices[0]) : initialValue(schema);
 }
 
 function validateObject(properties, value, prefix, partial) {
@@ -429,7 +695,7 @@ function validateObject(properties, value, prefix, partial) {
 
 function validateValue(schema, value, path, partial) {
   if (schema.type === "constant") {
-    return JSON.stringify(value) === JSON.stringify(schema.value) ? [] : [`${path} must be ${compact(schema.value)}.`];
+    return JSON.stringify(value) === JSON.stringify(schema.value) ? [] : [`${path} must be ${describe(schema, schema.value)}.`];
   }
   if (schema.type === "number") {
     if (!Number.isFinite(value)) return [`${path} must be a number.`];
@@ -495,27 +761,86 @@ function unknownPaths(properties, value, prefix = "") {
   return out;
 }
 
-function optionValues(schema, options) {
-  return options[schema.optionsSource] ?? schema.values ?? [];
+/**
+ * What a picker may offer, given what its siblings currently say.
+ *
+ * A plain array is a fixed vocabulary. A function is one that depends on the
+ * rest of the entry - `optionsFrom` names the sibling property it is computed
+ * from, which is how an event list narrows to what its chosen sources raise.
+ */
+function optionValues(schema, options, siblings) {
+  const source = schema?.optionsSource ? options?.[schema.optionsSource] : undefined;
+  const resolved = typeof source === "function"
+    ? source(schema.optionsFrom ? siblings?.[schema.optionsFrom] : undefined)
+    : source;
+  const list = resolved ?? schema?.values ?? [];
+  return Array.isArray(list) ? list : [];
 }
 
-let datalistId = 0;
-const datalists = new Map();
-function attachDatalist(input, values, prefix) {
-  if (!values?.length) return;
-  const cacheKey = `${prefix}:${JSON.stringify(values)}`;
-  let id = datalists.get(cacheKey);
-  if (id) {
-    input.setAttribute("list", id);
-    return;
+/** Walk a schema tree - object properties, array items, record values alike. */
+function anySchema(properties, predicate) {
+  for (const schema of Object.values(properties ?? {})) {
+    if (predicate(schema)) return true;
+    const children = schema.type === "object" ? schema.properties
+      : schema.type === "record" ? { value: schema.values }
+        : schema.items ? { item: schema.items } : null;
+    if (children && anySchema(children, predicate)) return true;
   }
-  const list = document.createElement("datalist");
-  id = `${prefix}-${++datalistId}`;
-  list.id = id;
-  for (const value of values) addOption(list, String(value), String(value));
-  input.setAttribute("list", list.id);
-  document.body.append(list);
-  datalists.set(cacheKey, id);
+  return false;
+}
+
+/** Every entity name the value currently holds, wherever the schema puts one. */
+function entityValues(properties, value, out = []) {
+  for (const [key, schema] of Object.entries(properties ?? {})) {
+    if (!own(value, key)) continue;
+    collect(schema, value[key]);
+  }
+  return out;
+
+  function collect(schema, item) {
+    if (item === undefined || item === null) return;
+    if (schema.type === "entity" || schema.type === "entitySource") {
+      for (const name of Array.isArray(item) ? item : [item]) {
+        if (typeof name === "string" && name.trim()) out.push(name.trim());
+      }
+      return;
+    }
+    if (schema.type === "object") entityValues(schema.properties ?? {}, item, out);
+    else if (schema.type === "record" && isPlainObject(item)) {
+      for (const child of Object.values(item)) collect(schema.values, child);
+    } else if (schema.type === "array" && Array.isArray(item)) {
+      for (const child of item) collect(schema.items ?? {}, child);
+    }
+  }
+}
+
+/**
+ * Say a value the way a person would read it, never the way a file stores it.
+ *
+ * Inherited values, constants and defaults are all shown rather than edited,
+ * and `JSON.stringify` of a sound map is a line of punctuation nobody should
+ * have to parse to find out which MP3 a splash plays.
+ */
+function describe(schema, value) {
+  if (value === undefined || value === null) return "not set";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    if (schema?.type === "vector3") return `X ${value[0]} · Y ${value[1]} · Z ${value[2]}`;
+    if (!value.length) return "empty";
+    return value.map((item) => describe(schema?.items, item)).join(", ");
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value);
+    if (!entries.length) return "empty";
+    return entries
+      .map(([key, item]) => schema?.type === "record"
+        ? `${key}: ${describe(schema.values, item)}`
+        : `${schema?.properties?.[key]?.label ?? key}: ${describe(schema?.properties?.[key], item)}`)
+      .join(" · ");
+  }
+  return String(value);
 }
 
 function addOption(select, value, label) {
@@ -548,8 +873,4 @@ function valueAt(value, path) {
   let current = value;
   for (const key of path) current = current?.[key];
   return current;
-}
-
-function compact(value) {
-  return typeof value === "string" ? value : JSON.stringify(value);
 }
