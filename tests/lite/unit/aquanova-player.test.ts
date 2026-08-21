@@ -3,6 +3,7 @@ import { CharacterSupportedState } from "../../../packages/babylon-lite/src";
 import type { Mesh, PhysicsCharacterController } from "../../../packages/babylon-lite/src";
 import {
     PlayerBehavior,
+    playerCapsuleSpawnPosition,
     playerSupportedMovementVelocity,
     playerWeaponSwayMultiplier,
     remainingForwardApertureAssist,
@@ -11,7 +12,13 @@ import {
     shouldUseJumpApertureAssist,
     weaponWheelDirection,
 } from "../../../lab/lite/src/demos/aquanova/behaviors/player";
-import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS, MAX_WALKABLE_SLOPE_COSINE } from "../../../lab/lite/src/demos/aquanova/constants";
+import {
+    CROUCH_CAPSULE_HEIGHT,
+    CROUCH_CAPSULE_RADIUS,
+    MAX_WALKABLE_SLOPE_COSINE,
+    PLAYER_CAPSULE_HEIGHT,
+    PLAYER_CAPSULE_RADIUS,
+} from "../../../lab/lite/src/demos/aquanova/constants";
 import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 describe("Aquanova player", () => {
@@ -19,6 +26,40 @@ describe("Aquanova player", () => {
         const player = new PlayerBehavior("player", [{} as Mesh], {}, {} as AquanovaGameContext);
 
         expect((player as unknown as { characterStrength: number }).characterStrength).toBe(10_000);
+    });
+
+    it("disables collision for its owning marker when started", () => {
+        const emit = vi.fn();
+        const context = {
+            canvas: { dataset: {} },
+            character: {
+                characterStrength: 0,
+                shapeOptions: { capsuleHeight: PLAYER_CAPSULE_HEIGHT, capsuleRadius: PLAYER_CAPSULE_RADIUS },
+            },
+            events: {
+                emit,
+                on: vi.fn(() => () => {}),
+            },
+            capsuleHeight: PLAYER_CAPSULE_HEIGHT,
+            capsuleRadius: PLAYER_CAPSULE_RADIUS,
+        } as unknown as AquanovaGameContext;
+        const player = new PlayerBehavior("playerMarker", [{} as Mesh], {}, context);
+        const internals = player as unknown as {
+            createCrosshair(): void;
+            listen(): void;
+        };
+        internals.createCrosshair = vi.fn();
+        internals.listen = vi.fn();
+        vi.stubGlobal("window", {});
+        vi.stubGlobal("document", {});
+
+        try {
+            player.start();
+            expect(emit).toHaveBeenCalledWith("entityEvent", { name: "playerMarker", event: "disableCollision" });
+        } finally {
+            player.dispose();
+            vi.unstubAllGlobals();
+        }
     });
 
     it("keeps slopes below 45 degrees walkable", () => {
@@ -34,10 +75,21 @@ describe("Aquanova player", () => {
         expect(walking.x).not.toBeCloseTo(0);
     });
 
-    it("uses a valid 0.7 metre crouched capsule", () => {
+    it("uses 0.3 metre standing and crouched capsule radii", () => {
+        expect(PLAYER_CAPSULE_HEIGHT).toBe(1.8);
+        expect(PLAYER_CAPSULE_RADIUS).toBe(0.3);
         expect(CROUCH_CAPSULE_HEIGHT).toBe(0.7);
-        expect(CROUCH_CAPSULE_RADIUS).toBe(0.35);
+        expect(CROUCH_CAPSULE_RADIUS).toBe(0.3);
+        expect(PLAYER_CAPSULE_HEIGHT).toBeGreaterThanOrEqual(PLAYER_CAPSULE_RADIUS * 2);
         expect(CROUCH_CAPSULE_HEIGHT).toBeGreaterThanOrEqual(CROUCH_CAPSULE_RADIUS * 2);
+    });
+
+    it("spawns the capsule at the centre of its matching 1.8 metre marker", () => {
+        expect(playerCapsuleSpawnPosition([-2.3, 0, 4.7], [-1.7, PLAYER_CAPSULE_HEIGHT, 5.3])).toEqual({
+            x: -2,
+            y: PLAYER_CAPSULE_HEIGHT / 2,
+            z: 5,
+        });
     });
 
     it("auto-crouches only during a forward jump when the aperture requires it", () => {
@@ -70,7 +122,7 @@ describe("Aquanova player", () => {
 
     it("keeps a blocked aperture assist active after touching the sill", () => {
         let supported = true;
-        const shapeOptions = { capsuleHeight: 1.8, capsuleRadius: 0.4 };
+        const shapeOptions = { capsuleHeight: PLAYER_CAPSULE_HEIGHT, capsuleRadius: PLAYER_CAPSULE_RADIUS };
         const preserveFootCalls: boolean[] = [];
         const position = { x: 0, y: 1, z: 0 };
         const character = {
@@ -92,8 +144,8 @@ describe("Aquanova player", () => {
             canvas: { dataset: {} },
             camera: { position: vector, target: vector },
             character,
-            capsuleHeight: 1.8,
-            capsuleRadius: 0.4,
+            capsuleHeight: PLAYER_CAPSULE_HEIGHT,
+            capsuleRadius: PLAYER_CAPSULE_RADIUS,
             eyeHeight: 0.62,
             canStand: () => true,
             jumpApertureAssist: () => ({ lateralOffset: 0.05 }),
@@ -140,7 +192,7 @@ describe("Aquanova player", () => {
         let supportedState = CharacterSupportedState.SUPPORTED;
         let blocked = false;
         const position = { x: 0, y: 1, z: 0 };
-        const shapeOptions = { capsuleHeight: 1.8, capsuleRadius: 0.4 };
+        const shapeOptions = { capsuleHeight: PLAYER_CAPSULE_HEIGHT, capsuleRadius: PLAYER_CAPSULE_RADIUS };
         const sound = { label: "player:stepMetallic", source: "/aquanova/sounds/stepMetallic.mp3", sound: {} };
         const load = vi.fn().mockResolvedValue(sound);
         const play = vi.fn();
@@ -164,8 +216,8 @@ describe("Aquanova player", () => {
             camera: { position: vector, target: vector },
             character,
             sounds: { load, play },
-            capsuleHeight: 1.8,
-            capsuleRadius: 0.4,
+            capsuleHeight: PLAYER_CAPSULE_HEIGHT,
+            capsuleRadius: PLAYER_CAPSULE_RADIUS,
             eyeHeight: 0.62,
             canStand: () => true,
             jumpApertureAssist: () => null,

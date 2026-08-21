@@ -19,10 +19,14 @@ export const SKYBOX_EXT = ".png";
 export const SKYBOX_SIZE = 300;
 /** Cosine of the steepest slope the player may stand on without sliding (45 degrees). */
 export const MAX_WALKABLE_SLOPE_COSINE = Math.SQRT1_2;
+/** Total player capsule height while standing. */
+export const PLAYER_CAPSULE_HEIGHT = 1.8;
+/** Player capsule radius while standing. */
+export const PLAYER_CAPSULE_RADIUS = 0.3;
 /** Total player capsule height while crouched. */
 export const CROUCH_CAPSULE_HEIGHT = 0.7;
 /** Crouched radius; height must remain at least twice the radius for a valid capsule. */
-export const CROUCH_CAPSULE_RADIUS = CROUCH_CAPSULE_HEIGHT * 0.5;
+export const CROUCH_CAPSULE_RADIUS = 0.3;
 
 export type Vec3 = readonly [number, number, number];
 

@@ -27,6 +27,9 @@ describe("Aquanova collision behaviors", () => {
         expect(() => new SetCollisionShapeBehavior("pipe", [mesh("pipe")], { type: "box" } as never, { setCollisionShape: vi.fn() })).toThrow(
             'setCollisionShape.type must be "mesh" when provided'
         );
+        expect(() => new SetCollisionShapeBehavior("pipe", [mesh("pipe")], { unexpected: true } as never, { setCollisionShape: vi.fn() })).toThrow(
+            "setCollisionShape.unexpected is not supported"
+        );
     });
 
     it("raises entry and exit events on the trigger owner and forwards player filtering", () => {
@@ -98,44 +101,14 @@ describe("Aquanova collision behaviors", () => {
         expect(setEnabled).toHaveBeenLastCalledWith(true);
     });
 
-    it("keeps legacy trigger routing working during migration", () => {
-        const events = new AquanovaEventManager();
-        let enter = (): void => {};
-        const behavior = new TriggerBehavior(
-            "trapTrigger",
-            [mesh("trigger")],
-            { onIntersection: { raiseEvent: "activated", entity: "trap" } },
-            {
-                events,
-                registerIntersectionTrigger: (_entityName, _playerOnly, callbacks) => {
-                    enter = callbacks.onEntered;
-                    return { setEnabled: vi.fn(), dispose: vi.fn() };
-                },
-            }
-        );
-        const raised = vi.fn();
-        events.on("entityEvent", raised);
-        behavior.start();
-
-        enter();
-
-        expect(raised).toHaveBeenLastCalledWith({ name: "trap", event: "activated" });
-    });
-
     it("validates trigger event configuration", () => {
         const context = { events: new AquanovaEventManager(), registerIntersectionTrigger: vi.fn() };
         expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: {} }, context)).not.toThrow();
         expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: { enterEvent: "" } }, context)).toThrow(
             "trigger.onIntersection.enterEvent must be a non-empty event name when provided"
         );
-        expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: { raiseEvent: "open", entity: "" } }, context)).toThrow(
-            "trigger.onIntersection.entity must be a non-empty entity name when provided"
-        );
-        expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: { enterEvent: "open", raiseEvent: "legacy" } }, context)).toThrow(
-            "trigger.onIntersection cannot combine enterEvent/exitEvent with legacy raiseEvent"
-        );
-        expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: { enterEvent: "open", entity: "target" } }, context)).toThrow(
-            "trigger.onIntersection.entity is only supported with legacy raiseEvent"
+        expect(() => new TriggerBehavior("trigger", [mesh("trigger")], { onIntersection: { unexpected: true } } as never, context)).toThrow(
+            "trigger.onIntersection.unexpected is not supported"
         );
     });
 

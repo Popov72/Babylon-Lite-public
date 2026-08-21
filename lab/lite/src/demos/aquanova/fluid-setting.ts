@@ -87,21 +87,12 @@ export function hexToRgb(hex: string | undefined): [number, number, number] | nu
     const n = parseInt(m[1]!, 16);
     return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
-/** A setting may be named with or without its extension ("liquid-slow" or "liquid-slow.json") — the
- *  manifest's global list and a behaviour's own list disagree today. Reduce both to one key so a
- *  lookup cannot miss, and so the fetch never builds "…/liquid-slow.json.json". */
-export function canonicalSettingName(name: string): string {
-    return name.replace(/\.json$/i, "");
-}
-
 export async function fetchFluidSetting(name: string): Promise<FluidSimSetting | undefined> {
-    // Named with or without its extension; canonicalSettingName strips it so we never request
-    // "…/liquid-slow.json.json". That URL is not a clean 404 under the dev server — its SPA fallback
-    // answers 200 with index.html, so `res.ok` passes and the failure only surfaces as a swallowed
-    // JSON parse error below, leaving the setting silently missing.
-    const file = canonicalSettingName(name);
+    if (!name || /\.json$/i.test(name)) {
+        throw new Error(`[aquanova] fluidSim name "${name}" must omit the .json extension`);
+    }
     try {
-        const res = await fetch(`/aquanova/fluidSim/${file}.json`);
+        const res = await fetch(`/aquanova/fluidSim/${name}.json`);
         if (!res.ok) {
             // eslint-disable-next-line no-console
             console.warn(`[aquanova] fluidSim "${name}": HTTP ${res.status} — falling back to the default water`);

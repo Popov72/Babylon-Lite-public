@@ -88,9 +88,18 @@ export function weaponWheelDirection(deltaY: number): -1 | 1 | null {
     return deltaY < 0 ? -1 : 1;
 }
 
+export function playerCapsuleSpawnPosition(markerMin: readonly [number, number, number], markerMax: readonly [number, number, number]): { x: number; y: number; z: number } {
+    return {
+        x: (markerMin[0] + markerMax[0]) / 2,
+        y: (markerMin[1] + markerMax[1]) / 2,
+        z: (markerMin[2] + markerMax[2]) / 2,
+    };
+}
+
 export class PlayerBehavior implements Behavior<"player"> {
     public readonly name = "player";
     public readonly mesh: Mesh;
+    private readonly entityName: string;
     private readonly context: AquanovaGameContext;
     private readonly keys = new Set<string>();
     private readonly freePosition = { x: 0, y: 0, z: 0 };
@@ -127,12 +136,13 @@ export class PlayerBehavior implements Behavior<"player"> {
     private crosshair: HTMLDivElement | null = null;
     private readonly characterStrength: number;
 
-    public constructor(_entityName: string, meshes: readonly Mesh[], config: PlayerBehaviorConfig, context: AquanovaGameContext) {
+    public constructor(entityName: string, meshes: readonly Mesh[], config: PlayerBehaviorConfig, context: AquanovaGameContext) {
         const mesh = meshes[0];
         if (!mesh) {
             throw new Error("[aquanova] player requires at least one mesh");
         }
         this.mesh = mesh;
+        this.entityName = entityName;
         this.context = context;
         const characterStrength = config.characterStrength ?? DEFAULT_CHARACTER_STRENGTH;
         if (!Number.isFinite(characterStrength) || characterStrength < 0) {
@@ -153,6 +163,7 @@ export class PlayerBehavior implements Behavior<"player"> {
     }
 
     public start(): void {
+        this.context.events.emit("entityEvent", { name: this.entityName, event: "disableCollision" });
         this.context.character.characterStrength = this.characterStrength;
         this.context.canvas.dataset.characterStrength = String(this.characterStrength);
         this.updateCrouchDataset();

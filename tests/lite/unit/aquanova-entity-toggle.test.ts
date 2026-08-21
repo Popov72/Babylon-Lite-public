@@ -108,27 +108,9 @@ describe("Aquanova entity toggle behaviors", () => {
         expect(() => new RemoveEntityBehavior("target", [mesh("target")], { events: [{ name: "", source: "source" }] }, { events: new AquanovaEventManager() })).toThrow(
             "removeEntity.events[].name must be a non-empty event name"
         );
-        expect(
-            () =>
-                new ShowEntityBehavior(
-                    "target",
-                    [mesh("target")],
-                    { events: [{ name: "show", source: "source" }], onEvent: "legacy", entity: "target" },
-                    { events: new AquanovaEventManager() }
-                )
-        ).toThrow("showEntity cannot combine events with legacy onEvent/entity");
-    });
-
-    it("keeps legacy target-oriented event entries working during migration", () => {
-        const events = new AquanovaEventManager();
-        const behavior = new ShowEntityBehavior("source", [mesh("source")], { onEvent: "activated", entity: "target" }, { events });
-        const forwarded = vi.fn();
-        events.on("entityEvent", forwarded);
-        behavior.start();
-
-        events.emit("entityEvent", { name: "source", event: "activated" });
-
-        expect(forwarded).toHaveBeenLastCalledWith({ name: "target", event: "show" });
+        expect(() => new ShowEntityBehavior("target", [mesh("target")], { unexpected: true } as never, { events: new AquanovaEventManager() })).toThrow(
+            "showEntity.unexpected is not supported"
+        );
     });
 
     it("instantiates behaviors owned by meshless doors", async () => {
@@ -161,15 +143,6 @@ describe("Aquanova entity toggle behaviors", () => {
 
         stopDoorEvents();
         manager.dispose();
-    });
-
-    it("rejects incomplete legacy event entries", () => {
-        expect(() => new EnableEntityBehavior("source", [], { onEvent: "" }, { events: new AquanovaEventManager() })).toThrow(
-            "enableEntity legacy onEvent and entity must be provided together"
-        );
-        expect(() => new DisableEntityBehavior("source", [], { onEvent: "cancel", entity: "" }, { events: new AquanovaEventManager() })).toThrow(
-            "disableEntity.entity must be a non-empty entity or door name"
-        );
     });
 
     it("removes, hides, and shows every mesh belonging to the target entity", () => {

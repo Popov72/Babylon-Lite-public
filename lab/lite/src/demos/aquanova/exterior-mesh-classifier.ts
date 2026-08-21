@@ -17,7 +17,7 @@ import {
 } from "babylon-lite";
 import type { MeshGroupBounds } from "./mesh-bounds.js";
 import type { ShipChunk, ShipPortal } from "./manifest.js";
-import { buildRuntimePortals, portalFacesCamera, type RuntimePortal } from "./portal-visibility.js";
+import { buildRuntimePortals, type RuntimePortal } from "./portal-visibility.js";
 
 type Vec3 = readonly [number, number, number];
 
@@ -74,6 +74,16 @@ function pointInConvexPolygon(x: number, y: number, polygon: readonly (readonly 
     return true;
 }
 
+function separates(portal: RuntimePortal, first: Vec3, second: Vec3): boolean {
+    const a = portal.corners[0];
+    const b = portal.corners[1];
+    const c = portal.corners[2];
+    if (!a || !b || !c) return false;
+    const normal = cross([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    const side = (point: Vec3): number => dot(normal, [point[0] - a[0], point[1] - a[1], point[2] - a[2]]);
+    return side(first) * side(second) < 0;
+}
+
 export function buildSkyPortalMask(
     view: { direction: Vec3; right: Vec3; up: Vec3 },
     portals: readonly RuntimePortal[],
@@ -85,7 +95,7 @@ export function buildSkyPortalMask(
     const eye = cameraPosition(centre, view.direction, distance);
     for (const portal of portals) {
         const skyChunk = portal.chunkA === "__SKYBOX__" ? portal.chunkA : portal.chunkB === "__SKYBOX__" ? portal.chunkB : null;
-        if (!skyChunk || !portalFacesCamera(portal, skyChunk, eye)) continue;
+        if (!skyChunk || !separates(portal, eye, centre)) continue;
         const polygon = portal.corners.map((corner) => {
             const relative: Vec3 = [corner[0] - centre[0], corner[1] - centre[1], corner[2] - centre[2]];
             return [((dot(relative, view.right) / halfExtent + 1) * SIZE) / 2, ((1 - dot(relative, view.up) / halfExtent) * SIZE) / 2] as const;

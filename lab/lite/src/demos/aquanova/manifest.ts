@@ -1,7 +1,7 @@
 // Loading and typing of `ship_manifest.json` — the ship editor's companion to `ship.glb`.
 //
 // The manifest is the single source of truth for the ship's structure: chunk AABBs and their glTF
-// root nodes, portals, per-entity behaviours and spawns. Anything that needs to know "which room is
+// root nodes, portals, per-entity behaviours and gameplay placements. Anything that needs to know "which room is
 // this" or "what does this prop do" resolves it from here rather than inferring it from geometry.
 
 import type { ShipEnvironment } from "../ship-manifest.js";
@@ -95,7 +95,7 @@ export interface ShipDoor {
 // behavior instances can coexist on one mesh. A liquefaction behavior without `fluidSim` inherits
 // the manifest's global list.
 export interface ShipManifest {
-    fluidSim?: string[]; // fluid-simulation setting files (in aquanova/fluidSim/) a liquefied mesh may use
+    fluidSim?: string[]; // extensionless fluid-setting names under aquanova/fluidSim/ that a liquefied mesh may use
     behaviors?: BehaviorLibrary; // behaviour name → definition
     entities?: Entities; // mesh name → assigned behaviours
     chunks: ShipChunk[];
@@ -104,7 +104,6 @@ export interface ShipManifest {
     portals: ShipPortal[];
     doors?: ShipDoor[];
     environment?: ShipEnvironment;
-    spawns?: { player?: Vec3; weapon?: Vec3; startChunk?: string };
     /** Every placed kit module. Together with `moduleCollision` this is the ship's collision data. */
     instances?: ShipInstance[];
     /** Kit module path → its collision primitive(s), in module-local space. One shape or several. */

@@ -2,6 +2,7 @@ import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, WeaponLiquefactorBehaviorConfig } from "./types.js";
+import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 
 const DEFAULT_RANGE = 100;
 const SOUND_ROOT = "/aquanova/sounds";
@@ -56,6 +57,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         if (!mesh) {
             throw new Error("[aquanova] weaponLiquefactor requires at least one mesh");
         }
+        assertBehaviorConfigKeys(config, "weaponLiquefactor", ["range", "sounds"]);
         this.entityName = entityName;
         this.mesh = mesh;
         this.config = config;

@@ -4,6 +4,7 @@ import { meshGroupBounds, type MeshGroupBounds } from "../mesh-bounds.js";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, PickEntityBehaviorConfig } from "./types.js";
+import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 
 const SOUND_ROOT = "/aquanova/sounds";
 const SOUND_ASSET_VERSION = "20260813-1";
@@ -33,6 +34,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         if (!meshes.length) {
             throw new Error("[aquanova] pickEntity requires at least one mesh");
         }
+        assertBehaviorConfigKeys(config, "pickEntity", ["boundingBoxScale", "raiseEvent", "sound", "speed"]);
         validateEvent(config.raiseEvent);
         validateSoundName(config.sound ?? DEFAULT_SOUND);
         this.mesh = meshes[0]!;
@@ -91,7 +93,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         this.context.sounds.play(this.sound);
         if (this.config.raiseEvent) {
             this.context.events.emit("entityEvent", {
-                name: this.config.raiseEvent.target ?? this.config.raiseEvent.entity ?? this.entityName,
+                name: this.config.raiseEvent.target ?? this.entityName,
                 event: this.config.raiseEvent.event,
             });
         }
@@ -102,17 +104,12 @@ function validateEvent(event: PickEntityBehaviorConfig["raiseEvent"]): void {
     if (!event) {
         return;
     }
+    assertBehaviorConfigKeys(event, "pickEntity.raiseEvent", ["target", "event"]);
     if (!event.event) {
         throw new Error("[aquanova] pickEntity.raiseEvent.event must be a non-empty event name");
     }
     if (event.target !== undefined && !event.target) {
         throw new Error("[aquanova] pickEntity.raiseEvent.target must be a non-empty entity or door name when provided");
-    }
-    if (event.entity !== undefined && !event.entity) {
-        throw new Error("[aquanova] pickEntity.raiseEvent.entity must be a non-empty entity or door name when provided");
-    }
-    if (event.target !== undefined && event.entity !== undefined) {
-        throw new Error("[aquanova] pickEntity.raiseEvent cannot combine target with legacy entity");
     }
 }
 

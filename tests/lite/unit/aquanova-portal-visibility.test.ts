@@ -19,7 +19,6 @@ function portal(id: string, chunkA: string, chunkB: string, z: number, enabled =
         chunkA,
         chunkB,
         centre: [0, 0, z],
-        normal: [0, 0, -1],
         corners: [
             [-1, -1, z],
             [1, -1, z],
@@ -31,7 +30,7 @@ function portal(id: string, chunkA: string, chunkB: string, z: number, enabled =
 }
 
 describe("Aquanova portal visibility", () => {
-    it("converts manifest portal coordinates and normals to Lite space", () => {
+    it("converts manifest portal coordinates to Lite space", () => {
         const chunks: ShipChunk[] = [
             { id: "A", aabb: { min: [-4, -1, -1], max: [0, 1, 1] } },
             { id: "B", aabb: { min: [0, -1, -1], max: [4, 1, 1] } },
@@ -53,34 +52,30 @@ describe("Aquanova portal visibility", () => {
         const [runtime] = buildRuntimePortals([source], chunks);
 
         expect(runtime?.centre).toEqual([1, 0, 0]);
-        expect(runtime?.normal).toEqual([1, 0, 0]);
         expect(runtime?.corners[0]).toEqual([1, -1, -1]);
         expect(runtime?.enabled).toBe(true);
     });
 
-    it("flips an authored normal that points toward chunkB instead of chunkA", () => {
+    it("does not retain an authored normal whose chunk centres cannot orient an overlapping portal", () => {
         const chunks: ShipChunk[] = [
-            { id: "A", aabb: { min: [-2, -1, -4], max: [2, 1, 0] } },
-            { id: "B", aabb: { min: [-2, -1, 0], max: [2, 1, 4] } },
+            { id: "A", aabb: { min: [-5, -1, -1], max: [5, 1, 1] } },
+            { id: "B", aabb: { min: [-3, -1, -1], max: [-1, 1, 1] } },
         ];
         const source: ShipPortal = {
             id: "P",
             chunkA: "A",
             chunkB: "B",
-            centre: [0, 0, 0],
-            normal: [0, 0, 1],
+            centre: [-3, 0, 0],
+            normal: [-1, 0, 0],
             corners: [
-                [-1, -1, 0],
-                [1, -1, 0],
-                [1, 1, 0],
-                [-1, 1, 0],
+                [-3, -1, -1],
+                [-3, -1, 1],
+                [-3, 1, 1],
+                [-3, 1, -1],
             ],
         };
 
-        const normal = buildRuntimePortals([source], chunks)[0]?.normal;
-        expect(normal?.[0]).toBeCloseTo(0);
-        expect(normal?.[1]).toBeCloseTo(0);
-        expect(normal?.[2]).toBeCloseTo(-1);
+        expect(buildRuntimePortals([source], chunks)[0]).not.toHaveProperty("normal");
     });
 
     it("repairs stale sky-portal ownership from the portal position", () => {
@@ -107,11 +102,22 @@ describe("Aquanova portal visibility", () => {
 
     it("culls destination meshes against portal edge and depth planes", () => {
         const p = portal("P", "A", "B", 2);
-        const planes = createPortalFrustumPlanes(p, "A", [0, 0, 0]);
+        const planes = createPortalFrustumPlanes(p, [0, 0, 0]);
 
         expect(aabbIntersectsPlanes({ min: [-0.25, -0.25, 3.75], max: [0.25, 0.25, 4.25] }, planes)).toBe(true);
         expect(aabbIntersectsPlanes({ min: [2.75, -0.25, 3.75], max: [3.25, 0.25, 4.25] }, planes)).toBe(false);
         expect(aabbIntersectsPlanes({ min: [-0.25, -0.25, 0.75], max: [0.25, 0.25, 1.25] }, planes)).toBe(false);
+    });
+
+    it("orients the portal depth plane from the camera", () => {
+        const p = portal("P", "A", "B", 2);
+        const fromA = createPortalFrustumPlanes(p, [0, 0, 0]);
+        const fromB = createPortalFrustumPlanes(p, [0, 0, 4]);
+
+        expect(aabbIntersectsPlanes({ min: [-0.1, -0.1, 3], max: [0.1, 0.1, 3.2] }, fromA)).toBe(true);
+        expect(aabbIntersectsPlanes({ min: [-0.1, -0.1, 0.8], max: [0.1, 0.1, 1] }, fromA)).toBe(false);
+        expect(aabbIntersectsPlanes({ min: [-0.1, -0.1, 0.8], max: [0.1, 0.1, 1] }, fromB)).toBe(true);
+        expect(aabbIntersectsPlanes({ min: [-0.1, -0.1, 3], max: [0.1, 0.1, 3.2] }, fromB)).toBe(false);
     });
 
     it("recognizes a portal crossing a clipping volume even when no corner is fully inside", () => {
@@ -145,6 +151,43 @@ describe("Aquanova portal visibility", () => {
             cameraPosition: [0, 0, 0],
             cameraPlanes: [],
             portals: [portal("AB", "A", "B", 2), portal("BC", "B", "C", 4, false)],
+            chunkExists: () => true,
+            onChunk: (chunk) => visited.push(chunk),
+        });
+
+        expect(visited).toEqual(["A", "B"]);
+        expect(traversals.map((entry) => entry.portalId)).toEqual(["AB"]);
+    });
+
+    it("traverses a portal between overlapping chunks from the camera's geometric side", () => {
+        const chunks: ShipChunk[] = [
+            { id: "A", aabb: { min: [-5, -1, -1], max: [5, 1, 1] } },
+            { id: "B", aabb: { min: [-3, -1, -1], max: [-1, 1, 1] } },
+        ];
+        const [overlapping] = buildRuntimePortals(
+            [
+                {
+                    id: "AB",
+                    chunkA: "A",
+                    chunkB: "B",
+                    centre: [-3, 0, 0],
+                    normal: [-1, 0, 0],
+                    corners: [
+                        [-3, -1, -1],
+                        [-3, -1, 1],
+                        [-3, 1, 1],
+                        [-3, 1, -1],
+                    ],
+                },
+            ],
+            chunks
+        );
+        const visited: string[] = [];
+        const traversals = traversePortalGraph({
+            startChunks: ["A"],
+            cameraPosition: [4, 0, 0],
+            cameraPlanes: [],
+            portals: [overlapping!],
             chunkExists: () => true,
             onChunk: (chunk) => visited.push(chunk),
         });

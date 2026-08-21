@@ -4,18 +4,18 @@
 // and ship props into GPU fluid. This slice LOADS THE SHIP: a chunked modular interior authored
 // in the Aquanova ship editor from the CC0 Quaternius "Modular SciFi MegaKit" and exported to a
 // single glTF (ship.glb) with a companion ship_manifest.json describing chunks, portals, doors
-// and spawns (see lab/public/aquanova/ASSET-LICENSES.md and SciFiShip/README.md).
+// and gameplay placements (see lab/public/aquanova/ASSET-LICENSES.md and SciFiShip/README.md).
 //
 // What this slice does:
 //   • loads ship.glb and lights it with authored runtime lights + bounded local environment probes;
 //   • builds one static trimesh collider from the whole ship so the player collides with every
 //     wall, floor and prop — no hand-authored boxes;
-//   • spawns a Havok first-person character-controller capsule at the manifest player spawn, the
+//   • spawns a Havok first-person character-controller capsule at the manifest player behavior, the
 //     camera riding at eye height (WASD/arrows walk in the horizontal plane, mouse-drag looks).
 //
 // The ship runs back → front along glTF +X (storage → corridor → junction → cargo bay). Lite's
 // glTF loader mirrors handedness on the __root__ (scale x = -1), so glTF (x,y,z) renders at Lite
-// (-x, y, z); every manifest coordinate is converted through `toLite()` before use.
+// (-x, y, z).
 //
 
 import HavokPhysics from "@babylonjs/havok";
@@ -106,11 +106,12 @@ import {
     CROUCH_CAPSULE_RADIUS,
     FLOOR_Y,
     MAX_WALKABLE_SLOPE_COSINE,
+    PLAYER_CAPSULE_HEIGHT,
+    PLAYER_CAPSULE_RADIUS,
     SHIP_URL,
     SKYBOX_EXT,
     SKYBOX_SIZE,
     SKYBOX_URL,
-    toLite,
     type Vec3,
 } from "./constants.js";
 import { applyLocalEnvironmentProbes, type LocalEnvironmentBlendInfo } from "./local-environments.js";
@@ -146,7 +147,7 @@ import { registerEntityCollisionEventHandlers } from "./entity-collision-events.
 import { createIntersectionTriggerRegistry } from "./intersection-triggers.js";
 import { createPersistentMeshEntityEventOperations, registerMeshEntityEventHandlers } from "./entity-events.js";
 import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
-import { canonicalSettingName, fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
+import { fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
 import {
     AquanovaBehaviorManager,
     PlayerBehavior,
@@ -155,7 +156,7 @@ import {
     type LiquefiableBehaviorConfig,
     type MeshBehaviorAvailability,
 } from "./behaviors/index.js";
-import { selectClosestClearApertureOffset } from "./behaviors/player.js";
+import { playerCapsuleSpawnPosition, selectClosestClearApertureOffset } from "./behaviors/player.js";
 import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
 import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
 import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
@@ -208,22 +209,22 @@ export async function main(): Promise<void> {
     // Preload the fluid-simulation settings the manifest lists (parsed once). At liquefy time a mesh
     // uses its pinned override if it has one, else a random pick from this global list.
     //
-    // The union of the global list AND every behaviour's own `fluidSim` is loaded, keyed by canonical
-    // name. Loading only the global list meant a behaviour naming its own setting (the crates carry
+    // The union of the global list AND every behaviour's own `fluidSim` is loaded. Loading only the
+    // global list meant a behaviour naming its own setting (the crates carry
     // `fluidSim: ["liquid-slow"]`) missed the map at liquefy time and silently fell back to
     // DEFAULT_SAMPLE_RADIUS + FLUID_SETTING: the crates sampled at 0.03 instead of the file's 0.08,
     // giving ~19x the particles (6260 vs 330) and default physics instead of the file's.
-    const fluidSettingNames = (manifest?.fluidSim ?? []).map(canonicalSettingName);
+    const fluidSettingNames = manifest?.fluidSim ?? [];
     const behaviorSettingNames = new Set<string>();
     for (const b of Object.values(manifest?.behaviors ?? {})) {
         if ("fluidSim" in b) {
-            for (const n of b.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+            for (const n of b.fluidSim ?? []) behaviorSettingNames.add(n);
         }
     }
     for (const e of Object.values(manifest?.entities ?? {})) {
         for (const ref of e?.behaviors ?? []) {
             if ("fluidSim" in ref) {
-                for (const n of ref.fluidSim ?? []) behaviorSettingNames.add(canonicalSettingName(n));
+                for (const n of ref.fluidSim ?? []) behaviorSettingNames.add(n);
             }
         }
     }
@@ -661,16 +662,16 @@ export async function main(): Promise<void> {
     }
 
     // ── Placement markers (player / weapon start) ────────────────────────────────────────
-    // An entity carrying a `*_startpos` behaviour is a PLACEMENT MARKER, not scenery: something
-    // spawns at its node and the marker itself is DISABLED — hidden, non-pickable, and skipped by
-    // every classification pass below so it never enters physics, the SDF bake or the target sets.
+    // An entity carrying the `player` behavior is a PLACEMENT MARKER, not scenery: something
+    // spawns at its node and the marker itself is DISABLED — hidden, non-pickable, skipped by every
+    // classification pass below, and made non-collidable by PlayerBehavior when behaviors start.
     // Its `direction` parameter is the glTF-space vector the spawned thing initially faces. The
     // library definitions are empty, so a marker is matched by NAME on the entity's reference.
     const markerMeshes = new Set<Mesh>();
     interface Marker {
         entity: string;
-        min: number[] | null;
-        max: number[] | null;
+        min: Vec3 | null;
+        max: Vec3 | null;
         direction?: number[];
     }
     const resolveMarker = (behaviorName: string): Marker | null => {
@@ -689,22 +690,13 @@ export async function main(): Promise<void> {
             (m as { pickable?: boolean }).pickable = false;
         }
         const bounds = meshGroupBounds(meshes);
-        const min = bounds ? bounds.centre.map((value, axis) => value - bounds.half[axis]!) : null;
-        const max = bounds ? bounds.centre.map((value, axis) => value + bounds.half[axis]!) : null;
+        const min: Vec3 | null = bounds ? [bounds.centre[0] - bounds.half[0], bounds.centre[1] - bounds.half[1], bounds.centre[2] - bounds.half[2]] : null;
+        const max: Vec3 | null = bounds ? [bounds.centre[0] + bounds.half[0], bounds.centre[1] + bounds.half[1], bounds.centre[2] + bounds.half[2]] : null;
         return { entity: found.entityName, min, max, direction: found.assignment.direction };
     };
     const playerMarker = resolveMarker("player");
-    const weaponMarker = resolveMarker("weapon");
     // Disabled marker geometry is treated exactly like a portal: excluded everywhere below.
     const isDisabledMesh = (m: Mesh): boolean => isPortalMesh(m) || markerMeshes.has(m);
-
-    // Weapon pickup spot: the marker's centre, else the legacy glTF-space spawn. Exposed for the
-    // pickup prop (and QA) rather than being read from the removed `spawns.weapon`.
-    const weaponSpawn: Vec3 =
-        weaponMarker?.min && weaponMarker.max
-            ? [(weaponMarker.min[0]! + weaponMarker.max[0]!) / 2, weaponMarker.max[1]!, (weaponMarker.min[2]! + weaponMarker.max[2]!) / 2]
-            : toLite(manifest?.spawns?.weapon ?? [7, 0.95, 2.8]);
-    canvas.dataset.weaponSpawn = weaponSpawn.map((v) => v.toFixed(3)).join(",");
 
     // Disable KHR_materials_transmission on the ship: the fluid surface composites into the swapchain
     // AFTER the scene renders, but transmission retargets the scene task to an offscreen HDR buffer and
@@ -931,18 +923,17 @@ export async function main(): Promise<void> {
     }
 
     // ── First-person player at the manifest spawn ─────────────────────────────────────────
-    const CAP_H = 1.8;
-    const CAP_R = 0.4;
+    const CAP_H = PLAYER_CAPSULE_HEIGHT;
+    const CAP_R = PLAYER_CAPSULE_RADIUS;
     const FLUID_CAP_R = CAP_R * 2;
     const EYE = 0.62; // camera offset above the capsule centre → ~1.5 m eye level
-    // Marker present → stand on top of it; otherwise fall back to the legacy glTF-space spawn.
-    const fallback = toLite(manifest?.spawns?.player ?? [-0.5, 0, 0]);
     const pMin = playerMarker?.min;
     const pMax = playerMarker?.max;
-    const sx = pMin && pMax ? (pMin[0]! + pMax[0]!) / 2 : fallback[0];
-    const sz = pMin && pMax ? (pMin[2]! + pMax[2]!) / 2 : fallback[2];
-    const sy = pMax ? pMax[1]! + CAP_H / 2 + 0.1 : CAP_H / 2 + 0.1;
-    const character = createPhysicsCharacterController(world, { x: sx, y: sy, z: sz }, { capsuleHeight: CAP_H, capsuleRadius: CAP_R });
+    if (!pMin || !pMax) {
+        throw new Error("[aquanova] a player behavior must be assigned to an entity with mesh geometry");
+    }
+    const spawnPosition = playerCapsuleSpawnPosition(pMin, pMax);
+    const character = createPhysicsCharacterController(world, spawnPosition, { capsuleHeight: CAP_H, capsuleRadius: CAP_R });
     character.maxSlopeCosine = MAX_WALKABLE_SLOPE_COSINE;
     const capsuleHeight = (): number => character.shapeOptions.capsuleHeight ?? CAP_H;
     const canStand = (): boolean => {
@@ -3507,7 +3498,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         const ownSettings = sourceConfig?.fluidSim ?? behaviorManager.getLiquefiableConfig(mesh)?.fluidSim;
         const candidates = ownSettings?.length ? ownSettings : fluidSettingNames;
         const settingName = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)]! : undefined;
-        const setting = settingName ? fluidSettings.get(canonicalSettingName(settingName)) : undefined;
+        const setting = settingName ? fluidSettings.get(settingName) : undefined;
         if (settingName && !setting) {
             // Never degrade quietly: falling back changes both the particle count and the physics.
             // eslint-disable-next-line no-console

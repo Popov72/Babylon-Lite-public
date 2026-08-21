@@ -1,6 +1,7 @@
 import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { Behavior, BehaviorEventSubscription, EntityToggleBehaviorConfig } from "./types.js";
+import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 
 type EntityToggleContext = Pick<AquanovaGameContext, "events">;
 type EntityToggleBehaviorName = "disableCollision" | "disableEntity" | "enableCollision" | "enableEntity" | "hideEntity" | "removeEntity" | "showEntity";
@@ -35,7 +36,7 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
     public init(): void {}
 
     public start(): void {
-        if (!this.config.events && !this.config.onEvent && !this.config.entity) {
+        if (!this.config.events) {
             this.context.events.emit("entityEvent", {
                 name: this.entityName,
                 event: this.outputEvent,
@@ -46,11 +47,6 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
             if (this.config.events?.some((subscription) => subscriptionMatches(subscription, name, event))) {
                 this.context.events.emit("entityEvent", {
                     name: this.entityName,
-                    event: this.outputEvent,
-                });
-            } else if (this.config.onEvent && this.config.entity && name === this.entityName && event === this.config.onEvent) {
-                this.context.events.emit("entityEvent", {
-                    name: this.config.entity,
                     event: this.outputEvent,
                 });
             }
@@ -64,38 +60,27 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
 }
 
 function validateEventConfiguration(name: EntityToggleBehaviorName, config: EntityToggleBehaviorConfig): void {
-    if (config.events !== undefined) {
-        if (config.onEvent !== undefined || config.entity !== undefined) {
-            throw new Error(`[aquanova] ${name} cannot combine events with legacy onEvent/entity`);
-        }
-        if (config.events.length === 0) {
-            throw new Error(`[aquanova] ${name}.events must contain at least one event`);
-        }
-        for (const event of config.events) {
-            if (!event.name) {
-                throw new Error(`[aquanova] ${name}.events[].name must be a non-empty event name`);
-            }
-            if (typeof event.source === "string" && !event.source) {
-                throw new Error(`[aquanova] ${name}.events[].source must be a non-empty entity or door name`);
-            }
-            if (Array.isArray(event.source) && event.source.length === 0) {
-                throw new Error(`[aquanova] ${name}.events[].source must contain at least one entity or door name`);
-            }
-            if (Array.isArray(event.source) && event.source.some((source) => !source)) {
-                throw new Error(`[aquanova] ${name}.events[].source entries must be non-empty entity or door names`);
-            }
-        }
-
+    assertBehaviorConfigKeys(config, name, ["events"]);
+    if (config.events === undefined) {
         return;
     }
-    if ((config.onEvent === undefined) !== (config.entity === undefined)) {
-        throw new Error(`[aquanova] ${name} legacy onEvent and entity must be provided together`);
+    if (config.events.length === 0) {
+        throw new Error(`[aquanova] ${name}.events must contain at least one event`);
     }
-    if (config.onEvent !== undefined && !config.onEvent) {
-        throw new Error(`[aquanova] ${name}.onEvent must be a non-empty event name`);
-    }
-    if (config.entity !== undefined && !config.entity) {
-        throw new Error(`[aquanova] ${name}.entity must be a non-empty entity or door name`);
+    for (const event of config.events) {
+        assertBehaviorConfigKeys(event, `${name}.events[]`, ["name", "source"]);
+        if (!event.name) {
+            throw new Error(`[aquanova] ${name}.events[].name must be a non-empty event name`);
+        }
+        if (typeof event.source === "string" && !event.source) {
+            throw new Error(`[aquanova] ${name}.events[].source must be a non-empty entity or door name`);
+        }
+        if (Array.isArray(event.source) && event.source.length === 0) {
+            throw new Error(`[aquanova] ${name}.events[].source must contain at least one entity or door name`);
+        }
+        if (Array.isArray(event.source) && event.source.some((source) => !source)) {
+            throw new Error(`[aquanova] ${name}.events[].source entries must be non-empty entity or door names`);
+        }
     }
 }
 

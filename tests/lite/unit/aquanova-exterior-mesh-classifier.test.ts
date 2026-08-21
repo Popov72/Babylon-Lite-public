@@ -7,7 +7,6 @@ const skyPortal: RuntimePortal = {
     chunkA: "A",
     chunkB: "__SKYBOX__",
     centre: [0, 0, 2],
-    normal: [0, 0, -1],
     corners: [
         [-1, -1, 2],
         [1, -1, 2],

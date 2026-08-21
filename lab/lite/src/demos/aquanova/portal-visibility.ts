@@ -21,7 +21,6 @@ export interface RuntimePortal {
     chunkB: string;
     door?: string;
     centre: Vec3;
-    normal: Vec3;
     corners: readonly Vec3[];
     enabled: boolean;
 }
@@ -85,15 +84,9 @@ interface PortalVisibilityOptions {
 }
 
 const PLANE_EPSILON = 1e-5;
-const PORTAL_SIDE_EPSILON = 0.02;
 
 function toLite([x, y, z]: Vec3): Vec3 {
     return [-x, y, z];
-}
-
-function normalize([x, y, z]: Vec3): Vec3 | null {
-    const length = Math.hypot(x, y, z);
-    return length > 1e-9 ? [x / length, y / length, z / length] : null;
 }
 
 function subtract(a: Vec3, b: Vec3): Vec3 {
@@ -124,11 +117,6 @@ function makePlane(x: number, y: number, z: number, d: number): Plane | null {
     return length > 1e-9 ? { x: x / length, y: y / length, z: z / length, d: d / length } : null;
 }
 
-function chunkCentre(chunk: ShipChunk | undefined): Vec3 | null {
-    if (!chunk) return null;
-    return toLite([(chunk.aabb.min[0] + chunk.aabb.max[0]) * 0.5, (chunk.aabb.min[1] + chunk.aabb.max[1]) * 0.5, (chunk.aabb.min[2] + chunk.aabb.max[2]) * 0.5]);
-}
-
 function skyPortalChunk(portal: ShipPortal, chunks: readonly ShipChunk[]): string | undefined {
     if (portal.chunkA !== "__SKYBOX__" && portal.chunkB !== "__SKYBOX__") return undefined;
     let best: ShipChunk | undefined;
@@ -148,7 +136,6 @@ function skyPortalChunk(portal: ShipPortal, chunks: readonly ShipChunk[]): strin
 
 /** Convert the manifest's glTF-space portal records into Lite world space. */
 export function buildRuntimePortals(portals: readonly ShipPortal[], chunks: readonly ShipChunk[]): RuntimePortal[] {
-    const chunkById = new Map(chunks.map((chunk) => [chunk.id, chunk]));
     const result: RuntimePortal[] = [];
     for (const portal of portals) {
         if (!portal.id || !portal.chunkA || !portal.chunkB || !portal.corners || portal.corners.length < 3) continue;
@@ -161,24 +148,12 @@ export function buildRuntimePortals(portals: readonly ShipPortal[], chunks: read
         }
         const centre = toLite(portal.centre);
         const corners = portal.corners.map(toLite);
-        let normal = portal.normal ? normalize(toLite(portal.normal)) : null;
-        const a = chunkCentre(chunkById.get(chunkA));
-        const b = chunkCentre(chunkById.get(chunkB));
-        if (!normal) {
-            normal = a && b ? normalize(subtract(a, b)) : normalize(cross(subtract(corners[1]!, corners[0]!), subtract(corners[2]!, corners[0]!)));
-        }
-        if (!normal) continue;
-        // Exported door normals follow the prefab's local +Z and are not guaranteed to point at
-        // chunkA. Normalize that convention here so traversal works from both sides for every door.
-        const towardA = a ? subtract(a, centre) : b ? subtract(centre, b) : null;
-        if (towardA && dot(normal, towardA) < 0) normal = [-normal[0], -normal[1], -normal[2]];
         result.push({
             id: portal.id,
             chunkA,
             chunkB,
             ...(portal.door ? { door: portal.door } : {}),
             centre,
-            normal,
             corners,
             enabled: portal.enabled !== false,
         });
@@ -199,25 +174,30 @@ export function extractCameraFrustumPlanes(matrix: ArrayLike<number>): Plane[] {
     return values.map(([x, y, z, d]) => makePlane(x, y, z, d)).filter((plane): plane is Plane => plane !== null);
 }
 
-/** Whether a portal faces the camera from the chunk currently being traversed. */
-export function portalFacesCamera(portal: RuntimePortal, fromChunk: string, cameraPosition: Vec3): boolean {
-    const sign = fromChunk === portal.chunkA ? 1 : -1;
-    const toCamera = subtract(cameraPosition, portal.centre);
-    return (portal.normal[0] * toCamera[0] + portal.normal[1] * toCamera[1] + portal.normal[2] * toCamera[2]) * sign >= -PORTAL_SIDE_EPSILON;
-}
-
-/** Planes added after crossing a portal: one per edge plus the portal's destination-facing plane. */
-export function createPortalFrustumPlanes(portal: RuntimePortal, fromChunk: string, cameraPosition: Vec3): Plane[] {
+/**
+ * Planes added after crossing a portal: one per edge plus the portal's destination-facing plane.
+ * The corners define the plane; the camera side defines its orientation. Chunk AABB centres are
+ * deliberately irrelevant because connected chunk volumes may overlap or contain one another.
+ */
+export function createPortalFrustumPlanes(portal: RuntimePortal, cameraPosition: Vec3): Plane[] {
     const planes: Plane[] = [];
-    const sourceSign = fromChunk === portal.chunkA ? 1 : -1;
-    const sourceNormal: Vec3 = [portal.normal[0] * sourceSign, portal.normal[1] * sourceSign, portal.normal[2] * sourceSign];
-    const destination = makePlane(
-        -sourceNormal[0],
-        -sourceNormal[1],
-        -sourceNormal[2],
-        sourceNormal[0] * portal.centre[0] + sourceNormal[1] * portal.centre[1] + sourceNormal[2] * portal.centre[2]
-    );
-    if (destination) planes.push(destination);
+    const first = portal.corners[0];
+    const second = portal.corners[1];
+    const third = portal.corners[2];
+    const geometryNormal = first && second && third ? cross(subtract(second, first), subtract(third, first)) : null;
+    if (geometryNormal) {
+        const cameraDistance = dot(geometryNormal, subtract(cameraPosition, portal.centre));
+        if (Math.abs(cameraDistance) > PLANE_EPSILON) {
+            const sourceNormal: Vec3 = cameraDistance > 0 ? geometryNormal : [-geometryNormal[0], -geometryNormal[1], -geometryNormal[2]];
+            const destination = makePlane(
+                -sourceNormal[0],
+                -sourceNormal[1],
+                -sourceNormal[2],
+                sourceNormal[0] * portal.centre[0] + sourceNormal[1] * portal.centre[1] + sourceNormal[2] * portal.centre[2]
+            );
+            if (destination) planes.push(destination);
+        }
+    }
 
     for (let i = 0; i < portal.corners.length; i++) {
         const a = portal.corners[i]!;
@@ -313,7 +293,7 @@ export function traversePortalGraph(options: PortalGraphTraversalOptions): Porta
         options.onChunk(state.chunk, state.planes);
         if (state.depth > options.portals.length) continue;
         const candidates = (byChunk.get(state.chunk) ?? [])
-            .filter((portal) => portal.enabled && portalFacesCamera(portal, state.chunk, options.cameraPosition) && polygonIntersectsPlanes(portal.corners, state.planes))
+            .filter((portal) => portal.enabled && polygonIntersectsPlanes(portal.corners, state.planes))
             .sort((a, b) => {
                 const aSky = (state.chunk === a.chunkA ? a.chunkB : a.chunkA) === "__SKYBOX__";
                 const bSky = (state.chunk === b.chunkA ? b.chunkB : b.chunkA) === "__SKYBOX__";
@@ -321,7 +301,7 @@ export function traversePortalGraph(options: PortalGraphTraversalOptions): Porta
             });
         for (const portal of candidates) {
             const toChunk = state.chunk === portal.chunkA ? portal.chunkB : portal.chunkA;
-            const nextPlanes = [...state.planes, ...createPortalFrustumPlanes(portal, state.chunk, options.cameraPosition)];
+            const nextPlanes = [...state.planes, ...createPortalFrustumPlanes(portal, options.cameraPosition)];
             if (!options.chunkExists(toChunk)) {
                 if (toChunk === "__SKYBOX__" && options.onSkyPortal) {
                     traversals.push({ portalId: portal.id, fromChunk: state.chunk, toChunk, depth: state.depth, corners: portal.corners });

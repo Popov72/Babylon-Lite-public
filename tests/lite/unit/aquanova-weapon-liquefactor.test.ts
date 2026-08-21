@@ -113,6 +113,10 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         vi.restoreAllMocks();
     });
 
+    it("rejects the removed facing direction field", () => {
+        expect(() => createHarness({ config: { direction: [0, 0, 1] } as WeaponLiquefactorBehaviorConfig })).toThrow("[aquanova] weaponLiquefactor.direction is not supported");
+    });
+
     it("preloads shared and manifest sounds once, then randomly plays the requested splash category", async () => {
         const config = {
             sounds: {

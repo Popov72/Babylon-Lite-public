@@ -47,7 +47,7 @@ parameters. The current definitions are:
 | `anyLiquefaction`       | Liquefies with the manifest's default fluid setting     |
 | `stdLiquefaction`       | Liquefies with the standard fluid setting               |
 | `explosiveLiquefaction` | Liquefies with the explosive fluid setting              |
-| `player`                | Owns first-person input, movement, and weapon firing    |
+| `player`                | Owns first-person controls and disables its marker      |
 | `weaponLiquefactor`     | Gates and drives the Liquefactor weapon                 |
 | `weaponAntiGravityGun`  | Grabs and throws dynamic rigid bodies                   |
 | `pickEntity`            | Collects an intersected entity and emits an event       |
@@ -98,8 +98,7 @@ manifest-driven link between otherwise independent behaviors. Subscriptions
 treat that owner name as their `source`. `pickEntity` may define
 `raiseEvent: { target, event }`; after collection it emits that payload exactly
 once. `target` is optional and defaults to the entity carrying `pickEntity`.
-Consumers ignore events addressed to other entities. The former `entity` field
-remains runtime-compatible while manifests are migrated.
+Consumers ignore events addressed to other entities.
 
 `setCollisionShape` builds a Havok box from each entity mesh group's world-space
 AABB by default. Explicit `{ "type": "mesh" }` instead builds a static
@@ -133,9 +132,12 @@ act on their owner. Their optional `events` array identifies event sources:
 The behavior runs when any entry matches. `source` is an entity or door id, or
 an array of ids with equivalent OR semantics; sources do not need to own
 meshes. With no `events`, the action runs immediately during behavior startup.
-The old `onEvent`/`entity` forwarding form and
-`trigger.onIntersection.raiseEvent`/`entity` remain runtime-compatible only
-while manifests are migrated.
+Unsupported behavior keys are rejected at load time so stale manifest syntax
+cannot silently change behavior.
+
+`fluidSim` entries are extensionless setting names such as `liquid-slow`.
+The runtime appends `.json` only when fetching the corresponding file from
+`/aquanova/fluidSim/`.
 
 The player emits `hitWithWeapon` after a center-screen pick. The player does not
 know whether the picked mesh is liquefiable. Each liquefiable behavior listens
@@ -162,10 +164,22 @@ The `player` definition may set `characterStrength`, the maximum force applied
 to contacted dynamic bodies. It defaults to `10000`; setting it to `0`
 preserves collision while disabling player pushes.
 
+The entity carrying `player` is a placement marker rather than scenery. Its
+mesh is hidden and non-pickable during scene setup, and the behavior disables
+collision for the complete owning entity when it starts. The marker is authored
+as the standing `1.8 m` capsule volume, with its bottom on the spawn floor; its
+world-space AABB centre is therefore the character controller's initial centre.
+
+Door behaviors enable or disable their associated visibility portal. Recursive
+portal traversal treats the rectangle as two-sided: its corners define the
+clipping plane, and the current camera position selects the source side. Chunk
+AABB centres do not orient that plane because connected chunk bounds may overlap
+or contain one another.
+
 `C` toggles crouching. Over `0.2 s`, the character controller keeps the
 capsule's foot position fixed while smoothly changing its total height from
-`1.8 m` to `0.7 m`. Its crouched radius is `0.35 m`, keeping the capsule valid
-while reducing its standing `0.4 m` radius. Camera height and the 25% crouched movement-speed reduction
+`1.8 m` to `0.7 m`. Its radius remains `0.3 m` in both positions. Camera height
+and the 25% crouched movement-speed reduction
 interpolate with the same progress. The transition is reversible and works on
 the ground or during a jump. A jump request or held run key requests standing
 first; expansion is accepted only while the taller capsule has overhead
@@ -304,13 +318,12 @@ so any member can be targeted directly. Linked relations form one symmetric,
 transitive group for melting; an entity's own liquefaction behavior takes
 precedence over an inherited one.
 
-## Migration boundary
+## Behavior boundary
 
 The behavior layer owns gameplay policy and event flow. The existing GPU fluid
 simulation, collision construction, render graph, and debug tooling remain
-services in `main.ts`; they are invoked through the typed behavior context. This
-keeps the migration behavior-preserving while allowing those subsystems to move
-behind narrower services later.
+services in `main.ts`; they are invoked through the typed behavior context so
+those subsystems can move behind narrower services independently.
 
 Fluid collision primitives retain stable buffer slots with an `active` flag.
 When a placement stops being collidable, Aquanova updates only that flag in
@@ -370,7 +383,7 @@ Every non-ground-only fluid collision set also reserves one capsule slot for
 the player, even when the player starts outside that simulation's domain. The
 slot is refreshed from the character controller's position and velocity before
 fluid stepping, and is disabled while the player is in noclip mode. The fluid
-capsule uses twice the physical character radius (0.8 m instead of 0.4 m)
+capsule uses twice the physical character radius (0.6 m instead of 0.3 m)
 to make displacement around the player more visible. Its lower endpoint also
 extends downward by half the physical capsule radius so the boundary remains
 partially submerged at floor level.

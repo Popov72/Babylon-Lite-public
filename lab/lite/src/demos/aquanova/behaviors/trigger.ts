@@ -1,6 +1,7 @@
 import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext, IntersectionTriggerRegistration } from "./game-context.js";
 import type { Behavior, TriggerBehaviorConfig } from "./types.js";
+import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 
 type TriggerContext = Pick<AquanovaGameContext, "events" | "registerIntersectionTrigger">;
 
@@ -19,27 +20,17 @@ export class TriggerBehavior implements Behavior<"trigger"> {
         if (!mesh) {
             throw new Error("[aquanova] trigger requires at least one mesh");
         }
+        assertBehaviorConfigKeys(config, "trigger", ["onIntersection"]);
         const intersection = config.onIntersection;
         if (!intersection) {
             throw new Error("[aquanova] trigger.onIntersection must be provided");
         }
+        assertBehaviorConfigKeys(intersection, "trigger.onIntersection", ["enterEvent", "exitEvent", "playerOnly"]);
         if (intersection.enterEvent !== undefined && !intersection.enterEvent) {
             throw new Error("[aquanova] trigger.onIntersection.enterEvent must be a non-empty event name when provided");
         }
         if (intersection.exitEvent !== undefined && !intersection.exitEvent) {
             throw new Error("[aquanova] trigger.onIntersection.exitEvent must be a non-empty event name when provided");
-        }
-        if (intersection.raiseEvent !== undefined && !intersection.raiseEvent) {
-            throw new Error("[aquanova] trigger.onIntersection.raiseEvent must be a non-empty event name when provided");
-        }
-        if ((intersection.enterEvent !== undefined || intersection.exitEvent !== undefined) && intersection.raiseEvent !== undefined) {
-            throw new Error("[aquanova] trigger.onIntersection cannot combine enterEvent/exitEvent with legacy raiseEvent");
-        }
-        if (intersection.entity !== undefined && !intersection.entity) {
-            throw new Error("[aquanova] trigger.onIntersection.entity must be a non-empty entity name when provided");
-        }
-        if (intersection.entity !== undefined && intersection.raiseEvent === undefined) {
-            throw new Error("[aquanova] trigger.onIntersection.entity is only supported with legacy raiseEvent");
         }
         this.entityName = entityName;
         this.mesh = mesh;
@@ -53,7 +44,7 @@ export class TriggerBehavior implements Behavior<"trigger"> {
         const intersection = this.config.onIntersection;
         this.registration = this.context.registerIntersectionTrigger(this.entityName, intersection.playerOnly ?? false, {
             onEntered: () => {
-                this.raise(intersection.enterEvent ?? intersection.raiseEvent, intersection.entity);
+                this.raise(intersection.enterEvent);
             },
             onExited: () => {
                 this.raise(intersection.exitEvent);
@@ -80,12 +71,12 @@ export class TriggerBehavior implements Behavior<"trigger"> {
         this.registration = null;
     }
 
-    private raise(event: string | undefined, legacyTarget?: string): void {
+    private raise(event: string | undefined): void {
         if (!this.enabled || !event) {
             return;
         }
         this.context.events.emit("entityEvent", {
-            name: legacyTarget ?? this.entityName,
+            name: this.entityName,
             event,
         });
     }

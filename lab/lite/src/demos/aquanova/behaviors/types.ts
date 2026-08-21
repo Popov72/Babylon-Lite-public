@@ -21,8 +21,6 @@ export interface PlayerBehaviorConfig {
 export interface PickEntityRaiseEventConfig {
     /** Entity or door that receives the event. Defaults to the behavior owner. */
     target?: string;
-    /** @deprecated Use `target`; retained while existing manifests are migrated. */
-    entity?: string;
     event: string;
 }
 
@@ -36,16 +34,10 @@ export interface BehaviorEventSubscription {
 export interface EntityToggleBehaviorConfig {
     /** Events that cause this behavior to act on its owning entity or door. */
     events?: BehaviorEventSubscription[];
-    /** @deprecated Use `events`; retained while existing manifests are migrated. */
-    onEvent?: string;
-    /** @deprecated Legacy action target paired with `onEvent`. */
-    entity?: string;
 }
 
 export interface SetCollisionShapeBehaviorConfig {
     type?: "mesh";
-    /** Compatibility with manifests authored before the parameter was named `type`. */
-    shape?: "mesh";
 }
 
 export interface TriggerBehaviorConfig {
@@ -53,10 +45,6 @@ export interface TriggerBehaviorConfig {
         enterEvent?: string;
         exitEvent?: string;
         playerOnly?: boolean;
-        /** @deprecated Use `enterEvent`; retained while existing manifests are migrated. */
-        raiseEvent?: string;
-        /** @deprecated New trigger events are always raised by the behavior owner. */
-        entity?: string;
     };
 }
 
@@ -78,7 +66,6 @@ export interface PlayAnimationBehaviorConfig {
 }
 
 export interface WeaponLiquefactorBehaviorConfig {
-    direction?: number[];
     /** Maximum beam range when the crosshair does not hit geometry. */
     range?: number;
     /** Sound category names mapped to MP3 file names without extensions. */
@@ -107,8 +94,6 @@ export interface BehaviorConfig {
     sounds?: Record<string, string[]>;
     speed?: number;
     boundingBoxScale?: number[];
-    entity?: string;
-    onEvent?: string;
     events?: BehaviorEventSubscription[];
     raiseEvent?: PickEntityRaiseEventConfig;
     reflectionProbe?: "exclude";
@@ -117,7 +102,6 @@ export interface BehaviorConfig {
     maxGrabDistance?: number;
     maxMass?: number;
     type?: "mesh";
-    shape?: "mesh";
     onIntersection?: TriggerBehaviorConfig["onIntersection"];
 }
 
