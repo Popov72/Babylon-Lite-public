@@ -241,6 +241,39 @@ describe("Blender fluid JSON", () => {
         expect(parsed.markersPerCell).toBe(8);
     });
 
+    it("parses advanced FLIP whitewater controls", () => {
+        const preset = validPreset();
+        Object.assign(preset.foam!, {
+            generateSpray: false,
+            generateFoam: true,
+            generateBubbles: false,
+            turbulenceRate: 25,
+            energySpeedMin: 0.8,
+            energySpeedMax: 7,
+            curvatureMin: 0.1,
+            curvatureMax: 2,
+            turbulenceMin: 0.2,
+            turbulenceMax: 3,
+            foamLayerDepth: 1.5,
+            sprayDrag: 0.6,
+        });
+
+        expect(parseBlenderFluidJson(selfContainedJson(preset)).preset.foam).toMatchObject({
+            generateSpray: false,
+            generateFoam: true,
+            generateBubbles: false,
+            turbulenceRate: 25,
+            energySpeedMin: 0.8,
+            energySpeedMax: 7,
+            curvatureMin: 0.1,
+            curvatureMax: 2,
+            turbulenceMin: 0.2,
+            turbulenceMax: 3,
+            foamLayerDepth: 1.5,
+            sprayDrag: 0.6,
+        });
+    });
+
     it("accepts particle counts above the former fixed ceiling", () => {
         const preset = validPreset();
         preset.particleCount = 2_500_000;

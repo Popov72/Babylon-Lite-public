@@ -76,9 +76,26 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-quality-presets", "false");
     await expect(qualitySelect).toBeHidden();
     await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 15_000 }).toBe(0);
+    await expect(page.getByText("Active foam particles", { exact: true })).toHaveCount(0);
+    const foamCounts = controlsPanel.locator('[data-fluid-foam-counts="true"]');
+    await expect(foamCounts).toHaveText("Disabled");
+    await page.getByLabel("Enable foam").check();
+    await expect.poll(async () => foamCounts.locator("div").count(), { timeout: 15_000 }).toBe(4);
+    const foamCountLines = await foamCounts.locator("div").allTextContents();
+    expect(foamCountLines[0]).toContain("\u00a0/\u00a0");
+    expect(foamCountLines[0]).toMatch(/particles$/);
+    expect(foamCountLines.slice(1).map((line) => line.split(":")[0])).toEqual(["Foam", "Spray", "Bubbles"]);
+    await page.getByLabel("Generate spray").uncheck();
+    await expect
+        .poll(async () => (await foamCounts.locator("div").allTextContents()).map((line) => line.split(":")[0]))
+        .toEqual([foamCountLines[0]!.split(":")[0]!, "Foam", "Bubbles"]);
+    await page.getByLabel("Generate spray").check();
+    await page.getByLabel("Enable foam").uncheck();
     await methodSelect.selectOption("PBF");
     await expect(canvas).toHaveAttribute("data-method", "PBF");
     await expect(page.getByText(/^Relaxation ε/)).toBeVisible();
+    await expect(page.getByText("FLIP advanced whitewater", { exact: true })).toBeHidden();
+    await expect(page.getByText(/^Turbulence rate/)).toBeHidden();
 
     await page.getByRole("button", { name: "+ Emitter", exact: true }).click();
     await page.getByRole("button", { name: "+ Sink", exact: true }).click();
@@ -163,6 +180,10 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
     await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
     await expect(page.getByText(/^FLIP ratio/)).toBeVisible();
+    await expect(page.getByText("FLIP advanced whitewater", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^Turbulence rate/)).toBeVisible();
+    const advancedFlipFoam = page.locator("[data-fluid-flip-foam-advanced]");
+    await expect(advancedFlipFoam).toBeVisible();
     await expect(page.getByText(/^Relaxation ε/)).toHaveCount(0);
     const limitVolumeRate = page.locator('[data-flow-field-label="Limit volume rate"] input[type="checkbox"]');
     await expect(limitVolumeRate).toBeVisible();
@@ -183,6 +204,7 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
 
     await methodSelect.selectOption("PB-MPM");
     await expect(canvas).toHaveAttribute("data-method", "PB-MPM");
+    await expect(advancedFlipFoam).toBeHidden();
     const materialSelect = page.getByText("PB-MPM material", { exact: true }).locator("..").locator("select");
     await expect(materialSelect).toBeVisible();
     await expect(materialSelect).toHaveValue("0");

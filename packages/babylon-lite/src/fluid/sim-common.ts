@@ -118,6 +118,16 @@ export interface DiffusePool {
     /** Indirect draw arguments `[6, liveCount, 0, 0]` for the foam renderer. Present
      *  together with `activeIndices`. */
     readonly drawIndirect?: GPUBuffer;
+    /** Latest asynchronously sampled live-particle counts. */
+    readonly counts?: DiffuseParticleCounts;
+}
+
+export interface DiffuseParticleCounts {
+    readonly total: number;
+    readonly spray: number;
+    readonly foam: number;
+    readonly bubble: number;
+    readonly capacity: number;
 }
 
 /** Diffuse-particle (foam) tuning knobs. All optional, with paper defaults. Drives the
@@ -125,12 +135,36 @@ export interface DiffusePool {
  *  classification, advection and rendering are all method-agnostic. */
 export interface FoamConfig {
     /** Track live diffuse-particle slots persistently so update and render passes
-     *  visit only active particles. Default false. */
+     *  visit only active particles. Default true. */
     activeParticles?: boolean;
+    /** Generate and retain spray particles. Default true. */
+    generateSpray?: boolean;
+    /** Generate and retain surface-foam particles. Default true. */
+    generateFoam?: boolean;
+    /** Generate and retain submerged bubble particles. Default true. */
+    generateBubbles?: boolean;
     /** Trapped-air generation rate (max samples per second per fluid particle). Default 40. */
     kTa?: number;
     /** Wave-crest generation rate (max samples per second per fluid particle). Default 40. */
     kWc?: number;
+    /** FLIP-only turbulence generation rate. Other backends ignore it. Default 0. */
+    kTurb?: number;
+    /** FLIP-only minimum particle speed admitted by the energy gate. Default sqrt(0.5). */
+    energySpeedMin?: number;
+    /** FLIP-only particle speed at which the energy gate reaches full strength. Default sqrt(40). */
+    energySpeedMax?: number;
+    /** FLIP-only minimum dimensionless surface curvature admitted by the crest gate. Default 0.05. */
+    curvatureMin?: number;
+    /** FLIP-only dimensionless surface curvature at which the crest gate reaches full strength. Default 1.5. */
+    curvatureMax?: number;
+    /** FLIP-only minimum MAC velocity-gradient turbulence admitted by the turbulence gate. Default 0.1. */
+    turbulenceMin?: number;
+    /** FLIP-only turbulence at which the turbulence gate reaches full strength. Default 2.5. */
+    turbulenceMax?: number;
+    /** FLIP-only depth below an upward free surface that retains foam, in MAC cells. Default 0. */
+    foamLayerDepth?: number;
+    /** FLIP-only aerodynamic spray drag in inverse seconds. Default 0. */
+    sprayDrag?: number;
     /** Bubble buoyancy coefficient (fraction of gravity applied upward). Default 0.8. */
     kb?: number;
     /** Bubble drag coefficient toward the local fluid velocity, in the range 0 to 1. Default 0.5. */
@@ -155,12 +189,16 @@ export interface FoamConfig {
 // a hash PRNG. The `Diffuse` slot layout is FIXED — the foam renderer reads the pool, so
 // it must not be reordered. Both backends pack the `Foam` UBO identically (indices below),
 // so its layout is shared too; extend only at the END.
-//   FoamParams UBO layout (16 floats / 64 bytes):
+//   FoamParams UBO layout (32 words / 128 bytes):
 //     [0..3]  tauTaMin, tauTaMax, tauWcMin, tauWcMax
 //     [4..7]  tauKMin, tauKMax, kTa, kWc
 //     [8..11] kb, kd, rv, frameDt
 //     [12..15] tMin, tMax, frameSeed(u32), _pad1
-export const FOAM_BYTES = 64;
+//     [16..19] kTurb, energySpeedMin, energySpeedMax, sprayDrag
+//     [20..23] turbulenceMin, turbulenceMax, curvatureMin, curvatureMax
+//     [24..27] foamLayerDepth, _pad2, _pad3, _pad4
+//     [28..31] generateSpray(u32), generateFoam(u32), generateBubbles(u32), _pad5
+export const FOAM_BYTES = 128;
 
 export const FOAM_COMMON_WGSL = /* wgsl */ `
 struct Foam {
@@ -168,8 +206,15 @@ struct Foam {
     tauKMin: f32, tauKMax: f32, kTa: f32, kWc: f32,
     kb: f32, kd: f32, rv: f32, frameDt: f32,
     tMin: f32, tMax: f32, frameSeed: u32, _pad1: u32,
+    kTurb: f32, energySpeedMin: f32, energySpeedMax: f32, sprayDrag: f32,
+    turbulenceMin: f32, turbulenceMax: f32, curvatureMin: f32, curvatureMax: f32,
+    foamLayerDepth: f32, _pad2: f32, _pad3: f32, _pad4: f32,
+    generateSpray: u32, generateFoam: u32, generateBubbles: u32, _pad5: u32,
 };
 struct Diffuse { p: vec4<f32>, v: vec4<f32> };
+fn foamKindEnabled(kind: u32) -> bool {
+    return select(select(foam.generateSpray != 0u, foam.generateFoam != 0u, kind == 1u), foam.generateBubbles != 0u, kind == 2u);
+}
 // Radial hat weight W(r,h) = 1 - r/h for r<=h (better near a free surface than poly6).
 fn wHat(rlen: f32, h: f32) -> f32 { return max(0.0, 1.0 - rlen / h); }
 // Clamp/normalise Φ(I, lo, hi) = (min(I,hi) - min(I,lo)) / (hi - lo) in [0,1].
@@ -211,6 +256,7 @@ fn main() {
 export const FOAM_ACTIVE_FINISH_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> state: array<atomic<u32>>;
 @group(0) @binding(1) var<storage, read_write> drawArgs: array<u32>;
+@group(0) @binding(2) var<storage, read_write> computeArgs: array<u32>;
 @compute @workgroup_size(1)
 fn main() {
     let oldSide = atomicLoad(&state[3]);
@@ -220,9 +266,237 @@ fn main() {
     drawArgs[1] = count;
     drawArgs[2] = 0u;
     drawArgs[3] = 0u;
+    let groups = (count + 63u) / 64u;
+    computeArgs[0] = min(groups, 65535u);
+    computeArgs[1] = (groups + 65534u) / 65535u;
+    computeArgs[2] = 1u;
     atomicStore(&state[3], newSide);
     atomicStore(&state[1u + oldSide], 0u);
 }`;
+
+const DIFFUSE_COUNT_DENSE_WGSL = /* wgsl */ `
+struct Diffuse { p: vec4<f32>, v: vec4<f32> };
+@group(0) @binding(0) var<storage, read> diffuse: array<Diffuse>;
+@group(0) @binding(1) var<storage, read_write> counts: array<atomic<u32>>;
+var<workgroup> localCounts: array<atomic<u32>, 4>;
+
+@compute @workgroup_size(64)
+fn main(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>
+) {
+    if (lid.x < 4u) {
+        atomicStore(&localCounts[lid.x], 0u);
+    }
+    workgroupBarrier();
+    let i = gid.x + gid.y * groups.x * 64u;
+    if (i < arrayLength(&diffuse) && diffuse[i].p.w > 0.0) {
+        let kind = u32(clamp(round(diffuse[i].v.w), 0.0, 2.0));
+        atomicAdd(&localCounts[0], 1u);
+        atomicAdd(&localCounts[1u + kind], 1u);
+    }
+    workgroupBarrier();
+    if (lid.x < 4u) {
+        atomicAdd(&counts[lid.x], atomicLoad(&localCounts[lid.x]));
+    }
+}`;
+
+const DIFFUSE_COUNT_ACTIVE_WGSL = /* wgsl */ `
+struct Diffuse { p: vec4<f32>, v: vec4<f32> };
+@group(0) @binding(0) var<storage, read> diffuse: array<Diffuse>;
+@group(0) @binding(1) var<storage, read_write> state: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>>;
+var<workgroup> localCounts: array<atomic<u32>, 4>;
+
+fn activeStride(cap: u32) -> u32 { return ((cap + 63u) / 64u) * 64u; }
+fn activeListBase(side: u32, cap: u32) -> u32 { return 64u + side * activeStride(cap); }
+
+@compute @workgroup_size(64)
+fn main(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) groups: vec3<u32>
+) {
+    if (lid.x < 4u) {
+        atomicStore(&localCounts[lid.x], 0u);
+    }
+    workgroupBarrier();
+    let item = gid.x + gid.y * groups.x * 64u;
+    let cap = arrayLength(&diffuse);
+    let side = atomicLoad(&state[3]);
+    let count = atomicLoad(&state[1u + side]);
+    if (item < count) {
+        let slot = atomicLoad(&state[activeListBase(side, cap) + item]);
+        if (diffuse[slot].p.w > 0.0) {
+            let kind = u32(clamp(round(diffuse[slot].v.w), 0.0, 2.0));
+            atomicAdd(&localCounts[0], 1u);
+            atomicAdd(&localCounts[1u + kind], 1u);
+        }
+    }
+    workgroupBarrier();
+    if (lid.x < 4u) {
+        atomicAdd(&counts[lid.x], atomicLoad(&localCounts[lid.x]));
+    }
+}`;
+
+export interface DiffuseCountTracker {
+    readonly counts: DiffuseParticleCounts | undefined;
+    readonly gpuBytes: number;
+    configure(diffuse: GPUBuffer, capacity: number, activeState?: GPUBuffer): void;
+    encode(encoder: GPUCommandEncoder, denseGroups: number, activeDispatch?: GPUBuffer): void;
+    reset(capacity?: number): void;
+    dispose(): void;
+}
+
+/** Periodically samples live diffuse-particle counts with asynchronous readback. */
+export function createDiffuseCountTracker(device: GPUDevice, label: string): DiffuseCountTracker {
+    const counterBuffer = device.createBuffer({
+        label: `${label}-counts`,
+        size: 16,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+    const readbacks = [0, 1].map((index) =>
+        device.createBuffer({
+            label: `${label}-counts-readback-${index}`,
+            size: 16,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        })
+    );
+    const densePipeline = device.createComputePipeline({
+        label: `${label}-count-dense`,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ code: DIFFUSE_COUNT_DENSE_WGSL }), entryPoint: "main" },
+    });
+    const activePipeline = device.createComputePipeline({
+        label: `${label}-count-active`,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ code: DIFFUSE_COUNT_ACTIVE_WGSL }), entryPoint: "main" },
+    });
+    const states: Array<"idle" | "copied" | "mapping"> = ["idle", "idle"];
+    const generations = [0, 0];
+    let generation = 0;
+    let frame = 0;
+    let denseBindGroup: GPUBindGroup | null = null;
+    let activeBindGroup: GPUBindGroup | null = null;
+    let configuredDiffuse: GPUBuffer | null = null;
+    let configuredActiveState: GPUBuffer | undefined;
+    let capacity = 0;
+    let latest: DiffuseParticleCounts | undefined;
+    let error: unknown = null;
+
+    const poll = (): void => {
+        if (error) {
+            const pending = error;
+            error = null;
+            throw pending;
+        }
+        for (let index = 0; index < readbacks.length; index++) {
+            if (states[index] !== "copied") {
+                continue;
+            }
+            states[index] = "mapping";
+            const buffer = readbacks[index]!;
+            const mappedGeneration = generations[index]!;
+            void buffer
+                .mapAsync(GPUMapMode.READ)
+                .then(() => {
+                    if (mappedGeneration === generation) {
+                        const values = new Uint32Array(buffer.getMappedRange());
+                        latest = {
+                            total: values[0] ?? 0,
+                            spray: values[1] ?? 0,
+                            foam: values[2] ?? 0,
+                            bubble: values[3] ?? 0,
+                            capacity,
+                        };
+                    }
+                    buffer.unmap();
+                    states[index] = "idle";
+                })
+                .catch((reason: unknown) => {
+                    error = reason;
+                    states[index] = "idle";
+                });
+        }
+    };
+
+    return {
+        get counts(): DiffuseParticleCounts | undefined {
+            return latest;
+        },
+        get gpuBytes(): number {
+            return counterBuffer.size + readbacks.reduce((sum, buffer) => sum + buffer.size, 0);
+        },
+        configure(diffuse: GPUBuffer, nextCapacity: number, activeState?: GPUBuffer): void {
+            if (configuredDiffuse === diffuse && configuredActiveState === activeState && capacity === nextCapacity) {
+                return;
+            }
+            configuredDiffuse = diffuse;
+            configuredActiveState = activeState;
+            capacity = nextCapacity;
+            denseBindGroup = device.createBindGroup({
+                layout: densePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: diffuse } },
+                    { binding: 1, resource: { buffer: counterBuffer } },
+                ],
+            });
+            activeBindGroup = activeState
+                ? device.createBindGroup({
+                      layout: activePipeline.getBindGroupLayout(0),
+                      entries: [
+                          { binding: 0, resource: { buffer: diffuse } },
+                          { binding: 1, resource: { buffer: activeState } },
+                          { binding: 2, resource: { buffer: counterBuffer } },
+                      ],
+                  })
+                : null;
+            this.reset(nextCapacity);
+        },
+        encode(encoder: GPUCommandEncoder, denseGroups: number, activeDispatch?: GPUBuffer): void {
+            poll();
+            frame++;
+            if (frame % 30 !== 0 || !denseBindGroup) {
+                return;
+            }
+            const readbackIndex = states.findIndex((state) => state === "idle");
+            if (readbackIndex < 0) {
+                return;
+            }
+            encoder.clearBuffer(counterBuffer);
+            const pass = encoder.beginComputePass({ label: `${label}-count` });
+            if (activeDispatch && activeBindGroup) {
+                pass.setPipeline(activePipeline);
+                pass.setBindGroup(0, activeBindGroup);
+                pass.dispatchWorkgroupsIndirect(activeDispatch, 0);
+            } else {
+                const groups = Math.max(1, denseGroups);
+                const x = Math.min(groups, 65535);
+                pass.setPipeline(densePipeline);
+                pass.setBindGroup(0, denseBindGroup);
+                pass.dispatchWorkgroups(x, Math.ceil(groups / x), 1);
+            }
+            pass.end();
+            encoder.copyBufferToBuffer(counterBuffer, 0, readbacks[readbackIndex]!, 0, 16);
+            states[readbackIndex] = "copied";
+            generations[readbackIndex] = generation;
+        },
+        reset(nextCapacity = capacity): void {
+            generation++;
+            capacity = nextCapacity;
+            latest = undefined;
+            frame = 0;
+            device.queue.writeBuffer(counterBuffer, 0, new Uint32Array(4));
+        },
+        dispose(): void {
+            counterBuffer.destroy();
+            for (const buffer of readbacks) {
+                buffer.destroy();
+            }
+        },
+    };
+}
 
 /** Fields common to all fluid backends. Method-specific tuning lives in the per-solver
  *  `PbfOptions` / `MlsMpmOptions`, which each extend this. */

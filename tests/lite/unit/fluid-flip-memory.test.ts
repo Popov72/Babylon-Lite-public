@@ -89,6 +89,35 @@ describe("FLIP particle dispatch", () => {
         expect(source).toContain("get diffuse(): DiffusePool | undefined");
     });
 
+    it("samples diffuse-particle usage asynchronously with per-kind workgroup reduction", () => {
+        const common = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/sim-common.ts"), "utf8");
+        expect(common).toContain("export interface DiffuseParticleCounts");
+        expect(common).toContain("var<workgroup> localCounts: array<atomic<u32>, 4>");
+        expect(common).toContain("frame % 30 !== 0");
+        expect(common).toContain(".mapAsync(GPUMapMode.READ)");
+        expect(common).toContain("pass.dispatchWorkgroupsIndirect(activeDispatch, 0)");
+        expect(common).toContain("@group(0) @binding(2) var<storage, read_write> computeArgs");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        expect(controls).not.toContain("Active foam particles");
+        expect(controls).toContain("\\u00a0/\\u00a0");
+        expect(controls.indexOf('"Generate foam"')).toBeLessThan(controls.indexOf('"Generate spray"'));
+        expect(controls.indexOf('"Generate spray"')).toBeLessThan(controls.indexOf('"Generate bubbles"'));
+        expect(controls).toContain("setFoamParticleCounts");
+        const demo = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/fluid.ts"), "utf8");
+        expect(demo).toContain("canvas.dataset.diffuseParticleCount");
+        expect(demo).toContain("canvas.dataset.sprayParticleCount");
+        expect(demo).toContain("canvas.dataset.foamParticleCount");
+        expect(demo).toContain("canvas.dataset.bubbleParticleCount");
+        for (const file of ["flip-sim.ts", "pbf-sim.ts", "mls-mpm-sim.ts", "pbmpm-sim.ts"]) {
+            const source = readFileSync(resolve(process.cwd(), `packages/babylon-lite/src/fluid/${file}`), "utf8");
+            expect(source).toContain("createDiffuseCountTracker");
+            expect(source).toContain("foamCountTracker?.encode");
+            expect(source).toContain("foamCountTracker?.gpuBytes");
+            expect(source).toContain("foamCountTracker?.dispose()");
+            expect(source).toMatch(/activeParticles \?\? true/);
+        }
+    });
+
     it("classifies foam only on fluid cells that touch air", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
         const surface = source.slice(source.indexOf("const SURFACE_NORMAL_WGSL"), source.indexOf("const SURFACE_CURVATURE_WGSL"));
@@ -105,12 +134,33 @@ describe("FLIP particle dispatch", () => {
     it("keeps the FLIP foam emitter within eight storage buffers", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
         const emitter = source.slice(source.indexOf("function buildFoamEmitWgsl"), source.indexOf("function buildFoamUpdateWgsl"));
-        expect(emitter).not.toContain("var<storage, read> faceVelocity");
+        expect(emitter).toContain("@group(0) @binding(2) var<storage, read> faceVelocity");
         expect(emitter).toContain("@group(0) @binding(9) var<storage, read_write> lifecycle");
+        expect(emitter).not.toContain("@binding(10)");
         expect(emitter).toContain("fn sampleCurvature");
+        expect(emitter).toContain("fn sampleTurbulence");
+        expect(emitter).toContain("let curl =");
+        expect(emitter).toContain("let strainSq =");
+        expect(emitter).toContain("if (foam.kTurb > 0.0)");
         expect(emitter).toContain("let topWeight = smoothstep");
         expect(emitter).toContain("let trappedAir =");
         expect(emitter).toContain("let waveCrest =");
+        expect(emitter).toContain("foam.kTurb * iturb");
+    });
+
+    it("supports FLIP foam layers and aerodynamic spray drag", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        const update = source.slice(source.indexOf("function buildFoamUpdateWgsl"), source.indexOf("function buildForceWgsl"));
+        expect(update).toContain("fn sampleFoamLayer");
+        expect(update).toContain("foam.foamLayerDepth");
+        expect(update).toContain("if (foam.sprayDrag > 0.0)");
+        expect(update).toContain("velocity *= exp(-foam.sprayDrag * dt)");
+        expect(source).toContain("foamF32[16] = config.kTurb ?? 0");
+        expect(source).toContain("foamF32[24] = Math.max(0, config.foamLayerDepth ?? 0)");
+        expect(source).toContain("foamU32[28] = config.generateSpray === false ? 0 : 1");
+        expect(source).toContain("foamU32[29] = config.generateFoam === false ? 0 : 1");
+        expect(source).toContain("foamU32[30] = config.generateBubbles === false ? 0 : 1");
+        expect(update).toContain("if (!foamKindEnabled(kind))");
     });
 });
 

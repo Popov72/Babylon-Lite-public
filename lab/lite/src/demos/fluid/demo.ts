@@ -148,8 +148,20 @@ export interface PairState {
     foam?: {
         enabled: boolean;
         activeParticles?: boolean;
+        generateSpray?: boolean;
+        generateFoam?: boolean;
+        generateBubbles?: boolean;
         kTa: number;
         kWc: number;
+        kTurb?: number;
+        energySpeedMin?: number;
+        energySpeedMax?: number;
+        curvatureMin?: number;
+        curvatureMax?: number;
+        turbulenceMin?: number;
+        turbulenceMax?: number;
+        foamLayerDepth?: number;
+        sprayDrag?: number;
         kb: number;
         kd: number;
         tMin: number;

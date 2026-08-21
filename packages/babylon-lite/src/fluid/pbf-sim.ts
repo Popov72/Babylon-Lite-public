@@ -67,6 +67,7 @@ import {
     FOAM_ACTIVE_PREPARE_WGSL,
     FOAM_BYTES,
     FOAM_COMMON_WGSL,
+    createDiffuseCountTracker,
     createFluidFlowState,
     createFluidInitialParticles,
     createFluidWarmupState,
@@ -1044,6 +1045,11 @@ ${slotLookup}
     let dt = sim.dt;
     var kind = 1u;
     if (nn < 6u) { kind = 0u; } else if (nn > 20u) { kind = 2u; }
+    if (!foamKindEnabled(kind)) {
+        diffuse[i].p = vec4<f32>(pp, 0.0);
+        ${deactivate}
+        return;
+    }
 
     var np = pp;
     var life = p0.w;
@@ -1604,6 +1610,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
     let foamActivePrepareBG: GPUBindGroup | null = null;
     let foamActiveFinishBG: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
+    let foamCountTracker: ReturnType<typeof createDiffuseCountTracker> | null = null;
 
     function buildFoamBindGroups(): void {
         foamNormalsBG = device.createBindGroup({
@@ -1665,6 +1672,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                   entries: [
                       { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
                       { binding: 1, resource: { buffer: foamDrawIndirectBuffer! } },
+                      { binding: 2, resource: { buffer: foamActiveDispatchBuffer! } },
                   ],
               })
             : null;
@@ -1679,7 +1687,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             foamParamsBuffer = device.createBuffer({ label: "fluid-foam-params", size: FOAM_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             diffuseHeadBuffer = device.createBuffer({ label: "fluid-foam-head", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         }
-        const nextActiveParticles = cfg.activeParticles ?? false;
+        const nextActiveParticles = cfg.activeParticles ?? true;
         const activeModeChanged = nextActiveParticles !== foamActiveParticles;
         if (nextActiveParticles && !foamActiveUpdatePipeline) {
             foamActiveEmitPipeline = computePipeline("fluid-foam-emit-active", buildFoamEmitWgsl(true));
@@ -1753,10 +1761,15 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             enc.clearBuffer(diffuseHeadBuffer!);
             device.queue.submit([enc.finish()]);
         }
+        foamCountTracker ??= createDiffuseCountTracker(device, "fluid-foam");
+        foamCountTracker.configure(diffuseBuffer!, cap, foamActiveParticles ? foamActiveStateBuffer! : undefined);
         diffusePool = {
             buffer: diffuseBuffer!,
             headBuffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer!,
             capacity: cap,
+            get counts() {
+                return foamCountTracker!.counts;
+            },
             ...(foamActiveParticles
                 ? {
                       activeIndices: foamActiveStateBuffer!,
@@ -1780,6 +1793,9 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
         foamF32[10] = cfg.rv ?? particleRadius;
         foamF32[12] = cfg.tMin ?? 0.3;
         foamF32[13] = cfg.tMax ?? 2.0;
+        foamU32[28] = cfg.generateSpray === false ? 0 : 1;
+        foamU32[29] = cfg.generateFoam === false ? 0 : 1;
+        foamU32[30] = cfg.generateBubbles === false ? 0 : 1;
         // foamU32[14] (frameSeed) is written per frame in step().
         device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
     }
@@ -1796,6 +1812,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             enc.clearBuffer(foamDrawIndirectBuffer!);
         }
         device.queue.submit([enc.finish()]);
+        foamCountTracker?.reset(foamCapacity);
         if (foamActiveStateBuffer) {
             device.queue.writeBuffer(foamActiveStateBuffer, 16, new Uint32Array([foamCapacity]));
             foamActiveSide = 0;
@@ -1853,6 +1870,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             if (foamParamsBuffer) {
                 b += foamParamsBuffer.size;
             }
+            b += foamCountTracker?.gpuBytes ?? 0;
             return b;
         },
         get diffuse(): DiffusePool | undefined {
@@ -1946,10 +1964,14 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
                         activeIndices: foamActiveStateBuffer!,
                         activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide),
                         drawIndirect: foamDrawIndirectBuffer!,
+                        get counts() {
+                            return foamCountTracker!.counts;
+                        },
                     };
                 } else {
                     dispatch(encoder, "fluid-foam-update", foamUpdatePipeline!, foamUpdateBG, foamPoolGroups);
                 }
+                foamCountTracker?.encode(encoder, foamPoolGroups, foamActiveParticles ? foamActiveDispatchBuffer! : undefined);
                 encoder.popDebugGroup();
             }
             encodeFluidActiveCountReadback(flowState, encoder);
@@ -2070,6 +2092,7 @@ export function createPbfSim(engine: EngineContext, options: PbfOptions = {}): F
             foamActiveStateBuffer?.destroy();
             foamActiveDispatchBuffer?.destroy();
             foamDrawIndirectBuffer?.destroy();
+            foamCountTracker?.dispose();
             sortedNormalBuffer?.destroy();
             foamParamsBuffer?.destroy();
         },

@@ -132,8 +132,20 @@ export interface FluidExportJson {
     foam: {
         enableFoam: boolean;
         activeParticles?: boolean;
+        generateSpray?: boolean;
+        generateFoam?: boolean;
+        generateBubbles?: boolean;
         trappedAirRate: number;
         waveCrestRate: number;
+        turbulenceRate?: number;
+        energySpeedMin?: number;
+        energySpeedMax?: number;
+        curvatureMin?: number;
+        curvatureMax?: number;
+        turbulenceMin?: number;
+        turbulenceMax?: number;
+        foamLayerDepth?: number;
+        sprayDrag?: number;
         foamLifetime: number;
         foamLifetimeMin: number;
         bubbleBuoyancy: number;
@@ -219,9 +231,21 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         },
         foam: {
             enableFoam: f?.enabled ?? false,
-            activeParticles: f?.activeParticles ?? false,
+            activeParticles: true,
+            generateSpray: f?.generateSpray ?? true,
+            generateFoam: f?.generateFoam ?? true,
+            generateBubbles: f?.generateBubbles ?? true,
             trappedAirRate: f?.kTa ?? 0,
             waveCrestRate: f?.kWc ?? 0,
+            turbulenceRate: f?.kTurb ?? 0,
+            energySpeedMin: f?.energySpeedMin ?? Math.sqrt(0.5),
+            energySpeedMax: f?.energySpeedMax ?? Math.sqrt(40),
+            curvatureMin: f?.curvatureMin ?? 0.05,
+            curvatureMax: f?.curvatureMax ?? 1.5,
+            turbulenceMin: f?.turbulenceMin ?? 0.1,
+            turbulenceMax: f?.turbulenceMax ?? 2.5,
+            foamLayerDepth: f?.foamLayerDepth ?? 0,
+            sprayDrag: f?.sprayDrag ?? 0,
             foamLifetime: f?.tMax ?? 0,
             foamLifetimeMin: f?.tMin ?? 0,
             bubbleBuoyancy: f?.kb ?? 0,
@@ -332,9 +356,21 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         anisoSurfScale: r.anisoRadiusDamping ?? 0.5,
         foam: {
             enabled: fm.enableFoam,
-            activeParticles: fm.activeParticles ?? false,
+            activeParticles: true,
+            generateSpray: fm.generateSpray ?? true,
+            generateFoam: fm.generateFoam ?? true,
+            generateBubbles: fm.generateBubbles ?? true,
             kTa: fm.trappedAirRate,
             kWc: fm.waveCrestRate,
+            kTurb: fm.turbulenceRate ?? 0,
+            energySpeedMin: fm.energySpeedMin ?? Math.sqrt(0.5),
+            energySpeedMax: fm.energySpeedMax ?? Math.sqrt(40),
+            curvatureMin: fm.curvatureMin ?? 0.05,
+            curvatureMax: fm.curvatureMax ?? 1.5,
+            turbulenceMin: fm.turbulenceMin ?? 0.1,
+            turbulenceMax: fm.turbulenceMax ?? 2.5,
+            foamLayerDepth: fm.foamLayerDepth ?? 0,
+            sprayDrag: fm.sprayDrag ?? 0,
             kb: fm.bubbleBuoyancy,
             kd: fm.bubbleDrag,
             tMin: fm.foamLifetimeMin,

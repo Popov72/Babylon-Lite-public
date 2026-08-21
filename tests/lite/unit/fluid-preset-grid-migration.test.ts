@@ -99,6 +99,55 @@ describe("fluid preset grid migration", () => {
         expect(presetFromExportJson(exportJsonFromPairState("box", "FLIP", state)).schema).toEqual(state.schema);
     });
 
+    it("round-trips advanced FLIP whitewater controls", () => {
+        const state = pairState();
+        state.foam = {
+            enabled: true,
+            activeParticles: true,
+            generateSpray: false,
+            generateFoam: true,
+            generateBubbles: false,
+            kTa: 30,
+            kWc: 40,
+            kTurb: 25,
+            energySpeedMin: 0.8,
+            energySpeedMax: 7,
+            curvatureMin: 0.1,
+            curvatureMax: 2,
+            turbulenceMin: 0.2,
+            turbulenceMax: 3,
+            foamLayerDepth: 1.5,
+            sprayDrag: 0.6,
+            kb: 0.8,
+            kd: 0.5,
+            tMin: 0.3,
+            tMax: 2,
+            poolScale: 3,
+            blurRadius: 4,
+            lightIntensity: 0.9,
+            ambient: 0.5,
+            aoStrength: 0.5,
+            normalStrength: 6,
+            debugTexture: "off",
+        };
+
+        const imported = presetFromExportJson(exportJsonFromPairState("box", "FLIP", state));
+        expect(imported.foam).toMatchObject({
+            generateSpray: false,
+            generateFoam: true,
+            generateBubbles: false,
+            kTurb: 25,
+            energySpeedMin: 0.8,
+            energySpeedMax: 7,
+            curvatureMin: 0.1,
+            curvatureMax: 2,
+            turbulenceMin: 0.2,
+            turbulenceMax: 3,
+            foamLayerDepth: 1.5,
+            sprayDrag: 0.6,
+        });
+    });
+
     it("defaults legacy lifecycle settings to indefinite with a two-second decay", () => {
         const legacy = exportJsonFromPairState("box", "PBF", pairState());
         delete legacy.simulationDuration;

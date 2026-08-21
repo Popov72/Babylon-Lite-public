@@ -433,6 +433,11 @@ function validateFoam(value: unknown): void {
     if (foam.activeParticles !== undefined) {
         bool(foam.activeParticles, "manifest.preset.foam.activeParticles");
     }
+    for (const key of ["generateSpray", "generateFoam", "generateBubbles"]) {
+        if (foam[key] !== undefined) {
+            bool(foam[key], `manifest.preset.foam.${key}`);
+        }
+    }
     for (const key of [
         "trappedAirRate",
         "waveCrestRate",
@@ -453,8 +458,32 @@ function validateFoam(value: unknown): void {
     ]) {
         finiteNumber(foam[key], `manifest.preset.foam.${key}`, 0, 1_000_000);
     }
+    for (const [key, max] of [
+        ["turbulenceRate", 500],
+        ["energySpeedMin", 20],
+        ["energySpeedMax", 40],
+        ["curvatureMin", 4],
+        ["curvatureMax", 8],
+        ["turbulenceMin", 20],
+        ["turbulenceMax", 40],
+        ["foamLayerDepth", 4],
+        ["sprayDrag", 10],
+    ] as const) {
+        if (foam[key] !== undefined) {
+            finiteNumber(foam[key], `manifest.preset.foam.${key}`, 0, max);
+        }
+    }
     if ((foam.foamLifetimeMin as number) > (foam.foamLifetime as number)) {
         fail("manifest.preset.foam.foamLifetimeMin must not exceed foamLifetime");
+    }
+    for (const [minKey, maxKey] of [
+        ["energySpeedMin", "energySpeedMax"],
+        ["curvatureMin", "curvatureMax"],
+        ["turbulenceMin", "turbulenceMax"],
+    ] as const) {
+        if (foam[minKey] !== undefined && foam[maxKey] !== undefined && (foam[minKey] as number) >= (foam[maxKey] as number)) {
+            fail(`manifest.preset.foam.${minKey} must be less than ${maxKey}`);
+        }
     }
     const bubbleColor = text(foam.subsurfaceBubbleColor, "manifest.preset.foam.subsurfaceBubbleColor");
     if (!HEX_COLOR.test(bubbleColor)) {

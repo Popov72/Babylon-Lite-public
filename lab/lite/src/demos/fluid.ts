@@ -69,9 +69,9 @@ import {
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim.js";
-import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink, FluidTransform } from "babylon-lite";
+import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink } from "babylon-lite";
 import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
-import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_EMITTERS, MAX_FLUID_POLYGON_POINTS, MAX_FLUID_SINKS } from "babylon-lite/fluid/sim-common.js";
+import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
@@ -96,6 +96,7 @@ import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } f
 import { parseBlenderFluidJson, scenePayloadFromBlenderFluidJson, type BlenderFluidScene } from "./fluid/blender-fluid-json.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/simulation-lifecycle.js";
+import { createFluidFlowEditor, type FluidFlowEditor, type FluidFlowObjectKind } from "./fluid/flow-editor.js";
 import { ENV_STUDIO_URL } from "./fluid/demo.js";
 import {
     cellSizeForPhysicsScale,
@@ -663,8 +664,7 @@ async function main(): Promise<void> {
     const rayForce = createRayForce(engine._device);
     let activeFlow: FluidFlowConfig = { emitters: [], sinks: [] };
     let installedFlow: FluidFlowConfig = { emitters: [], sinks: [] };
-    let initialEmitterParticleCountValue: HTMLElement | null = null;
-    let initialEmitterParticleCountId: string | null = null;
+    let flowEditor: FluidFlowEditor | null = null;
     const initialFlowSignature = (flow: FluidFlowConfig): string =>
         JSON.stringify({
             initialEmittersFillCapacity: flow.initialEmittersFillCapacity ?? false,
@@ -965,9 +965,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function pushFoam(): void {
         const f = controls.getValues().foam;
         const cfg: FoamConfig = {
-            activeParticles: f.activeParticles,
+            activeParticles: true,
+            generateSpray: f.generateSpray,
+            generateFoam: f.generateFoam,
+            generateBubbles: f.generateBubbles,
             kTa: f.kTa,
             kWc: f.kWc,
+            kTurb: f.kTurb,
+            energySpeedMin: f.energySpeedMin,
+            energySpeedMax: f.energySpeedMax,
+            curvatureMin: f.curvatureMin,
+            curvatureMax: f.curvatureMax,
+            turbulenceMin: f.turbulenceMin,
+            turbulenceMax: f.turbulenceMax,
+            foamLayerDepth: f.foamLayerDepth,
+            sprayDrag: f.sprayDrag,
             kb: f.kb,
             kd: f.kd,
             tMin: f.tMin,
@@ -1424,13 +1436,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         return counts;
     }
     function refreshInitialEmitterParticleCount(): void {
-        if (!initialEmitterParticleCountValue || !initialEmitterParticleCountId) {
-            delete canvas.dataset.selectedInitialEmitterParticleCount;
-            return;
-        }
-        const count = flipInitialEmitterParticleCounts().get(initialEmitterParticleCountId) ?? 0;
-        initialEmitterParticleCountValue.textContent = count.toLocaleString();
-        canvas.dataset.selectedInitialEmitterParticleCount = String(count);
+        flowEditor?.refreshComputedValues();
     }
     const flipParticleCapacity = (requested: number, scale: number, flow = activeFlow, explicitGrid = gridSettings !== undefined): number => {
         return flipParticlePlan(requested, scale, flow, explicitGrid).total;
@@ -1509,8 +1515,28 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             return error instanceof Error ? error.message : String(error);
         }
     }
+    function refreshFoamParticleCounts(): void {
+        const enabled = controls.getValues().foam.enabled && !!activeSim.setFoam;
+        const diffuse = enabled ? activeSim.diffuse : undefined;
+        const counts = diffuse?.counts;
+        controls.setFoamParticleCounts(counts, enabled, diffuse?.capacity);
+        canvas.dataset.diffuseParticlesEnabled = String(enabled);
+        canvas.dataset.diffuseParticleCapacity = String(diffuse?.capacity ?? 0);
+        if (!counts) {
+            delete canvas.dataset.diffuseParticleCount;
+            delete canvas.dataset.sprayParticleCount;
+            delete canvas.dataset.foamParticleCount;
+            delete canvas.dataset.bubbleParticleCount;
+            return;
+        }
+        canvas.dataset.diffuseParticleCount = String(counts.total);
+        canvas.dataset.sprayParticleCount = String(counts.spray);
+        canvas.dataset.foamParticleCount = String(counts.foam);
+        canvas.dataset.bubbleParticleCount = String(counts.bubble);
+    }
     function refreshParticleUsageStatus(activeCount = activeSim.activeCount ?? activeSim.count): void {
         refreshInitialEmitterParticleCount();
+        refreshFoamParticleCounts();
         canvas.dataset.simulationGpuBytes = String(activeSim.gpuBytes);
         if (methodName !== "FLIP") {
             controls.setParticleUsage(activeCount, activeSim.count, activeSim.gpuBytes);
@@ -2322,9 +2348,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             fusedBlockDiscovery: false,
             foam: {
                 enabled: false,
-                activeParticles: false,
+                activeParticles: true,
+                generateSpray: true,
+                generateFoam: true,
+                generateBubbles: true,
                 kTa: 40,
                 kWc: 40,
+                kTurb: 0,
+                energySpeedMin: Math.sqrt(0.5),
+                energySpeedMax: Math.sqrt(40),
+                curvatureMin: 0.05,
+                curvatureMax: 1.5,
+                turbulenceMin: 0.1,
+                turbulenceMax: 2.5,
+                foamLayerDepth: 0,
+                sprayDrag: 0,
                 kb: 0.8,
                 kd: 0.5,
                 tMin: 0.3,
@@ -2431,13 +2469,18 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             },
             onReset: (preserveSceneAnimations) => resetActiveFlow(true, preserveSceneAnimations),
             onFoamEnable: () => pushFoam(),
-            onFoamActiveParticles: () => pushFoam(),
+            onFoamKinds: () => pushFoam(),
             onFoamKta: () => {
                 if (controls.getValues().foam.enabled) {
                     pushFoam();
                 }
             },
             onFoamKwc: () => {
+                if (controls.getValues().foam.enabled) {
+                    pushFoam();
+                }
+            },
+            onFoamAdvanced: () => {
                 if (controls.getValues().foam.enabled) {
                     pushFoam();
                 }
@@ -2794,7 +2837,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 };
                 activeFlow = (parsed.formatVersion ?? 0) < 4 ? flowToGridLocal(importedFlow) : importedFlow;
                 resetActiveFlow(false);
-                updateAuthoredFlow();
+                refreshFlowUI();
                 return;
             }
             applyImportedPreset(parsed as FluidExportJson, true);
@@ -2912,12 +2955,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     }
 
-    let selectedEmitterId: string | null = null;
-    let selectedSinkId: string | null = null;
     let showEmitterWireframe = false;
     let showSinkWireframe = false;
-    type FlowObjectKind = "emitter" | "sink";
-    let flowGizmoOwner: FlowObjectKind | null = null;
+    let flowGizmoOwner: FluidFlowObjectKind | null = null;
 
     type FlowWireframeSegment = readonly [Vec3, Vec3];
     const FLOW_WIREFRAME_SEGMENTS = MAX_FLUID_POLYGON_POINTS * 3;
@@ -3089,11 +3129,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
     const emitterFlowWireframe = createFlowWireframe("fluid-emitter-wireframe", { r: 0.1, g: 0.9, b: 1, a: 0.9 });
     const sinkFlowWireframe = createFlowWireframe("fluid-sink-wireframe", { r: 1, g: 0.55, b: 0.1, a: 0.9 });
-    const selectedFlowObject = (kind: FlowObjectKind): FluidEmitter | FluidSink | undefined => {
-        const selectedId = kind === "emitter" ? selectedEmitterId : selectedSinkId;
-        return kind === "emitter" ? activeFlow.emitters.find((emitter) => emitter.id === selectedId) : activeFlow.sinks.find((sink) => sink.id === selectedId);
-    };
-    const syncFlowWireframe = (kind: FlowObjectKind): void => {
+    const selectedFlowObject = (kind: FluidFlowObjectKind): FluidEmitter | FluidSink | undefined => flowEditor?.getSelected(kind);
+    const syncFlowWireframe = (kind: FluidFlowObjectKind): void => {
         const isEmitter = kind === "emitter";
         const mesh = isEmitter ? emitterFlowWireframe : sinkFlowWireframe;
         const visible = isEmitter ? showEmitterWireframe : showSinkWireframe;
@@ -3164,7 +3201,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
     const finishFlowGizmoDrag = (): void => {
         syncFlowTransformFromGizmo();
-        refreshFlowUI();
+        flowEditor?.refresh();
     };
     for (const gizmo of flowPositionSubGizmos) {
         gizmo.onPositionChanged.add(syncFlowTransformFromGizmo);
@@ -3234,810 +3271,52 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     syncGridBoundsWireframe();
     syncGridGizmo();
 
-    const identityFlowTransform = (): FluidTransform => ({ position: [0, 1, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] });
-    const defaultFlowShape = (type: FluidShape["type"]): FluidShape => {
-        if (type === "sphere") {
-            return { type, radius: 0.25 };
-        }
-        if (type === "cylinder") {
-            return { type, radius: 0.5, height: 0.5 };
-        }
-        if (type === "cone") {
-            return { type, bottomRadius: 0.5, topRadius: 0, height: 1 };
-        }
-        if (type === "capsule") {
-            return { type, radius: 0.5, height: 1 };
-        }
-        if (type === "polygonPrism") {
-            return {
-                type,
-                points: [
-                    [-0.5, -0.5],
-                    [0.5, -0.5],
-                    [0.5, 0.5],
-                    [-0.5, 0.5],
-                ],
-                thickness: 0.25,
-            };
-        }
-        return { type: "box", size: [1, 1, 1] };
-    };
-    const uniqueFlowId = (prefix: string): string => {
-        const used = new Set([...activeFlow.emitters.map((emitter) => emitter.id), ...activeFlow.sinks.map((sink) => sink.id)]);
-        let index = 1;
-        while (used.has(`${prefix}-${index}`)) {
-            index++;
-        }
-        return `${prefix}-${index}`;
-    };
-    const updateAuthoredFlow = (rebuildEditor = true): void => {
-        if (rebuildEditor) {
-            refreshFlowUI();
-        } else {
+    flowEditor = createFluidFlowEditor({
+        emittersHost: emitterFlowHost,
+        sinksHost: sinkFlowHost,
+        flow: activeFlow,
+        onChange: (_flow, change) => {
+            if (change.type === "flow") {
+                applyFlow();
+            } else if (change.type === "object") {
+                updateInstalledFlowObject(change.kind, change.object);
+            }
+        },
+        onRefresh: () => {
             syncFlowWireframe("emitter");
             syncFlowWireframe("sink");
             syncFlowGizmo();
-        }
-        refreshParticleUsageStatus();
-        controls.setGridStatus(flipPendingCapacityStatus());
-    };
-    const updateLiveFlowObject = (kind: FlowObjectKind, object: FluidEmitter | FluidSink, rebuildEditor = true): void => {
-        updateInstalledFlowObject(kind, object);
-        updateAuthoredFlow(rebuildEditor);
-    };
-    const flowButton = (label: string, onClick: () => void): HTMLButtonElement => {
-        const button = document.createElement("button");
-        button.textContent = label;
-        button.style.cssText = "padding:3px 7px;background:#25354a;color:#e8eef5;border:1px solid #40536d;border-radius:3px;cursor:pointer;";
-        button.onclick = onClick;
-        return button;
-    };
-    const flowField = (label: string, control: HTMLElement, info?: string): HTMLElement => {
-        const row = document.createElement("label");
-        row.style.cssText = "display:grid;grid-template-columns:105px 1fr;align-items:center;gap:6px;margin:4px 0;";
-        row.dataset.flowFieldLabel = label;
-        const text = document.createElement("span");
-        text.textContent = label;
-        if (info) {
-            row.title = info;
-            const icon = document.createElement("span");
-            icon.textContent = " ⓘ";
-            icon.style.cssText = "color:#6d7f95;cursor:help;";
-            text.appendChild(icon);
-        }
-        row.append(text, control);
-        return row;
-    };
-    const numberInput = (value: number, onChange: (value: number) => void, step = 0.1, min?: number): HTMLInputElement => {
-        let committed = value;
-        const input = document.createElement("input");
-        input.type = "text";
-        input.inputMode = "decimal";
-        input.dataset.step = String(step);
-        if (min !== undefined) {
-            input.dataset.min = String(min);
-        }
-        input.value = String(value);
-        input.style.cssText = "width:100%;min-width:0;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:3px 5px;";
-        input.onchange = () => {
-            const next = Number(input.value.trim().replace(",", "."));
-            if (Number.isFinite(next) && (min === undefined || next >= min)) {
-                committed = next;
-                input.value = String(next);
-                onChange(next);
-            } else {
-                input.value = String(committed);
-            }
-        };
-        input.onkeydown = (event) => {
-            if (event.key === "Enter") {
-                input.blur();
-                return;
-            }
-            if (event.key === "ArrowUp" || event.key === "ArrowDown") {
-                event.preventDefault();
-                const parsed = Number(input.value.trim().replace(",", "."));
-                const base = Number.isFinite(parsed) ? parsed : committed;
-                const next = Math.max(min ?? Number.NEGATIVE_INFINITY, base + (event.key === "ArrowUp" ? step : -step));
-                committed = next;
-                input.value = String(next);
-                onChange(next);
-            }
-        };
-        return input;
-    };
-    const textInput = (value: string, onChange: (value: string) => void): HTMLInputElement => {
-        const input = document.createElement("input");
-        input.type = "text";
-        input.value = value;
-        input.style.cssText = "width:100%;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:2px 4px;";
-        input.onchange = () => onChange(input.value.trim() || value);
-        return input;
-    };
-    const selectInput = <T extends string>(value: T, values: readonly T[], onChange: (value: T) => void): HTMLSelectElement => {
-        const select = document.createElement("select");
-        select.style.cssText = "width:100%;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;padding:2px;";
-        for (const item of values) {
-            const option = document.createElement("option");
-            option.value = item;
-            option.textContent = item;
-            select.appendChild(option);
-        }
-        select.value = value;
-        select.onchange = () => onChange(select.value as T);
-        return select;
-    };
-    const vec3Editor = (value: [number, number, number], onChange: (value: [number, number, number]) => void, step = 0.1): HTMLElement => {
-        const current: [number, number, number] = [...value];
-        const host = document.createElement("div");
-        host.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:3px;";
-        for (let axis = 0; axis < 3; axis++) {
-            host.appendChild(
-                numberInput(
-                    value[axis]!,
-                    (next) => {
-                        current[axis] = next;
-                        onChange([...current]);
-                    },
-                    step
-                )
-            );
-        }
-        return host;
-    };
-    const quatFromEulerDegrees = (value: [number, number, number]): [number, number, number, number] => {
-        const x = (value[0] * Math.PI) / 360;
-        const y = (value[1] * Math.PI) / 360;
-        const z = (value[2] * Math.PI) / 360;
-        const sx = Math.sin(x);
-        const cx = Math.cos(x);
-        const sy = Math.sin(y);
-        const cy = Math.cos(y);
-        const sz = Math.sin(z);
-        const cz = Math.cos(z);
-        return [sx * cy * cz - cx * sy * sz, cx * sy * cz + sx * cy * sz, cx * cy * sz - sx * sy * cz, cx * cy * cz + sx * sy * sz];
-    };
-    const eulerDegreesFromQuat = (q: [number, number, number, number]): [number, number, number] => {
-        const [x, y, z, w] = q;
-        const rx = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
-        const sy = Math.max(-1, Math.min(1, 2 * (w * y - z * x)));
-        const ry = Math.asin(sy);
-        const rz = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
-        return [(rx * 180) / Math.PI, (ry * 180) / Math.PI, (rz * 180) / Math.PI];
-    };
-    const appendTransformEditor = (host: HTMLElement, kind: FlowObjectKind, target: FluidEmitter | FluidSink): void => {
-        const transform = target.transform;
-        host.append(
-            flowField(
-                "Position",
-                vec3Editor(transform.position, (value) => {
-                    transform.position = value;
-                    updateLiveFlowObject(kind, target, false);
-                }),
-                "Grid-local offset from Grid position."
-            ),
-            flowField(
-                "Rotation °",
-                vec3Editor(
-                    eulerDegreesFromQuat(transform.rotation),
-                    (value) => {
-                        transform.rotation = quatFromEulerDegrees(value);
-                        updateLiveFlowObject(kind, target, false);
-                    },
-                    1
-                )
-            ),
-            flowField(
-                "Scale",
-                vec3Editor(
-                    transform.scale,
-                    (value) => {
-                        transform.scale = value;
-                        updateLiveFlowObject(kind, target, false);
-                    },
-                    0.05
-                )
-            )
-        );
-    };
-    const appendShapeEditor = (host: HTMLElement, kind: FlowObjectKind, target: FluidEmitter | FluidSink): void => {
-        const shapeTypes: FluidShape["type"][] = ["box", "sphere", "cylinder", "cone", "capsule", "polygonPrism"];
-        host.appendChild(
-            flowField(
-                "Shape",
-                selectInput(target.shape.type, shapeTypes, (type) => {
-                    target.shape = defaultFlowShape(type);
-                    updateLiveFlowObject(kind, target);
-                })
-            )
-        );
-        const shape = target.shape;
-        if (shape.type === "box") {
-            host.appendChild(
-                flowField(
-                    "Size",
-                    vec3Editor(shape.size, (value) => {
-                        shape.size = value;
-                        updateLiveFlowObject(kind, target, false);
-                    })
-                )
-            );
-        } else if (shape.type === "sphere") {
-            host.appendChild(
-                flowField(
-                    "Radius",
-                    numberInput(
-                        shape.radius,
-                        (value) => {
-                            shape.radius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                )
-            );
-        } else if (shape.type === "cylinder") {
-            host.append(
-                flowField(
-                    "Radius",
-                    numberInput(
-                        shape.radius,
-                        (value) => {
-                            shape.radius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField(
-                    "Inner radius",
-                    numberInput(
-                        shape.innerRadius ?? 0,
-                        (value) => {
-                            shape.innerRadius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField(
-                    "Height",
-                    numberInput(
-                        shape.height,
-                        (value) => {
-                            shape.height = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                )
-            );
-        } else if (shape.type === "cone") {
-            host.append(
-                flowField(
-                    "Bottom radius",
-                    numberInput(
-                        shape.bottomRadius,
-                        (value) => {
-                            shape.bottomRadius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField(
-                    "Top radius",
-                    numberInput(
-                        shape.topRadius,
-                        (value) => {
-                            shape.topRadius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField(
-                    "Height",
-                    numberInput(
-                        shape.height,
-                        (value) => {
-                            shape.height = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                )
-            );
-        } else if (shape.type === "capsule") {
-            host.append(
-                flowField(
-                    "Radius",
-                    numberInput(
-                        shape.radius,
-                        (value) => {
-                            shape.radius = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField(
-                    "Total height",
-                    numberInput(
-                        shape.height,
-                        (value) => {
-                            shape.height = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                )
-            );
-        } else {
-            const points = document.createElement("textarea");
-            points.value = shape.points.map((point) => `${point[0]},${point[1]}`).join("; ");
-            points.rows = 3;
-            points.style.cssText = "width:100%;box-sizing:border-box;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;";
-            points.onchange = () => {
-                const parsed = points.value
-                    .split(";")
-                    .map((entry) => entry.split(",").map(Number))
-                    .filter((entry) => entry.length === 2 && entry.every(Number.isFinite))
-                    .map((entry) => [entry[0]!, entry[1]!] as [number, number]);
-                if (parsed.length >= 3) {
-                    shape.points = parsed;
-                    updateLiveFlowObject(kind, target, false);
-                }
-            };
-            host.append(
-                flowField("Points x,z", points),
-                flowField(
-                    "Thickness",
-                    numberInput(
-                        shape.thickness,
-                        (value) => {
-                            shape.thickness = value;
-                            updateLiveFlowObject(kind, target, false);
-                        },
-                        0.05,
-                        0
-                    )
-                )
-            );
-        }
-    };
-    const flowWireframeCheckbox = (kind: FlowObjectKind): HTMLInputElement => {
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = kind === "emitter" ? showEmitterWireframe : showSinkWireframe;
-        checkbox.onchange = () => {
-            if (kind === "emitter") {
-                showEmitterWireframe = checkbox.checked;
-            } else {
-                showSinkWireframe = checkbox.checked;
-            }
-            syncFlowWireframe(kind);
-        };
-        return checkbox;
-    };
-    const flowGizmoCheckbox = (kind: FlowObjectKind): HTMLInputElement => {
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = flowGizmoOwner === kind;
-        checkbox.onchange = () => {
-            flowGizmoOwner = checkbox.checked ? kind : flowGizmoOwner === kind ? null : flowGizmoOwner;
-            refreshFlowUI();
-        };
-        return checkbox;
-    };
-    const flowList = (kind: FlowObjectKind): HTMLSelectElement => {
-        const objects = kind === "emitter" ? activeFlow.emitters : activeFlow.sinks;
-        const selectedId = kind === "emitter" ? selectedEmitterId : selectedSinkId;
-        const list = document.createElement("select");
-        list.size = Math.min(8, Math.max(3, objects.length));
-        list.style.cssText = "width:100%;background:#182233;color:#e8eef5;border:1px solid #40536d;border-radius:3px;";
-        for (const object of objects) {
-            const option = document.createElement("option");
-            option.value = object.id;
-            option.textContent = object.name;
-            list.appendChild(option);
-        }
-        if (selectedId) {
-            list.value = selectedId;
-        }
-        list.onchange = () => {
-            if (kind === "emitter") {
-                selectedEmitterId = list.value || null;
-            } else {
-                selectedSinkId = list.value || null;
-            }
-            refreshFlowUI();
-        };
-        return list;
-    };
-    const flowButtons = (kind: FlowObjectKind): HTMLElement => {
-        const host = document.createElement("div");
-        host.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;margin:5px 0;";
-        const selected = selectedFlowObject(kind);
-        const objects = kind === "emitter" ? activeFlow.emitters : activeFlow.sinks;
-        const limit = kind === "emitter" ? MAX_FLUID_EMITTERS : MAX_FLUID_SINKS;
-        const add = flowButton(kind === "emitter" ? "+ Emitter" : "+ Sink", () => {
-            const id = uniqueFlowId(kind);
-            if (kind === "emitter") {
-                activeFlow.emitters.push({
-                    id,
-                    name: "New emitter",
-                    enabled: true,
-                    behavior: "inflow",
-                    transform: identityFlowTransform(),
-                    shape: defaultFlowShape("box"),
-                    sampling: "volume",
-                    velocity: [0, 1, 0],
-                    velocitySpace: "local",
-                    spread: 0,
-                });
-                selectedEmitterId = id;
-            } else {
-                activeFlow.sinks.push({
-                    id,
-                    name: "New sink",
-                    enabled: true,
-                    mode: "delete",
-                    transform: identityFlowTransform(),
-                    shape: defaultFlowShape("box"),
-                    targets: [],
-                    volumeRate: 1,
-                });
-                selectedSinkId = id;
-            }
-            applyFlow();
-            refreshFlowUI();
-        });
-        add.disabled = objects.length >= limit;
-        const duplicate = flowButton("Duplicate", () => {
-            if (!selected) {
-                return;
-            }
-            const copy = structuredClone(selected);
-            copy.id = uniqueFlowId(kind);
-            copy.name += " copy";
-            if (kind === "emitter") {
-                activeFlow.emitters.push(copy as FluidEmitter);
-                selectedEmitterId = copy.id;
-            } else {
-                activeFlow.sinks.push(copy as FluidSink);
-                selectedSinkId = copy.id;
-            }
-            applyFlow();
-            refreshFlowUI();
-        });
-        duplicate.disabled = !selected || objects.length >= limit;
-        const remove = flowButton("Delete", () => {
-            if (!selected) {
-                return;
-            }
-            if (kind === "emitter") {
-                activeFlow.emitters = activeFlow.emitters.filter((emitter) => emitter.id !== selected.id);
-                for (const sink of activeFlow.sinks) {
-                    sink.targets = sink.targets.filter((id) => id !== selected.id);
-                }
-                selectedEmitterId = null;
-            } else {
-                activeFlow.sinks = activeFlow.sinks.filter((sink) => sink.id !== selected.id);
-                selectedSinkId = null;
-            }
-            applyFlow();
-            refreshFlowUI();
-        });
-        remove.disabled = !selected;
-        host.append(add, duplicate, remove);
-        return host;
-    };
-    const commonFlowEditor = (kind: FlowObjectKind, object: FluidEmitter | FluidSink): HTMLElement => {
-        const editor = document.createElement("div");
-        editor.style.cssText = "border-top:1px solid #33445b;margin-top:6px;padding-top:5px;";
-        const enabled = document.createElement("input");
-        enabled.type = "checkbox";
-        enabled.checked = object.enabled;
-        enabled.onchange = () => {
-            object.enabled = enabled.checked;
-            updateLiveFlowObject(kind, object);
-        };
-        editor.append(
-            flowField("Wireframe", flowWireframeCheckbox(kind)),
-            flowField("Gizmo", flowGizmoCheckbox(kind)),
-            flowField("Enabled", enabled),
-            flowField(
-                "Name",
-                textInput(object.name, (value) => {
-                    object.name = value;
-                    refreshFlowUI();
-                })
-            )
-        );
-        appendTransformEditor(editor, kind, object);
-        appendShapeEditor(editor, kind, object);
-        return editor;
-    };
-    const refreshEmitterUI = (): void => {
-        initialEmitterParticleCountValue = null;
-        initialEmitterParticleCountId = null;
-        delete canvas.dataset.selectedInitialEmitterParticleCount;
-        const fillCapacity = document.createElement("input");
-        fillCapacity.type = "checkbox";
-        fillCapacity.checked = activeFlow.initialEmittersFillCapacity === true;
-        fillCapacity.onchange = () => {
-            activeFlow.initialEmittersFillCapacity = fillCapacity.checked;
-            applyFlow();
-        };
-        if (!activeFlow.emitters.some((emitter) => emitter.id === selectedEmitterId)) {
-            selectedEmitterId = activeFlow.emitters[0]?.id ?? null;
-        }
-        const emitter = activeFlow.emitters.find((item) => item.id === selectedEmitterId);
-        const editor = emitter ? commonFlowEditor("emitter", emitter) : document.createElement("div");
-        if (emitter) {
-            const sourceAndNormalEnabled =
-                emitter.sourceVelocityFactor !== undefined || emitter.normalVelocity !== undefined || (emitter.sourceNode === undefined && emitter.sourceVelocity !== undefined);
-            const sourceAndNormal = document.createElement("input");
-            sourceAndNormal.type = "checkbox";
-            sourceAndNormal.checked = sourceAndNormalEnabled;
-            sourceAndNormal.onchange = () => {
-                if (sourceAndNormal.checked) {
-                    emitter.sourceVelocityFactor ??= 1;
-                    emitter.normalVelocity ??= 0;
+            refreshParticleUsageStatus();
+            controls.setGridStatus(flipPendingCapacityStatus());
+        },
+        visuals: {
+            getWireframeVisible: (kind) => (kind === "emitter" ? showEmitterWireframe : showSinkWireframe),
+            setWireframeVisible: (kind, visible) => {
+                if (kind === "emitter") {
+                    showEmitterWireframe = visible;
                 } else {
-                    delete emitter.sourceVelocity;
-                    delete emitter.sourceVelocityFactor;
-                    delete emitter.normalVelocity;
+                    showSinkWireframe = visible;
                 }
-                updateLiveFlowObject("emitter", emitter);
-            };
-            if (emitter.sourceNode) {
-                const sourceNode = document.createElement("code");
-                sourceNode.textContent = emitter.sourceNode;
-                sourceNode.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-                sourceNode.title = emitter.sourceNode;
-                editor.appendChild(flowField("Source mesh", sourceNode, "Imported GLB node whose animated world transform drives this analytical emitter."));
+            },
+            getGizmoVisible: (kind) => flowGizmoOwner === kind,
+            setGizmoVisible: (kind, visible) => {
+                flowGizmoOwner = visible ? kind : flowGizmoOwner === kind ? null : flowGizmoOwner;
+            },
+        },
+        getEmitterRateMode: () => (methodName === "FLIP" ? "occupancy-refill" : "unlimited-toggle"),
+        getInitialEmitterParticleCount: (emitter) =>
+            methodName === "FLIP" && emitter.behavior === "initial" ? (flipInitialEmitterParticleCounts().get(emitter.id) ?? 0) : undefined,
+        onInitialEmitterParticleCountDisplayed: (count) => {
+            if (count === undefined) {
+                delete canvas.dataset.selectedInitialEmitterParticleCount;
+            } else {
+                canvas.dataset.selectedInitialEmitterParticleCount = String(count);
             }
-            const rateToggle = document.createElement("input");
-            rateToggle.type = "checkbox";
-            const usesOccupancyRefill = methodName === "FLIP";
-            rateToggle.checked = usesOccupancyRefill ? emitter.volumeRate !== undefined : emitter.volumeRate === undefined;
-            rateToggle.onchange = () => {
-                const rateLimited = usesOccupancyRefill ? rateToggle.checked : !rateToggle.checked;
-                emitter.volumeRate = rateLimited ? (emitter.volumeRate ?? 1) : undefined;
-                updateLiveFlowObject("emitter", emitter);
-            };
-            editor.prepend(
-                flowField(
-                    "Behavior",
-                    selectInput(emitter.behavior, ["initial", "inflow"] as const, (value) => {
-                        emitter.behavior = value;
-                        updateLiveFlowObject("emitter", emitter);
-                    })
-                ),
-                flowField(
-                    "Sampling",
-                    selectInput(emitter.sampling, ["volume", "surface"] as const, (value) => {
-                        emitter.sampling = value;
-                        updateLiveFlowObject("emitter", emitter);
-                    })
-                )
-            );
-            if (methodName === "FLIP" && emitter.behavior === "initial") {
-                const particleCount = document.createElement("output");
-                particleCount.style.cssText = "font-variant-numeric:tabular-nums;";
-                particleCount.dataset.fluidInitialEmitterParticleCount = emitter.id;
-                initialEmitterParticleCountValue = particleCount;
-                initialEmitterParticleCountId = emitter.id;
-                editor.prepend(
-                    flowField(
-                        "FLIP particles",
-                        particleCount,
-                        "Read-only marker allocation accepted for this Initial emitter after Reset simulation, including clipping to the FLIP domain, grid cell size, Markers per cell, other Initial emitters, and Particle capacity."
-                    )
-                );
-                refreshInitialEmitterParticleCount();
-            }
-            if (emitter.behavior === "inflow") {
-                editor.appendChild(
-                    flowField(
-                        "Delay before start",
-                        numberInput(
-                            emitter.delayBeforeStart ?? 0,
-                            (value) => {
-                                emitter.delayBeforeStart = value;
-                                updateLiveFlowObject("emitter", emitter, false);
-                            },
-                            0.1,
-                            0
-                        ),
-                        "Simulation-time seconds to wait after reset before this Inflow emits or accepts recycled particles."
-                    )
-                );
-                editor.appendChild(
-                    flowField(
-                        usesOccupancyRefill ? "Limit volume rate" : "Unlimited",
-                        rateToggle,
-                        usesOccupancyRefill
-                            ? "When disabled, FLIP refills empty marker space inside the emitter shape. Enable this to cap the replenished liquid volume per simulation second; emission velocity remains independent."
-                            : undefined
-                    )
-                );
-                if (emitter.volumeRate !== undefined) {
-                    editor.appendChild(
-                        flowField(
-                            "Volume / second",
-                            numberInput(
-                                emitter.volumeRate,
-                                (value) => {
-                                    emitter.volumeRate = value;
-                                    updateLiveFlowObject("emitter", emitter, false);
-                                },
-                                0.1,
-                                0
-                            ),
-                            usesOccupancyRefill
-                                ? "Maximum world-space liquid volume replenished per simulation second. The actual amount may be lower when the emitter region is already full."
-                                : undefined
-                        )
-                    );
-                }
-            }
-            editor.append(
-                flowField(
-                    "Velocity (XYZ)",
-                    vec3Editor(emitter.velocity, (value) => {
-                        emitter.velocity = value;
-                        updateLiveFlowObject("emitter", emitter, false);
-                    }),
-                    "Authored launch velocity added to every emitted particle. This value is independent of the source mesh's motion."
-                ),
-                flowField(
-                    "Velocity space",
-                    selectInput(emitter.velocitySpace, ["local", "world"] as const, (value) => {
-                        emitter.velocitySpace = value;
-                        updateLiveFlowObject("emitter", emitter);
-                    })
-                ),
-                flowField(
-                    "Spread",
-                    numberInput(
-                        emitter.spread,
-                        (value) => {
-                            emitter.spread = value;
-                            updateLiveFlowObject("emitter", emitter, false);
-                        },
-                        0.05,
-                        0
-                    )
-                ),
-                flowField("Source + normal", sourceAndNormal, "Opt-in inherited velocity from the linked Source mesh plus analytical shape-normal velocity.")
-            );
-            if (sourceAndNormalEnabled) {
-                editor.append(
-                    flowField(
-                        "Source factor",
-                        numberInput(emitter.sourceVelocityFactor ?? 1, (value) => {
-                            emitter.sourceVelocityFactor = value;
-                            updateLiveFlowObject("emitter", emitter, false);
-                        }),
-                        "Multiplier applied to velocity derived each frame from the linked Source mesh's animation."
-                    ),
-                    flowField(
-                        "Normal velocity",
-                        numberInput(emitter.normalVelocity ?? 0, (value) => {
-                            emitter.normalVelocity = value;
-                            updateLiveFlowObject("emitter", emitter, false);
-                        }),
-                        "Speed along the emitter shape's outward analytical normal. Negative values point inward."
-                    )
-                );
-            }
-        }
-        emitterFlowHost.replaceChildren(flowField("Initial emitters fill capacity", fillCapacity), flowList("emitter"), flowButtons("emitter"), editor);
-    };
-    const refreshSinkUI = (): void => {
-        if (!activeFlow.sinks.some((sink) => sink.id === selectedSinkId)) {
-            selectedSinkId = activeFlow.sinks[0]?.id ?? null;
-        }
-        const sink = activeFlow.sinks.find((item) => item.id === selectedSinkId);
-        const editor = sink ? commonFlowEditor("sink", sink) : document.createElement("div");
-        if (sink) {
-            const operation = selectInput(sink.mode ?? "delete", ["delete", "recycle"] as const, (value) => {
-                sink.mode = value;
-                if (value === "recycle" && sink.targets.length === 0) {
-                    const firstInflow = activeFlow.emitters.find((emitter) => emitter.behavior === "inflow");
-                    sink.targets = firstInflow ? [firstInflow.id] : [];
-                }
-                updateLiveFlowObject("sink", sink);
-                refreshSinkUI();
-            });
-            const targets = document.createElement("div");
-            targets.style.cssText = "display:grid;gap:2px;";
-            for (const emitter of activeFlow.emitters.filter((item) => item.behavior === "inflow")) {
-                const label = document.createElement("label");
-                const checkbox = document.createElement("input");
-                checkbox.type = "checkbox";
-                checkbox.checked = sink.targets.includes(emitter.id);
-                checkbox.onchange = () => {
-                    sink.targets = checkbox.checked ? [...sink.targets, emitter.id] : sink.targets.filter((id) => id !== emitter.id);
-                    updateLiveFlowObject("sink", sink);
-                };
-                label.append(checkbox, ` ${emitter.name}`);
-                targets.appendChild(label);
-            }
-            const rateMode = sink.perParticleRecycleRate !== undefined ? "perParticle" : sink.volumeRate !== undefined ? "volume" : "all";
-            const rate = selectInput(rateMode, ["all", "volume", "perParticle"] as const, (value) => {
-                if (value === "all") {
-                    sink.volumeRate = undefined;
-                    sink.perParticleRecycleRate = undefined;
-                } else if (value === "volume") {
-                    sink.volumeRate ??= 1;
-                    sink.perParticleRecycleRate = undefined;
-                } else {
-                    sink.volumeRate = undefined;
-                    sink.perParticleRecycleRate ??= 1;
-                }
-                updateLiveFlowObject("sink", sink);
-            });
-            editor.append(flowField("Behavior", operation));
-            if ((sink.mode ?? "delete") === "recycle") {
-                editor.append(flowField("Targets", targets));
-            }
-            editor.append(flowField("Capture limit", rate));
-            if (sink.volumeRate !== undefined) {
-                editor.appendChild(
-                    flowField(
-                        "Volume / second",
-                        numberInput(
-                            sink.volumeRate,
-                            (value) => {
-                                sink.volumeRate = value;
-                                updateLiveFlowObject("sink", sink, false);
-                            },
-                            0.1,
-                            0
-                        )
-                    )
-                );
-            } else if (sink.perParticleRecycleRate !== undefined) {
-                editor.appendChild(
-                    flowField(
-                        "Per-particle / second",
-                        numberInput(
-                            sink.perParticleRecycleRate,
-                            (value) => {
-                                sink.perParticleRecycleRate = value;
-                                updateLiveFlowObject("sink", sink, false);
-                            },
-                            0.05,
-                            0
-                        )
-                    )
-                );
-            }
-        }
-        sinkFlowHost.replaceChildren(flowList("sink"), flowButtons("sink"), editor);
-    };
+        },
+    });
     function refreshFlowUI(): void {
-        refreshEmitterUI();
-        refreshSinkUI();
-        syncFlowWireframe("emitter");
-        syncFlowWireframe("sink");
-        syncFlowGizmo();
-        refreshParticleUsageStatus();
+        flowEditor?.setFlow(activeFlow);
     }
-
     // Apply a solver parameter, folding in the physics particle-size coupling.
     // The sliders expose the base (1×) values; PBF's restDensity and constraint
     // relaxation must additionally track the particle scale (restDensity ∝
@@ -4621,9 +3900,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             const cur = controls.getValues().foam;
             controls.setFoam({
                 enabled: f.enabled,
-                activeParticles: f.activeParticles ?? false,
+                activeParticles: true,
+                generateSpray: f.generateSpray ?? true,
+                generateFoam: f.generateFoam ?? true,
+                generateBubbles: f.generateBubbles ?? true,
                 kTa: f.kTa,
                 kWc: f.kWc,
+                kTurb: f.kTurb ?? cur.kTurb,
+                energySpeedMin: f.energySpeedMin ?? cur.energySpeedMin,
+                energySpeedMax: f.energySpeedMax ?? cur.energySpeedMax,
+                curvatureMin: f.curvatureMin ?? cur.curvatureMin,
+                curvatureMax: f.curvatureMax ?? cur.curvatureMax,
+                turbulenceMin: f.turbulenceMin ?? cur.turbulenceMin,
+                turbulenceMax: f.turbulenceMax ?? cur.turbulenceMax,
+                foamLayerDepth: f.foamLayerDepth ?? cur.foamLayerDepth,
+                sprayDrag: f.sprayDrag ?? cur.sprayDrag,
                 kb: f.kb,
                 kd: f.kd,
                 tMin: f.tMin,
@@ -4756,8 +4047,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             if (activeDemo) {
                 activeDemo.onLeave();
             }
-            selectedEmitterId = null;
-            selectedSinkId = null;
+            flowEditor?.clearSelection(false);
             showEmitterWireframe = false;
             showSinkWireframe = false;
             flowGizmoOwner = null;

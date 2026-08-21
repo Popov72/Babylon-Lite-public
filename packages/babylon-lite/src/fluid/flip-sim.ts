@@ -33,6 +33,7 @@ import {
     SCENE_NORMAL_WGSL,
     SCENE_SDF_GRID_WGSL,
     SPAWN_ACCEPT_TRIES,
+    createDiffuseCountTracker,
     createFluidFlowState,
     createFluidInitialParticles,
     createFluidWarmupState,
@@ -1256,6 +1257,7 @@ ${FLUID_LIFECYCLE_STRUCT_WGSL}
 ${FLUID_LIFECYCLE_RUNTIME_WGSL}
 @group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read> velocities: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> faceVelocity: array<vec2<f32>>;
 @group(0) @binding(3) var<storage, read> normals: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> curvature: array<f32>;
 @group(0) @binding(5) var<uniform> p: Params;
@@ -1307,6 +1309,40 @@ fn sampleCurvature(world: vec3<f32>) -> f32 {
     return value;
 }
 
+fn faceValue(kind: u32, c: vec3<i32>) -> f32 {
+    let d = faceGridDim(kind, p);
+    if (any(c < vec3<i32>(0)) || any(c >= d)) {
+        return 0.0;
+    }
+    let sample = faceVelocity[globalFaceIndex(kind, c, p)];
+    return select(0.0, sample.x, sample.y > 0.5);
+}
+
+fn cellVelocity(c: vec3<i32>) -> vec3<f32> {
+    if (!inCellGrid(c, p)) {
+        return vec3<f32>(0.0);
+    }
+    return 0.5 * vec3<f32>(
+        faceValue(FACE_U, c) + faceValue(FACE_U, c + vec3<i32>(1, 0, 0)),
+        faceValue(FACE_V, c) + faceValue(FACE_V, c + vec3<i32>(0, 1, 0)),
+        faceValue(FACE_W, c) + faceValue(FACE_W, c + vec3<i32>(0, 0, 1))
+    );
+}
+
+fn sampleTurbulence(world: vec3<f32>) -> f32 {
+    let c = clamp(vec3<i32>(floor((world - p.originDx.xyz) / p.originDx.w)), vec3<i32>(0), gridDim(p) - vec3<i32>(1));
+    let invTwoDx = 0.5 / p.originDx.w;
+    let dVdx = (cellVelocity(c + vec3<i32>(1, 0, 0)) - cellVelocity(c - vec3<i32>(1, 0, 0))) * invTwoDx;
+    let dVdy = (cellVelocity(c + vec3<i32>(0, 1, 0)) - cellVelocity(c - vec3<i32>(0, 1, 0))) * invTwoDx;
+    let dVdz = (cellVelocity(c + vec3<i32>(0, 0, 1)) - cellVelocity(c - vec3<i32>(0, 0, 1))) * invTwoDx;
+    let curl = vec3<f32>(dVdy.z - dVdz.y, dVdz.x - dVdx.z, dVdx.y - dVdy.x);
+    let sxy = 0.5 * (dVdx.y + dVdy.x);
+    let sxz = 0.5 * (dVdx.z + dVdz.x);
+    let syz = 0.5 * (dVdy.z + dVdz.y);
+    let strainSq = dVdx.x * dVdx.x + dVdy.y * dVdy.y + dVdz.z * dVdz.z + 2.0 * (sxy * sxy + sxz * sxz + syz * syz);
+    return p.originDx.w * sqrt(max(0.0, dot(curl, curl) + 2.0 * strainSq));
+}
+
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
     let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
@@ -1333,16 +1369,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let trappedAir = max(0.0, -normalSpeed);
     let waveCrest = max(0.0, sampleCurvature(pi) * p.originDx.w) * max(0.0, normalSpeed);
     let ita = phi(trappedAir, foam.tauTaMin, foam.tauTaMax);
-    let iwc = phi(waveCrest, foam.tauWcMin, foam.tauWcMax);
-    let ik = phi(0.5 * speed * speed, foam.tauKMin, foam.tauKMax);
-    let expected = topWeight * ik * (foam.kTa * ita + foam.kWc * iwc) * foam.frameDt;
+    let iwc = phi(waveCrest, foam.curvatureMin, foam.curvatureMax);
+    var iturb = 0.0;
+    if (foam.kTurb > 0.0) {
+        iturb = phi(sampleTurbulence(pi), foam.turbulenceMin, foam.turbulenceMax);
+    }
+    let ik = phi(speed, foam.energySpeedMin, foam.energySpeedMax);
+    let expected = topWeight * ik * (foam.kTa * ita + foam.kWc * iwc + foam.kTurb * iturb) * foam.frameDt;
     let whole = floor(expected);
     var spawnCount = i32(whole) + select(0, 1, fRnd((i * 2246822519u) ^ (foam.frameSeed * 22695477u)) < expected - whole);
     spawnCount = min(spawnCount, 8);
     if (spawnCount <= 0) {
         return;
     }
-    let potential = clamp(ita + iwc, 0.0, 1.0);
+    let potential = max(ita, max(iwc, iturb));
     let life = mix(foam.tMin, foam.tMax, potential);
     let axis = vi / speed;
     var tangent = cross(axis, vec3<f32>(0.0, 1.0, 0.0));
@@ -1456,6 +1496,37 @@ fn sampleSurface(world: vec3<f32>) -> vec4<f32> {
     return surface;
 }
 
+fn sampleFoamLayer(world: vec3<f32>) -> vec4<f32> {
+    var best = sampleSurface(world);
+    var bestOutward = -safeNormal(best.xyz, vec3<f32>(0.0, 1.0, 0.0));
+    var bestScore = best.w * smoothstep(0.1, 0.45, bestOutward.y);
+    let depth = clamp(foam.foamLayerDepth, 0.0, 4.0);
+    if (depth <= 0.0) {
+        return best;
+    }
+    let cell = clamp(vec3<i32>(floor((world - p.originDx.xyz) / p.originDx.w)), vec3<i32>(0), gridDim(p) - vec3<i32>(1));
+    for (var layer = 1; layer <= 4; layer = layer + 1) {
+        let distance = f32(layer);
+        if (distance > depth + 0.5) {
+            continue;
+        }
+        let candidateCell = cell + vec3<i32>(0, layer, 0);
+        if (!inCellGrid(candidateCell, p)) {
+            continue;
+        }
+        var candidate = normals[cellIndex(candidateCell, p)];
+        let layerWeight = 1.0 - smoothstep(max(0.0, depth - 0.5), depth + 0.5, distance);
+        candidate.w *= layerWeight;
+        let outward = -safeNormal(candidate.xyz, vec3<f32>(0.0, 1.0, 0.0));
+        let score = candidate.w * smoothstep(0.1, 0.45, outward.y);
+        if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
 ${slotLookup}
@@ -1473,7 +1544,7 @@ ${slotLookup}
     let cell = clamp(vec3<i32>(floor((position - p.originDx.xyz) / p.originDx.w)), vec3<i32>(0), gridDim(p) - vec3<i32>(1));
     let cellId = cellIndex(cell, p);
     let occupancy = min(f32(atomicLoad(&cellMarks[cellId])) / max(1.0, f32(p.counts.y)), 1.0);
-    let surface = sampleSurface(position);
+    let surface = sampleFoamLayer(position);
     let surfaceStrength = surface.w * p.originDx.w;
     let outward = -safeNormal(surface.xyz, vec3<f32>(0.0, 1.0, 0.0));
     let fluidVelocity = sampleVelocity(position);
@@ -1488,10 +1559,18 @@ ${slotLookup}
     } else if (occupancy < 0.2) {
         kind = 0u;
     }
+    if (!foamKindEnabled(kind)) {
+        diffuse[i].p = vec4<f32>(position, 0.0);
+        ${deactivate}
+        return;
+    }
     var next = position;
     var life = current.w;
     if (kind == 0u) {
         velocity.y -= p.sim.y * dt;
+        if (foam.sprayDrag > 0.0) {
+            velocity *= exp(-foam.sprayDrag * dt);
+        }
         next += velocity * dt;
     } else if (kind == 2u) {
         velocity.y += foam.kb * p.sim.y * dt;
@@ -2170,6 +2249,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let foamActivePrepareBindGroup: GPUBindGroup | null = null;
     let foamActiveFinishBindGroup: GPUBindGroup | null = null;
     let diffusePool: DiffusePool | undefined;
+    let foamCountTracker: ReturnType<typeof createDiffuseCountTracker> | null = null;
 
     function buildFoamBindGroups(): void {
         foamEmitBindGroup = device.createBindGroup({
@@ -2177,6 +2257,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             entries: [
                 { binding: 0, resource: { buffer: positionBuffer } },
                 { binding: 1, resource: { buffer: velocityBuffer } },
+                { binding: 2, resource: { buffer: faceVelocityA } },
                 { binding: 3, resource: { buffer: surfaceNormalBuffer } },
                 { binding: 4, resource: { buffer: surfaceCurvatureBuffer } },
                 { binding: 5, resource: { buffer: paramsBuffer } },
@@ -2213,6 +2294,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                   entries: [
                       { binding: 0, resource: { buffer: foamActiveStateBuffer! } },
                       { binding: 1, resource: { buffer: foamDrawIndirectBuffer! } },
+                      { binding: 2, resource: { buffer: foamActiveDispatchBuffer! } },
                   ],
               })
             : null;
@@ -2233,7 +2315,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             });
         }
-        const nextActiveParticles = config.activeParticles ?? false;
+        const nextActiveParticles = config.activeParticles ?? true;
         const activeModeChanged = nextActiveParticles !== foamActiveParticles;
         if (nextActiveParticles && !foamActiveEmitPipeline) {
             foamActiveEmitPipeline = pipeline("flip-foam-emit-active", buildFoamEmitWgsl(true));
@@ -2309,10 +2391,15 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             encoder.clearBuffer(diffuseHeadBuffer!);
             device.queue.submit([encoder.finish()]);
         }
+        foamCountTracker ??= createDiffuseCountTracker(device, "flip-foam");
+        foamCountTracker.configure(diffuseBuffer!, capacity, foamActiveParticles ? foamActiveStateBuffer! : undefined);
         diffusePool = {
             buffer: diffuseBuffer!,
             headBuffer: foamActiveParticles ? foamActiveStateBuffer! : diffuseHeadBuffer!,
             capacity,
+            get counts() {
+                return foamCountTracker!.counts;
+            },
             ...(foamActiveParticles
                 ? {
                       activeIndices: foamActiveStateBuffer!,
@@ -2335,6 +2422,18 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         foamF32[10] = config.rv ?? particleRadius;
         foamF32[12] = config.tMin ?? 0.3;
         foamF32[13] = config.tMax ?? 2;
+        foamF32[16] = config.kTurb ?? 0;
+        foamF32[17] = Math.max(0, config.energySpeedMin ?? Math.sqrt(0.5));
+        foamF32[18] = Math.max(foamF32[17]! + 1e-4, config.energySpeedMax ?? Math.sqrt(40));
+        foamF32[19] = Math.max(0, config.sprayDrag ?? 0);
+        foamF32[20] = Math.max(0, config.turbulenceMin ?? 0.1);
+        foamF32[21] = Math.max(foamF32[20]! + 1e-4, config.turbulenceMax ?? 2.5);
+        foamF32[22] = Math.max(0, config.curvatureMin ?? 0.05);
+        foamF32[23] = Math.max(foamF32[22]! + 1e-4, config.curvatureMax ?? 1.5);
+        foamF32[24] = Math.max(0, config.foamLayerDepth ?? 0);
+        foamU32[28] = config.generateSpray === false ? 0 : 1;
+        foamU32[29] = config.generateFoam === false ? 0 : 1;
+        foamU32[30] = config.generateBubbles === false ? 0 : 1;
         device.queue.writeBuffer(foamParamsBuffer!, 0, foamData);
     }
 
@@ -2350,6 +2449,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             encoder.clearBuffer(foamDrawIndirectBuffer!);
         }
         device.queue.submit([encoder.finish()]);
+        foamCountTracker?.reset(foamCapacity);
         if (foamActiveStateBuffer) {
             device.queue.writeBuffer(foamActiveStateBuffer, 16, new Uint32Array([foamCapacity]));
             foamActiveSide = 0;
@@ -2425,6 +2525,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 (foamActiveStateBuffer?.size ?? 0) +
                 (foamActiveDispatchBuffer?.size ?? 0) +
                 (foamDrawIndirectBuffer?.size ?? 0) +
+                (foamCountTracker?.gpuBytes ?? 0) +
                 (foamParamsBuffer?.size ?? 0)
             );
         },
@@ -2534,10 +2635,14 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                         activeIndices: foamActiveStateBuffer!,
                         activeIndicesOffset: foamActiveListOffset(foamCapacity, foamActiveSide),
                         drawIndirect: foamDrawIndirectBuffer!,
+                        get counts() {
+                            return foamCountTracker!.counts;
+                        },
                     };
                 } else {
                     dispatch(encoder, "flip-foam-update", foamUpdatePipeline!, foamUpdateBindGroup, foamPoolGroups);
                 }
+                foamCountTracker?.encode(encoder, foamPoolGroups, foamActiveParticles ? foamActiveDispatchBuffer! : undefined);
                 encoder.popDebugGroup();
             }
             encoder.clearBuffer(maxSpeedBuffer);
@@ -2699,6 +2804,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             foamActiveStateBuffer?.destroy();
             foamActiveDispatchBuffer?.destroy();
             foamDrawIndirectBuffer?.destroy();
+            foamCountTracker?.dispose();
             foamParamsBuffer?.destroy();
             warmupState.paramsBuffer.destroy();
             disposeFluidFlowState(flowState);

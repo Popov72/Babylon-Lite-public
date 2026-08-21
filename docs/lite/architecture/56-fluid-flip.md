@@ -393,19 +393,26 @@ Generation runs once per rendered frame after the final G2P, not once per adapti
 
 - inward normal motion and under-filled surface occupancy for trapped-air potential;
 - positive curvature and outward normal motion for wave-crest potential;
+- dimensionless vorticity plus strain sampled from the final staggered MAC velocity field for turbulence potential;
 - marker kinetic energy as the common emission gate.
 
 Expected generation is multiplied by frame duration and stochastically rounded, so changing adaptive substeps does not change the authored rate. New diffuse particles are sampled in a short velocity-aligned cylinder.
 
+The advanced FLIP-only controls expose the energy-speed, curvature, and turbulence response ranges. Turbulence generation defaults to zero so existing presets retain their previous output and skip the velocity-gradient samples; raising its rate enables the additional MAC-gradient source. The emitter reads the face-velocity grid as its eighth storage buffer, preserving the portable WebGPU per-stage limit without allocating a separate turbulence grid. Zero foam-layer depth and zero spray drag likewise bypass their additional work.
+
 The interface field is nonzero only in fluid cells with a six-connected air neighbour. Marker-density gradients inside the liquid or beside solid/domain walls are not treated as free surface. Diffuse particles trilinearly sample this cell-centred field to avoid cell-aligned type bands. Stable foam uses continuous upward-normal enter/retain thresholds, with hysteresis as marker occupancy changes; it does not depend on a binary “air cell directly above” test. The update pass samples the finalized staggered MAC velocity and classifies particles from local marker occupancy and that smoothed free-surface field:
 
-- spray is ballistic under gravity in low-occupancy cells;
-- foam follows the MAC velocity only on upward-facing top-surface regions and consumes lifetime;
+- spray is ballistic under gravity in low-occupancy cells, with optional exponential air drag;
+- foam follows the MAC velocity on upward-facing top-surface regions and may be retained within a configurable vertical layer below that surface;
 - every occupied non-interface particle is a bubble, following the liquid with drag plus upward buoyancy.
 
 Foam retention is evaluated before the low-occupancy spray transition, so a surface-attached particle does not alternate between foam and spray as it crosses a cell boundary. The renderer likewise fades spray in only after its eye-space depth is clearly detached from the reconstructed liquid surface.
 
-Dense mode scans the fixed pool. Optional active-particle mode maintains two compact survivor lists, indirect compute dispatch, and indirect draw arguments shared with the existing foam renderer. The FLIP emitter binds exactly eight storage buffers, preserving the portable WebGPU per-stage limit.
+Dense mode scans the fixed pool. The default active-particle mode maintains two compact survivor lists, indirect compute dispatch, and indirect draw arguments shared with the existing foam renderer. It is an implementation optimization rather than an authored look control, so the Whiteboard always enables it and does not expose a checkbox. The FLIP emitter binds exactly eight storage buffers, preserving the portable WebGPU per-stage limit.
+
+The shared diffuse pool also exposes an asynchronously sampled usage snapshot: live total, spray, foam, bubbles, and allocated capacity. A dedicated compute pass reduces counts within each 64-thread workgroup before issuing four global atomic additions per workgroup. It runs every 30 simulation frames; compact mode reuses the current active-list indirect dispatch, while dense mode scans the fixed pool. Two 16-byte staging buffers are mapped on later frames, so the controls panel can report pool pressure without a CPU/GPU synchronization point. Reset, disable, pool rebuild, and solver switching clear the displayed sample until the next readback. The same tracker is used by FLIP, PBF, MLS-MPM, and PB-MPM.
+
+Spray, surface foam, and bubbles can be enabled independently. Classification still derives the physical kind from the local fluid state, but a particle classified into a disabled kind is killed immediately and removed from the compact list, so it neither renders nor consumes a live pool slot. All three switches default to enabled for backward compatibility. `Subsurface bubble strength` remains a render-opacity control only; disabling bubble generation is the simulation control that prevents bubble particles from existing.
 
 The screen-space renderer samples the liquid depth at each foam particle centre, estimates the local depth tangent plane, and softly attenuates billboard fragments by their deviation from that plane. A reconstructed surface-normal mask retains upward-facing foam while fading steep/front-facing liquid, and diffuse gain fades during the final 0.3 seconds of lifetime. Unlike spray, surface foam cannot project an entire constant-depth billboard over a farther front-facing liquid surface, large splats do not form hard moving intersection contours, and short-lived particles do not disappear at full opacity.
 
@@ -464,6 +471,7 @@ No module-level cache or registration side effect is added.
 - Format-11 export/import round-trips FLIP resolution divisions, markers per cell, adaptive timestep controls, viscosity, and surface tension.
 - A WebGPU regression dispatches nonzero viscosity and surface-tension passes and verifies finite particle velocity output.
 - A WebGPU regression verifies that FLIP foam is absent while disabled, generates diffuse particles under energetic surface motion, validates portable bindings, and clears on reset/disable.
+- The diffuse-count regression verifies exact dense and compact totals and the spray/foam/bubble breakdown without synchronous GPU readback.
 - The 651,086-marker box preset retains liquid height and occupied cells for 20 simulated seconds without growing corner columns.
 
 ### Focused Validation

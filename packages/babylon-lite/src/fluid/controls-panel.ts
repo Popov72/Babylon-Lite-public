@@ -18,6 +18,7 @@
 
 import type { FluidDebug } from "./fluid-surface-render.js";
 import type { FoamDebugTexture } from "./foam-render.js";
+import type { DiffuseParticleCounts } from "./sim-common.js";
 
 /** One per-method physics slider definition (mirrors the fluid demo's `SCHEMAS`). */
 export interface PhysSchemaEntry {
@@ -437,8 +438,20 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
 export interface FluidFoamValues {
     enabled: boolean;
     activeParticles?: boolean;
+    generateSpray?: boolean;
+    generateFoam?: boolean;
+    generateBubbles?: boolean;
     kTa: number;
     kWc: number;
+    kTurb: number;
+    energySpeedMin: number;
+    energySpeedMax: number;
+    curvatureMin: number;
+    curvatureMax: number;
+    turbulenceMin: number;
+    turbulenceMax: number;
+    foamLayerDepth: number;
+    sprayDrag: number;
     kb: number;
     kd: number;
     tMin: number;
@@ -605,8 +618,10 @@ export interface FluidControlsCallbacks {
     // Foam config (generation) — gated on "enabled" by the host.
     onFoamEnable?(enabled: boolean): void;
     onFoamActiveParticles?(enabled: boolean): void;
+    onFoamKinds?(): void;
     onFoamKta?(v: number): void;
     onFoamKwc?(v: number): void;
+    onFoamAdvanced?(): void;
     onFoamLifetime?(v: number): void;
     onFoamBuoyancy?(v: number): void;
     onFoamDrag?(v: number): void;
@@ -740,6 +755,7 @@ export interface FluidControlsHandle {
     setPagedGridStatus(message: string, error?: boolean): void;
     setFusedBlockDiscovery(enabled: boolean): void;
     setFoam(foam: FluidFoamValues): void;
+    setFoamParticleCounts(counts: DiffuseParticleCounts | undefined, enabled: boolean, capacity?: number): void;
 
     /** Snapshot every control value (for pair-state capture / export). */
     getValues(): FluidControlValues;
@@ -778,6 +794,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         schemas[m] = opts.schemas[m]!.map((p) => ({ ...p }));
     }
     let currentMethod = init.method;
+    let applyFoamMethodVisibility = (): void => {};
 
     // ── Labelled render-slider helper (mirrors the fluid demo's makeRenderSlider). ──
     type RenderSliderRow = HTMLDivElement & { set(v: number): void; get(): number };
@@ -906,6 +923,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         applyMaterialVisibility();
         applyActiveBlocksVisibility();
         applyFlipControlVisibility();
+        applyFoamMethodVisibility();
         on.onMethod?.(currentMethod);
     };
     applyMaterialVisibility();
@@ -1607,6 +1625,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         particlesTitle.style.display = flip ? "none" : "";
         particlesSel.style.display = flip ? "none" : "";
         physRow.style.display = flip ? "none" : "";
+        flipResolutionRow.hidden = !flip;
+        flipMarkersRow.hidden = !flip;
+        flipParticleCapacityRow.hidden = !flip;
         flipResolutionRow.style.display = flip ? "block" : "none";
         flipMarkersRow.style.display = flip ? "flex" : "none";
         flipParticleCapacityRow.style.display = flip ? "flex" : "none";
@@ -1789,6 +1810,15 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const foamCfg = {
         kTa: init.foam.kTa,
         kWc: init.foam.kWc,
+        kTurb: init.foam.kTurb ?? 0,
+        energySpeedMin: init.foam.energySpeedMin ?? Math.sqrt(0.5),
+        energySpeedMax: init.foam.energySpeedMax ?? Math.sqrt(40),
+        curvatureMin: init.foam.curvatureMin ?? 0.05,
+        curvatureMax: init.foam.curvatureMax ?? 1.5,
+        turbulenceMin: init.foam.turbulenceMin ?? 0.1,
+        turbulenceMax: init.foam.turbulenceMax ?? 2.5,
+        foamLayerDepth: init.foam.foamLayerDepth ?? 0,
+        sprayDrag: init.foam.sprayDrag ?? 0,
         kb: init.foam.kb,
         kd: init.foam.kd,
         tMax: init.foam.tMax,
@@ -1803,6 +1833,39 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let foamAmbient = init.foam.ambient;
     let foamAOStrength = init.foam.aoStrength;
     let foamNormalStrength = init.foam.normalStrength;
+    let foamGenerateFoam = init.foam.generateFoam ?? true;
+    let foamGenerateSpray = init.foam.generateSpray ?? true;
+    let foamGenerateBubbles = init.foam.generateBubbles ?? true;
+
+    const foamUsageRow = document.createElement("div");
+    foamUsageRow.dataset.fluidFoamCounts = "true";
+    foamUsageRow.style.cssText = "margin:0 0 8px 18px;color:#aebdca;font-size:11px;line-height:1.45;";
+    const updateFoamParticleCounts = (counts: DiffuseParticleCounts | undefined, enabled: boolean, capacity?: number): void => {
+        const lines: string[] = [];
+        if (!enabled) {
+            lines.push("Disabled");
+        } else if (!counts) {
+            lines.push(capacity ? `Calculating…\u00a0/\u00a0${capacity.toLocaleString()}\u00a0particles` : "Calculating…");
+        } else {
+            lines.push(`${counts.total.toLocaleString()}\u00a0/\u00a0${counts.capacity.toLocaleString()}\u00a0particles`);
+            if (foamGenerateFoam) {
+                lines.push(`Foam:\u00a0${counts.foam.toLocaleString()}`);
+            }
+            if (foamGenerateSpray) {
+                lines.push(`Spray:\u00a0${counts.spray.toLocaleString()}`);
+            }
+            if (foamGenerateBubbles) {
+                lines.push(`Bubbles:\u00a0${counts.bubble.toLocaleString()}`);
+            }
+        }
+        foamUsageRow.replaceChildren(
+            ...lines.map((text) => {
+                const line = document.createElement("div");
+                line.textContent = text;
+                return line;
+            })
+        );
+    };
 
     const foamEnableRow = document.createElement("label");
     foamEnableRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
@@ -1814,22 +1877,56 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     foamEnableRow.append(foamEnableChk, foamEnableText);
     foamEnableChk.onchange = () => {
         foamEnabled = foamEnableChk.checked;
-        foamActiveParticlesChk.disabled = !foamEnabled;
-        foamActiveParticlesRow.style.opacity = foamEnabled ? "1" : "0.5";
+        applyFoamKindAvailability();
+        updateFoamParticleCounts(undefined, foamEnabled);
         on.onFoamEnable?.(foamEnabled);
     };
-    const foamActiveParticlesRow = document.createElement("label");
-    foamActiveParticlesRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:0 0 8px 18px;cursor:pointer;";
-    const foamActiveParticlesChk = document.createElement("input");
-    foamActiveParticlesChk.type = "checkbox";
-    foamActiveParticlesChk.checked = init.foam.activeParticles ?? false;
-    foamActiveParticlesChk.disabled = !foamEnabled;
-    foamActiveParticlesRow.style.opacity = foamEnabled ? "1" : "0.5";
-    foamActiveParticlesRow.append(
-        foamActiveParticlesChk,
-        labelWithInfo("Active foam particles", "Compacts live diffuse-particle slots each frame so the expensive foam update and splat draw skip unused pool entries.")
+    const makeFoamKindToggle = (label: string, checked: boolean, info: string): [HTMLLabelElement, HTMLInputElement] => {
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex;align-items:center;gap:6px;margin:0 0 6px 18px;cursor:pointer;";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = checked;
+        row.append(input, labelWithInfo(label, info));
+        return [row, input];
+    };
+    const [foamGenerateFoamRow, foamGenerateFoamChk] = makeFoamKindToggle(
+        "Generate foam",
+        foamGenerateFoam,
+        "Allows diffuse particles attached to the liquid surface. This is independent of the overall Enable foam switch."
     );
-    foamActiveParticlesChk.onchange = () => on.onFoamActiveParticles?.(foamActiveParticlesChk.checked);
+    const [foamGenerateSprayRow, foamGenerateSprayChk] = makeFoamKindToggle(
+        "Generate spray",
+        foamGenerateSpray,
+        "Allows detached low-density diffuse particles. Disabling it removes existing spray and prevents it from consuming pool slots."
+    );
+    const [foamGenerateBubblesRow, foamGenerateBubblesChk] = makeFoamKindToggle(
+        "Generate bubbles",
+        foamGenerateBubbles,
+        "Allows submerged diffuse particles. Subsurface bubble strength only changes their rendering; this switch controls whether they exist."
+    );
+    foamGenerateFoamChk.onchange = () => {
+        foamGenerateFoam = foamGenerateFoamChk.checked;
+        on.onFoamKinds?.();
+    };
+    foamGenerateSprayChk.onchange = () => {
+        foamGenerateSpray = foamGenerateSprayChk.checked;
+        on.onFoamKinds?.();
+    };
+    foamGenerateBubblesChk.onchange = () => {
+        foamGenerateBubbles = foamGenerateBubblesChk.checked;
+        on.onFoamKinds?.();
+    };
+    const foamKindRows = [foamGenerateFoamRow, foamGenerateSprayRow, foamGenerateBubblesRow];
+    const foamKindChecks = [foamGenerateFoamChk, foamGenerateSprayChk, foamGenerateBubblesChk];
+    const applyFoamKindAvailability = (): void => {
+        for (let index = 0; index < foamKindRows.length; index++) {
+            foamKindChecks[index]!.disabled = !foamEnabled;
+            foamKindRows[index]!.style.opacity = foamEnabled ? "1" : "0.5";
+        }
+    };
+    applyFoamKindAvailability();
+    updateFoamParticleCounts(undefined, foamEnabled);
     const foamKtaRow = makeRenderSlider(
         "Trapped-air rate",
         0,
@@ -1852,6 +1949,118 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         (v) => {
             foamCfg.kWc = v;
             on.onFoamKwc?.(v);
+        }
+    );
+    const foamAdvancedTitle = document.createElement("div");
+    foamAdvancedTitle.textContent = "FLIP advanced whitewater";
+    foamAdvancedTitle.dataset.fluidFlipFoamAdvanced = "true";
+    foamAdvancedTitle.style.cssText = "font-weight:600;color:#9fb4cc;margin:10px 0 6px;";
+    const foamTurbulenceRateRow = makeRenderSlider(
+        "Turbulence rate",
+        0,
+        500,
+        1,
+        foamCfg.kTurb,
+        (v) => String(Math.round(v)),
+        (v) => {
+            foamCfg.kTurb = v;
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamEnergyMinRow = makeRenderSlider(
+        "Energy speed min",
+        0,
+        20,
+        0.1,
+        foamCfg.energySpeedMin,
+        (v) => v.toFixed(1),
+        (v) => {
+            foamCfg.energySpeedMin = Math.min(v, foamCfg.energySpeedMax - 0.1);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamEnergyMaxRow = makeRenderSlider(
+        "Energy speed max",
+        0.1,
+        40,
+        0.1,
+        foamCfg.energySpeedMax,
+        (v) => v.toFixed(1),
+        (v) => {
+            foamCfg.energySpeedMax = Math.max(v, foamCfg.energySpeedMin + 0.1);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamCurvatureMinRow = makeRenderSlider(
+        "Curvature min",
+        0,
+        4,
+        0.01,
+        foamCfg.curvatureMin,
+        (v) => v.toFixed(2),
+        (v) => {
+            foamCfg.curvatureMin = Math.min(v, foamCfg.curvatureMax - 0.01);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamCurvatureMaxRow = makeRenderSlider(
+        "Curvature max",
+        0.01,
+        8,
+        0.01,
+        foamCfg.curvatureMax,
+        (v) => v.toFixed(2),
+        (v) => {
+            foamCfg.curvatureMax = Math.max(v, foamCfg.curvatureMin + 0.01);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamTurbulenceMinRow = makeRenderSlider(
+        "Turbulence min",
+        0,
+        20,
+        0.05,
+        foamCfg.turbulenceMin,
+        (v) => v.toFixed(2),
+        (v) => {
+            foamCfg.turbulenceMin = Math.min(v, foamCfg.turbulenceMax - 0.05);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamTurbulenceMaxRow = makeRenderSlider(
+        "Turbulence max",
+        0.05,
+        40,
+        0.05,
+        foamCfg.turbulenceMax,
+        (v) => v.toFixed(2),
+        (v) => {
+            foamCfg.turbulenceMax = Math.max(v, foamCfg.turbulenceMin + 0.05);
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamLayerDepthRow = makeRenderSlider(
+        "Foam layer depth",
+        0,
+        4,
+        0.1,
+        foamCfg.foamLayerDepth,
+        (v) => `${v.toFixed(1)} cells`,
+        (v) => {
+            foamCfg.foamLayerDepth = v;
+            on.onFoamAdvanced?.();
+        }
+    );
+    const foamSprayDragRow = makeRenderSlider(
+        "Spray air drag",
+        0,
+        10,
+        0.1,
+        foamCfg.sprayDrag,
+        (v) => `${v.toFixed(1)} /s`,
+        (v) => {
+            foamCfg.sprayDrag = v;
+            on.onFoamAdvanced?.();
         }
     );
     const foamLifeRow = makeRenderSlider(
@@ -2057,9 +2266,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
     const foamControls: HTMLElement[] = [
         foamEnableRow,
-        foamActiveParticlesRow,
+        foamUsageRow,
+        foamGenerateFoamRow,
+        foamGenerateSprayRow,
+        foamGenerateBubblesRow,
         foamKtaRow,
         foamKwcRow,
+        foamAdvancedTitle,
+        foamTurbulenceRateRow,
+        foamEnergyMinRow,
+        foamEnergyMaxRow,
+        foamCurvatureMinRow,
+        foamCurvatureMaxRow,
+        foamTurbulenceMinRow,
+        foamTurbulenceMaxRow,
+        foamLayerDepthRow,
+        foamSprayDragRow,
         foamLifeRow,
         foamBuoyRow,
         foamDragRow,
@@ -2081,6 +2303,26 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamDebugTexTitle,
         foamDebugTexSel,
     ];
+    const foamAdvancedControls = [
+        foamAdvancedTitle,
+        foamTurbulenceRateRow,
+        foamEnergyMinRow,
+        foamEnergyMaxRow,
+        foamCurvatureMinRow,
+        foamCurvatureMaxRow,
+        foamTurbulenceMinRow,
+        foamTurbulenceMaxRow,
+        foamLayerDepthRow,
+        foamSprayDragRow,
+    ];
+    applyFoamMethodVisibility = (): void => {
+        const flip = currentMethod === "FLIP";
+        for (const control of foamAdvancedControls) {
+            control.hidden = !flip;
+            control.style.display = flip ? "" : "none";
+        }
+    };
+    applyFoamMethodVisibility();
 
     // ── Assemble the panel ──────────────────────────────────────────────────
     const root = document.createElement("div");
@@ -2162,6 +2404,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamKwcRow,
             "How much foam is generated at wave crests \u2014 sharply curved, fast-moving surfaces. Raise it for spray off breaking waves. 0 turns this source off; with the trapped-air rate also at 0 no foam is created at all.",
         ],
+        [
+            foamTurbulenceRateRow,
+            "FLIP ONLY. Generation rate driven by vorticity and shear in the final MAC velocity field. 0 disables this advanced source and preserves the previous whitewater behaviour.",
+        ],
+        [foamEnergyMinRow, "FLIP ONLY. Fluid speed where all whitewater emission begins to pass the kinetic-energy gate."],
+        [foamEnergyMaxRow, "FLIP ONLY. Fluid speed where the kinetic-energy gate reaches full strength."],
+        [foamCurvatureMinRow, "FLIP ONLY. Dimensionless upward-surface curvature where wave-crest emission begins."],
+        [foamCurvatureMaxRow, "FLIP ONLY. Dimensionless upward-surface curvature where wave-crest emission reaches full strength."],
+        [foamTurbulenceMinRow, "FLIP ONLY. MAC-grid vorticity/shear magnitude where turbulence emission begins."],
+        [foamTurbulenceMaxRow, "FLIP ONLY. MAC-grid vorticity/shear magnitude where turbulence emission reaches full strength."],
+        [foamLayerDepthRow, "FLIP ONLY. Retains diffuse particles as surface foam this many MAC cells below an upward-facing free surface. 0 uses only the immediate interface."],
+        [foamSprayDragRow, "FLIP ONLY. Exponential aerodynamic damping applied to detached spray. 0 leaves spray ballistic apart from gravity."],
         [foamLifeRow, "How long foam particles survive, in seconds. Longer leaves persistent trails and rafts of foam; shorter makes it flash and vanish."],
         [
             foamBuoyRow,
@@ -2394,6 +2648,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             applyMaterialVisibility();
             applyActiveBlocksVisibility();
             applyFlipControlVisibility();
+            applyFoamMethodVisibility();
         },
         setMaterial(material: number): void {
             materialSel.value = String(material);
@@ -2417,6 +2672,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                       }
                     : null;
             updateParticleUsage();
+        },
+        setFoamParticleCounts(counts: DiffuseParticleCounts | undefined, enabled: boolean, capacity?: number): void {
+            updateFoamParticleCounts(counts, enabled, capacity);
         },
         setSimulationDuration(seconds: number): void {
             simulationDurationRow.set(seconds);
@@ -2566,15 +2824,28 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             // the config to the sim via its applyFoam() after the sim rebuild).
             foamEnabled = foam.enabled;
             foamEnableChk.checked = foam.enabled;
-            foamActiveParticlesChk.checked = foam.activeParticles ?? false;
-            foamActiveParticlesChk.disabled = !foam.enabled;
-            foamActiveParticlesRow.style.opacity = foam.enabled ? "1" : "0.5";
+            foamGenerateFoam = foam.generateFoam ?? true;
+            foamGenerateSpray = foam.generateSpray ?? true;
+            foamGenerateBubbles = foam.generateBubbles ?? true;
+            foamGenerateFoamChk.checked = foamGenerateFoam;
+            foamGenerateSprayChk.checked = foamGenerateSpray;
+            foamGenerateBubblesChk.checked = foamGenerateBubbles;
+            applyFoamKindAvailability();
             foamTMin = foam.tMin;
             foamDebugTexSel.value = foam.debugTexture;
             on.onFoamDebugTexture?.(foam.debugTexture as FoamDebugTexture);
             // Config sliders (fire their effect callbacks — gated on "enabled" by the host).
             foamKtaRow.set(foam.kTa);
             foamKwcRow.set(foam.kWc);
+            foamTurbulenceRateRow.set(foam.kTurb);
+            foamEnergyMinRow.set(foam.energySpeedMin);
+            foamEnergyMaxRow.set(foam.energySpeedMax);
+            foamCurvatureMinRow.set(foam.curvatureMin);
+            foamCurvatureMaxRow.set(foam.curvatureMax);
+            foamTurbulenceMinRow.set(foam.turbulenceMin);
+            foamTurbulenceMaxRow.set(foam.turbulenceMax);
+            foamLayerDepthRow.set(foam.foamLayerDepth);
+            foamSprayDragRow.set(foam.sprayDrag);
             foamBuoyRow.set(foam.kb);
             foamDragRow.set(foam.kd);
             foamLifeRow.set(foam.tMax);
@@ -2640,9 +2911,21 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 showContainer: containerChk.checked,
                 foam: {
                     enabled: foamEnabled,
-                    activeParticles: foamActiveParticlesChk.checked,
+                    activeParticles: true,
+                    generateSpray: foamGenerateSpray,
+                    generateFoam: foamGenerateFoam,
+                    generateBubbles: foamGenerateBubbles,
                     kTa: foamCfg.kTa,
                     kWc: foamCfg.kWc,
+                    kTurb: foamCfg.kTurb,
+                    energySpeedMin: foamCfg.energySpeedMin,
+                    energySpeedMax: foamCfg.energySpeedMax,
+                    curvatureMin: foamCfg.curvatureMin,
+                    curvatureMax: foamCfg.curvatureMax,
+                    turbulenceMin: foamCfg.turbulenceMin,
+                    turbulenceMax: foamCfg.turbulenceMax,
+                    foamLayerDepth: foamCfg.foamLayerDepth,
+                    sprayDrag: foamCfg.sprayDrag,
                     kb: foamCfg.kb,
                     kd: foamCfg.kd,
                     tMin: foamTMin,
