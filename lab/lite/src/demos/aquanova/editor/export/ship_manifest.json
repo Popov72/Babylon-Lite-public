@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-20T20:36:35.776Z",
+  "savedAt": "2026-08-21T18:41:31.585Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -95,8 +95,8 @@
           4.4267
         ]
       },
-      "instanceCount": 38,
-      "meshCount": 75
+      "instanceCount": 37,
+      "meshCount": 74
     },
     {
       "id": "CH01_StorageC",
@@ -139,18 +139,18 @@
       "node": "CHUNK_CH03_StorageC2",
       "aabb": {
         "min": [
-          7.226,
+          -11.3,
           -0.013,
           -20.774
         ],
         "max": [
           16.2534,
           5.006,
-          -3.3814
+          2.05
         ]
       },
-      "instanceCount": 45,
-      "meshCount": 128
+      "instanceCount": 46,
+      "meshCount": 129
     },
     {
       "id": "Test",
@@ -2044,28 +2044,6 @@
       "node": "storageDoor_caution"
     },
     {
-      "id": "P0197",
-      "module": "Modular SciFi MegaKit/Decals/Decal_0",
-      "chunk": "CH00_Storage",
-      "name": "player",
-      "position": [
-        6.5,
-        0.1,
-        2
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "player"
-    },
-    {
       "id": "P0198",
       "module": "Modular SciFi MegaKit/Platforms/Platform_DarkPlates",
       "chunk": "CH00_Storage",
@@ -3786,6 +3764,27 @@
         0.12
       ],
       "node": "trapTrigger"
+    },
+    {
+      "id": "P0489",
+      "module": "Aquanova/Props/Player",
+      "chunk": "CH03_StorageC2",
+      "position": [
+        11,
+        0,
+        1.75
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0489"
     }
   ],
   "markers": [
@@ -13970,8 +13969,8 @@
   "activeChunk": "CH03_StorageC2",
   "fluidSim": [
     "viscosity-inplace",
-    "liquid-slow.json",
-    "liquid-crate.json"
+    "liquid-slow",
+    "liquid-crate"
   ],
   "behaviors": {
     "dynamic": {
@@ -14023,21 +14022,6 @@
     "enableCollision": {}
   },
   "entities": {
-    "player": {
-      "behaviors": [
-        {
-          "name": "player",
-          "direction": [
-            1,
-            0,
-            0
-          ]
-        },
-        {
-          "name": "probeExcluded"
-        }
-      ]
-    },
     "crate2": {
       "behaviors": [
         {
@@ -14069,13 +14053,21 @@
         },
         {
           "name": "hideEntity",
-          "onEvent": "startLiquefaction",
-          "entity": "CH01_CorridorFan2"
+          "events": [
+            {
+              "name": "startLiquefaction",
+              "source": "CH01_CorridorFan2"
+            }
+          ]
         },
         {
           "name": "showEntity",
-          "onEvent": "cancelLiquefaction",
-          "entity": "CH01_CorridorFan2"
+          "events": [
+            {
+              "name": "cancelLiquefaction",
+              "source": "CH01_CorridorFan2"
+            }
+          ]
         }
       ]
     },
@@ -14249,7 +14241,7 @@
             1
           ],
           "raiseEvent": {
-            "name": "itemAntiGravityGun",
+            "target": "itemAntiGravityGun",
             "event": "enable"
           }
         }
@@ -14300,7 +14292,7 @@
       "behaviors": [
         {
           "name": "setCollisionShape",
-          "shape": "mesh"
+          "type": "mesh"
         },
         {
           "name": "stdLiquefaction"
@@ -14476,23 +14468,30 @@
           ]
         }
       ]
+    },
+    "P0489": {
+      "behaviors": [
+        {
+          "name": "player"
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      -1.317,
-      0.993,
-      2
+      9.76,
+      2.5,
+      -2.375
     ],
     "rotation": [
-      0.433,
-      664.455,
+      0.253,
+      665.734,
       0
     ],
     "target": [
-      -10.394,
-      -3.203,
-      2.074
+      7.051,
+      -0.001,
+      6.921
     ]
   },
   "environment": {
