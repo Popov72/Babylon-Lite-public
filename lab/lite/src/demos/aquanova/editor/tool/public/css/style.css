@@ -9,6 +9,10 @@
   --accent-dim: #7a4420;
   --danger: #d9534f;
   --ok: #4caf7d;
+  /* The one light surface in a dark tool: a behaviour's title strip, which has
+     to separate one behaviour from the next at a glance. */
+  --title-bar: #c6ccd6;
+  --title-bar-text: #10131a;
 }
 
 * { box-sizing: border-box; }
@@ -385,6 +389,13 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #validation .err { color: var(--danger); }
 #validation .ok { color: var(--ok); }
 #validation div { margin: 2px 0; }
+/* An element a check names is a place to go, not just a word: same colour as
+   the line it sits in, underlined so it reads as somewhere to click. */
+.check-ref {
+  padding: 0; border: 0; background: none; color: inherit; font: inherit;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.check-ref:hover { color: var(--text); }
 
 /* --------------------------------------------------------------- status */
 
@@ -575,15 +586,21 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 #chunk-error, #probe-error, #bhv-error { min-height: 14px; color: var(--danger); font-size: 11px; }
 #bhv-fields { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .behavior-form { display: flex; flex-direction: column; gap: 8px; }
-.behavior-description { margin: 0 !important; color: var(--muted); font-size: 11px; }
 .behavior-property { padding-top: 7px; border-top: 1px solid var(--line); }
 .behavior-property:first-of-type { border-top: 0; padding-top: 0; }
 .behavior-label { margin-bottom: 3px; color: var(--text); font-size: 11px; font-weight: 600; }
 .behavior-help, .behavior-inherited {
   margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.35;
 }
-.behavior-override { display: flex; align-items: center; gap: 5px; font-size: 11px; }
-.behavior-override input { margin: 0; }
+.behavior-property > .behavior-label { display: flex; align-items: center; gap: 6px; }
+.behavior-revert { margin-left: auto; line-height: 1; }
+/* A value the element has not taken over yet: shown, editable, and plainly not
+   its own until something is changed. */
+.behavior-inheriting > .behavior-label { color: var(--muted); }
+.behavior-inheriting input, .behavior-inheriting select, .behavior-inheriting button {
+  opacity: 0.6;
+}
+.behavior-inheriting :is(input, select, button):is(:hover, :focus) { opacity: 1; }
 .behavior-constant {
   padding: 4px 6px; border: 1px solid var(--line); border-radius: 3px;
   color: var(--muted); font: 11px/1.4 ui-monospace, "Cascadia Mono", monospace;
@@ -623,26 +640,48 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
 .behavior-record-row > .behavior-array { min-width: 0; }
 .behavior-small { min-width: 24px; padding: 2px 5px; }
 .behavior-array-add { align-self: flex-start; margin-top: 2px; }
-.behavior-unknown, .behavior-legacy, .behavior-validation {
+.behavior-validation {
   padding: 6px; border-radius: 3px; font-size: 10px; line-height: 1.4;
-}
-.behavior-unknown, .behavior-legacy {
-  color: var(--accent); border: 1px solid var(--accent-dim); background: rgba(255, 176, 0, 0.06);
 }
 .behavior-validation { color: var(--danger); border: 1px solid var(--danger); }
 
-/* the applied list in the inspector */
+/* the applied list in the inspector: one box per behaviour, so where one ends
+   and the next begins is seen rather than worked out */
+.bhv-head { display: flex; align-items: center; gap: 6px; }
+.bhv-head h3 { flex: 1 1 auto; }
+#btn-bhv-fold { flex: 0 0 auto; }
+#bhv-applied .bhv-entry {
+  margin: 4px 0 6px; border: 1px solid var(--line); border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
 #bhv-applied .item {
   display: flex; align-items: center; gap: 6px;
-  padding: 3px 0; border-bottom: 1px solid var(--line);
+  padding: 3px 6px; border-bottom: 1px solid var(--line);
+  /* The name strip is the box's title bar, and its handle: behaviours open
+     folded, so this row is all there is to see and to aim at most of the time.
+     Light on a dark tool, which is the whole point - a lift of a few percent
+     read as one long list again, and telling one behaviour from the next is
+     what the box is for. */
+  /* Not a palette tile, though it borrows the class: left-aligned, and the
+     inherited pointer is honest because the whole strip folds it. */
+  background: var(--title-bar); color: var(--title-bar-text);
+  border-radius: 3px 3px 0 0; text-align: left;
 }
-#bhv-applied .item .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#bhv-applied .bhv-entry.folded .item { border-bottom: 0; border-radius: 3px; }
+#bhv-applied .bhv-entry.folded [data-behavior-form] { display: none; }
+#bhv-applied .item .n {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 700;
+}
 /* The ordinal shown only when a node carries the same behaviour more than once. */
-#bhv-applied .item .muted { flex: 0 0 auto; font-size: 11px; }
+#bhv-applied .item .muted { flex: 0 0 auto; font-size: 11px; color: #4a5262; }
 #bhv-applied .item button { flex: 0 0 auto; }
-#bhv-applied .behavior-form {
-  margin: 4px 0 8px; padding: 6px; border: 1px solid var(--line); border-radius: 3px;
+#bhv-applied .item button.fold {
+  padding: 0 3px; border: 0; background: none;
+  color: var(--title-bar-text); font-size: 11px; opacity: 0.65;
 }
+#bhv-applied .item button.fold:hover { opacity: 1; }
+#bhv-applied .behavior-form { margin: 0; padding: 6px; }
 
 /*
  * The step readouts that ride the axis gizmo: the move step at the origin, the

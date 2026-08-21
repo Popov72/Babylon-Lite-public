@@ -77,11 +77,11 @@ const built = await page.evaluate(async () => {
   ed.select([]);
 
   // A prop the runtime moves, so the manifest has a dynamic element in it.
-  ed.setBehaviorDef("SlidingLeaf", { dynamic: true, axis: "x", distance: 2 });
-  ed.addEntityBehavior(doorLeaf.node.name, "SlidingLeaf");
+  ed.setBehaviorDef("dynamic", { dynamic: true });
+  ed.addEntityBehavior(doorLeaf.node.name, "dynamic");
   ed.state.activeChunk = "CH01_CorridorA";
   const dynamicCorridorProp = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Small", new V(16, 2, -4), { silent: true });
-  ed.addEntityBehavior(dynamicCorridorProp.node.name, "SlidingLeaf");
+  ed.addEntityBehavior(dynamicCorridorProp.node.name, "dynamic");
   ed.state.activeChunk = "CH00_Storage";
 
   // A real kit lamp, whose M_Light material genuinely emits and which seeds its

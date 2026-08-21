@@ -5,7 +5,7 @@
 
 import { instantiate, getModule } from "./kit.js";
 import { patchKhronosPbrNeutralShader } from "./shader-patches.js";
-import { renameEntityReferences } from "./behavior-metadata.js";
+import { renameEntityReferences, validateBehaviorConfig } from "./behavior-metadata.js";
 
 const {
   Engine, Scene, UniversalCamera, HemisphericLight, Vector3,
@@ -3079,14 +3079,23 @@ function renameEntityRefs(before, after) {
 let behaviorCatalog = null;
 export function setBehaviorCatalog(catalog) { behaviorCatalog = catalog; }
 
+function assertValidBehaviorConfig(name, value, partial, path) {
+  if (!behaviorCatalog) {
+    throw new Error("behavior metadata is not loaded");
+  }
+  const errors = validateBehaviorConfig(behaviorCatalog, name, value, { partial });
+  if (errors.length) {
+    throw new Error(`${path}: ${errors.join(" ")}`);
+  }
+}
+
 // ------------------------------------------------------------- behaviours
 //
 // Two halves, matching the manifest:
 //
 //   behaviors   a *library* of named definitions - "stdLiquefaction" is
 //               `{ liquefiable: true, fluidSim: [...] }`. The metadata-driven
-//               editor knows the supported fields, while this model preserves
-//               unknown legacy fields until metadata is added for them.
+//               editor knows and validates every supported field.
 //   entities    which of those a node name carries, plus the `linked` node
 //               names some of them need - a door half links to its other half.
 //
@@ -3114,27 +3123,10 @@ export function setBehaviorDef(name, body) {
   if (!key) return false;
   if (!body || typeof body !== "object" || Array.isArray(body)) return false;
   const next = JSON.parse(JSON.stringify(body));
+  assertValidBehaviorConfig(key, next, true, `behavior "${key}"`);
   if (JSON.stringify(state.behaviors.get(key) ?? null) === JSON.stringify(next)) return false;
   pushUndo();
   state.behaviors.set(key, next);
-  emit("behaviors");
-  return true;
-}
-
-/**
- * Rename a definition, carrying every reference with it. A rename that left the
- * entities pointing at the old name would silently drop their behaviour.
- */
-export function renameBehaviorDef(from, to) {
-  const next = String(to || "").trim();
-  if (!from || !next || from === next) return false;
-  if (!state.behaviors.has(from) || state.behaviors.has(next)) return false;
-  pushUndo();
-  // rebuilt rather than set(), so the library keeps its order
-  state.behaviors = new Map([...state.behaviors].map(([k, v]) => [k === from ? next : k, v]));
-  for (const list of state.entities.values()) {
-    for (const b of list) if (b.name === from) b.name = next;
-  }
   emit("behaviors");
   return true;
 }
@@ -3156,10 +3148,7 @@ export function deleteBehaviorDef(name) {
 /**
  * The behaviours a node name carries, as a copy.
  *
- * Every key is copied, not a known subset: the runtime owns which parameters an
- * applied behaviour may carry, exactly as it owns which flags a definition may
- * carry, and a whitelist here would quietly delete the ones this tool has not
- * heard of the first time the panel read a record back.
+ * Every parameter has already been validated against the metadata catalogue.
  */
 export function entityBehaviors(nodeName) {
   const list = state.entities.get(String(nodeName || "").trim()) || [];
@@ -3320,11 +3309,10 @@ export function behaviorParams(assignment) {
 /**
  * Whether a node is one the game hides before the player ever sees it.
  *
- * `hideEntity` with no parameters is the runtime's "hide me, now": with neither
- * `onEvent` to wait for nor `entity` to name, `entity-toggle.ts` emits the hide
- * event against its OWN entity as soon as it starts. With either one filled in
- * it is a trigger instead - it hides something else, later - and the element
- * itself stays exactly where it was authored.
+ * `hideEntity` with no parameters is the runtime's "hide me, now":
+ * `entity-toggle.ts` emits the hide event against its own entity as soon as it
+ * starts. An `events` array instead delays that action until a subscription
+ * matches.
  *
  * So this is a statement about the ship, not about the editor: it is true of a
  * trap that starts buried whether or not anything is currently previewing it.
@@ -3378,8 +3366,7 @@ export function isProbeExcludedNode(nodeName) {
  * The parameters an applied behaviour carries, replaced wholesale.
  *
  * The metadata-driven panel edits a local object and replaces the assignment
- * when its typed values are valid. Taking the whole object here also preserves
- * fields from older manifests that do not yet have authoring metadata.
+ * when its typed values are valid.
  *
  * Only three things are normalised, and each is a rule this tool owns rather
  * than the runtime:
@@ -3409,6 +3396,10 @@ export function setEntityParams(nodeName, index, params) {
     if (next.direction.some((v) => v !== 0)) next.direction = next.direction.map((v) => Math.round(v * 1e4) / 1e4);
     else delete next.direction;
   }
+  assertValidBehaviorConfig(entry.name, {
+    ...(state.behaviors.get(entry.name) ?? {}),
+    ...behaviorParams(next),
+  }, false, `entity "${node}" behavior "${entry.name}"`);
   if (JSON.stringify(entry) === JSON.stringify(next)) return false;
   pushUndo();
   list[at] = next;
@@ -4086,7 +4077,7 @@ export function serialize() {
     // Not ship data, but on the stack all the same: a restore clears it, so
     // leaving it out made every undo reveal what H had parked away.
     hidden: [...state.hidden],    entities: Object.fromEntries([...state.entities]
-      .map(([k, v]) => [k, v.map((b) => ({ name: b.name, ...writeBehaviorExtras(b) }))])),
+      .map(([k, v]) => [k, { behaviors: v.map((b) => ({ name: b.name, ...writeBehaviorParams(b) })) }])),
     instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
@@ -4418,45 +4409,44 @@ async function restoreFrom(data) {
   // The ship's own sim list wins over the tool's config.json: config is what a
   // *new* ship starts from, but a saved one carries the list it was authored
   // against, and the two drifting apart would silently repoint its behaviours.
-  if (Array.isArray(data.fluidSim)) state.fluidSim = [...data.fluidSim];
+  if (Array.isArray(data.fluidSim)) {
+    for (const name of data.fluidSim) {
+      if (typeof name !== "string" || !name || /\.json$/i.test(name)) {
+        throw new Error(`fluidSim name "${String(name)}" must omit the .json extension`);
+      }
+    }
+    state.fluidSim = [...data.fluidSim];
+  }
   for (const [name, body] of Object.entries(data.behaviors || {})) {
     const key = String(name || "").trim();
     if (!key || !body || typeof body !== "object" || Array.isArray(body)) continue;
-    state.behaviors.set(key, JSON.parse(JSON.stringify(body)));
-  }
-  // A manifest written before `entities` existed keyed `behaviors` by NODE
-  // name, so each entry meant "this node has these flags". Keeping the bodies
-  // as definitions but dropping the application would silently un-liquefy the
-  // ship, so apply each one to the node it was named after. Detected by the
-  // key being absent, not empty: serialize() always writes both.
-  if (!("entities" in data)) {
-    for (const name of state.behaviors.keys()) {
-      state.entities.set(name, [{ name, linked: [] }]);
-    }
+    const definition = JSON.parse(JSON.stringify(body));
+    assertValidBehaviorConfig(key, definition, true, `behavior "${key}"`);
+    state.behaviors.set(key, definition);
   }
   for (const [node, list] of Object.entries(data.entities || {})) {
     const key = String(node || "").trim();
     if (!key) continue;
-    if (!Array.isArray(list?.behaviors ?? list)) continue;
-    // accept both the manifest's { behaviors: [...] } and a bare array
-    const raw = Array.isArray(list) ? list : list.behaviors;
+    if (!Array.isArray(list?.behaviors)) {
+      throw new Error(`entity "${key}" must contain a behaviors array`);
+    }
     const kept = [];
-    for (const b of raw) {
-      if (!b || typeof b !== "object") continue;
-      // A hand-edit that put `direction` in a sibling entry of its own:
-      //   [ { name: "player_startpos" }, { direction: [...] } ]
-      // An entry with no name means nothing to the runtime, and folding it into
-      // the one above is the only reading under which it means anything at all.
-      if (!b.name) {
-        const prev = kept[kept.length - 1];
-        if (prev) {
-          console.warn(`merged a nameless behaviour entry on "${key}" into "${prev.name}"`, b);
-          Object.assign(prev, readBehaviorExtras(b));
-        }
-        continue;
+    for (const b of list.behaviors) {
+      if (!b || typeof b !== "object" || Array.isArray(b)) {
+        throw new Error(`entity "${key}" contains an invalid behavior assignment`);
       }
-      if (!state.behaviors.has(b.name)) continue;
-      kept.push({ name: b.name, linked: [], ...readBehaviorExtras(b) });
+      if (!b.name) {
+        throw new Error(`entity "${key}" contains a behavior assignment without a name`);
+      }
+      if (!state.behaviors.has(b.name)) {
+        throw new Error(`entity "${key}" references unknown behavior "${b.name}"`);
+      }
+      const params = readBehaviorParams(b);
+      assertValidBehaviorConfig(b.name, {
+        ...state.behaviors.get(b.name),
+        ...behaviorParams(params),
+      }, false, `entity "${key}" behavior "${b.name}"`);
+      kept.push({ name: b.name, linked: [], ...params });
     }
     if (kept.length) state.entities.set(key, kept);
   }
@@ -4480,27 +4470,17 @@ function flipX(v) { return [-Number(v[0]), Number(v[1]), Number(v[2])]; }
 /**
  * The parameters of an applied behaviour, on the way IN from the wire.
  *
- * Everything but `name` is carried through: the runtime decides which
- * parameters a behaviour understands, and a whitelist here would delete an
- * authored one the first time this tool loaded a file it did not write.
+ * `direction` is a vector, so it is mirrored into editor space.
  *
- * Two keys are not opaque. `linked` is a node-name list, coerced to strings
- * because the picker and `setEntityParams` both assume that. `direction` is a
- * vector, so it is mirrored into editor space; anything that is not a valid
- * 3-vector is left alone, since flipping a sign inside something we cannot read
- * would corrupt it.
- *
- * The inverse of writeBehaviorExtras - the pair has to stay symmetric, so keep
+ * The inverse of writeBehaviorParams - the pair has to stay symmetric, so keep
  * them next to each other.
  */
-function readBehaviorExtras(b) {
+function readBehaviorParams(b) {
   const out = {};
   for (const [key, value] of Object.entries(b)) {
     if (key === "name" || value === undefined) continue;
     out[key] = JSON.parse(JSON.stringify(value));
   }
-  if (Array.isArray(out.linked)) out.linked = out.linked.map(String);
-  else delete out.linked;
   if (isVector3(out.direction)) out.direction = flipX(out.direction);
   return out;
 }
@@ -4508,17 +4488,17 @@ function readBehaviorExtras(b) {
 /**
  * The parameters of an applied behaviour, on the way OUT to the wire.
  *
- * The inverse of readBehaviorExtras: same pass-through, same two special cases,
+ * The inverse of readBehaviorParams: same parameters, same two special cases,
  * plus one asymmetry - an empty `linked` is dropped rather than written, since
  * every behaviour carries the key in state and only a few ever fill it.
  */
-export function writeBehaviorExtras(b) {
+export function writeBehaviorParams(b) {
   const out = {};
   for (const [key, value] of Object.entries(b)) {
     if (key === "name" || value === undefined) continue;
     out[key] = JSON.parse(JSON.stringify(value));
   }
-  if (Array.isArray(out.linked) && out.linked.length) out.linked = out.linked.map(String);
+  if (Array.isArray(out.linked) && out.linked.length) out.linked = [...out.linked];
   else delete out.linked;
   if (isVector3(out.direction)) out.direction = flipX(out.direction);
   return out;

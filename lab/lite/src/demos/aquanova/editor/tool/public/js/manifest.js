@@ -11,7 +11,7 @@ import {
   serializeEditorPrefs, applyEditorPrefs,
   applyEnvironment, whileBusy, withVeilSuspended,
   isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
-  environmentProbeIds, environmentProbeOf, writeBehaviorExtras, nodeNameOf, pushUndo,
+  environmentProbeIds, environmentProbeOf, writeBehaviorParams, nodeNameOf, pushUndo,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -82,11 +82,9 @@ export { nodeNameOf };
 /**
  * The `behaviors` library and the `entities` that carry them.
  *
- * Definitions are written through untouched. The authoring metadata controls
- * which fields the UI edits, while pass-through serialization preserves unknown
- * legacy fields instead of quietly deleting them. Applied parameters use
- * writeBehaviorExtras for the same reason - one helper, shared with the undo
- * snapshot, so the two can never disagree about what an assignment may carry.
+ * Definitions and assignments have already been validated against the
+ * authoring metadata. Applied parameters use writeBehaviorParams so coordinate
+ * conversion is shared with the undo snapshot.
  *
  * `linked` is omitted when empty rather than written as `[]` - the absence is
  * what "this one stands alone" means - and entries pointing at a behaviour that
@@ -104,7 +102,7 @@ function serializeEntities() {
   for (const node of nodes) {
     const kept = (state.entities.get(node) || [])
       .filter((b) => state.behaviors.has(b.name))
-      .map((b) => ({ name: b.name, ...writeBehaviorExtras(b) }));
+      .map((b) => ({ name: b.name, ...writeBehaviorParams(b) }));
     if (kept.length) out[node] = { behaviors: kept };
   }
   return out;
@@ -576,14 +574,6 @@ export async function loadLayout(name) {
     applyView(data.view);                // older manifests simply have none
     applyEnvironment(data.environment, data.editorEnvironment);
     applyEditorPrefs(data.editorPrefs);   // older manifests simply have none
-    // Start positions moved to behaviours, so an old block is dropped rather
-    // than silently kept and re-saved. Said out loud, because losing where the
-    // player starts without being told is exactly the kind of thing you notice
-    // three sessions later.
-    if (data.spawns && Object.keys(data.spawns).length) {
-      console.warn("legacy spawns dropped:", data.spawns);
-      data.legacySpawns = data.spawns;
-    }
     return data;
   });
 }
@@ -824,6 +814,38 @@ export function liveEntitiesByChunk() {
     out[chunk] = [...names].sort((a, b) => a.localeCompare(b));
   }
   return out;
+}
+
+/**
+ * The names worth offering where one behaviour points at another entity.
+ *
+ * Every node the ship exports is a name the runtime can resolve, and that is
+ * the wrong list to put in front of an author: a room is a hundred wall panels
+ * and floor tiles, each split again into a `_primitive<i>` per submesh, and not
+ * one of them can raise an event or answer one. Two kinds of thing take part in
+ * the event traffic - something carrying at least one behaviour, a behaviour
+ * being the only thing that raises or listens, and a door, which the game opens
+ * by being named. Those are what the pickers offer.
+ *
+ * The pieces then fall out of the list on their own, with no rule about pieces:
+ * `P0135_primitive0` is absent because nothing was assigned to it, while a
+ * behaviour hand-written onto `Fan_primitive0` keeps its place, because that
+ * part genuinely does take part.
+ *
+ * A name no node answers to any more is left out. Behaviours outlive the
+ * element that carried them by design - see pruneOrphanEntities - but a name
+ * with nothing behind it is not something to point new work at. Where one is
+ * already written it stays visible: out-of-list values are shown, never
+ * dropped.
+ */
+export function eventEntityNames() {
+  const live = liveEntityNames();
+  const names = new Set();
+  for (const [name, list] of state.entities) {
+    if (list?.length && live.has(name)) names.add(name);
+  }
+  for (const m of state.markers.values()) if (m.type === "door") names.add(m.id);
+  return [...names].sort((a, b) => a.localeCompare(b));
 }
 
 function namesOfPlacement(p) {

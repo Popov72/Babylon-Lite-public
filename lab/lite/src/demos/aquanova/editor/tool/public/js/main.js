@@ -5,7 +5,7 @@ import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
   saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, syncShip, resolveDoorChunks, nodeNameOf,
-  liveEntityNames, liveEntitiesByChunk, pruneOrphanEntities,
+  eventEntityNames, liveEntitiesByChunk, pruneOrphanEntities,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
@@ -85,7 +85,6 @@ const libraryScope = {};
 
 function fillBehaviorNameOptions(selected = "") {
   const names = behaviorMetadataNames(behaviorCatalog);
-  if (selected && !names.includes(selected)) names.unshift(selected);
   $("bhv-name").replaceChildren();
   const prompt = document.createElement("option");
   prompt.value = "";
@@ -94,10 +93,19 @@ function fillBehaviorNameOptions(selected = "") {
   for (const name of names) {
     const option = document.createElement("option");
     option.value = name;
-    option.textContent = behaviorMetadata(behaviorCatalog, name)?.label ?? name;
+    const about = behaviorMetadata(behaviorCatalog, name);
+    option.textContent = about?.label ?? name;
+    if (about?.description) option.title = about.description;
     $("bhv-name").append(option);
   }
   $("bhv-name").value = selected;
+  describeBehaviorPick();
+}
+
+/** What the chosen behaviour is for, on the control that names it. */
+function describeBehaviorPick() {
+  const pick = $("bhv-name");
+  pick.title = behaviorMetadata(behaviorCatalog, pick.value)?.description ?? "";
 }
 
 /**
@@ -346,7 +354,10 @@ function refreshBehavior() {
   // The whole library, every time: a behaviour may be attached more than once,
   // so "already attached" is no longer a reason to leave it out of the list.
   $("bhv-add").innerHTML = library.length
-    ? library.map((b) => `<option value="${esc(b)}">${esc(b)}</option>`).join("")
+    ? library.map((b) => {
+      const about = behaviorMetadata(behaviorCatalog, b)?.description;
+      return `<option value="${esc(b)}"${about ? ` title="${esc(about)}"` : ""}>${esc(b)}</option>`;
+    }).join("")
     : `<option disabled>(none defined)</option>`;
   $("bhv-add").disabled = !library.length;
   $("btn-bhv-add").disabled = !library.length;
@@ -356,6 +367,40 @@ function refreshBehavior() {
 
 const esc = (s) => String(s).replace(/[&<>"]/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/**
+ * How each applied behaviour is folded, kept across the panel's rebuilds.
+ *
+ * A form rebuilds itself after every edit, so a fold held in the DOM would
+ * spring open the moment you changed a field under it. Like the entity scopes
+ * above, this is how the panel is being looked at rather than anything about
+ * the ship, so it lives here and is never saved.
+ *
+ * **Folded is the default**, so selecting an element answers "what does this
+ * thing do" in one screen of names rather than opening every form it carries -
+ * and the forms are long. The map therefore holds the exceptions in both
+ * directions, which is why it stores `false` as well as `true`: a behaviour you
+ * have just attached is one you are about to configure, so Add opens it.
+ */
+const behaviorFolds = new Map();
+const foldKey = (nodeName, at) => `${nodeName}#${at}`;
+
+/**
+ * Forget one behaviour's fold and slide the ones after it down.
+ *
+ * Folds are keyed by position, because a name is not an identity here - the
+ * same behaviour may be attached twice. So removing the first of three has to
+ * move the other two's folds with them, or the box that opens afterwards is
+ * not the one that was open.
+ */
+function dropFold(nodeName, at, total) {
+  for (let i = at; i < total; i++) {
+    const next = behaviorFolds.get(foldKey(nodeName, i + 1));
+    if (next === undefined) behaviorFolds.delete(foldKey(nodeName, i));
+    else behaviorFolds.set(foldKey(nodeName, i), next);
+  }
+  behaviorFolds.delete(foldKey(nodeName, total - 1));
+}
 
 /** Render each applied behavior by list position, because duplicate names are valid. */
 function renderApplied(nodeName, applied) {
@@ -368,6 +413,7 @@ function renderApplied(nodeName, applied) {
 
   if (!applied.length) {
     host.innerHTML = nodeName ? '<div class="muted">none attached</div>' : "";
+    refreshFoldAll();
     return;
   }
   const entry = entryOf(state.selection[0]);
@@ -378,24 +424,47 @@ function renderApplied(nodeName, applied) {
   const total = new Map();
   for (const b of applied) total.set(b.name, (total.get(b.name) || 0) + 1);
   const seen = new Map();
+  // Name, ordinal and fields in one box, so where one behaviour ends and the
+  // next begins is a thing you see rather than a thing you work out. The
+  // description rides on the name as a tooltip: it is the same sentence every
+  // time you open this element, and printed under the name it pushed the
+  // fields - the part you came for - off the bottom of the panel.
   host.innerHTML = applied.map((b, at) => {
     const ordinal = (seen.get(b.name) || 0) + 1;
     seen.set(b.name, ordinal);
-    const rows = [
-      `<div class="item"><span class="n">${esc(b.name)}</span>`
+    const about = behaviorMetadata(behaviorCatalog, b.name)?.description ?? "";
+    const folded = behaviorFolds.get(foldKey(nodeName, at)) !== false;
+    return `<div class="bhv-entry${folded ? " folded" : ""}" data-entry="${at}">`
+      + `<div class="item"><button class="fold" data-fold="${at}" title="Fold or unfold this behaviour"`
+      + ` aria-expanded="${folded ? "false" : "true"}">${folded ? "▸" : "▾"}</button>`
+      + `<span class="n"${about ? ` title="${esc(about)}"` : ""}>${esc(b.name)}</span>`
       + (total.get(b.name) > 1 ? `<span class="muted">#${ordinal}</span>` : "")
-      + `<button data-remove="${at}">Remove</button></div>`,
-    ];
-    rows.push(`<div data-behavior-form="${at}"></div>`);
-    return rows.join("");
+      + `<button data-remove="${at}">Remove</button></div>`
+      + `<div data-behavior-form="${at}"></div></div>`;
   }).join("");
 
   for (const btn of host.querySelectorAll("[data-remove]")) {
     btn.addEventListener("click", () => {
-      removeEntityBehavior(nodeName, Number(btn.dataset.remove));
+      const at = Number(btn.dataset.remove);
+      removeEntityBehavior(nodeName, at);
+      dropFold(nodeName, at, applied.length);
       refreshBehavior();
     });
   }
+  // Folding is a change of view, not of anything the form holds, so it turns
+  // the box over in place: rebuilding the panel would rebuild every form under
+  // it for nothing. The whole title strip is the handle - the arrow alone is a
+  // 10 px target - and Remove, the one other thing on the strip, keeps its own
+  // click.
+  for (const head of host.querySelectorAll(".bhv-entry > .item")) {
+    head.addEventListener("click", (event) => {
+      if (event.target.closest("[data-remove]")) return;
+      const box = head.closest(".bhv-entry");
+      setFold(box, !box.classList.contains("folded"), nodeName);
+      refreshFoldAll();
+    });
+  }
+  refreshFoldAll();
   const options = behaviorFormOptions(candidates, nodeName);
   for (const formHost of host.querySelectorAll("[data-behavior-form]")) {
     const at = Number(formHost.dataset.behaviorForm);
@@ -413,6 +482,40 @@ function renderApplied(nodeName, applied) {
     });
   }
 }
+
+/** Turn one behaviour box over, and remember which way it was left. */
+function setFold(box, folded, nodeName) {
+  box.classList.toggle("folded", folded);
+  behaviorFolds.set(foldKey(nodeName, Number(box.dataset.entry)), folded);
+  const arrow = box.querySelector("[data-fold]");
+  arrow.textContent = folded ? "▸" : "▾";
+  arrow.setAttribute("aria-expanded", folded ? "false" : "true");
+}
+
+/**
+ * The fold-all button says what it will do, not what it has done.
+ *
+ * One button rather than two: with anything open, "Fold all" is the only thing
+ * worth asking for, and once everything is folded, the reverse. It reads the
+ * boxes rather than a flag of its own, so folding the last one by hand leaves
+ * it saying the right thing.
+ */
+function refreshFoldAll() {
+  const boxes = [...$("bhv-applied").querySelectorAll(".bhv-entry")];
+  const button = $("btn-bhv-fold");
+  button.disabled = !boxes.length;
+  button.textContent = boxes.length && boxes.every((box) => box.classList.contains("folded"))
+    ? "Unfold all" : "Fold all";
+}
+
+$("btn-bhv-fold").addEventListener("click", () => {
+  const boxes = [...$("bhv-applied").querySelectorAll(".bhv-entry")];
+  if (!boxes.length) return;
+  const fold = !boxes.every((box) => box.classList.contains("folded"));
+  const nodeName = selectedName();
+  for (const box of boxes) setFold(box, fold, nodeName);
+  refreshFoldAll();
+});
 
 /**
  * How wide each form's entity pickers are looking, kept across rebuilds.
@@ -432,16 +535,16 @@ const entityScopeFor = (key) => {
  *
  * Vocabularies come from three places and are merged here so the form never has
  * to know which: the metadata file (the game's own MP3s), the ship (its rooms,
- * its elements, its sims), and the behaviours themselves (the events they
- * raise, the sound categories the weapon defines). `eventsOfSources` is a
- * function rather than a list because its answer depends on which sources the
- * entry being edited has picked - see eventsRaisedByAll.
+ * the elements events can reach, its sims), and the behaviours themselves (the
+ * events they raise, the sound categories the weapon defines). `eventsOfSources`
+ * is a function rather than a list because its answer depends on which sources
+ * the entry being edited has picked - see eventsRaisedByAll.
  */
 function behaviorFormOptions(nearbyEntities = [], owner = "") {
   const entry = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
   return {
     ...behaviorFileOptions(behaviorCatalog),
-    entities: alphabetical(new Set([...liveEntityNames(), ...state.entities.keys()])),
+    eventEntities: eventEntityNames(),
     nearbyEntities: alphabetical(nearbyEntities),
     entitiesByChunk: liveEntitiesByChunk(),
     chunks: [...state.chunks],
@@ -505,6 +608,9 @@ $("btn-bhv-add").addEventListener("click", () => {
   const pick = $("bhv-add").value;
   if (!name || !pick) return;
   addEntityBehavior(name, pick);
+  // Everything else opens folded; this one does not. Attaching a behaviour is
+  // asking for its fields, and it lands at the end of the list.
+  behaviorFolds.set(foldKey(name, entityBehaviors(name).length - 1), false);
   refreshBehavior();
 });
 
@@ -574,6 +680,7 @@ $("btn-bhv-new").addEventListener("click", () => {
 });
 $("bhv-name").addEventListener("change", () => {
   const name = $("bhv-name").value.trim();
+  describeBehaviorPick();
   const existing = libSelected && name === libSelected ? getBehaviorDef(libSelected) : null;
   libraryForm = createBehaviorForm($("bhv-fields"), {
     metadata: behaviorMetadata(behaviorCatalog, name),
@@ -2307,7 +2414,7 @@ async function doSave() {
       : `saved ${r.bytes} bytes → ${r.path}${coll}`;
   } catch (e) { setStatus("save failed: " + e.message); return; }
   const warning = strays.length
-    ? ` — check chunks: ${strays.join("; ")}`
+    ? ` — check chunks: ${strays.map(checkText).join("; ")}`
     : "";
   // Named, not counted: "dropped 4 entries" is only alarming, and the whole
   // point of saying anything is that you can tell at a glance whether one of
@@ -3096,6 +3203,20 @@ function short(s) {
 // ------------------------------------------------------------- validation
 
 /**
+ * A check line: what it says, kept apart from the elements it says it about.
+ *
+ * A warning that names a piece is only actionable if you can get to that piece,
+ * and hunting for `P0488` in a ship of hundreds is most of what the warning
+ * costs to act on. So a line is a list of segments rather than a string: plain
+ * prose, and references carrying the ids they name. The panel draws a reference
+ * as something you click to go there; the status bar, which has nothing to
+ * click, reads the same line back as text.
+ */
+const ref = (label, ids) => ({ label, ids: [...ids] });
+const checkText = (line) =>
+  line.map((segment) => (typeof segment === "string" ? segment : segment.label)).join("");
+
+/**
  * The stray-chunk check, phrased for a human, or nothing at all when it is off.
  *
  * One producer for both consumers: the Live checks list reads it continuously
@@ -3112,15 +3233,22 @@ function strayChunkWarnings() {
   const groups = new Map();
   for (const stray of strays) {
     const key = `${stray.chunk}\u0000${stray.host || ""}`;
-    if (!groups.has(key)) groups.set(key, { chunk: stray.chunk, host: stray.host, names: [] });
-    groups.get(key).names.push(stray.name);
+    if (!groups.has(key)) groups.set(key, { chunk: stray.chunk, host: stray.host, members: [] });
+    groups.get(key).members.push(stray);
   }
-  return [...groups.values()].map(({ chunk, host, names }) => {
-    const shown = names.slice(0, 3).join(", ");
-    const rest = names.length > 3 ? `, +${names.length - 3} more` : "";
-    return host
-      ? `${names.length} element(s) assigned to ${chunk} sit in ${host}: ${shown}${rest}`
-      : `${names.length} element(s) assigned to ${chunk} touch nothing else in it: ${shown}${rest}`;
+  return [...groups.values()].map(({ chunk, host, members }) => {
+    const line = [host
+      ? `${members.length} element(s) assigned to ${chunk} sit in ${host}: `
+      : `${members.length} element(s) assigned to ${chunk} touch nothing else in it: `];
+    members.slice(0, 3).forEach((stray, at) => {
+      if (at) line.push(", ");
+      line.push(ref(stray.name, [stray.id]));
+    });
+    // The overflow names nothing, so it stands for what it hides: the ones not
+    // listed, and only those.
+    const rest = members.slice(3);
+    if (rest.length) line.push(", ", ref(`+${rest.length} more`, rest.map((stray) => stray.id)));
+    return line;
   });
 }
 
@@ -3157,30 +3285,49 @@ function validate() {
   for (const d of doors) {
     const [a, b] = resolveDoorChunks(d, boxes);
     linked.add(a); linked.add(b);
-    if (!a || !b) out.push(["err", `${d.id}: only one side resolves (${a || b || "none"})`]);
-    else if (a === b) out.push(["err", `${d.id}: both sides resolve to ${a}`]);
+    if (!a || !b) out.push(["err", [ref(d.id, [d.id]), `: only one side resolves (${a || b || "none"})`]]);
+    else if (a === b) out.push(["err", [ref(d.id, [d.id]), `: both sides resolve to ${a}`]]);
     // A window onto space has nothing to slide: it is a hole in the hull, not a
     // doorway, so the missing-leaves warning would be permanent noise.
-    if (!d.leaves.length && b !== SKYBOX_CHUNK) out.push(["warn", `${d.id}: no leaves assigned`]);
+    if (!d.leaves.length && b !== SKYBOX_CHUNK) out.push(["warn", [ref(d.id, [d.id]), ": no leaves assigned"]]);
   }
   const orphans = state.chunks.filter((c) =>
     !linked.has(c) && shipPlacements().some((p) => p.chunk === c));
   if (orphans.length && state.chunks.length > 1) {
-    out.push(["warn", `unreachable: ${orphans.join(", ")}`]);
+    out.push(["warn", [`unreachable: ${orphans.join(", ")}`]]);
   }
-  if (!doors.length && state.chunks.length > 1) out.push(["warn", "no doors placed yet"]);
+  if (!doors.length && state.chunks.length > 1) out.push(["warn", ["no doors placed yet"]]);
 
   // A room with no probe reflects nothing at all in the game, which on a kit
   // this metallic reads as black panels rather than as a missing feature.
   const covered = new Set();
   for (const probe of state.environmentProbes.values()) covered.add(probe.id);
   if (!covered.size && shipPlacements().length) {
-    out.push(["warn", "no environment probes — nothing in the ship will reflect anything"]);
+    out.push(["warn", ["no environment probes — nothing in the ship will reflect anything"]]);
   }
   const el = $("validation");
-  el.innerHTML = out.length
-    ? out.map(([k, m]) => `<div class="${k}">${m}</div>`).join("")
-    : `<div class="ok">All checks pass.</div>`;
+  el.replaceChildren(...(out.length
+    ? out.map(([kind, line]) => checkLine(kind, line))
+    : [checkLine("ok", ["All checks pass."])]));
+}
+
+/** One check line, with every element it names a click away from being framed. */
+function checkLine(kind, line) {
+  const row = document.createElement("div");
+  row.className = kind;
+  for (const segment of line) {
+    if (typeof segment === "string") { row.append(segment); continue; }
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "check-ref";
+    link.textContent = segment.label;
+    link.title = segment.ids.length === 1
+      ? `Select ${segment.ids[0]} and frame it`
+      : `Select these ${segment.ids.length} elements and frame them`;
+    link.addEventListener("click", () => { select(segment.ids); focusSelection(); });
+    row.append(link);
+  }
+  return row;
 }
 
 // ------------------------------------------------------------------- boot
@@ -3904,10 +4051,7 @@ async function bootstrap() {
   const data = await loadLayout().catch(() => null);
   if (data) {
     refreshChunks();
-    setStatus(data.legacySpawns
-      ? `restored ${data.instances.length} instances — the old player/weapon spawns were `
-        + "dropped: give a dummy element a start-position behaviour instead"
-      : `restored ${data.instances.length} instances from ship_manifest.json`);
+    setStatus(`restored ${data.instances.length} instances from ship_manifest.json`);
   } else {
     // No ship yet, but the kit's collision file may still be there - that is
     // the whole point of it living apart from any one ship.

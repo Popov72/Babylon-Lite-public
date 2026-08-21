@@ -34,8 +34,6 @@ try {
     // Every list the UI offers, read the way a person sees it: the placeholder
     // entry is not a choice, so it never counts as one.
     const offered = (select) => [...select.options].map((o) => o.value).filter(Boolean);
-    const overrideFor = (host, text) => [...host.querySelectorAll(".behavior-override")]
-      .find((label) => label.textContent.includes(text))?.querySelector("input");
     // The form rebuilds itself whenever a choice changes the shape of what
     // follows, so every handle has to be taken again after each click.
     const addRow = (host, selector = ".behavior-array-add") => host.querySelector(selector).click();
@@ -60,7 +58,7 @@ try {
       // The MP3s come from the definition file, exactly as the editor merges
       // them in: a sound is chosen from what the game actually ships.
       ...ui.behaviorFileOptions(catalog),
-      nearbyEntities: [], entities: ["Door_D00", "S1", "S2"], fluidSim: [],
+      nearbyEntities: [], eventEntities: ["Door_D00", "S1", "S2"], fluidSim: [],
       events: ["activated", "hummed", "opened", "splashed"],
       eventsOfSources: intersect,
     };
@@ -69,17 +67,21 @@ try {
     const linkedHost = makeHost();
     const linkedForm = ui.createBehaviorForm(linkedHost, {
       metadata: ui.behaviorMetadata(catalog, "stdLiquefaction"),
-      value: { legacyFlag: { kept: true } },
+      value: {},
       inherited: { liquefiable: true, fluidSim: ["liquid-slow"] },
       scope: "assignment",
       options: { ...shipOptions, nearbyEntities: ["S1", "S2"] },
     });
-    change(overrideFor(linkedHost, "Linked entities"), true);
-    addRow(linkedHost);
-    addRow(linkedHost);
-    const linkedTyped = linkedHost.querySelectorAll(".behavior-array-row input[type=text]").length;
-    const linkedOffers = offered(linkedHost.querySelector(".behavior-array-row select"));
-    change([...linkedHost.querySelectorAll(".behavior-array-row select")][1], "S2");
+    // Every other field of the behaviour now renders its own editor too, so
+    // reach for this one by name rather than by being first.
+    const linkedField = linkedHost.querySelector('[data-behavior-key="linked"]');
+    addRow(linkedField);
+    addRow(linkedHost.querySelector('[data-behavior-key="linked"]'));
+    const linkedRows = () =>
+      linkedHost.querySelector('[data-behavior-key="linked"]');
+    const linkedTyped = linkedRows().querySelectorAll(".behavior-array-row input[type=text]").length;
+    const linkedOffers = offered(linkedRows().querySelector(".behavior-array-row select"));
+    change([...linkedRows().querySelectorAll(".behavior-array-row select")][1], "S2");
 
     // ---- sources first, then the events they all raise --------------------
     const actionHost = makeHost();
@@ -90,7 +92,6 @@ try {
       scope: "assignment",
       options: shipOptions,
     });
-    change(actionHost.querySelector(".behavior-override input"), true);
     addRow(actionHost);
     const subscriptionLabels = [...actionHost.querySelectorAll(".behavior-array-row .behavior-label")]
       .map((label) => label.textContent);
@@ -118,7 +119,6 @@ try {
       },
       entityScope: {},
     });
-    change(scopedHost.querySelector(".behavior-override input"), true);
     addRow(scopedHost);
     addRow(scopedHost, ".behavior-array-row .behavior-array-add");
     const scopeModes = offered(scopedHost.querySelector(".behavior-scope select"));
@@ -136,7 +136,6 @@ try {
       options: shipOptions,
     });
     const beforeTrigger = triggerForm.validate();
-    change(triggerHost.querySelector(".behavior-override input"), true);
     const enter = triggerHost.querySelector(".behavior-object select");
     change(enter, "activated");
     const newValue = [...enter.options].map((o) => o.value).find((v) => v.startsWith("\u0000"));
@@ -151,11 +150,9 @@ try {
       scope: "assignment",
       options: shipOptions,
     });
-    change(overrideFor(pickHost, "Event to raise"), true);
     const pickSelects = [...pickHost.querySelectorAll('[data-behavior-key="raiseEvent"] select')];
     change(pickSelects[0], "Door_D00");
     change(pickSelects[1], "activated");
-    change(overrideFor(pickHost, "Sound"), true);
     const soundOffers = offered(pickHost.querySelector('[data-behavior-key="sound"] select'));
 
     // ---- inherited values read as prose, never as JSON --------------------
@@ -167,8 +164,16 @@ try {
       scope: "assignment",
       options: shipOptions,
     });
-    const inheritedSounds = [...soundsHost.querySelectorAll(".behavior-inherited")]
-      .map((node) => node.textContent).join(" | ");
+    // An inherited value is shown by the editors themselves now, so it has to be
+    // legible there: the categories the weapon defines, in the fields that edit
+    // them, and no JSON anywhere on the way.
+    const inheritedSounds = {
+      hint: [...soundsHost.querySelectorAll(".behavior-inherited")]
+        .map((node) => node.textContent).join(" | "),
+      shown: [...soundsHost.querySelectorAll("input, select")].map((node) => node.value),
+      text: soundsHost.textContent,
+      greyed: !!soundsHost.querySelector(".behavior-inheriting"),
+    };
 
     const dynamicHost = makeHost();
     const dynamicForm = ui.createBehaviorForm(dynamicHost, {
@@ -178,10 +183,37 @@ try {
       scope: "assignment",
       options: {},
     });
-    change(dynamicHost.querySelector('[data-behavior-key="mass"] .behavior-override input'), true);
-    const defaultMass = dynamicForm.read().mass;
-    change(dynamicHost.querySelector('[data-behavior-key="mass"] input[type=number]'), "0");
+    // Looking at a field is not editing it: an untouched row writes nothing and
+    // names its default rather than quietly adopting it.
+    const massInput = dynamicHost.querySelector('[data-behavior-key="mass"] input[type=number]');
+    const untouchedMass = { placeholder: massInput.placeholder, written: dynamicForm.read().mass ?? null };
+    change(massInput, "0");
     const badMass = dynamicForm.validate();
+
+    // ---- taking a value over, and handing it back -------------------------
+    const revertHost = makeHost();
+    const revertForm = ui.createBehaviorForm(revertHost, {
+      metadata: ui.behaviorMetadata(catalog, "dynamic"),
+      value: {},
+      inherited: { mass: 4 },
+      scope: "assignment",
+      options: {},
+    });
+    const massOf = () => revertHost.querySelector('[data-behavior-key="mass"] input[type=number]');
+    const revert = {
+      opensOnInherited: massOf().value,
+      greyedBefore: !!revertHost.querySelector(".behavior-inheriting"),
+      offeredBefore: !!revertHost.querySelector(".behavior-revert"),
+      readBefore: revertForm.read().mass ?? null,
+    };
+    change(massOf(), "9");
+    revert.readAfter = revertForm.read().mass ?? null;
+    revert.greyedAfter = !!revertHost.querySelector(".behavior-inheriting");
+    revert.offeredAfter = !!revertHost.querySelector(".behavior-revert");
+    revertHost.querySelector(".behavior-revert").click();
+    revert.readReverted = revertForm.read().mass ?? null;
+    revert.greyedReverted = !!revertHost.querySelector(".behavior-inheriting");
+    revert.showsInheritedAgain = massOf().value;
 
     const collisionHost = makeHost();
     const collisionForm = ui.createBehaviorForm(collisionHost, {
@@ -212,10 +244,10 @@ try {
     document.querySelector("#btn-bhv-save").click();
     const uiCreatedDefinition = editor.getBehaviorDef("dynamic");
     editor.setBehaviorDef("stdLiquefaction", {
-      liquefiable: true, fluidSim: ["liquid-slow"], legacyFlag: { kept: true },
+      liquefiable: true, fluidSim: ["liquid-slow"],
     });
     editor.state.entities.set("source", [{
-      name: "stdLiquefaction", linked: ["S1", "S2"], legacyAssignment: 7,
+      name: "stdLiquefaction", linked: ["S1", "S2"],
     }]);
     document.querySelector("#btn-bhv-library").click();
     change(document.querySelector("#bhv-list"), "stdLiquefaction");
@@ -254,6 +286,25 @@ try {
     const selfLink = editor.state.entities.get("Barrel");
     const byChunk = manifest.liveEntitiesByChunk();
 
+    // ---- what an entity picker is allowed to offer ------------------------
+    // Only what takes part in the event traffic: something carrying at least
+    // one behaviour, or a door. A module's exported pieces - a
+    // `_primitive<i>` per submesh - carry nothing, so none of them can appear,
+    // while the manifest still knows every one of them by name.
+    editor.clearAll();
+    const quietId = (await editor.placeAt(module, [0, 0, 0])).id;
+    const loudId = (await editor.placeAt(module, [4, 0, 0])).id;
+    editor.renamePlacement(quietId, "Quiet");
+    editor.renamePlacement(loudId, "Loud");
+    editor.state.entities.set("Loud", [{ name: "stdLiquefaction" }]);
+    const markers = await import("/js/markers.js");
+    const door = markers.addDoor([2, 0, 0], { silent: true });
+    const participants = {
+      offered: manifest.eventEntityNames(),
+      door: door.id,
+      exported: [...manifest.liveEntityNames()].filter((name) => name.startsWith("Loud")),
+    };
+
     return {
       metadataCount: ui.behaviorMetadataNames(catalog).length,
       linked: linkedForm.read(),
@@ -273,19 +324,20 @@ try {
       pick: pickForm.read(),
       soundOffers,
       inheritedSounds,
-      defaultMass,
+      untouchedMass,
+      revert,
       badMass,
       collision: collisionForm.read(),
       uiCreatedDefinition,
       raised,
       raisedByOne,
       raisedByAll,
-      serializedDefinition: serialized.behaviors.stdLiquefaction,
-      serializedAssignment: serialized.entities.source,
       libraryFields,
       renamed,
       selfLink,
+      participants,
       byChunkRooms: Object.keys(byChunk).length,
+      overrideBoxes: document.querySelectorAll(".behavior-override").length,
       rawJsonEditorPresent: !!document.querySelector("#bhv-json"),
     };
   });
@@ -303,8 +355,6 @@ try {
   if (!same(result.linked.linked, ["S1", "S2"])) {
     fail(`linked entity array did not round-trip: ${JSON.stringify(result.linked)}`);
   }
-  if (!result.linked.legacyFlag?.kept) fail("unknown assignment field was not preserved");
-
   // Sources before events, and only the events they share.
   const labels = (result.subscriptionLabels ?? []).map((text) => text.replace(" *", ""));
   if (labels[0] !== "Sources" || labels[1] !== "Event") {
@@ -348,15 +398,40 @@ try {
     fail(`sounds were not offered from the definition file: ${JSON.stringify(result.soundOffers)}`);
   }
 
-  // No JSON anywhere a person reads.
-  if (!result.inheritedSounds.includes("quickSplash: waterQuickSplash")
-      || /[{}"[]/.test(result.inheritedSounds)) {
-    fail(`inherited value was not written as prose: ${result.inheritedSounds}`);
+  // No JSON anywhere a person reads, and an inherited value legible in the
+  // fields that edit it rather than described beside them.
+  for (const shown of ["quickSplash", "waterQuickSplash", "bigSplash", "waterBigSplash"]) {
+    if (!result.inheritedSounds.shown.includes(shown)) {
+      fail(`inherited value was not shown in its editors: ${JSON.stringify(result.inheritedSounds)}`);
+    }
+  }
+  if (!result.inheritedSounds.greyed) {
+    fail("an inherited value was not marked as the behaviour's");
+  }
+  if (/[{}"[]/.test(result.inheritedSounds.text)) {
+    fail(`inherited value was written as JSON: ${result.inheritedSounds.text}`);
   }
   if (/[{}]|":/.test(result.libraryFields)) fail(`behaviour library shows JSON: ${result.libraryFields}`);
 
-  if (result.defaultMass !== 10 || !result.badMass.some((m) => m.includes("greater than 0"))) {
-    fail(`number default/validation failed: ${result.defaultMass}, ${JSON.stringify(result.badMass)}`);
+  // Nothing is overridden by ticking a box: the field is simply edited, and
+  // handed back with the one control that remains.
+  if (result.overrideBoxes) fail(`${result.overrideBoxes} override checkboxes are still rendered`);
+  if (result.untouchedMass.written !== null
+      || !result.untouchedMass.placeholder.includes("10")) {
+    fail(`an untouched field must stay unset and name its default: ${JSON.stringify(result.untouchedMass)}`);
+  }
+  if (!result.badMass.some((m) => m.includes("greater than 0"))) {
+    fail(`number validation failed: ${JSON.stringify(result.badMass)}`);
+  }
+  const r = result.revert;
+  if (r.opensOnInherited !== "4" || !r.greyedBefore || r.offeredBefore || r.readBefore !== null) {
+    fail(`a field must open on the behaviour's value without taking it: ${JSON.stringify(r)}`);
+  }
+  if (r.readAfter !== 9 || r.greyedAfter || !r.offeredAfter) {
+    fail(`editing a field did not take the value over: ${JSON.stringify(r)}`);
+  }
+  if (r.readReverted !== null || !r.greyedReverted || r.showsInheritedAgain !== "4") {
+    fail(`the value could not be handed back to the behaviour: ${JSON.stringify(r)}`);
   }
   if (result.collision.type !== "mesh") fail(`enum field failed: ${JSON.stringify(result.collision)}`);
   if (result.uiCreatedDefinition?.dynamic !== true) {
@@ -370,10 +445,6 @@ try {
   }
   if (result.raisedByAll.length) {
     fail(`sources sharing no event must offer none: ${JSON.stringify(result.raisedByAll)}`);
-  }
-  if (!result.serializedDefinition.legacyFlag?.kept
-      || result.serializedAssignment.behaviors[0].legacyAssignment !== 7) {
-    fail("manifest serialization deleted unknown legacy behavior data");
   }
   if (!result.libraryFields.includes("Fluid simulations")
       || !result.libraryFields.includes("Splash sound category")) {
@@ -399,6 +470,22 @@ try {
     fail(`a rename linked an element to itself: ${JSON.stringify(result.selfLink)}`);
   }
   if (!result.byChunkRooms) fail("entities were not filed by room");
+
+  // An entity picker offers what takes part in events, and nothing else.
+  const parts = result.participants.exported.filter((name) => /_primitive\d+$/.test(name));
+  if (!parts.length) fail("the fixture exported no parts, so the rule below proves nothing");
+  if (!result.participants.offered.includes("Loud")) {
+    fail(`an element carrying a behaviour was not offered: ${JSON.stringify(result.participants)}`);
+  }
+  if (!result.participants.offered.includes(result.participants.door)) {
+    fail(`a door was not offered: ${JSON.stringify(result.participants)}`);
+  }
+  if (result.participants.offered.includes("Quiet")) {
+    fail(`an element carrying no behaviour was offered: ${JSON.stringify(result.participants)}`);
+  }
+  if (result.participants.offered.some((name) => parts.includes(name))) {
+    fail(`the pieces of an element were offered: ${JSON.stringify(result.participants)}`);
+  }
 
   if (result.rawJsonEditorPresent) fail("raw behavior JSON editor is still present");
   if (errors.length) fail(`browser errors:\n${[...new Set(errors)].join("\n")}`);

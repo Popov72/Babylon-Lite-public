@@ -14,5 +14,5 @@
     "url": "http://localhost:5174/lite/demo-aquanova.html",
     "syncScript": "../../../../../../public/aquanova/scripts/sync-ship.ts"
   },
-  "fluidSim": ["viscosity-inplace", "liquid-slow.json"]
+  "fluidSim": ["viscosity-inplace", "liquid-slow"]
 }

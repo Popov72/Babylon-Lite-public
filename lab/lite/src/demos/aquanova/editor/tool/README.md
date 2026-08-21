@@ -60,9 +60,9 @@ as a module id plus a transform, so a layout reloads exactly:
   "environment": { "strength", "toneMapping", "exposure", "specularAA", "reflectionRoughness" },
   "editorEnvironment": { "strength", "toneMapping", "exposure" },
   "editorPrefs": { "veilAlpha", "bigPalette", "strayChunkCheck", "probes" },
-  "fluidSim": [ "viscosity-inplace", "liquid-slow.json" ],
-  "behaviors": { "door_liquefiable": { "liquefiable": true } },
-  "entities":  { "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ] } }
+  "fluidSim": [ "viscosity-inplace", "liquid-slow" ],
+  "behaviors": { "stdLiquefaction": { "liquefiable": true } },
+  "entities":  { "storageDoorL": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorR"] } ] } }
 }
 ```
 
@@ -123,14 +123,14 @@ pull the feature module in, and it assigns to the node _and_ the mesh.
 Two halves, matching the manifest:
 
 ```jsonc
-"fluidSim": [ "viscosity-inplace", "liquid-slow.json" ],   // the global list
+"fluidSim": [ "viscosity-inplace", "liquid-slow" ],   // extensionless setting names
 "behaviors": {                       // a LIBRARY of named definitions
-  "door_liquefiable": { "liquefiable": true, "fluidSim": ["viscosity-inplace"] },
+  "stdLiquefaction": { "liquefiable": true, "fluidSim": ["viscosity-inplace"] },
   "dynamic":          { "dynamic": true }
 },
 "entities": {                        // which node names carry which
-  "storageDoorL": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorR"] } ] },
-  "storageDoorR": { "behaviors": [ { "name": "door_liquefiable", "linked": ["storageDoorL"] } ] }
+  "storageDoorL": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorR"] } ] },
+  "storageDoorR": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorL"] } ] }
 }
 ```
 
@@ -141,27 +141,18 @@ _new_ ship starts from, but a saved one carries the list it was authored
 against, and letting the two drift apart would silently repoint its behaviours.
 An undo snapshot carries no list, so undoing never disturbs the one in force.
 
-**Definition bodies are free-form JSON, written through untouched.** The runtime
-owns which flags exist; a tool that normalised the ones it happened to know
-about today would quietly drop the rest, and would need editing every time one
-was added. So the window is a name and a textarea, and the only thing checked is
-that the text parses to a JSON _object_ — an array or a bare number there would
-be silently ignored by the runtime rather than rejected.
+Behavior names and parameters come from
+`public/data/behavior-definitions.json`. Definitions and assignments are
+validated against that metadata; unsupported names, fields, and values are
+rejected rather than preserved.
 
 **Edit behaviours…** in Settings ▸ Runtime opens the library: pick from the
 list, edit, `New`, `Save`, `Delete`. It used to sit in the inspector's Behaviour
 panel, which is hidden unless exactly one element is selected — so the one
 window that edits the ship's _shared_ definitions could only be reached through
 an element that happened to be selected. The list is **alphabetical**, sorted
-for display only — definitions accumulate as the ship is built, so the order
-they were written in is the history of the project rather than anything you
-could look a name up by, and the manifest keeps saying what it always said. Two
-operations keep the file consistent by themselves:
-
-- **Renaming** a definition rewrites every entity that referenced it. A rename
-  that left them pointing at the old name would silently drop their behaviour.
-- **Deleting** one strips it from every entity that carried it, rather than
-  leaving entries the runtime would ignore.
+for display only. **Deleting** one strips it from every entity that carried it,
+rather than leaving invalid references behind.
 
 **Attaching** happens on the selected element, keyed by its **node name** — so
 the panel shows how many elements that name governs (`"crate" — 4 elements`).
@@ -314,6 +305,26 @@ is never saved, and it survives the panel rebuilding the form after each edit.
 `linked` is the exception; it is always room-locked, because linking is for
 pieces that melt together.
 
+**A picker offers what takes part in events, and nothing else.** Two things can
+be at either end of an event: something carrying at least one behaviour, since a
+behaviour is the only thing that raises one or listens for one, and a door,
+which the game opens by being named. Everything else on the ship — the wall
+panels, the floor tiles, the lamps nobody wired to anything — can neither speak
+nor answer, so offering them would be offering a hundred ways to author a
+subscription that silently never fires. `eventEntityNames()` is that list, and
+it is what feeds the event `source` picker and `pickEntity`'s raise `target`.
+
+The pieces then fall out of the list on their own, with no rule about pieces. A
+dressed node exports under several names — the node itself, plus a
+`_primitive<i>` per submesh the kit split it into and a `_<clip>` per animation
+— and all of them are real entity names the manifest writes and the runtime
+resolves; `P0135_primitive0` simply has nothing assigned to it, so it is not
+offered. A behaviour hand-written onto `Fan_primitive0` keeps its place, because
+that part genuinely does take part. Nothing is forgotten either way:
+`liveEntityNames()` still reports every spelling, which is what orphan pruning
+compares against, and a name already written stays visible under the
+`— not in this list` rule.
+
 **Renaming an element carries its references with it.** Every entity-typed
 parameter in every definition and every assignment — `linked`, an event
 `source`, a raise `target` — is rewritten in the same undo step that moves the
@@ -323,27 +334,63 @@ fields hold a node name is read from the schema, so a behaviour added to the
 file later is covered without anyone remembering to come back here. Renaming a
 **chunk** does the same: a chunk id is a node name too.
 
+**One behaviour is one box, and it opens folded.** The applied list used to draw
+a title and its fields as two unrelated blocks, so an element carrying three
+behaviours was a column of rows you had to read to find out where one ended and
+the next began. Each is a framed entry now — a title strip carrying the name,
+and the fields under it — and they start **shut**: selecting something answers
+"what does this do" as a short list of names, which is the question being asked
+nearly every time, instead of as every form it carries stacked down the panel.
+The arrow beside a name opens that one — or a click anywhere on its title
+strip, which is the whole width of the panel rather than a 10 px triangle;
+**Fold all** in the panel header does the lot, and says **Unfold all** once
+everything is away. **Add is the
+exception** and opens what it just attached, because attaching a behaviour is
+asking for its fields. The folds are remembered per element and per behaviour
+rather than in the DOM, since the panel rebuilds every form after every edit —
+a fold that sprang open each time you changed a field would be worse than none
+— and because they are kept by *position*, removing a behaviour slides the
+folds under it up with it, so the box that stays open is the one that was open.
+
+**What a behaviour is for is a tooltip on its name** — in the applied list, in
+the **Add** menu and in the library window. It was a paragraph above the fields,
+which repeated itself for every element carrying that behaviour and pushed the
+fields, the part you came for, down the panel. The description answers "which
+one is this?", and that is a question about the name.
+
+**A field the behaviour already answers is editable straight away.** An
+assignment either sets a value or takes the behaviour's, and saying which used
+to be a checkbox: a row reading `Override Splash sound category` directly above
+one reading `Splash sound category`, and a click spent agreeing to edit the
+thing you had just clicked on. The field itself carries the state now. It opens
+showing what the behaviour says, greyed to mean *this is not yours yet*, and the
+first change makes it yours — no ceremony, and nothing to notice if you were
+only reading. Handing it back is the one direction that still has to be asked
+for, so it is the only control left: a `↺` beside the label, appearing once
+there is something to hand back. Clearing the field does the same.
+
+> Looking is free, and that is load-bearing. An inherited field edits a shadow
+> copy, not the assignment, so opening a picker to see what the behaviour chose
+> and then closing it again cannot leave that value behind — which would detach
+> the element from a definition it is still following, and would do it silently.
+> Only a real change promotes the shadow into the assignment.
+
 **No JSON is shown anywhere in the panel.** Inherited values, constants and
 defaults are all things you read rather than edit, and they are written as prose
 — `From the behaviour: quickSplash: waterQuickSplash · bigSplash:
 waterBigSplash` — because `{"quickSplash":["waterQuickSplash"]}` is a line of
 punctuation nobody should have to parse to find out which splash plays.
 
-> Which is what made **Override Sound categories** look broken on
-> `itemLiquefactor`. The checkbox was right: `weaponLiquefactor`'s *definition*
-> holds the categories, the *assignment* is bare, and an unchecked override
-> beside the inherited value is exactly that state. What was wrong was that the
-> inherited value was printed as raw JSON, so it read as noise rather than as an
-> answer.
+> Which is what made **Sound categories** look broken on `itemLiquefactor`:
+> `weaponLiquefactor`'s *definition* holds the categories and the *assignment*
+> is bare, which is a perfectly ordinary state — but it was reported as raw
+> JSON beside an unticked override box, so it read as noise rather than as an
+> answer. The value is now simply in the field, greyed, saying whose it is.
 
-Every key not described by the file is still **carried through untouched**, in
-and out, by one symmetric pair of helpers (`readBehaviorExtras` /
-`writeBehaviorExtras`) shared by the manifest writer and the undo snapshot, so
-the two can never disagree about what an assignment may carry. The form lists
-them as `Legacy fields are preserved but not editable`, which is what the
-manifest's older spellings (`shape` for `type`, `entity`/`onEvent` for `events`)
-show up as. A `name` inside the parameters is ignored: the name is the identity
-of the assignment, not a parameter.
+Every behavior definition and assignment is validated against the metadata
+file. Unsupported fields and behavior names are rejected instead of being
+carried through. A `name` inside the parameters is ignored: the name is the
+identity of the assignment, not a parameter.
 
 The runtime `playAnimation` behavior accepts `{ "animation": "ClipName",
 "loop": false }`. Both parameters are optional: omitting `animation` selects
@@ -360,9 +407,10 @@ The runtime `setCollisionShape` behavior replaces the entity's authored Havok
 primitive with its world-space mesh AABB by default. Explicit
 `{ "type": "mesh" }` uses a static triangle-mesh collider instead.
 The runtime `trigger` behavior accepts
-`{ "onIntersection": { "raiseEvent": "event", "playerOnly": true,
-"entity": "target" } }`. `playerOnly` defaults to `false`, `entity` defaults to
-the behavior's own entity, and entity `enable` / `disable` events control
+`{ "onIntersection": { "enterEvent": "activated",
+"exitEvent": "deactivated", "playerOnly": true } }`. The event names are
+independently optional, `playerOnly` defaults to `false`, and events are raised
+by the behavior's own entity. Entity `enable` / `disable` events control
 whether intersections are reported.
 
 Three keys are not opaque:
@@ -375,19 +423,6 @@ Three keys are not opaque:
   Stored **as typed, not normalised**: normalising on every commit would fight
   you as you type. An all-zero vector is dropped rather than written, since it
   names no direction at all.
-
-> A hand-edit that splits a parameter into a sibling entry of its own —
-> `[ { "name": "player_startpos" }, { "direction": [...] } ]` — is **folded back
-> into the entry above it** on load, with a console warning. An entry with no
-> `name` means nothing to the runtime, so that is the only reading under which
-> it means anything, and dropping it would silently lose the edit.
-
-> A manifest written before `entities` existed keyed `behaviors` by _node_ name,
-> so each entry meant "this node has these flags". Loading one keeps the bodies
-> as definitions **and applies each to the node it was named after** — keeping
-> them without the application would silently un-liquefy the ship. Detected by
-> the `entities` key being absent rather than empty, since `serialize()` always
-> writes both.
 
 #### Watching them run: Settings ▸ Runtime ▸ Run behaviours
 
@@ -435,18 +470,14 @@ has to keep drawing the rest of the ship while you go and fix it.
 reason: an element the game hides before the player ever reaches it is not part
 of the room, and a preview that draws it is not showing the ship.
 
-`hideEntity` reads two ways, and the parameters are what decide which:
+`hideEntity` with no `events` emits the hide event against **its own** entity
+the moment it starts. With an `events` array, it waits until any configured
+event name and source match, then hides its owner. The same owner-only rule
+applies to every entity action behavior.
 
-| The assignment                      | What the game does                                                   | What the editor does                                             |
-| ----------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `{ "onEvent": "…", "entity": "…" }` | waits for the event, then hides **something else**                   | nothing — the element itself is untouched, so it stays on screen |
-| no parameters at all                | emits the hide event against **its own** entity the moment it starts | takes it off screen in the **Runtime** view                      |
-
-That is `entity-toggle.ts`'s own rule, not one invented here: with neither an
-event to wait for nor an entity to name, the only reading left is "hide me,
-now". So the parameters box being **empty** — the same empty the panel shows,
-which is why the test for it lives next to the panel's own `behaviorParams` —
-is the whole of the condition.
+The parameters box being **empty** — the same empty the panel shows, which is
+why the test for it lives next to the panel's own `behaviorParams` — is the
+whole condition for the editor's initially hidden preview.
 
 Two places honour it, and both on the same terms:
 
@@ -462,13 +493,8 @@ Two places honour it, and both on the same terms:
   it is back in the room, back in the render list and back in the digest, so
   every probe that would now photograph it correctly reads as stale.
 
-> The immediate-self reading is opt-in on the game side: `EntityToggleBehavior`
-> takes an `allowImmediateSelfAction` flag, and only the subclasses that pass it
-> may be authored with no parameters at all — `hideEntity` alongside
-> `disableCollision` and `enableCollision`. The rest still require an `onEvent`
-> and an `entity` and throw at load without them, so an empty box on one of
-> those is an authoring mistake this preview does **not** dress up as a
-> deliberately hidden element.
+> Every entity action behavior acts on its owner. Omitting `events` runs it
+> immediately; providing `events` delays it until any subscription matches.
 
 ### Lights
 
@@ -1086,7 +1112,7 @@ the same thing.
 | Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Behaviour        | inspector panel — attach library behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each one's parameters as **raw JSON**, and pick the `linked` nodes a liquefiable one melts with · the library itself (name + free-form JSON body) opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Behaviour        | inspector panel — attach metadata-defined behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each parameter with its typed control, and pick the `linked` nodes a liquefiable one melts with · the typed library opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -2267,13 +2293,8 @@ invisible while every derived figure came from the same stale matrix, and became
 a real disagreement the moment door width started coming from `scaling`
 directly.
 
-**Start positions are not markers.** They used to be — a `Player` and a `Weapon`
-button dropping a `spawns` block — but they moved into behaviours: place a dummy
-element, name it, and give it a `player_startingpos` (or `weapon_startingpos`)
-behaviour. One mechanism for "this node means something to the runtime" is
-better than two, and the behaviour body can carry whatever the runtime grows to
-need. Loading a manifest that still has a `spawns` block **drops it and says
-so** in the status bar rather than keeping it and quietly re-saving it.
+**Start positions are behaviors, not markers.** Place a dummy element, name it,
+and assign `player`, `weaponLiquefactor`, or `weaponAntiGravityGun` as needed.
 
 Markers are editor-only: they are written to the manifest but excluded from the
 exported .glb.
@@ -3207,6 +3228,21 @@ batch validators):
 > And the move snap is a working setting that is changed a dozen times an hour,
 > so measuring finished geometry against whatever it currently reads flags
 > everything placed at a different step.
+
+**Every name a check prints is a way to the thing it names.** A warning reading
+`1 element(s) assigned to CH03_StorageC2 sit in CH00_Storage: P0488` is
+describing something you now have to go and find, and the panel already knows
+exactly which element it is — so each name is a button: click it and that
+element is selected and framed, wherever the camera happens to be. Door
+warnings name their door the same way, and the stray-chunk report names every
+element it found, with `+3 more` selecting the ones it had no room to list so
+the whole group is still one click away. Chunk ids stay plain text — a chunk is
+an assignment, not something to point a camera at.
+
+> Which is why a check line is a **list of pieces** — prose, then a group of ids
+> — instead of a sentence that would have to be parsed back apart to find the
+> names in it. `checkText()` flattens the same line for the status bar on save,
+> so the two can never disagree, and no name reaches the panel as markup.
 
 ### Elements left in the wrong chunk
 

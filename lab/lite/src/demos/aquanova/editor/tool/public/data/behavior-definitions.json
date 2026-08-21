@@ -114,10 +114,6 @@
         { "name": "endLiquefaction" }
       ],
       "properties": {
-        "direction": {
-          "type": "vector3",
-          "label": "Facing direction"
-        },
         "range": {
           "type": "number",
           "minimum": 0,
@@ -157,7 +153,7 @@
           "properties": {
             "target": {
               "type": "entity",
-              "optionsSource": "entities",
+              "optionsSource": "eventEntities",
               "label": "Target",
               "description": "Defaults to the behavior owner."
             },
@@ -320,7 +316,7 @@
             "properties": {
               "source": {
                 "type": "entitySource",
-                "optionsSource": "entities",
+                "optionsSource": "eventEntities",
                 "required": true,
                 "label": "Sources",
                 "description": "Whose events are watched. One source is written as a string; several are written as an array."

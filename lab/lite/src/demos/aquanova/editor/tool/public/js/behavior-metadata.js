@@ -51,6 +51,13 @@ export function behaviorMetadataNames(catalog) {
   return Object.keys(catalog?.behaviors ?? {}).sort((a, b) => a.localeCompare(b));
 }
 
+export function validateBehaviorConfig(catalog, name, value, { partial = false } = {}) {
+  const metadata = behaviorMetadata(catalog, name);
+  if (!metadata) return [`No metadata describes behavior "${name}".`];
+  if (!isPlainObject(value)) return [`Behavior "${name}" must be an object.`];
+  return validateObject(metadata.properties ?? {}, value, "", partial);
+}
+
 /**
  * The option lists the metadata file ships with, keyed by `optionsSource`.
  *
@@ -139,7 +146,7 @@ const sorted = (names) => [...names].sort((a, b) => a.localeCompare(b));
 /** Vocabularies the ship defines: always chosen from, never typed. */
 const PICKED_TYPES = new Set(["enum", "entity", "event"]);
 /** The one option source the room filter applies to; `nearbyEntities` is already a room. */
-const SCOPED_ENTITIES = "entities";
+const SCOPED_ENTITIES = "eventEntities";
 /** Sentinel select value that opens the "name a new one" input. */
 const NEW_VALUE = "\u0000new";
 
@@ -255,11 +262,17 @@ export function createBehaviorForm(host, {
    */
   function scopedEntities(all) {
     if (rooms.mode === "all") return all;
+    const here = roomNames();
+    return all.filter((name) => here.has(name));
+  }
+
+  /** The names the chosen rooms hold, whether or not anything offers them. */
+  function roomNames() {
     const chosen = rooms.mode === "chosen" ? (rooms.chunks ?? []) : (options.currentChunks ?? []);
     const byChunk = options.entitiesByChunk ?? {};
     const keep = new Set();
     for (const room of chosen) for (const name of byChunk[room] ?? []) keep.add(name);
-    return all.filter((name) => keep.has(name));
+    return keep;
   }
 
   function choicesFor(schema, siblings) {
@@ -271,16 +284,20 @@ export function createBehaviorForm(host, {
    * Open on the room, unless that would hide something already chosen.
    *
    * An entry authored across the ship must not come back reading "not in the
-   * list" merely because the panel opened on the narrowest view of it.
+   * list" merely because the panel opened on the narrowest view of it. The test
+   * is the room and not the offer, because widening is the only thing the
+   * filter can put right: a name that left the offer - whose behaviours were
+   * taken away, say - is missing from every room equally, and opening on the
+   * whole ship to find it would only be a longer list that still lacks it.
    */
   function pickInitialScope() {
     if (rooms.mode) return;
     rooms.mode = "all";
     if (!options.entitiesByChunk || !(options.currentChunks ?? []).length) return;
     rooms.mode = "chunk";
-    const visible = new Set(scopedEntities(optionValues({ optionsSource: SCOPED_ENTITIES }, options)));
+    const here = roomNames();
     const missing = entityValues(metadata?.properties ?? {}, draft)
-      .some((name) => !visible.has(name));
+      .some((name) => !here.has(name));
     if (missing) rooms.mode = "all";
   }
 
@@ -321,19 +338,12 @@ export function createBehaviorForm(host, {
     host.replaceChildren();
     host.className = "behavior-form";
     if (!metadata) {
-      const warning = element("div", "behavior-legacy",
-        "No metadata describes this behavior. Its existing data will be preserved.");
-      host.append(warning);
-      const paths = unknownPaths({}, draft);
-      if (paths.length) host.append(element("div", "behavior-unknown", `Preserved fields: ${paths.join(", ")}`));
+      host.append(element("div", "behavior-validation", "No metadata describes this behavior."));
       return;
     }
-    if (metadata.description) host.append(element("p", "behavior-description", metadata.description));
-    const unknown = unknownPaths(metadata.properties ?? {}, draft);
-    if (unknown.length) {
-      host.append(element("div", "behavior-unknown",
-        `Legacy fields are preserved but not editable: ${unknown.join(", ")}`));
-    }
+    // What the behaviour is for is written where its name is - the applied
+    // list's row, the library's picker - rather than above its fields: it is
+    // the same sentence every time, and the fields are what the panel is for.
     pickInitialScope();
     if (options.entitiesByChunk && anySchema(metadata.properties ?? {},
       (schema) => schema.optionsSource === SCOPED_ENTITIES)) {
@@ -351,53 +361,82 @@ export function createBehaviorForm(host, {
     host.append(validationHost);
   }
 
+  /**
+   * One top-level field, and where its value comes from.
+   *
+   * An assignment either sets a value or takes the behaviour's, and that used
+   * to be a checkbox you ticked before the field would appear: a click spent
+   * saying "yes, I do want to edit the thing I just clicked on", and a row
+   * reading `Override Splash sound category` directly above one reading
+   * `Splash sound category`. The field is simply editable instead. It opens
+   * showing what the behaviour says, greyed to say the value is not yours yet,
+   * and the first change makes it yours. Handing it back is the only part that
+   * still needs asking for, so that is the only control left - one ↺ beside the
+   * label, and only once there is something to hand back.
+   *
+   * Editing writes to a shadow rather than to the draft, so looking is free:
+   * opening a picker, reading what the behaviour set, changing your mind and
+   * closing it again must not leave a copy of the inherited value behind, which
+   * would quietly detach the element from a definition it is still following.
+   */
   function renderTopProperty(key, schema) {
     const wrapper = element("div", "behavior-property");
     wrapper.dataset.behaviorKey = key;
     const assigned = own(draft, key);
-    if (scope === "assignment" && schema.type !== "constant") {
-      const override = element("label", "behavior-override");
-      const check = document.createElement("input");
-      check.type = "checkbox";
-      check.checked = assigned;
-      const inheritedValue = inherited?.[key];
-      override.append(check, document.createTextNode(
-        ` Override ${schema.label ?? key}${schema.required ? " *" : ""}`));
-      if (!assigned && inheritedValue !== undefined) {
-        override.title = `The behaviour already sets this to ${describe(schema, inheritedValue)}.`;
-      }
-      check.addEventListener("change", () => {
-        if (check.checked) draft[key] = initialValue(schema, inheritedValue);
-        else delete draft[key];
-        changed(true);
-      });
-      wrapper.append(override);
-      if (!assigned) {
-        wrapper.append(element("div", "behavior-inherited", inheritedValue === undefined
-          ? "Not set, here or on the behaviour."
-          : `From the behaviour: ${describe(schema, inheritedValue)}`));
-        return wrapper;
-      }
-    }
-    if (scope === "definition" && schema.type === "object" && !assigned) {
-      const configure = element("label", "behavior-override");
-      const check = document.createElement("input");
-      check.type = "checkbox";
-      configure.append(check, document.createTextNode(
-        ` Configure ${schema.label ?? key}${schema.required ? " *" : ""}`));
-      check.addEventListener("change", () => {
-        if (check.checked) draft[key] = initialValue(schema);
-        else delete draft[key];
-        changed(true);
-      });
-      wrapper.append(configure);
+    const inheritedValue = scope === "assignment" ? inherited?.[key] : undefined;
+    // What may be left unset: anything on an assignment, and a definition's
+    // optional sections - the rest of a definition is the behaviour itself.
+    const optional = schema.type !== "constant" && (scope === "assignment" || schema.type === "object");
+    const label = element("div", "behavior-label",
+      `${schema.label ?? key}${schema.required ? " *" : ""}`);
+    if (schema.description) label.title = schema.description;
+    wrapper.append(label);
+
+    if (assigned || !optional) {
+      if (assigned && optional) label.append(revertControl(key, inheritedValue));
+      wrapper.append(renderValue(schema, draft, key, [key]));
+      if (schema.description) wrapper.append(element("div", "behavior-help", schema.description));
       return wrapper;
     }
-    const label = element("div", "behavior-label", `${schema.label ?? key}${schema.required ? " *" : ""}`);
-    if (schema.description) label.title = schema.description;
-    wrapper.append(label, renderValue(schema, draft, key, [key]));
+
+    wrapper.classList.add("behavior-inheriting");
+    const shadow = {};
+    if (inheritedValue !== undefined) shadow[key] = clone(inheritedValue);
+    const hint = element("div", "behavior-inherited", inheritedValue !== undefined
+      ? "From the behaviour."
+      : scope === "assignment" ? "Not set, here or on the behaviour." : "Not set.");
+    const settle = () => {
+      wrapper.classList.remove("behavior-inheriting");
+      hint.remove();
+      label.append(revertControl(key, inheritedValue));
+    };
+    // Taking the value over is a change of state as well as of value, but the
+    // row can say so itself. A full redraw here would throw away the focus of
+    // whoever is still working their way along the form.
+    const promote = (structural = false) => {
+      if (!own(shadow, key)) {
+        delete draft[key];
+        changed(true);
+        return;
+      }
+      const first = !own(draft, key);
+      draft[key] = shadow[key];
+      if (first && !structural) settle();
+      changed(structural);
+    };
+    wrapper.append(renderValue(schema, shadow, key, [key], promote), hint);
     if (schema.description) wrapper.append(element("div", "behavior-help", schema.description));
     return wrapper;
+  }
+
+  function revertControl(key, inheritedValue) {
+    const button = smallButton("↺", inheritedValue !== undefined
+      ? "Use the behaviour's value" : "Leave this unset", () => {
+      delete draft[key];
+      changed(true);
+    });
+    button.classList.add("behavior-revert");
+    return button;
   }
 
   function renderValue(schema, parent, key, path, localChanged = changed) {
@@ -537,11 +576,14 @@ export function createBehaviorForm(host, {
       input.value = Number.isFinite(current[axis]) ? String(current[axis]) : "";
       return input;
     });
+    // A vector is written whole but edited an axis at a time, and an axis left
+    // blank is the zero it looks like: typing -1 into X of an empty field means
+    // (-1, 0, 0), not "still nothing". Emptying all three unsets it again.
     const commit = () => {
       const values = inputs.map((input) => input.value.trim());
       if (values.every((item) => !item)) delete parent[key];
-      else if (values.every((item) => item !== "" && Number.isFinite(Number(item)))) {
-        parent[key] = values.map(Number);
+      else if (values.every((item) => item === "" || Number.isFinite(Number(item)))) {
+        parent[key] = values.map((item) => (item === "" ? 0 : Number(item)));
       }
       localChanged();
     };
@@ -681,6 +723,11 @@ function initialItemValue(schema, choices) {
 
 function validateObject(properties, value, prefix, partial) {
   const errors = [];
+  for (const key of Object.keys(value)) {
+    if (properties[key]) continue;
+    const path = prefix ? `${prefix}.${key}` : key;
+    errors.push(`${path} is not supported.`);
+  }
   for (const [key, schema] of Object.entries(properties)) {
     const path = prefix ? `${prefix}.${key}` : key;
     const present = own(value, key);
@@ -744,21 +791,6 @@ function validateValue(schema, value, path, partial) {
     return value.flatMap((item, index) => validateValue(schema.items, item, `${path}[${index}]`, partial));
   }
   return [];
-}
-
-function unknownPaths(properties, value, prefix = "") {
-  if (!isPlainObject(value)) return [];
-  const out = [];
-  for (const [key, item] of Object.entries(value)) {
-    const path = prefix ? `${prefix}.${key}` : key;
-    const schema = properties[key];
-    if (!schema) {
-      out.push(path);
-    } else if (schema.type === "object" && isPlainObject(item)) {
-      out.push(...unknownPaths(schema.properties ?? {}, item, path));
-    }
-  }
-  return out;
 }
 
 /**

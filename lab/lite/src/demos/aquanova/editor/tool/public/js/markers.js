@@ -185,10 +185,7 @@ export function serializeMarkers() {
 export function deserializeMarkers(list) {
   for (const id of [...state.markers.keys()]) removeMarker(id, true);
   for (const m of list || []) {
-    // Spawn markers are gone: a start position is now a dummy element carrying
-    // a "player_startingpos" behaviour, so an old one is dropped rather than
-    // resurrected as a marker nothing can edit.
-    if (m.type !== "door") continue;
+    if (m.type !== "door") throw new Error(`unsupported marker type "${m.type}"`);
     addDoor(Vector3.FromArray(m.position), { ...m, silent: true });
   }
   emit("markers");

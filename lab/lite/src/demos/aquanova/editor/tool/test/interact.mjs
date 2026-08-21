@@ -3320,24 +3320,28 @@ const bhv = await page.evaluate(async () => {
   ed.renamePlacement(b.id, "crate");       // same name on purpose
   ed.renamePlacement(c.id, "doorL");
 
-  // The storage layer still preserves unknown fields even though the UI edits
-  // known fields through metadata.
   const blank = ed.setBehaviorDef("   ", { dynamic: true });
   const notObject = ed.setBehaviorDef("bad", [1, 2, 3]);
-  ed.setBehaviorDef("any_liquefiable", { liquefiable: true });
-  ed.setBehaviorDef("door_liquefiable",
-    { liquefiable: true, fluidSim: ["viscosity-inplace"], whatever: { nested: 1 } });
+  let unknownDefinition = false;
+  try {
+    ed.setBehaviorDef("bad", { dynamic: true });
+  } catch {
+    unknownDefinition = true;
+  }
+  ed.setBehaviorDef("anyLiquefaction", { liquefiable: true });
+  ed.setBehaviorDef("stdLiquefaction",
+    { liquefiable: true, fluidSim: ["viscosity-inplace"] });
   ed.setBehaviorDef("dynamic", { dynamic: true });
 
-  ed.addEntityBehavior("crate", "any_liquefiable");
+  ed.addEntityBehavior("crate", "anyLiquefaction");
   // The same behaviour twice is legal - the runtime builds one instance per
   // entry - so the second attach lands beside the first, not on top of it.
-  const twice = ed.addEntityBehavior("crate", "any_liquefiable");
+  const twice = ed.addEntityBehavior("crate", "anyLiquefaction");
   const twiceListed = ed.entityBehaviors("crate").map((x) => x.name);
   ed.removeEntityBehavior("crate", 1);
   const afterOneRemoved = ed.entityBehaviors("crate").map((x) => x.name);
   const unknown = ed.addEntityBehavior("crate", "nope");
-  ed.addEntityBehavior("doorL", "door_liquefiable");
+  ed.addEntityBehavior("doorL", "stdLiquefaction");
   ed.setEntityLinked("doorL", 0, ["crate", "doorL", "crate"]);
   ed.state.entities.get("doorL")[0].sound = "longSplash";
 
@@ -3345,38 +3349,35 @@ const bhv = await page.evaluate(async () => {
   const written = JSON.parse(JSON.stringify(man.behaviors));
   const entities = JSON.parse(JSON.stringify(man.entities));
 
-  // renaming a definition has to carry every reference with it
-  ed.renameBehaviorDef("any_liquefiable", "meltable");
-  const afterRename = ed.entityBehaviors("crate").map((x) => x.name);
-  // and deleting one has to strip it from the entities that carried it
-  ed.deleteBehaviorDef("meltable");
+  // deleting one has to strip it from the entities that carried it
+  ed.deleteBehaviorDef("anyLiquefaction");
   const afterDelete = { list: ed.behaviorNames(), crate: ed.entityBehaviors("crate") };
 
   // round trip through the undo snapshot
   const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
-  ed.deleteBehaviorDef("door_liquefiable");
+  ed.deleteBehaviorDef("stdLiquefaction");
   const wiped = ed.entityBehaviors("doorL").length;
   await ed.deserialize(snapshot);
   const restored = ed.entityBehaviors("doorL");
 
   const inRoom = ed.nodeNamesInChunk(ed.state.placements.get(c.id).chunk, "doorL");
-  const liquefies = [ed.isLiquefiable("door_liquefiable"), ed.isLiquefiable("dynamic")];
+  const liquefies = [ed.isLiquefiable("stdLiquefaction"), ed.isLiquefiable("dynamic")];
   const global = man.fluidSim;
   ed.clearAll(); ed.select([]);
   const afterClearAll = { defs: ed.behaviorNames(), ents: ed.entityBehaviors("crate") };
-  return { blank, notObject, twice, twiceListed, afterOneRemoved, unknown, written,
-    entities, afterRename, afterDelete,
+  return { blank, notObject, unknownDefinition, twice, twiceListed, afterOneRemoved, unknown, written,
+    entities, afterDelete,
     wiped, restored, inRoom, liquefies, global, afterClearAll };
 });
-check("a definition needs a name, and a JSON object for a body",
-  bhv.blank === false && bhv.notObject === false,
-  `blank=${bhv.blank}, array=${bhv.notObject}`);
-check("definition bodies are written through untouched",
-  JSON.stringify(bhv.written.door_liquefiable)
-    === JSON.stringify({ liquefiable: true, fluidSim: ["viscosity-inplace"], whatever: { nested: 1 } }),
-  JSON.stringify(bhv.written.door_liquefiable));
+check("a definition needs a metadata name and a JSON object for a body",
+  bhv.blank === false && bhv.notObject === false && bhv.unknownDefinition,
+  `blank=${bhv.blank}, array=${bhv.notObject}, unknown=${bhv.unknownDefinition}`);
+check("validated definition bodies are written unchanged",
+  JSON.stringify(bhv.written.stdLiquefaction)
+    === JSON.stringify({ liquefiable: true, fluidSim: ["viscosity-inplace"] }),
+  JSON.stringify(bhv.written.stdLiquefaction));
 check("entities list the behaviours they carry",
-  bhv.entities.crate.behaviors[0].name === "any_liquefiable"
+  bhv.entities.crate.behaviors[0].name === "anyLiquefaction"
     && !("linked" in bhv.entities.crate.behaviors[0]),
   JSON.stringify(bhv.entities.crate));
 check("linked is de-duplicated, drops self, and is omitted when empty",
@@ -3387,20 +3388,18 @@ check("per-entity sound categories are written beside the behavior name",
   JSON.stringify(bhv.entities.doorL.behaviors[0]));
 check("a behaviour can be attached twice and removed by position, but not when it does not exist",
   bhv.twice === true && bhv.unknown === false
-    && bhv.twiceListed?.join() === "any_liquefiable,any_liquefiable"
-    && bhv.afterOneRemoved?.join() === "any_liquefiable",
+    && bhv.twiceListed?.join() === "anyLiquefaction,anyLiquefaction"
+    && bhv.afterOneRemoved?.join() === "anyLiquefaction",
   `twice=${bhv.twice}, listed=${JSON.stringify(bhv.twiceListed)},`
   + ` after remove=${JSON.stringify(bhv.afterOneRemoved)}, unknown=${bhv.unknown}`);
-check("renaming a definition carries every reference with it",
-  bhv.afterRename.join() === "meltable", `[${bhv.afterRename}]`);
 check("deleting a definition strips it from the entities that used it",
-  !bhv.afterDelete.list.includes("meltable") && bhv.afterDelete.crate.length === 0,
+  !bhv.afterDelete.list.includes("anyLiquefaction") && bhv.afterDelete.crate.length === 0,
   `library [${bhv.afterDelete.list}], crate ${JSON.stringify(bhv.afterDelete.crate)}`);
 check("per-entity sound categories survive undo snapshots",
   bhv.restored[0]?.sound === "longSplash",
   JSON.stringify(bhv.restored));
 check("behaviours ride the undo stack",
-  bhv.wiped === 0 && bhv.restored[0]?.name === "door_liquefiable"
+  bhv.wiped === 0 && bhv.restored[0]?.name === "stdLiquefaction"
     && bhv.restored[0].linked.join() === "crate",
   `wiped=${bhv.wiped}, restored=${JSON.stringify(bhv.restored)}`);
 check("only liquefiable definitions ask for linked names",
@@ -3408,41 +3407,11 @@ check("only liquefiable definitions ask for linked names",
 check("the linked candidates are the other named nodes in the room",
   bhv.inRoom.join() === "crate", `[${bhv.inRoom}]`);
 check("the manifest carries the global sim list",
-  Array.isArray(bhv.global) && bhv.global.includes("liquid-slow.json"),
+  Array.isArray(bhv.global) && bhv.global.includes("liquid-slow"),
   JSON.stringify(bhv.global));
 check("clearing the layout forgets the library and the entities",
   bhv.afterClearAll.defs.length === 0 && bhv.afterClearAll.ents.length === 0,
   JSON.stringify(bhv.afterClearAll));
-
-// a manifest from before `entities` existed keyed behaviours by node name, so
-// the bodies must be kept AND applied to the node they were named after
-const legacy = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
-  await ed.deserialize({
-    chunks: ["CH00_Storage"], activeChunk: "CH00_Storage", instances: [], markers: [],
-    behaviors: { crate2: { liquefiable: true }, crate4: { liquefiable: true } },
-  });
-  const migrated = {
-    defs: ed.behaviorNames(),
-    crate2: ed.entityBehaviors("crate2").map((b) => b.name),
-  };
-  // …but a snapshot that *has* the key, even empty, is the new format
-  await ed.deserialize({
-    chunks: ["CH00_Storage"], activeChunk: "CH00_Storage", instances: [], markers: [],
-    behaviors: { spare: { dynamic: true } }, entities: {},
-  });
-  const modern = { defs: ed.behaviorNames(), spare: ed.entityBehaviors("spare").length };
-  ed.clearAll(); ed.select([]);
-  return { migrated, modern };
-});
-check("an old node-keyed behaviours block is applied, not just kept",
-  legacy.migrated.defs.join() === "crate2,crate4"
-    && legacy.migrated.crate2.join() === "crate2",
-  JSON.stringify(legacy.migrated));
-check("an empty entities block means the new format, and applies nothing",
-  legacy.modern.defs.join() === "spare" && legacy.modern.spare === 0,
-  JSON.stringify(legacy.modern));
 
 // the ship's own sim list wins over config.json: config is what a *new* ship
 // starts from, but a saved one carries the list it was authored against
@@ -3452,7 +3421,13 @@ const simList = await page.evaluate(async () => {
   const fromConfig = [...ed.state.fluidSim];
   const base = { chunks: ["CH00_Storage"], activeChunk: "CH00_Storage", instances: [], markers: [] };
 
-  await ed.deserialize({ ...base, fluidSim: ["ship-only.json", "thick.json"] });
+  let extensionError = "";
+  try {
+    await ed.deserialize({ ...base, fluidSim: ["ship-only.json"] });
+  } catch (error) {
+    extensionError = String(error);
+  }
+  await ed.deserialize({ ...base, fluidSim: ["ship-only", "thick"] });
   const loaded = [...ed.state.fluidSim];
   const written = mf.buildManifest().fluidSim;
 
@@ -3462,16 +3437,19 @@ const simList = await page.evaluate(async () => {
 
   ed.state.fluidSim = fromConfig;
   ed.clearAll(); ed.select([]);
-  return { fromConfig, loaded, written, afterUndo };
+  return { fromConfig, loaded, written, afterUndo, extensionError };
 });
+check("fluidSim names omit the file extension",
+  simList.extensionError.includes('fluidSim name "ship-only.json" must omit the .json extension'),
+  simList.extensionError);
 check("the manifest's fluidSim list is exported",
-  simList.written.join() === "ship-only.json,thick.json", `[${simList.written}]`);
+  simList.written.join() === "ship-only,thick", `[${simList.written}]`);
 check("a loaded list takes precedence over the one from config.json",
-  simList.loaded.join() === "ship-only.json,thick.json"
+  simList.loaded.join() === "ship-only,thick"
     && simList.fromConfig.join() !== simList.loaded.join(),
   `config [${simList.fromConfig}] -> ship [${simList.loaded}]`);
 check("a snapshot without a list leaves the one in force alone",
-  simList.afterUndo.join() === "ship-only.json,thick.json", `[${simList.afterUndo}]`);
+  simList.afterUndo.join() === "ship-only,thick", `[${simList.afterUndo}]`);
 
 // ---- 1d-quaterdecies. the behaviour panel and the library dialog ----------
 // The panel edits the *node name* - the one in the field, or the element's id
@@ -3498,6 +3476,17 @@ const readPanel = () => page.evaluate(() => ({
   count: document.getElementById("bhv-count").textContent,
   hint: document.getElementById("bhv-hint").textContent,
 }));
+
+// Behaviours open folded, so anything reaching into a form has to open its box
+// first - which is what a user does too. Idempotent: a box the panel already
+// opened (Add opens what it attaches) is left alone.
+const unfoldBehavior = async (at = 0) => {
+  await page.evaluate((i) => {
+    const box = document.querySelector(`#bhv-applied .bhv-entry[data-entry="${i}"]`);
+    if (box?.classList.contains("folded")) box.querySelector("[data-fold]").click();
+  }, at);
+  await page.waitForTimeout(80);
+};
 
 const unnamed = await readPanel();
 check("an unnamed element carries behaviours under its id, and the panel says so",
@@ -3611,7 +3600,6 @@ await page.locator("#insp-name").blur();
 await page.waitForTimeout(200);
 await page.evaluate(async (ids) => (await import("/js/editor.js")).select([ids.a]), bhvIds);
 await page.waitForTimeout(250);
-await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-override input');
 await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
 await page.waitForTimeout(250);
 const linkedNow = await page.evaluate(async () => {
@@ -3638,6 +3626,93 @@ const both = await page.evaluate(() => ({
 check("only the liquefiable one gets a linked picker",
   both.applied.join() === "stdLiquefaction,dynamic" && both.pickers === 1,
   `${JSON.stringify(both.applied)}, ${both.pickers} picker(s)`);
+
+// Each behaviour is one box you can fold shut, and what it is for is on its
+// name rather than printed above its fields.
+const folded = await page.evaluate(async () => {
+  const boxes = () => [...document.querySelectorAll("#bhv-applied .bhv-entry")];
+  const shut = () => boxes().map((box) => box.classList.contains("folded"));
+  const foldAll = document.getElementById("btn-bhv-fold");
+  const opened = shut();
+  const tips = [...document.querySelectorAll("#bhv-applied .item .n")].map((n) => n.title);
+  const prose = document.querySelectorAll("#bhv-applied .behavior-description").length;
+  boxes()[0].querySelector("[data-fold]").click();
+  const one = shut();
+  const hidden = getComputedStyle(boxes()[0].querySelector("[data-behavior-form]")).display;
+  const label = foldAll.textContent;
+  foldAll.click();
+  const all = shut();
+  const backLabel = foldAll.textContent;
+
+  // A fold is how the panel is being looked at, so it has to survive the panel
+  // rebuilding itself - which it does after every edit.
+  const ed = await import("/js/editor.js");
+  const id = [...ed.state.placements.values()].find((p) => p.name === "crate").id;
+  ed.select([]); ed.select([id]);
+  await new Promise((r) => setTimeout(r, 50));
+  const rebuilt = shut();
+  document.getElementById("btn-bhv-fold").click();
+  return { opened, one, all, rebuilt, back: shut(), tips, prose, hidden, label, backLabel };
+});
+check("a behaviour folds on its own and every one folds at once",
+  folded.opened.join() === "false,false" && folded.one.join() === "true,false"
+    && folded.hidden === "none" && folded.all.join() === "true,true"
+    && folded.back.join() === "false,false",
+  JSON.stringify(folded));
+check("the fold-all button says what it will do next",
+  folded.label === "Fold all" && folded.backLabel === "Unfold all", JSON.stringify(folded));
+check("a fold survives the panel rebuilding itself",
+  folded.rebuilt.join() === "true,true", JSON.stringify(folded.rebuilt));
+check("a behaviour's description is on its name, not above its fields",
+  folded.prose === 0 && /liquef/i.test(folded.tips[0] ?? ""), JSON.stringify(folded.tips));
+
+// Folded is the default - an element answers "what do you do" as a list of
+// names, not as every form it carries - and Add is the one exception.
+const foldDefault = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const shut = () => [...document.querySelectorAll("#bhv-applied .bhv-entry")]
+    .map((box) => box.classList.contains("folded"));
+  const idOf = (name) => [...ed.state.placements.values()].find((p) => p.name === name).id;
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+
+  ed.addEntityBehavior("crateB", "stdLiquefaction");
+  ed.select([]); ed.select([idOf("crateB")]);
+  await settle();
+  const attached = shut();
+
+  document.getElementById("bhv-add").value = "dynamic";
+  document.getElementById("btn-bhv-add").click();
+  await settle();
+  const afterAdd = shut();
+
+  // Removing the one above it has to take the folds down with it: they are
+  // kept by position, and the box that stays open must be the same box.
+  // The strip is the handle, not just the arrow, so the name folds it too.
+  document.querySelector("#bhv-applied .bhv-entry .item .n").click();
+  await settle();
+  const afterStrip = shut();
+  document.querySelector("#bhv-applied .bhv-entry .item .n").click();
+  await settle();
+  const afterStripBack = shut();
+
+  document.querySelector("#bhv-applied [data-remove='0']").click();
+  await settle();
+  const afterRemove = shut();
+
+  ed.removeEntityBehavior("crateB", 0);
+  ed.select([]); ed.select([idOf("crate")]);
+  await settle();
+  return { attached, afterAdd, afterStrip, afterStripBack, afterRemove };
+});
+check("a behaviour opens folded, and only the one just added opens",
+  foldDefault.attached.join() === "true" && foldDefault.afterAdd.join() === "true,false",
+  JSON.stringify(foldDefault));
+check("the whole title strip folds it, and Remove still removes",
+  foldDefault.afterStrip.join() === "false,false"
+    && foldDefault.afterStripBack.join() === "true,false",
+  JSON.stringify(foldDefault));
+check("removing a behaviour slides the folds under it up with it",
+  foldDefault.afterRemove.join() === "false", JSON.stringify(foldDefault.afterRemove));
 
 // isDynamicNode: only `dynamic: true` counts - liquefiable no longer implies it
 const dyn = await page.evaluate(async () => {
@@ -3683,8 +3758,8 @@ await page.evaluate(async () => {
   ed.select([id]);
 });
 await page.waitForTimeout(250);
-await page.click('#bhv-applied [data-behavior-key="sound"] .behavior-override input');
 await page.waitForTimeout(200);
+await unfoldBehavior(0);
 await page.selectOption('#bhv-applied [data-behavior-key="sound"] select', "longSplash");
 await page.waitForTimeout(250);
 const paramsStored = await page.evaluate(async () => {
@@ -3715,7 +3790,7 @@ const dirRoundTrip = await page.evaluate(async () => {
   return ed.entityBehaviors("crate").findIndex((b) => b.name === "player");
 });
 await page.waitForTimeout(200);
-await page.click(`[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-override input`);
+await unfoldBehavior(dirRoundTrip);
 const directionInputs = page.locator(
   `[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-vector input`);
 await directionInputs.nth(0).fill("-1");
@@ -3733,7 +3808,7 @@ const directionRoundTrip = await page.evaluate(async () => {
   if (crate) ed.select([crate.id]);
   return {
     before,
-    snapshot: snapshot.entities.crate.find((b) => b.name === "player"),
+    snapshot: snapshot.entities.crate.behaviors.find((b) => b.name === "player"),
     after,
   };
 });
@@ -3751,29 +3826,29 @@ check("a direction survives undo without mirroring itself",
 const probeOut = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   ed.setBehaviorDef("probeExcluded", { reflectionProbe: "exclude" });
-    ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: "zap" } });
-    ed.setBehaviorDef("weaponAntiGravityGun", {});
-    ed.setBehaviorDef("playAnimation", {});
-    ed.setBehaviorDef("rigid", { dynamic: true });
-    ed.setBehaviorDef("melts", { liquefiable: true });
-  ed.setBehaviorDef("sealedDoor", { sealed: true });
+  ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: ["zap"] } });
+  ed.setBehaviorDef("weaponAntiGravityGun", {});
+  ed.setBehaviorDef("playAnimation", {});
+  ed.setBehaviorDef("dynamic", { dynamic: true });
+  ed.setBehaviorDef("anyLiquefaction", { liquefiable: true });
+  ed.setBehaviorDef("enableEntity", {});
   ed.addEntityBehavior("optedOut", "probeExcluded");
-    ed.addEntityBehavior("gun", "weaponLiquefactor");
-    ed.addEntityBehavior("gravityGun", "weaponAntiGravityGun");
-    ed.addEntityBehavior("fan", "playAnimation");
-    ed.addEntityBehavior("barrel", "rigid");
-    ed.addEntityBehavior("icicle", "melts");
-  ed.addEntityBehavior("plainDoor", "sealedDoor");
+  ed.addEntityBehavior("gun", "weaponLiquefactor");
+  ed.addEntityBehavior("gravityGun", "weaponAntiGravityGun");
+  ed.addEntityBehavior("fan", "playAnimation");
+  ed.addEntityBehavior("barrel", "dynamic");
+  ed.addEntityBehavior("icicle", "anyLiquefaction");
+  ed.addEntityBehavior("plainDoor", "enableEntity");
   // the last one carries a harmless behaviour first, so this also proves the
   // test is over the whole list rather than just the first entry
   ed.addEntityBehavior("plainDoor", "probeExcluded");
   return {
     optedOut: ed.isProbeExcludedNode("optedOut"),
-        gun: ed.isProbeExcludedNode("gun"),
-        gravityGun: ed.isProbeExcludedNode("gravityGun"),
-        fan: ed.isProbeExcludedNode("fan"),
-        barrel: ed.isProbeExcludedNode("barrel"),
-        icicle: ed.isProbeExcludedNode("icicle"),
+    gun: ed.isProbeExcludedNode("gun"),
+    gravityGun: ed.isProbeExcludedNode("gravityGun"),
+    fan: ed.isProbeExcludedNode("fan"),
+    barrel: ed.isProbeExcludedNode("barrel"),
+    icicle: ed.isProbeExcludedNode("icicle"),
     second: ed.isProbeExcludedNode("plainDoor"),
     plain: ed.isProbeExcludedNode("crateB2"),
     unnamed: ed.isProbeExcludedNode(""),
@@ -3788,11 +3863,10 @@ check("any behaviour in the list is enough, not just the first", probeOut.second
 check("everything else stays in the probe", !probeOut.plain && !probeOut.unnamed, JSON.stringify(probeOut));
 
 // ---- hideEntity: what the game hides before the player arrives -------------
-// `hideEntity` with no parameters is entity-toggle.ts's "hide me, now" - with
-// neither an event to wait for nor an entity to name it fires against its own
-// entity at start - so the Runtime view has to draw the ship without it, and a
-// probe capture must not photograph it. With parameters it is a trigger for
-// something else and the element itself stays put. Run behaviours governs both.
+// `hideEntity` with no parameters is entity-toggle.ts's "hide me, now", so the
+// Runtime view has to draw the ship without it and a probe capture must not
+// photograph it. With an events subscription it waits instead. Run behaviours
+// governs both.
 await page.evaluate(async () => {
     const ed = await import("/js/editor.js");
     ed.clearAll();
@@ -3809,7 +3883,7 @@ await page.evaluate(async () => {
         behaviors: { hideEntity: {} },
         entities: {
             trap: { behaviors: [{ name: "hideEntity" }] },
-            trapTrigger: { behaviors: [{ name: "hideEntity", onEvent: "activated", entity: "plainWall" }] },
+            trapTrigger: { behaviors: [{ name: "hideEntity", events: [{ name: "activated", source: "plainWall" }] }] },
         },
     });
 });
@@ -3838,7 +3912,7 @@ const hideRule = await page.evaluate(async () => {
         bare: ed.behaviorParams({ name: "hideEntity" }),
         linkedEmpty: ed.behaviorParams({ name: "hideEntity", linked: [] }),
         linkedFull: ed.behaviorParams({ name: "hideEntity", linked: ["a"] }),
-        withEvent: ed.behaviorParams({ name: "hideEntity", onEvent: "activated" }),
+        withEvent: ed.behaviorParams({ name: "hideEntity", events: [{ name: "activated", source: "plainWall" }] }),
         hidden: ed.behaviorHiddenPlacements().map((p) => p.name),
     };
 });
@@ -3880,7 +3954,7 @@ check(
     JSON.stringify(hideRun.inProbe)
 );
 check(
-    "a parameterised hideEntity hides something else, so its own element stays",
+    "an event-driven hideEntity waits, so its own element stays",
     hideRun.shown.trapTrigger && hideRun.inProbe.trapTrigger,
     JSON.stringify(hideRun)
 );
@@ -3907,12 +3981,12 @@ check("and the status line counts them", /1 element\(s\) hidden by hideEntity/.t
 // view has to follow it without a mode switch.
 await page.evaluate(async () => {
     const ed = await import("/js/editor.js");
-    ed.setEntityParams("trap", 0, { onEvent: "activated", entity: "plainWall" });
+    ed.setEntityParams("trap", 0, { events: [{ name: "activated", source: "plainWall" }] });
 });
 await page.waitForTimeout(400);
 const hideParamed = await hideState();
 check(
-    "giving it a parameter makes it a trigger, and the element comes straight back",
+    "giving it an event subscription delays the action, and the element comes straight back",
     hideParamed.shown.trap && hideParamed.inProbe.trap,
     JSON.stringify(hideParamed)
 );
@@ -4413,7 +4487,6 @@ check("a door is deliberately not nameable", doorNameRow === true, String(doorNa
 await page.selectOption("#bhv-add", "stdLiquefaction");
 await page.click("#btn-bhv-add");
 await page.waitForTimeout(200);
-await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-override input');
 await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
 await page.waitForTimeout(150);
 const doorAttached = await page.evaluate(async () => {
@@ -4463,27 +4536,6 @@ check("deleting a door drops its behaviours, and the reused id inherits nothing"
   JSON.stringify(doorGone));
 check("undo brings a deleted door's behaviours back",
   doorGone.afterUndo.join() === "stdLiquefaction", JSON.stringify(doorGone.afterUndo));
-
-// a hand-edit that split `direction` into a sibling entry of its own
-const merged = await page.evaluate(async () => {
-  const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
-  await ed.deserialize({
-    chunks: ["CH00_Storage"], activeChunk: "CH00_Storage", instances: [], markers: [],
-    behaviors: { player_startpos: {} },
-    entities: {
-      player: { behaviors: [{ name: "player_startpos" }, { direction: [-1, 0, 0] }] },
-    },
-  });
-  const out = ed.entityBehaviors("player");
-  ed.clearAll(); ed.select([]);
-  return out;
-});
-check("a nameless sibling entry is folded into the one above it",
-  merged.length === 1 && merged[0].name === "player_startpos"
-    // the manifest is glTF space, so the editor sees it mirrored
-    && merged[0].direction?.join() === "1,0,0",
-  JSON.stringify(merged));
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -6210,6 +6262,61 @@ check("the stray-chunk setting silences the check and the Live checks panel",
     && /sit in CH_SB/.test(strays.panelOn),
   `off="${strays.panelOff}" on="${strays.panelOn}"`);
 
+// A warning that names a piece is only worth reading if you can get to that
+// piece: every name a check prints is a way there.
+const strayLink = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const i = await import("/js/interact.js");
+  const V = BABYLON.Vector3;
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  const wall = (x, z, chunk) => ed.placeAt(W, new V(x, 0, z), { silent: true, chunk });
+  i.cancelGhost(); ed.clearAll(); ed.select([]);
+  ed.addChunk("CH_LA"); ed.addChunk("CH_LB");
+  for (const z of [0, 4, 8]) await wall(0, z, "CH_LA");
+  for (const z of [40, 44, 48]) await wall(0, z, "CH_LB");
+  // The last one loudly, so the panel is looking at this ship and not at
+  // whatever the section before left behind.
+  const misplaced = await ed.placeAt(W, new V(0, 0, 52), { chunk: "CH_LA" });
+  await new Promise((r) => setTimeout(r, 50));
+  ed.select([]);
+  const link = [...document.querySelectorAll("#validation .check-ref")]
+    .find((node) => node.textContent === misplaced.id);
+  const camera = ed.state.camera.position.clone();
+  link?.click();
+  await new Promise((r) => setTimeout(r, 50));
+  return {
+    named: !!link,
+    // the prose stays prose: only the element's own name is a control
+    text: document.getElementById("validation").textContent,
+    selected: [...ed.state.selection],
+    misplaced: misplaced.id,
+    framed: BABYLON.Vector3.Distance(camera, ed.state.camera.position) > 1,
+  };
+});
+check("a stray named in the checks panel selects and frames that element",
+  strayLink.named && strayLink.selected.join() === strayLink.misplaced && strayLink.framed
+    && /sit in CH_LB/.test(strayLink.text),
+  JSON.stringify(strayLink));
+
+// A door names itself in its own warnings, and that name goes to the door.
+const doorLink = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mk = await import("/js/markers.js");
+  const V = BABYLON.Vector3;
+  ed.clearAll(); ed.select([]);
+  const door = mk.addDoor(new V(0, 0, 0));
+  await new Promise((r) => setTimeout(r, 50));
+  const link = [...document.querySelectorAll("#validation .check-ref")]
+    .find((node) => node.textContent === door.id);
+  link?.click();
+  await new Promise((r) => setTimeout(r, 50));
+  const selected = [...ed.state.selection];
+  ed.clearAll(); ed.select([]);
+  return { named: !!link, selected, door: door.id };
+});
+check("a door named in the checks panel is a way to that door",
+  doorLink.named && doorLink.selected.join() === doorLink.door, JSON.stringify(doorLink));
+
 // a negative exposure can only be the old stops format - the slider has never
 // gone below 0.15 - so it is converted rather than clamped up to the floor
 const oldStops = await page.evaluate(async () => {
@@ -6376,7 +6483,7 @@ const pruneSetup = await page.evaluate(async () => {
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   i.cancelGhost(); ed.clearAll(); ed.select([]);
   ed.state.chunks = ["CH_PRUNE"]; ed.state.activeChunk = "CH_PRUNE";
-  ed.setBehaviorDef("keep", {});
+  ed.setBehaviorDef("enableEntity", {});
 
   const named = await ed.placeAt(M, new V(0, 0, 0),
     { chunk: "CH_PRUNE", name: "crate", silent: true });
@@ -6386,7 +6493,7 @@ const pruneSetup = await page.evaluate(async () => {
 
   for (const key of ["crate", "crate_primitive0", bare.id, door.id, "CH_PRUNE",
     `LIGHT_${lamp.id}`, "ghost", "oldName"]) {
-    ed.addEntityBehavior(key, "keep");
+    ed.addEntityBehavior(key, "enableEntity");
   }
   return { named: named.id, bare: bare.id, door: door.id, lamp: lamp.id,
     before: [...ed.state.entities.keys()].sort() };
@@ -6451,7 +6558,7 @@ const pruneAuto = await page.evaluate(async () => {
     }
     return realFetch(url, opts);
   };
-  ed.addEntityBehavior("ghostAgain", "keep");
+  ed.addEntityBehavior("ghostAgain", "enableEntity");
   const minutes = ed.state.config.autoSaveMinutes;
   try {
     ed.setConfig("autoSaveMinutes", 2);
@@ -10716,10 +10823,10 @@ const dupBhv = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   i.cancelGhost(); ed.clearAll(); ed.select([]);
 
-  ed.setBehaviorDef("spin", { });
+  ed.setBehaviorDef("playAnimation", { });
   const fan = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Fan_Small", new V(0, 2, 0), { silent: true });
   ed.renamePlacement(fan.id, "fanA");
-  ed.addEntityBehavior("fanA", "spin");
+  ed.addEntityBehavior("fanA", "playAnimation");
   ed.setEntityParams("fanA", 0, { animation: "Fan_Idle", loop: false });
 
   ed.select([fan.id]);
@@ -10767,7 +10874,7 @@ check("a copy is nameless, so the manifest sees two nodes rather than one",
     && !!dupBhv.written.fanA && !!dupBhv.written[dupBhv.copyId],
   `name=${JSON.stringify(dupBhv.name)}, exported as ${dupBhv.exported}, entities [${Object.keys(dupBhv.written)}]`);
 check("and it brings the source's behaviours, parameters and all",
-  dupBhv.carried.length === 1 && dupBhv.carried[0].name === "spin"
+  dupBhv.carried.length === 1 && dupBhv.carried[0].name === "playAnimation"
     && dupBhv.carried[0].animation === "Fan_Idle" && dupBhv.carried[0].loop === false,
   JSON.stringify(dupBhv.carried));
 check("as a copy, not a second handle on the source's",
