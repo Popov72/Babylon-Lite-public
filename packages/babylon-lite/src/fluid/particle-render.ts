@@ -28,6 +28,56 @@ export interface ParticleRenderOptions {
     sim: FluidSim;
 }
 
+/**
+ * Opt-in replacement for the complete particle billboard WGSL module.
+ *
+ * Bind group 0 is stable: binding 0 is the 128-byte camera uniform used by the
+ * built-in shader, binding 1 is the simulation `array<vec4<f32>>` position
+ * buffer, binding 2 is the simulation `array<f32>` debug buffer, and binding 3
+ * is present only when `customUniforms` is supplied.
+ */
+export interface ParticleRenderShaderOptions {
+    /** Complete WGSL shader-module source. */
+    code: string;
+    /** Vertex entry point. Defaults to `vs`. */
+    vertexEntryPoint?: string;
+    /** Fragment entry point. Defaults to `fs`. */
+    fragmentEntryPoint?: string;
+    /**
+     * Initial bytes for an optional caller-defined payload exposed as a uniform
+     * buffer at group 0, binding 3. Its byte length must be a multiple of four.
+     */
+    customUniforms?: ArrayBufferView;
+    /** Target blend state. Defaults to the built-in alpha blend; `null` disables blending. */
+    blend?: GPUBlendState | null;
+    /** Whether particle fragments write depth. Defaults to `true`. */
+    depthWriteEnabled?: boolean;
+    /** Depth comparison function. Defaults to reverse-Z `greater-equal`. */
+    depthCompare?: GPUCompareFunction;
+}
+
+/** Public controls returned by {@link createParticleRenderTask}. */
+export interface ParticleRenderTask extends Task {
+    setSim(s: FluidSim): void;
+    setEnabled(on: boolean): void;
+    setOpacity(v: number): void;
+    setSizeScale(s: number): void;
+    setTint(rgb: [number, number, number]): void;
+    setVelocityBrighten(v: number): void;
+    setProfiler(p: FluidProfiler | null): void;
+    /**
+     * Select a complete custom WGSL module, or restore the built-in module with
+     * `null`. Pipeline recreation is deferred until the task next records or
+     * executes.
+     */
+    setShader(shader: ParticleRenderShaderOptions | null): void;
+    /**
+     * Replace the binding-3 payload configured by the active custom shader.
+     * The replacement must have the same byte length as `customUniforms`.
+     */
+    setCustomUniforms(data: ArrayBufferView): void;
+}
+
 const RENDER_WGSL = /* wgsl */ `
 struct Cam {
     vp: mat4x4<f32>,
@@ -83,19 +133,29 @@ struct VOut {
     return vec4<f32>(col, cam.misc.z);
 }`;
 
-export function createParticleRenderTask(
-    engine: EngineContext,
-    scene: SceneContext,
-    opts: ParticleRenderOptions
-): Task & {
-    setSim(s: FluidSim): void;
-    setEnabled(on: boolean): void;
-    setOpacity(v: number): void;
-    setSizeScale(s: number): void;
-    setTint(rgb: [number, number, number]): void;
-    setVelocityBrighten(v: number): void;
-    setProfiler(p: FluidProfiler | null): void;
-} {
+const DEFAULT_BLEND: GPUBlendState = {
+    color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+    alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+};
+
+interface CustomShaderState {
+    code: string;
+    vertexEntryPoint: string;
+    fragmentEntryPoint: string;
+    customUniforms: Uint8Array | null;
+    blend: GPUBlendState | null;
+    depthWriteEnabled: boolean;
+    depthCompare: GPUCompareFunction;
+}
+
+function copyCustomUniforms(data: ArrayBufferView): Uint8Array {
+    if (data.byteLength === 0 || data.byteLength % 4 !== 0) {
+        throw new Error("Particle renderer custom uniforms must have a non-zero byte length divisible by 4.");
+    }
+    return new Uint8Array(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+}
+
+export function createParticleRenderTask(engine: EngineContext, scene: SceneContext, opts: ParticleRenderOptions): ParticleRenderTask {
     const device = engine._device;
     const { colorRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
@@ -114,6 +174,8 @@ export function createParticleRenderTask(
 
     let pipeline: GPURenderPipeline | null = null;
     let bindGroup: GPUBindGroup | null = null;
+    let customShader: CustomShaderState | null = null;
+    let customUniformBuffer: GPUBuffer | null = null;
 
     function buildBindGroup(): void {
         if (!pipeline) {
@@ -126,6 +188,7 @@ export function createParticleRenderTask(
                 { binding: 0, resource: { buffer: camBuffer } },
                 { binding: 1, resource: { buffer: currentSim.positionBuffer } },
                 { binding: 2, resource: { buffer: currentSim.debugBuffer } },
+                ...(customUniformBuffer ? [{ binding: 3, resource: { buffer: customUniformBuffer } }] : []),
             ],
         });
     }
@@ -134,32 +197,58 @@ export function createParticleRenderTask(
         if (pipeline) {
             return;
         }
-        const module = device.createShaderModule({ label: "fluid-particles", code: RENDER_WGSL });
+        const shader = customShader;
+        const module = device.createShaderModule({ label: "fluid-particles", code: shader?.code ?? RENDER_WGSL });
+        const blend = shader ? shader.blend : DEFAULT_BLEND;
+        const target: GPUColorTargetState = { format: engine.format };
+        if (blend) {
+            target.blend = blend;
+        }
+        let layout: GPUPipelineLayout | "auto" = "auto";
+        if (shader) {
+            const visibility = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+            const entries: GPUBindGroupLayoutEntry[] = [
+                { binding: 0, visibility, buffer: { type: "uniform" } },
+                { binding: 1, visibility, buffer: { type: "read-only-storage" } },
+                { binding: 2, visibility, buffer: { type: "read-only-storage" } },
+            ];
+            if (shader.customUniforms) {
+                entries.push({ binding: 3, visibility, buffer: { type: "uniform" } });
+            }
+            const bindGroupLayout = device.createBindGroupLayout({
+                label: "fluid-particle-custom-bindings",
+                entries,
+            });
+            layout = device.createPipelineLayout({
+                label: "fluid-particle-custom-pipeline-layout",
+                bindGroupLayouts: [bindGroupLayout],
+            });
+        }
         pipeline = device.createRenderPipeline({
             label: "fluid-particles",
-            layout: "auto",
-            vertex: { module, entryPoint: "vs" },
+            layout,
+            vertex: { module, entryPoint: shader?.vertexEntryPoint ?? "vs" },
             fragment: {
                 module,
-                entryPoint: "fs",
-                targets: [
-                    {
-                        format: engine.format,
-                        blend: {
-                            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-                            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-                        },
-                    },
-                ],
+                entryPoint: shader?.fragmentEntryPoint ?? "fs",
+                targets: [target],
             },
             primitive: { topology: "triangle-list", cullMode: "none" },
             depthStencil: {
                 format: depthRT._descriptor.dFormat!,
-                depthWriteEnabled: true,
-                depthCompare: "greater-equal", // reverse-Z, matching the scene render task
+                depthWriteEnabled: shader?.depthWriteEnabled ?? true,
+                depthCompare: shader?.depthCompare ?? "greater-equal", // reverse-Z, matching the scene render task
             },
             multisample: { count: depthRT._descriptor.samples },
         });
+        if (shader?.customUniforms) {
+            customUniformBuffer = device.createBuffer({
+                label: "fluid-particle-custom-uniforms",
+                size: shader.customUniforms.byteLength,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(customUniformBuffer, 0, shader.customUniforms);
+        }
         buildBindGroup();
     }
 
@@ -190,7 +279,38 @@ export function createParticleRenderTask(
         device.queue.writeBuffer(camBuffer, 0, camData);
     }
 
-    return {
+    function executeBuilt(): number {
+        if (!enabled || opacity <= 0) {
+            return 0;
+        }
+        const colorView = colorRT._colorView;
+        const depthView = depthRT._depthView;
+        if (!pipeline || !bindGroup || !colorView || !depthView) {
+            return 0;
+        }
+        updateCamera();
+        engine._currentEncoder.pushDebugGroup("Fluid particles (spheres)");
+        const pass = engine._currentEncoder.beginRenderPass({
+            label: "fluid-particles",
+            colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
+            depthStencilAttachment: { view: depthView, depthLoadOp: "load", depthStoreOp: "store" },
+            timestampWrites: profiler?.pass("Particles"),
+        });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.draw(6, currentSim.renderCount ?? currentSim.count);
+        pass.end();
+        engine._currentEncoder.popDebugGroup();
+        return 1;
+    }
+
+    function executeNeedsBuild(): number {
+        build();
+        task.execute = executeBuilt;
+        return executeBuilt();
+    }
+
+    const task: ParticleRenderTask = {
         name: "fluid-particles",
         engine,
         scene,
@@ -225,35 +345,45 @@ export function createParticleRenderTask(
         setProfiler(p: FluidProfiler | null): void {
             profiler = p;
         },
+        setShader(shader: ParticleRenderShaderOptions | null): void {
+            customShader = shader
+                ? {
+                      code: shader.code,
+                      vertexEntryPoint: shader.vertexEntryPoint ?? "vs",
+                      fragmentEntryPoint: shader.fragmentEntryPoint ?? "fs",
+                      customUniforms: shader.customUniforms ? copyCustomUniforms(shader.customUniforms) : null,
+                      blend: shader.blend === undefined ? DEFAULT_BLEND : shader.blend,
+                      depthWriteEnabled: shader.depthWriteEnabled ?? true,
+                      depthCompare: shader.depthCompare ?? "greater-equal",
+                  }
+                : null;
+            customUniformBuffer?.destroy();
+            customUniformBuffer = null;
+            pipeline = null;
+            bindGroup = null;
+            task.execute = executeNeedsBuild;
+        },
+        setCustomUniforms(data: ArrayBufferView): void {
+            if (!customShader?.customUniforms) {
+                throw new Error("The active particle shader does not define a custom uniform payload.");
+            }
+            if (data.byteLength !== customShader.customUniforms.byteLength) {
+                throw new Error(`Particle renderer custom uniform update is ${data.byteLength} bytes; expected ${customShader.customUniforms.byteLength}.`);
+            }
+            customShader.customUniforms.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+            if (customUniformBuffer) {
+                device.queue.writeBuffer(customUniformBuffer, 0, customShader.customUniforms);
+            }
+        },
         record(): void {
             build();
+            task.execute = executeBuilt;
         },
-        execute(): number {
-            if (!enabled || opacity <= 0) {
-                return 0;
-            }
-            const colorView = colorRT._colorView;
-            const depthView = depthRT._depthView;
-            if (!pipeline || !bindGroup || !colorView || !depthView) {
-                return 0;
-            }
-            updateCamera();
-            engine._currentEncoder.pushDebugGroup("Fluid particles (spheres)");
-            const pass = engine._currentEncoder.beginRenderPass({
-                label: "fluid-particles",
-                colorAttachments: [{ view: colorView, loadOp: "load", storeOp: "store" }],
-                depthStencilAttachment: { view: depthView, depthLoadOp: "load", depthStoreOp: "store" },
-                timestampWrites: profiler?.pass("Particles"),
-            });
-            pass.setPipeline(pipeline);
-            pass.setBindGroup(0, bindGroup);
-            pass.draw(6, currentSim.renderCount ?? currentSim.count);
-            pass.end();
-            engine._currentEncoder.popDebugGroup();
-            return 1;
-        },
+        execute: executeBuilt,
         dispose(): void {
+            customUniformBuffer?.destroy();
             camBuffer.destroy();
         },
     };
+    return task;
 }

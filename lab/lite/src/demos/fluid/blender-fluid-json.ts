@@ -47,8 +47,14 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         cflNumber: [0, 10],
         restitution: [0, 1],
         velocityDamping: [0, 10],
+        pressureSolver: [0, 1],
         pressureIterations: [1, 100],
         pressureRelaxation: [0.1, 1],
+        multigridCycles: [1, 8],
+        liquidSdf: [0, 1],
+        ghostFluid: [0, 1],
+        fractionalSolids: [0, 1],
+        movingSolidBoundaries: [0, 1],
         viscosityIterations: [1, 40],
         maxSubDtMs: [1, 20],
     },
@@ -78,6 +84,9 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         substeps: [1, 8],
         maxSubDtMs: [2, 20],
     },
+};
+const OPTIONAL_PHYSICS_KEYS: Record<string, ReadonlySet<string>> = {
+    FLIP: new Set(["pressureSolver", "multigridCycles", "liquidSdf", "ghostFluid", "fractionalSolids", "movingSolidBoundaries"]),
 };
 
 export interface BlenderFluidScene {
@@ -366,6 +375,9 @@ function validatePhysics(value: unknown, method: string): void {
         }
     }
     for (const [key, [min, max]] of Object.entries(limits)) {
+        if (physics[key] === undefined && OPTIONAL_PHYSICS_KEYS[method]?.has(key)) {
+            continue;
+        }
         finiteNumber(physics[key], `manifest.preset.physics.${key}`, min, max);
     }
 }

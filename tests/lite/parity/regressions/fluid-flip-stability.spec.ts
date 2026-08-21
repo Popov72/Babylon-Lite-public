@@ -151,6 +151,169 @@ main().catch((error) => { canvas.dataset.error = error?.message ?? String(error)
     await expect(canvas).not.toHaveAttribute("data-error", /./);
 });
 
+test("FLIP executes multigrid V-cycles and switches pressure solvers live", async ({ page }) => {
+    await page.goto("/");
+    await page.setContent(`
+<canvas id="renderCanvas" width="16" height="16"></canvas>
+<script type="module">
+import { createEngine } from "${LITE_ENTRY}";
+import { createFlipSim } from "${FLIP_ENTRY}";
+
+const canvas = document.getElementById("renderCanvas");
+window.addEventListener("error", (event) => { canvas.dataset.error = event.message; });
+window.addEventListener("unhandledrejection", (event) => { canvas.dataset.error = event.reason?.message ?? String(event.reason); });
+
+async function main() {
+    const engine = await createEngine(canvas);
+    const device = engine._device;
+    device.pushErrorScope("validation");
+    const sim = createFlipSim(engine, {
+        count: 8,
+        initialPositions: new Float32Array([
+            -0.1, 0.9, -0.1, 0.1, 0.9, -0.1, -0.1, 1.1, -0.1, 0.1, 1.1, -0.1,
+            -0.1, 0.9, 0.1, 0.1, 0.9, 0.1, -0.1, 1.1, 0.1, 0.1, 1.1, 0.1,
+        ]),
+        boundsMin: [-1, 0, -1],
+        boundsMax: [1, 2, 1],
+        groundY: 0,
+        dx: 0.25,
+        particleRadius: 0.05,
+        gravity: 9.8,
+        flipRatio: 0.95,
+        pressureIterations: 4,
+        minSubsteps: 1,
+        maxSubDt: 1 / 120,
+    });
+    const jacobiBytes = sim.gpuBytes;
+    sim.setParam("pressureSolver", 1);
+    sim.setParam("multigridCycles", 2);
+    const multigridBytes = sim.gpuBytes;
+    for (let frame = 0; frame < 4; frame++) {
+        const encoder = device.createCommandEncoder();
+        sim.step(encoder, 1 / 120);
+        device.queue.submit([encoder.finish()]);
+    }
+    sim.setParam("pressureSolver", 0);
+    const jacobiEncoder = device.createCommandEncoder();
+    sim.step(jacobiEncoder, 1 / 120);
+    device.queue.submit([jacobiEncoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    const validationError = await device.popErrorScope();
+    if (validationError) {
+        throw validationError;
+    }
+    const readback = device.createBuffer({ size: 8 * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const readEncoder = device.createCommandEncoder();
+    readEncoder.copyBufferToBuffer(sim.velocityBuffer, 0, readback, 0, 8 * 16);
+    device.queue.submit([readEncoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const velocity = Array.from(new Float32Array(readback.getMappedRange().slice(0)));
+    canvas.dataset.result = JSON.stringify({
+        finite: velocity.every(Number.isFinite),
+        allocated: multigridBytes > jacobiBytes,
+    });
+    readback.unmap();
+    readback.destroy();
+    sim.dispose();
+}
+
+main().catch((error) => { canvas.dataset.error = error?.message ?? String(error); });
+</script>`);
+
+    const canvas = page.locator("#renderCanvas");
+    await expect(canvas).toHaveAttribute("data-result", /./);
+    await expect(canvas).not.toHaveAttribute("data-error", /./);
+    expect(JSON.parse((await canvas.getAttribute("data-result"))!)).toEqual({ finite: true, allocated: true });
+});
+
+test("FLIP runs all opt-in subcell geometry paths", async ({ page }) => {
+    await page.goto("/");
+    await page.setContent(`
+<canvas id="renderCanvas" width="16" height="16"></canvas>
+<script type="module">
+import { createEngine } from "${LITE_ENTRY}";
+import { createFlipSim } from "${FLIP_ENTRY}";
+
+const canvas = document.getElementById("renderCanvas");
+window.addEventListener("error", (event) => { canvas.dataset.error = event.message; });
+window.addEventListener("unhandledrejection", (event) => { canvas.dataset.error = event.reason?.message ?? String(event.reason); });
+
+async function main() {
+    const engine = await createEngine(canvas);
+    const device = engine._device;
+    device.pushErrorScope("validation");
+    const sdfBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(sdfBuffer, 0, new Float32Array([0, 0.75, 0, 0.35]));
+    const sim = createFlipSim(engine, {
+        count: 8,
+        initialPositions: new Float32Array([
+            -0.1, 0.4, -0.1, 0.1, 0.4, -0.1, -0.1, 0.6, -0.1, 0.1, 0.6, -0.1,
+            -0.1, 0.4, 0.1, 0.1, 0.4, 0.1, -0.1, 0.6, 0.1, 0.1, 0.6, 0.1,
+        ]),
+        boundsMin: [-1, 0, -1],
+        boundsMax: [1, 2, 1],
+        groundY: 0,
+        dx: 0.25,
+        particleRadius: 0.05,
+        gravity: 1,
+        pressureSolver: "multigrid",
+        multigridCycles: 1,
+        liquidSdf: true,
+        ghostFluid: true,
+        fractionalSolids: true,
+        movingSolidBoundaries: true,
+        minSubsteps: 1,
+        maxSubsteps: 1,
+        maxSubDt: 1 / 120,
+    });
+    sim.setSceneSdf({
+        struct: "struct SceneSdfParams { sphere: vec4<f32>, };",
+        sdf: \`fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
+            let center = sceneSdfParams.sphere.xyz + vec3<f32>(dt * 0.1, 0.0, 0.0);
+            return length(pt - center) - sceneSdfParams.sphere.w;
+        }\`,
+        buffer: sdfBuffer,
+    });
+    const enabledBytes = sim.gpuBytes;
+    const encoder = device.createCommandEncoder();
+    sim.step(encoder, 1 / 120);
+    device.queue.submit([encoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    sim.setParam("movingSolidBoundaries", 0);
+    sim.setParam("fractionalSolids", 0);
+    sim.setParam("ghostFluid", 0);
+    sim.setParam("liquidSdf", 0);
+    const disabledBytes = sim.gpuBytes;
+    const legacyEncoder = device.createCommandEncoder();
+    sim.step(legacyEncoder, 1 / 120);
+    device.queue.submit([legacyEncoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+    const validationError = await device.popErrorScope();
+    if (validationError) {
+        throw validationError;
+    }
+    const readback = device.createBuffer({ size: 8 * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const readEncoder = device.createCommandEncoder();
+    readEncoder.copyBufferToBuffer(sim.velocityBuffer, 0, readback, 0, 8 * 16);
+    device.queue.submit([readEncoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const velocity = Array.from(new Float32Array(readback.getMappedRange().slice(0)));
+    canvas.dataset.result = JSON.stringify({ finite: velocity.every(Number.isFinite), memoryReleased: disabledBytes < enabledBytes });
+    readback.unmap();
+    readback.destroy();
+    sim.dispose();
+    sdfBuffer.destroy();
+}
+
+main().catch((error) => { canvas.dataset.error = error?.message ?? String(error); });
+</script>`);
+
+    const canvas = page.locator("#renderCanvas");
+    await expect(canvas).toHaveAttribute("data-result", /./);
+    await expect(canvas).not.toHaveAttribute("data-error", /./);
+    expect(JSON.parse((await canvas.getAttribute("data-result"))!)).toEqual({ finite: true, memoryReleased: true });
+});
+
 test("FLIP exposes only the contiguous seeded prefix to renderers", async ({ page }) => {
     await page.goto("/");
     await page.setContent(`
@@ -275,6 +438,9 @@ async function main() {
         flipRatio: 0.95,
         pressureIterations: 40,
         pressureRelaxation: 0.8,
+        liquidSdf: true,
+        ghostFluid: true,
+        fractionalSolids: true,
         minSubsteps: 1,
         maxSubDt: 1 / 60,
     });

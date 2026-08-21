@@ -4,10 +4,11 @@ import { resolve } from "node:path";
 const LITE_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/index.ts").replace(/\\/g, "/")}`;
 const FLIP_ENTRY = `/@fs/${resolve(__dirname, "../../../../packages/babylon-lite/src/fluid/flip-sim.ts").replace(/\\/g, "/")}`;
 
-test("FLIP preserves different authored liquid volumes", async ({ page }) => {
-    test.setTimeout(180_000);
-    await page.goto("/");
-    await page.setContent(`
+for (const pressureSolver of ["jacobi", "multigrid"] as const) {
+    test(`FLIP preserves different authored liquid volumes with ${pressureSolver}`, async ({ page }) => {
+        test.setTimeout(180_000);
+        await page.goto("/");
+        await page.setContent(`
 <canvas id="renderCanvas" width="16" height="16"></canvas>
 <script type="module">
 import { createEngine } from "${LITE_ENTRY}";
@@ -42,8 +43,10 @@ async function settledHeight(engine, sizeY) {
         particleRadius: 0.09,
         gravity: 9.8,
         flipRatio: 0.95,
+        pressureSolver: "${pressureSolver}",
         pressureIterations: 40,
         pressureRelaxation: 0.8,
+        multigridCycles: 2,
         minSubsteps: 1,
         maxSubDt: 1 / 60,
     });
@@ -89,13 +92,14 @@ async function main() {
 main().catch((error) => { canvas.dataset.error = error?.message ?? String(error); });
 </script>`);
 
-    const canvas = page.locator("#renderCanvas");
-    await expect(canvas).toHaveAttribute("data-result", /./, { timeout: 150_000 });
-    await expect(canvas).not.toHaveAttribute("data-error", /./);
-    const result = JSON.parse((await canvas.getAttribute("data-result"))!) as {
-        small: { count: number; height: number; top: number };
-        large: { count: number; height: number; top: number };
-    };
-    expect(result.large.count).toBeGreaterThan(result.small.count * 2.9);
-    expect(result.large.height).toBeGreaterThan(result.small.height * 2);
-});
+        const canvas = page.locator("#renderCanvas");
+        await expect(canvas).toHaveAttribute("data-result", /./, { timeout: 150_000 });
+        await expect(canvas).not.toHaveAttribute("data-error", /./);
+        const result = JSON.parse((await canvas.getAttribute("data-result"))!) as {
+            small: { count: number; height: number; top: number };
+            large: { count: number; height: number; top: number };
+        };
+        expect(result.large.count).toBeGreaterThan(result.small.count * 2.9);
+        expect(result.large.height).toBeGreaterThan(result.small.height * 2);
+    });
+}

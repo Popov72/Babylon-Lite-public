@@ -213,7 +213,10 @@ struct Foam {
 };
 struct Diffuse { p: vec4<f32>, v: vec4<f32> };
 fn foamKindEnabled(kind: u32) -> bool {
-    return select(select(foam.generateSpray != 0u, foam.generateFoam != 0u, kind == 1u), foam.generateBubbles != 0u, kind == 2u);
+    if (kind == 0u) { return foam.generateSpray != 0u; }
+    if (kind == 1u) { return foam.generateFoam != 0u; }
+    if (kind == 2u) { return foam.generateBubbles != 0u; }
+    return false;
 }
 // Radial hat weight W(r,h) = 1 - r/h for r<=h (better near a free surface than poly6).
 fn wHat(rlen: f32, h: f32) -> f32 { return max(0.0, 1.0 - rlen / h); }

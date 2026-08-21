@@ -776,6 +776,8 @@ export type {
     ForceFieldSpec,
     SceneSdfSpec,
 } from "./fluid/sim-common.js";
+export { createParticleRenderTask } from "./fluid/particle-render.js";
+export type { ParticleRenderOptions, ParticleRenderShaderOptions, ParticleRenderTask } from "./fluid/particle-render.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

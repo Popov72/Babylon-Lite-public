@@ -13,6 +13,18 @@ describe("FLIP GPU memory estimate", () => {
     it("adds 40 bytes for each particle slot", () => {
         expect(estimateFlipGpuBytes(101, [4, 5, 6]) - estimateFlipGpuBytes(100, [4, 5, 6])).toBe(40);
     });
+
+    it("includes the selected multigrid hierarchy", () => {
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "multigrid")).toBe(43_348);
+        expect(estimateFlipGpuBytes(100, [16, 16, 16], "multigrid")).toBeGreaterThan(estimateFlipGpuBytes(100, [16, 16, 16]));
+    });
+
+    it("adds optional subcell buffers only when selected", () => {
+        const base = estimateFlipGpuBytes(100, [4, 5, 6]);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { liquidSdf: true }) - base).toBe(960);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { fractionalSolids: true }) - base).toBe(3_472);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { liquidSdf: true, fractionalSolids: true }) - base).toBe(4_432);
+    });
 });
 
 describe("FLIP particle dispatch", () => {
@@ -77,6 +89,46 @@ describe("FLIP particle dispatch", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
         expect(source).toContain("if (kinematicViscosity > 0 && viscosityIterations > 0)");
         expect(source).toContain("if (surfaceTension > 0)");
+    });
+
+    it("provides a lazy geometric multigrid pressure path alongside Jacobi", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        expect(source).toContain('export type FlipPressureSolver = "jacobi" | "multigrid"');
+        expect(source).toContain("const MULTIGRID_RESTRICT_WGSL");
+        expect(source).toContain("const MULTIGRID_PROLONGATE_WGSL");
+        expect(source).toContain("function ensureMultigrid()");
+        expect(source).toContain('if (pressureSolver === "multigrid")');
+        expect(source).toContain("encodeMultigridPressure(encoder)");
+        expect(source).toContain("multigridResources?.gpuBytes ?? 0");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        expect(controls).toContain('key: "pressureSolver"');
+        expect(controls).toContain('{ label: "Weighted Jacobi", value: 0 }');
+        expect(controls).toContain('{ label: "Multigrid", value: 1 }');
+        expect(controls).toContain('key: "multigridCycles"');
+        expect(controls).toContain('visibleWhen: { key: "pressureSolver", equals: 0 }');
+        expect(controls).toContain('visibleWhen: { key: "pressureSolver", equals: 1 }');
+    });
+
+    it("keeps subcell liquid and solid geometry independently opt-in", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        expect(source).toContain("const LIQUID_SDF_SEED_WGSL");
+        expect(source).toContain("function buildSolidFaceGeometryWgsl");
+        expect(source).toContain("if (liquidSdfEnabled)");
+        expect(source).toContain("if (fractionalSolidsEnabled)");
+        expect(source).toContain("-gradient / magnitude");
+        expect(source).toContain("magnitude / p.originDx.w");
+        expect(source).toContain("function buildPressureResidualWgsl");
+        expect(source).toContain("levelIndex === 0 ? multigridFineResidualPipeline");
+        expect(source).toContain("if (leftType != CELL_FLUID && rightType != CELL_FLUID)");
+        expect(source).toContain("velocity[i] = vec2<f32>(geometry.y, 0.0)");
+        expect(source).toContain("liquidSdfResources?.gpuBytes ?? 0");
+        expect(source).toContain("solidFaceResources?.gpuBytes ?? 0");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        expect(controls).toContain('key: "liquidSdf"');
+        expect(controls).toContain('key: "ghostFluid"');
+        expect(controls).toContain('key: "fractionalSolids"');
+        expect(controls).toContain('key: "movingSolidBoundaries"');
+        expect(controls).toContain('{ label: "Off (fast)", value: 0 }');
     });
 
     it("keeps FLIP whitewater lazy and runs it once after the final substep", () => {

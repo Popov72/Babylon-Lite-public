@@ -28,6 +28,12 @@ export interface PhysSchemaEntry {
     max: number;
     step: number;
     value: number;
+    /** Render as a dropdown instead of a range slider. */
+    control?: "slider" | "select";
+    /** Numeric dropdown choices used when control is "select". */
+    options?: readonly { label: string; value: number }[];
+    /** Show this control only while another numeric parameter has the given value. */
+    visibleWhen?: { key: string; equals: number };
     /** Optional visual group used to separate material, timestep, collision, and numerical controls. */
     group?: "liquid" | "timestep" | "collision" | "advanced";
     /** One-line explanation shown in a hover tooltip behind an "i" next to the label. */
@@ -194,12 +200,28 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             info: "Non-physical exponential drag applied uniformly to marker velocity. This is separate from viscosity and should normally remain 0.",
         },
         {
+            key: "pressureSolver",
+            label: "Pressure solver",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Weighted Jacobi", value: 0 },
+                { label: "Multigrid", value: 1 },
+            ],
+            group: "advanced",
+            info: "Selects the incompressibility solver. Weighted Jacobi is the legacy fixed-iteration path; multigrid removes pressure error across several grid resolutions.",
+        },
+        {
             key: "pressureIterations",
             label: "Pressure iterations",
             min: 1,
             max: 100,
             step: 1,
             value: 40,
+            visibleWhen: { key: "pressureSolver", equals: 0 },
             info: "Weighted-Jacobi iterations used to project the MAC grid to an approximately divergence-free velocity field. More iterations improve incompressibility at proportional GPU cost.",
         },
         {
@@ -209,7 +231,80 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 0.01,
             value: 0.8,
-            info: "Weighted-Jacobi relaxation factor. This is an implementation-level control and may be removed when the pressure solver moves to PCG or multigrid.",
+            visibleWhen: { key: "pressureSolver", equals: 0 },
+            info: "Weighted-Jacobi relaxation factor. Hidden while multigrid is selected because multigrid uses an internally tuned smoother.",
+        },
+        {
+            key: "multigridCycles",
+            label: "Multigrid cycles",
+            min: 1,
+            max: 8,
+            step: 1,
+            value: 2,
+            visibleWhen: { key: "pressureSolver", equals: 1 },
+            info: "Geometric multigrid V-cycles per substep. More cycles reduce the remaining divergence; two is the normal real-time setting.",
+        },
+        {
+            key: "liquidSdf",
+            label: "Liquid SDF",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            group: "advanced",
+            info: "Builds a particle-derived narrow-band liquid signed-distance field for smoother interface normals and optional ghost-fluid pressure. Disabled by default and records no SDF passes.",
+        },
+        {
+            key: "ghostFluid",
+            label: "Ghost-fluid pressure",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            visibleWhen: { key: "liquidSdf", equals: 1 },
+            group: "advanced",
+            info: "Uses the liquid SDF to place the zero-pressure free surface between cell centres. Improves thin surfaces and volume behavior at additional GPU cost.",
+        },
+        {
+            key: "fractionalSolids",
+            label: "Fractional solid faces",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            group: "advanced",
+            info: "Samples the scene SDF at MAC-face corners and uses the open-area fraction in divergence and pressure projection. Disabled by default.",
+        },
+        {
+            key: "movingSolidBoundaries",
+            label: "Moving solid velocity",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            visibleWhen: { key: "fractionalSolids", equals: 1 },
+            group: "advanced",
+            info: "Includes SDF-derived obstacle velocity in fractional boundary fluxes. Enable for animated obstacles; leave off for static scenes.",
         },
         {
             key: "viscosityIterations",
@@ -688,6 +783,8 @@ export interface FluidControlsOptions {
     on: FluidControlsCallbacks;
     /** Override the outer panel `cssText` (default = the fluid demo's right-side panel). */
     panelStyle?: string;
+    /** Allow the user to resize the panel in both directions (defaults to true). */
+    resizable?: boolean;
     /** GPU-timing panel config (only built when provided AND !hideGpuTiming). */
     gpu?: FluidGpuOptions;
 }
@@ -713,6 +810,8 @@ export interface FluidControlsHandle {
     containerToggleRow: HTMLElement | null;
     /** Build a collapsible section with the shared header styling (for the host's Demo/Export). */
     makeSection(title: string, items: HTMLElement[]): HTMLElement[];
+    /** Show or hide a shared section by its title. */
+    setSectionVisible(title: string, visible: boolean): void;
 
     // ── Programmatic setters (see the module contract for which fire callbacks) ──
     setMethod(method: string): void;
@@ -860,6 +959,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     }
 
     // ── Collapsible section builder (shared header styling). ──
+    const sections = new Map<string, readonly [HTMLElement, HTMLElement]>();
     const makeSection = (text: string, items: HTMLElement[]): HTMLElement[] => {
         const h = document.createElement("div");
         h.style.cssText =
@@ -877,6 +977,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             body.style.display = collapsed ? "" : "none";
             caret.style.transform = collapsed ? "" : "rotate(-90deg)";
         };
+        sections.set(text, [h, body]);
         return [h, body];
     };
 
@@ -972,7 +1073,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     particleUsageRow.dataset.fluidParticleUsage = "true";
     const particleUsageLabel = labelWithInfo(
         "Particle usage",
-        "Active is the number of particles currently simulated; total is the number of allocated particle slots. In FLIP, each marker is one simulation particle. Simulation GPU memory counts buffers owned by the active solver only; the GPU panel also estimates fluid render targets."
+        "Active is the number of particles currently simulated; total is the number of allocated particle slots. In FLIP, each marker is one simulation particle. Simulation GPU memory counts buffers owned by the active solver only; before a solver starts, the projected allocation is shown in the After restart rows. The GPU panel also estimates fluid render targets."
     );
     particleUsageLabel.style.cssText = "display:block;margin-bottom:3px;";
     const currentParticleUsageValue = document.createElement("div");
@@ -998,7 +1099,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             "\u00a0" +
             countLabel;
         particleGpuMemoryValue.textContent =
-            displayedGpuBytes > 0 ? "Simulation GPU memory:\u00a0" + formatGpuBytes(displayedGpuBytes) : "Simulation GPU memory:\u00a0Calculating...";
+            displayedParticleCount === 0
+                ? "Simulation GPU memory:\u00a0Not running"
+                : displayedGpuBytes > 0
+                  ? "Simulation GPU memory:\u00a0" + formatGpuBytes(displayedGpuBytes)
+                  : "Simulation GPU memory:\u00a0Calculating...";
         const restartDiffers =
             restartParticleUsage !== null &&
             (restartParticleUsage.activeCount !== displayedActiveParticleCount ||
@@ -1022,7 +1127,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         updateParticleUsage();
     };
     const setParticleCapacity = (count: number): void => {
-        displayedParticleCount = count;
+        displayedParticleCount = Math.max(0, count);
         updateParticleUsage();
     };
     updateParticleUsage();
@@ -1747,7 +1852,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let visibleParamKeys: Set<string> | null = null;
     const applyParamVisibility = (): void => {
         for (const [key, row] of paramRows) {
-            row.style.display = !visibleParamKeys || visibleParamKeys.has(key) ? "" : "none";
+            const definition = (schemas[currentMethod] ?? []).find((entry) => entry.key === key);
+            const dependency = definition?.visibleWhen;
+            const dependencyVisible = !dependency || (schemas[currentMethod] ?? []).find((entry) => entry.key === dependency.key)?.value === dependency.equals;
+            row.style.display = (!visibleParamKeys || visibleParamKeys.has(key)) && dependencyVisible ? "" : "none";
         }
     };
     function buildSliders(name: string): void {
@@ -1770,6 +1878,28 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             previousGroup = p.group;
             const row = document.createElement("div");
             row.style.cssText = "margin:6px 0;";
+            row.dataset.fluidPhysicsParam = p.key;
+            if (p.control === "select") {
+                const select = document.createElement("select");
+                select.style.cssText = SELECT_STYLE;
+                for (const option of p.options ?? []) {
+                    const element = document.createElement("option");
+                    element.value = String(option.value);
+                    element.textContent = option.label;
+                    select.appendChild(element);
+                }
+                select.value = String(p.value);
+                select.onchange = () => {
+                    const value = Number.parseFloat(select.value);
+                    p.value = value;
+                    on.onPhysicsParam?.(p.key, value);
+                    applyParamVisibility();
+                };
+                row.append(labelWithInfo(p.label, p.info), select);
+                sliderHost.appendChild(row);
+                paramRows.set(p.key, row);
+                continue;
+            }
             const head = document.createElement("div");
             head.style.cssText = "display:flex;justify-content:space-between;";
             const lab = labelWithInfo(p.label, p.info);
@@ -2327,6 +2457,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     // ── Assemble the panel ──────────────────────────────────────────────────
     const root = document.createElement("div");
     root.style.cssText = opts.panelStyle ?? DEFAULT_PANEL_STYLE;
+    if (opts.resizable !== false) {
+        root.style.resize = "both";
+        root.style.overflow = "auto";
+        root.style.boxSizing = "border-box";
+    }
     const demoSlot = document.createElement("div");
     root.appendChild(demoSlot);
 
@@ -2641,6 +2776,14 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         demoSlot,
         containerToggleRow: opts.hideContainerToggle ? null : containerRow,
         makeSection,
+        setSectionVisible(title: string, visible: boolean): void {
+            const section = sections.get(title);
+            if (!section) {
+                return;
+            }
+            section[0].style.display = visible ? "" : "none";
+            section[1].style.display = visible ? "" : "none";
+        },
 
         setMethod(method: string): void {
             currentMethod = method;
@@ -2661,7 +2804,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setActiveParticleCount,
         setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void {
             displayedActiveParticleCount = Math.max(0, Math.floor(activeCount));
-            displayedParticleCount = Math.max(1, Math.floor(totalCount));
+            displayedParticleCount = Math.max(0, Math.floor(totalCount));
             displayedGpuBytes = Math.max(0, gpuBytes);
             restartParticleUsage =
                 restartActiveCount !== undefined && restartTotalCount !== undefined && restartGpuBytes !== undefined

@@ -1550,7 +1550,10 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const effectiveGrid = effectiveGridSettings();
         const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
         const gridDim = gridCellsForSize(effectiveGrid.size, cellSize);
-        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim);
+        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim, (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+            liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
+            fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
+        });
         const gridRestartPending =
             physicsScale !== builtPhysicsScale ||
             !gridSettingsEqual(gridSettings, builtGridSettings) ||
@@ -3333,6 +3336,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         sim.setParam(key, v);
         if (key === "gravity" && sim === activeSim) {
             canvas.dataset.gravity = String(value);
+        }
+        if (key === "pressureSolver" && sim === activeSim) {
+            canvas.dataset.pressureSolver = value >= 0.5 ? "multigrid" : "jacobi";
+        }
+        if (sim === activeSim && (key === "liquidSdf" || key === "ghostFluid" || key === "fractionalSolids" || key === "movingSolidBoundaries")) {
+            canvas.dataset[key] = value >= 0.5 ? "true" : "false";
         }
     }
 

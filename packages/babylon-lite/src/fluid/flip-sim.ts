@@ -59,9 +59,56 @@ const WORKGROUP_SIZE = 64;
 const MAX_WORKGROUPS = 65535;
 const FIXED_POINT = 10000;
 const PARAMS_BYTES = 8 * 16;
+const MULTIGRID_PARAMS_BYTES = 3 * 16;
+const MULTIGRID_PRE_SMOOTH = 2;
+const MULTIGRID_POST_SMOOTH = 4;
+const MULTIGRID_COARSE_SMOOTH = 16;
+const MULTIGRID_RELAXATION = 0.8;
+const MULTIGRID_CORRECTION_DAMPING = 0.5;
+const MAX_MULTIGRID_LEVELS = 8;
 const EXTRAPOLATION_LAYERS = 2;
+const LIQUID_SDF_LAYERS = 3;
 
-export function estimateFlipGpuBytes(particleCount: number, gridDim: readonly [number, number, number]): number {
+export type FlipPressureSolver = "jacobi" | "multigrid";
+
+/** Optional high-quality FLIP geometry paths. Every feature defaults off so the
+ * legacy fast path allocates no extra buffers and records no extra passes. */
+export interface FlipQualityFeatures {
+    /** Build a particle-occupancy-derived narrow-band liquid signed-distance field. */
+    liquidSdf?: boolean;
+    /** Use liquid-SDF interface fractions in the free-surface pressure solve. Requires liquidSdf. */
+    ghostFluid?: boolean;
+    /** Sample the scene SDF into fractional open-area weights on MAC faces. */
+    fractionalSolids?: boolean;
+    /** Include scene-boundary velocity in weighted face fluxes. Requires fractionalSolids. */
+    movingSolidBoundaries?: boolean;
+}
+
+function multigridDimensions(gridDim: readonly [number, number, number]): Array<[number, number, number]> {
+    const dimensions: Array<[number, number, number]> = [[...gridDim]];
+    while (dimensions.length < MAX_MULTIGRID_LEVELS) {
+        const current = dimensions[dimensions.length - 1]!;
+        if (Math.min(...current) <= 4 || current[0] * current[1] * current[2] <= 64) {
+            break;
+        }
+        dimensions.push(current.map((value) => Math.max(1, Math.ceil(value / 2))) as [number, number, number]);
+    }
+    return dimensions;
+}
+
+function estimateMultigridGpuBytes(gridDim: readonly [number, number, number]): number {
+    return multigridDimensions(gridDim).reduce((bytes, dim, index) => {
+        const count = dim[0] * dim[1] * dim[2];
+        return bytes + count * (index === 0 ? 8 : 20) + MULTIGRID_PARAMS_BYTES;
+    }, 0);
+}
+
+export function estimateFlipGpuBytes(
+    particleCount: number,
+    gridDim: readonly [number, number, number],
+    pressureSolver: FlipPressureSolver = "jacobi",
+    quality: FlipQualityFeatures = {}
+): number {
     const count = Math.max(1, Math.floor(particleCount));
     const dim = gridDim.map((value) => Math.max(4, Math.round(value))) as [number, number, number];
     const numCells = dim[0] * dim[1] * dim[2];
@@ -70,7 +117,10 @@ export function estimateFlipGpuBytes(particleCount: number, gridDim: readonly [n
     const faceBytes = totalFaces * (8 + 4 + 8 + 8 + 8 + 8 + 4);
     const cellBytes = numCells * (4 + 4 + 4 + 4 + 4 + 16 + 4);
     const fixedBytes = PARAMS_BYTES + 32 + 4 + 2 * 4;
-    return particleBytes + faceBytes + cellBytes + fixedBytes + estimateFluidFlowGpuBytes(count);
+    const multigridBytes = pressureSolver === "multigrid" ? estimateMultigridGpuBytes(dim) : 0;
+    const liquidSdfBytes = quality.liquidSdf ? numCells * 8 : 0;
+    const solidFaceBytes = quality.fractionalSolids ? totalFaces * 8 : 0;
+    return particleBytes + faceBytes + cellBytes + fixedBytes + estimateFluidFlowGpuBytes(count) + multigridBytes + liquidSdfBytes + solidFaceBytes;
 }
 
 export interface FlipOptions extends FluidSimBaseOptions {
@@ -98,6 +148,10 @@ export interface FlipOptions extends FluidSimBaseOptions {
     pressureIterations?: number;
     /** Weighted-Jacobi relaxation factor. Default 0.8. */
     pressureRelaxation?: number;
+    /** Pressure projection solver. Default "jacobi". */
+    pressureSolver?: FlipPressureSolver;
+    /** Geometric multigrid V-cycles per substep. Default 2. */
+    multigridCycles?: number;
     /** FLIP share in the FLIP/PIC blend. Default 0.95. */
     flipRatio?: number;
     /** Exponential non-physical particle-velocity damping per second. Default 0. */
@@ -108,10 +162,65 @@ export interface FlipOptions extends FluidSimBaseOptions {
     viscosityIterations?: number;
     /** Liquid-air surface tension coefficient. Default 0. */
     surfaceTension?: number;
+    /** Build the optional liquid signed-distance field. Default false. */
+    liquidSdf?: boolean;
+    /** Use ghost-fluid free-surface pressure fractions. Requires liquidSdf. Default false. */
+    ghostFluid?: boolean;
+    /** Use fractional scene-solid MAC face weights. Default false. */
+    fractionalSolids?: boolean;
+    /** Include moving-solid face velocity in fractional fluxes. Requires fractionalSolids. Default false. */
+    movingSolidBoundaries?: boolean;
     /** Particle collision restitution. Default 0. */
     restitution?: number;
     /** Explicit world-space xyz seed positions. */
     initialPositions?: Float32Array;
+}
+
+interface MultigridLevel {
+    readonly dim: [number, number, number];
+    readonly count: number;
+    readonly groups: number;
+    readonly cellTypes: GPUBuffer;
+    readonly rhs: GPUBuffer;
+    readonly residual: GPUBuffer;
+    readonly pressureA: GPUBuffer;
+    readonly pressureB: GPUBuffer;
+    readonly params: GPUBuffer;
+    readonly smoothAB: GPUBindGroup;
+    readonly smoothBA: GPUBindGroup;
+    readonly residualA: GPUBindGroup;
+    readonly residualB: GPUBindGroup;
+    restrict?: GPUBindGroup;
+    prolongAA?: GPUBindGroup;
+    prolongAB?: GPUBindGroup;
+    prolongBA?: GPUBindGroup;
+    prolongBB?: GPUBindGroup;
+}
+
+interface MultigridResources {
+    readonly levels: MultigridLevel[];
+    readonly buildRhs: GPUBindGroup;
+    fineResidualA?: GPUBindGroup;
+    fineResidualB?: GPUBindGroup;
+    readonly gpuBytes: number;
+}
+
+interface LiquidSdfResources {
+    readonly sdfA: GPUBuffer;
+    readonly sdfB: GPUBuffer;
+    readonly seedPipeline: GPUComputePipeline;
+    readonly relaxPipeline: GPUComputePipeline;
+    readonly seed: GPUBindGroup;
+    readonly relaxAB: GPUBindGroup;
+    readonly relaxBA: GPUBindGroup;
+    readonly gpuBytes: number;
+}
+
+interface SolidFaceResources {
+    readonly geometry: GPUBuffer;
+    pipeline: GPUComputePipeline;
+    bindGroup: GPUBindGroup;
+    readonly gpuBytes: number;
 }
 
 const COMMON_WGSL = /* wgsl */ `
@@ -323,7 +432,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     atomicAdd(&cellMarks[cellIndex(cell, p)], 1u);
 }`;
 
-function buildClassifyWgsl(scene: SceneSdfSpec | null): string {
+function buildClassifyWgsl(scene: SceneSdfSpec | null, fractionalSolids = false): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(3) var<uniform> sceneSdfParams: SceneSdfParams;
@@ -345,14 +454,168 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let d = gridDim(p);
     let c = faceCoord(i, d);
     let center = p.originDx.xyz + (vec3<f32>(c) + 0.5) * p.originDx.w;
-    // Keep cut cells fluid and let the particle-level SDF collision enforce the
-    // exact surface. Marking a cell solid when the wall merely crosses its centre
-    // creates a zero-velocity tangential stencil that can pin a visible wall film.
-    if (sceneSdf(center, 0.0) <= -0.5 * p.originDx.w) {
+    // Fractional mode keeps every cut cell active; the half-diagonal threshold
+    // guarantees that a solid cell is fully behind a proper signed-distance surface.
+    if (sceneSdf(center, 0.0) <= ${fractionalSolids ? "-0.8660254" : "-0.5"} * p.originDx.w) {
         cellTypes[i] = CELL_SOLID;
     } else {
         cellTypes[i] = select(CELL_AIR, CELL_FLUID, atomicLoad(&cellMarks[i]) > 0u);
     }
+}`;
+}
+
+const LIQUID_SDF_SEED_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> cellMarks: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> liquidSdf: array<f32>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn cellTypeAt(c: vec3<i32>) -> u32 {
+    if (!inCellGrid(c, p)) {
+        return CELL_SOLID;
+    }
+    return cellTypes[cellIndex(c, p)];
+}
+
+fn touches(c: vec3<i32>, kind: u32) -> bool {
+    return cellTypeAt(c + vec3<i32>(-1, 0, 0)) == kind
+        || cellTypeAt(c + vec3<i32>(1, 0, 0)) == kind
+        || cellTypeAt(c + vec3<i32>(0, -1, 0)) == kind
+        || cellTypeAt(c + vec3<i32>(0, 1, 0)) == kind
+        || cellTypeAt(c + vec3<i32>(0, 0, -1)) == kind
+        || cellTypeAt(c + vec3<i32>(0, 0, 1)) == kind;
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&liquidSdf)) {
+        return;
+    }
+    let kind = cellTypes[i];
+    if (kind == CELL_SOLID) {
+        liquidSdf[i] = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
+        return;
+    }
+    let c = faceCoord(i, gridDim(p));
+    let band = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
+    if (kind == CELL_FLUID) {
+        let occupancy = min(f32(atomicLoad(&cellMarks[i])) / max(1.0, f32(p.counts.y)), 1.0);
+        let interfaceDistance = p.originDx.w * clamp(occupancy, 0.1, 1.0);
+        liquidSdf[i] = -select(band, interfaceDistance, touches(c, CELL_AIR));
+    } else {
+        liquidSdf[i] = select(band, 0.5 * p.originDx.w, touches(c, CELL_FLUID));
+    }
+}`;
+
+const LIQUID_SDF_RELAX_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> sdfIn: array<f32>;
+@group(0) @binding(1) var<storage, read_write> sdfOut: array<f32>;
+@group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn distanceAt(c: vec3<i32>, fallback: f32) -> f32 {
+    if (!inCellGrid(c, p) || cellTypes[cellIndex(c, p)] == CELL_SOLID) {
+        return fallback;
+    }
+    return abs(sdfIn[cellIndex(c, p)]);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&sdfOut)) {
+        return;
+    }
+    let kind = cellTypes[i];
+    if (kind == CELL_SOLID) {
+        sdfOut[i] = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
+        return;
+    }
+    let c = faceCoord(i, gridDim(p));
+    var distance = abs(sdfIn[i]);
+    distance = min(distance, distanceAt(c + vec3<i32>(-1, 0, 0), distance) + p.originDx.w);
+    distance = min(distance, distanceAt(c + vec3<i32>(1, 0, 0), distance) + p.originDx.w);
+    distance = min(distance, distanceAt(c + vec3<i32>(0, -1, 0), distance) + p.originDx.w);
+    distance = min(distance, distanceAt(c + vec3<i32>(0, 1, 0), distance) + p.originDx.w);
+    distance = min(distance, distanceAt(c + vec3<i32>(0, 0, -1), distance) + p.originDx.w);
+    distance = min(distance, distanceAt(c + vec3<i32>(0, 0, 1), distance) + p.originDx.w);
+    sdfOut[i] = select(distance, -distance, kind == CELL_FLUID);
+}`;
+
+function buildSolidFaceGeometryWgsl(scene: SceneSdfSpec | null): string {
+    const sceneDecl = scene
+        ? `${scene.struct}
+@group(0) @binding(2) var<uniform> sceneSdfParams: SceneSdfParams;
+${scene.sdfGrid ? `@group(0) @binding(3) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${scene.sdf}
+${SCENE_NORMAL_WGSL}`
+        : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
+fn sceneNormal(pt: vec3<f32>, dt: f32) -> vec3<f32> { return vec3<f32>(0.0, 1.0, 0.0); }`;
+    return /* wgsl */ `
+${COMMON_WGSL}
+${sceneDecl}
+@group(0) @binding(0) var<storage, read_write> faceGeometry: array<vec2<f32>>;
+@group(0) @binding(1) var<uniform> p: Params;
+
+fn faceCenter(kind: u32, c: vec3<i32>) -> vec3<f32> {
+    var offset = vec3<f32>(0.5);
+    if (kind == FACE_U) { offset.x = 0.0; }
+    if (kind == FACE_V) { offset.y = 0.0; }
+    if (kind == FACE_W) { offset.z = 0.0; }
+    return p.originDx.xyz + (vec3<f32>(c) + offset) * p.originDx.w;
+}
+
+fn aperture(phi: f32) -> f32 {
+    return clamp(0.5 + phi / p.originDx.w, 0.0, 1.0);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= totalFaceCount(p)) {
+        return;
+    }
+    let kind = faceKind(i, p);
+    let d = faceGridDim(kind, p);
+    let c = faceCoord(faceLocalIndex(i, kind, p), d);
+    if ((kind == FACE_U && (c.x == 0 || c.x == d.x - 1))
+        || (kind == FACE_V && (c.y == 0 || c.y == d.y - 1))
+        || (kind == FACE_W && (c.z == 0 || c.z == d.z - 1))) {
+        faceGeometry[i] = vec2<f32>(0.0);
+        return;
+    }
+    let center = faceCenter(kind, c);
+    var tangentA = vec3<f32>(0.0);
+    var tangentB = vec3<f32>(0.0);
+    if (kind == FACE_U) {
+        tangentA.y = 0.5 * p.originDx.w;
+        tangentB.z = 0.5 * p.originDx.w;
+    } else if (kind == FACE_V) {
+        tangentA.x = 0.5 * p.originDx.w;
+        tangentB.z = 0.5 * p.originDx.w;
+    } else {
+        tangentA.x = 0.5 * p.originDx.w;
+        tangentB.y = 0.5 * p.originDx.w;
+    }
+    let open = 0.25 * (
+        aperture(sceneSdf(center - tangentA - tangentB, 0.0))
+        + aperture(sceneSdf(center + tangentA - tangentB, 0.0))
+        + aperture(sceneSdf(center - tangentA + tangentB, 0.0))
+        + aperture(sceneSdf(center + tangentA + tangentB, 0.0)));
+    var solidVelocity = 0.0;
+    if (p.counts.z != 0u && open < 1.0) {
+        let epsilon = max(1.0e-4, min(p.sim.x, 0.002));
+        let normal = sceneNormal(center, 0.0);
+        let normalSpeed = -(sceneSdf(center, epsilon) - sceneSdf(center, 0.0)) / epsilon;
+        var component = normal.z;
+        if (kind == FACE_U) { component = normal.x; }
+        if (kind == FACE_V) { component = normal.y; }
+        solidVelocity = normalSpeed * component;
+    }
+    faceGeometry[i] = vec2<f32>(open, solidVelocity);
 }`;
 }
 
@@ -515,6 +778,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     normals[i] = vec4<f32>(select(vec3<f32>(0.0), gradient / magnitude, magnitude > 1.0e-6), magnitude);
 }`;
 
+const SURFACE_NORMAL_SDF_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> liquidSdf: array<f32>;
+@group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> normals: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn phiAt(c: vec3<i32>, fallback: f32) -> f32 {
+    if (!inCellGrid(c, p) || cellTypes[cellIndex(c, p)] == CELL_SOLID) {
+        return fallback;
+    }
+    return liquidSdf[cellIndex(c, p)];
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&normals)) {
+        return;
+    }
+    let centerPhi = liquidSdf[i];
+    if (cellTypes[i] == CELL_SOLID || abs(centerPhi) > 1.5 * p.originDx.w) {
+        normals[i] = vec4<f32>(0.0);
+        return;
+    }
+    let c = faceCoord(i, gridDim(p));
+    let gradient = vec3<f32>(
+        phiAt(c + vec3<i32>(1, 0, 0), centerPhi) - phiAt(c - vec3<i32>(1, 0, 0), centerPhi),
+        phiAt(c + vec3<i32>(0, 1, 0), centerPhi) - phiAt(c - vec3<i32>(0, 1, 0), centerPhi),
+        phiAt(c + vec3<i32>(0, 0, 1), centerPhi) - phiAt(c - vec3<i32>(0, 0, 1), centerPhi)
+    ) / (2.0 * p.originDx.w);
+    let magnitude = length(gradient);
+    // Match the inward-facing legacy normal and its resolution-independent
+    // interface-strength encoding.
+    normals[i] = vec4<f32>(select(vec3<f32>(0.0), -gradient / magnitude, magnitude > 1.0e-6), magnitude / p.originDx.w);
+}`;
+
 const SURFACE_CURVATURE_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> normals: array<vec4<f32>>;
@@ -598,7 +898,57 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     velocity[i] = vec2<f32>(velocity[i].x + force * p.sim.x, 1.0);
 }`;
 
-function buildDivergenceWgsl(scene: SceneSdfSpec | null): string {
+const SURFACE_FORCE_SDF_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> velocity: array<vec2<f32>>;
+@group(0) @binding(1) var<storage, read> liquidSdf: array<f32>;
+@group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(3) var<storage, read> curvature: array<f32>;
+@group(0) @binding(4) var<uniform> p: Params;
+
+fn cellTypeAt(c: vec3<i32>) -> u32 {
+    if (!inCellGrid(c, p)) {
+        return CELL_SOLID;
+    }
+    return cellTypes[cellIndex(c, p)];
+}
+
+fn indicator(c: vec3<i32>) -> f32 {
+    if (!inCellGrid(c, p) || cellTypeAt(c) == CELL_SOLID) {
+        return 0.0;
+    }
+    return clamp(0.5 - liquidSdf[cellIndex(c, p)] / p.originDx.w, 0.0, 1.0);
+}
+
+fn curvatureAt(c: vec3<i32>) -> f32 {
+    if (!inCellGrid(c, p) || cellTypeAt(c) == CELL_SOLID) {
+        return 0.0;
+    }
+    return curvature[cellIndex(c, p)];
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= totalFaceCount(p)) {
+        return;
+    }
+    let kind = faceKind(i, p);
+    let d = faceGridDim(kind, p);
+    let c = faceCoord(faceLocalIndex(i, kind, p), d);
+    let adjacent = adjacentCells(kind, c);
+    let leftType = cellTypeAt(adjacent[0]);
+    let rightType = cellTypeAt(adjacent[1]);
+    if (leftType == CELL_SOLID || rightType == CELL_SOLID || (leftType != CELL_FLUID && rightType != CELL_FLUID)) {
+        return;
+    }
+    let indicatorGradient = (indicator(adjacent[1]) - indicator(adjacent[0])) / p.originDx.w;
+    let faceCurvature = 0.5 * (curvatureAt(adjacent[0]) + curvatureAt(adjacent[1]));
+    let force = p.material.y * faceCurvature * indicatorGradient;
+    velocity[i] = vec2<f32>(velocity[i].x + force * p.sim.x, 1.0);
+}`;
+
+function buildDivergenceWgsl(scene: SceneSdfSpec | null, fractionalSolids = false): string {
     const sceneDecl = scene
         ? `${scene.struct}
 @group(0) @binding(5) var<uniform> sceneSdfParams: SceneSdfParams;
@@ -613,9 +963,16 @@ ${sceneDecl}
 @group(0) @binding(2) var<storage, read_write> divergence: array<f32>;
 @group(0) @binding(3) var<uniform> p: Params;
 @group(0) @binding(4) var<storage, read_write> accum: array<FaceAccum>;
+${fractionalSolids ? "@group(0) @binding(7) var<storage, read> faceGeometry: array<vec2<f32>>;" : ""}
 
 fn faceValue(kind: u32, c: vec3<i32>) -> f32 {
-    return velocity[globalFaceIndex(kind, c, p)].x;
+    let index = globalFaceIndex(kind, c, p);
+    ${
+        fractionalSolids
+            ? `let geometry = faceGeometry[index];
+    return geometry.x * velocity[index].x + (1.0 - geometry.x) * geometry.y;`
+            : "return velocity[index].x;"
+    }
 }
 
 fn faceWeight(kind: u32, c: vec3<i32>) -> f32 {
@@ -674,15 +1031,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 }
 
-const PRESSURE_WGSL = /* wgsl */ `
+function buildPressureWgsl(ghostFluid = false, fractionalSolids = false): string {
+    return /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> pressureIn: array<f32>;
 @group(0) @binding(1) var<storage, read_write> pressureOut: array<f32>;
 @group(0) @binding(2) var<storage, read> divergence: array<f32>;
 @group(0) @binding(3) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(4) var<uniform> p: Params;
+${ghostFluid ? "@group(0) @binding(5) var<storage, read> liquidSdf: array<f32>;" : ""}
+${fractionalSolids ? "@group(0) @binding(6) var<storage, read> faceGeometry: array<vec2<f32>>;" : ""}
 
-fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+fn addNeighbour(c: vec3<i32>, faceIndex: u32, centerPhi: f32, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
     if (!inCellGrid(c, p)) {
         return;
     }
@@ -690,9 +1050,21 @@ fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f
     if (cellKind == CELL_SOLID) {
         return;
     }
-    *diagonal += 1.0;
+    ${fractionalSolids ? "let faceWeight = faceGeometry[faceIndex].x;" : "let faceWeight = 1.0;"}
+    if (faceWeight <= 1.0e-4) {
+        return;
+    }
     if (cellKind == CELL_FLUID) {
-        *sum += pressureIn[cellIndex(c, p)];
+        *diagonal += faceWeight;
+        *sum += faceWeight * pressureIn[cellIndex(c, p)];
+    } else {
+        ${
+            ghostFluid
+                ? `let neighbourPhi = liquidSdf[cellIndex(c, p)];
+        let theta = clamp(centerPhi / min(centerPhi - neighbourPhi, -1.0e-6), 0.01, 1.0);
+        *diagonal += faceWeight / theta;`
+                : "*diagonal += faceWeight;"
+        }
     }
 }
 
@@ -709,6 +1081,172 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let c = faceCoord(i, gridDim(p));
     var sum = 0.0;
     var diagonal = 0.0;
+    ${ghostFluid ? "let centerPhi = liquidSdf[i];" : "let centerPhi = -p.originDx.w;"}
+    addNeighbour(c + vec3<i32>(-1, 0, 0), globalFaceIndex(FACE_U, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(1, 0, 0), globalFaceIndex(FACE_U, c + vec3<i32>(1, 0, 0), p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, -1, 0), globalFaceIndex(FACE_V, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 1, 0), globalFaceIndex(FACE_V, c + vec3<i32>(0, 1, 0), p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, -1), globalFaceIndex(FACE_W, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, 1), globalFaceIndex(FACE_W, c + vec3<i32>(0, 0, 1), p), centerPhi, &sum, &diagonal);
+    if (diagonal <= 0.0) {
+        pressureOut[i] = 0.0;
+        return;
+    }
+    let rhs = divergence[i] * p.originDx.w * p.originDx.w;
+    let candidate = (sum - rhs) / diagonal;
+    pressureOut[i] = mix(pressureIn[i], candidate, p.solve.x);
+}`;
+}
+
+function buildPressureResidualWgsl(ghostFluid = false, fractionalSolids = false): string {
+    return /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> pressure: array<f32>;
+@group(0) @binding(1) var<storage, read> divergence: array<f32>;
+@group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> residual: array<f32>;
+@group(0) @binding(4) var<uniform> p: Params;
+${ghostFluid ? "@group(0) @binding(5) var<storage, read> liquidSdf: array<f32>;" : ""}
+${fractionalSolids ? "@group(0) @binding(6) var<storage, read> faceGeometry: array<vec2<f32>>;" : ""}
+
+fn addNeighbour(c: vec3<i32>, faceIndex: u32, centerPhi: f32, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+    if (!inCellGrid(c, p)) {
+        return;
+    }
+    let cellKind = cellTypes[cellIndex(c, p)];
+    if (cellKind == CELL_SOLID) {
+        return;
+    }
+    ${fractionalSolids ? "let faceWeight = faceGeometry[faceIndex].x;" : "let faceWeight = 1.0;"}
+    if (faceWeight <= 1.0e-4) {
+        return;
+    }
+    if (cellKind == CELL_FLUID) {
+        *diagonal += faceWeight;
+        *sum += faceWeight * pressure[cellIndex(c, p)];
+    } else {
+        ${
+            ghostFluid
+                ? `let neighbourPhi = liquidSdf[cellIndex(c, p)];
+        let theta = clamp(centerPhi / min(centerPhi - neighbourPhi, -1.0e-6), 0.01, 1.0);
+        *diagonal += faceWeight / theta;`
+                : "*diagonal += faceWeight;"
+        }
+    }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&residual)) {
+        return;
+    }
+    if (cellTypes[i] != CELL_FLUID) {
+        residual[i] = 0.0;
+        return;
+    }
+    let c = faceCoord(i, gridDim(p));
+    var sum = 0.0;
+    var diagonal = 0.0;
+    ${ghostFluid ? "let centerPhi = liquidSdf[i];" : "let centerPhi = -p.originDx.w;"}
+    addNeighbour(c + vec3<i32>(-1, 0, 0), globalFaceIndex(FACE_U, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(1, 0, 0), globalFaceIndex(FACE_U, c + vec3<i32>(1, 0, 0), p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, -1, 0), globalFaceIndex(FACE_V, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 1, 0), globalFaceIndex(FACE_V, c + vec3<i32>(0, 1, 0), p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, -1), globalFaceIndex(FACE_W, c, p), centerPhi, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, 1), globalFaceIndex(FACE_W, c + vec3<i32>(0, 0, 1), p), centerPhi, &sum, &diagonal);
+    let rhs = -divergence[i] * p.originDx.w * p.originDx.w;
+    residual[i] = rhs - (diagonal * pressure[i] - sum);
+}`;
+}
+
+const MULTIGRID_COMMON_WGSL = /* wgsl */ `
+const CELL_AIR: u32 = 0u;
+const CELL_FLUID: u32 = 1u;
+const CELL_SOLID: u32 = 2u;
+
+struct MultigridParams {
+    dim: vec4<u32>,
+    fineDim: vec4<u32>,
+    solve: vec4<f32>,
+};
+
+fn gridDim(p: MultigridParams) -> vec3<i32> {
+    return vec3<i32>(p.dim.xyz);
+}
+
+fn fineGridDim(p: MultigridParams) -> vec3<i32> {
+    return vec3<i32>(p.fineDim.xyz);
+}
+
+fn gridIndex(c: vec3<i32>, d: vec3<i32>) -> u32 {
+    return u32(c.x + d.x * (c.y + d.y * c.z));
+}
+
+fn gridCoord(index: u32, d: vec3<i32>) -> vec3<i32> {
+    let x = i32(index % u32(d.x));
+    let yz = i32(index / u32(d.x));
+    let y = yz % d.y;
+    return vec3<i32>(x, y, yz / d.y);
+}
+
+fn inGrid(c: vec3<i32>, d: vec3<i32>) -> bool {
+    return all(c >= vec3<i32>(0)) && all(c < d);
+}
+`;
+
+const MULTIGRID_BUILD_RHS_WGSL = /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> divergence: array<f32>;
+@group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> rhs: array<f32>;
+@group(0) @binding(3) var<uniform> p: MultigridParams;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&rhs)) {
+        return;
+    }
+    rhs[i] = select(0.0, -divergence[i] * p.solve.y, cellTypes[i] == CELL_FLUID);
+}`;
+
+const MULTIGRID_SMOOTH_WGSL = /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> pressureIn: array<f32>;
+@group(0) @binding(1) var<storage, read_write> pressureOut: array<f32>;
+@group(0) @binding(2) var<storage, read> rhs: array<f32>;
+@group(0) @binding(3) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(4) var<uniform> p: MultigridParams;
+
+fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+    let d = gridDim(p);
+    if (!inGrid(c, d)) {
+        return;
+    }
+    let cellKind = cellTypes[gridIndex(c, d)];
+    if (cellKind == CELL_SOLID) {
+        return;
+    }
+    *diagonal += 1.0;
+    if (cellKind == CELL_FLUID) {
+        *sum += pressureIn[gridIndex(c, d)];
+    }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&pressureOut)) {
+        return;
+    }
+    if (cellTypes[i] != CELL_FLUID) {
+        pressureOut[i] = 0.0;
+        return;
+    }
+    let c = gridCoord(i, gridDim(p));
+    var sum = 0.0;
+    var diagonal = 0.0;
     addNeighbour(c + vec3<i32>(-1, 0, 0), &sum, &diagonal);
     addNeighbour(c + vec3<i32>(1, 0, 0), &sum, &diagonal);
     addNeighbour(c + vec3<i32>(0, -1, 0), &sum, &diagonal);
@@ -719,12 +1257,152 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         pressureOut[i] = 0.0;
         return;
     }
-    let rhs = divergence[i] * p.originDx.w * p.originDx.w;
-    let candidate = (sum - rhs) / diagonal;
+    let candidate = (sum + rhs[i]) / diagonal;
     pressureOut[i] = mix(pressureIn[i], candidate, p.solve.x);
 }`;
 
-const PROJECT_WGSL = /* wgsl */ `
+const MULTIGRID_RESIDUAL_WGSL = /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> pressure: array<f32>;
+@group(0) @binding(1) var<storage, read> rhs: array<f32>;
+@group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> residual: array<f32>;
+@group(0) @binding(4) var<uniform> p: MultigridParams;
+
+fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+    let d = gridDim(p);
+    if (!inGrid(c, d)) {
+        return;
+    }
+    let cellKind = cellTypes[gridIndex(c, d)];
+    if (cellKind == CELL_SOLID) {
+        return;
+    }
+    *diagonal += 1.0;
+    if (cellKind == CELL_FLUID) {
+        *sum += pressure[gridIndex(c, d)];
+    }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&residual)) {
+        return;
+    }
+    if (cellTypes[i] != CELL_FLUID) {
+        residual[i] = 0.0;
+        return;
+    }
+    let c = gridCoord(i, gridDim(p));
+    var sum = 0.0;
+    var diagonal = 0.0;
+    addNeighbour(c + vec3<i32>(-1, 0, 0), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(1, 0, 0), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, -1, 0), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 1, 0), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, -1), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, 1), &sum, &diagonal);
+    residual[i] = rhs[i] - (diagonal * pressure[i] - sum);
+}`;
+
+const MULTIGRID_RESTRICT_WGSL = /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> fineResidual: array<f32>;
+@group(0) @binding(1) var<storage, read> fineTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> coarseRhs: array<f32>;
+@group(0) @binding(3) var<storage, read_write> coarseTypes: array<u32>;
+@group(0) @binding(4) var<storage, read_write> coarsePressureA: array<f32>;
+@group(0) @binding(5) var<storage, read_write> coarsePressureB: array<f32>;
+@group(0) @binding(6) var<uniform> p: MultigridParams;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&coarseRhs)) {
+        return;
+    }
+    coarsePressureA[i] = 0.0;
+    coarsePressureB[i] = 0.0;
+    let coarseCoord = gridCoord(i, gridDim(p));
+    let fineBase = coarseCoord * 2;
+    let fineDim = fineGridDim(p);
+    var residualSum = 0.0;
+    var fluidCount = 0u;
+    var solidCount = 0u;
+    for (var z = 0; z < 2; z = z + 1) {
+        for (var y = 0; y < 2; y = y + 1) {
+            for (var x = 0; x < 2; x = x + 1) {
+                let c = fineBase + vec3<i32>(x, y, z);
+                if (!inGrid(c, fineDim)) {
+                    continue;
+                }
+                let fineIndex = gridIndex(c, fineDim);
+                let cellKind = fineTypes[fineIndex];
+                if (cellKind == CELL_FLUID) {
+                    fluidCount += 1u;
+                    residualSum += fineResidual[fineIndex];
+                } else if (cellKind == CELL_SOLID) {
+                    solidCount += 1u;
+                }
+            }
+        }
+    }
+    if (fluidCount > 0u) {
+        coarseTypes[i] = CELL_FLUID;
+        coarseRhs[i] = residualSum * 0.5;
+    } else {
+        coarseTypes[i] = select(CELL_AIR, CELL_SOLID, solidCount > 0u);
+        coarseRhs[i] = 0.0;
+    }
+}`;
+
+const MULTIGRID_PROLONGATE_WGSL = /* wgsl */ `
+${MULTIGRID_COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> coarsePressure: array<f32>;
+@group(0) @binding(1) var<storage, read> coarseTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> finePressure: array<f32>;
+@group(0) @binding(3) var<storage, read> fineTypes: array<u32>;
+@group(0) @binding(4) var<uniform> p: MultigridParams;
+
+fn coarsePressureAt(c: vec3<i32>) -> f32 {
+    let d = gridDim(p);
+    if (!inGrid(c, d)) {
+        return 0.0;
+    }
+    let i = gridIndex(c, d);
+    return select(0.0, coarsePressure[i], coarseTypes[i] == CELL_FLUID);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&finePressure)) {
+        return;
+    }
+    if (fineTypes[i] != CELL_FLUID) {
+        finePressure[i] = 0.0;
+        return;
+    }
+    let fineCoord = gridCoord(i, fineGridDim(p));
+    let coarsePosition = (vec3<f32>(fineCoord) + 0.5) * 0.5 - 0.5;
+    let base = vec3<i32>(floor(coarsePosition));
+    let fraction = coarsePosition - floor(coarsePosition);
+    var correction = 0.0;
+    for (var z = 0; z < 2; z = z + 1) {
+        for (var y = 0; y < 2; y = y + 1) {
+            for (var x = 0; x < 2; x = x + 1) {
+                let offset = vec3<i32>(x, y, z);
+                let weightAxis = select(vec3<f32>(1.0) - fraction, fraction, offset == vec3<i32>(1));
+                correction += coarsePressureAt(base + offset) * weightAxis.x * weightAxis.y * weightAxis.z;
+            }
+        }
+    }
+    finePressure[i] += correction * ${MULTIGRID_CORRECTION_DAMPING};
+}`;
+
+function buildProjectWgsl(ghostFluid = false, fractionalSolids = false): string {
+    return /* wgsl */ `
 ${COMMON_WGSL}
 @group(0) @binding(0) var<storage, read> pressure: array<f32>;
 @group(0) @binding(1) var<storage, read> oldVelocity: array<f32>;
@@ -732,6 +1410,8 @@ ${COMMON_WGSL}
 @group(0) @binding(3) var<storage, read_write> deltaVelocity: array<vec2<f32>>;
 @group(0) @binding(4) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(5) var<uniform> p: Params;
+${ghostFluid ? "@group(0) @binding(6) var<storage, read> liquidSdf: array<f32>;" : ""}
+${fractionalSolids ? "@group(0) @binding(7) var<storage, read> faceGeometry: array<vec2<f32>>;" : ""}
 
 fn cellTypeAt(c: vec3<i32>) -> u32 {
     if (!inCellGrid(c, p)) {
@@ -759,15 +1439,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let adjacent = adjacentCells(kind, c);
     let leftType = cellTypeAt(adjacent[0]);
     let rightType = cellTypeAt(adjacent[1]);
-    if (leftType == CELL_SOLID || rightType == CELL_SOLID || (leftType != CELL_FLUID && rightType != CELL_FLUID)) {
+    ${fractionalSolids ? "let geometry = faceGeometry[i];" : "let geometry = vec2<f32>(1.0, 0.0);"}
+    if (leftType == CELL_SOLID || rightType == CELL_SOLID) {
+        velocity[i] = vec2<f32>(geometry.y, 0.0);
+        deltaVelocity[i] = vec2<f32>(geometry.y - oldVelocity[i], 0.0);
+        return;
+    }
+    if (leftType != CELL_FLUID && rightType != CELL_FLUID) {
         velocity[i] = vec2<f32>(0.0);
         deltaVelocity[i] = vec2<f32>(0.0);
         return;
     }
-    let projected = velocity[i].x - (pressureAt(adjacent[1]) - pressureAt(adjacent[0])) / p.originDx.w;
+    if (geometry.x <= 1.0e-4) {
+        velocity[i] = vec2<f32>(geometry.y, 0.0);
+        deltaVelocity[i] = vec2<f32>(geometry.y - oldVelocity[i], 0.0);
+        return;
+    }
+    var theta = 1.0;
+    ${
+        ghostFluid
+            ? `if (leftType != rightType && (leftType == CELL_AIR || rightType == CELL_AIR)) {
+        let leftPhi = liquidSdf[cellIndex(adjacent[0], p)];
+        let rightPhi = liquidSdf[cellIndex(adjacent[1], p)];
+        theta = clamp(abs(select(rightPhi, leftPhi, leftType == CELL_FLUID)) / max(abs(leftPhi) + abs(rightPhi), 1.0e-6), 0.01, 1.0);
+    }`
+            : ""
+    }
+    let projected = velocity[i].x - (pressureAt(adjacent[1]) - pressureAt(adjacent[0])) / (theta * p.originDx.w);
     velocity[i] = vec2<f32>(projected, 1.0);
     deltaVelocity[i] = vec2<f32>(projected - oldVelocity[i], 1.0);
 }`;
+}
 
 const EXTRAPOLATE_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
@@ -1657,10 +2359,16 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let flipRatio = options.flipRatio ?? 0.95;
     let pressureIterations = Math.max(1, Math.round(options.pressureIterations ?? 40));
     let pressureRelaxation = options.pressureRelaxation ?? 0.8;
+    let pressureSolver: FlipPressureSolver = options.pressureSolver === "multigrid" ? "multigrid" : "jacobi";
+    let multigridCycles = Math.min(8, Math.max(1, Math.round(options.multigridCycles ?? 2)));
     let velocityDamping = options.velocityDamping ?? 0;
     let kinematicViscosity = Math.max(0, options.kinematicViscosity ?? 0);
     let viscosityIterations = Math.max(1, Math.round(options.viscosityIterations ?? 12));
     let surfaceTension = Math.max(0, options.surfaceTension ?? 0);
+    let liquidSdfEnabled = options.liquidSdf === true;
+    let ghostFluidEnabled = options.ghostFluid === true;
+    let fractionalSolidsEnabled = options.fractionalSolids === true;
+    let movingSolidBoundariesEnabled = options.movingSolidBoundaries === true;
     let restitution = options.restitution ?? 0;
     let minSubsteps = Math.max(1, Math.round(options.minSubsteps ?? 1));
     let maxSubsteps = Math.max(minSubsteps, Math.round(options.maxSubsteps ?? 8));
@@ -1727,6 +2435,10 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const surfaceCurvatureBuffer = device.createBuffer({ label: "flip-surface-curvature", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
     const pressureA = device.createBuffer({ label: "flip-pressure-a", size: numCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const pressureB = device.createBuffer({ label: "flip-pressure-b", size: numCells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    let multigridResources: MultigridResources | null = null;
+    let liquidSdfResources: LiquidSdfResources | null = null;
+    let solidFaceResources: SolidFaceResources | null = null;
+    let sceneSdf: SceneSdfSpec | null = null;
     const paramsBuffer = device.createBuffer({ label: "flip-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const emitRangeBuffer = device.createBuffer({ label: "flip-flow-emit-range", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const maxSpeedBuffer = device.createBuffer({
@@ -1828,6 +2540,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         paramsF32[25] = surfaceTension;
         paramsF32[26] = viscosityIterations;
         paramsF32[27] = cflNumber;
+        paramsU32[30] = fractionalSolidsEnabled && movingSolidBoundariesEnabled ? 1 : 0;
         device.queue.writeBuffer(paramsBuffer, 0, paramsData);
     }
 
@@ -1919,6 +2632,12 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         encoder.clearBuffer(cellMarksBuffer);
         encoder.clearBuffer(pressureA);
         encoder.clearBuffer(pressureB);
+        if (multigridResources) {
+            for (let index = 1; index < multigridResources.levels.length; index++) {
+                encoder.clearBuffer(multigridResources.levels[index]!.pressureA);
+                encoder.clearBuffer(multigridResources.levels[index]!.pressureB);
+            }
+        }
         device.queue.submit([encoder.finish()]);
         pressureCurrentIsA = true;
     }
@@ -1935,20 +2654,318 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const normalizePipeline = pipeline("flip-normalize", NORMALIZE_WGSL);
     const viscosityRhsPipeline = pipeline("flip-viscosity-rhs", VISCOSITY_RHS_WGSL);
     const viscosityPipeline = pipeline("flip-viscosity", VISCOSITY_WGSL);
-    const surfaceNormalPipeline = pipeline("flip-surface-normal", SURFACE_NORMAL_WGSL);
+    let surfaceNormalPipeline = pipeline("flip-surface-normal", liquidSdfEnabled ? SURFACE_NORMAL_SDF_WGSL : SURFACE_NORMAL_WGSL);
     const surfaceCurvaturePipeline = pipeline("flip-surface-curvature", SURFACE_CURVATURE_WGSL);
-    const surfaceForcePipeline = pipeline("flip-surface-force", SURFACE_FORCE_WGSL);
+    let surfaceForcePipeline = pipeline("flip-surface-force", liquidSdfEnabled ? SURFACE_FORCE_SDF_WGSL : SURFACE_FORCE_WGSL);
     const speedReducePipeline = pipeline("flip-speed-reduce", SPEED_REDUCE_WGSL);
-    let divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(null));
-    const pressurePipeline = pipeline("flip-pressure", PRESSURE_WGSL);
-    const projectPipeline = pipeline("flip-project", PROJECT_WGSL);
+    let divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(null, fractionalSolidsEnabled));
+    let pressurePipeline = pipeline("flip-pressure", buildPressureWgsl(liquidSdfEnabled && ghostFluidEnabled, fractionalSolidsEnabled));
+    const multigridBuildRhsPipeline = pipeline("flip-multigrid-build-rhs", MULTIGRID_BUILD_RHS_WGSL);
+    const multigridSmoothPipeline = pipeline("flip-multigrid-smooth", MULTIGRID_SMOOTH_WGSL);
+    const multigridResidualPipeline = pipeline("flip-multigrid-residual", MULTIGRID_RESIDUAL_WGSL);
+    let multigridFineResidualPipeline: GPUComputePipeline | null = null;
+    const multigridRestrictPipeline = pipeline("flip-multigrid-restrict", MULTIGRID_RESTRICT_WGSL);
+    const multigridProlongatePipeline = pipeline("flip-multigrid-prolongate", MULTIGRID_PROLONGATE_WGSL);
+    let projectPipeline = pipeline("flip-project", buildProjectWgsl(liquidSdfEnabled && ghostFluidEnabled, fractionalSolidsEnabled));
     const extrapolatePipeline = pipeline("flip-extrapolate", EXTRAPOLATE_WGSL);
     const flowDeletePipeline = pipeline("flip-flow-delete", FLOW_DELETE_WGSL);
     const flowMarkOccupancyPipeline = pipeline("flip-flow-mark-occupancy", FLOW_MARK_OCCUPANCY_WGSL);
     const flowEmitPipeline = pipeline("flip-flow-emit", FLOW_EMIT_WGSL);
     const flowEmitAppendPipeline = pipeline("flip-flow-emit-append", FLOW_EMIT_APPEND_WGSL);
-    let classifyPipeline = pipeline("flip-classify", buildClassifyWgsl(null));
+    let classifyPipeline = pipeline("flip-classify", buildClassifyWgsl(null, fractionalSolidsEnabled));
     let g2pPipeline = pipeline("flip-g2p", buildG2pWgsl(null));
+
+    function ensureLiquidSdf(): LiquidSdfResources {
+        if (liquidSdfResources) {
+            return liquidSdfResources;
+        }
+        const sdfA = device.createBuffer({ label: "flip-liquid-sdf-a", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
+        const sdfB = device.createBuffer({ label: "flip-liquid-sdf-b", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
+        const seedPipeline = pipeline("flip-liquid-sdf-seed", LIQUID_SDF_SEED_WGSL);
+        const relaxPipeline = pipeline("flip-liquid-sdf-relax", LIQUID_SDF_RELAX_WGSL);
+        liquidSdfResources = {
+            sdfA,
+            sdfB,
+            seedPipeline,
+            relaxPipeline,
+            seed: device.createBindGroup({
+                layout: seedPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: cellMarksBuffer } },
+                    { binding: 1, resource: { buffer: cellTypeBuffer } },
+                    { binding: 2, resource: { buffer: sdfA } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            relaxAB: device.createBindGroup({
+                layout: relaxPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: sdfA } },
+                    { binding: 1, resource: { buffer: sdfB } },
+                    { binding: 2, resource: { buffer: cellTypeBuffer } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            relaxBA: device.createBindGroup({
+                layout: relaxPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: sdfB } },
+                    { binding: 1, resource: { buffer: sdfA } },
+                    { binding: 2, resource: { buffer: cellTypeBuffer } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            gpuBytes: sdfA.size + sdfB.size,
+        };
+        return liquidSdfResources;
+    }
+
+    function buildSolidFaceBindGroup(geometry: GPUBuffer, pipe: GPUComputePipeline, scene: SceneSdfSpec | null): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: geometry } },
+            { binding: 1, resource: { buffer: paramsBuffer } },
+        ];
+        if (scene) {
+            entries.push({ binding: 2, resource: { buffer: scene.buffer } });
+            if (scene.sdfGrid) {
+                entries.push({ binding: 3, resource: { buffer: scene.sdfGrid } });
+            }
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+
+    function ensureSolidFaces(): SolidFaceResources {
+        if (solidFaceResources) {
+            return solidFaceResources;
+        }
+        const geometry = device.createBuffer({ label: "flip-solid-face-geometry", size: totalFaces * 8, usage: GPUBufferUsage.STORAGE });
+        const solidPipeline = pipeline("flip-solid-face-geometry", buildSolidFaceGeometryWgsl(sceneSdf));
+        solidFaceResources = {
+            geometry,
+            pipeline: solidPipeline,
+            bindGroup: buildSolidFaceBindGroup(geometry, solidPipeline, sceneSdf),
+            gpuBytes: geometry.size,
+        };
+        return solidFaceResources;
+    }
+
+    function encodeLiquidSdf(encoder: GPUCommandEncoder): void {
+        const resources = ensureLiquidSdf();
+        dispatch(encoder, "flip-liquid-sdf-seed", resources.seedPipeline, resources.seed, cellGroups);
+        let currentIsA = true;
+        for (let layer = 0; layer < LIQUID_SDF_LAYERS; layer++) {
+            dispatch(encoder, "flip-liquid-sdf-relax", resources.relaxPipeline, currentIsA ? resources.relaxAB : resources.relaxBA, cellGroups);
+            currentIsA = !currentIsA;
+        }
+    }
+
+    function liquidSdfBuffer(): GPUBuffer {
+        const resources = ensureLiquidSdf();
+        return LIQUID_SDF_LAYERS % 2 === 0 ? resources.sdfA : resources.sdfB;
+    }
+
+    function ensureMultigrid(): MultigridResources {
+        if (multigridResources) {
+            return multigridResources;
+        }
+        multigridFineResidualPipeline = pipeline("flip-multigrid-fine-residual", buildPressureResidualWgsl(liquidSdfEnabled && ghostFluidEnabled, fractionalSolidsEnabled));
+        const dimensions = multigridDimensions(gridDim);
+        const rawLevels = dimensions.map((dim, index) => {
+            const levelCount = dim[0] * dim[1] * dim[2];
+            const bytes = levelCount * 4;
+            const cellTypes = index === 0 ? cellTypeBuffer : device.createBuffer({ label: `flip-multigrid-types-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
+            const levelPressureA =
+                index === 0
+                    ? pressureA
+                    : device.createBuffer({
+                          label: `flip-multigrid-pressure-a-${index}`,
+                          size: bytes,
+                          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                      });
+            const levelPressureB =
+                index === 0
+                    ? pressureB
+                    : device.createBuffer({
+                          label: `flip-multigrid-pressure-b-${index}`,
+                          size: bytes,
+                          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                      });
+            const rhs = device.createBuffer({ label: `flip-multigrid-rhs-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
+            const residual = device.createBuffer({ label: `flip-multigrid-residual-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
+            const params = device.createBuffer({
+                label: `flip-multigrid-params-${index}`,
+                size: MULTIGRID_PARAMS_BYTES,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            const paramsData = new ArrayBuffer(MULTIGRID_PARAMS_BYTES);
+            const paramsU32 = new Uint32Array(paramsData);
+            const paramsF32 = new Float32Array(paramsData);
+            const fineDim = index === 0 ? dim : dimensions[index - 1]!;
+            paramsU32[0] = dim[0];
+            paramsU32[1] = dim[1];
+            paramsU32[2] = dim[2];
+            paramsU32[4] = fineDim[0];
+            paramsU32[5] = fineDim[1];
+            paramsU32[6] = fineDim[2];
+            paramsF32[8] = MULTIGRID_RELAXATION;
+            paramsF32[9] = (dx * 2 ** index) ** 2;
+            device.queue.writeBuffer(params, 0, paramsData);
+            return {
+                dim,
+                count: levelCount,
+                groups: Math.ceil(levelCount / WORKGROUP_SIZE),
+                cellTypes,
+                rhs,
+                residual,
+                pressureA: levelPressureA,
+                pressureB: levelPressureB,
+                params,
+            };
+        });
+        const levels: MultigridLevel[] = rawLevels.map((level) => ({
+            ...level,
+            smoothAB: device.createBindGroup({
+                layout: multigridSmoothPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: level.pressureA } },
+                    { binding: 1, resource: { buffer: level.pressureB } },
+                    { binding: 2, resource: { buffer: level.rhs } },
+                    { binding: 3, resource: { buffer: level.cellTypes } },
+                    { binding: 4, resource: { buffer: level.params } },
+                ],
+            }),
+            smoothBA: device.createBindGroup({
+                layout: multigridSmoothPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: level.pressureB } },
+                    { binding: 1, resource: { buffer: level.pressureA } },
+                    { binding: 2, resource: { buffer: level.rhs } },
+                    { binding: 3, resource: { buffer: level.cellTypes } },
+                    { binding: 4, resource: { buffer: level.params } },
+                ],
+            }),
+            residualA: device.createBindGroup({
+                layout: multigridResidualPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: level.pressureA } },
+                    { binding: 1, resource: { buffer: level.rhs } },
+                    { binding: 2, resource: { buffer: level.cellTypes } },
+                    { binding: 3, resource: { buffer: level.residual } },
+                    { binding: 4, resource: { buffer: level.params } },
+                ],
+            }),
+            residualB: device.createBindGroup({
+                layout: multigridResidualPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: level.pressureB } },
+                    { binding: 1, resource: { buffer: level.rhs } },
+                    { binding: 2, resource: { buffer: level.cellTypes } },
+                    { binding: 3, resource: { buffer: level.residual } },
+                    { binding: 4, resource: { buffer: level.params } },
+                ],
+            }),
+        }));
+        for (let index = 0; index < levels.length - 1; index++) {
+            const fine = levels[index]!;
+            const coarse = levels[index + 1]!;
+            fine.restrict = device.createBindGroup({
+                layout: multigridRestrictPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: fine.residual } },
+                    { binding: 1, resource: { buffer: fine.cellTypes } },
+                    { binding: 2, resource: { buffer: coarse.rhs } },
+                    { binding: 3, resource: { buffer: coarse.cellTypes } },
+                    { binding: 4, resource: { buffer: coarse.pressureA } },
+                    { binding: 5, resource: { buffer: coarse.pressureB } },
+                    { binding: 6, resource: { buffer: coarse.params } },
+                ],
+            });
+            const prolongEntries = (coarsePressure: GPUBuffer, finePressure: GPUBuffer): GPUBindGroup =>
+                device.createBindGroup({
+                    layout: multigridProlongatePipeline.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: coarsePressure } },
+                        { binding: 1, resource: { buffer: coarse.cellTypes } },
+                        { binding: 2, resource: { buffer: finePressure } },
+                        { binding: 3, resource: { buffer: fine.cellTypes } },
+                        { binding: 4, resource: { buffer: coarse.params } },
+                    ],
+                });
+            fine.prolongAA = prolongEntries(coarse.pressureA, fine.pressureA);
+            fine.prolongAB = prolongEntries(coarse.pressureA, fine.pressureB);
+            fine.prolongBA = prolongEntries(coarse.pressureB, fine.pressureA);
+            fine.prolongBB = prolongEntries(coarse.pressureB, fine.pressureB);
+        }
+        const buildRhs = device.createBindGroup({
+            layout: multigridBuildRhsPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: divergenceBuffer } },
+                { binding: 1, resource: { buffer: cellTypeBuffer } },
+                { binding: 2, resource: { buffer: levels[0]!.rhs } },
+                { binding: 3, resource: { buffer: levels[0]!.params } },
+            ],
+        });
+        let gpuBytes = 0;
+        for (let index = 0; index < levels.length; index++) {
+            const level = levels[index]!;
+            gpuBytes += level.rhs.size + level.residual.size + level.params.size;
+            if (index > 0) {
+                gpuBytes += level.cellTypes.size + level.pressureA.size + level.pressureB.size;
+            }
+        }
+        multigridResources = { levels, buildRhs, gpuBytes };
+        rebuildMultigridFineResidualBindGroups();
+        return multigridResources;
+    }
+
+    function encodeMultigridPressure(encoder: GPUCommandEncoder): void {
+        const resources = ensureMultigrid();
+        const pass = encoder.beginComputePass({ label: "flip-multigrid", timestampWrites: simProfiler?.pass("Simulation") });
+        const run = (pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, groups: number): void => {
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, bindGroup);
+            pass.dispatchWorkgroups(Math.min(groups, MAX_WORKGROUPS), Math.ceil(groups / MAX_WORKGROUPS));
+        };
+        const smooth = (levelIndex: number, iterations: number, currentIsA: boolean): boolean => {
+            const level = resources.levels[levelIndex]!;
+            for (let iteration = 0; iteration < iterations; iteration++) {
+                run(
+                    levelIndex === 0 ? pressurePipeline : multigridSmoothPipeline,
+                    levelIndex === 0 ? (currentIsA ? pressureABindGroup : pressureBBindGroup) : currentIsA ? level.smoothAB : level.smoothBA,
+                    level.groups
+                );
+                currentIsA = !currentIsA;
+            }
+            return currentIsA;
+        };
+        const solveLevel = (levelIndex: number, currentIsA: boolean): boolean => {
+            const level = resources.levels[levelIndex]!;
+            if (levelIndex === resources.levels.length - 1) {
+                return smooth(levelIndex, MULTIGRID_COARSE_SMOOTH, currentIsA);
+            }
+            currentIsA = smooth(levelIndex, MULTIGRID_PRE_SMOOTH, currentIsA);
+            run(
+                levelIndex === 0 ? multigridFineResidualPipeline! : multigridResidualPipeline,
+                levelIndex === 0 ? (currentIsA ? resources.fineResidualA! : resources.fineResidualB!) : currentIsA ? level.residualA : level.residualB,
+                level.groups
+            );
+            const coarse = resources.levels[levelIndex + 1]!;
+            run(multigridRestrictPipeline, level.restrict!, coarse.groups);
+            const coarseCurrentIsA = solveLevel(levelIndex + 1, true);
+            const prolong = coarseCurrentIsA && currentIsA ? level.prolongAA! : coarseCurrentIsA ? level.prolongAB! : currentIsA ? level.prolongBA! : level.prolongBB!;
+            run(multigridProlongatePipeline, prolong, level.groups);
+            return smooth(levelIndex, MULTIGRID_POST_SMOOTH, currentIsA);
+        };
+
+        const fine = resources.levels[0]!;
+        run(multigridBuildRhsPipeline, resources.buildRhs, fine.groups);
+        let currentIsA = pressureCurrentIsA;
+        for (let cycle = 0; cycle < multigridCycles; cycle++) {
+            currentIsA = solveLevel(0, currentIsA);
+        }
+        pass.end();
+        pressureCurrentIsA = currentIsA;
+    }
 
     const p2gBindGroup = device.createBindGroup({
         layout: p2gPipeline.getBindGroupLayout(0),
@@ -1999,15 +3016,18 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             { binding: 4, resource: { buffer: paramsBuffer } },
         ],
     });
-    const surfaceNormalBindGroup = device.createBindGroup({
-        layout: surfaceNormalPipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: cellMarksBuffer } },
-            { binding: 1, resource: { buffer: cellTypeBuffer } },
-            { binding: 2, resource: { buffer: surfaceNormalBuffer } },
-            { binding: 3, resource: { buffer: paramsBuffer } },
-        ],
-    });
+    function buildSurfaceNormalBindGroup(pipe: GPUComputePipeline): GPUBindGroup {
+        return device.createBindGroup({
+            layout: pipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: liquidSdfEnabled ? liquidSdfBuffer() : cellMarksBuffer } },
+                { binding: 1, resource: { buffer: cellTypeBuffer } },
+                { binding: 2, resource: { buffer: surfaceNormalBuffer } },
+                { binding: 3, resource: { buffer: paramsBuffer } },
+            ],
+        });
+    }
+    let surfaceNormalBindGroup = buildSurfaceNormalBindGroup(surfaceNormalPipeline);
     const surfaceCurvatureBindGroup = device.createBindGroup({
         layout: surfaceCurvaturePipeline.getBindGroupLayout(0),
         entries: [
@@ -2017,16 +3037,19 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             { binding: 3, resource: { buffer: paramsBuffer } },
         ],
     });
-    const surfaceForceBindGroup = device.createBindGroup({
-        layout: surfaceForcePipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: faceVelocityA } },
-            { binding: 1, resource: { buffer: cellMarksBuffer } },
-            { binding: 2, resource: { buffer: cellTypeBuffer } },
-            { binding: 3, resource: { buffer: surfaceCurvatureBuffer } },
-            { binding: 4, resource: { buffer: paramsBuffer } },
-        ],
-    });
+    function buildSurfaceForceBindGroup(pipe: GPUComputePipeline): GPUBindGroup {
+        return device.createBindGroup({
+            layout: pipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: faceVelocityA } },
+                { binding: 1, resource: { buffer: liquidSdfEnabled ? liquidSdfBuffer() : cellMarksBuffer } },
+                { binding: 2, resource: { buffer: cellTypeBuffer } },
+                { binding: 3, resource: { buffer: surfaceCurvatureBuffer } },
+                { binding: 4, resource: { buffer: paramsBuffer } },
+            ],
+        });
+    }
+    let surfaceForceBindGroup = buildSurfaceForceBindGroup(surfaceForcePipeline);
     const speedReduceBindGroup = device.createBindGroup({
         layout: speedReducePipeline.getBindGroupLayout(0),
         entries: [
@@ -2050,51 +3073,76 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 entries.push({ binding: 6, resource: { buffer: scene.sdfGrid } });
             }
         }
+        if (fractionalSolidsEnabled) {
+            entries.push({ binding: 7, resource: { buffer: ensureSolidFaces().geometry } });
+        }
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
     }
     let divergenceBindGroup = buildDivergenceBindGroup(divergencePipeline, null);
-    const pressureABindGroup = device.createBindGroup({
-        layout: pressurePipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: pressureA } },
-            { binding: 1, resource: { buffer: pressureB } },
+    function buildPressureBindGroup(pipe: GPUComputePipeline, input: GPUBuffer, output: GPUBuffer): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: input } },
+            { binding: 1, resource: { buffer: output } },
             { binding: 2, resource: { buffer: divergenceBuffer } },
             { binding: 3, resource: { buffer: cellTypeBuffer } },
             { binding: 4, resource: { buffer: paramsBuffer } },
-        ],
-    });
-    const pressureBBindGroup = device.createBindGroup({
-        layout: pressurePipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: pressureB } },
-            { binding: 1, resource: { buffer: pressureA } },
-            { binding: 2, resource: { buffer: divergenceBuffer } },
-            { binding: 3, resource: { buffer: cellTypeBuffer } },
+        ];
+        if (liquidSdfEnabled && ghostFluidEnabled) {
+            entries.push({ binding: 5, resource: { buffer: liquidSdfBuffer() } });
+        }
+        if (fractionalSolidsEnabled) {
+            entries.push({ binding: 6, resource: { buffer: ensureSolidFaces().geometry } });
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+    let pressureABindGroup = buildPressureBindGroup(pressurePipeline, pressureA, pressureB);
+    let pressureBBindGroup = buildPressureBindGroup(pressurePipeline, pressureB, pressureA);
+
+    function buildMultigridFineResidualBindGroup(pipe: GPUComputePipeline, pressure: GPUBuffer, residual: GPUBuffer): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: pressure } },
+            { binding: 1, resource: { buffer: divergenceBuffer } },
+            { binding: 2, resource: { buffer: cellTypeBuffer } },
+            { binding: 3, resource: { buffer: residual } },
             { binding: 4, resource: { buffer: paramsBuffer } },
-        ],
-    });
-    const projectABindGroup = device.createBindGroup({
-        layout: projectPipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: pressureA } },
+        ];
+        if (liquidSdfEnabled && ghostFluidEnabled) {
+            entries.push({ binding: 5, resource: { buffer: liquidSdfBuffer() } });
+        }
+        if (fractionalSolidsEnabled) {
+            entries.push({ binding: 6, resource: { buffer: ensureSolidFaces().geometry } });
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+
+    function rebuildMultigridFineResidualBindGroups(): void {
+        if (!multigridResources) {
+            return;
+        }
+        const fineResidual = multigridResources.levels[0]!.residual;
+        multigridResources.fineResidualA = buildMultigridFineResidualBindGroup(multigridFineResidualPipeline!, pressureA, fineResidual);
+        multigridResources.fineResidualB = buildMultigridFineResidualBindGroup(multigridFineResidualPipeline!, pressureB, fineResidual);
+    }
+
+    function buildProjectBindGroup(pipe: GPUComputePipeline, pressure: GPUBuffer): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: pressure } },
             { binding: 1, resource: { buffer: faceOldBuffer } },
             { binding: 2, resource: { buffer: faceVelocityA } },
             { binding: 3, resource: { buffer: faceDeltaA } },
             { binding: 4, resource: { buffer: cellTypeBuffer } },
             { binding: 5, resource: { buffer: paramsBuffer } },
-        ],
-    });
-    const projectBBindGroup = device.createBindGroup({
-        layout: projectPipeline.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: { buffer: pressureB } },
-            { binding: 1, resource: { buffer: faceOldBuffer } },
-            { binding: 2, resource: { buffer: faceVelocityA } },
-            { binding: 3, resource: { buffer: faceDeltaA } },
-            { binding: 4, resource: { buffer: cellTypeBuffer } },
-            { binding: 5, resource: { buffer: paramsBuffer } },
-        ],
-    });
+        ];
+        if (liquidSdfEnabled && ghostFluidEnabled) {
+            entries.push({ binding: 6, resource: { buffer: liquidSdfBuffer() } });
+        }
+        if (fractionalSolidsEnabled) {
+            entries.push({ binding: 7, resource: { buffer: ensureSolidFaces().geometry } });
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+    let projectABindGroup = buildProjectBindGroup(projectPipeline, pressureA);
+    let projectBBindGroup = buildProjectBindGroup(projectPipeline, pressureB);
     const extrapolateABindGroup = device.createBindGroup({
         layout: extrapolatePipeline.getBindGroupLayout(0),
         entries: [
@@ -2216,6 +3264,36 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const particleGroups = Math.ceil(count / WORKGROUP_SIZE);
     const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
     const faceGroups = Math.ceil(totalFaces / WORKGROUP_SIZE);
+
+    function rebuildQualityPipelines(): void {
+        if (liquidSdfEnabled) {
+            ensureLiquidSdf();
+        }
+        if (fractionalSolidsEnabled) {
+            const resources = ensureSolidFaces();
+            resources.pipeline = pipeline("flip-solid-face-geometry", buildSolidFaceGeometryWgsl(sceneSdf));
+            resources.bindGroup = buildSolidFaceBindGroup(resources.geometry, resources.pipeline, sceneSdf);
+        }
+        const useGhostFluid = liquidSdfEnabled && ghostFluidEnabled;
+        classifyPipeline = pipeline("flip-classify", buildClassifyWgsl(sceneSdf, fractionalSolidsEnabled));
+        surfaceNormalPipeline = pipeline("flip-surface-normal", liquidSdfEnabled ? SURFACE_NORMAL_SDF_WGSL : SURFACE_NORMAL_WGSL);
+        surfaceForcePipeline = pipeline("flip-surface-force", liquidSdfEnabled ? SURFACE_FORCE_SDF_WGSL : SURFACE_FORCE_WGSL);
+        divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(sceneSdf, fractionalSolidsEnabled));
+        pressurePipeline = pipeline("flip-pressure", buildPressureWgsl(useGhostFluid, fractionalSolidsEnabled));
+        if (multigridResources) {
+            multigridFineResidualPipeline = pipeline("flip-multigrid-fine-residual", buildPressureResidualWgsl(useGhostFluid, fractionalSolidsEnabled));
+        }
+        projectPipeline = pipeline("flip-project", buildProjectWgsl(useGhostFluid, fractionalSolidsEnabled));
+        surfaceNormalBindGroup = buildSurfaceNormalBindGroup(surfaceNormalPipeline);
+        surfaceForceBindGroup = buildSurfaceForceBindGroup(surfaceForcePipeline);
+        divergenceBindGroup = buildDivergenceBindGroup(divergencePipeline, sceneSdf);
+        classifyBindGroup = buildClassifyBindGroup(classifyPipeline, sceneSdf);
+        pressureABindGroup = buildPressureBindGroup(pressurePipeline, pressureA, pressureB);
+        pressureBBindGroup = buildPressureBindGroup(pressurePipeline, pressureB, pressureA);
+        rebuildMultigridFineResidualBindGroups();
+        projectABindGroup = buildProjectBindGroup(projectPipeline, pressureA);
+        projectBBindGroup = buildProjectBindGroup(projectPipeline, pressureB);
+    }
 
     const FOAM_CAP_LIMIT = Math.min(
         Math.floor(Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) / 32),
@@ -2474,6 +3552,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         return Math.min(count, flowFrame.emitUnlimited ? candidates : Math.min(candidates, flowFrame.emitCount));
     }
 
+    if (pressureSolver === "multigrid") {
+        ensureMultigrid();
+    }
     seed();
     writeParams(1 / 120);
 
@@ -2514,6 +3595,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 surfaceCurvatureBuffer.size +
                 pressureA.size +
                 pressureB.size +
+                (multigridResources?.gpuBytes ?? 0) +
+                (liquidSdfResources?.gpuBytes ?? 0) +
+                (solidFaceResources?.gpuBytes ?? 0) +
                 paramsBuffer.size +
                 emitRangeBuffer.size +
                 maxSpeedBuffer.size +
@@ -2589,6 +3673,13 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 dispatch(encoder, "flip-p2g", p2gPipeline, p2gBindGroup, activeParticleGroups);
                 flowOccupancyValid = true;
                 dispatch(encoder, "flip-classify", classifyPipeline, classifyBindGroup, cellGroups);
+                if (liquidSdfEnabled) {
+                    encodeLiquidSdf(encoder);
+                }
+                if (fractionalSolidsEnabled) {
+                    const resources = ensureSolidFaces();
+                    dispatch(encoder, "flip-solid-face-geometry", resources.pipeline, resources.bindGroup, faceGroups);
+                }
                 dispatch(encoder, "flip-normalize", normalizePipeline, normalizeBindGroup, faceGroups);
                 if (kinematicViscosity > 0 && viscosityIterations > 0) {
                     dispatch(encoder, "flip-viscosity-rhs", viscosityRhsPipeline, viscosityRhsBindGroup, faceGroups);
@@ -2607,9 +3698,13 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     }
                 }
                 dispatch(encoder, "flip-divergence", divergencePipeline, divergenceBindGroup, cellGroups);
-                for (let iteration = 0; iteration < pressureIterations; iteration++) {
-                    dispatch(encoder, "flip-pressure", pressurePipeline, pressureCurrentIsA ? pressureABindGroup : pressureBBindGroup, cellGroups);
-                    pressureCurrentIsA = !pressureCurrentIsA;
+                if (pressureSolver === "multigrid") {
+                    encodeMultigridPressure(encoder);
+                } else {
+                    for (let iteration = 0; iteration < pressureIterations; iteration++) {
+                        dispatch(encoder, "flip-pressure", pressurePipeline, pressureCurrentIsA ? pressureABindGroup : pressureBBindGroup, cellGroups);
+                        pressureCurrentIsA = !pressureCurrentIsA;
+                    }
                 }
                 dispatch(encoder, "flip-project", projectPipeline, pressureCurrentIsA ? projectABindGroup : projectBBindGroup, faceGroups);
                 for (let layer = 0; layer < EXTRAPOLATION_LAYERS; layer++) {
@@ -2671,6 +3766,15 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 case "pressureRelaxation":
                     pressureRelaxation = Math.min(1, Math.max(0.01, value));
                     break;
+                case "pressureSolver":
+                    pressureSolver = value >= 0.5 ? "multigrid" : "jacobi";
+                    if (pressureSolver === "multigrid") {
+                        ensureMultigrid();
+                    }
+                    break;
+                case "multigridCycles":
+                    multigridCycles = Math.min(8, Math.max(1, Math.round(value)));
+                    break;
                 case "velocityDamping":
                     velocityDamping = Math.max(0, value);
                     break;
@@ -2682,6 +3786,41 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     break;
                 case "surfaceTension":
                     surfaceTension = Math.max(0, value);
+                    break;
+                case "liquidSdf":
+                    if (liquidSdfEnabled === value >= 0.5) {
+                        break;
+                    }
+                    liquidSdfEnabled = value >= 0.5;
+                    if (!liquidSdfEnabled && liquidSdfResources) {
+                        liquidSdfResources.sdfA.destroy();
+                        liquidSdfResources.sdfB.destroy();
+                        liquidSdfResources = null;
+                    }
+                    rebuildQualityPipelines();
+                    break;
+                case "ghostFluid":
+                    if (ghostFluidEnabled === value >= 0.5) {
+                        break;
+                    }
+                    ghostFluidEnabled = value >= 0.5;
+                    if (liquidSdfEnabled) {
+                        rebuildQualityPipelines();
+                    }
+                    break;
+                case "fractionalSolids":
+                    if (fractionalSolidsEnabled === value >= 0.5) {
+                        break;
+                    }
+                    fractionalSolidsEnabled = value >= 0.5;
+                    if (!fractionalSolidsEnabled && solidFaceResources) {
+                        solidFaceResources.geometry.destroy();
+                        solidFaceResources = null;
+                    }
+                    rebuildQualityPipelines();
+                    break;
+                case "movingSolidBoundaries":
+                    movingSolidBoundariesEnabled = value >= 0.5;
                     break;
                 case "restitution":
                     restitution = Math.min(1, Math.max(0, value));
@@ -2702,12 +3841,18 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             }
         },
         setSceneSdf(scene: SceneSdfSpec | null): void {
-            classifyPipeline = pipeline("flip-classify", buildClassifyWgsl(scene));
-            divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(scene));
+            sceneSdf = scene;
+            classifyPipeline = pipeline("flip-classify", buildClassifyWgsl(scene, fractionalSolidsEnabled));
             g2pPipeline = pipeline("flip-g2p", buildG2pWgsl(scene));
             classifyBindGroup = buildClassifyBindGroup(classifyPipeline, scene);
-            divergenceBindGroup = buildDivergenceBindGroup(divergencePipeline, scene);
             g2pBindGroup = buildG2pBindGroup(g2pPipeline, scene);
+            if (fractionalSolidsEnabled) {
+                const resources = ensureSolidFaces();
+                resources.pipeline = pipeline("flip-solid-face-geometry", buildSolidFaceGeometryWgsl(scene));
+                resources.bindGroup = buildSolidFaceBindGroup(resources.geometry, resources.pipeline, scene);
+            }
+            divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(scene, fractionalSolidsEnabled));
+            divergenceBindGroup = buildDivergenceBindGroup(divergencePipeline, scene);
         },
         setEmitters(config: EmitterConfig | null): void {
             flowSeedsInitialParticles = false;
@@ -2793,6 +3938,22 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             surfaceCurvatureBuffer.destroy();
             pressureA.destroy();
             pressureB.destroy();
+            liquidSdfResources?.sdfA.destroy();
+            liquidSdfResources?.sdfB.destroy();
+            solidFaceResources?.geometry.destroy();
+            if (multigridResources) {
+                for (let index = 0; index < multigridResources.levels.length; index++) {
+                    const level = multigridResources.levels[index]!;
+                    level.rhs.destroy();
+                    level.residual.destroy();
+                    level.params.destroy();
+                    if (index > 0) {
+                        level.cellTypes.destroy();
+                        level.pressureA.destroy();
+                        level.pressureB.destroy();
+                    }
+                }
+            }
             paramsBuffer.destroy();
             emitRangeBuffer.destroy();
             maxSpeedBuffer.destroy();
