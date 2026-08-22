@@ -137,6 +137,21 @@ describe("PBR local cubemap projection", () => {
         expect(() => enablePbrLocalCubemap({ maxCandidates: 5 })).toThrow(/already 6/);
     });
 
+    it("keeps single local cubemaps independent from sheen roughness textures", () => {
+        const material = createPbrMaterial();
+        setPbrLocalEnvironment(material, makeEnvironment(), {
+            projectionPosition: [0, 0, 0],
+            projectionSize: [1, 1, 1],
+        });
+        material._sheen = {
+            isEnabled: true,
+            roughnessTexture: {} as never,
+        };
+
+        expect(pbrExt.detect!(material)).toEqual({ f: 1 << 24, f2: 0 });
+        expect(sheenExt.detect!(material).f2 & (1 << 29)).not.toBe(0);
+    });
+
     it("keeps the lightweight single-probe box projection path", async () => {
         const globalCubeView = {} as GPUTextureView;
         const localCubeView = {} as GPUTextureView;
@@ -176,7 +191,7 @@ describe("PBR local cubemap projection", () => {
         await enablePbrLocalCubemap();
         createPbrMeshBindGroup(
             engine as never,
-            { _features: 0, _features2: 1 << 29, _meshFeatures: 0, _meshBGL: {} as GPUBindGroupLayout, _shadowBGL: null } as never,
+            { _features: 1 << 24, _features2: 0, _meshFeatures: 0, _meshBGL: {} as GPUBindGroupLayout, _shadowBGL: null } as never,
             { _fragmentKey: "ibl|local-cubemap" } as never,
             {} as GPUBuffer,
             {} as GPUBuffer,

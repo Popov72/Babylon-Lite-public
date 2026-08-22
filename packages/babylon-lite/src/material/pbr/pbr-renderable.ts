@@ -275,7 +275,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         _createThinInstanceFragment,
     });
 
-    const baseSceneFeatures = (hasTonemap ? PBR_HAS_TONEMAP : 0) | (scene.fog ? PBR_HAS_FOG : 0);
+    const _sceneFeatures = (hasEnv ? PBR_HAS_ENV : 0) | (hasTonemap ? PBR_HAS_TONEMAP : 0) | (scene.fog ? PBR_HAS_FOG : 0);
     // Shadow bind group cache — within one scene build, all receiving meshes share the
     // same shadowLights array, so a BG keyed by shadowBGL alone is correct.
     const shadowBGCache = new Map<GPUBindGroupLayout, GPUBindGroup>();
@@ -314,9 +314,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
         const vbLayout = mesh._gpu._vbLayout;
         const vbKey = mesh._gpu._vbKey ?? "";
         const uv2Mask = (mat as { _uv2Mask?: number })._uv2Mask ?? 0;
-        const sceneFeatures = baseSceneFeatures | (envTextures ? PBR_HAS_ENV : 0);
-
-        const composed = composePbr(features, features2, meshFeatures, sceneFeatures, lightMode, singleLightType, esmShadowDepthCode, vbLayout, vbKey, uv2Mask, pluginIndex);
+        const composed = composePbr(features, features2, meshFeatures, _sceneFeatures, lightMode, singleLightType, esmShadowDepthCode, vbLayout, vbKey, uv2Mask, pluginIndex);
         // Non-triangle topology rides on the composed variant (see ComposedShader._prim). The
         // composition key folds in meshFeatures, whose topology bits this mirrors, so this is only
         // ever written with the same value for a given variant.
@@ -326,7 +324,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
             features,
             features2,
             meshFeatures,
-            sceneFeatures,
+            _sceneFeatures,
             composed,
             `${lightMode}${singleLightType}${vbKey}:${uv2Mask}:${toneMappingKey}${pluginIndex}`,
             mat.stencil ?? null
@@ -533,7 +531,7 @@ export async function buildPbrRenderables(scene: SceneContext, meshes: Mesh[], e
     // already dynamic-imports this module.
     (scene as SceneContext & { _pbrGeomContext?: _PbrGeometryContext })._pbrGeomContext = {
         _composePbr: composePbr,
-        _sceneFeatures: baseSceneFeatures,
+        _sceneFeatures,
         _envTextures: envTextures ?? null,
         _shadowLights: shadowLights,
         _syncThinInstanceBuffers: _syncThinInstanceBuffers,

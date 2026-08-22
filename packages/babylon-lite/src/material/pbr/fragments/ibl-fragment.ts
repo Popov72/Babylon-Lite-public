@@ -9,7 +9,6 @@
  */
 
 import type { ShaderFragment } from "../../../shader/fragment-types.js";
-import type { PbrExt } from "../pbr-flags.js";
 
 // WebGPU shader stage constants
 const STAGE_FRAGMENT = 0x2;
@@ -30,12 +29,6 @@ return vec3<f32>(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
 }
 `;
 
-export const IBL_SCENE_IRRADIANCE = `let environmentIrradiance = (scene.vSphericalL00.rgb
-  + scene.vSphericalL1_1.rgb * N_env.y + scene.vSphericalL10.rgb * N_env.z + scene.vSphericalL11.rgb * N_env.x
-  + scene.vSphericalL2_2.rgb * (N_env.y * N_env.x) + scene.vSphericalL2_1.rgb * (N_env.y * N_env.z)
-  + scene.vSphericalL20.rgb * (3.0 * N_env.z * N_env.z - 1.0) + scene.vSphericalL21.rgb * (N_env.z * N_env.x)
-  + scene.vSphericalL22.rgb * (N_env.x * N_env.x - N_env.y * N_env.y)) * material.environmentIntensity;`;
-
 function makeIblCalculation(hasNormalMap: boolean, anisoBentNormalCode: string = "", skyboxCalculation: string = ""): string {
     // Skybox mode: caller passes pre-baked WGSL (from ibl-skybox-wgsl.ts) to avoid
     // bundling that ~1 KB string into scenes that don't use skyboxMode.
@@ -48,7 +41,11 @@ function makeIblCalculation(hasNormalMap: boolean, anisoBentNormalCode: string =
     // Normal PBR: use reflected view or anisotropy bent normal.
     const reflectionDir = anisoBentNormalCode ? anisoBentNormalCode : `let R_raw = reflect(-V, N);`;
 
-    const irradianceCode = IBL_SCENE_IRRADIANCE;
+    const irradianceCode = `let environmentIrradiance = (scene.vSphericalL00.rgb
+  + scene.vSphericalL1_1.rgb * N_env.y + scene.vSphericalL10.rgb * N_env.z + scene.vSphericalL11.rgb * N_env.x
+  + scene.vSphericalL2_2.rgb * (N_env.y * N_env.x) + scene.vSphericalL2_1.rgb * (N_env.y * N_env.z)
+  + scene.vSphericalL20.rgb * (3.0 * N_env.z * N_env.z - 1.0) + scene.vSphericalL21.rgb * (N_env.z * N_env.x)
+  + scene.vSphericalL22.rgb * (N_env.x * N_env.x - N_env.y * N_env.y)) * material.environmentIntensity;`;
 
     return `${reflectionDir}
 let R = rotateY(R_raw, scene.envRotationY);
@@ -66,7 +63,7 @@ let cubemapDim = f32(textureDimensions(iblTexture).x);
 var specLod = log2(cubemapDim * alphaG) * scene.vImageInfos.z;
 var environmentRadiance = textureSampleLevel(iblTexture, iblSampler, R, clamp(specLod, 0.0, maxLod)).rgb * material.environmentIntensity;
 environmentRadiance = mix(environmentRadiance, environmentIrradiance, alphaG);
-var finalIrradiance = environmentIrradiance * surfaceAlbedo * occlusion;
+let finalIrradiance = environmentIrradiance * surfaceAlbedo * occlusion;
 let finalSpecularScaled = directSpecular * energyConservation;
 let finalRadianceScaled = environmentRadiance * colorSpecularEnvReflectance * energyConservation;
 color = finalIrradiance + finalRadianceScaled + finalSpecularScaled + directDiffuse + emissive;`;
@@ -100,6 +97,8 @@ export function createIblFragment(hasNormalMap: boolean, anisoBentNormalCode: st
         },
     };
 }
+
+import type { PbrExt } from "../pbr-flags.js";
 
 export const pbrExt: PbrExt = {
     id: "ibl",

@@ -17,7 +17,7 @@ import {
 } from "../pbr-local-cubemap-limits.js";
 
 const PBR_HAS_LOCAL_PROBE_SET = 1 << 31;
-const PBR2_HAS_LOCAL_CUBEMAP = 1 << 29;
+const PBR_HAS_LOCAL_CUBEMAP = 1 << 24;
 const STAGE_FRAGMENT = 0x2;
 
 const LOCAL_SH_FIELDS = [
@@ -498,13 +498,13 @@ export const pbrExt: PbrExt = {
     phase: "fragment",
     detect(material) {
         const state = _getPbrLocalEnvironment(material);
-        return state?.kind === "probes" ? { f: PBR_HAS_LOCAL_PROBE_SET, f2: 0 } : { f: 0, f2: state?.kind === "single" ? PBR2_HAS_LOCAL_CUBEMAP : 0 };
+        return state?.kind === "probes" ? { f: PBR_HAS_LOCAL_PROBE_SET, f2: 0 } : { f: state?.kind === "single" ? PBR_HAS_LOCAL_CUBEMAP : 0, f2: 0 };
     },
     frag(ctx) {
         if ((ctx._features & PBR_HAS_LOCAL_PROBE_SET) !== 0) {
             return createProbeArrayFragment(ctx);
         }
-        return (ctx._features2 & PBR2_HAS_LOCAL_CUBEMAP) !== 0 ? createSingleFragment(ctx) : null;
+        return (ctx._features & PBR_HAS_LOCAL_CUBEMAP) !== 0 ? createSingleFragment(ctx) : null;
     },
     writeUbo(data, material, offsets) {
         const state = _getPbrLocalEnvironment(material);
