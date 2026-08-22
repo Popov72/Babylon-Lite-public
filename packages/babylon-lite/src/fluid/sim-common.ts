@@ -19,6 +19,21 @@ export interface FluidProfiler {
     pass(stage: string): { querySet: GPUQuerySet; beginningOfPassWriteIndex: number; endOfPassWriteIndex: number } | undefined;
 }
 
+export interface FluidPressureDiagnostics {
+    /** Maximum absolute algebraic pressure residual on fluid cells. */
+    readonly maxResidual: number;
+    /** Maximum absolute pressure right-hand side used to normalize maxResidual. */
+    readonly maxRhs: number;
+    /** maxResidual / max(maxRhs, epsilon). */
+    readonly relativeResidual: number;
+    /** Maximum absolute divergence measured after pressure projection. */
+    readonly maxDivergence: number;
+    /** Number of fluid cells represented by this asynchronous sample. */
+    readonly fluidCellCount: number;
+    /** Multigrid cycles encoded for the sampled solve, or zero for another solver. */
+    readonly pressureIterations: number;
+}
+
 /** vec4<f32>-per-particle position + a per-particle speed the renderer reads.
  *  Both backends expose their state through these buffers in WORLD units. */
 export interface FluidSim {
@@ -49,6 +64,8 @@ export interface FluidSim {
     readonly debugBuffer: GPUBuffer;
     /** Normalisation reciprocal for `debugBuffer` (≈ 1 / typical max speed). */
     readonly debugNorm: number;
+    /** Latest asynchronously completed pressure-quality sample. FLIP only. */
+    readonly pressureDiagnostics?: FluidPressureDiagnostics;
     /** Estimated total bytes of the GPU buffers this backend owns (particle state,
      *  neighbour grid, render positions, foam pool + uniforms). Re-read live: the
      *  foam pool is allocated lazily and re-sized, so the value grows once foam is on. */

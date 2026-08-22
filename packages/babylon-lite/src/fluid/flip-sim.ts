@@ -15,6 +15,7 @@ import type {
     FluidEmitter,
     FluidFlowConfig,
     FluidProfiler,
+    FluidPressureDiagnostics,
     FluidSim,
     FluidSimBaseOptions,
     FoamConfig,
@@ -58,7 +59,7 @@ import {
 const WORKGROUP_SIZE = 64;
 const MAX_WORKGROUPS = 65535;
 const FIXED_POINT = 10000;
-const PARAMS_BYTES = 8 * 16;
+const PARAMS_BYTES = 9 * 16;
 const MULTIGRID_PARAMS_BYTES = 3 * 16;
 const MULTIGRID_PRE_SMOOTH = 2;
 const MULTIGRID_POST_SMOOTH = 4;
@@ -68,13 +69,20 @@ const MULTIGRID_CORRECTION_DAMPING = 0.5;
 const MAX_MULTIGRID_LEVELS = 8;
 const EXTRAPOLATION_LAYERS = 2;
 const LIQUID_SDF_LAYERS = 3;
+const PRESSURE_DIAGNOSTIC_BYTES = 6 * 4;
+const RESEED_HEADER_WORDS = 8;
+const RESEED_HEADER_BYTES = RESEED_HEADER_WORDS * 4;
+const RESEED_MIN_WORK_BUDGET = 256;
+const RESEED_WORK_BUDGET_DIVISOR = 1000;
 
 export type FlipPressureSolver = "jacobi" | "multigrid";
 
 /** Optional high-quality FLIP geometry paths. Every feature defaults off so the
  * legacy fast path allocates no extra buffers and records no extra passes. */
 export interface FlipQualityFeatures {
-    /** Build a particle-occupancy-derived narrow-band liquid signed-distance field. */
+    /** Allocate asynchronous pressure residual/divergence diagnostics. */
+    pressureDiagnostics?: boolean;
+    /** Build a marker-sphere narrow-band particle level set. */
     liquidSdf?: boolean;
     /** Use liquid-SDF interface fractions in the free-surface pressure solve. Requires liquidSdf. */
     ghostFluid?: boolean;
@@ -82,6 +90,8 @@ export interface FlipQualityFeatures {
     fractionalSolids?: boolean;
     /** Include scene-boundary velocity in weighted face fluxes. Requires fractionalSolids. */
     movingSolidBoundaries?: boolean;
+    /** Allocate production marker-reseeding work lists. */
+    reseedParticles?: boolean;
 }
 
 function multigridDimensions(gridDim: readonly [number, number, number]): Array<[number, number, number]> {
@@ -99,7 +109,7 @@ function multigridDimensions(gridDim: readonly [number, number, number]): Array<
 function estimateMultigridGpuBytes(gridDim: readonly [number, number, number]): number {
     return multigridDimensions(gridDim).reduce((bytes, dim, index) => {
         const count = dim[0] * dim[1] * dim[2];
-        return bytes + count * (index === 0 ? 8 : 20) + MULTIGRID_PARAMS_BYTES;
+        return bytes + count * (index === 0 ? 12 : 24) + MULTIGRID_PARAMS_BYTES;
     }, 0);
 }
 
@@ -117,10 +127,23 @@ export function estimateFlipGpuBytes(
     const faceBytes = totalFaces * (8 + 4 + 8 + 8 + 8 + 8 + 4);
     const cellBytes = numCells * (4 + 4 + 4 + 4 + 4 + 16 + 4);
     const fixedBytes = PARAMS_BYTES + 32 + 4 + 2 * 4;
+    const pressureDiagnosticBytes = quality.pressureDiagnostics ? numCells * 4 + PRESSURE_DIAGNOSTIC_BYTES * 3 : 0;
     const multigridBytes = pressureSolver === "multigrid" ? estimateMultigridGpuBytes(dim) : 0;
     const liquidSdfBytes = quality.liquidSdf ? numCells * 8 : 0;
     const solidFaceBytes = quality.fractionalSolids ? totalFaces * 8 : 0;
-    return particleBytes + faceBytes + cellBytes + fixedBytes + estimateFluidFlowGpuBytes(count) + multigridBytes + liquidSdfBytes + solidFaceBytes;
+    const reseedBytes = quality.reseedParticles ? RESEED_HEADER_BYTES + count * 8 : 0;
+    return (
+        particleBytes +
+        faceBytes +
+        cellBytes +
+        fixedBytes +
+        estimateFluidFlowGpuBytes(count) +
+        multigridBytes +
+        pressureDiagnosticBytes +
+        liquidSdfBytes +
+        solidFaceBytes +
+        reseedBytes
+    );
 }
 
 export interface FlipOptions extends FluidSimBaseOptions {
@@ -152,6 +175,10 @@ export interface FlipOptions extends FluidSimBaseOptions {
     pressureSolver?: FlipPressureSolver;
     /** Geometric multigrid V-cycles per substep. Default 2. */
     multigridCycles?: number;
+    /** Relative pressure residual target. 0 retains fixed-cycle behavior. Default 0. */
+    pressureTolerance?: number;
+    /** Asynchronously sample pressure residual and post-projection divergence. Default false. */
+    pressureDiagnostics?: boolean;
     /** FLIP share in the FLIP/PIC blend. Default 0.95. */
     flipRatio?: number;
     /** Exponential non-physical particle-velocity damping per second. Default 0. */
@@ -170,6 +197,16 @@ export interface FlipOptions extends FluidSimBaseOptions {
     fractionalSolids?: boolean;
     /** Include moving-solid face velocity in fractional fluxes. Requires fractionalSolids. Default false. */
     movingSolidBoundaries?: boolean;
+    /** Enable min/target/max marker reseeding. Default false. */
+    reseedParticles?: boolean;
+    /** Under-populated cell threshold. Default max(1, markersPerCell / 2). */
+    reseedMinParticles?: number;
+    /** Marker count restored in under-populated cells. Default markersPerCell. */
+    reseedTargetParticles?: number;
+    /** Markers above this count are recycled. Default ceil(markersPerCell * 1.5). */
+    reseedMaxParticles?: number;
+    /** Number of substeps between reseeding passes. Default 5. */
+    reseedInterval?: number;
     /** Particle collision restitution. Default 0. */
     restitution?: number;
     /** Explicit world-space xyz seed positions. */
@@ -183,6 +220,7 @@ interface MultigridLevel {
     readonly cellTypes: GPUBuffer;
     readonly rhs: GPUBuffer;
     readonly residual: GPUBuffer;
+    readonly fluidFraction: GPUBuffer;
     readonly pressureA: GPUBuffer;
     readonly pressureB: GPUBuffer;
     readonly params: GPUBuffer;
@@ -208,11 +246,15 @@ interface MultigridResources {
 interface LiquidSdfResources {
     readonly sdfA: GPUBuffer;
     readonly sdfB: GPUBuffer;
-    readonly seedPipeline: GPUComputePipeline;
+    readonly clearPipeline: GPUComputePipeline;
+    readonly scatterPipeline: GPUComputePipeline;
+    readonly finalizePipeline: GPUComputePipeline;
     readonly relaxPipeline: GPUComputePipeline;
-    readonly seed: GPUBindGroup;
-    readonly relaxAB: GPUBindGroup;
+    readonly clear: GPUBindGroup;
+    readonly scatter: GPUBindGroup;
+    readonly finalize: GPUBindGroup;
     readonly relaxBA: GPUBindGroup;
+    readonly relaxAB: GPUBindGroup;
     readonly gpuBytes: number;
 }
 
@@ -220,6 +262,37 @@ interface SolidFaceResources {
     readonly geometry: GPUBuffer;
     pipeline: GPUComputePipeline;
     bindGroup: GPUBindGroup;
+    readonly gpuBytes: number;
+}
+
+interface PressureDiagnosticResources {
+    readonly residual: GPUBuffer;
+    readonly output: GPUBuffer;
+    readonly readbacks: GPUBuffer[];
+    readonly readbackStates: Array<"idle" | "copied" | "mapping">;
+    readbackNext: number;
+    readbackError: unknown;
+    disposed: boolean;
+    residualPipeline: GPUComputePipeline;
+    readonly reducePipeline: GPUComputePipeline;
+    readonly postDivergencePipeline: GPUComputePipeline;
+    residualA: GPUBindGroup;
+    residualB: GPUBindGroup;
+    readonly reduce: GPUBindGroup;
+    readonly postDivergence: GPUBindGroup;
+    readonly gpuBytes: number;
+}
+
+interface ReseedResources {
+    readonly state: GPUBuffer;
+    readonly deleteOverfullPipeline: GPUComputePipeline;
+    readonly deleteSurplusPipeline: GPUComputePipeline;
+    readonly buildPipeline: GPUComputePipeline;
+    emitPipeline: GPUComputePipeline;
+    readonly deleteOverfullBindGroup: GPUBindGroup;
+    readonly deleteSurplusBindGroup: GPUBindGroup;
+    readonly buildBindGroup: GPUBindGroup;
+    emitBindGroup: GPUBindGroup;
     readonly gpuBytes: number;
 }
 
@@ -242,6 +315,7 @@ struct Params {
     solve: vec4<f32>,
     material: vec4<f32>,
     counts: vec4<u32>,
+    reseed: vec4<u32>,
 };
 
 struct FaceAccum {
@@ -464,27 +538,74 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 }
 
-const LIQUID_SDF_SEED_WGSL = /* wgsl */ `
+const LIQUID_SDF_CLEAR_WGSL = /* wgsl */ `
 ${COMMON_WGSL}
-@group(0) @binding(0) var<storage, read_write> cellMarks: array<atomic<u32>>;
+@group(0) @binding(0) var<storage, read_write> orderedSdf: array<atomic<u32>>;
+@group(0) @binding(1) var<uniform> p: Params;
+
+fn floatToOrdered(value: f32) -> u32 {
+    let bits = bitcast<u32>(value);
+    return select(~bits, bits ^ 0x80000000u, (bits & 0x80000000u) == 0u);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i < arrayLength(&orderedSdf)) {
+        atomicStore(&orderedSdf[i], floatToOrdered(f32(${LIQUID_SDF_LAYERS}) * p.originDx.w));
+    }
+}
+`;
+
+const LIQUID_SDF_SCATTER_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
+@group(0) @binding(0) var<storage, read> positions: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> orderedSdf: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> p: Params;
+@group(0) @binding(3) var<storage, read_write> lifecycle: FluidLifecycle;
+
+fn floatToOrdered(value: f32) -> u32 {
+    let bits = bitcast<u32>(value);
+    return select(~bits, bits ^ 0x80000000u, (bits & 0x80000000u) == 0u);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= p.counts.x || !fluidParticleIsActive(i)) {
+        return;
+    }
+    let position = positions[i].xyz;
+    let particleCell = vec3<i32>(floor((position - p.originDx.xyz) / p.originDx.w));
+    let reconstructionRadius = max(p.solve.z, 0.75 * p.originDx.w);
+    for (var z = -1; z <= 1; z = z + 1) {
+        for (var y = -1; y <= 1; y = y + 1) {
+            for (var x = -1; x <= 1; x = x + 1) {
+                let c = particleCell + vec3<i32>(x, y, z);
+                if (!inCellGrid(c, p)) {
+                    continue;
+                }
+                let center = p.originDx.xyz + (vec3<f32>(c) + 0.5) * p.originDx.w;
+                let distance = length(center - position) - reconstructionRadius;
+                atomicMin(&orderedSdf[cellIndex(c, p)], floatToOrdered(distance));
+            }
+        }
+    }
+}
+`;
+
+const LIQUID_SDF_FINALIZE_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> orderedSdf: array<atomic<u32>>;
 @group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(2) var<storage, read_write> liquidSdf: array<f32>;
 @group(0) @binding(3) var<uniform> p: Params;
 
-fn cellTypeAt(c: vec3<i32>) -> u32 {
-    if (!inCellGrid(c, p)) {
-        return CELL_SOLID;
-    }
-    return cellTypes[cellIndex(c, p)];
-}
-
-fn touches(c: vec3<i32>, kind: u32) -> bool {
-    return cellTypeAt(c + vec3<i32>(-1, 0, 0)) == kind
-        || cellTypeAt(c + vec3<i32>(1, 0, 0)) == kind
-        || cellTypeAt(c + vec3<i32>(0, -1, 0)) == kind
-        || cellTypeAt(c + vec3<i32>(0, 1, 0)) == kind
-        || cellTypeAt(c + vec3<i32>(0, 0, -1)) == kind
-        || cellTypeAt(c + vec3<i32>(0, 0, 1)) == kind;
+fn orderedToFloat(value: u32) -> f32 {
+    let bits = select(~value, value ^ 0x80000000u, (value & 0x80000000u) != 0u);
+    return bitcast<f32>(bits);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
@@ -493,19 +614,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     if (i >= arrayLength(&liquidSdf)) {
         return;
     }
+    let band = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
+    let nearest = clamp(orderedToFloat(atomicLoad(&orderedSdf[i])), -band, band);
     let kind = cellTypes[i];
     if (kind == CELL_SOLID) {
-        liquidSdf[i] = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
-        return;
-    }
-    let c = faceCoord(i, gridDim(p));
-    let band = f32(${LIQUID_SDF_LAYERS}) * p.originDx.w;
-    if (kind == CELL_FLUID) {
-        let occupancy = min(f32(atomicLoad(&cellMarks[i])) / max(1.0, f32(p.counts.y)), 1.0);
-        let interfaceDistance = p.originDx.w * clamp(occupancy, 0.1, 1.0);
-        liquidSdf[i] = -select(band, interfaceDistance, touches(c, CELL_AIR));
+        liquidSdf[i] = band;
+    } else if (kind == CELL_FLUID) {
+        liquidSdf[i] = min(nearest, -0.05 * p.originDx.w);
     } else {
-        liquidSdf[i] = select(band, 0.5 * p.originDx.w, touches(c, CELL_FLUID));
+        liquidSdf[i] = max(nearest, 0.05 * p.originDx.w);
     }
 }`;
 
@@ -536,12 +653,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     }
     let c = faceCoord(i, gridDim(p));
     var distance = abs(sdfIn[i]);
-    distance = min(distance, distanceAt(c + vec3<i32>(-1, 0, 0), distance) + p.originDx.w);
-    distance = min(distance, distanceAt(c + vec3<i32>(1, 0, 0), distance) + p.originDx.w);
-    distance = min(distance, distanceAt(c + vec3<i32>(0, -1, 0), distance) + p.originDx.w);
-    distance = min(distance, distanceAt(c + vec3<i32>(0, 1, 0), distance) + p.originDx.w);
-    distance = min(distance, distanceAt(c + vec3<i32>(0, 0, -1), distance) + p.originDx.w);
-    distance = min(distance, distanceAt(c + vec3<i32>(0, 0, 1), distance) + p.originDx.w);
+    for (var z = -1; z <= 1; z = z + 1) {
+        for (var y = -1; y <= 1; y = y + 1) {
+            for (var x = -1; x <= 1; x = x + 1) {
+                if (x == 0 && y == 0 && z == 0) {
+                    continue;
+                }
+                let offset = vec3<i32>(x, y, z);
+                let stepDistance = length(vec3<f32>(offset)) * p.originDx.w;
+                distance = min(distance, distanceAt(c + offset, distance) + stepDistance);
+            }
+        }
+    }
     sdfOut[i] = select(distance, -distance, kind == CELL_FLUID);
 }`;
 
@@ -1160,6 +1283,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
 }`;
 }
 
+const PRESSURE_DIAGNOSTIC_REDUCE_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> residual: array<f32>;
+@group(0) @binding(1) var<storage, read> divergence: array<f32>;
+@group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(3) var<storage, read_write> diagnostics: array<atomic<u32>>;
+@group(0) @binding(4) var<uniform> p: Params;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= arrayLength(&residual) || cellTypes[i] != CELL_FLUID) {
+        return;
+    }
+    let rhs = abs(divergence[i] * p.originDx.w * p.originDx.w);
+    atomicMax(&diagnostics[0], bitcast<u32>(abs(residual[i])));
+    atomicMax(&diagnostics[1], bitcast<u32>(rhs));
+    atomicAdd(&diagnostics[3], 1u);
+}
+`;
+
+const POST_DIVERGENCE_DIAGNOSTIC_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read> divergence: array<f32>;
+@group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> diagnostics: array<atomic<u32>>;
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i < arrayLength(&divergence) && cellTypes[i] == CELL_FLUID) {
+        atomicMax(&diagnostics[2], bitcast<u32>(abs(divergence[i])));
+    }
+}
+`;
+
 const MULTIGRID_COMMON_WGSL = /* wgsl */ `
 const CELL_AIR: u32 = 0u;
 const CELL_FLUID: u32 = 1u;
@@ -1201,6 +1360,7 @@ ${MULTIGRID_COMMON_WGSL}
 @group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(2) var<storage, read_write> rhs: array<f32>;
 @group(0) @binding(3) var<uniform> p: MultigridParams;
+@group(0) @binding(4) var<storage, read_write> fluidFraction: array<f32>;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
@@ -1208,7 +1368,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     if (i >= arrayLength(&rhs)) {
         return;
     }
-    rhs[i] = select(0.0, -divergence[i] * p.solve.y, cellTypes[i] == CELL_FLUID);
+    let fluid = cellTypes[i] == CELL_FLUID;
+    rhs[i] = select(0.0, -divergence[i] * p.solve.y, fluid);
+    fluidFraction[i] = select(0.0, 1.0, fluid);
 }`;
 
 const MULTIGRID_SMOOTH_WGSL = /* wgsl */ `
@@ -1218,8 +1380,9 @@ ${MULTIGRID_COMMON_WGSL}
 @group(0) @binding(2) var<storage, read> rhs: array<f32>;
 @group(0) @binding(3) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(4) var<uniform> p: MultigridParams;
+@group(0) @binding(5) var<storage, read> fluidFraction: array<f32>;
 
-fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+fn addNeighbour(c: vec3<i32>, centerFraction: f32, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
     let d = gridDim(p);
     if (!inGrid(c, d)) {
         return;
@@ -1228,9 +1391,11 @@ fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f
     if (cellKind == CELL_SOLID) {
         return;
     }
-    *diagonal += 1.0;
+    let neighbourFraction = select(0.0, fluidFraction[gridIndex(c, d)], cellKind == CELL_FLUID);
+    let coefficient = select(centerFraction, min(centerFraction, neighbourFraction), cellKind == CELL_FLUID);
+    *diagonal += coefficient;
     if (cellKind == CELL_FLUID) {
-        *sum += pressureIn[gridIndex(c, d)];
+        *sum += coefficient * pressureIn[gridIndex(c, d)];
     }
 }
 
@@ -1245,14 +1410,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         return;
     }
     let c = gridCoord(i, gridDim(p));
+    let centerFraction = max(fluidFraction[i], 0.125);
     var sum = 0.0;
     var diagonal = 0.0;
-    addNeighbour(c + vec3<i32>(-1, 0, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(1, 0, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, -1, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 1, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 0, -1), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 0, 1), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(-1, 0, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(1, 0, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, -1, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 1, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, -1), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, 1), centerFraction, &sum, &diagonal);
     if (diagonal <= 0.0) {
         pressureOut[i] = 0.0;
         return;
@@ -1268,8 +1434,9 @@ ${MULTIGRID_COMMON_WGSL}
 @group(0) @binding(2) var<storage, read> cellTypes: array<u32>;
 @group(0) @binding(3) var<storage, read_write> residual: array<f32>;
 @group(0) @binding(4) var<uniform> p: MultigridParams;
+@group(0) @binding(5) var<storage, read> fluidFraction: array<f32>;
 
-fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
+fn addNeighbour(c: vec3<i32>, centerFraction: f32, sum: ptr<function, f32>, diagonal: ptr<function, f32>) {
     let d = gridDim(p);
     if (!inGrid(c, d)) {
         return;
@@ -1278,9 +1445,11 @@ fn addNeighbour(c: vec3<i32>, sum: ptr<function, f32>, diagonal: ptr<function, f
     if (cellKind == CELL_SOLID) {
         return;
     }
-    *diagonal += 1.0;
+    let neighbourFraction = select(0.0, fluidFraction[gridIndex(c, d)], cellKind == CELL_FLUID);
+    let coefficient = select(centerFraction, min(centerFraction, neighbourFraction), cellKind == CELL_FLUID);
+    *diagonal += coefficient;
     if (cellKind == CELL_FLUID) {
-        *sum += pressure[gridIndex(c, d)];
+        *sum += coefficient * pressure[gridIndex(c, d)];
     }
 }
 
@@ -1295,14 +1464,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
         return;
     }
     let c = gridCoord(i, gridDim(p));
+    let centerFraction = max(fluidFraction[i], 0.125);
     var sum = 0.0;
     var diagonal = 0.0;
-    addNeighbour(c + vec3<i32>(-1, 0, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(1, 0, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, -1, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 1, 0), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 0, -1), &sum, &diagonal);
-    addNeighbour(c + vec3<i32>(0, 0, 1), &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(-1, 0, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(1, 0, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, -1, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 1, 0), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, -1), centerFraction, &sum, &diagonal);
+    addNeighbour(c + vec3<i32>(0, 0, 1), centerFraction, &sum, &diagonal);
     residual[i] = rhs[i] - (diagonal * pressure[i] - sum);
 }`;
 
@@ -1314,7 +1484,9 @@ ${MULTIGRID_COMMON_WGSL}
 @group(0) @binding(3) var<storage, read_write> coarseTypes: array<u32>;
 @group(0) @binding(4) var<storage, read_write> coarsePressureA: array<f32>;
 @group(0) @binding(5) var<storage, read_write> coarsePressureB: array<f32>;
-@group(0) @binding(6) var<uniform> p: MultigridParams;
+@group(0) @binding(6) var<storage, read> fineFraction: array<f32>;
+@group(0) @binding(7) var<storage, read_write> coarseFraction: array<f32>;
+@group(0) @binding(8) var<uniform> p: MultigridParams;
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
@@ -1328,7 +1500,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     let fineBase = coarseCoord * 2;
     let fineDim = fineGridDim(p);
     var residualSum = 0.0;
-    var fluidCount = 0u;
+    var fractionSum = 0.0;
+    var childCount = 0u;
     var solidCount = 0u;
     for (var z = 0; z < 2; z = z + 1) {
         for (var y = 0; y < 2; y = y + 1) {
@@ -1340,17 +1513,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
                 let fineIndex = gridIndex(c, fineDim);
                 let cellKind = fineTypes[fineIndex];
                 if (cellKind == CELL_FLUID) {
-                    fluidCount += 1u;
-                    residualSum += fineResidual[fineIndex];
+                    let fraction = fineFraction[fineIndex];
+                    fractionSum += fraction;
+                    residualSum += fraction * fineResidual[fineIndex];
                 } else if (cellKind == CELL_SOLID) {
                     solidCount += 1u;
                 }
+                childCount += 1u;
             }
         }
     }
-    if (fluidCount > 0u) {
+    coarseFraction[i] = fractionSum / max(1.0, f32(childCount));
+    if (fractionSum > 1.0e-4) {
         coarseTypes[i] = CELL_FLUID;
-        coarseRhs[i] = residualSum * 0.5;
+        coarseRhs[i] = 4.0 * residualSum / fractionSum;
     } else {
         coarseTypes[i] = select(CELL_AIR, CELL_SOLID, solidCount > 0u);
         coarseRhs[i] = 0.0;
@@ -1714,6 +1890,235 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) 
     positions[i] = vec4<f32>(next, 1.0);
     velocities[i] = vec4<f32>(velocity, 0.0);
 }`;
+}
+
+function buildReseedDeleteWgsl(overfullOnly: boolean): string {
+    return /* wgsl */ `
+${COMMON_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
+@group(0) @binding(0) var<storage, read_write> positions: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> cellMarks: array<atomic<u32>>;
+@group(0) @binding(3) var<uniform> p: Params;
+@group(0) @binding(4) var<storage, read_write> lifecycle: FluidLifecycle;
+@group(0) @binding(5) var<storage, read_write> state: array<atomic<u32>>;
+
+fn reseedWorkBudget() -> u32 {
+    let listCapacity = atomicLoad(&state[2]);
+    return min(listCapacity, max(${RESEED_MIN_WORK_BUDGET}u, p.counts.x / ${RESEED_WORK_BUDGET_DIVISOR}u));
+}
+
+fn reserveRecycleRequest() -> u32 {
+    let requestCount = min(atomicLoad(&state[0]), reseedWorkBudget());
+    loop {
+        let recycled = atomicLoad(&state[4]);
+        if (recycled >= requestCount) {
+            return 0xffffffffu;
+        }
+        if (atomicCompareExchangeWeak(&state[4], recycled, recycled + 1u).exchanged) {
+            return recycled;
+        }
+    }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i >= p.counts.x || !fluidParticleIsActive(i)) {
+        return;
+    }
+    let c = clamp(vec3<i32>(floor((positions[i].xyz - p.originDx.xyz) / p.originDx.w)), vec3<i32>(0), gridDim(p) - vec3<i32>(1));
+    let cell = cellIndex(c, p);
+    loop {
+        let current = atomicLoad(&cellMarks[cell]);
+        if (current <= ${overfullOnly ? "p.reseed.w" : "p.reseed.z"}) {
+            return;
+        }
+        if (atomicCompareExchangeWeak(&cellMarks[cell], current, current - 1u).exchanged) {
+            let ticket = reserveRecycleRequest();
+            if (ticket == 0xffffffffu) {
+                atomicAdd(&cellMarks[cell], 1u);
+                return;
+            }
+            if (fluidDeleteParticle(i)) {
+                let listCapacity = atomicLoad(&state[2]);
+                atomicStore(&state[${RESEED_HEADER_WORDS}u + listCapacity + ticket], i);
+            } else {
+                atomicAdd(&cellMarks[cell], 1u);
+            }
+            return;
+        }
+    }
+}
+`;
+}
+
+const RESEED_BUILD_WGSL = /* wgsl */ `
+${COMMON_WGSL}
+@group(0) @binding(0) var<storage, read_write> cellMarks: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(2) var<storage, read_write> state: array<atomic<u32>>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn reseedWorkBudget() -> u32 {
+    let listCapacity = atomicLoad(&state[2]);
+    return min(listCapacity, max(${RESEED_MIN_WORK_BUDGET}u, p.counts.x / ${RESEED_WORK_BUDGET_DIVISOR}u));
+}
+
+fn touchesFreeSurface(c: vec3<i32>) -> bool {
+    let offsets = array<vec3<i32>, 6>(
+        vec3<i32>(-1, 0, 0), vec3<i32>(1, 0, 0),
+        vec3<i32>(0, -1, 0), vec3<i32>(0, 1, 0),
+        vec3<i32>(0, 0, -1), vec3<i32>(0, 0, 1));
+    for (var neighbour = 0u; neighbour < 6u; neighbour = neighbour + 1u) {
+        let nc = c + offsets[neighbour];
+        if (inCellGrid(nc, p) && cellTypes[cellIndex(nc, p)] == CELL_AIR) {
+            return true;
+        }
+    }
+    return false;
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let i = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    if (i == 0u) {
+        atomicAdd(&state[3], 1u);
+    }
+    if (i >= arrayLength(&cellTypes) || cellTypes[i] != CELL_FLUID) {
+        return;
+    }
+    let c = faceCoord(i, gridDim(p));
+    if (touchesFreeSurface(c)) {
+        return;
+    }
+    let current = atomicLoad(&cellMarks[i]);
+    if (current >= p.reseed.y) {
+        return;
+    }
+    let deficit = p.reseed.z - min(current, p.reseed.z);
+    let capacity = reseedWorkBudget();
+    for (var marker = 0u; marker < deficit; marker = marker + 1u) {
+        let ticket = atomicAdd(&state[0], 1u);
+        if (ticket < capacity) {
+            atomicStore(&state[${RESEED_HEADER_WORDS}u + ticket], i);
+        }
+    }
+}
+`;
+
+function buildReseedEmitWgsl(scene: SceneSdfSpec | null): string {
+    const sceneDecl = scene
+        ? `${scene.struct}
+@group(0) @binding(7) var<uniform> sceneSdfParams: SceneSdfParams;
+${scene.sdfGrid ? `@group(0) @binding(8) var<storage, read> sceneSdfGrid: array<f32>;\n${SCENE_SDF_GRID_WGSL}` : ""}
+${scene.sdf}
+${SCENE_NORMAL_WGSL}`
+        : `fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return 1.0e30; }
+fn sceneNormal(pt: vec3<f32>, dt: f32) -> vec3<f32> { return vec3<f32>(0.0, 1.0, 0.0); }`;
+    return /* wgsl */ `
+${COMMON_WGSL}
+${FLUID_LIFECYCLE_STRUCT_WGSL}
+${FLUID_LIFECYCLE_RUNTIME_WGSL}
+${sceneDecl}
+@group(0) @binding(0) var<storage, read_write> positions: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> velocities: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read> faceVelocity: array<vec2<f32>>;
+@group(0) @binding(3) var<storage, read> cellTypes: array<u32>;
+@group(0) @binding(4) var<storage, read_write> state: array<atomic<u32>>;
+@group(0) @binding(5) var<uniform> p: Params;
+@group(0) @binding(6) var<storage, read_write> lifecycle: FluidLifecycle;
+
+fn reseedWorkBudget() -> u32 {
+    let listCapacity = atomicLoad(&state[2]);
+    return min(listCapacity, max(${RESEED_MIN_WORK_BUDGET}u, p.counts.x / ${RESEED_WORK_BUDGET_DIVISOR}u));
+}
+
+fn hash(value: u32) -> u32 {
+    var result = value;
+    result ^= result >> 16u;
+    result *= 0x7feb352du;
+    result ^= result >> 15u;
+    result *= 0x846ca68bu;
+    result ^= result >> 16u;
+    return result;
+}
+
+fn sampleComponent(world: vec3<f32>, kind: u32) -> f32 {
+    let d = faceGridDim(kind, p);
+    let grid = (world - p.originDx.xyz) / p.originDx.w - faceOffset(kind);
+    let base = vec3<i32>(floor(grid));
+    let f = grid - floor(grid);
+    var weighted = 0.0;
+    var weightSum = 0.0;
+    for (var z = 0; z < 2; z = z + 1) {
+        for (var y = 0; y < 2; y = y + 1) {
+            for (var x = 0; x < 2; x = x + 1) {
+                let c = base + vec3<i32>(x, y, z);
+                if (any(c < vec3<i32>(0)) || any(c >= d)) {
+                    continue;
+                }
+                let q = vec3<f32>(f32(x), f32(y), f32(z));
+                let w3 = select(vec3<f32>(1.0) - f, f, q > vec3<f32>(0.5));
+                let sample = faceVelocity[globalFaceIndex(kind, c, p)];
+                if (sample.y > 0.5) {
+                    let weight = w3.x * w3.y * w3.z;
+                    weighted += weight * sample.x;
+                    weightSum += weight;
+                }
+            }
+        }
+    }
+    return select(0.0, weighted / weightSum, weightSum > 1.0e-6);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) groups: vec3<u32>) {
+    let ticket = gid.x + gid.y * groups.x * ${WORKGROUP_SIZE}u;
+    let available = min(min(atomicLoad(&state[0]), atomicLoad(&state[4])), reseedWorkBudget());
+    if (ticket >= available) {
+        return;
+    }
+    let listCapacity = atomicLoad(&state[2]);
+    let donor = atomicLoad(&state[${RESEED_HEADER_WORDS}u + listCapacity + ticket]);
+    if (donor >= p.counts.x || !fluidParticleIsFree(donor)) {
+        return;
+    }
+    let cell = atomicLoad(&state[${RESEED_HEADER_WORDS}u + ticket]);
+    if (cellTypes[cell] != CELL_FLUID) {
+        fluidActivateParticle(donor);
+        return;
+    }
+    let c = faceCoord(cell, gridDim(p));
+    let generation = atomicLoad(&state[3]);
+    let seed = hash(ticket ^ (cell * 0x9e3779b9u) ^ (generation * 0x85ebca6bu));
+    let jitter = vec3<f32>(
+        f32(hash(seed ^ 0x68bc21ebu) & 0xffffu) / 65535.0,
+        f32(hash(seed ^ 0x02e5be93u) & 0xffffu) / 65535.0,
+        f32(hash(seed ^ 0x967a889bu) & 0xffffu) / 65535.0) - 0.5;
+    var position = p.originDx.xyz + (vec3<f32>(c) + 0.5 + 0.7 * jitter) * p.originDx.w;
+    let radius = p.solve.z;
+    let distance = sceneSdf(position, 0.0);
+    if (distance < radius) {
+        let normal = safeNormal(sceneNormal(position, 0.0), vec3<f32>(0.0, 1.0, 0.0));
+        position += (radius - distance) * normal;
+        position = clamp(position, p.boundsMin.xyz + radius, p.boundsMax.xyz - radius);
+        if (sceneSdf(position, 0.0) < radius) {
+            fluidActivateParticle(donor);
+            return;
+        }
+    }
+    if (!fluidActivateParticle(donor)) {
+        return;
+    }
+    let velocity = vec3<f32>(
+        sampleComponent(position, FACE_U),
+        sampleComponent(position, FACE_V),
+        sampleComponent(position, FACE_W));
+    positions[donor] = vec4<f32>(position, 1.0);
+    velocities[donor] = vec4<f32>(velocity, 0.0);
+}
+`;
 }
 
 const SPEED_REDUCE_WGSL = /* wgsl */ `
@@ -2361,6 +2766,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let pressureRelaxation = options.pressureRelaxation ?? 0.8;
     let pressureSolver: FlipPressureSolver = options.pressureSolver === "multigrid" ? "multigrid" : "jacobi";
     let multigridCycles = Math.min(8, Math.max(1, Math.round(options.multigridCycles ?? 2)));
+    let pressureTolerance = Math.max(0, options.pressureTolerance ?? 0);
+    let pressureDiagnosticsEnabled = options.pressureDiagnostics === true;
+    let adaptiveMultigridCycles = multigridCycles;
     let velocityDamping = options.velocityDamping ?? 0;
     let kinematicViscosity = Math.max(0, options.kinematicViscosity ?? 0);
     let viscosityIterations = Math.max(1, Math.round(options.viscosityIterations ?? 12));
@@ -2369,6 +2777,12 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let ghostFluidEnabled = options.ghostFluid === true;
     let fractionalSolidsEnabled = options.fractionalSolids === true;
     let movingSolidBoundariesEnabled = options.movingSolidBoundaries === true;
+    let reseedParticlesEnabled = options.reseedParticles === true;
+    let reseedMinParticles = Math.max(1, Math.round(options.reseedMinParticles ?? markersPerCell * 0.5));
+    let reseedTargetParticles = Math.max(reseedMinParticles, Math.round(options.reseedTargetParticles ?? markersPerCell));
+    let reseedMaxParticles = Math.max(reseedTargetParticles, Math.round(options.reseedMaxParticles ?? markersPerCell * 1.5));
+    let reseedInterval = Math.max(1, Math.round(options.reseedInterval ?? 5));
+    let reseedSubstep = 0;
     let restitution = options.restitution ?? 0;
     let minSubsteps = Math.max(1, Math.round(options.minSubsteps ?? 1));
     let maxSubsteps = Math.max(minSubsteps, Math.round(options.maxSubsteps ?? 8));
@@ -2385,6 +2799,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let resetInitialEmitterParticleCounts: ReadonlyMap<string, number> = new Map();
     let simProfiler: FluidProfiler | null = null;
     let pressureCurrentIsA = true;
+    let latestPressureDiagnostics: FluidPressureDiagnostics | undefined;
 
     const positionBuffer = device.createBuffer({
         label: "flip-particle-positions",
@@ -2438,6 +2853,8 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let multigridResources: MultigridResources | null = null;
     let liquidSdfResources: LiquidSdfResources | null = null;
     let solidFaceResources: SolidFaceResources | null = null;
+    let pressureDiagnosticResources: PressureDiagnosticResources | null = null;
+    let reseedResources: ReseedResources | null = null;
     let sceneSdf: SceneSdfSpec | null = null;
     const paramsBuffer = device.createBuffer({ label: "flip-params", size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const emitRangeBuffer = device.createBuffer({ label: "flip-flow-emit-range", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -2507,6 +2924,73 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         }
     }
 
+    function pollPressureDiagnostics(): void {
+        const resources = pressureDiagnosticResources;
+        if (!resources) {
+            return;
+        }
+        if (resources.readbackError) {
+            const error = resources.readbackError;
+            resources.readbackError = null;
+            throw error;
+        }
+        for (let index = 0; index < resources.readbacks.length; index++) {
+            if (resources.readbackStates[index] !== "copied") {
+                continue;
+            }
+            resources.readbackStates[index] = "mapping";
+            const buffer = resources.readbacks[index]!;
+            void buffer
+                .mapAsync(GPUMapMode.READ)
+                .then(() => {
+                    if (resources.disposed) {
+                        return;
+                    }
+                    const words = new Uint32Array(buffer.getMappedRange());
+                    const floats = new Float32Array(words.slice(0, 3).buffer);
+                    const maxResidual = floats[0] ?? 0;
+                    const maxRhs = floats[1] ?? 0;
+                    const relativeResidual = maxResidual / Math.max(maxRhs, 1e-12);
+                    latestPressureDiagnostics = {
+                        maxResidual,
+                        maxRhs,
+                        relativeResidual,
+                        maxDivergence: floats[2] ?? 0,
+                        fluidCellCount: words[3] ?? 0,
+                        pressureIterations: pressureSolver === "multigrid" ? adaptiveMultigridCycles : pressureIterations,
+                    };
+                    if (pressureSolver === "multigrid" && pressureTolerance > 0 && Number.isFinite(relativeResidual)) {
+                        if (relativeResidual > pressureTolerance) {
+                            adaptiveMultigridCycles = Math.min(multigridCycles, adaptiveMultigridCycles + 1);
+                        } else if (relativeResidual < pressureTolerance * 0.25) {
+                            adaptiveMultigridCycles = Math.max(1, adaptiveMultigridCycles - 1);
+                        }
+                    }
+                    buffer.unmap();
+                    resources.readbackStates[index] = "idle";
+                })
+                .catch((error: unknown) => {
+                    if (!resources.disposed) {
+                        resources.readbackError = error;
+                        resources.readbackStates[index] = "idle";
+                    }
+                });
+        }
+    }
+
+    function encodePressureDiagnosticReadback(encoder: GPUCommandEncoder, resources: PressureDiagnosticResources): void {
+        for (let offset = 0; offset < resources.readbacks.length; offset++) {
+            const index = (resources.readbackNext + offset) % resources.readbacks.length;
+            if (resources.readbackStates[index] !== "idle") {
+                continue;
+            }
+            encoder.copyBufferToBuffer(resources.output, 0, resources.readbacks[index]!, 0, PRESSURE_DIAGNOSTIC_BYTES);
+            resources.readbackStates[index] = "copied";
+            resources.readbackNext = (index + 1) % resources.readbacks.length;
+            return;
+        }
+    }
+
     const paramsData = new ArrayBuffer(PARAMS_BYTES);
     const paramsF32 = new Float32Array(paramsData);
     const paramsU32 = new Uint32Array(paramsData);
@@ -2541,6 +3025,10 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         paramsF32[26] = viscosityIterations;
         paramsF32[27] = cflNumber;
         paramsU32[30] = fractionalSolidsEnabled && movingSolidBoundariesEnabled ? 1 : 0;
+        paramsU32[32] = reseedParticlesEnabled ? 1 : 0;
+        paramsU32[33] = reseedMinParticles;
+        paramsU32[34] = reseedTargetParticles;
+        paramsU32[35] = reseedMaxParticles;
         device.queue.writeBuffer(paramsBuffer, 0, paramsData);
     }
 
@@ -2552,6 +3040,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         flowOccupancyValid = false;
         maxSpeedGeneration++;
         lastMaxSpeed = 0;
+        latestPressureDiagnostics = undefined;
+        adaptiveMultigridCycles = multigridCycles;
+        reseedSubstep = 0;
         const flowParticles =
             initialPositions || !flowSeedsInitialParticles
                 ? null
@@ -2559,7 +3050,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         resetInitialEmitterParticleCounts = flowParticles?.emitterCounts ?? new Map();
         const explicitCount = initialPositions ? Math.min(count, Math.floor(initialPositions.length / 3)) : count;
         initialTargetCount = initialPositions ? explicitCount : (flowParticles?.activeCount ?? count);
-        activePrefixValid = !configuredFlowBreaksPrefix;
+        activePrefixValid = !configuredFlowBreaksPrefix && !reseedParticlesEnabled;
         warmupStep = warmupFrames > 0 ? Math.max(1, Math.ceil(initialTargetCount / warmupFrames)) : Math.max(1, initialTargetCount);
         liveCount = warmupFrames > 0 ? Math.min(initialTargetCount, warmupStep) : initialTargetCount;
         resetFluidParticleLifecycle(flowState, liveCount, initialTargetCount);
@@ -2632,6 +3123,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         encoder.clearBuffer(cellMarksBuffer);
         encoder.clearBuffer(pressureA);
         encoder.clearBuffer(pressureB);
+        if (pressureDiagnosticResources) {
+            encoder.clearBuffer(pressureDiagnosticResources.output);
+        }
         if (multigridResources) {
             for (let index = 1; index < multigridResources.levels.length; index++) {
                 encoder.clearBuffer(multigridResources.levels[index]!.pressureA);
@@ -2681,28 +3175,39 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         }
         const sdfA = device.createBuffer({ label: "flip-liquid-sdf-a", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
         const sdfB = device.createBuffer({ label: "flip-liquid-sdf-b", size: numCells * 4, usage: GPUBufferUsage.STORAGE });
-        const seedPipeline = pipeline("flip-liquid-sdf-seed", LIQUID_SDF_SEED_WGSL);
+        const clearPipeline = pipeline("flip-liquid-sdf-clear", LIQUID_SDF_CLEAR_WGSL);
+        const scatterPipeline = pipeline("flip-liquid-sdf-scatter", LIQUID_SDF_SCATTER_WGSL);
+        const finalizePipeline = pipeline("flip-liquid-sdf-finalize", LIQUID_SDF_FINALIZE_WGSL);
         const relaxPipeline = pipeline("flip-liquid-sdf-relax", LIQUID_SDF_RELAX_WGSL);
         liquidSdfResources = {
             sdfA,
             sdfB,
-            seedPipeline,
+            clearPipeline,
+            scatterPipeline,
+            finalizePipeline,
             relaxPipeline,
-            seed: device.createBindGroup({
-                layout: seedPipeline.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: cellMarksBuffer } },
-                    { binding: 1, resource: { buffer: cellTypeBuffer } },
-                    { binding: 2, resource: { buffer: sdfA } },
-                    { binding: 3, resource: { buffer: paramsBuffer } },
-                ],
-            }),
-            relaxAB: device.createBindGroup({
-                layout: relaxPipeline.getBindGroupLayout(0),
+            clear: device.createBindGroup({
+                layout: clearPipeline.getBindGroupLayout(0),
                 entries: [
                     { binding: 0, resource: { buffer: sdfA } },
-                    { binding: 1, resource: { buffer: sdfB } },
-                    { binding: 2, resource: { buffer: cellTypeBuffer } },
+                    { binding: 1, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            scatter: device.createBindGroup({
+                layout: scatterPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: positionBuffer } },
+                    { binding: 1, resource: { buffer: sdfA } },
+                    { binding: 2, resource: { buffer: paramsBuffer } },
+                    { binding: 3, resource: { buffer: flowState.lifecycleBuffer } },
+                ],
+            }),
+            finalize: device.createBindGroup({
+                layout: finalizePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: sdfA } },
+                    { binding: 1, resource: { buffer: cellTypeBuffer } },
+                    { binding: 2, resource: { buffer: sdfB } },
                     { binding: 3, resource: { buffer: paramsBuffer } },
                 ],
             }),
@@ -2711,6 +3216,15 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 entries: [
                     { binding: 0, resource: { buffer: sdfB } },
                     { binding: 1, resource: { buffer: sdfA } },
+                    { binding: 2, resource: { buffer: cellTypeBuffer } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            relaxAB: device.createBindGroup({
+                layout: relaxPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: sdfA } },
+                    { binding: 1, resource: { buffer: sdfB } },
                     { binding: 2, resource: { buffer: cellTypeBuffer } },
                     { binding: 3, resource: { buffer: paramsBuffer } },
                 ],
@@ -2749,10 +3263,79 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         return solidFaceResources;
     }
 
+    function buildReseedEmitBindGroup(pipe: GPUComputePipeline, state: GPUBuffer, scene: SceneSdfSpec | null): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: positionBuffer } },
+            { binding: 1, resource: { buffer: velocityBuffer } },
+            { binding: 2, resource: { buffer: faceVelocityA } },
+            { binding: 3, resource: { buffer: cellTypeBuffer } },
+            { binding: 4, resource: { buffer: state } },
+            { binding: 5, resource: { buffer: paramsBuffer } },
+            { binding: 6, resource: { buffer: flowState.lifecycleBuffer } },
+        ];
+        if (scene) {
+            entries.push({ binding: 7, resource: { buffer: scene.buffer } });
+            if (scene.sdfGrid) {
+                entries.push({ binding: 8, resource: { buffer: scene.sdfGrid } });
+            }
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+
+    function ensureReseedResources(): ReseedResources {
+        if (reseedResources) {
+            return reseedResources;
+        }
+        const state = device.createBuffer({
+            label: "flip-reseed-state",
+            size: RESEED_HEADER_BYTES + count * 8,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(state, 8, new Uint32Array([count, 0]));
+        const deleteOverfullPipeline = pipeline("flip-reseed-delete-overfull", buildReseedDeleteWgsl(true));
+        const deleteSurplusPipeline = pipeline("flip-reseed-delete-surplus", buildReseedDeleteWgsl(false));
+        const buildPipeline = pipeline("flip-reseed-build", RESEED_BUILD_WGSL);
+        const emitPipeline = pipeline("flip-reseed-emit", buildReseedEmitWgsl(sceneSdf));
+        const buildDeleteBindGroup = (deletePipeline: GPUComputePipeline): GPUBindGroup =>
+            device.createBindGroup({
+                layout: deletePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: positionBuffer } },
+                    { binding: 2, resource: { buffer: cellMarksBuffer } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                    { binding: 4, resource: { buffer: flowState.lifecycleBuffer } },
+                    { binding: 5, resource: { buffer: state } },
+                ],
+            });
+        reseedResources = {
+            state,
+            deleteOverfullPipeline,
+            deleteSurplusPipeline,
+            buildPipeline,
+            emitPipeline,
+            deleteOverfullBindGroup: buildDeleteBindGroup(deleteOverfullPipeline),
+            deleteSurplusBindGroup: buildDeleteBindGroup(deleteSurplusPipeline),
+            buildBindGroup: device.createBindGroup({
+                layout: buildPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: cellMarksBuffer } },
+                    { binding: 1, resource: { buffer: cellTypeBuffer } },
+                    { binding: 2, resource: { buffer: state } },
+                    { binding: 3, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            emitBindGroup: buildReseedEmitBindGroup(emitPipeline, state, sceneSdf),
+            gpuBytes: state.size,
+        };
+        return reseedResources;
+    }
+
     function encodeLiquidSdf(encoder: GPUCommandEncoder): void {
         const resources = ensureLiquidSdf();
-        dispatch(encoder, "flip-liquid-sdf-seed", resources.seedPipeline, resources.seed, cellGroups);
-        let currentIsA = true;
+        dispatch(encoder, "flip-liquid-sdf-clear", resources.clearPipeline, resources.clear, cellGroups);
+        dispatch(encoder, "flip-liquid-sdf-scatter", resources.scatterPipeline, resources.scatter, particleGroups);
+        dispatch(encoder, "flip-liquid-sdf-finalize", resources.finalizePipeline, resources.finalize, cellGroups);
+        let currentIsA = false;
         for (let layer = 0; layer < LIQUID_SDF_LAYERS; layer++) {
             dispatch(encoder, "flip-liquid-sdf-relax", resources.relaxPipeline, currentIsA ? resources.relaxAB : resources.relaxBA, cellGroups);
             currentIsA = !currentIsA;
@@ -2761,7 +3344,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
 
     function liquidSdfBuffer(): GPUBuffer {
         const resources = ensureLiquidSdf();
-        return LIQUID_SDF_LAYERS % 2 === 0 ? resources.sdfA : resources.sdfB;
+        return LIQUID_SDF_LAYERS % 2 === 0 ? resources.sdfB : resources.sdfA;
     }
 
     function ensureMultigrid(): MultigridResources {
@@ -2792,6 +3375,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                       });
             const rhs = device.createBuffer({ label: `flip-multigrid-rhs-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
             const residual = device.createBuffer({ label: `flip-multigrid-residual-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
+            const fluidFraction = device.createBuffer({ label: `flip-multigrid-fluid-fraction-${index}`, size: bytes, usage: GPUBufferUsage.STORAGE });
             const params = device.createBuffer({
                 label: `flip-multigrid-params-${index}`,
                 size: MULTIGRID_PARAMS_BYTES,
@@ -2817,6 +3401,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 cellTypes,
                 rhs,
                 residual,
+                fluidFraction,
                 pressureA: levelPressureA,
                 pressureB: levelPressureB,
                 params,
@@ -2832,6 +3417,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     { binding: 2, resource: { buffer: level.rhs } },
                     { binding: 3, resource: { buffer: level.cellTypes } },
                     { binding: 4, resource: { buffer: level.params } },
+                    { binding: 5, resource: { buffer: level.fluidFraction } },
                 ],
             }),
             smoothBA: device.createBindGroup({
@@ -2842,6 +3428,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     { binding: 2, resource: { buffer: level.rhs } },
                     { binding: 3, resource: { buffer: level.cellTypes } },
                     { binding: 4, resource: { buffer: level.params } },
+                    { binding: 5, resource: { buffer: level.fluidFraction } },
                 ],
             }),
             residualA: device.createBindGroup({
@@ -2852,6 +3439,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     { binding: 2, resource: { buffer: level.cellTypes } },
                     { binding: 3, resource: { buffer: level.residual } },
                     { binding: 4, resource: { buffer: level.params } },
+                    { binding: 5, resource: { buffer: level.fluidFraction } },
                 ],
             }),
             residualB: device.createBindGroup({
@@ -2862,6 +3450,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     { binding: 2, resource: { buffer: level.cellTypes } },
                     { binding: 3, resource: { buffer: level.residual } },
                     { binding: 4, resource: { buffer: level.params } },
+                    { binding: 5, resource: { buffer: level.fluidFraction } },
                 ],
             }),
         }));
@@ -2877,7 +3466,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     { binding: 3, resource: { buffer: coarse.cellTypes } },
                     { binding: 4, resource: { buffer: coarse.pressureA } },
                     { binding: 5, resource: { buffer: coarse.pressureB } },
-                    { binding: 6, resource: { buffer: coarse.params } },
+                    { binding: 6, resource: { buffer: fine.fluidFraction } },
+                    { binding: 7, resource: { buffer: coarse.fluidFraction } },
+                    { binding: 8, resource: { buffer: coarse.params } },
                 ],
             });
             const prolongEntries = (coarsePressure: GPUBuffer, finePressure: GPUBuffer): GPUBindGroup =>
@@ -2903,12 +3494,13 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 { binding: 1, resource: { buffer: cellTypeBuffer } },
                 { binding: 2, resource: { buffer: levels[0]!.rhs } },
                 { binding: 3, resource: { buffer: levels[0]!.params } },
+                { binding: 4, resource: { buffer: levels[0]!.fluidFraction } },
             ],
         });
         let gpuBytes = 0;
         for (let index = 0; index < levels.length; index++) {
             const level = levels[index]!;
-            gpuBytes += level.rhs.size + level.residual.size + level.params.size;
+            gpuBytes += level.rhs.size + level.residual.size + level.fluidFraction.size + level.params.size;
             if (index > 0) {
                 gpuBytes += level.cellTypes.size + level.pressureA.size + level.pressureB.size;
             }
@@ -2960,7 +3552,8 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         const fine = resources.levels[0]!;
         run(multigridBuildRhsPipeline, resources.buildRhs, fine.groups);
         let currentIsA = pressureCurrentIsA;
-        for (let cycle = 0; cycle < multigridCycles; cycle++) {
+        const cycleBudget = pressureTolerance > 0 ? adaptiveMultigridCycles : multigridCycles;
+        for (let cycle = 0; cycle < cycleBudget; cycle++) {
             currentIsA = solveLevel(0, currentIsA);
         }
         pass.end();
@@ -3097,6 +3690,114 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     }
     let pressureABindGroup = buildPressureBindGroup(pressurePipeline, pressureA, pressureB);
     let pressureBBindGroup = buildPressureBindGroup(pressurePipeline, pressureB, pressureA);
+
+    function buildPressureDiagnosticResidualBindGroup(pipe: GPUComputePipeline, pressure: GPUBuffer, residual: GPUBuffer): GPUBindGroup {
+        const entries: GPUBindGroupEntry[] = [
+            { binding: 0, resource: { buffer: pressure } },
+            { binding: 1, resource: { buffer: divergenceBuffer } },
+            { binding: 2, resource: { buffer: cellTypeBuffer } },
+            { binding: 3, resource: { buffer: residual } },
+            { binding: 4, resource: { buffer: paramsBuffer } },
+        ];
+        if (liquidSdfEnabled && ghostFluidEnabled) {
+            entries.push({ binding: 5, resource: { buffer: liquidSdfBuffer() } });
+        }
+        if (fractionalSolidsEnabled) {
+            entries.push({ binding: 6, resource: { buffer: ensureSolidFaces().geometry } });
+        }
+        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries });
+    }
+
+    function ensurePressureDiagnosticResources(): PressureDiagnosticResources {
+        if (pressureDiagnosticResources) {
+            return pressureDiagnosticResources;
+        }
+        const residual = device.createBuffer({
+            label: "flip-pressure-diagnostic-residual",
+            size: numCells * 4,
+            usage: GPUBufferUsage.STORAGE,
+        });
+        const output = device.createBuffer({
+            label: "flip-pressure-diagnostics",
+            size: PRESSURE_DIAGNOSTIC_BYTES,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
+        const readbacks = [0, 1].map((index) =>
+            device.createBuffer({
+                label: `flip-pressure-diagnostics-readback-${index}`,
+                size: PRESSURE_DIAGNOSTIC_BYTES,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            })
+        );
+        const residualPipeline = pipeline(
+            "flip-pressure-diagnostic-residual",
+            buildPressureResidualWgsl(liquidSdfEnabled && ghostFluidEnabled, fractionalSolidsEnabled)
+        );
+        const reducePipeline = pipeline("flip-pressure-diagnostic-reduce", PRESSURE_DIAGNOSTIC_REDUCE_WGSL);
+        const postDivergencePipeline = pipeline("flip-post-divergence-diagnostic", POST_DIVERGENCE_DIAGNOSTIC_WGSL);
+        pressureDiagnosticResources = {
+            residual,
+            output,
+            readbacks,
+            readbackStates: ["idle", "idle"],
+            readbackNext: 0,
+            readbackError: null,
+            disposed: false,
+            residualPipeline,
+            reducePipeline,
+            postDivergencePipeline,
+            residualA: buildPressureDiagnosticResidualBindGroup(residualPipeline, pressureA, residual),
+            residualB: buildPressureDiagnosticResidualBindGroup(residualPipeline, pressureB, residual),
+            reduce: device.createBindGroup({
+                layout: reducePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: residual } },
+                    { binding: 1, resource: { buffer: divergenceBuffer } },
+                    { binding: 2, resource: { buffer: cellTypeBuffer } },
+                    { binding: 3, resource: { buffer: output } },
+                    { binding: 4, resource: { buffer: paramsBuffer } },
+                ],
+            }),
+            postDivergence: device.createBindGroup({
+                layout: postDivergencePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: divergenceBuffer } },
+                    { binding: 1, resource: { buffer: cellTypeBuffer } },
+                    { binding: 2, resource: { buffer: output } },
+                ],
+            }),
+            gpuBytes: residual.size + output.size + readbacks.reduce((sum, buffer) => sum + buffer.size, 0),
+        };
+        return pressureDiagnosticResources;
+    }
+
+    function rebuildPressureDiagnosticResources(): void {
+        if (!pressureDiagnosticResources) {
+            return;
+        }
+        const resources = pressureDiagnosticResources;
+        resources.residualPipeline = pipeline(
+            "flip-pressure-diagnostic-residual",
+            buildPressureResidualWgsl(liquidSdfEnabled && ghostFluidEnabled, fractionalSolidsEnabled)
+        );
+        resources.residualA = buildPressureDiagnosticResidualBindGroup(resources.residualPipeline, pressureA, resources.residual);
+        resources.residualB = buildPressureDiagnosticResidualBindGroup(resources.residualPipeline, pressureB, resources.residual);
+    }
+
+    function destroyPressureDiagnosticResources(): void {
+        const resources = pressureDiagnosticResources;
+        if (!resources) {
+            return;
+        }
+        pressureDiagnosticResources = null;
+        latestPressureDiagnostics = undefined;
+        resources.disposed = true;
+        resources.residual.destroy();
+        resources.output.destroy();
+        for (const readback of resources.readbacks) {
+            readback.destroy();
+        }
+    }
 
     function buildMultigridFineResidualBindGroup(pipe: GPUComputePipeline, pressure: GPUBuffer, residual: GPUBuffer): GPUBindGroup {
         const entries: GPUBindGroupEntry[] = [
@@ -3265,6 +3966,16 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     const cellGroups = Math.ceil(numCells / WORKGROUP_SIZE);
     const faceGroups = Math.ceil(totalFaces / WORKGROUP_SIZE);
 
+    function encodeReseed(encoder: GPUCommandEncoder, activeParticleGroups: number): void {
+        const resources = ensureReseedResources();
+        encoder.clearBuffer(resources.state, 0, 8);
+        encoder.clearBuffer(resources.state, 16, 4);
+        dispatch(encoder, "flip-reseed-build", resources.buildPipeline, resources.buildBindGroup, cellGroups);
+        dispatch(encoder, "flip-reseed-delete-overfull", resources.deleteOverfullPipeline, resources.deleteOverfullBindGroup, activeParticleGroups);
+        dispatch(encoder, "flip-reseed-delete-surplus", resources.deleteSurplusPipeline, resources.deleteSurplusBindGroup, activeParticleGroups);
+        dispatch(encoder, "flip-reseed-emit", resources.emitPipeline, resources.emitBindGroup, particleGroups);
+    }
+
     function rebuildQualityPipelines(): void {
         if (liquidSdfEnabled) {
             ensureLiquidSdf();
@@ -3290,6 +4001,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         classifyBindGroup = buildClassifyBindGroup(classifyPipeline, sceneSdf);
         pressureABindGroup = buildPressureBindGroup(pressurePipeline, pressureA, pressureB);
         pressureBBindGroup = buildPressureBindGroup(pressurePipeline, pressureB, pressureA);
+        rebuildPressureDiagnosticResources();
         rebuildMultigridFineResidualBindGroups();
         projectABindGroup = buildProjectBindGroup(projectPipeline, pressureA);
         projectBBindGroup = buildProjectBindGroup(projectPipeline, pressureB);
@@ -3555,6 +4267,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     if (pressureSolver === "multigrid") {
         ensureMultigrid();
     }
+    if (pressureDiagnosticsEnabled || pressureTolerance > 0) {
+        ensurePressureDiagnosticResources();
+    }
     seed();
     writeParams(1 / 120);
 
@@ -3576,6 +4291,9 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
         velocityBuffer,
         debugBuffer,
         debugNorm: 1 / 8,
+        get pressureDiagnostics(): FluidPressureDiagnostics | undefined {
+            return latestPressureDiagnostics;
+        },
         get gpuBytes(): number {
             return (
                 positionBuffer.size +
@@ -3595,9 +4313,11 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 surfaceCurvatureBuffer.size +
                 pressureA.size +
                 pressureB.size +
+                (pressureDiagnosticResources?.gpuBytes ?? 0) +
                 (multigridResources?.gpuBytes ?? 0) +
                 (liquidSdfResources?.gpuBytes ?? 0) +
                 (solidFaceResources?.gpuBytes ?? 0) +
+                (reseedResources?.gpuBytes ?? 0) +
                 paramsBuffer.size +
                 emitRangeBuffer.size +
                 maxSpeedBuffer.size +
@@ -3619,6 +4339,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             }
             pollFluidActiveCount(flowState);
             pollMaxSpeed();
+            pollPressureDiagnostics();
             const frameDt = dt;
             const hardDtSteps = Math.ceil(frameDt / maxSubDt - 1e-9);
             const cflSteps = cflNumber > 0 && lastMaxSpeed > 0 ? Math.ceil((frameDt * lastMaxSpeed) / (cflNumber * dx) - 1e-9) : 0;
@@ -3706,11 +4427,34 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                         pressureCurrentIsA = !pressureCurrentIsA;
                     }
                 }
+                const samplePressure = step === stepCount - 1 && (pressureDiagnosticsEnabled || pressureTolerance > 0);
+                if (samplePressure) {
+                    const resources = ensurePressureDiagnosticResources();
+                    encoder.clearBuffer(resources.output);
+                    dispatch(
+                        encoder,
+                        "flip-pressure-diagnostic-residual",
+                        resources.residualPipeline,
+                        pressureCurrentIsA ? resources.residualA : resources.residualB,
+                        cellGroups
+                    );
+                    dispatch(encoder, "flip-pressure-diagnostic-reduce", resources.reducePipeline, resources.reduce, cellGroups);
+                }
                 dispatch(encoder, "flip-project", projectPipeline, pressureCurrentIsA ? projectABindGroup : projectBBindGroup, faceGroups);
+                if (samplePressure) {
+                    const resources = pressureDiagnosticResources!;
+                    dispatch(encoder, "flip-post-project-divergence", divergencePipeline, divergenceBindGroup, cellGroups);
+                    dispatch(encoder, "flip-post-divergence-diagnostic", resources.postDivergencePipeline, resources.postDivergence, cellGroups);
+                    encodePressureDiagnosticReadback(encoder, resources);
+                }
                 for (let layer = 0; layer < EXTRAPOLATION_LAYERS; layer++) {
                     dispatch(encoder, "flip-extrapolate", extrapolatePipeline, layer % 2 === 0 ? extrapolateABindGroup : extrapolateBBindGroup, faceGroups);
                 }
                 dispatch(encoder, "flip-g2p", g2pPipeline, g2pBindGroup, activeParticleGroups);
+                reseedSubstep++;
+                if (reseedParticlesEnabled && reseedSubstep % reseedInterval === 0) {
+                    encodeReseed(encoder, activeParticleGroups);
+                }
             }
             if (foamEnabled && foamEmitBindGroup && foamUpdateBindGroup) {
                 foamF32[11] = frameDt;
@@ -3774,6 +4518,24 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                     break;
                 case "multigridCycles":
                     multigridCycles = Math.min(8, Math.max(1, Math.round(value)));
+                    adaptiveMultigridCycles = Math.min(adaptiveMultigridCycles, multigridCycles);
+                    break;
+                case "pressureTolerance":
+                    pressureTolerance = Math.max(0, value);
+                    adaptiveMultigridCycles = multigridCycles;
+                    if (pressureTolerance > 0) {
+                        ensurePressureDiagnosticResources();
+                    } else if (!pressureDiagnosticsEnabled) {
+                        destroyPressureDiagnosticResources();
+                    }
+                    break;
+                case "pressureDiagnostics":
+                    pressureDiagnosticsEnabled = value >= 0.5;
+                    if (pressureDiagnosticsEnabled) {
+                        ensurePressureDiagnosticResources();
+                    } else if (pressureTolerance === 0) {
+                        destroyPressureDiagnosticResources();
+                    }
                     break;
                 case "velocityDamping":
                     velocityDamping = Math.max(0, value);
@@ -3822,6 +4584,31 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 case "movingSolidBoundaries":
                     movingSolidBoundariesEnabled = value >= 0.5;
                     break;
+                case "reseedParticles":
+                    reseedParticlesEnabled = value >= 0.5;
+                    if (reseedParticlesEnabled) {
+                        ensureReseedResources();
+                        activePrefixValid = false;
+                    } else if (reseedResources) {
+                        reseedResources.state.destroy();
+                        reseedResources = null;
+                    }
+                    break;
+                case "reseedMinParticles":
+                    reseedMinParticles = Math.max(1, Math.round(value));
+                    reseedTargetParticles = Math.max(reseedMinParticles, reseedTargetParticles);
+                    reseedMaxParticles = Math.max(reseedTargetParticles, reseedMaxParticles);
+                    break;
+                case "reseedTargetParticles":
+                    reseedTargetParticles = Math.max(reseedMinParticles, Math.round(value));
+                    reseedMaxParticles = Math.max(reseedTargetParticles, reseedMaxParticles);
+                    break;
+                case "reseedMaxParticles":
+                    reseedMaxParticles = Math.max(reseedTargetParticles, Math.round(value));
+                    break;
+                case "reseedInterval":
+                    reseedInterval = Math.max(1, Math.round(value));
+                    break;
                 case "restitution":
                     restitution = Math.min(1, Math.max(0, value));
                     break;
@@ -3850,6 +4637,10 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
                 const resources = ensureSolidFaces();
                 resources.pipeline = pipeline("flip-solid-face-geometry", buildSolidFaceGeometryWgsl(scene));
                 resources.bindGroup = buildSolidFaceBindGroup(resources.geometry, resources.pipeline, scene);
+            }
+            if (reseedResources) {
+                reseedResources.emitPipeline = pipeline("flip-reseed-emit", buildReseedEmitWgsl(scene));
+                reseedResources.emitBindGroup = buildReseedEmitBindGroup(reseedResources.emitPipeline, reseedResources.state, scene);
             }
             divergencePipeline = pipeline("flip-divergence", buildDivergenceWgsl(scene, fractionalSolidsEnabled));
             divergenceBindGroup = buildDivergenceBindGroup(divergencePipeline, scene);
@@ -3938,14 +4729,17 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
             surfaceCurvatureBuffer.destroy();
             pressureA.destroy();
             pressureB.destroy();
+            destroyPressureDiagnosticResources();
             liquidSdfResources?.sdfA.destroy();
             liquidSdfResources?.sdfB.destroy();
             solidFaceResources?.geometry.destroy();
+            reseedResources?.state.destroy();
             if (multigridResources) {
                 for (let index = 0; index < multigridResources.levels.length; index++) {
                     const level = multigridResources.levels[index]!;
                     level.rhs.destroy();
                     level.residual.destroy();
+                    level.fluidFraction.destroy();
                     level.params.destroy();
                     if (index > 0) {
                         level.cellTypes.destroy();

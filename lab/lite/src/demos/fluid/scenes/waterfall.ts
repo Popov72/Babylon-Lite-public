@@ -27,7 +27,7 @@
 // stay right whatever model or yaw is in use — giving a seamless springs → terraces → pool
 // → springs loop.
 
-import { addToScene, createDisc, createMeshFromData, createPbrMaterial, enableMirroredMeshes, loadGltf, setMeshVisible } from "babylon-lite";
+import { addToScene, createDisc, createMeshFromData, createPbrMaterial, enableMirroredMeshes, loadGltf, setMeshVisible, setShadowOnly } from "babylon-lite";
 import type { FluidEmitter, FluidFlowConfig, Mesh, SceneNode } from "babylon-lite";
 import type { ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import type { DemoParam, FluidCtx, FluidDemo, DemoStateValue } from "../demo.js";
@@ -900,14 +900,10 @@ export function createWaterfallDemo(ctx: FluidCtx): FluidDemo {
     // it paint shadow over the shoreline as well as the water. Dropping it 2 cm puts it behind
     // the terrain everywhere the terrain exists, so it only ever shows in the open pond.
     shadowCatcher.position.set(ROCK_CX, FLOOR_Y - 0.02, ROCK_CZ);
-    shadowCatcher.material = createPbrMaterial({
-        shadowOnly: true,
-        shadowOnlyColor: [0, 0, 0],
-        // Well under 1: this is a shadow on WATER, and a fully opaque black reads as a hole
-        // punched in the pond rather than as shade.
-        shadowOnlyOpacity: 0.45,
-        shadowOnlyFalloff: 1,
-    });
+    shadowCatcher.material = createPbrMaterial({});
+    // Well under 1: this is a shadow on WATER, and a fully opaque black reads as a hole
+    // punched in the pond rather than as shade.
+    setShadowOnly(shadowCatcher.material, { color: [0, 0, 0], opacity: 0.45, falloff: 1 });
     shadowCatcher.receiveShadows = true; // required by shadowOnly — it IS the shadow term
     addToScene(ctx.scene, shadowCatcher);
     setMeshVisible(shadowCatcher, false);

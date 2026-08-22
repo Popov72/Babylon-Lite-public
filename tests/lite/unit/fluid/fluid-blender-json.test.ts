@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../lab/lite/src/demos/fluid/blender-fluid-json";
-import type { FluidExportJson } from "../../../lab/lite/src/demos/fluid/preset-io";
+import { parseBlenderFluidCollision, parseBlenderFluidJson, scenePayloadFromBlenderFluidJson } from "../../../../lab/lite/src/demos/fluid/blender-fluid-json";
+import type { FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
 
 function collisionBytes(): Uint8Array {
     const bytes = new Uint8Array(64 + 8 * 4);
@@ -29,6 +32,31 @@ function glbBytes(): Uint8Array {
     view.setUint32(8, 12, true);
     return bytes;
 }
+
+describe("Blender FLIP Fluids exporter", () => {
+    it("exports the format-12 quality-comparison settings", () => {
+        const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
+        expect(source).toContain('"version": (3, 1, 0)');
+        expect(source).toContain('"formatVersion": 12');
+        for (const key of [
+            "pressureSolver",
+            "multigridCycles",
+            "pressureTolerance",
+            "pressureDiagnostics",
+            "liquidSdf",
+            "ghostFluid",
+            "fractionalSolids",
+            "movingSolidBoundaries",
+            "reseedParticles",
+            "reseedMinParticles",
+            "reseedTargetParticles",
+            "reseedMaxParticles",
+            "reseedInterval",
+        ]) {
+            expect(source).toContain(`"${key}":`);
+        }
+    });
+});
 
 function validPreset(): FluidExportJson {
     return {
@@ -231,10 +259,17 @@ describe("Blender fluid JSON", () => {
             pressureIterations: 40,
             pressureRelaxation: 0.8,
             multigridCycles: 2,
+            pressureTolerance: 0.001,
+            pressureDiagnostics: 1,
             liquidSdf: 1,
             ghostFluid: 1,
             fractionalSolids: 1,
             movingSolidBoundaries: 1,
+            reseedParticles: 1,
+            reseedMinParticles: 4,
+            reseedTargetParticles: 8,
+            reseedMaxParticles: 12,
+            reseedInterval: 5,
             viscosityIterations: 12,
             maxSubDtMs: 8.4,
         };

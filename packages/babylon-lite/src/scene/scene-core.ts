@@ -50,10 +50,7 @@ export type ClipPlane = readonly [number, number, number, number];
 export type EnvironmentSkyboxKind = "dds" | "hdr";
 
 /** @internal One feature-owned transformation of a visible-environment skybox shader. */
-export interface EnvironmentSkyboxShaderPatch {
-    /** @internal */
-    _apply(fragment: string, kind: EnvironmentSkyboxKind): string;
-}
+export type EnvironmentSkyboxShaderPatch = (fragment: string, kind: EnvironmentSkyboxKind) => string;
 
 /** @internal Lazy access to one feature-owned visible-environment shader patch. */
 export type EnvironmentSkyboxShaderPatchLoader = () => EnvironmentSkyboxShaderPatch | Promise<EnvironmentSkyboxShaderPatch>;

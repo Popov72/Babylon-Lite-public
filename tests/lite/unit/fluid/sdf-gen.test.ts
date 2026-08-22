@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { MeshSdfGrid } from "../../../packages/babylon-lite/src/fluid/volume-sampling/sdf-gen";
-import { generateMeshSdf } from "../../../packages/babylon-lite/src/fluid/volume-sampling/sdf-gen";
+import type { MeshSdfGrid } from "../../../../packages/babylon-lite/src/fluid/volume-sampling/sdf-gen";
+import { generateMeshSdf } from "../../../../packages/babylon-lite/src/fluid/volume-sampling/sdf-gen";
 
 // ------------------------------------------------------------------
 // Analytic test meshes (built in-code so the tests are self-contained).

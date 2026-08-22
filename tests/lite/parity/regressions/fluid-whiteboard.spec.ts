@@ -184,6 +184,8 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     const pressureIterations = page.locator('[data-fluid-physics-param="pressureIterations"]');
     const pressureRelaxation = page.locator('[data-fluid-physics-param="pressureRelaxation"]');
     const multigridCycles = page.locator('[data-fluid-physics-param="multigridCycles"]');
+    const pressureTolerance = page.locator('[data-fluid-physics-param="pressureTolerance"]');
+    const pressureDiagnostics = page.locator('[data-fluid-physics-param="pressureDiagnostics"] select');
     await expect(pressureSolver).toHaveValue("0");
     await expect(pressureIterations).toBeVisible();
     await expect(pressureRelaxation).toBeVisible();
@@ -193,6 +195,11 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(pressureIterations).toBeHidden();
     await expect(pressureRelaxation).toBeHidden();
     await expect(multigridCycles).toBeVisible();
+    await expect(pressureTolerance).toBeVisible();
+    await expect(pressureDiagnostics).toHaveValue("0");
+    await pressureDiagnostics.selectOption("1");
+    await expect(canvas).toHaveAttribute("data-pressure-diagnostics", "true");
+    await expect(page.locator('[data-fluid-pressure-diagnostics="true"]')).toContainText("Pressure residual:");
     const liquidSdf = page.locator('[data-fluid-physics-param="liquidSdf"] select');
     const ghostFluid = page.locator('[data-fluid-physics-param="ghostFluid"]');
     const fractionalSolids = page.locator('[data-fluid-physics-param="fractionalSolids"] select');
@@ -211,6 +218,13 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(movingSolidBoundaries).toBeVisible();
     await movingSolidBoundaries.locator("select").selectOption("1");
     await expect(canvas).toHaveAttribute("data-moving-solid-boundaries", "true");
+    const reseedParticles = page.locator('[data-fluid-physics-param="reseedParticles"] select');
+    const reseedMinimum = page.locator('[data-fluid-physics-param="reseedMinParticles"]');
+    await expect(reseedParticles).toHaveValue("0");
+    await expect(reseedMinimum).toBeHidden();
+    await reseedParticles.selectOption("1");
+    await expect(canvas).toHaveAttribute("data-reseed-particles", "true");
+    await expect(reseedMinimum).toBeVisible();
     await expect(page.getByText("FLIP advanced whitewater", { exact: true })).toBeVisible();
     await expect(page.getByText(/^Turbulence rate/)).toBeVisible();
     const advancedFlipFoam = page.locator("[data-fluid-flip-foam-advanced]");

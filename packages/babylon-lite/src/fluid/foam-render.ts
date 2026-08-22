@@ -170,16 +170,21 @@ struct VOut {
         // Bubble: only when submerged (behind the surface, water in front).
         if (hasWater && i.eyeZ > surfZ - u.texel.z) { outc.g = w; }
     } else if (kind == 0u) {
-        // Spray becomes visible over water only after separating clearly from the
-        // reconstructed surface. This avoids low-occupancy boundary jitter flashing
-        // near-surface particles across the liquid sides.
-        if (!hasWater) {
+        // FLIP benefits from stricter surface separation to suppress low-occupancy
+        // boundary jitter. Other solvers retain their established cascade rendering.
+        if (u.gains.w < 0.5) {
+            if (inFront) { outc.b = w; }
+        } else if (!hasWater) {
             outc.b = w;
         } else {
             let separation = surfZ - i.eyeZ;
             outc.b = w * smoothstep(u.texel.z, 2.0 * u.texel.z, separation);
         }
     } else {
+        if (u.gains.w < 0.5) {
+            if (inFront) { outc.r = w; }
+            return outc;
+        }
         // Follow the local tangent plane of the reconstructed liquid surface. Comparing
         // every fragment with the one constant particle-centre depth creates a moving
         // intersection contour on sloped waves, especially for large foam splats.
@@ -399,6 +404,7 @@ export function createFoamRenderTask(
 ): Task & {
     setSim(s: FluidSim): void;
     setEnabled(on: boolean): void;
+    setSurfaceFiltering(on: boolean): void;
     setOpacity(v: number): void;
     setSizeScale(s: number): void;
     setDebugByKind(on: boolean): void;
@@ -420,6 +426,7 @@ export function createFoamRenderTask(
     const getSurfaceDepth = opts.getSurfaceDepth;
     let currentSim = opts.sim;
     let enabled = true;
+    let surfaceFiltering = false;
     let opacity = 1;
     let sizeScale = 1;
     let debugByKind = false;
@@ -554,7 +561,7 @@ export function createFoamRenderTask(
         splatData[48] = 1.4; // sprayGain
         splatData[49] = 1.0; // foamGain
         splatData[50] = 1.0; // bubbleGain
-        splatData[51] = 0;
+        splatData[51] = surfaceFiltering ? 1 : 0;
         device.queue.writeBuffer(splatBuf, 0, splatData);
 
         device.queue.writeBuffer(blurXBuf, 0, new Float32Array([1, 0, blurRadius, 0]));
@@ -715,6 +722,10 @@ export function createFoamRenderTask(
         /** Enable/disable this renderer. */
         setEnabled(on: boolean): void {
             enabled = on;
+        },
+        /** Enable stricter reconstructed-surface classification for foam and spray. */
+        setSurfaceFiltering(on: boolean): void {
+            surfaceFiltering = on;
         },
         /** Fade all rendered diffuse particles without changing their pool. */
         setOpacity(v: number): void {

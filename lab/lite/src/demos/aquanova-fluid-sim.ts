@@ -23,7 +23,6 @@ import {
     attachPositionGizmoToNode,
     attachRotationGizmoToNode,
     attachScaleGizmoToNode,
-    computeDeformedPositions,
     createAnimationManager,
     createFreeCamera,
     createHavokWorld,
@@ -51,6 +50,7 @@ import {
     getViewMatrix,
     getViewProjectionMatrix,
     isPbrMaterial,
+    isGizmoInteracting,
     onPhysicsAfterStep,
     PhysicsMotionType,
     PhysicsShapeType,
@@ -63,6 +63,7 @@ import {
     loadEnvironment,
     loadHdrEnvironment,
     loadGltf,
+    loadSkybox,
     markMaterialUboDirty,
     onBeforeRender,
     pauseAnimation,
@@ -110,7 +111,6 @@ import type { FoamDebugTexture } from "babylon-lite/fluid/foam-render.js";
 import { fillMeshParticles } from "./particle-fill.js";
 import type { MeshFillStrategy, MeshParticleFill } from "./particle-fill.js";
 import type { VolumeSamplingMode } from "babylon-lite/fluid/volume-sampling/index.js";
-import { buildHdrSkyboxRenderable } from "babylon-lite/material/pbr/background-hdr-skybox.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import type { PhysSchemaEntry } from "babylon-lite/fluid/controls-panel.js";
 import { createFluidProfiler } from "./fluid/gpu-profiler.js";
@@ -127,6 +127,11 @@ import { collisionShapesForModule, worldShapesForMatrix } from "./aquanova/colli
 import type { ShipCollisionShape, WorldCollisionShape } from "./aquanova/collision-shapes.js";
 import { packPrimitives, primBufferBytes, PRIMITIVES_WGSL } from "./aquanova/collision-field.js";
 import type { FluidPrimitive } from "./aquanova/collision-field.js";
+import { SKYBOX_EXT, SKYBOX_SIZE, SKYBOX_URL } from "./aquanova/constants.js";
+import { applyLocalEnvironmentProbes, type LocalEnvironmentController } from "./aquanova/local-environments.js";
+import { buildRuntimeLights } from "./aquanova/lights.js";
+import type { ShipLight } from "./aquanova/manifest.js";
+import { getMeshPoseGeometry } from "./mesh-pose-geometry.js";
 
 // Box-preset render defaults (fluid/scenes/box.ts MLS-MPM preset).
 const DEF_COLOR = "#16a3c3";
@@ -214,16 +219,14 @@ interface Instance {
     readonly meshes: Mesh[]; // display sub-meshes (1 procedural, N for the skinned model)
     readonly materials: Material[]; // clip-plugin hosts + per-frame UBO bump
     readonly root: SceneNode; // wriggle / placement target (the mesh itself, or a parent transform)
-    readonly deformable: boolean; // sample the CURRENT animated pose (skinned model) instead of static geometry
     readonly surfaceOnly: boolean; // skip volume sampling (hollow prop) → dense barycentric-UV surface shell
-    readonly x: number;
-    readonly baseY: number; // world Y the mesh rests at (used for the static-sample world offset)
     homePos: [number, number, number]; // resting root position (auto-fit centred); Restart resets here. Rewritten if the root is later reparented under a physics display root.
     readonly diffuseTexs: TexInfo[]; // distinct base-colour textures across the sub-meshes (per-particle colour source)
     readonly meshTexIndex: number[]; // per display sub-mesh: its index into diffuseTexs (-1 if untextured)
     readonly baseColor: [number, number, number]; // fallback per-particle colour when there's no texture
     colorBuffer: GPUBuffer | null; // per-particle RGBA colour (filled once at shot time), fed to the surface renderer
-    animation: AnimationGroup | null; // looping walk (paused on shot, resumed on Restart)
+    animation: AnimationGroup | null; // looping walk, paused while liquefaction owns this instance
+    resumeAnimationOnCancel: boolean;
     readonly liquefyState: LiquefyState;
     readonly impulseBuffer: GPUBuffer;
     readonly impulseSpec: ForceFieldSpec;
@@ -268,6 +271,9 @@ interface ManualRun {
 
 async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const renderLikeAquanova = new URL(location.href).searchParams.get("aquanovaRendering") === "1";
+    canvas.dataset.aquanovaRendering = String(renderLikeAquanova);
+    canvas.dataset.portalRendering = "false";
 
     let requiredLimits: Record<string, number> | undefined;
     try {
@@ -487,6 +493,7 @@ async function main(): Promise<void> {
 
     const instances: Instance[] = [];
     const meshToInstance = new Map<Mesh, Instance>();
+    const editableShipMeshes = new Set<Mesh>();
     const instanceOf = (m: unknown): Instance | undefined => meshToInstance.get(m as Mesh);
     const animManager = createAnimationManager({ engine });
 
@@ -572,16 +579,14 @@ async function main(): Promise<void> {
             meshes,
             materials: [...materials],
             root,
-            deformable: true,
             surfaceOnly: cfg.surfaceOnly ?? false,
-            x: cfg.x,
-            baseY: GROUND_Y,
             homePos,
             diffuseTexs,
             meshTexIndex,
             baseColor: [0.8, 0.8, 0.8],
             colorBuffer: null,
             animation: anim,
+            resumeAnimationOnCancel: false,
             liquefyState,
             impulseBuffer,
             impulseSpec,
@@ -608,7 +613,7 @@ async function main(): Promise<void> {
         };
         instances.push(inst);
         for (const m of meshes) meshToInstance.set(m, inst);
-        invalidateFilteredSceneTasks();
+        invalidatePhaseTaskBundles();
         setStatus();
     }
 
@@ -626,6 +631,7 @@ async function main(): Promise<void> {
     // Restart teleports the body back to.
     const dynDisplays: { proxy: SceneNode; body: PhysicsBody; disp: SceneNode; rest: [number, number, number] }[] = [];
     let physWorld: PhysicsWorld | null = null;
+    let localEnvironmentController: LocalEnvironmentController | null = null;
 
     // ── Aquanova ship meshes ─────────────────────────────────────────────────
     // Load the FULL ship.glb exactly as Aquanova does and make every ship mesh a foe, IN PLACE inside
@@ -649,9 +655,16 @@ async function main(): Promise<void> {
         // The component check matches Aquanova's own loader (aquanova/manifest.ts), which reads the
         // same file: a truthy-but-malformed AABB would not crash, it would quietly yield `undefined`
         // corner components and propagate NaN into the room test and the collision box extents.
-        const hasBounds = (c: { aabb: { min: number[]; max: number[] } | null }): c is { aabb: { min: number[]; max: number[] } } =>
-            c.aabb?.min?.length === 3 && c.aabb?.max?.length === 3;
+        type ShipChunkData = NonNullable<ShipManifestData["chunks"]>[number];
+        const hasBounds = (c: ShipChunkData): c is ShipChunkData & { aabb: { min: number[]; max: number[] } } => c.aabb?.min?.length === 3 && c.aabb?.max?.length === 3;
         const chunks = (shipManifest?.chunks ?? []).filter(hasBounds);
+        const chunkIdByRootNode = new Map<string, string>();
+        for (const chunk of chunks) {
+            if (chunk.node && chunk.id) {
+                chunkIdByRootNode.set(chunk.node, chunk.id);
+            }
+        }
+        const chunkOfMesh = new Map<Mesh, string>();
         const liqNames = new Set(
             Object.keys(shipManifest?.entities ?? {}).filter((name) => isLiquefiableBehavior(resolveBehavior(shipManifest?.behaviors, shipManifest?.entities, name)))
         );
@@ -722,19 +735,27 @@ async function main(): Promise<void> {
         // under one entity exactly as they do in Aquanova.
         const PRIMITIVE_WRAPPER = /_primitive\d+$/;
         const found: { mesh: Mesh; parent: SceneNode; owner: SceneNode }[] = [];
+        const shipMeshes: Array<{ mesh: Mesh; owner: SceneNode }> = [];
         const seen = new Set<Mesh>();
-        const walk = (node: SceneNode, owner: SceneNode): void => {
+        const walk = (node: SceneNode, owner: SceneNode, chunk: string | undefined): void => {
             for (const c of [...(node.children ?? [])]) {
-                if (isMeshNode(c) && c._cpuPositions && c._cpuIndices && !seen.has(c)) {
+                const childChunk = chunkIdByRootNode.get(c.name) ?? chunk;
+                if (isMeshNode(c) && !seen.has(c)) {
                     seen.add(c);
-                    found.push({ mesh: c, parent: node, owner });
+                    shipMeshes.push({ mesh: c, owner });
+                    if (childChunk) {
+                        chunkOfMesh.set(c, childChunk);
+                    }
+                    if (c._cpuPositions && c._cpuIndices) {
+                        found.push({ mesh: c, parent: node, owner });
+                    }
                     continue;
                 }
                 const wrapper = PRIMITIVE_WRAPPER.test(c.name) && c.name.replace(PRIMITIVE_WRAPPER, "") === node.name;
-                walk(c, wrapper ? owner : c);
+                walk(c, wrapper ? owner : c, childChunk);
             }
         };
-        walk(shipRoot, shipRoot);
+        walk(shipRoot, shipRoot, undefined);
         if (!found.length) {
             // eslint-disable-next-line no-console
             console.warn("[aquanova-fluid-sim] ship.glb contained no sampleable meshes");
@@ -761,6 +782,16 @@ async function main(): Promise<void> {
         const markerNames = new Set(
             [PLAYER_START_BEHAVIOR, WEAPON_START_BEHAVIOR].map((bh) => findEntityWithBehavior(shipManifest?.entities, bh)?.name).filter((v): v is string => !!v)
         );
+        const disabledShipMeshes = new Set<Mesh>();
+        for (const { mesh, owner } of shipMeshes) {
+            if (markerNames.has(owner.name) || mesh.name.startsWith("Portal_")) {
+                setMeshVisible(mesh, false);
+                (mesh as { pickable?: boolean }).pickable = false;
+                disabledShipMeshes.add(mesh);
+            } else {
+                editableShipMeshes.add(mesh);
+            }
+        }
         const placementIdForNode = (node: SceneNode): string | null => {
             let current: SceneNode | null = node;
             while (current) {
@@ -772,10 +803,9 @@ async function main(): Promise<void> {
             }
             return null;
         };
+        const shipInstanceStart = instances.length;
         for (const { mesh, parent, owner } of found) {
-            if (markerNames.has(owner.name)) {
-                setMeshVisible(mesh, false);
-                (mesh as { pickable?: boolean }).pickable = false;
+            if (disabledShipMeshes.has(mesh)) {
                 continue;
             }
             const liquefyState: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
@@ -813,6 +843,46 @@ async function main(): Promise<void> {
             const bh = behaviorOfNode(owner.name);
             if (bh) behaviorOfInstance.set(inst, bh);
             n++;
+        }
+
+        if (renderLikeAquanova) {
+            const runtimeLitMeshes = new Set(shipMeshes.map(({ mesh }) => mesh).filter((mesh) => !disabledShipMeshes.has(mesh)));
+            const lights = buildRuntimeLights(scene, shipRoot, runtimeLitMeshes, chunkOfMesh, shipManifest?.lights);
+            canvas.dataset.clusteredLightCount = String(lights.clusteredPoint + lights.clusteredSpot);
+            canvas.dataset.runtimeLitCount = String(runtimeLitMeshes.size);
+            if (lights.overflow) {
+                console.warn(`[aquanova-fluid-sim] ${lights.overflow} non-clustered light(s) dropped: the shared lights UBO is full`);
+            }
+
+            // Fixed mode assigns one immutable, intersecting box-projected cubemap to each mesh.
+            // This deliberately does not enable Aquanova's per-fragment cubemap blending.
+            localEnvironmentController = await applyLocalEnvironmentProbes(
+                scene,
+                shipMeshes.map(({ mesh }) => mesh),
+                { blendingEnabled: false }
+            );
+            if (localEnvironmentController) {
+                canvas.dataset.localEnvironmentCount = String(localEnvironmentController.loaded);
+                canvas.dataset.localCubemapBlending = "false";
+                if (localEnvironmentController.missing.length) {
+                    console.warn("[aquanova-fluid-sim] local environments not loaded:", localEnvironmentController.missing.join(", "));
+                }
+                localEnvironmentController.updatePoi([cam.position.x, cam.position.y, cam.position.z]);
+                const fluidEnvironment = localEnvironmentController.dominantEnvironment();
+                if (fluidEnvironment) {
+                    surfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
+                }
+            }
+
+            // Lighting and local-environment setup replace material objects. Keep each liquefaction
+            // instance pointed at the final materials so its clip UBO is dirtied every frame.
+            for (const instance of instances.slice(shipInstanceStart)) {
+                const materials = new Set(instance.meshes.map((mesh) => mesh.material).filter((material): material is Material => material !== undefined));
+                instance.materials.splice(0, instance.materials.length, ...materials);
+            }
+            // No portal visibility controller is created here: the existing scene task renders every
+            // visible ship mesh every frame, which is intentional for fluid performance testing.
+            canvas.dataset.fullShipRendering = "true";
         }
 
         // ── Havok: chunk shells + a rigid body per `dynamic` node ────────────────────────
@@ -981,7 +1051,6 @@ async function main(): Promise<void> {
             depth: depthRT,
             clr: true,
             clrColor: { r: 0.05, g: 0.06, b: 0.1, a: 1 },
-            _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase !== "dissolving",
         },
         engine,
         scene
@@ -1226,11 +1295,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const foeDepth = createRenderTarget({ lbl: "liq-foe-depth", dFormat: depthRT._descriptor.dFormat, samples: 1, size: engine });
     foeDepth._eager = true;
     foeDepth._ownsDepthTexture = false;
-    const foeTask = createRenderTask(
-        { name: "liq-foe", rt: engine.scRT, depth: foeDepth, clr: false, _filterRenderable: (renderable) => instanceOf(renderable.mesh)?.phase === "dissolving" },
-        engine,
-        scene
-    );
+    const foeTask = createRenderTask({ name: "liq-foe", rt: engine.scRT, depth: foeDepth, clr: false, autoMirror: false }, engine, scene);
     const foeRecord = foeTask.record.bind(foeTask);
     foeTask.record = (): void => {
         foeDepth._depthTexture = depthRT._depthTexture;
@@ -1240,6 +1305,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         foeRecord();
     };
     addTask(scene, foeTask);
+
+    const gateTaskMeshes = (task: typeof sceneTask, shouldDraw: (instance: Instance) => boolean): void => {
+        const executeTask = task.execute;
+        if (!executeTask) {
+            throw new Error(`Render task "${task.name}" does not provide a direct execute path.`);
+        }
+        const execute = executeTask.bind(task);
+        task.execute = (): number => {
+            const hidden: Mesh[] = [];
+            for (const instance of instances) {
+                if (shouldDraw(instance)) continue;
+                for (const mesh of instance.meshes) {
+                    if (mesh.visible === false) continue;
+                    mesh.visible = false;
+                    hidden.push(mesh);
+                }
+            }
+            try {
+                return execute();
+            } finally {
+                for (const mesh of hidden) mesh.visible = true;
+            }
+        };
+    };
+    gateTaskMeshes(sceneTask, (instance) => instance.phase !== "dissolving");
+    gateTaskMeshes(foeTask, (instance) => instance.phase === "dissolving");
 
     // Encoder-level GPU-timing resolve: after every other pass, close the whole-frame envelope and
     // resolve the timestamp queries. Draws nothing. Must be the LAST task added.
@@ -1260,11 +1351,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         });
     }
 
-    const invalidateFilteredSceneTasks = (): void => {
+    const invalidatePhaseTaskBundles = (): void => {
         for (const task of [sceneTask, foeTask]) {
-            task._lastVersion = -1;
             task._ob.length = 0;
         }
+        foeTask.enabled = instances.some((instance) => instance.phase === "dissolving");
     };
 
     surfaceTask.setDirLight(SUN_DIR);
@@ -1294,9 +1385,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         environment?: ShipEnvironment;
         behaviors?: ShipBehaviorLibrary; // behaviour name → definition
         entities?: ShipEntities; // mesh name → assigned behaviours
-        chunks?: { aabb: { min: number[]; max: number[] } | null }[];
+        chunks?: { id?: string; node?: string; aabb: { min: number[]; max: number[] } | null }[];
         moduleCollision?: Readonly<Record<string, ShipCollisionShape | readonly ShipCollisionShape[]>>;
         fluidSim?: string[];
+        lights?: ShipLight[];
     }
     let shipManifest: ShipManifestData | null = null;
     const shipManifestReady = fetch(SHIP_MANIFEST_URL)
@@ -1334,19 +1426,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // The skybox snapshots scene.imageProcessing at build time, so grade FIRST.
         scene.imageProcessing.exposure = gradedExposure(exposure);
         scene.imageProcessing.contrast = gradedContrast(contrast);
-        // Ship mode has no sky of its own — loadHdrEnvironment already pushed the solid fallback
-        // skybox, matching Aquanova.
-        return { env, sky: SHIP_MODE ? null : buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
+        // AquanovaFluidSim is ship-only. Its environment loader or authored Aquanova skybox owns
+        // the background, so there is no gallery sky renderable to install here.
+        return { env, sky: null, exposure, contrast };
     };
     const loadEnvSlot = async (c: (typeof ENV_CHOICES)[number]): Promise<EnvSlot | null> => {
         if (envSlots.has(c.key)) return envSlots.get(c.key) ?? null;
         try {
             const env = c.hdr
                 ? // Both demos build the IBL at 512-pixel cube faces (sharper specular reflections on
-                  // the ship's metal than the 256 default). Ship mode additionally mirrors Aquanova's
-                  // background: the solid fallback skybox `loadHdrEnvironment` builds, rather than this
-                  // demo's own HDR cubemap sky, which only the gallery's environment dropdown needs.
-                  await loadHdrEnvironment(scene, c.url, SHIP_MODE ? { faceSize: 512, skipGround: true } : { faceSize: 512, skipGround: true, skipSkybox: true })
+                  // the ship's metal than the 256 default). Aquanova rendering uses its authored
+                  // backdrop instead of the HDR loader's fallback skybox.
+                  await loadHdrEnvironment(
+                      scene,
+                      c.url,
+                      renderLikeAquanova
+                          ? { faceSize: 512, skipGround: true, skipSkybox: true }
+                          : SHIP_MODE
+                            ? { faceSize: 512, skipGround: true }
+                            : { faceSize: 512, skipGround: true, skipSkybox: true }
+                  )
                 : await loadEnvironment(scene, c.url, { brdfUrl, skipGround: true, skipSkybox: true });
             scene.imageProcessing.toneMappingEnabled = true;
             // Ship mode uses the view transform named in the manifest (Aquanova reads the same
@@ -1389,7 +1488,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         const slot = await loadEnvSlot(c);
         if (slot && currentEnvKey === key) installEnvSlot(slot);
     };
-    const envReady = applyEnv(currentEnvKey);
+    const envReady = (async (): Promise<void> => {
+        await applyEnv(currentEnvKey);
+        if (!renderLikeAquanova) {
+            return;
+        }
+        try {
+            await loadSkybox(scene, SKYBOX_URL, SKYBOX_EXT, SKYBOX_SIZE);
+        } catch (err) {
+            console.warn("[aquanova-fluid-sim] Aquanova skybox not loaded", err);
+        }
+    })();
 
     // ── Global tuning state (applied to newly built sims) ────────────────────
     let radiusValue = 0.08;
@@ -1815,30 +1924,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const LIQUEFY_EDGE = 0.6;
     const NO_TEX = 0xffffffff; // per-vertex/particle texIndex sentinel: no texture → baseColor fill
 
-    // Geometry to feed the volume sampler: LOCAL + a world offset (procedural), or the CURRENT
-    // deformed pose already in WORLD space with a zero offset (skinned model). Also emits per-vertex
-    // UVs + a per-vertex texture index (which sub-mesh texture to sample) when the instance is textured.
+    // Merge each mesh's current rendered pose into one world-space triangle soup.
+    // Also emits per-vertex UVs and a texture index when the instance is textured.
     function sampleGeometry(inst: Instance): SampleGeom | null {
         const wantUv = inst.diffuseTexs.length > 0;
-        if (!inst.deformable) {
-            const m = inst.meshes[0]!;
-            if (!m._cpuPositions || !m._cpuIndices) return null;
-            const uvs = wantUv && m._cpuUvs ? m._cpuUvs.slice() : null;
-            return { positions: m._cpuPositions.slice(), indices: (m._cpuIndices as Uint32Array).slice(), uvs, texIndices: null, ox: inst.x, oy: inst.baseY, oz: 0 };
-        }
         let totalV = 0;
         let totalI = 0;
         let allHaveUv = wantUv;
-        const parts: { pos: Float32Array; idx: Uint32Array; uv: Float32Array | null; ti: number; w: ArrayLike<number> }[] = [];
+        const parts: { pos: Float32Array; idx: Uint32Array; uv: Float32Array | null; ti: number }[] = [];
         for (let mi = 0; mi < inst.meshes.length; mi++) {
             const m = inst.meshes[mi]!;
-            if (!m._cpuPositions || !m._cpuIndices) continue;
-            const local = computeDeformedPositions(m) ?? m._cpuPositions;
-            const uv = m._cpuUvs ?? null;
-            if (!uv) allHaveUv = false;
-            parts.push({ pos: local, idx: m._cpuIndices as Uint32Array, uv, ti: inst.meshTexIndex[mi] ?? -1, w: m.worldMatrix as unknown as ArrayLike<number> });
-            totalV += local.length / 3;
-            totalI += m._cpuIndices.length;
+            const geometry = getMeshPoseGeometry(m);
+            if (!geometry) continue;
+            if (!geometry.uvs) allHaveUv = false;
+            parts.push({ pos: geometry.positions, idx: geometry.indices, uv: geometry.uvs, ti: inst.meshTexIndex[mi] ?? -1 });
+            totalV += geometry.positions.length / 3;
+            totalI += geometry.indices.length;
         }
         if (totalV === 0) return null;
         const positions = new Float32Array(totalV * 3);
@@ -1848,18 +1949,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         let vb = 0;
         let ic = 0;
         for (const p of parts) {
-            const w = p.w;
             const n = p.pos.length / 3;
             const ti = p.ti >= 0 ? p.ti >>> 0 : NO_TEX;
+            positions.set(p.pos, vb * 3);
             for (let v = 0; v < n; v++) {
-                const s = v * 3;
-                const lx = p.pos[s]!,
-                    ly = p.pos[s + 1]!,
-                    lz = p.pos[s + 2]!;
-                const o = (vb + v) * 3;
-                positions[o] = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
-                positions[o + 1] = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
-                positions[o + 2] = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
                 if (uvs && p.uv) {
                     uvs[(vb + v) * 2] = p.uv[v * 2]!;
                     uvs[(vb + v) * 2 + 1] = p.uv[v * 2 + 1]!;
@@ -2038,8 +2131,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const gridDim = gridSize.map((size) => Math.max(1, Math.ceil(size / dx))) as [number, number, number];
         const flipPhysics = physValues["FLIP"]!;
         const gpuBytes = estimateFlipGpuBytes(capacity, gridDim, (flipPhysics.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+            pressureDiagnostics: (flipPhysics.pressureDiagnostics ?? 0) >= 0.5 || (flipPhysics.pressureTolerance ?? 0) > 0,
             liquidSdf: (flipPhysics.liquidSdf ?? 0) >= 0.5,
             fractionalSolids: (flipPhysics.fractionalSolids ?? 0) >= 0.5,
+            reseedParticles: (flipPhysics.reseedParticles ?? 0) >= 0.5,
         });
         return { active, capacity, gpuBytes };
     }
@@ -2131,6 +2226,13 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     let sampleSeq = 0;
     const pendingSamples = new Map<number, { inst: Instance; hit: [number, number, number] }>();
 
+    const resumeCancelledAnimation = (inst: Instance): void => {
+        if (inst.resumeAnimationOnCancel && inst.animation) {
+            playAnimation(inst.animation);
+        }
+        inst.resumeAnimationOnCancel = false;
+    };
+
     // A small pool of sampling workers so several foes can convert to particles IN PARALLEL: a
     // second shot while one conversion is in flight goes to a free worker instead of queueing behind
     // it. `pendingSamples` (keyed by id) routes each reply to the right foe regardless of worker.
@@ -2159,6 +2261,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             entry.inst.sampling = false;
             leaveShot(entry.inst);
             stopWriggle(entry.inst);
+            resumeCancelledAnimation(entry.inst);
             setStatus();
             return;
         }
@@ -2200,6 +2303,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         inst.sampleId = id;
         const h: [number, number, number] = [hit[0], hit[1], hit[2]];
         pendingSamples.set(id, { inst, hit: h });
+        const animation = inst.animation;
+        inst.resumeAnimationOnCancel = !!animation?.isPlaying;
+        if (animation?.isPlaying) {
+            pauseAnimation(animation);
+        }
         startWriggle(inst); // pain shake begins immediately on click, before the async sample finishes
         setStatus();
         const geom = sampleGeometry(inst);
@@ -2208,11 +2316,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             inst.sampling = false;
             leaveShot(inst);
             stopWriggle(inst);
+            resumeCancelledAnimation(inst);
             setStatus();
             return false;
         }
-        // Freeze a walking foe so the dissolve shows the exact pose we just sampled.
-        if (inst.animation) pauseAnimation(inst.animation);
         const pw = pickWorker();
         if (pw) {
             const transfer: Transferable[] = [geom.positions.buffer, geom.indices.buffer];
@@ -2256,6 +2363,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 inst.sampling = false;
                 leaveShot(inst);
                 stopWriggle(inst);
+                resumeCancelledAnimation(inst);
                 setStatus();
             }
         }
@@ -2267,6 +2375,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (inst.sampleId !== id || !inst.sampling || inst.phase !== "solid") {
             inst.sampling = false;
             leaveShot(inst);
+            resumeCancelledAnimation(inst);
             return;
         }
         inst.sampling = false;
@@ -2294,7 +2403,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         setWaterWriggle(inst, fill.positions, fill.count); // add the water jitter; the mesh shake is already running
         bumpUbo(inst);
         liveShots++;
-        invalidateFilteredSceneTasks();
+        invalidatePhaseTaskBundles();
         setStatus();
     }
 
@@ -2307,8 +2416,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         inst.phase = "fluid";
         inst.fluidElapsed = 0;
         inst.shot = null; // the shot has erupted; membership no longer gates anything
+        inst.resumeAnimationOnCancel = false;
         startImpulse(inst);
-        invalidateFilteredSceneTasks();
+        invalidatePhaseTaskBundles();
         setStatus();
     }
 
@@ -2341,6 +2451,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             inst.wriggling = false;
             inst.wriggleWaterBase = null;
             inst.wriggleWaterScratch = null;
+            inst.resumeAnimationOnCancel = false;
             inst.root.position.set(inst.homePos[0], inst.homePos[1], inst.homePos[2]);
             setVisible(inst, true);
             bumpUbo(inst);
@@ -2365,7 +2476,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         liveShots = 0;
         virtualSim.count = 0;
-        invalidateFilteredSceneTasks();
+        invalidatePhaseTaskBundles();
         setStatus();
         refreshManualParticleUsage();
     }
@@ -2397,8 +2508,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (!helperText) return;
         helperText.textContent =
             simulationType === "mesh"
-                ? "WASD + Space/C: fly · RMB-drag: look · P: pause · R: restart · LMB: liquefy a ship mesh"
-                : "WASD + Space/C: fly · RMB-drag: look · Shift+RMB-drag: push fluid · P: pause · R: stop/start";
+                ? "WASD + Space/C: fly · RMB-drag: look · Shift+LMB: toggle mesh gizmo · LMB: liquefy · P: pause · R: restart"
+                : "WASD + Space/C: fly · RMB-drag: look · Shift+LMB: toggle mesh gizmo · Shift+RMB-drag: push fluid · P: pause · R: stop/start";
     };
     updateHelperText();
 
@@ -2433,6 +2544,26 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
     simulationTypeSelect.onchange = () => setSimulationType(simulationTypeSelect.value as SimulationType);
     const simulationTypeRow = labelledRow("Simulation type", simulationTypeSelect);
+
+    const aquanovaRenderingInput = document.createElement("input");
+    aquanovaRenderingInput.type = "checkbox";
+    aquanovaRenderingInput.id = "aquanova-rendering";
+    aquanovaRenderingInput.checked = renderLikeAquanova;
+    aquanovaRenderingInput.style.cssText = "margin-right:6px;vertical-align:middle;";
+    aquanovaRenderingInput.onchange = () => {
+        const url = new URL(location.href);
+        if (aquanovaRenderingInput.checked) {
+            url.searchParams.set("aquanovaRendering", "1");
+        } else {
+            url.searchParams.delete("aquanovaRendering");
+        }
+        location.assign(url);
+    };
+    const aquanovaRenderingRow = document.createElement("label");
+    aquanovaRenderingRow.style.cssText = "display:block;margin-bottom:8px;color:#b6c4d6;cursor:pointer;";
+    aquanovaRenderingRow.title =
+        "Reload with Aquanova's authored clustered lights and one fixed local cubemap per ship mesh. The full ship remains rendered every frame; portal culling and cubemap blending stay disabled.";
+    aquanovaRenderingRow.append(aquanovaRenderingInput, document.createTextNode("Aquanova rendering"));
 
     const fluidSimSelect = document.createElement("select");
     fluidSimSelect.id = "aquanova-fluid-sim-preset";
@@ -2930,11 +3061,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const flowScaleGizmo = createScaleGizmo(engine, gridGizmoLayer);
     const gridPositionGizmo = createPositionGizmo(engine, gridGizmoLayer, { planarEnabled: true });
     const gridScaleGizmo = createScaleGizmo(engine, gridGizmoLayer);
+    const meshPositionGizmo = createPositionGizmo(engine, gridGizmoLayer, { planarEnabled: true });
+    const meshRotationGizmo = createRotationGizmo(engine, gridGizmoLayer);
     setPositionGizmoLocalCoordinates(flowPositionGizmo, false);
     setRotationGizmoLocalCoordinates(flowRotationGizmo, true);
     setScaleGizmoLocalCoordinates(flowScaleGizmo, true);
     setPositionGizmoLocalCoordinates(gridPositionGizmo, false);
     setScaleGizmoLocalCoordinates(gridScaleGizmo, true);
+    setPositionGizmoLocalCoordinates(meshPositionGizmo, false);
+    setRotationGizmoLocalCoordinates(meshRotationGizmo, true);
     const flowPositionSubGizmos = [
         flowPositionGizmo.xGizmo,
         flowPositionGizmo.yGizmo,
@@ -2954,6 +3089,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         ...(gridPositionGizmo.zPlaneGizmo ? [gridPositionGizmo.zPlaneGizmo] : []),
     ];
     const gridScaleSubGizmos = [gridScaleGizmo.xGizmo, gridScaleGizmo.yGizmo, gridScaleGizmo.zGizmo, gridScaleGizmo.uniformScaleGizmo];
+    const meshPositionSubGizmos = [
+        meshPositionGizmo.xGizmo,
+        meshPositionGizmo.yGizmo,
+        meshPositionGizmo.zGizmo,
+        ...(meshPositionGizmo.xPlaneGizmo ? [meshPositionGizmo.xPlaneGizmo] : []),
+        ...(meshPositionGizmo.yPlaneGizmo ? [meshPositionGizmo.yPlaneGizmo] : []),
+        ...(meshPositionGizmo.zPlaneGizmo ? [meshPositionGizmo.zPlaneGizmo] : []),
+    ];
+    const meshRotationSubGizmos = [meshRotationGizmo.xGizmo, meshRotationGizmo.yGizmo, meshRotationGizmo.zGizmo];
     const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
         for (const gizmo of gizmos) {
             for (const mesh of gizmo._visibleMeshes) {
@@ -2962,6 +3106,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
     };
     const selectedFlowObject = (kind: FluidFlowObjectKind) => flowEditor?.getSelected(kind);
+    let meshGizmoTarget: Mesh | null = null;
+    const meshGizmoId = (mesh: Mesh | null): string | null => (mesh ? (instanceOf(mesh)?.key ?? mesh.name) : null);
+    const setMeshGizmoTarget = (target: Mesh | null): void => {
+        meshGizmoTarget = target;
+        attachPositionGizmoToNode(meshPositionGizmo, target);
+        attachRotationGizmoToNode(meshRotationGizmo, target);
+        setGizmoMeshesVisible(!!target, meshPositionSubGizmos);
+        setGizmoMeshesVisible(!!target, meshRotationSubGizmos);
+        canvas.dataset.meshGizmo = meshGizmoId(target) ?? "";
+    };
+    setMeshGizmoTarget(null);
     const syncFlowWireframe = (kind: FluidFlowObjectKind): void => {
         const isEmitter = kind === "emitter";
         const mesh = isEmitter ? emitterFlowWireframe : sinkFlowWireframe;
@@ -3259,6 +3414,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onFoamPool: () => pushFoam(),
             onFoamThresholds: (t0, t1) => foamTask.setThresholds(t0, t1),
             onFoamSubsurface: (v) => foamTask.setSubsurfaceStrength(v),
+            onFoamSurfaceFiltering: (enabled) => foamTask.setSurfaceFiltering(enabled),
             onFoamSubColor: (rgb) => foamTask.setSubsurfaceColor(rgb),
             onFoamSize: (v) => foamTask.setSizeScale(v),
             onFoamBlur: (v) => foamTask.setBlurRadius(v),
@@ -3653,6 +3809,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const demoSection = controls.makeSection("Demo", [
         title,
         simulationTypeRow,
+        aquanovaRenderingRow,
         fluidSimRow,
         fluidSimAuthoring,
         collisionRadiusRow,
@@ -3750,6 +3907,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     canvas.dataset.method = currentMethod;
     refreshPhysicsParamVisibility();
     setStatus();
+
+    const pickEditableMeshAt = async (px: number, py: number): Promise<Mesh | null> => {
+        const info = await pickAsync(picker, px, py, { filter: (mesh) => editableShipMeshes.has(mesh) && mesh.visible !== false });
+        return info.hit && info.pickedMesh ? (info.pickedMesh as Mesh) : null;
+    };
+    const toggleMeshGizmoAt = async (px: number, py: number): Promise<string | null> => {
+        const target = await pickEditableMeshAt(px, py);
+        if (!target) return null;
+        setMeshGizmoTarget(meshGizmoTarget === target ? null : target);
+        return meshGizmoId(meshGizmoTarget);
+    };
 
     // ── Programmatic hooks for headless QA ───────────────────────────────────
     const qa = {
@@ -3883,6 +4051,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             impulseDir[2] = z;
             showImpulseDir();
         },
+        meshAt: async (px: number, py: number): Promise<string | null> => meshGizmoId(await pickEditableMeshAt(px, py)),
+        meshGizmo: (): string | null => meshGizmoId(meshGizmoTarget),
+        toggleMeshGizmoAt,
         setImpulseRadius: (r: number) => {
             impulseRadius = r;
             radiusImpInput.value = String(r);
@@ -3965,6 +4136,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             for (const s of groupOfInstance.get(next) ?? []) if (!seen.has(s)) queue.push(s);
             for (const name of linkedMeshNames(behaviorOfInstance.get(next))) for (const o of instancesByNodeName.get(name) ?? []) if (!seen.has(o)) queue.push(o);
         }
+        if (meshGizmoTarget && group.includes(instanceOf(meshGizmoTarget)!)) {
+            setMeshGizmoTarget(null);
+        }
         for (const m of group) if (m.phase === "solid" && !m.sampling) requestSample(m, hit);
         // Everything actually taking part shares ONE member list, so the group can erupt on the same
         // frame. Each member's clip front reaches its own maxR at a different time (the pane you hit is
@@ -3998,10 +4172,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
 
     canvas.addEventListener("pointerdown", (ev) => {
-        if (ev.button !== 0 || simulationType !== "mesh") return;
+        if (ev.button !== 0) return;
         const rect = canvas.getBoundingClientRect();
         const px = (ev.clientX - rect.left) * (canvas.width / rect.width);
         const py = (ev.clientY - rect.top) * (canvas.height / rect.height);
+        if (ev.shiftKey) {
+            // A gizmo collider press is handled by the utility-layer dispatcher. Its hover state is
+            // synchronous here even though GPU picking on pointer-down is asynchronous.
+            if (isGizmoInteracting(canvas)) {
+                return;
+            }
+            void toggleMeshGizmoAt(px, py);
+            return;
+        }
+        if (simulationType !== "mesh") return;
         void pickAsync(picker, px, py, { filter: (m) => instanceOf(m)?.phase === "solid" && !instanceOf(m)?.sampling }).then((info) => {
             if (!info.hit || !info.pickedPoint || !info.pickedMesh) return;
             const inst = instanceOf(info.pickedMesh);
@@ -4011,22 +4195,24 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     });
 
     // ── Per-frame loop ───────────────────────────────────────────────────────
-    let lastRenderableCount = -1;
     let fpsAccumMs = 0;
     let fpsFrames = 0;
     onBeforeRender(scene, (deltaMs: number) => {
         updateCamera(deltaMs);
+        if (localEnvironmentController) {
+            const previousProbe = localEnvironmentController.blendInfo().dominantProbeId;
+            const blend = localEnvironmentController.updatePoi([cam.position.x, cam.position.y, cam.position.z]);
+            if (blend.dominantProbeId !== previousProbe) {
+                const fluidEnvironment = localEnvironmentController.dominantEnvironment();
+                if (fluidEnvironment) {
+                    surfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
+                }
+            }
+        }
         // Open the whole-frame GPU-timing envelope BEFORE any pass is encoded this frame.
         if (profiler) {
             profiler.beginFrame();
             profiler.frameStart(engine._currentEncoder);
-        }
-        // The model is a dynamic (post-boot) add; its renderables materialize a few frames later.
-        // Rebuild the filtered scene/foe draw lists whenever the renderable set changes so the
-        // model appears in sceneColorRT (not just in the picker) once it drains in.
-        if (scene._renderables.length !== lastRenderableCount) {
-            lastRenderableCount = scene._renderables.length;
-            invalidateFilteredSceneTasks();
         }
         updateAnimationManager(animManager, deltaMs); // advance the model's walk (skeleton pose)
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
@@ -4163,6 +4349,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // Load the full Aquanova ship before scene registration so the liquefy plugin materializes for
     // every ship mesh.
     await loadShipFoes();
+    // The overlay is an explicit demo-owned list. It contains only liquefiable ship meshes, while
+    // task-local visibility gating decides which dissolving meshes draw on a given frame.
+    for (const instance of instances) {
+        for (const mesh of instance.meshes) {
+            foeTask.addMesh(mesh);
+        }
+    }
+    invalidatePhaseTaskBundles();
     await registerScene(scene);
     await registerUtilityLayer(gridGizmoLayer);
     await startEngine(engine);

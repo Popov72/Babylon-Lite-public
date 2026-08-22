@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { presetFromExportJson, type FluidExportJson } from "../../../lab/lite/src/demos/fluid/preset-io";
+import { presetFromExportJson, type FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
 import {
     allocateFluidInflowCapacity,
     countFluidInitialParticles,
@@ -21,7 +21,7 @@ import {
     type FluidEmitter,
     type FluidFlowConfig,
     type FluidShape,
-} from "../../../packages/babylon-lite/src/fluid/sim-common";
+} from "../../../../packages/babylon-lite/src/fluid/sim-common";
 
 const transform = (position: [number, number, number]) => ({
     position,

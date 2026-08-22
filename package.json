@@ -33,6 +33,7 @@
         "test": "pnpm build:bundle-scenes && pnpm test:parity",
         "test:watch": "vitest --project unit",
         "test:unit": "vitest run --project unit",
+        "test:unit:fluid": "vitest run --project unit tests/lite/unit/fluid",
         "test:unit:gl": "vitest run --project gl-unit",
         "test:build:gl": "vitest run --project gl-build",
         "test:build": "vitest run --project build",

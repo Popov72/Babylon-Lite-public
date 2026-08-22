@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { cleanupTempDirs, ensureLibBuilt, LIB_ENTRY, runRollup } from "./bundler-harness";
 
 type BuiltEnvironmentPatch = {
-    _apply(fragment: string, kind: "dds" | "hdr"): string;
+    default(fragment: string, kind: "dds" | "hdr"): string;
 };
 
 function readBuiltSkyboxFragment(relativePath: string, variableName: string): string {
@@ -107,11 +107,11 @@ describe("environment setter tree shaking", () => {
         expect(hdr).not.toContain("var dir");
         expect(hdr).not.toContain("envCubemap");
         expect(hdr).not.toMatch(/\b_er[cs]\b/);
-        expect(rotationPatch._apply(dds, "dds")).not.toBe(dds);
-        expect(rotationPatch._apply(hdr, "hdr")).not.toBe(hdr);
-        expect(blurPatch._apply(dds, "dds")).not.toBe(dds);
-        expect(blurPatch._apply(hdr, "hdr")).not.toBe(hdr);
-        expect(() => rotationPatch._apply("", "dds")).toThrow();
-        expect(() => blurPatch._apply("", "dds")).toThrow();
+        expect(rotationPatch.default(dds, "dds")).not.toBe(dds);
+        expect(rotationPatch.default(hdr, "hdr")).not.toBe(hdr);
+        expect(blurPatch.default(dds, "dds")).not.toBe(dds);
+        expect(blurPatch.default(hdr, "hdr")).not.toBe(hdr);
+        expect(() => rotationPatch.default("", "dds")).toThrow();
+        expect(() => blurPatch.default("", "dds")).toThrow();
     });
 });

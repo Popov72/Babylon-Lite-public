@@ -1,4 +1,4 @@
-import * as environmentBlurSkyboxPatch from "../material/pbr/fragments/environment-blur-fragment.js";
+import environmentBlurSkyboxPatch from "../material/pbr/fragments/environment-blur-fragment.js";
 import { _registerEnvironmentSkyboxShaderPatch } from "../material/pbr/environment-skybox-shader-composer.js";
 import type { EnvironmentSkyboxShaderPatchLoader, SceneContext } from "./scene-core.js";
 import { _invalidateSceneUboCaches, _registerSceneUboContributor } from "./scene-ubo-extras.js";

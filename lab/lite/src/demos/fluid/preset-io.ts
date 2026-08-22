@@ -134,6 +134,8 @@ export interface FluidExportJson {
         generateSpray?: boolean;
         generateFoam?: boolean;
         generateBubbles?: boolean;
+        /** Optional for backward compatibility; legacy FLIP files default on, other methods off. */
+        surfaceFiltering?: boolean;
         trappedAirRate: number;
         waveCrestRate: number;
         turbulenceRate?: number;
@@ -235,6 +237,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
             generateSpray: f?.generateSpray ?? true,
             generateFoam: f?.generateFoam ?? true,
             generateBubbles: f?.generateBubbles ?? true,
+            surfaceFiltering: f?.surfaceFiltering ?? method === "FLIP",
             trappedAirRate: f?.kTa ?? 0,
             waveCrestRate: f?.kWc ?? 0,
             turbulenceRate: f?.kTurb ?? 0,
@@ -361,6 +364,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
             generateSpray: fm.generateSpray ?? true,
             generateFoam: fm.generateFoam ?? true,
             generateBubbles: fm.generateBubbles ?? true,
+            surfaceFiltering: fm.surfaceFiltering ?? j.meta.method === "FLIP",
             kTa: fm.trappedAirRate,
             kWc: fm.waveCrestRate,
             kTurb: fm.turbulenceRate ?? 0,

@@ -18,7 +18,7 @@
 
 import type { FluidDebug } from "./fluid-surface-render.js";
 import type { FoamDebugTexture } from "./foam-render.js";
-import type { DiffuseParticleCounts } from "./sim-common.js";
+import type { DiffuseParticleCounts, FluidPressureDiagnostics } from "./sim-common.js";
 
 /** One per-method physics slider definition (mirrors the fluid demo's `SCHEMAS`). */
 export interface PhysSchemaEntry {
@@ -236,13 +236,38 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
         },
         {
             key: "multigridCycles",
-            label: "Multigrid cycles",
+            label: "Maximum multigrid cycles",
             min: 1,
             max: 8,
             step: 1,
             value: 2,
             visibleWhen: { key: "pressureSolver", equals: 1 },
-            info: "Geometric multigrid V-cycles per substep. More cycles reduce the remaining divergence; two is the normal real-time setting.",
+            info: "Maximum geometric multigrid V-cycles per substep. With Pressure tolerance enabled, completed residual samples adapt the cycle budget up to this cap.",
+        },
+        {
+            key: "pressureTolerance",
+            label: "Pressure tolerance",
+            min: 0,
+            max: 0.1,
+            step: 0.0001,
+            value: 0,
+            visibleWhen: { key: "pressureSolver", equals: 1 },
+            info: "Target relative pressure residual. 0 preserves fixed-cycle behavior. Nonzero values adapt the multigrid cycle budget asynchronously without stalling the GPU.",
+        },
+        {
+            key: "pressureDiagnostics",
+            label: "Pressure diagnostics",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            group: "advanced",
+            info: "Asynchronously samples pressure residual and post-projection divergence. Pressure tolerance enables the same sampling automatically.",
         },
         {
             key: "liquidSdf",
@@ -305,6 +330,61 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             visibleWhen: { key: "fractionalSolids", equals: 1 },
             group: "advanced",
             info: "Includes SDF-derived obstacle velocity in fractional boundary fluxes. Enable for animated obstacles; leave off for static scenes.",
+        },
+        {
+            key: "reseedParticles",
+            label: "Particle reseeding",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "select",
+            options: [
+                { label: "Off (fast)", value: 0 },
+                { label: "On", value: 1 },
+            ],
+            group: "advanced",
+            info: "Redistributes markers from dense cells into sparse interior cells without increasing the global active count. Disabled by default and allocates no reseeding buffers.",
+        },
+        {
+            key: "reseedMinParticles",
+            label: "Reseed minimum",
+            min: 1,
+            max: 64,
+            step: 1,
+            value: 4,
+            visibleWhen: { key: "reseedParticles", equals: 1 },
+            info: "Interior cells below this marker count request recycled markers. Partially filled free-surface cells are left unchanged.",
+        },
+        {
+            key: "reseedTargetParticles",
+            label: "Reseed target",
+            min: 1,
+            max: 64,
+            step: 1,
+            value: 8,
+            visibleWhen: { key: "reseedParticles", equals: 1 },
+            info: "Marker count requested for an under-populated interior liquid cell, subject to the available recycled-marker budget.",
+        },
+        {
+            key: "reseedMaxParticles",
+            label: "Reseed maximum",
+            min: 1,
+            max: 96,
+            step: 1,
+            value: 12,
+            visibleWhen: { key: "reseedParticles", equals: 1 },
+            info: "Markers above this count are removed first; additional markers above the target may be redistributed to sparse interior cells.",
+        },
+        {
+            key: "reseedInterval",
+            label: "Reseed interval",
+            min: 1,
+            max: 30,
+            step: 1,
+            value: 5,
+            visibleWhen: { key: "reseedParticles", equals: 1 },
+            info: "Number of FLIP substeps between rate-limited marker redistribution passes.",
         },
         {
             key: "viscosityIterations",
@@ -536,6 +616,8 @@ export interface FluidFoamValues {
     generateSpray?: boolean;
     generateFoam?: boolean;
     generateBubbles?: boolean;
+    /** Reject near-surface spray and foam that does not follow the reconstructed surface. */
+    surfaceFiltering?: boolean;
     kTa: number;
     kWc: number;
     kTurb: number;
@@ -714,6 +796,7 @@ export interface FluidControlsCallbacks {
     onFoamEnable?(enabled: boolean): void;
     onFoamActiveParticles?(enabled: boolean): void;
     onFoamKinds?(): void;
+    onFoamSurfaceFiltering?(enabled: boolean): void;
     onFoamKta?(v: number): void;
     onFoamKwc?(v: number): void;
     onFoamAdvanced?(): void;
@@ -819,6 +902,7 @@ export interface FluidControlsHandle {
     setParticleCount(count: number): void;
     setActiveParticleCount(count: number): void;
     setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void;
+    setPressureDiagnostics(diagnostics: FluidPressureDiagnostics | undefined): void;
     setSimulationDuration(seconds: number): void;
     setAlphaDecay(seconds: number): void;
     setRenderMode(spheres: boolean): void;
@@ -1085,6 +1169,26 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const restartGpuMemoryValue = document.createElement("div");
     restartGpuMemoryValue.style.cssText = "display:none;color:#e5bd68;font-variant-numeric:tabular-nums;";
     particleUsageRow.append(particleUsageLabel, currentParticleUsageValue, restartParticleUsageValue, particleGpuMemoryValue, restartGpuMemoryValue);
+    const pressureDiagnosticsRow = document.createElement("div");
+    pressureDiagnosticsRow.style.cssText = "display:none;margin:6px 0;font-size:11px;line-height:1.45;color:#9fb4cc;font-variant-numeric:tabular-nums;";
+    pressureDiagnosticsRow.dataset.fluidPressureDiagnostics = "true";
+    let displayedPressureDiagnostics: FluidPressureDiagnostics | undefined;
+    const updatePressureDiagnostics = (): void => {
+        const diagnostics = displayedPressureDiagnostics;
+        pressureDiagnosticsRow.style.display = currentMethod === "FLIP" && diagnostics ? "block" : "none";
+        if (!diagnostics) {
+            pressureDiagnosticsRow.textContent = "";
+            return;
+        }
+        pressureDiagnosticsRow.replaceChildren(
+            Object.assign(document.createElement("div"), {
+                textContent: `Pressure residual:\u00a0${diagnostics.relativeResidual.toExponential(2)}\u00a0relative\u00a0(${diagnostics.pressureIterations}\u00a0iterations)`,
+            }),
+            Object.assign(document.createElement("div"), {
+                textContent: `Post-project divergence:\u00a0${diagnostics.maxDivergence.toExponential(2)}`,
+            })
+        );
+    };
     let displayedActiveParticleCount = init.count;
     let displayedParticleCount = init.count;
     let displayedGpuBytes = 0;
@@ -1738,6 +1842,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         flipParticleCapacityRow.style.display = flip ? "flex" : "none";
         applyMarkerDensityStatusVisibility();
         updateParticleUsage();
+        updatePressureDiagnostics();
     };
     applyFlipControlVisibility();
 
@@ -1966,6 +2071,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let foamGenerateFoam = init.foam.generateFoam ?? true;
     let foamGenerateSpray = init.foam.generateSpray ?? true;
     let foamGenerateBubbles = init.foam.generateBubbles ?? true;
+    let foamSurfaceFiltering = init.foam.surfaceFiltering ?? currentMethod === "FLIP";
 
     const foamUsageRow = document.createElement("div");
     foamUsageRow.dataset.fluidFoamCounts = "true";
@@ -2046,6 +2152,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     foamGenerateBubblesChk.onchange = () => {
         foamGenerateBubbles = foamGenerateBubblesChk.checked;
         on.onFoamKinds?.();
+    };
+    const foamSurfaceFilteringRow = document.createElement("label");
+    foamSurfaceFilteringRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:0 0 8px 18px;cursor:pointer;";
+    const foamSurfaceFilteringChk = document.createElement("input");
+    foamSurfaceFilteringChk.type = "checkbox";
+    foamSurfaceFilteringChk.checked = foamSurfaceFiltering;
+    foamSurfaceFilteringRow.append(
+        foamSurfaceFilteringChk,
+        labelWithInfo(
+            "Strict surface filtering",
+            "Rejects spray that has not separated from the reconstructed liquid and foam that does not follow its local surface. Useful for suppressing persistent boundary artifacts, but may remove foam from vertical cascades."
+        )
+    );
+    foamSurfaceFilteringChk.onchange = () => {
+        foamSurfaceFiltering = foamSurfaceFilteringChk.checked;
+        on.onFoamSurfaceFiltering?.(foamSurfaceFiltering);
     };
     const foamKindRows = [foamGenerateFoamRow, foamGenerateSprayRow, foamGenerateBubblesRow];
     const foamKindChecks = [foamGenerateFoamChk, foamGenerateSprayChk, foamGenerateBubblesChk];
@@ -2400,6 +2522,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         foamGenerateFoamRow,
         foamGenerateSprayRow,
         foamGenerateBubblesRow,
+        foamSurfaceFilteringRow,
         foamKtaRow,
         foamKwcRow,
         foamAdvancedTitle,
@@ -2658,8 +2781,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         // slider; the per-method sliders + reset stay.
         const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
         const gridRows = opts.showGridControls
-            ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, particleUsageRow, gridBoundsRow, gridGizmoRow]
-            : [particleUsageRow];
+            ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, particleUsageRow, pressureDiagnosticsRow, gridBoundsRow, gridGizmoRow]
+            : [particleUsageRow, pressureDiagnosticsRow];
         const physItems = opts.hidePhysScale
             ? [flipResolutionRow, flipMarkersRow, flipParticleCapacityRow, markerDensityStatus, ...gridRows, ...activeBlockRows, sliderHost, resetBtn]
             : [physRow, flipResolutionRow, flipMarkersRow, flipParticleCapacityRow, markerDensityStatus, ...gridRows, ...activeBlockRows, sliderHost, resetBtn];
@@ -2816,6 +2939,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                     : null;
             updateParticleUsage();
         },
+        setPressureDiagnostics(diagnostics: FluidPressureDiagnostics | undefined): void {
+            displayedPressureDiagnostics = diagnostics;
+            updatePressureDiagnostics();
+        },
         setFoamParticleCounts(counts: DiffuseParticleCounts | undefined, enabled: boolean, capacity?: number): void {
             updateFoamParticleCounts(counts, enabled, capacity);
         },
@@ -2970,9 +3097,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamGenerateFoam = foam.generateFoam ?? true;
             foamGenerateSpray = foam.generateSpray ?? true;
             foamGenerateBubbles = foam.generateBubbles ?? true;
+            foamSurfaceFiltering = foam.surfaceFiltering ?? currentMethod === "FLIP";
             foamGenerateFoamChk.checked = foamGenerateFoam;
             foamGenerateSprayChk.checked = foamGenerateSpray;
             foamGenerateBubblesChk.checked = foamGenerateBubbles;
+            foamSurfaceFilteringChk.checked = foamSurfaceFiltering;
+            on.onFoamSurfaceFiltering?.(foamSurfaceFiltering);
             applyFoamKindAvailability();
             foamTMin = foam.tMin;
             foamDebugTexSel.value = foam.debugTexture;
@@ -3058,6 +3188,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                     generateSpray: foamGenerateSpray,
                     generateFoam: foamGenerateFoam,
                     generateBubbles: foamGenerateBubbles,
+                    surfaceFiltering: foamSurfaceFiltering,
                     kTa: foamCfg.kTa,
                     kWc: foamCfg.kWc,
                     kTurb: foamCfg.kTurb,

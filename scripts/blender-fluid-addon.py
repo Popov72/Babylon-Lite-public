@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Babylon Lite Fluid JSON",
     "author": "Babylon Lite contributors",
-    "version": (3, 0, 0),
+    "version": (3, 1, 0),
     "blender": (4, 0, 0),
     "location": "Properties > Scene > Babylon Lite Fluid; File > Export",
     "description": "Export a native or add-on fluid setup to Babylon Lite JSON",
@@ -168,6 +168,8 @@ def derived_domain_values(scene, domain, grid_size):
         time_steps = advanced.min_max_time_steps_per_frame
         min_substeps = int(clamp(int(time_steps.value_min), 1, 16))
         max_substeps = int(clamp(max(min_substeps, int(time_steps.value_max)), 1, 32))
+        pressure_iterations = int(clamp(int(advanced.pressure_solver_max_iterations), 1, 100))
+        pressure_tolerance = clamp(float(getattr(advanced, "pressure_solver_error_tolerance", 1e-3)), 0, 0.1)
         return {
             "method": "FLIP",
             "particle_count": particle_count,
@@ -188,8 +190,21 @@ def derived_domain_values(scene, domain, grid_size):
                 "cflNumber": clamp(float(getattr(advanced, "CFL_condition_number", 2)), 0, 10),
                 "restitution": 0,
                 "velocityDamping": 0,
-                "pressureIterations": int(clamp(int(advanced.pressure_solver_max_iterations), 1, 100)),
+                "pressureSolver": 1,
+                "pressureIterations": pressure_iterations,
                 "pressureRelaxation": 0.8,
+                "multigridCycles": int(clamp(math.ceil(pressure_iterations / 25), 2, 8)),
+                "pressureTolerance": pressure_tolerance,
+                "pressureDiagnostics": 1,
+                "liquidSdf": 1,
+                "ghostFluid": 1,
+                "fractionalSolids": 1,
+                "movingSolidBoundaries": 1,
+                "reseedParticles": 1,
+                "reseedMinParticles": max(1, FLIP_MARKERS_PER_CELL // 2),
+                "reseedTargetParticles": FLIP_MARKERS_PER_CELL,
+                "reseedMaxParticles": int(math.ceil(FLIP_MARKERS_PER_CELL * 1.5)),
+                "reseedInterval": 5,
                 "viscosityIterations": 12,
                 "maxSubDtMs": 8.4,
             },
@@ -663,7 +678,7 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks):
         simulation_time_scale = clamp(float(settings.time_scale), 0.01, 100)
         particle_count = derived["particle_count"]
     preset = {
-        "formatVersion": 11,
+        "formatVersion": 12,
         "meta": {"demo": "blender", "method": derived["method"]},
         "source": source_snapshot(scene, domain),
         "physics": derived["physics"],

@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import type { PairState } from "../../../lab/lite/src/demos/fluid/demo";
-import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "../../../lab/lite/src/demos/fluid/preset-io";
+import type { PairState } from "../../../../lab/lite/src/demos/fluid/demo";
+import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "../../../../lab/lite/src/demos/fluid/preset-io";
 
 const pairState = (): PairState => ({
     schema: {},
@@ -110,6 +110,7 @@ describe("fluid preset grid migration", () => {
             generateSpray: false,
             generateFoam: true,
             generateBubbles: false,
+            surfaceFiltering: true,
             kTa: 30,
             kWc: 40,
             kTurb: 25,
@@ -139,6 +140,7 @@ describe("fluid preset grid migration", () => {
             generateSpray: false,
             generateFoam: true,
             generateBubbles: false,
+            surfaceFiltering: true,
             kTurb: 25,
             energySpeedMin: 0.8,
             energySpeedMax: 7,
@@ -149,6 +151,16 @@ describe("fluid preset grid migration", () => {
             foamLayerDepth: 1.5,
             sprayDrag: 0.6,
         });
+    });
+
+    it("defaults legacy strict foam filtering by solver", () => {
+        const flip = exportJsonFromPairState("box", "FLIP", pairState());
+        const pbf = exportJsonFromPairState("box", "PBF", pairState());
+        delete flip.foam.surfaceFiltering;
+        delete pbf.foam.surfaceFiltering;
+
+        expect(presetFromExportJson(flip).foam?.surfaceFiltering).toBe(true);
+        expect(presetFromExportJson(pbf).foam?.surfaceFiltering).toBe(false);
     });
 
     it("defaults legacy lifecycle settings to indefinite with a two-second decay", () => {

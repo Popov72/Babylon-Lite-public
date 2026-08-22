@@ -63,6 +63,7 @@ import {
     setRotationGizmoLocalCoordinates,
     setScaleGizmoLocalCoordinates,
     setMeshVisible,
+    setEnvironmentRotation,
     setShadowTaskCasterMeshes,
     startEngine,
     updateLineSystem,
@@ -994,6 +995,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function applyFoam(): void {
         pushFoam();
         foamTask.setSim(activeSim);
+        foamTask.setSurfaceFiltering(controls.getValues().foam.surfaceFiltering ?? methodName === "FLIP");
     }
 
     // ── Opt-in GPU timing (see ./fluid/gpu-profiler.ts) ──────────────────────
@@ -1154,6 +1156,9 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     let envOverride: string | null = null;
     const envKeyFor = (demo: FluidDemo): string => envOverride ?? demo.envKey ?? "studio";
 
+    // Rotation is an opt-in skybox shader feature. Register it before makeSlot builds any
+    // visible environment so the later UI updates can rotate existing skyboxes dynamically.
+    setEnvironmentRotation(scene, 0);
     const envReady = Promise.all([
         loadEnvironment(scene, ENV_STUDIO_URL, { brdfUrl, skipGround: true, skipSkybox: true }).catch((err: unknown) => {
             console.warn("[fluid] studio env load failed", err);
@@ -1165,15 +1170,15 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             console.warn(`[fluid] waterfall sky HDR load failed (${WATERFALL_ENV_URL}) — falling back to the studio environment`, err);
             return null;
         }),
-    ]).then(([studio, sky]) => {
+    ]).then(async ([studio, sky]) => {
         // The loaders disagree on tone mapping (loadEnvironment enables it, loadHdrEnvironment
         // disables it) and Promise.all gives no ordering guarantee, so pin it explicitly.
         scene.imageProcessing.toneMappingEnabled = true;
-        studioSlot = studio ? makeSlot(studio, 1.0, 1.1) : null;
+        studioSlot = studio ? await makeSlot(studio, 1.0, 1.1) : null;
         // `sky` is the waterfall's own env (WATERFALL_ENV_URL). Take its grade from the matching
         // picker entry rather than repeating the numbers, so the eager slot and the picker can
         // never disagree about how the same map is exposed.
-        skySlot = sky ? makeSlot(sky, EAGER_SKY?.exposure ?? 0.8, EAGER_SKY?.contrast ?? 1.15) : null;
+        skySlot = sky ? await makeSlot(sky, EAGER_SKY?.exposure ?? 0.8, EAGER_SKY?.contrast ?? 1.15) : null;
         studioSlot ??= skySlot;
         skySlot ??= studioSlot;
         // Cache AFTER the cross-fallback, so a failed map resolves to its survivor rather than
@@ -1194,10 +1199,11 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     /** Build a slot for an already-loaded cube. The skybox snapshots scene.imageProcessing at
      *  build time, so the grade must be set FIRST — that is why this is not just an object
      *  literal, and why every slot carries the grade it was built under. */
-    function makeSlot(env: EnvironmentTextures, exposure: number, contrast: number): EnvSlot {
+    async function makeSlot(env: EnvironmentTextures, exposure: number, contrast: number): Promise<EnvSlot> {
         scene.imageProcessing.exposure = exposure;
         scene.imageProcessing.contrast = contrast;
-        return { env, sky: buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]), exposure, contrast };
+        const sky = await buildHdrSkyboxRenderable(scene, env, 10, [0, 0, 0], [0, 0, 0]);
+        return { env, sky, exposure, contrast };
     }
 
     /** Fetch + prefilter a choice the first time it is picked, then cache it (including a
@@ -1211,7 +1217,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                 ? await loadHdrEnvironment(scene, choice.url, { faceSize: 512, skipGround: true, skipSkybox: true })
                 : await loadEnvironment(scene, choice.url, { brdfUrl, skipGround: true, skipSkybox: true });
             scene.imageProcessing.toneMappingEnabled = true;
-            const slot = makeSlot(env, choice.exposure, choice.contrast);
+            const slot = await makeSlot(env, choice.exposure, choice.contrast);
             envSlots.set(choice.key, slot);
             return slot;
         } catch (err: unknown) {
@@ -1537,6 +1543,21 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     function refreshParticleUsageStatus(activeCount = activeSim.activeCount ?? activeSim.count): void {
         refreshInitialEmitterParticleCount();
         refreshFoamParticleCounts();
+        const pressureDiagnostics = methodName === "FLIP" ? activeSim.pressureDiagnostics : undefined;
+        controls.setPressureDiagnostics(pressureDiagnostics);
+        if (pressureDiagnostics) {
+            canvas.dataset.pressureRelativeResidual = String(pressureDiagnostics.relativeResidual);
+            canvas.dataset.pressureMaxResidual = String(pressureDiagnostics.maxResidual);
+            canvas.dataset.postProjectionDivergence = String(pressureDiagnostics.maxDivergence);
+            canvas.dataset.pressureFluidCellCount = String(pressureDiagnostics.fluidCellCount);
+            canvas.dataset.pressureIterationsUsed = String(pressureDiagnostics.pressureIterations);
+        } else {
+            delete canvas.dataset.pressureRelativeResidual;
+            delete canvas.dataset.pressureMaxResidual;
+            delete canvas.dataset.postProjectionDivergence;
+            delete canvas.dataset.pressureFluidCellCount;
+            delete canvas.dataset.pressureIterationsUsed;
+        }
         canvas.dataset.simulationGpuBytes = String(activeSim.gpuBytes);
         if (methodName !== "FLIP") {
             controls.setParticleUsage(activeCount, activeSim.count, activeSim.gpuBytes);
@@ -1551,8 +1572,12 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
         const gridDim = gridCellsForSize(effectiveGrid.size, cellSize);
         const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim, (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+            pressureDiagnostics:
+                (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 ||
+                (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
             liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
             fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
+            reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
         });
         const gridRestartPending =
             physicsScale !== builtPhysicsScale ||
@@ -2182,7 +2207,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     envRow.append(envLabel, envSel);
 
     // Environment yaw. Turns the backdrop, the PBR image-based lighting and the fluid's own
-    // reflections together: `scene.envRotationY` is repacked into the scene UBO every frame
+    // reflections together: `setEnvironmentRotation` updates the scene UBO every frame
     // (the skybox and the PBR IBL read it from there) and mirrored into the fluid surface
     // pass, which owns a separate uniform block.
     let envRotationDeg = 0;
@@ -2206,7 +2231,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         envRotationDeg = deg;
         envRotVal.textContent = `${Math.round(deg)}\u00b0`;
         const rad = (deg * Math.PI) / 180;
-        scene.envRotationY = rad;
+        setEnvironmentRotation(scene, rad);
         surfaceTask.setEnvRotationY(rad);
     };
     envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
@@ -2355,6 +2380,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 generateSpray: true,
                 generateFoam: true,
                 generateBubbles: true,
+                surfaceFiltering: false,
                 kTa: 40,
                 kWc: 40,
                 kTurb: 0,
@@ -2473,6 +2499,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onReset: (preserveSceneAnimations) => resetActiveFlow(true, preserveSceneAnimations),
             onFoamEnable: () => pushFoam(),
             onFoamKinds: () => pushFoam(),
+            onFoamSurfaceFiltering: (enabled) => foamTask.setSurfaceFiltering(enabled),
             onFoamKta: () => {
                 if (controls.getValues().foam.enabled) {
                     pushFoam();
@@ -3340,7 +3367,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (key === "pressureSolver" && sim === activeSim) {
             canvas.dataset.pressureSolver = value >= 0.5 ? "multigrid" : "jacobi";
         }
-        if (sim === activeSim && (key === "liquidSdf" || key === "ghostFluid" || key === "fractionalSolids" || key === "movingSolidBoundaries")) {
+        if (
+            sim === activeSim &&
+            (key === "pressureDiagnostics" ||
+                key === "liquidSdf" ||
+                key === "ghostFluid" ||
+                key === "fractionalSolids" ||
+                key === "movingSolidBoundaries" ||
+                key === "reseedParticles")
+        ) {
             canvas.dataset[key] = value >= 0.5 ? "true" : "false";
         }
     }
@@ -3647,7 +3682,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             pagedGrid: method === "MLS-MPM" ? false : undefined,
             pagedGridMaxPages: method === "MLS-MPM" ? Math.max(1000, Math.round((RENDER_DEFAULTS.count * 27 * 1.5) / 64000) * 1000) : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? false : undefined,
-            foam: { ...FOAM_DEFAULTS },
+            foam: { ...FOAM_DEFAULTS, surfaceFiltering: method === "FLIP" },
             showContainer: true,
         };
     }
@@ -3913,6 +3948,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 generateSpray: f.generateSpray ?? true,
                 generateFoam: f.generateFoam ?? true,
                 generateBubbles: f.generateBubbles ?? true,
+                surfaceFiltering: f.surfaceFiltering ?? methodName === "FLIP",
                 kTa: f.kTa,
                 kWc: f.kWc,
                 kTurb: f.kTurb ?? cur.kTurb,

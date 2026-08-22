@@ -16,7 +16,7 @@ import {
     gridSizeForBounds,
     gridWorldSize,
     highestFittingGridResolution,
-} from "../../../lab/lite/src/demos/fluid/grid-settings";
+} from "../../../../lab/lite/src/demos/fluid/grid-settings";
 
 describe("fluid grid settings", () => {
     it("derives cubic cell size from the explicit physics scale", () => {

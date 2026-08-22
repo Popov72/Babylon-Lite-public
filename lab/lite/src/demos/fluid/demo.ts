@@ -153,6 +153,8 @@ export interface PairState {
         generateSpray?: boolean;
         generateFoam?: boolean;
         generateBubbles?: boolean;
+        /** Strict reconstructed-surface rejection for foam and spray rendering. */
+        surfaceFiltering?: boolean;
         kTa: number;
         kWc: number;
         kTurb?: number;

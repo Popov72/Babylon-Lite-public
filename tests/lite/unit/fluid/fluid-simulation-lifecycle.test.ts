@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "../../../lab/lite/src/demos/fluid/simulation-lifecycle";
+import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "../../../../lab/lite/src/demos/fluid/simulation-lifecycle";
 
 describe("fluid simulation lifecycle", () => {
     it("runs indefinitely when duration is zero", () => {

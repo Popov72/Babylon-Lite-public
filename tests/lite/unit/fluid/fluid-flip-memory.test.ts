@@ -3,11 +3,11 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { estimateFlipGpuBytes } from "../../../packages/babylon-lite/src/fluid/flip-sim";
+import { estimateFlipGpuBytes } from "../../../../packages/babylon-lite/src/fluid/flip-sim";
 
 describe("FLIP GPU memory estimate", () => {
     it("matches the solver buffer layout", () => {
-        expect(estimateFlipGpuBytes(100, [4, 5, 6])).toBe(42_340);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6])).toBe(42_356);
     });
 
     it("adds 40 bytes for each particle slot", () => {
@@ -15,15 +15,17 @@ describe("FLIP GPU memory estimate", () => {
     });
 
     it("includes the selected multigrid hierarchy", () => {
-        expect(estimateFlipGpuBytes(100, [4, 5, 6], "multigrid")).toBe(43_348);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "multigrid")).toBe(43_844);
         expect(estimateFlipGpuBytes(100, [16, 16, 16], "multigrid")).toBeGreaterThan(estimateFlipGpuBytes(100, [16, 16, 16]));
     });
 
     it("adds optional subcell buffers only when selected", () => {
         const base = estimateFlipGpuBytes(100, [4, 5, 6]);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { pressureDiagnostics: true }) - base).toBe(552);
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { liquidSdf: true }) - base).toBe(960);
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { fractionalSolids: true }) - base).toBe(3_472);
         expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { liquidSdf: true, fractionalSolids: true }) - base).toBe(4_432);
+        expect(estimateFlipGpuBytes(100, [4, 5, 6], "jacobi", { reseedParticles: true }) - base).toBe(832);
     });
 });
 
@@ -111,7 +113,10 @@ describe("FLIP particle dispatch", () => {
 
     it("keeps subcell liquid and solid geometry independently opt-in", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
-        expect(source).toContain("const LIQUID_SDF_SEED_WGSL");
+        expect(source).toContain("const LIQUID_SDF_SCATTER_WGSL");
+        expect(source).toContain("atomicMin(&orderedSdf");
+        expect(source).toContain("let reconstructionRadius = max(p.solve.z, 0.75 * p.originDx.w)");
+        expect(source).toContain("let stepDistance = length(vec3<f32>(offset)) * p.originDx.w");
         expect(source).toContain("function buildSolidFaceGeometryWgsl");
         expect(source).toContain("if (liquidSdfEnabled)");
         expect(source).toContain("if (fractionalSolidsEnabled)");
@@ -129,6 +134,50 @@ describe("FLIP particle dispatch", () => {
         expect(controls).toContain('key: "fractionalSolids"');
         expect(controls).toContain('key: "movingSolidBoundaries"');
         expect(controls).toContain('{ label: "Off (fast)", value: 0 }');
+    });
+
+    it("samples pressure quality asynchronously and adapts multigrid within a cycle cap", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        expect(source).toContain("const PRESSURE_DIAGNOSTIC_REDUCE_WGSL");
+        expect(source).toContain("const POST_DIVERGENCE_DIAGNOSTIC_WGSL");
+        expect(source).toContain("relativeResidual > pressureTolerance");
+        expect(source).toContain("adaptiveMultigridCycles = Math.min(multigridCycles");
+        expect(source).toContain(".mapAsync(GPUMapMode.READ)");
+        expect(source).toContain("function ensurePressureDiagnosticResources()");
+        expect(source).toContain("destroyPressureDiagnosticResources()");
+        expect(source).toContain("pressureDiagnosticResources?.gpuBytes ?? 0");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        expect(controls).toContain('key: "pressureTolerance"');
+        expect(controls).toContain('key: "pressureDiagnostics"');
+        expect(controls).toContain("Pressure residual:");
+        expect(controls).toContain("Post-project divergence:");
+    });
+
+    it("keeps min-target-max marker reseeding lazy and recyclable", () => {
+        const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/flip-sim.ts"), "utf8");
+        expect(source).toContain("function buildReseedDeleteWgsl");
+        expect(source).toContain("const RESEED_BUILD_WGSL");
+        expect(source).toContain("function buildReseedEmitWgsl");
+        expect(source).toContain("function ensureReseedResources()");
+        expect(source).toContain("fluidDeleteParticle(i)");
+        expect(source).toContain("fluidActivateParticle(donor)");
+        expect(source).toContain("fn touchesFreeSurface");
+        expect(source).toContain("let available = min(min(atomicLoad(&state[0]), atomicLoad(&state[4]))");
+        expect(source).toContain("listCapacity + ticket], i");
+        expect(source).toContain("if (ticket == 0xffffffffu)");
+        expect(source).toContain("fluidActivateParticle(donor);");
+        expect(source).toContain('dispatch(encoder, "flip-reseed-build"');
+        expect(source.indexOf('dispatch(encoder, "flip-reseed-build"')).toBeLessThan(source.indexOf('dispatch(encoder, "flip-reseed-delete-overfull"'));
+        expect(source.indexOf('dispatch(encoder, "flip-reseed-delete-overfull"')).toBeLessThan(
+            source.indexOf('dispatch(encoder, "flip-reseed-delete-surplus"')
+        );
+        expect(source).toContain("if (sceneSdf(position, 0.0) < radius)");
+        expect(source).toContain("reseedResources?.gpuBytes ?? 0");
+        expect(source).toContain("reseedResources.state.destroy()");
+        const controls = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/controls-panel.ts"), "utf8");
+        for (const key of ["reseedParticles", "reseedMinParticles", "reseedTargetParticles", "reseedMaxParticles", "reseedInterval"]) {
+            expect(controls).toContain(`key: "${key}"`);
+        }
     });
 
     it("keeps FLIP whitewater lazy and runs it once after the final substep", () => {

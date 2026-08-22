@@ -34,6 +34,8 @@ export interface FlipOptions extends FluidSimBaseOptions {
     pressureIterations?: number;
     pressureRelaxation?: number;
     multigridCycles?: number;
+    pressureTolerance?: number;
+    pressureDiagnostics?: boolean;
     flipRatio?: number;
     velocityDamping?: number;
     kinematicViscosity?: number;
@@ -43,6 +45,11 @@ export interface FlipOptions extends FluidSimBaseOptions {
     ghostFluid?: boolean;
     fractionalSolids?: boolean;
     movingSolidBoundaries?: boolean;
+    reseedParticles?: boolean;
+    reseedMinParticles?: number;
+    reseedTargetParticles?: number;
+    reseedMaxParticles?: number;
+    reseedInterval?: number;
     restitution?: number;
     initialPositions?: Float32Array;
 }
@@ -68,11 +75,18 @@ Physics controls:
 | `pressureSolver`        |   0-1 |       0 | Weighted Jacobi (0) or geometric multigrid (1).                       |
 | `pressureIterations`    | 1-100 |      40 | Weighted-Jacobi pressure iterations per substep.                      |
 | `pressureRelaxation`    | 0.1-1 |     0.8 | Weighted-Jacobi pressure relaxation factor.                           |
-| `multigridCycles`       |   1-8 |       2 | Multigrid V-cycles per substep.                                       |
-| `liquidSdf`             |   0-1 |       0 | Build the narrow-band particle-occupancy liquid SDF.                  |
+| `multigridCycles`       |   1-8 |       2 | Maximum multigrid V-cycles per substep.                               |
+| `pressureTolerance`     | 0-0.1 |       0 | Relative residual target; zero preserves fixed-cycle behavior.        |
+| `pressureDiagnostics`   |   0-1 |       0 | Asynchronously sample residual and post-project divergence.           |
+| `liquidSdf`             |   0-1 |       0 | Build the marker-sphere narrow-band particle level set.               |
 | `ghostFluid`            |   0-1 |       0 | Use liquid-SDF free-surface pressure fractions.                       |
 | `fractionalSolids`      |   0-1 |       0 | Use scene-SDF open-area weights on MAC faces.                         |
 | `movingSolidBoundaries` |   0-1 |       0 | Add moving-solid velocity to fractional boundary flux.                |
+| `reseedParticles`       |   0-1 |       0 | Enable min/target/max marker reseeding.                               |
+| `reseedMinParticles`    |  1-64 |       4 | Refill cells below this count.                                        |
+| `reseedTargetParticles` |  1-64 |       8 | Marker count requested for refilled cells.                            |
+| `reseedMaxParticles`    |  1-96 |      12 | Recycle markers above this count.                                     |
+| `reseedInterval`        |  1-30 |       5 | Substeps between reseeding passes.                                    |
 | `viscosityIterations`   |  1-40 |      12 | Jacobi iterations when physical viscosity is nonzero.                 |
 | `maxSubDtMs`            |  1-20 |     8.4 | Absolute maximum time represented by one substep.                     |
 
@@ -152,12 +166,12 @@ pressureA/pressureB   f32[Nx*Ny*Nz], storing pressure impulse q = subDt * pressu
 multigrid RHS/residual buffers, plus pressure/type buffers on successively halved grids
 surfaceNormal         vec4<f32>[Nx*Ny*Nz]: interface normal and gradient magnitude
 surfaceCurvature      f32[Nx*Ny*Nz]
-liquidSdfA/liquidSdfB optional f32[Nx*Ny*Nz] narrow-band distance ping-pong
+liquidSdfA/liquidSdfB optional f32[Nx*Ny*Nz] marker-sphere level-set ping-pong
 solidFaceGeometry     optional vec2<f32> per face: open fraction, solid normal velocity
 maxSpeed              atomic<u32>[1], positive-float bits for asynchronous CFL reduction
 ```
 
-The liquid-SDF and solid-face buffers are allocated lazily. With all four subcell controls off, the legacy path records no SDF construction or solid-face sampling passes and retains its previous memory footprint.
+The liquid-SDF, solid-face, pressure-diagnostic, and reseeding buffers are allocated lazily. With optional quality controls off and zero pressure tolerance, the legacy path records no corresponding passes and retains its previous memory footprint.
 
 P2G uses integer fixed-point atomics because baseline WebGPU has no portable floating-point atomic addition. Momentum and interpolation weights use the same scale, so normalization divides their decoded values. Particle velocity is CFL-clamped before encoding to prevent integer overflow.
 
@@ -217,10 +231,11 @@ Per rendered frame:
     7. when enabled, solve implicit MAC-grid viscosity;
     8. when enabled, compute interface normals, curvature, and surface force;
     9. compute fluid-cell divergence;
-    10. solve pressure using either warm-started weighted Jacobi or geometric multigrid V-cycles;
+    10. solve pressure using either warm-started weighted Jacobi or residual-controlled geometric multigrid V-cycles;
     11. project face velocities and create FLIP delta fields;
     12. extrapolate projected velocity and delta into two air-cell layers;
-    13. grid-to-particle transfer, gated marker redistribution, RK2 advection, and collision.
+    13. grid-to-particle transfer, RK2 advection, and collision;
+    14. when enabled and due, recycle over-populated markers and refill under-populated cells.
 7. Run one particle-speed pass that writes debug speed and atomically reduces maximum speed.
 8. Encode active-count and maximum-speed readbacks into double-buffered staging buffers.
 
@@ -287,7 +302,7 @@ When `surfaceTension > 0`, marker count per cell defines a clamped liquid indica
 
 Solid-neighbour samples reuse the local value so the indicator is not differentiated through collision geometry. All normal, curvature, and force dispatches are skipped at zero surface tension.
 
-When `liquidSdf` is enabled, three narrow-band relaxation layers propagate signed distance from the particle-occupied liquid/air interface. Interface normals and the continuum-force indicator are then derived from that field instead of raw marker occupancy. This path is opt-in; enabling `ghostFluid` alone has no effect until `liquidSdf` is also enabled.
+When `liquidSdf` is enabled, active markers scatter the signed distance from a reconstruction sphere into nearby cell centres using ordered-float atomic minimum operations. The reconstruction radius is at least `0.75 * dx`, keeping the standard eight-marker lattice connected even when the visual/collision marker radius is smaller. Fluid and air signs are reconciled with cell classification, then three 26-neighbour Euclidean relaxation layers reinitialize the narrow band. Interface normals and the continuum-force indicator are derived from this particle level set instead of raw marker occupancy. This path is opt-in; enabling `ghostFluid` alone has no effect until `liquidSdf` is also enabled.
 
 ### Divergence
 
@@ -328,7 +343,7 @@ Solid neighbours implement a zero-normal-gradient pressure boundary by not contr
 
 Pressure ping-pong buffers persist between substeps and rendered frames. Each solve starts from the previous projected state, while Jacobi writes zero into cells that are no longer fluid. This warm start is required for hydrostatic pressure to converge through deep liquid volumes with a bounded iteration count; clearing pressure every substep makes tall authored volumes numerically compress into a shallow marker layer.
 
-The geometric multigrid path solves the same fine-grid equation. Its hierarchy is allocated lazily when multigrid is first selected, so Jacobi retains its previous memory footprint. The fine level always uses the exact active operator, including ghost-fluid interface fractions and fractional-solid face weights; coarse levels use the inexpensive uniform rediscretization. Each V-cycle:
+The geometric multigrid path solves the same fine-grid equation. Its hierarchy is allocated lazily when multigrid is first selected, so Jacobi retains its previous memory footprint. The fine level always uses the exact active operator, including ghost-fluid interface fractions and fractional-solid face weights. Restriction volume-weights the residual and carries a fluid-volume fraction to each coarse cell; coarse smoothing uses those fractions in its face coefficients instead of reverting to a binary uniform operator. Each V-cycle:
 
 1. applies two weighted-Jacobi pre-smoothing passes;
 2. computes the residual;
@@ -337,7 +352,9 @@ The geometric multigrid path solves the same fine-grid equation. Its hierarchy i
 5. trilinearly prolongates each correction;
 6. applies four post-smoothing passes per level.
 
-Residual restriction scales by four for the doubled cell width. A coarse cell remains fluid when any child is fluid, preventing thin boundary layers and channels from disappearing from the correction hierarchy; otherwise it is solid when it contains a solid child and air when all children are air. Prolongated corrections are damped by 0.5. Coarse correction buffers are cleared for each V-cycle, while the fine pressure field remains warm-started across substeps.
+Residual restriction scales by four for the doubled cell width. A coarse cell remains fluid when any child has nonzero fluid volume, preventing thin boundary layers and channels from disappearing from the correction hierarchy; otherwise it is solid when it contains a solid child and air when all children are air. Prolongated corrections are damped by 0.5. Coarse correction buffers are cleared for each V-cycle, while the fine pressure field remains warm-started across substeps.
+
+The optional relative tolerance is evaluated from the infinity norm of the exact fine-grid residual divided by the infinity norm of its right-hand side. Two staging buffers read this diagnostic asynchronously, so the CPU never stalls the submitted WebGPU queue. Completed samples raise or lower the next solve's cycle budget within `[1, multigridCycles]`. Zero tolerance preserves the previous fixed-cycle path. The same sample reports post-projection maximum divergence and fluid-cell count in the controls panel and canvas datasets. Diagnostic compute and staging resources are allocated only while diagnostics are displayed or a nonzero tolerance needs feedback, then released when both controls are disabled.
 
 The UI shows Pressure iterations and Pressure relaxation only for Weighted Jacobi. Multigrid instead exposes Multigrid cycles; smoothing counts, hierarchy depth, and its relaxation factor are fixed implementation details.
 
@@ -355,7 +372,7 @@ Air pressure is zero. Faces touching a solid cell remain at the solid boundary v
 delta = projectedVelocity - oldFaceVelocity
 ```
 
-With `ghostFluid`, a fluid-to-air matrix coefficient is divided by the SDF-derived interface fraction `theta`, clamped away from zero. With `fractionalSolids`, every pressure coefficient is additionally multiplied by its MAC-face open fraction. The same interface fraction is used during projection. Multigrid uses this weighted operator for fine-grid pre-smoothing, residual evaluation, and post-smoothing, while retaining a uniform coarse hierarchy as an approximate low-frequency correction.
+With `ghostFluid`, a fluid-to-air matrix coefficient is divided by the SDF-derived interface fraction `theta`, clamped away from zero. With `fractionalSolids`, every pressure coefficient is additionally multiplied by its MAC-face open fraction. The same interface fraction is used during projection. Multigrid uses this weighted operator for fine-grid pre-smoothing, residual evaluation, and post-smoothing, while coarse levels preserve restricted fluid-volume fractions as an approximate coefficient hierarchy.
 
 ### Velocity Extrapolation
 
@@ -381,15 +398,16 @@ mid = position + 0.5 * subDt * sampleVelocity(position)
 next = position + subDt * sampleVelocity(mid)
 ```
 
-After P2G has counted markers per cell, G2P checks only the source cell count for each particle. Cells at or below `1.25 * markersPerCell` pay one atomic load and return immediately. In an overcrowded cell, a bounded fraction of markers is deterministically redistributed among lower-density six-neighbours:
+Legacy G2P redistribution remains active on the fast path and cheaply moves a bounded fraction of overcrowded markers toward lower-density neighbours.
 
-- ordinary redistribution targets only already-occupied liquid cells;
-- cells above `2 * markersPerCell` may refill empty horizontal or upward cells;
-- target cell centres must remain inside the scene SDF by at least the particle radius;
-- moved markers receive deterministic sub-cell jitter;
-- no marker is created or deleted.
+Production reseeding is independently opt-in. Every `reseedInterval` substeps it:
 
-This prevents stationary-wall and corner clumps from collapsing many markers into a small occupied volume while keeping the normal-case particle cost low.
+1. appends one cell index per missing marker when an interior fluid cell falls below `reseedMinParticles`; cells touching six-connected air are partially filled free-surface cells and do not request markers;
+2. pairs requests first with markers above `reseedMaxParticles`, then with markers above `reseedTargetParticles` until the request budget is satisfied, recording the exact donor slot for every request;
+3. reactivates each recorded donor slot at a hashed, sub-cell-jittered position, pushing candidates outside the scene-SDF collision margin and restoring the donor at its original position when no valid placement is found;
+4. initializes redistributed velocity from the finalized staggered MAC field.
+
+Reseeding pairs every recycled marker with exactly one request and restores rejected placements, so it preserves the global active count: it cannot grow toward storage capacity, decrease through unmatched donors, or counteract a sink. Each pass is capped to the larger of 256 markers or 0.1% of capacity, preventing a large redistribution burst from visibly perturbing P2G sampling. The target and donor lists remain bounded by particle capacity and cannot overrun storage. Atomic ticket order can vary across GPU workgroups, so reseeding is spatially stable but not bitwise deterministic. Enabling reseeding invalidates the contiguous render prefix because recycled slots can be anywhere in the pool. The state/list buffer is allocated lazily and destroyed when reseeding is disabled.
 
 ### Collision
 
@@ -523,10 +541,10 @@ The optional uniform bytes are copied into a renderer-owned GPU buffer and updat
 | Inflow/outflow             | shared flow emitter and delete-sink passes                                |
 | Initial fluid objects      | deterministic shared initial-emitter lattice                              |
 | Particle capacity          | user-selected fixed GPU allocation; active prefix is derived/dynamic      |
-| Particle reseeding         | bounded in-place redistribution from overcrowded cells                    |
+| Particle reseeding         | legacy redistribution or opt-in min/target/max recycling and refill       |
 | Whitewater                 | opt-in trapped-air/wave-crest diffuse spray, foam, and bubbles            |
 
-Weighted Jacobi remains the compatibility default. Geometric multigrid adds coarse-grid correction without PCG's repeated global dot-product reductions, making it suitable for WebGPU while retaining fixed, predictable V-cycle costs.
+Weighted Jacobi remains the compatibility default. Geometric multigrid adds volume-weighted coarse-grid correction without PCG's repeated global dot-product reductions. Fixed V-cycles remain available; tolerance mode adapts the next solve from asynchronous residual samples.
 
 ## Dependencies
 
@@ -554,14 +572,15 @@ No module-level cache or registration side effect is added.
 - The Whiteboard method selector exposes FLIP.
 - Switching PBF -> FLIP preserves emitter, sink, grid position, grid size, particle size, gravity, bounds visibility, gizmo visibility, camera, environment, and imported bundle state.
 - FLIP displays its own controls and hides PBF/MLS-MPM/PB-MPM-only controls.
-- Selecting multigrid hides Jacobi iterations/relaxation, shows V-cycle count, and updates the live solver without rebuilding the simulation.
+- Selecting multigrid hides Jacobi iterations/relaxation, shows maximum V-cycles and pressure tolerance, and updates the live solver without rebuilding the simulation.
 - An enabled initial emitter activates particles; an explicit empty graph remains at zero active particles.
 - Delete sinks reduce active count and an enabled inflow refills free slots.
 - Different authored initial-emitter heights retain measurably different settled particle heights at equal marker density.
 - FLIP marker-density estimation reports particles per authored MAC cell and warns above the high-density threshold.
 - Format-11 export/import round-trips FLIP resolution divisions, markers per cell, adaptive timestep controls, viscosity, and surface tension.
 - A WebGPU regression dispatches nonzero viscosity and surface-tension passes and verifies finite particle velocity output.
-- WebGPU regressions execute multigrid V-cycles, verify lazy hierarchy allocation, preserve authored liquid volumes with both pressure solvers, and switch back to Jacobi without rebuilding.
+- WebGPU regressions execute multigrid V-cycles, verify pressure diagnostics and tolerance adaptation, preserve authored liquid volumes with both pressure solvers, and switch back to Jacobi without rebuilding.
+- A WebGPU regression grows a sparse marker cell through min/target/max reseeding, verifies diagnostics remain finite, and releases the optional reseed allocation live.
 - A WebGPU regression enables liquid SDF, ghost-fluid pressure, fractional faces, and moving-solid velocity together and validates finite output without WebGPU errors.
 - A WebGPU regression compiles and draws a custom particle WGSL module, updates its uniform payload, restores the built-in shader, and confirms invalid WGSL surfaces a validation error.
 - A WebGPU regression verifies that FLIP foam is absent while disabled, generates diffuse particles under energetic surface motion, validates portable bindings, and clears on reset/disable.
@@ -577,13 +596,13 @@ No module-level cache or registration side effect is added.
 
 ## Quality Extensions
 
-1. PCG with multigrid as a preconditioner for tolerance-driven convergence.
+1. PCG with multigrid as a preconditioner for same-substep tolerance termination.
 2. Deterministic cell-sorted gather P2G to remove fixed-point atomics.
 3. APIC affine transfers.
-4. Production min/max particle reseeding and surface-aware sheeting.
+4. Surface-aware particle sheeting.
 5. ST-FLIP large-timestep reconstruction.
 6. Obstacle-driven dust generation as a separate diffuse-particle type.
-7. Optional polygon surface reconstruction and export.
+7. Optional polygon surface reconstruction; Blender scene comparison already uses the self-contained Babylon Lite JSON exporter.
 
 ## File Manifest
 
@@ -595,7 +614,7 @@ No module-level cache or registration side effect is added.
 - `lab/lite/src/demos/fluid/preset-io.ts`
 - `lab/lite/src/demos/fluid/blender-fluid-json.ts`
 - `lab/lite/src/demos/fluid/quality-presets.ts`
-- `tests/lite/unit/fluid-grid-settings.test.ts`
-- `tests/lite/unit/fluid-blender-json.test.ts`
-- `tests/lite/unit/fluid-method-independent-state.test.ts`
+- `tests/lite/unit/fluid/fluid-grid-settings.test.ts`
+- `tests/lite/unit/fluid/fluid-blender-json.test.ts`
+- `tests/lite/unit/fluid/fluid-method-independent-state.test.ts`
 - `tests/lite/parity/regressions/fluid-whiteboard.spec.ts`

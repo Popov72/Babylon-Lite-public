@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { buildMeshDistance, buildSignedDistanceGrid, createVolumeSampler, sampleMeshVolume } from "../../../packages/babylon-lite/src/fluid/volume-sampling/index";
-import { createCubicKernel } from "../../../packages/babylon-lite/src/fluid/volume-sampling/sph-kernels";
-import { buildNeighborhood } from "../../../packages/babylon-lite/src/fluid/volume-sampling/neighborhood";
+import { buildMeshDistance, buildSignedDistanceGrid, createVolumeSampler, sampleMeshVolume } from "../../../../packages/babylon-lite/src/fluid/volume-sampling/index";
+import { createCubicKernel } from "../../../../packages/babylon-lite/src/fluid/volume-sampling/sph-kernels";
+import { buildNeighborhood } from "../../../../packages/babylon-lite/src/fluid/volume-sampling/neighborhood";
 
 // ------------------------------------------------------------------
 // Analytic test meshes (built in-code so the tests are self-contained).

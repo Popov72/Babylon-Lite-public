@@ -51,10 +51,17 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         pressureIterations: [1, 100],
         pressureRelaxation: [0.1, 1],
         multigridCycles: [1, 8],
+        pressureTolerance: [0, 0.1],
+        pressureDiagnostics: [0, 1],
         liquidSdf: [0, 1],
         ghostFluid: [0, 1],
         fractionalSolids: [0, 1],
         movingSolidBoundaries: [0, 1],
+        reseedParticles: [0, 1],
+        reseedMinParticles: [1, 64],
+        reseedTargetParticles: [1, 64],
+        reseedMaxParticles: [1, 96],
+        reseedInterval: [1, 30],
         viscosityIterations: [1, 40],
         maxSubDtMs: [1, 20],
     },
@@ -86,7 +93,21 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
     },
 };
 const OPTIONAL_PHYSICS_KEYS: Record<string, ReadonlySet<string>> = {
-    FLIP: new Set(["pressureSolver", "multigridCycles", "liquidSdf", "ghostFluid", "fractionalSolids", "movingSolidBoundaries"]),
+    FLIP: new Set([
+        "pressureSolver",
+        "multigridCycles",
+        "pressureTolerance",
+        "pressureDiagnostics",
+        "liquidSdf",
+        "ghostFluid",
+        "fractionalSolids",
+        "movingSolidBoundaries",
+        "reseedParticles",
+        "reseedMinParticles",
+        "reseedTargetParticles",
+        "reseedMaxParticles",
+        "reseedInterval",
+    ]),
 };
 
 export interface BlenderFluidScene {
@@ -527,9 +548,10 @@ function validatePreset(value: unknown): FluidExportJson {
         preset.formatVersion !== 8 &&
         preset.formatVersion !== 9 &&
         preset.formatVersion !== 10 &&
-        preset.formatVersion !== 11
+        preset.formatVersion !== 11 &&
+        preset.formatVersion !== 12
     ) {
-        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, or 11");
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, or 12");
     }
     const meta = record(preset.meta, "manifest.preset.meta");
     if (meta.demo !== "blender") {
@@ -727,9 +749,10 @@ export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
         preset.formatVersion !== 8 &&
         preset.formatVersion !== 9 &&
         preset.formatVersion !== 10 &&
-        preset.formatVersion !== 11
+        preset.formatVersion !== 11 &&
+        preset.formatVersion !== 12
     ) {
-        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, or 11");
+        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, or 12");
     }
     const scene = record(preset.scene, "manifest.preset.scene");
     if (scene.encoding !== "base64") {
