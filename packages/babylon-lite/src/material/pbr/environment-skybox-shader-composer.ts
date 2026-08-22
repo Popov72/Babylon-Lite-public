@@ -9,7 +9,7 @@ export function _registerEnvironmentSkyboxShaderPatch(scene: SceneContext, order
         fragment = kind === "hdr" ? SCENE_UBO_WGSL + fragment : fragment;
         for (const load of loaders.slice()) {
             if (load) {
-                fragment = (await load())(fragment, kind);
+                fragment = (await load())._apply(fragment, kind);
             }
         }
         return fragment;

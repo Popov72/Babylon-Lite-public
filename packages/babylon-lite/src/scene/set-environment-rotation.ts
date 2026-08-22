@@ -3,7 +3,7 @@ import type { EnvironmentSkyboxShaderPatchLoader, SceneContext } from "./scene-c
 import { _invalidateSceneUboCaches, registerEnvSceneUniforms } from "./scene-ubo-extras.js";
 
 // Rotation also affects IBL lighting, so keep the visible-skybox patch lazy for lighting-only consumers.
-const loadRotationSkyboxPatch: EnvironmentSkyboxShaderPatchLoader = async () => (await import("../material/pbr/fragments/environment-rotation-fragment.js")).default;
+const loadRotationSkyboxPatch: EnvironmentSkyboxShaderPatchLoader = () => import("../material/pbr/fragments/environment-rotation-fragment.js");
 
 /**
  * Set environment rotation around the Y axis, in radians.
