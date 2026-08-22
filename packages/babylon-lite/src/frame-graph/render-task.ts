@@ -106,8 +106,6 @@ export interface RenderTaskConfig {
     autoMirror?: boolean;
     /** @internal Skip clustered-light preparation for passes that never run forward lighting. */
     _skipClusteredLights?: boolean;
-    /** @internal Optional predicate applied when auto-mirroring scene renderables. Return false to exclude a renderable from this task. */
-    _filterRenderable?: (renderable: Renderable) => boolean;
 }
 
 /** A frame-graph task that records a single `RenderPass`, binds the scene's `RenderTarget`, and draws renderables into it. */
@@ -273,7 +271,7 @@ export function createRenderTask(config: RenderTaskConfig, engine: EngineContext
             resolvePendingMeshes(task, sc);
             task._af = autoMirror && !task._renderables.length;
             if (task._af) {
-                syncAutoRenderables(task, sc);
+                task._renderables.push(...sc._renderables);
             }
             // Read config.rt dynamically — transmission retargeting swaps it after
             // the task is created, and the engine scRT must never be rebuilt.
@@ -360,20 +358,6 @@ export function removeMeshFromTask(task: RenderTask, mesh: object): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-function syncAutoRenderables(task: RenderTask, sc: SceneContext): void {
-    task._renderables.length = 0;
-    const filter = task._config._filterRenderable;
-    if (!filter) {
-        task._renderables.push(...sc._renderables);
-        return;
-    }
-    for (const renderable of sc._renderables) {
-        if (filter(renderable)) {
-            task._renderables.push(renderable);
-        }
-    }
-}
 
 function resolvePendingMeshes(task: RenderTask, sc: SceneContext): void {
     if (!task._pendingMeshes.length) {
@@ -475,7 +459,8 @@ function prepareRenderTaskPass(task: RenderTask, eng: EngineContext, targetSigna
     const sc = task.scene as SceneContext;
     // Auto-resync when the source scene mutates.
     if (task._af && task._lastVersion !== sc._renderableVersion) {
-        syncAutoRenderables(task, sc);
+        task._renderables.length = 0;
+        task._renderables.push(...sc._renderables);
         buildBindings(task, eng, targetSignature);
     }
 
