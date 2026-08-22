@@ -51,7 +51,6 @@ import {
     StandardToneMapping,
     setSceneImageProcessing,
     enableMaterialPlugins,
-    getMeshGeometry,
     getFrameGraph,
     getPhysicsCharacterControllerBody,
     getPhysicsBodyLinearVelocity,
@@ -88,7 +87,7 @@ import {
     startEngine,
     stopAnimation,
 } from "babylon-lite";
-import type { EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
+import type { AnimationGroup, EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
@@ -157,10 +156,12 @@ import {
     type MeshBehaviorAvailability,
 } from "./behaviors/index.js";
 import { playerCapsuleSpawnPosition, selectClosestClearApertureOffset } from "./behaviors/player.js";
+import { pauseAnimationsTargetingEntities, resumeAnimations } from "./behaviors/play-animation.js";
 import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
 import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
 import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
 import { createCheatCodeMatcher } from "./cheat-code.js";
+import { getMeshPoseGeometry } from "../mesh-pose-geometry.js";
 
 export async function main(): Promise<void> {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -2980,6 +2981,8 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         setting: FluidSimSetting | undefined;
         settingName: string | undefined;
         soundCategory: string;
+        /** Animations that were playing when sampling began. Kept paused unless the shot is cancelled. */
+        pausedAnimations: AnimationGroup[];
         /** Instance ids this shot's water must NOT collide against (its own props). */
         excluded: ReadonlySet<string>;
         /** Unit direction from the player to the crosshair when the shot was fired. Used for a
@@ -3124,6 +3127,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         if (controlledGroup === group) controlledGroup = null;
     };
 
+    const resumeCancelledAnimations = (group: ShotGroup): void => {
+        resumeAnimations(group.pausedAnimations);
+        group.pausedAnimations.length = 0;
+    };
+
     const abortSample = (entry: PendingSample): void => {
         samplingShots.delete(entry);
         entry.group.sampling--;
@@ -3177,21 +3185,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     canvas.dataset.sampleWorkers = String(workerPool.length);
 
     const requestSample = (mesh: Mesh, group: ShotGroup): void => {
-        const g = getMeshGeometry(mesh);
+        const g = getMeshPoseGeometry(mesh);
         if (!g) return;
-        // Transform the mesh's LOCAL geometry into WORLD space (the fluid lives in world coords).
-        // Captured NOW, so a Havok-posed prop is sampled in the pose it had when it was shot.
-        const w = mesh.worldMatrix;
-        const src = g.positions;
-        const worldPos = new Float32Array(src.length);
-        for (let i = 0; i < src.length; i += 3) {
-            const lx = src[i]!,
-                ly = src[i + 1]!,
-                lz = src[i + 2]!;
-            worldPos[i] = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
-            worldPos[i + 1] = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
-            worldPos[i + 2] = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
-        }
+        const worldPos = g.positions;
         // The setting is chosen ONCE per shot by the caller and shared across the whole group; its
         // demoParams.particleRadius drives the volume-sampling spacing (and therefore the particle
         // count), so the same setting file yields the same count here as in the Liquefactor demo.
@@ -3217,13 +3213,13 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         };
         group.sampling++;
         samplingShots.add(entry);
-        const uvs = g.uvs ? g.uvs.slice() : null;
+        const uvs = g.uvs;
         const pw = pickWorker();
         if (pw) {
             const id = ++sampleSeq;
             pendingSamples.set(id, entry);
             pw.pending++;
-            const indices = g.indices.slice();
+            const indices = g.indices;
             const transfer: Transferable[] = [worldPos.buffer, indices.buffer];
             if (uvs) transfer.push(uvs.buffer);
             pw.worker.postMessage({ id, positions: worldPos, indices, uvs, texIndices: null, radius, mode: "dense", surfaceOnly: false, ox: 0, oy: 0, oz: 0 }, transfer);
@@ -3247,6 +3243,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     function finalizeShotIfReady(group: ShotGroup): void {
         if (!group.dispatchComplete || group.sampling > 0 || group.sim) return;
         if (group.samples.length === 0) {
+            resumeCancelledAnimations(group);
             releaseControlledGroup(group);
             return;
         }
@@ -3263,6 +3260,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 behaviorManager.restoreMesh(entry.mesh, entry.behaviorAvailability);
             }
             group.samples.length = 0;
+            resumeCancelledAnimations(group);
             releaseControlledGroup(group);
             return;
         }
@@ -3519,6 +3517,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             setting,
             settingName,
             soundCategory: sourceConfig?.sound ?? behaviorManager.getLiquefiableConfig(mesh)?.sound ?? "quickSplash",
+            pausedAnimations: pauseAnimationsTargetingEntities(ship.animationGroups ?? [], new Set(group.map((member) => nodeNameOfMesh.get(member) ?? member.name))),
             excluded: new Set(),
             shotDir: shotDirection(origin),
         };
@@ -3575,6 +3574,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         a.impulseBuffer.destroy();
         a.collision.buffer.destroy();
         a.group.sim = null;
+        resumeCancelledAnimations(a.group);
         releaseControlledGroup(a.group);
     }
 
@@ -3622,6 +3622,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         a.phase = "fluid";
         a.fluidElapsed = 0;
         behaviorManager.events.emit("liquefactionCompleted", { meshes: [...a.group.meshes], sound: a.group.soundCategory });
+        a.group.pausedAnimations.length = 0;
         releaseControlledGroup(a.group);
     }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AnimationGroup, Mesh } from "../../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
 import { AquanovaBehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
-import { PlayAnimationBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/play-animation";
+import { pauseAnimationsTargetingEntities, PlayAnimationBehavior, resumeAnimations } from "../../../../lab/lite/src/demos/aquanova/behaviors/play-animation";
 import type { AquanovaGameContext } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 function mesh(name: string): Mesh {
@@ -65,6 +65,25 @@ describe("Aquanova playAnimation behavior", () => {
 
         expect(firstFan.isPlaying).toBe(false);
         expect(secondFan.isPlaying).toBe(true);
+    });
+
+    it("pauses and resumes only playing animations that target liquefied entities", () => {
+        const firstFan = animationGroup("Fan", "fan1_propeller");
+        const secondFan = animationGroup("Fan", "fan2_propeller");
+        const alreadyPaused = animationGroup("Idle", "fan1");
+        firstFan.isPlaying = true;
+        secondFan.isPlaying = true;
+
+        const paused = pauseAnimationsTargetingEntities([firstFan, secondFan, alreadyPaused], new Set(["fan1"]));
+
+        expect(paused).toEqual([firstFan]);
+        expect(firstFan.isPlaying).toBe(false);
+        expect(secondFan.isPlaying).toBe(true);
+        expect(alreadyPaused.isPlaying).toBe(false);
+
+        resumeAnimations(paused);
+        expect(firstFan.isPlaying).toBe(true);
+        expect(alreadyPaused.isPlaying).toBe(false);
     });
 
     it("does nothing when no animation is available and none was requested", () => {

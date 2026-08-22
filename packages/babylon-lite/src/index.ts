@@ -630,7 +630,6 @@ export type { PickingInfo } from "./picking/picking-info.js";
 export { enableDetailedPicking } from "./picking/detailed-picking.js";
 export { getPickedNormal, getPickedUV } from "./picking/picking-helpers.js";
 export { computeDeformedPositionToRef } from "./picking/deformed-vertex.js";
-export { computeDeformedPositions, computeDeformedNormals, hasCpuDeformation } from "./picking/deformed-geometry.js";
 
 // ─── Gizmos ──────────────────────────────────────────────────────────
 export { createUtilityLayer, registerUtilityLayer, disposeUtilityLayer } from "./gizmo/utility-layer.js";

@@ -1,4 +1,4 @@
-import { playAnimation, stopAnimation, type AnimationGroup, type Mesh } from "babylon-lite";
+import { pauseAnimation, playAnimation, stopAnimation, type AnimationGroup, type Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { Behavior, PlayAnimationBehaviorConfig } from "./types.js";
 
@@ -55,7 +55,30 @@ export class PlayAnimationBehavior implements Behavior<"playAnimation"> {
     }
 }
 
-function animationTargetsEntity(group: AnimationGroup, entityName: string): boolean {
+export function pauseAnimationsTargetingEntities(animationGroups: readonly AnimationGroup[], entityNames: ReadonlySet<string>): AnimationGroup[] {
+    const paused: AnimationGroup[] = [];
+    for (const group of animationGroups) {
+        if (!group.isPlaying) {
+            continue;
+        }
+        for (const entityName of entityNames) {
+            if (animationTargetsEntity(group, entityName)) {
+                pauseAnimation(group);
+                paused.push(group);
+                break;
+            }
+        }
+    }
+    return paused;
+}
+
+export function resumeAnimations(animationGroups: readonly AnimationGroup[]): void {
+    for (const group of animationGroups) {
+        playAnimation(group);
+    }
+}
+
+export function animationTargetsEntity(group: AnimationGroup, entityName: string): boolean {
     const childPrefix = `${entityName}_`;
     return group.targetedAnimations.some(({ targetName, target }) => {
         if (targetName === entityName || targetName?.startsWith(childPrefix)) {
