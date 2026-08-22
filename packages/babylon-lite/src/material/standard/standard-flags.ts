@@ -1,6 +1,7 @@
 import type { ShaderFragment } from "../../shader/fragment-types.js";
 import type { Texture2D } from "../../texture/texture-2d.js";
 import type { Mesh } from "../../mesh/mesh.js";
+import type { EngineContext } from "../../engine/engine.js";
 import type { StandardMaterialProps } from "./standard-material.js";
 
 // ─── Feature Flags ──────────────────────────────────────────────────
@@ -21,6 +22,7 @@ export const OPACITY_FROM_RGB = 1 << 12;
 export const HAS_REFLECTION_TEXTURE = 1 << 13;
 export const DISABLE_LIGHTING = 1 << 14;
 export const MATERIAL_ALPHA_BLEND = 1 << 16;
+export const HAS_CUBE_REFLECTION = 1 << 17;
 export const NO_COLOR_OUTPUT = 1 << 18;
 export const HAS_DEPTH_EMISSIVE_TEXTURE = 1 << 19;
 export const ESM_SHADOW_OUTPUT = 1 << 20;
@@ -29,12 +31,14 @@ export const GEOMETRY_OUTPUT = 1 << 21;
 export const LIGHTMAP_SHADOWMAP = 1 << 15;
 /** Lightmap UVs are V-flipped (BJS Texture.uAng === π → uv'=(u, 1-v)). */
 export const LIGHTMAP_FLIP_V = 1 << 22;
-/** RGBA vertex color drives alpha (Babylon `VERTEXALPHA`). Set only when the mesh
- *  carries vertex colour AND explicitly opts in via `mesh.hasVertexAlpha`. Gates the
- *  vertex-colour fragment's `alpha *= vColor.a` + vertex-alpha alpha-test; without it
- *  the vertex colour is RGB-only. Kept distinct from `MATERIAL_ALPHA_BLEND` (which a
- *  translucent `mat.alpha < 1` material also sets) so a non-opted-in vertex-coloured
- *  translucent material never consumes vertex alpha. */
+// Bit 23 is reserved by STD_HAS_UV_TRANSFORM in the lazy
+// fragments/std-uv-transform-fragment.ts module.
+/** RGBA mesh vertex color drives alpha (Babylon `VERTEXALPHA`). Set only when a
+ *  vertex-colour buffer exists and the mesh explicitly opts in via
+ *  `mesh.hasVertexAlpha`. Gates the vertex-colour fragment's `alpha *= vColor.a` +
+ *  vertex-alpha alpha-test; without it mesh vertex colour is RGB-only. Kept distinct
+ *  from `MATERIAL_ALPHA_BLEND`, which is also used by material and thin-instance
+ *  alpha, so those sources never create a redundant vertex-colour shader variant. */
 export const VERTEX_ALPHA = 1 << 24;
 /** Mesh uses skeletal skinning. Enabled through the Standard mesh-feature subpath. */
 export const HAS_SKELETON = 1 << 26;
@@ -60,12 +64,18 @@ export interface StdExt {
     readonly _phase: StdExtPhase;
     /** @internal Feature bit this ext gates on. */
     readonly _feature: number;
+    /** @internal Contribute material feature bits for `mat` (including this ext's own
+     *  sub-bits, e.g. UV-set or mode selectors). Returns 0 when the material does not
+     *  use the feature. Only registered exts are consulted, so an opt-in setter is the
+     *  sole way these bits can ever be set — which is what keeps the detection code
+     *  (and the fragment it gates) out of the always-loaded core. */
+    _detect?(mat: StandardMaterialProps): number;
     /** @internal Effective Standard feature bits contributed by one mesh. */
-    _meshFeatures?(meshFeatures: number): number;
+    _meshFeatures?(meshFeatures: number, material?: StandardMaterialProps): number;
     /** @internal */
     _frag(features: number, meshFeatures?: number, shadowLights?: ShadowLightSlotLite[]): ShaderFragment;
     /** @internal Push group-1 bind entries starting at binding `b`; return new b. */
-    _bind?(mat: StandardMaterialProps, entries: GPUBindGroupEntry[], b: number, mesh?: Mesh): number;
+    _bind?(mat: StandardMaterialProps, entries: GPUBindGroupEntry[], b: number, mesh?: Mesh, engine?: EngineContext): number;
     /** @internal Bind feature-owned vertex buffers and return the next slot. */
     _bindVertexBuffers?(mesh: Mesh, pass: GPURenderPassEncoder | GPURenderBundleEncoder, slot: number): number;
     /** @internal Enumerate textures for acquire/release. */

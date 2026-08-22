@@ -44,8 +44,8 @@ export async function loadSkybox(scene: SceneContext, baseUrl: string, ext: stri
     world[15] = 1;
 
     const skyboxData: SkyboxData = {
-        cubeView: cubeTex._v,
-        cubeSampler: cubeTex._s,
+        cubeView: cubeTex._view,
+        cubeSampler: cubeTex._sampler,
         posBuffer,
         normBuffer,
         idxBuffer,

@@ -19,7 +19,7 @@ import { pbrExt, registerPbrLocalCubemapExt } from "../../../packages/babylon-li
 import { pbrExt as sheenExt } from "../../../packages/babylon-lite/src/material/pbr/fragments/sheen-fragment";
 import { createPbrComposer } from "../../../packages/babylon-lite/src/material/pbr/pbr-compose";
 import { _registerPbrExt, PBR_HAS_ENV } from "../../../packages/babylon-lite/src/material/pbr/pbr-flags";
-import { _computePbrMaterialFeatures, type PbrMaterialProps } from "../../../packages/babylon-lite/src/material/pbr/pbr-material";
+import { _computePbrMaterialFeatures, createPbrMaterial, type PbrMaterialProps } from "../../../packages/babylon-lite/src/material/pbr/pbr-material";
 import { createPbrMeshBindGroup } from "../../../packages/babylon-lite/src/material/pbr/pbr-pipeline";
 import type { MaterialPlugin } from "../../../packages/babylon-lite/src/material/plugin/material-plugin";
 import { registerPbrPlugins } from "../../../packages/babylon-lite/src/material/plugin/pbr-plugin-bridge";
@@ -39,10 +39,7 @@ function composer() {
         _fogHelper: "",
         _fogBlock: "",
         _createPbrTemplateExt: null,
-        _anisoExt: null,
-        _iblSkyboxCalc: "",
         _flatNormalWgsl: "",
-        _gammaTemplate: null,
         _createPbrShadowFragment: null,
         _shadowLights: [],
         _createThinInstanceFragment: null,
@@ -307,10 +304,10 @@ describe("PBR local cubemap projection", () => {
         _registerPbrExt(sheenExt);
         await enablePbrLocalCubemap();
         const environment = makeEnvironment({});
-        const material = {
-            clearCoat: { isEnabled: true },
-            sheen: { isEnabled: true },
-        } as PbrMaterialProps;
+        const material = createPbrMaterial({
+            _clearCoat: { isEnabled: true },
+            _sheen: { isEnabled: true },
+        });
         setPbrLocalEnvironmentProbeSet(material, fakeProbeSet(environment));
         const features = _computePbrMaterialFeatures(material);
         const result = composer()(features.features | clearcoatExt.detect!(material).f | sheenExt.detect!(material).f, features.features2, 0, PBR_HAS_ENV);
@@ -548,10 +545,10 @@ describe("PBR local cubemap projection", () => {
             name: "local-cubemap-regression",
             getCustomCode: (shaderType) => (shaderType === "fragment" ? { CUSTOM_FRAGMENT_UPDATE_ALPHA: pluginMarker } : null),
         };
-        const material = {
-            alphaCutOff: 0.5,
+        const material = createPbrMaterial({
+            _alphaCutOff: 0.5,
             plugins: [plugin],
-        } as PbrMaterialProps & { plugins: MaterialPlugin[] };
+        });
         setPbrLocalEnvironment(material, makeEnvironment({}), {
             projectionPosition: [0, 0, 0],
             projectionSize: [8, 6, 4],

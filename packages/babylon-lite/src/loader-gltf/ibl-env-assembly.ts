@@ -91,6 +91,15 @@ export function assembleEnvironmentTextures(
     const brdfSampler = engine._device.createSampler(_bilinearDesc);
     const sphericalHarmonics = polynomialToPreScaledHarmonics(irradianceSH);
     return {
+        specularCube,
+        specularCubeView,
+        brdfLut,
+        brdfLutView,
+        cubeSampler,
+        brdfSampler,
+        irradianceSH,
+        sphericalHarmonics,
+        lodGenerationScale,
         _specularCube: specularCube,
         _specularCubeView: specularCubeView,
         _brdfLut: brdfLut,
@@ -100,9 +109,6 @@ export function assembleEnvironmentTextures(
         _irradianceSH: irradianceSH,
         _sphericalHarmonics: sphericalHarmonics,
         _lodGenerationScale: lodGenerationScale,
-        _t: specularCube,
-        _v: specularCubeView,
-        _s: cubeSampler,
     };
 }
 
@@ -166,9 +172,10 @@ export async function resolveImage(json: any, binChunk: DataView, imageIdx: numb
     throw new Error("Image has neither bufferView nor uri");
 }
 
-/** Copy of scene-ubo-extras.ts `writeEnvShUbo` — writes the environment
- *  spherical-harmonics slice (float offsets 40–75) of the SceneUniforms struct. */
-function writeEnvShUbo(data: Float32Array, scene: SceneContext): void {
+/** Copy of scene-ubo-extras.ts `writeEnvUbo` — writes the environment rotation
+ *  (offset 36) and spherical-harmonics slice (offsets 40–75). */
+function writeEnvUbo(data: Float32Array, scene: SceneContext): void {
+    data[36] = scene._environmentRotation ?? 0;
     const sh = scene._envTextures?._sphericalHarmonics;
     if (sh) {
         data.set(sh, 40);
@@ -176,13 +183,13 @@ function writeEnvShUbo(data: Float32Array, scene: SceneContext): void {
 }
 
 /** Copy of scene-ubo-extras.ts `registerEnvSceneUniforms` (+ its dedup helper) —
- *  registers the env-SH scene-UBO contributor. The render task invokes whatever
+ *  registers the environment scene-UBO contributor. The render task invokes whatever
  *  contributors are on `scene._sceneUboContributors`, so a private copy of the
  *  writer is functionally identical to the shared one. Kept private so this
  *  feature does not pin scene-ubo-extras into every glTF scene's main chunk. */
 export function registerEnvSceneUniforms(scene: SceneContext): void {
     const list = (scene._sceneUboContributors ??= []);
-    if (!list.includes(writeEnvShUbo)) {
-        list.push(writeEnvShUbo);
+    if (!list.includes(writeEnvUbo)) {
+        list.push(writeEnvUbo);
     }
 }

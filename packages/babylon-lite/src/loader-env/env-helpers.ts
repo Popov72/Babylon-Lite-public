@@ -41,6 +41,15 @@ export function assembleEnvironmentTextures(
     const brdfSampler = getBilinearSampler(engine);
     const harmonics = sphericalHarmonics ?? polynomialToPreScaledHarmonics(irradianceSH);
     return {
+        specularCube,
+        specularCubeView,
+        brdfLut,
+        brdfLutView,
+        cubeSampler,
+        brdfSampler,
+        irradianceSH,
+        sphericalHarmonics: harmonics,
+        lodGenerationScale,
         _specularCube: specularCube,
         _specularCubeView: specularCubeView,
         _brdfLut: brdfLut,
@@ -50,8 +59,5 @@ export function assembleEnvironmentTextures(
         _irradianceSH: irradianceSH,
         _sphericalHarmonics: harmonics,
         _lodGenerationScale: lodGenerationScale,
-        _t: specularCube,
-        _v: specularCubeView,
-        _s: cubeSampler,
     };
 }

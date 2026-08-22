@@ -5,10 +5,22 @@ import { assembleEnvironmentTextures, loadBrdfImage } from "./env-helpers.js";
 import { parseEnvFile } from "./env-parse.js";
 import { computeSceneSize } from "../material/pbr/scene-size.js";
 import { registerEnvSceneUniforms } from "../scene/scene-ubo-extras.js";
-import type { CubeTexture } from "../texture/cube-texture.js";
 
 /** GPU-resident environment textures. */
-export interface EnvironmentTextures extends CubeTexture {
+export interface EnvironmentTextures {
+    specularCube: GPUTexture;
+    specularCubeView: GPUTextureView;
+    brdfLut: GPUTexture;
+    brdfLutView: GPUTextureView;
+    cubeSampler: GPUSampler;
+    brdfSampler: GPUSampler;
+    irradianceSH: Float32Array;
+    /** Pre-scaled SH coefficients for shader, 36 floats in stride-4 layout. */
+    sphericalHarmonics: Float32Array;
+    /** LOD generation scale for specular IBL sampling. */
+    lodGenerationScale: number;
+    /** LOD generation offset for prefiltered cubemap sampling. Default 0. */
+    lodGenerationOffset?: number;
     /** @internal */
     _specularCube: GPUTexture;
     /** @internal */
@@ -27,6 +39,8 @@ export interface EnvironmentTextures extends CubeTexture {
     _sphericalHarmonics: Float32Array;
     /** @internal */
     _lodGenerationScale: number;
+    /** @internal */
+    _lodGenerationOffset?: number;
 }
 
 /**
@@ -137,7 +151,7 @@ export async function loadEnvironment(
         }
         if (skyboxIsEnv) {
             const skybox = await import("../material/pbr/background-hdr-skybox.js");
-            scene._renderables.push(skybox.buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
+            scene._renderables.push(await skybox.buildHdrSkyboxRenderable(scene, textures, skyHalfSize, rootPosition, primaryColor));
         }
     });
 

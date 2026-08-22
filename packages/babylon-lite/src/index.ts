@@ -5,6 +5,7 @@
 export {
     createEngine,
     startEngine,
+    waitForGpuIdle,
     stopEngine,
     renderFrame,
     resizeEngine,
@@ -12,13 +13,13 @@ export {
     disposeEngine,
     setGpuTimingEnabled,
     isGpuTimingSupported,
-    VERSION,
 } from "./engine/engine.js";
+export { VERSION } from "./engine/version.js";
 export type { EngineContext, EngineOptions, RenderCanvas } from "./engine/engine.js";
 export { createNullEngine, stepScene, runHeadlessSteps } from "./engine/null-engine.js";
 export type { NullEngineOptions } from "./engine/null-engine.js";
-export { setRenderTaskGpuTimingEnabled, isRenderTaskGpuTimingSupported, getRenderTaskGpuTimings } from "./engine/gpu-task-timing.js";
-export type { RenderTaskGpuTiming, RenderTaskGpuTimings, RenderTaskGpuTimingStatus } from "./engine/gpu-task-timing.js";
+export { setRenderTaskGpuTimingEnabled, isRenderTaskGpuTimingSupported, getRenderTaskGpuTimings, measureRenderTaskOverdrawCost } from "./engine/gpu-task-timing.js";
+export type { RenderTaskGpuTiming, RenderTaskGpuTimings, RenderTaskGpuTimingStatus, OverdrawCostMeasure } from "./engine/gpu-task-timing.js";
 export { createSurface, disposeSurface, resizeSurface, setSurfaceSize } from "./engine/surface.js";
 export { enableSurfaceResizeObserver } from "./engine/enable-surface-resize-observer.js";
 export type { SurfaceContext, SurfaceOptions } from "./engine/surface.js";
@@ -44,6 +45,8 @@ export {
 } from "./scene/scene.js";
 export type { SceneContextOptions } from "./scene/scene.js";
 export { setFog, setClipPlane } from "./scene/scene-ubo-extras.js";
+export { setEnvironmentBlur } from "./scene/set-environment-blur.js";
+export { setEnvironmentRotation } from "./scene/set-environment-rotation.js";
 export { getFloatingOriginOffset } from "./large-world/floating-origin.js";
 
 // Opt-in full error messages. By default Babylon-Lite throws compact coded errors to keep bundles
@@ -216,6 +219,8 @@ export type { MeshGeometryCapacityResult } from "./mesh/mesh-factories.js";
 export { getMeshGeometry, getMeshTriangles } from "./mesh/get-mesh-geometry.js";
 export { createLineSystemData, createLineSystem, createLines, updateLineSystem } from "./mesh/create-line-system.js";
 export type { LineSystemData, LineSystemDataOptions, LineSystemOptions, LinesOptions, LineSystemUpdateOptions } from "./mesh/create-line-system.js";
+export { createDashedLines, updateDashedLines } from "./mesh/create-dashed-lines.js";
+export type { DashedLinesOptions, DashedLinesUpdateOptions } from "./mesh/create-dashed-lines.js";
 export { createBoxData } from "./mesh/create-box.js";
 export type { BoxData } from "./mesh/create-box.js";
 export { createSphereData } from "./mesh/create-sphere.js";
@@ -267,6 +272,14 @@ export { createStandardMaterial } from "./material/standard/create-standard-mate
 export { createStandardNoColorMaterialView } from "./material/standard/no-color-view.js";
 export { enableStandardSkeleton, enableStandardUvOffset } from "./material/standard/enable-standard-mesh-features.js";
 export { enableStandardVertexColors } from "./material/standard/enable-standard-vertex-colors.js";
+export { setStandardBumpTexture } from "./material/standard/set-std-bump.js";
+export { setStandardEmissiveTexture } from "./material/standard/set-std-emissive.js";
+export { setStandardSpecularTexture } from "./material/standard/set-std-specular.js";
+export { setStandardAmbientTexture } from "./material/standard/set-std-ambient.js";
+export { setStandardLightmapTexture } from "./material/standard/set-std-lightmap.js";
+export { setStandardOpacityTexture } from "./material/standard/set-std-opacity.js";
+export { setStandardReflectionTexture } from "./material/standard/set-std-reflection.js";
+export { setStandardReflectionCubeTexture } from "./material/standard/set-std-cube-reflection.js";
 export { enableMirroredMeshes } from "./mesh/enable-mirrored-meshes.js";
 export { createPbrMaterial } from "./material/pbr/pbr-material.js";
 export { enablePbrLightmap, setPbrLightmap } from "./material/pbr/enable-pbr-lightmap.js";
@@ -291,6 +304,22 @@ export type {
     PbrLocalEnvironmentProbeSet,
     PbrLocalEnvironmentProbeSetOptions,
 } from "./material/pbr/enable-pbr-local-cubemap.js";
+export { setShadowOnly } from "./material/pbr/set-shadow-only.js";
+export type { ShadowOnlyOptions } from "./material/pbr/set-shadow-only.js";
+export { setPbrClearCoat } from "./material/pbr/set-clearcoat.js";
+export { setPbrSheen } from "./material/pbr/set-sheen.js";
+export { setPbrIridescence } from "./material/pbr/set-iridescence.js";
+export { setPbrUnlit } from "./material/pbr/set-unlit.js";
+export { setPbrSubsurface } from "./material/pbr/set-subsurface.js";
+export { setPbrMetallicReflectance } from "./material/pbr/set-metallic-reflectance.js";
+export { setPbrAnisotropy } from "./material/pbr/set-anisotropy.js";
+export { setPbrGammaAlbedo } from "./material/pbr/set-gamma-albedo.js";
+export { setPbrSkybox } from "./material/pbr/set-skybox.js";
+export { setPbrAlphaCutoff } from "./material/pbr/set-alpha-cutoff.js";
+export { setPbrTransmission } from "./material/pbr/set-transmission.js";
+export { setPbrDispersion } from "./material/pbr/set-dispersion.js";
+export { setPbrEmissive } from "./material/pbr/set-emissive.js";
+export type { MetallicReflectanceOptions } from "./material/pbr/set-metallic-reflectance.js";
 export {
     createShaderMaterial,
     setShaderUniform,
@@ -302,6 +331,12 @@ export {
 } from "./material/shader/shader-material.js";
 export { enableShaderUniformRangeUpdates } from "./material/shader/shader-uniform-range.js";
 export { enableShaderMaterialUniformCaching } from "./material/shader/enable-shader-material-uniform-caching.js";
+export {
+    enableAsyncShaderPipelineCompilation,
+    prepareShaderMaterialPipeline,
+    prepareShaderMaterialPipelineForTask,
+} from "./material/shader/enable-async-shader-pipeline-compilation.js";
+export type { ShaderMaterialPipelineLayout } from "./material/shader/enable-async-shader-pipeline-compilation.js";
 export { createShaderNoColorMaterialView } from "./material/shader/no-color-view.js";
 export { createShaderNormalMaterialView } from "./material/shader/normal-view.js";
 export type { ShaderNormalViewConfig } from "./material/shader/normal-view.js";
@@ -318,7 +353,7 @@ export { createMaterialView } from "./material/material-view.js";
 export { getMaterialFamily } from "./material/material-family.js";
 export { isPbrMaterial, isStandardMaterial, isShaderMaterial, isNodeMaterial } from "./material/material-guards.js";
 export { markMaterialUboDirty } from "./material/material-dirty.js";
-export { enableMaterialUvTransform } from "./material/pbr/pbr-material.js";
+export { enableMaterialUvTransform } from "./material/enable-material-uv-transform.js";
 export { rebuildMaterial } from "./material/material-rebuild.js";
 export { setSceneImageProcessing } from "./scene/scene-image-processing.js";
 export type { ImageProcessingUpdate } from "./scene/scene-image-processing.js";
@@ -337,6 +372,7 @@ export { enableMaterialTracking } from "./material/observable-material.js";
 
 // ─── Loaders ─────────────────────────────────────────────────────────
 export { loadGltf } from "./loader-gltf/load-gltf.js";
+export { enableGltfCameras } from "./loader-gltf/gltf-feature-camera.js";
 export type { AssetContainer } from "./asset-container.js";
 export { getContainerMeshes } from "./asset-container.js";
 export { selectVariant, getVariantNames, resetVariant } from "./loader-gltf/material-variants.js";
@@ -358,6 +394,8 @@ export { loadDdsEnvironment } from "./loader-env/load-dds-env.js";
 export { buildDdsSkyboxRenderable } from "./material/pbr/background-dds-skybox.js";
 export { loadHdrEnvironment } from "./loader-hdr/load-hdr.js";
 export { loadTexture2D, cloneTexture2D } from "./texture/texture-2d.js";
+export { loadCubeTexture } from "./texture/cube-texture.js";
+export type { CubeTexture } from "./texture/cube-texture.js";
 export { loadSkybox } from "./loader-skybox/load-skybox.js";
 export { loadSplat } from "./loader-splat/load-splat.js";
 export { loadSOG } from "./loader-splat/load-sog.js";
@@ -416,9 +454,9 @@ export { createPropertyAnimationClip, createPropertyAnimationGroup } from "./ani
 export type { AnimationTask, AnimationTaskCategoryHandler, AnimationTaskOptions, AnimationTaskUpdate } from "./animation/animation-manager.js";
 export { createMorphTargets, setMorphTargetWeights } from "./morph/create-morph-targets.js";
 export type { MorphTargetData } from "./animation/types.js";
-export { bakeVat, bakeVatMany, attachVat } from "./vat/vat-baker.js";
+export { bakeVat, bakeVatMany, prepareVat, prepareVatMany, createVatBakeResult, createVatBakeResults, attachVat } from "./vat/vat-baker.js";
 export { setVatInstanceStorage, setVatTime } from "./vat/vat-baker.js";
-export type { VatBakeResult, VatBakeOptions, VatBakeTarget, VatClip, VatHandle } from "./vat/vat-baker.js";
+export type { VatBakeResult, PreparedVatBakeResult, VatBakeOptions, VatBakeTarget, VatClip, VatHandle } from "./vat/vat-baker.js";
 
 // ─── Math ────────────────────────────────────────────────────────────
 export { normalizeVec3 } from "./math/normalize-vec3.js";
@@ -433,6 +471,7 @@ export { crossVec3 } from "./math/cross-vec3.js";
 export { lengthVec3 } from "./math/length-vec3.js";
 export { negateVec3 } from "./math/negate-vec3.js";
 export { lerpVec3 } from "./math/lerp-vec3.js";
+export { sampleHermiteSpline, sampleCatmullRomSpline } from "./math/curve-splines.js";
 export { expDampFactor, dampScalar, lerpAngleShortest } from "./math/damp.js";
 export {
     addVec3InPlace,
@@ -621,7 +660,6 @@ export type { BoundingBoxGizmo, BoundingBoxGizmoOptions } from "./gizmo/bounding
 
 // ─── Low-level (for advanced/custom rendering) ──────────────────────
 export type { EnvironmentTextures } from "./loader-env/load-env.js";
-export type { CubeTexture } from "./texture/cube-texture.js";
 export type { Renderable, PrePassRenderable, SceneUniformUpdater, DrawBinding, DrawUpdateContext } from "./render/renderable.js";
 export type { RenderTargetSignature } from "./engine/render-target.js";
 
@@ -632,7 +670,7 @@ export type { SpriteAtlasFrameSource, SpriteAtlasPackOptions } from "./sprite/sh
 export { appendSpriteAtlasFrames, createSpriteAtlasFromFrames } from "./sprite/shared/sprite-atlas-packer.js";
 export type { Sprite2DLayer, Sprite2DLayerOptions, Sprite2DProps, Sprite2DView, Sprite2DDepthMode, SpriteBlendMode } from "./sprite/sprite-2d.js";
 export type { SpriteBlendDescriptor } from "./sprite/sprite-blend.js";
-export { spriteBlendOpaque, spriteBlendAlpha, spriteBlendPremultiplied, spriteBlendAdditive, spriteBlendMultiply } from "./sprite/sprite-blend.js";
+export { spriteBlendOpaque, spriteBlendAlpha, spriteBlendPremultiplied, spriteBlendAdditive, spriteBlendOneOne, spriteBlendMultiply } from "./sprite/sprite-blend.js";
 export {
     createSprite2DLayer,
     addSprite2DIndex,
@@ -730,11 +768,24 @@ export {
 export { parseNodeParticleSource } from "./particle/node/npe-parser.js";
 export type { NodeParticleSet, BuildNodeParticleOptions, ParseNodeParticleOptions } from "./particle/node/node-particle.js";
 export { buildNodeParticleSet, parseNodeParticleSetFromSnippet } from "./particle/node/node-particle.js";
+export { buildNodeParticleSetWithFlowMaps } from "./particle/node/npe-flow-map.js";
+export { buildNodeParticleSetWithBlendModes, enableNodeParticleBlendModes } from "./particle/node/npe-blend-modes.js";
+export { buildNodeParticleSetWithNoiseTextures } from "./particle/node/npe-noise.js";
+export { buildNodeParticleSetWithTextureUpdates } from "./particle/node/npe-texture-updates.js";
 export type { ParticleSystem } from "./particle/particle-system.js";
 export { animateParticleSystem, startParticleSystem, stopParticleSystem } from "./particle/particle-system.js";
 export type { RegisterNodeParticleOptions } from "./particle/particle-scene.js";
 export { registerNodeParticleSet } from "./particle/particle-scene.js";
 export { createParticleBillboard, syncParticleBillboard } from "./particle/particle-billboard.js";
+export type { ParticleSprite2DBridge, ParticleSprite2DBridgeOptions, RegisterNodeParticleSet2DOptions, NodeParticleSet2DBinding } from "./particle/particle-sprite-2d.js";
+export { createParticleSprite2DBridge, syncParticleSprite2DBridge, registerNodeParticleSet2D, disposeNodeParticleSet2DBinding } from "./particle/particle-sprite-2d.js";
+export type { ParticleSprite2DBlendModesBridge, NodeParticleSet2DBlendModesBinding } from "./particle/particle-sprite-2d-blend-modes.js";
+export {
+    createParticleSprite2DBridgeWithBlendModes,
+    syncParticleSprite2DBridgeWithBlendModes,
+    registerNodeParticleSet2DWithBlendModes,
+    disposeNodeParticleSet2DBlendModesBinding,
+} from "./particle/particle-sprite-2d-blend-modes.js";
 
 // ─── Text ────────────────────────────────────────────────────────────
 export type { Font } from "./text/font.js";

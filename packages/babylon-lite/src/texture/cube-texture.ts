@@ -5,19 +5,33 @@ import { generateMipmaps } from "./generate-mipmaps.js";
 import { mipLevelCount } from "./mip-count.js";
 import type { EngineContext } from "../engine/engine.js";
 
-/** Managed cube texture resource used by StandardMaterial reflections. */
-export interface CubeTexture {
-    /** @internal */
-    readonly _t: GPUTexture;
-    /** @internal */
-    readonly _v: GPUTextureView;
-    /** @internal */
-    readonly _s: GPUSampler;
-}
-type CubeResult = CubeTexture;
-let _cc: WeakMap<GPUDevice, Map<string, Promise<CubeResult>>> | null = null;
+declare const cubeTextureBrand: unique symbol;
 
-export function loadCubeTexture(engine: EngineContext, baseUrl: string, ext = ".jpg"): Promise<CubeResult> {
+/** A loaded cube texture, exposed without leaking its WebGPU handles. This is the
+ *  public cube handle returned by {@link loadCubeTexture}; pass it straight to
+ *  `setStandardReflectionCubeTexture()` or `loadSkybox()`.
+ *
+ *  The opaque nominal brand keeps a plain `Texture2D` from satisfying a cube slot:
+ *  `Texture2D` is structurally `{ texture, view, sampler, ... }`, so without the
+ *  brand it would compile against a cube parameter and then fail WebGPU validation
+ *  at bind-group creation (a `2d` view bound to a `texture_cube` binding). */
+export interface CubeTexture {
+    /** Opaque nominal brand. */
+    readonly [cubeTextureBrand]: true;
+    /** @internal */
+    readonly _texture: GPUTexture;
+    /** @internal */
+    readonly _view: GPUTextureView;
+    /** @internal */
+    readonly _sampler: GPUSampler;
+}
+
+let _cc: WeakMap<GPUDevice, Map<string, Promise<CubeTexture>>> | null = null;
+
+/** Load the six cube faces under `baseUrl` (`_px`/`_nx`/`_py`/`_ny`/`_pz`/`_nz` + `ext`)
+ *  into a mipmapped GPU cube texture. Results are cached per device by base URL + ext,
+ *  so repeated calls share one promise. */
+export function loadCubeTexture(engine: EngineContext, baseUrl: string, ext = ".jpg"): Promise<CubeTexture> {
     const device = engine._device;
     if (!_cc) {
         _cc = new WeakMap();
@@ -56,10 +70,10 @@ export function loadCubeTexture(engine: EngineContext, baseUrl: string, ext = ".
             generateMipmaps(engine, tex, i);
         }
         return {
-            _t: tex,
-            _v: tex.createView({ dimension: "cube", format: "rgba8unorm" }),
-            _s: getTrilinearSampler(engine),
-        };
+            _texture: tex,
+            _view: tex.createView({ dimension: "cube", format: "rgba8unorm" }),
+            _sampler: getTrilinearSampler(engine),
+        } as CubeTexture;
     })();
     dc.set(key, p);
     p.catch(() => dc!.delete(key));

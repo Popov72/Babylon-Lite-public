@@ -116,7 +116,7 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
                 rootPosition = size.rootPosition;
             }
             const { buildHdrSkyboxRenderable } = await import("../material/pbr/background-hdr-skybox.js");
-            scene._renderables.push(buildHdrSkyboxRenderable(scene, textures, autoSkyboxSize / 2, rootPosition, primaryColor));
+            scene._renderables.push(await buildHdrSkyboxRenderable(scene, textures, autoSkyboxSize / 2, rootPosition, primaryColor));
         }
         if ((!useHdr && !skipSkybox) || !skipGround) {
             const { computeSceneSize } = await import("../material/pbr/scene-size.js");
