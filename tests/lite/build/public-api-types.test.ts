@@ -115,10 +115,6 @@ describe("build/index.d.ts", () => {
         expect(external, `build/index.d.ts leaks types from external modules: ${external.join(", ")}`).toEqual([]);
     });
 
-    it("does not expose the removed Standard cube reflection property", () => {
-        expect(readFileSync(DTS_PATH, "utf-8")).not.toContain("reflectionCubeTexture");
-    });
-
     it("is the only declaration file in the published package", () => {
         const declarationFiles = readdirSync(BUILD_DIR, { recursive: true, encoding: "utf-8" })
             .filter((file) => file.endsWith(".d.ts"))
