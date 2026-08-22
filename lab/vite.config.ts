@@ -32,12 +32,13 @@ function escapeHtml(value: string): string {
 }
 
 function aquanovaFluidSimPlugin(): Plugin {
-    const manifestPath = resolve(__dirname, "public/aquanova/ship_manifest.json");
+    const sourceManifestPath = resolve(__dirname, "lite/src/demos/aquanova/editor/export/ship_manifest.json");
+    const publicManifestPath = resolve(__dirname, "public/aquanova/ship_manifest.json");
     const presetDir = resolve(__dirname, "public/aquanova/fluidSim");
     const normalizeName = (value: string): string => value.replace(/\.json$/i, "").toLowerCase();
     const validName = (value: string): boolean => /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
     const readManifest = (): Record<string, unknown> & { fluidSim?: string[]; savedAt?: string } =>
-        JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown> & { fluidSim?: string[]; savedAt?: string };
+        JSON.parse(readFileSync(sourceManifestPath, "utf8")) as Record<string, unknown> & { fluidSim?: string[]; savedAt?: string };
     const namesFromManifest = (manifest: { fluidSim?: string[] }): string[] => Array.from(new Set((manifest.fluidSim ?? []).map(normalizeName).filter(validName)));
     const sendJson = (res: ServerResponse, status: number, value: unknown): void => {
         res.statusCode = status;
@@ -67,14 +68,27 @@ function aquanovaFluidSimPlugin(): Plugin {
         writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
         renameSync(tempPath, path);
     };
-    const writeManifestFluidSims = (names: readonly string[]): void => {
-        const source = readFileSync(manifestPath, "utf8");
-        const replacement = `"fluidSim": [${names.length ? `\n${names.map((name) => `    ${JSON.stringify(name)}`).join(",\n")}\n  ` : ""}]`;
-        const next = source.replace(/"fluidSim"\s*:\s*\[[^\]]*\]/, replacement);
-        if (next === source) throw new Error("ship_manifest.json does not contain a fluidSim array.");
-        const tempPath = `${manifestPath}.tmp`;
+    const writeManifestFluidSims = (path: string, names: readonly string[]): void => {
+        const source = readFileSync(path, "utf8");
+        const current = namesFromManifest(JSON.parse(source) as { fluidSim?: string[] });
+        if (current.length === names.length && current.every((name, index) => name === names[index])) return;
+        const pattern = /^(\s*)"fluidSim"\s*:\s*\[[^\]]*\]/m;
+        const match = pattern.exec(source);
+        if (!match) throw new Error("ship_manifest.json does not contain a fluidSim array.");
+        const indent = match[1] ?? "";
+        const itemIndent = /\n([ \t]+)"/.exec(match[0])?.[1] ?? `${indent}  `;
+        const replacement =
+            match[0].includes("\n") && names.length
+                ? `${indent}"fluidSim": [\n${names.map((name) => `${itemIndent}${JSON.stringify(name)}`).join(",\n")}\n${indent}]`
+                : `${indent}"fluidSim": [${names.map((name) => JSON.stringify(name)).join(", ")}]`;
+        const next = source.replace(pattern, replacement);
+        const tempPath = `${path}.tmp`;
         writeFileSync(tempPath, next, "utf8");
-        renameSync(tempPath, manifestPath);
+        renameSync(tempPath, path);
+    };
+    const writeFluidSimManifests = (names: readonly string[]): void => {
+        writeManifestFluidSims(sourceManifestPath, names);
+        writeManifestFluidSims(publicManifestPath, names);
     };
 
     return {
@@ -114,15 +128,19 @@ function aquanovaFluidSimPlugin(): Plugin {
                         }
                         mkdirSync(presetDir, { recursive: true });
                         const previousPreset = existsSync(presetPath) ? readFileSync(presetPath) : null;
+                        const previousSourceManifest = readFileSync(sourceManifestPath);
+                        const previousPublicManifest = readFileSync(publicManifestPath);
                         try {
                             writeJsonAtomic(presetPath, preset);
-                            if (isNew) writeManifestFluidSims(manifest.fluidSim ?? []);
+                            writeFluidSimManifests(manifest.fluidSim ?? names);
                         } catch (error) {
                             if (previousPreset) {
                                 writeFileSync(presetPath, previousPreset);
                             } else if (existsSync(presetPath)) {
                                 unlinkSync(presetPath);
                             }
+                            writeFileSync(sourceManifestPath, previousSourceManifest);
+                            writeFileSync(publicManifestPath, previousPublicManifest);
                             throw error;
                         }
                         sendJson(res, 200, { name, names });
@@ -134,14 +152,16 @@ function aquanovaFluidSimPlugin(): Plugin {
                             return;
                         }
                         const manifest = readManifest();
-                        const previousNames = manifest.fluidSim ?? [];
                         const names = namesFromManifest(manifest).filter((entry) => entry !== name);
                         manifest.fluidSim = names;
-                        writeManifestFluidSims(manifest.fluidSim);
+                        const previousSourceManifest = readFileSync(sourceManifestPath);
+                        const previousPublicManifest = readFileSync(publicManifestPath);
                         try {
+                            writeFluidSimManifests(manifest.fluidSim);
                             unlinkSync(presetPath);
                         } catch (error) {
-                            writeManifestFluidSims(previousNames);
+                            writeFileSync(sourceManifestPath, previousSourceManifest);
+                            writeFileSync(publicManifestPath, previousPublicManifest);
                             throw error;
                         }
                         sendJson(res, 200, { name, names });
