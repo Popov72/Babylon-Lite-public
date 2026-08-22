@@ -10,8 +10,8 @@ import {
     traversePortalGraph,
     type Plane,
     type RuntimePortal,
-} from "../../../lab/lite/src/demos/aquanova/portal-visibility";
-import type { ShipChunk, ShipPortal } from "../../../lab/lite/src/demos/aquanova/manifest";
+} from "../../../../lab/lite/src/demos/aquanova/portal-visibility";
+import type { ShipChunk, ShipPortal } from "../../../../lab/lite/src/demos/aquanova/manifest";
 
 function portal(id: string, chunkA: string, chunkB: string, z: number, enabled = true): RuntimePortal {
     return {

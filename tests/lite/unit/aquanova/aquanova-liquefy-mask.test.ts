@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { liquefyFrontDistance } from "../../../lab/lite/src/demos/liquefy-plugin";
+import { liquefyFrontDistance } from "../../../../lab/lite/src/demos/liquefy-plugin";
 
 describe("Aquanova liquefaction particle mask", () => {
     it("reduces to the world-space spherical front when noise is disabled", () => {

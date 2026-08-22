@@ -10,7 +10,7 @@ import {
     LIQUEFACTOR_ADJUSTMENT_MUZZLE,
     LIQUEFACTOR_BARREL_DIRECTION,
     LIQUEFACTOR_MODEL_SCALE,
-} from "../../../lab/lite/src/demos/aquanova/liquefactor-viewmodel";
+} from "../../../../lab/lite/src/demos/aquanova/liquefactor-viewmodel";
 
 function rotate(q: readonly [number, number, number, number], v: readonly [number, number, number]): [number, number, number] {
     const [x, y, z, w] = q;

@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mesh } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import type { AquanovaGameContext, WeaponLiquefactorRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
-import { SoundManager } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
-import type { WeaponLiquefactorBehaviorConfig } from "../../../lab/lite/src/demos/aquanova/behaviors/types";
-import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
-import { WeaponLiquefactorBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-liquefactor";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import type { AquanovaGameContext, WeaponLiquefactorRuntime } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+import { SoundManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
+import type { WeaponLiquefactorBehaviorConfig } from "../../../../lab/lite/src/demos/aquanova/behaviors/types";
+import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
+import { WeaponLiquefactorBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-liquefactor";
 
 const audio = vi.hoisted(() => ({
     createAudioEngineAsync: vi.fn(),
@@ -18,7 +18,7 @@ const audio = vi.hoisted(() => ({
     stopStreamingSound: vi.fn(),
 }));
 
-vi.mock("../../../packages/babylon-lite/src/index.ts", () => audio);
+vi.mock("../../../../packages/babylon-lite/src/index.ts", () => audio);
 
 type WeaponContext = Pick<
     AquanovaGameContext,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
 describe("Aquanova weapon inventory", () => {
     it("selects acquired slots, toggles the selected slot, and holsters for an unowned slot", () => {

@@ -9,7 +9,7 @@ import {
     selectStaticBoxProbe,
     type BoxProbeInfluence,
     type BoxProbeRegion,
-} from "../../../lab/lite/src/demos/aquanova/probe-blending";
+} from "../../../../lab/lite/src/demos/aquanova/probe-blending";
 
 const probes: BoxProbeInfluence[] = [
     { id: "A", centre: [0, 0, 0], innerHalfSize: [2, 2, 2], outerHalfSize: [4, 4, 4] },

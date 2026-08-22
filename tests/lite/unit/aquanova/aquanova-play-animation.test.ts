@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AnimationGroup, Mesh } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { AquanovaBehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
-import { PlayAnimationBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/play-animation";
-import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+import type { AnimationGroup, Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import { AquanovaBehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
+import { PlayAnimationBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/play-animation";
+import type { AquanovaGameContext } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;

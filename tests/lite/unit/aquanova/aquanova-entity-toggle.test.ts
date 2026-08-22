@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Mesh, SceneContext } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
+import type { Mesh, SceneContext } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
 import {
     DisableCollisionBehavior,
     DisableEntityBehavior,
@@ -9,12 +9,12 @@ import {
     HideEntityBehavior,
     RemoveEntityBehavior,
     ShowEntityBehavior,
-} from "../../../lab/lite/src/demos/aquanova/behaviors/entity-toggle";
-import { AquanovaBehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import { registerEntityCollisionEventHandlers } from "../../../lab/lite/src/demos/aquanova/entity-collision-events";
-import { createPersistentMeshEntityEventOperations, registerMeshEntityEventHandlers } from "../../../lab/lite/src/demos/aquanova/entity-events";
-import { registerDoorEntityEventHandlers } from "../../../lab/lite/src/demos/aquanova/door-events";
+} from "../../../../lab/lite/src/demos/aquanova/behaviors/entity-toggle";
+import { AquanovaBehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import { registerEntityCollisionEventHandlers } from "../../../../lab/lite/src/demos/aquanova/entity-collision-events";
+import { createPersistentMeshEntityEventOperations, registerMeshEntityEventHandlers } from "../../../../lab/lite/src/demos/aquanova/entity-events";
+import { registerDoorEntityEventHandlers } from "../../../../lab/lite/src/demos/aquanova/door-events";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;

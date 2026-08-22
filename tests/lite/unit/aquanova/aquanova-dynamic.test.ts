@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DYNAMIC_MASS, resolveDynamicMass } from "../../../lab/lite/src/demos/aquanova/behaviors/dynamic";
+import { DEFAULT_DYNAMIC_MASS, resolveDynamicMass } from "../../../../lab/lite/src/demos/aquanova/behaviors/dynamic";
 
 describe("Aquanova dynamic behavior", () => {
     it("defaults mass to 10 kilograms and accepts a positive override", () => {

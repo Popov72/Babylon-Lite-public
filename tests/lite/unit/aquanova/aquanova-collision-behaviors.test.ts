@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Mesh } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import { SetCollisionShapeBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/set-collision-shape";
-import { TriggerBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/trigger";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import { SetCollisionShapeBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/set-collision-shape";
+import { TriggerBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/trigger";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;

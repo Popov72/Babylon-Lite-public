@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { PhysicsBody, PhysicsShape, PhysicsWorld } from "../../../packages/babylon-lite/src";
-import { createIntersectionTriggerRegistry } from "../../../lab/lite/src/demos/aquanova/intersection-triggers";
+import type { PhysicsBody, PhysicsShape, PhysicsWorld } from "../../../../packages/babylon-lite/src";
+import { createIntersectionTriggerRegistry } from "../../../../lab/lite/src/demos/aquanova/intersection-triggers";
 
 function body(id: bigint, shapeId: number): PhysicsBody {
     return { _hkBody: [id], _shape: { _hkShape: shapeId } as PhysicsShape } as PhysicsBody;

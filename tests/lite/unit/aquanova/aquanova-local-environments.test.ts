@@ -23,9 +23,9 @@ const lite = vi.hoisted(() => ({
 }));
 
 vi.mock("babylon-lite", () => lite);
-vi.mock("../../../packages/babylon-lite/src/index", () => lite);
+vi.mock("../../../../packages/babylon-lite/src/index", () => lite);
 
-import { applyLocalEnvironmentProbes } from "../../../lab/lite/src/demos/aquanova/local-environments";
+import { applyLocalEnvironmentProbes } from "../../../../lab/lite/src/demos/aquanova/local-environments";
 
 function worldMatrixAt(x = 0, y = 0, z = 0): number[] {
     return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];

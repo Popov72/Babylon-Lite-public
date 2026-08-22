@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildSkyPortalMask } from "../../../lab/lite/src/demos/aquanova/exterior-mesh-classifier";
-import type { RuntimePortal } from "../../../lab/lite/src/demos/aquanova/portal-visibility";
+import { buildSkyPortalMask } from "../../../../lab/lite/src/demos/aquanova/exterior-mesh-classifier";
+import type { RuntimePortal } from "../../../../lab/lite/src/demos/aquanova/portal-visibility";
 
 const skyPortal: RuntimePortal = {
     id: "outside",

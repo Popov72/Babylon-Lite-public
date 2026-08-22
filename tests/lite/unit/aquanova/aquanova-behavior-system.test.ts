@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Mesh } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import type { Behavior } from "../../../lab/lite/src/demos/aquanova/behavior-system/behavior";
-import { BehaviorManager } from "../../../lab/lite/src/demos/aquanova/behavior-system/behavior-manager";
-import * as aquanovaBehaviorConstructors from "../../../lab/lite/src/demos/aquanova/behaviors/behavior-constructors";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
-import { AquanovaBehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import type { Behavior } from "../../../../lab/lite/src/demos/aquanova/behavior-system/behavior";
+import { BehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behavior-system/behavior-manager";
+import * as aquanovaBehaviorConstructors from "../../../../lab/lite/src/demos/aquanova/behaviors/behavior-constructors";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import type { AquanovaGameContext } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+import { AquanovaBehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;

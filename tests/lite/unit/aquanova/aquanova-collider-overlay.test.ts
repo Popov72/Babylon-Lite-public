@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fluidPrimitiveWireframeLines, visibleInjectedPrimitives } from "../../../lab/lite/src/demos/aquanova/debug/collider-overlay";
+import { fluidPrimitiveWireframeLines, visibleInjectedPrimitives } from "../../../../lab/lite/src/demos/aquanova/debug/collider-overlay";
 
 describe("Aquanova collider overlay", () => {
     it("draws all twelve box edges at the injected half extents", () => {

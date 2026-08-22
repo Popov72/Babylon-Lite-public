@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mesh, SceneNode } from "../../../packages/babylon-lite/src";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import { PickEntityBehavior } from "../../../lab/lite/src/demos/aquanova/behaviors/pick-entity";
-import { SoundManager } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
-import { PLAYER_CAPSULE_HEIGHT, PLAYER_CAPSULE_RADIUS } from "../../../lab/lite/src/demos/aquanova/constants";
+import type { Mesh, SceneNode } from "../../../../packages/babylon-lite/src";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import { PickEntityBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/pick-entity";
+import { SoundManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
+import { PLAYER_CAPSULE_HEIGHT, PLAYER_CAPSULE_RADIUS } from "../../../../lab/lite/src/demos/aquanova/constants";
 
 const runtime = vi.hoisted(() => ({
     createAudioEngineAsync: vi.fn(),
@@ -17,7 +17,7 @@ const runtime = vi.hoisted(() => ({
     stopStreamingSound: vi.fn(),
 }));
 
-vi.mock("../../../packages/babylon-lite/src/index.ts", () => runtime);
+vi.mock("../../../../packages/babylon-lite/src/index.ts", () => runtime);
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const soundManagers: SoundManager[] = [];

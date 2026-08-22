@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { registerDoorEntityEventHandlers } from "../../../lab/lite/src/demos/aquanova/door-events";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import { registerDoorEntityEventHandlers } from "../../../../lab/lite/src/demos/aquanova/door-events";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 
 describe("Aquanova door entity events", () => {
     it("updates each addressed door and its portal state", () => {

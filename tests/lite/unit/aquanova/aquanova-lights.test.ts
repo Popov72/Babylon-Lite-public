@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mesh, SceneContext, SceneNode } from "../../../packages/babylon-lite/src";
-import { buildRuntimeLights } from "../../../lab/lite/src/demos/aquanova/lights";
+import type { Mesh, SceneContext, SceneNode } from "../../../../packages/babylon-lite/src";
+import { buildRuntimeLights } from "../../../../lab/lite/src/demos/aquanova/lights";
 
 const runtime = vi.hoisted(() => ({
     addClusteredLightContainer: vi.fn(),
@@ -16,7 +16,7 @@ const runtime = vi.hoisted(() => ({
     MAX_LIGHTS: 16,
 }));
 
-vi.mock("../../../packages/babylon-lite/src/index.ts", () => runtime);
+vi.mock("../../../../packages/babylon-lite/src/index.ts", () => runtime);
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 

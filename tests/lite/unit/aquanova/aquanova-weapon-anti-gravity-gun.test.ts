@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Mesh } from "../../../packages/babylon-lite/src";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import { AquanovaEventManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
-import type { AquanovaGameContext, WeaponAntiGravityGunRuntime } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
-import { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
-import { WeaponInventory } from "../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
+import type { AquanovaGameContext, WeaponAntiGravityGunRuntime } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+import { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
+import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
 type WeaponContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
 

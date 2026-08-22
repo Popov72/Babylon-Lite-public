@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SoundManager } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
+import { SoundManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-manager";
 
 const audio = vi.hoisted(() => ({
     createAudioEngineAsync: vi.fn(),
@@ -11,7 +11,7 @@ const audio = vi.hoisted(() => ({
     stopStreamingSound: vi.fn(),
 }));
 
-vi.mock("../../../packages/babylon-lite/src/index.ts", () => audio);
+vi.mock("../../../../packages/babylon-lite/src/index.ts", () => audio);
 
 describe("Aquanova sound manager", () => {
     beforeEach(() => {

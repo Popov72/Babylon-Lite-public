@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkAt, type ShipChunk } from "../../../lab/lite/src/demos/aquanova/manifest";
+import { chunkAt, type ShipChunk } from "../../../../lab/lite/src/demos/aquanova/manifest";
 
 const chunks: ShipChunk[] = [
     {

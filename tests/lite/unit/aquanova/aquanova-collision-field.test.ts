@@ -21,7 +21,7 @@ import {
     PRIM_CAPSULE,
     PRIM_CYLINDER,
     type FluidPrimitive,
-} from "../../../lab/lite/src/demos/aquanova/collision-field";
+} from "../../../../lab/lite/src/demos/aquanova/collision-field";
 
 /** Quaternion for a rotation of `deg` about `axis`. */
 function quat(axis: [number, number, number], deg: number): [number, number, number, number] {

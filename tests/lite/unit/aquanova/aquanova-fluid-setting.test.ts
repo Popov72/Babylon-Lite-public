@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchFluidSetting } from "../../../lab/lite/src/demos/aquanova/fluid-setting";
+import { fetchFluidSetting } from "../../../../lab/lite/src/demos/aquanova/fluid-setting";
 
 describe("Aquanova fluid settings", () => {
     afterEach(() => {

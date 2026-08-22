@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collisionShapesForModule, type ShipCollisionShape } from "../../../lab/lite/src/demos/aquanova/collision-shapes";
+import { collisionShapesForModule, type ShipCollisionShape } from "../../../../lab/lite/src/demos/aquanova/collision-shapes";
 
 const shape: ShipCollisionShape = {
     kind: "box",

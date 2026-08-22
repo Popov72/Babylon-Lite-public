@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSoundVolume } from "../../../lab/lite/src/demos/aquanova/behaviors/sound-volume";
-import { loadGraphicsSettings } from "../../../lab/lite/src/demos/aquanova/settings";
+import { normalizeSoundVolume } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-volume";
+import { loadGraphicsSettings } from "../../../../lab/lite/src/demos/aquanova/settings";
 
 describe("Aquanova sound volume", () => {
     it("clamps finite values to the master-gain range", () => {

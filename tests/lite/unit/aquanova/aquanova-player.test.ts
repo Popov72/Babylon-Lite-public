@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { CharacterSupportedState } from "../../../packages/babylon-lite/src";
-import type { Mesh, PhysicsCharacterController } from "../../../packages/babylon-lite/src";
+import { CharacterSupportedState } from "../../../../packages/babylon-lite/src";
+import type { Mesh, PhysicsCharacterController } from "../../../../packages/babylon-lite/src";
 import {
     PlayerBehavior,
     playerCapsuleSpawnPosition,
@@ -11,15 +11,15 @@ import {
     selectClosestClearApertureOffset,
     shouldUseJumpApertureAssist,
     weaponWheelDirection,
-} from "../../../lab/lite/src/demos/aquanova/behaviors/player";
+} from "../../../../lab/lite/src/demos/aquanova/behaviors/player";
 import {
     CROUCH_CAPSULE_HEIGHT,
     CROUCH_CAPSULE_RADIUS,
     MAX_WALKABLE_SLOPE_COSINE,
     PLAYER_CAPSULE_HEIGHT,
     PLAYER_CAPSULE_RADIUS,
-} from "../../../lab/lite/src/demos/aquanova/constants";
-import type { AquanovaGameContext } from "../../../lab/lite/src/demos/aquanova/behaviors/game-context";
+} from "../../../../lab/lite/src/demos/aquanova/constants";
+import type { AquanovaGameContext } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 describe("Aquanova player", () => {
     it("defaults to the intended dynamic-body push strength", () => {

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { AquanovaBehaviorManager } from "../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
-import { createCheatCodeMatcher } from "../../../lab/lite/src/demos/aquanova/cheat-code";
-import { createSceneNode } from "../../../packages/babylon-lite/src/scene/scene-node";
-import type { Mesh } from "../../../packages/babylon-lite/src";
+import { AquanovaBehaviorManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-behavior-manager";
+import { createCheatCodeMatcher } from "../../../../lab/lite/src/demos/aquanova/cheat-code";
+import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
+import type { Mesh } from "../../../../packages/babylon-lite/src";
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;
