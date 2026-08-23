@@ -17,6 +17,7 @@ import {
     _PBR_LOCAL_ENVIRONMENT_HEADER_U32,
     _PBR_LOCAL_ENVIRONMENT_PARALLAX_FLAG,
     _PBR_LOCAL_ENVIRONMENT_PROBE_FLOATS,
+    _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG,
     _PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS,
     MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
     MAX_PBR_LOCAL_ENVIRONMENT_PROBES,
@@ -63,12 +64,17 @@ export interface PbrLocalEnvironmentProbeGridCell {
  */
 export function setPbrLocalEnvironment(material: PbrMaterialProps, environment: EnvironmentTextures, options: PbrLocalEnvironmentOptions): void {
     finiteVec3(options.projectionPosition, "local environment projectionPosition");
-    finiteVec3(options.projectionSize, "local environment projectionSize", true);
+    const projectionSize: [number, number, number] =
+        options.shape === "sphere"
+            ? (finitePositive(options.projectionRadius, "local environment projectionRadius"),
+              [options.projectionRadius * 2, options.projectionRadius * 2, options.projectionRadius * 2])
+            : (finiteVec3(options.projectionSize, "local environment projectionSize", true), [...options.projectionSize]);
     _setPbrLocalEnvironment(material, {
         kind: "single",
         environment,
+        shape: options.shape ?? "box",
         projectionPosition: [...options.projectionPosition],
-        projectionSize: [...options.projectionSize],
+        projectionSize,
     });
 }
 
@@ -93,16 +99,30 @@ function finiteVec3(value: readonly number[], name: string, positive = false): v
     }
 }
 
+function finitePositive(value: number, name: string): void {
+    if (!Number.isFinite(value) || value <= 0) {
+        throw new Error(`[babylon-lite] ${name} must be finite and positive`);
+    }
+}
+
 function validateProbe(probe: PbrLocalEnvironmentProbe, index: number): void {
     finiteVec3(probe.capturePosition, `local probe ${index} capturePosition`);
     finiteVec3(probe.projectionPosition, `local probe ${index} projectionPosition`);
-    finiteVec3(probe.projectionSize, `local probe ${index} projectionSize`, true);
     finiteVec3(probe.influencePosition, `local probe ${index} influencePosition`);
-    finiteVec3(probe.influenceInnerSize, `local probe ${index} influenceInnerSize`);
-    finiteVec3(probe.influenceOuterSize, `local probe ${index} influenceOuterSize`, true);
-    for (let axis = 0; axis < 3; axis++) {
-        if (probe.influenceInnerSize[axis]! < 0 || probe.influenceInnerSize[axis]! > probe.influenceOuterSize[axis]!) {
-            throw new Error(`[babylon-lite] local probe ${index} influenceInnerSize must be non-negative and no larger than influenceOuterSize`);
+    if (probe.shape === "sphere") {
+        finitePositive(probe.projectionRadius, `local probe ${index} projectionRadius`);
+        finitePositive(probe.influenceOuterRadius, `local probe ${index} influenceOuterRadius`);
+        if (!Number.isFinite(probe.influenceInnerRadius) || probe.influenceInnerRadius < 0 || probe.influenceInnerRadius > probe.influenceOuterRadius) {
+            throw new Error(`[babylon-lite] local probe ${index} influenceInnerRadius must be finite, non-negative, and no larger than influenceOuterRadius`);
+        }
+    } else {
+        finiteVec3(probe.projectionSize, `local probe ${index} projectionSize`, true);
+        finiteVec3(probe.influenceInnerSize, `local probe ${index} influenceInnerSize`);
+        finiteVec3(probe.influenceOuterSize, `local probe ${index} influenceOuterSize`, true);
+        for (let axis = 0; axis < 3; axis++) {
+            if (probe.influenceInnerSize[axis]! < 0 || probe.influenceInnerSize[axis]! > probe.influenceOuterSize[axis]!) {
+                throw new Error(`[babylon-lite] local probe ${index} influenceInnerSize must be non-negative and no larger than influenceOuterSize`);
+            }
         }
     }
     if (probe.angleRadians !== undefined && !Number.isFinite(probe.angleRadians)) {
@@ -129,9 +149,11 @@ function packDebugColor(color: readonly [number, number, number] | undefined): n
 
 function writeProbe(data: Float32Array, u32: Uint32Array, probe: PbrLocalEnvironmentProbe, index: number, sourceMipOffset: number): void {
     const base = _PBR_LOCAL_ENVIRONMENT_HEADER_U32 + index * _PBR_LOCAL_ENVIRONMENT_PROBE_FLOATS;
-    const projectionHalf = probe.projectionSize.map((value) => value * 0.5);
-    const influenceInnerHalf = probe.influenceInnerSize.map((value) => value * 0.5);
-    const influenceOuterHalf = probe.influenceOuterSize.map((value) => value * 0.5);
+    const projectionHalf = probe.shape === "sphere" ? [probe.projectionRadius, probe.projectionRadius, probe.projectionRadius] : probe.projectionSize.map((value) => value * 0.5);
+    const influenceInnerHalf =
+        probe.shape === "sphere" ? [probe.influenceInnerRadius, probe.influenceInnerRadius, probe.influenceInnerRadius] : probe.influenceInnerSize.map((value) => value * 0.5);
+    const influenceOuterHalf =
+        probe.shape === "sphere" ? [probe.influenceOuterRadius, probe.influenceOuterRadius, probe.influenceOuterRadius] : probe.influenceOuterSize.map((value) => value * 0.5);
     const angle = probe.angleRadians ?? 0;
     const lodScale = probe.environment._lodGenerationScale ?? 0.8;
     const lodBias = sourceMipOffset * (lodScale - 1);
@@ -147,7 +169,7 @@ function writeProbe(data: Float32Array, u32: Uint32Array, probe: PbrLocalEnviron
     data.set(influenceInnerHalf, base + 16);
     data[base + 19] = Math.sin(angle);
     data.set(influenceOuterHalf, base + 20);
-    u32[base + 23] = packDebugColor(probe.debugColor);
+    u32[base + 23] = packDebugColor(probe.debugColor) | (probe.shape === "sphere" ? _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG : 0);
 }
 
 const GRID_HEADER_U32 = 8;
@@ -175,6 +197,9 @@ function validateGrid(options: PbrLocalEnvironmentProbeGridOptions): void {
 }
 
 function probeOuterWorldExtent(probe: PbrLocalEnvironmentProbe): [number, number, number] {
+    if (probe.shape === "sphere") {
+        return [probe.influenceOuterRadius, probe.influenceOuterRadius, probe.influenceOuterRadius];
+    }
     const halfX = probe.influenceOuterSize[0] * 0.5;
     const halfY = probe.influenceOuterSize[1] * 0.5;
     const halfZ = probe.influenceOuterSize[2] * 0.5;
@@ -188,6 +213,10 @@ function intersectsProbeOuterBox(probe: PbrLocalEnvironmentProbe, cellCentre: re
     const dx = cellCentre[0]! - probe.influencePosition[0];
     const dy = cellCentre[1]! - probe.influencePosition[1];
     const dz = cellCentre[2]! - probe.influencePosition[2];
+    if (probe.shape === "sphere") {
+        const distanceToCellSquared = Math.max(Math.abs(dx) - cellHalfSize, 0) ** 2 + Math.max(Math.abs(dy) - cellHalfSize, 0) ** 2 + Math.max(Math.abs(dz) - cellHalfSize, 0) ** 2;
+        return distanceToCellSquared <= probe.influenceOuterRadius ** 2 + GRID_EPSILON;
+    }
     const probeHalfX = probe.influenceOuterSize[0] * 0.5;
     const probeHalfY = probe.influenceOuterSize[1] * 0.5;
     const probeHalfZ = probe.influenceOuterSize[2] * 0.5;
@@ -217,6 +246,9 @@ function probeNdfAtPoint(probe: PbrLocalEnvironmentProbe, point: readonly number
     const dx = point[0]! - probe.influencePosition[0];
     const dy = point[1]! - probe.influencePosition[1];
     const dz = point[2]! - probe.influencePosition[2];
+    if (probe.shape === "sphere") {
+        return (Math.hypot(dx, dy, dz) - probe.influenceInnerRadius) / Math.max(probe.influenceOuterRadius - probe.influenceInnerRadius, 0.00001);
+    }
     const angle = probe.angleRadians ?? 0;
     const cosine = Math.cos(angle);
     const sine = Math.sin(angle);

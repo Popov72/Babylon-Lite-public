@@ -1074,6 +1074,100 @@ check(
     })
 );
 
+// The influence pair may legally sit off the projection box - they answer
+// different questions - but only the outer box has a centre to type into, the
+// inner one riding it. So putting them back is one gesture rather than three
+// numbers, offered beside the heading it is about.
+const probeRecentre = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const $ = (id) => document.getElementById(id);
+  const wait = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+  const id = "ENV_DRIFT";
+  ed.setEnvironmentProbe(id, {
+    boxPosition: [10, 0, 0], boxSize: [4, 4, 4], capturePosition: [10, 0, 0],
+    influenceBoxPosition: [10.7, 0, 0], influenceBoxSize: [8, 8, 8],
+    influenceInnerBoxSize: [2, 2, 2],
+  });
+  $("btn-probes").click();
+  // The list is re-rendered asynchronously, so picking before it lands would
+  // select nothing and leave the pane on whatever it had open.
+  for (let i = 0; i < 400 && !$("probe-list").querySelector(`option[value="${id}"]`); i++) await wait(25);
+  $("probe-list").value = id;
+  $("probe-list").dispatchEvent(new Event("change"));
+  await wait(200);
+  const button = $("btn-probe-influence-centre");
+  const offered = { label: button.textContent.trim(), disabled: button.disabled, title: button.title };
+  button.click();
+  await wait(200);
+  const centred = ed.environmentProbeOf(id);
+  const inert = button.disabled;
+  const status = $("status-text").textContent;
+  await ed.undo();
+  await wait(200);
+  const undone = ed.environmentProbeOf(id);
+  const offeredAgain = !$("btn-probe-influence-centre").disabled;
+  $("btn-probe-close").click();
+  ed.removeEnvironmentProbe(id);
+  return { offered, centred, inert, status, undone, offeredAgain };
+});
+check("Centre on box moves the influence pair onto the probe box, in one undo step",
+  probeRecentre.offered?.label === "Centre on box" && probeRecentre.offered.disabled === false
+    && /0\.70 m/.test(probeRecentre.offered.title)
+    && probeRecentre.centred?.influenceBoxPosition?.join() === "10,0,0"
+    && probeRecentre.centred?.influenceBoxSize?.join() === "8,8,8"
+    && probeRecentre.centred?.influenceInnerBoxSize?.join() === "2,2,2"
+    && probeRecentre.centred?.boxPosition?.join() === "10,0,0"
+    && /0\.70 m/.test(probeRecentre.status)
+    && probeRecentre.undone?.influenceBoxPosition?.join() === "10.7,0,0",
+  JSON.stringify({ offered: probeRecentre.offered, status: probeRecentre.status,
+    centred: probeRecentre.centred?.influenceBoxPosition,
+    undone: probeRecentre.undone?.influenceBoxPosition }));
+check("and offers itself only while there is something to put back",
+  probeRecentre.inert === true && probeRecentre.offeredAgain === true,
+  `after=${probeRecentre.inert}, after undo=${probeRecentre.offeredAgain}`);
+
+const sphereProbe = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const mf = await import("/js/manifest.js");
+  const runtime = await import("/js/runtime.js");
+  const id = "ENV_SPHERE";
+  ed.setEnvironmentProbe(id, {
+    shape: "sphere",
+    spherePosition: [2, 3, 4],
+    sphereRadius: 5,
+    capturePosition: [2, 3, 4],
+    influenceSpherePosition: [2.5, 3, 4],
+    influenceSphereRadius: 7,
+    influenceInnerSphereRadius: 3,
+  });
+  await runtime.showEnvironmentProbes(id);
+  const root = ed.entryOf(id)?.node;
+  const authored = ed.environmentProbeOf(id);
+  const manifest = mf.buildManifest().environmentProbes.find((probe) => probe.id === id);
+  const snapshot = JSON.parse(JSON.stringify(ed.serialize()));
+  await ed.deserialize(snapshot);
+  const survived = ed.environmentProbeOf(id);
+  ed.removeEnvironmentProbe(id);
+  runtime.hideEnvironmentProbes();
+  return {
+    authored,
+    manifest,
+    survived,
+    gizmo: root ? { position: root.position.asArray(), scaling: root.scaling.asArray() } : null,
+  };
+});
+check("spherical probes author, draw, export, and survive an editor round-trip",
+  sphereProbe.authored?.shape === "sphere"
+    && sphereProbe.authored?.sphereRadius === 5
+    && sphereProbe.authored?.influenceSphereRadius === 7
+    && sphereProbe.gizmo?.position?.join() === "2,3,4"
+    && sphereProbe.gizmo?.scaling?.join() === "10,10,10"
+    && sphereProbe.manifest?.shape === "sphere"
+    && sphereProbe.manifest?.spherePosition?.join() === "-2,3,4"
+    && sphereProbe.manifest?.sphereRadius === 5
+    && JSON.stringify(sphereProbe.authored) === JSON.stringify(sphereProbe.survived),
+  JSON.stringify(sphereProbe));
+
 // ---- 1d-quinquies-ter-bis. one cubemap size for the whole ship -------------
 // The runtime holds the captured environments in a cube texture ARRAY, and
 // every slice of an array shares one dimension - so the face size cannot be a
@@ -1259,7 +1353,7 @@ const probeSections = await page.evaluate(async () => {
 });
 check("the probe pane is split into Probe box, Influence box and Inner box",
     probeSections.order.join("|") ===
-        ["ID", "Always visible", "Env faces", "H3:Probe box", "Centre", "Size", "Camera", "H3:Influence box", "Centre", "Size", "H3:Inner box", "Size", "probe-resolved"].join("|"),
+        ["ID", "Shape", "Always visible", "Env faces", "H3:Probe box", "Centre", "Size", "Camera", "H3:Influence box", "Centre", "Size", "H3:Inner box", "Size", "probe-resolved"].join("|"),
     probeSections.order.join(" · ")
 );
 check("each probe section owns an eye that shows and hides only its own volume",

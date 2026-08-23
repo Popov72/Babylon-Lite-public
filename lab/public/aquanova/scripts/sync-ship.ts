@@ -21,33 +21,60 @@ const DEFAULT_OUT = path.resolve(HERE, "..");
 const REPO_ROOT = path.resolve(HERE, "../../../..");
 const execFileAsync = promisify(execFile);
 
-interface SourceLocalEnvironment {
+interface SourceLocalEnvironmentBase {
     env: string;
     position: [number, number, number];
-    boxPosition: [number, number, number];
-    boxSize: [number, number, number];
-    angle?: number;
     resolution: number;
     hash: string;
 }
+
+type SourceLocalEnvironment = SourceLocalEnvironmentBase &
+    (
+        | {
+              shape?: "box";
+              boxPosition: [number, number, number];
+              boxSize: [number, number, number];
+              angle?: number;
+          }
+        | {
+              shape: "sphere";
+              spherePosition: [number, number, number];
+              sphereRadius: number;
+          }
+    );
 
 interface SourceLocalEnvironmentIndex {
     probes?: Record<string, SourceLocalEnvironment>;
     chunks?: Record<string, SourceLocalEnvironment>;
 }
 
-interface RuntimeLocalEnvironment {
+interface RuntimeLocalEnvironmentBase {
     url: string;
     position: [number, number, number];
-    boxPosition: [number, number, number];
-    boxSize: [number, number, number];
-    influenceBoxPosition: [number, number, number];
-    influenceBoxSize: [number, number, number];
-    influenceInnerBoxSize: [number, number, number];
-    angle: number;
     resolution: number;
     bytes: number;
 }
+
+type RuntimeLocalEnvironment = RuntimeLocalEnvironmentBase &
+    (
+        | {
+              shape?: "box";
+              boxPosition: [number, number, number];
+              boxSize: [number, number, number];
+              influenceBoxPosition: [number, number, number];
+              influenceBoxSize: [number, number, number];
+              influenceInnerBoxSize: [number, number, number];
+              angle: number;
+          }
+        | {
+              shape: "sphere";
+              spherePosition: [number, number, number];
+              sphereRadius: number;
+              influenceSpherePosition: [number, number, number];
+              influenceSphereRadius: number;
+              influenceInnerSphereRadius: number;
+          }
+    );
 
 interface RuntimeLocalEnvironmentIndex {
     probes: Record<string, RuntimeLocalEnvironment>;
@@ -58,13 +85,19 @@ const DEFAULT_BLEND_DISTANCE = 1.5;
 interface ShipManifest {
     environmentProbes?: Array<{
         id?: string;
+        shape?: "box" | "sphere";
         boxPosition?: [number, number, number];
         boxSize?: [number, number, number];
+        spherePosition?: [number, number, number];
+        sphereRadius?: number;
         capturePosition?: [number, number, number];
         angle?: number;
         influenceBoxPosition?: [number, number, number];
         influenceBoxSize?: [number, number, number];
         influenceInnerBoxSize?: [number, number, number];
+        influenceSpherePosition?: [number, number, number];
+        influenceSphereRadius?: number;
+        influenceInnerSphereRadius?: number;
     }>;
     chunks?: Array<{
         id?: string;
@@ -80,15 +113,30 @@ interface ShipManifest {
  * generated index only records what was captured, in editor space, so
  * everything the author can type belongs here instead.
  */
-interface AuthoredProbe {
-    boxPosition: [number, number, number];
-    boxSize: [number, number, number];
+interface AuthoredProbeBase {
     capturePosition?: [number, number, number];
-    angle?: number;
-    influenceBoxPosition?: [number, number, number];
-    influenceBoxSize?: [number, number, number];
-    influenceInnerBoxSize?: [number, number, number];
 }
+
+type AuthoredProbe = AuthoredProbeBase &
+    (
+        | {
+              shape: "box";
+              boxPosition: [number, number, number];
+              boxSize: [number, number, number];
+              angle?: number;
+              influenceBoxPosition?: [number, number, number];
+              influenceBoxSize?: [number, number, number];
+              influenceInnerBoxSize?: [number, number, number];
+          }
+        | {
+              shape: "sphere";
+              spherePosition: [number, number, number];
+              sphereRadius: number;
+              influenceSpherePosition?: [number, number, number];
+              influenceSphereRadius?: number;
+              influenceInnerSphereRadius?: number;
+          }
+    );
 
 interface Options {
     src: string;
@@ -190,6 +238,13 @@ function defaultInfluenceSizes(boxSize: readonly number[]): {
     };
 }
 
+function defaultInfluenceRadii(radius: number): { inner: number; outer: number } {
+    return {
+        inner: Math.max(0, radius - DEFAULT_BLEND_DISTANCE),
+        outer: radius + DEFAULT_BLEND_DISTANCE,
+    };
+}
+
 function authoredVector(value: readonly number[] | undefined, bound?: "positive" | "nonNegative"): [number, number, number] | undefined {
     if (!value || value.length !== 3 || !value.every(Number.isFinite)) {
         return undefined;
@@ -203,15 +258,38 @@ function authoredVector(value: readonly number[] | undefined, bound?: "positive"
     return [value[0]!, value[1]!, value[2]!];
 }
 
-function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, AuthoredProbe> {
-    const boxes = new Map<string, AuthoredProbe>();
+function authoredLocalEnvironmentProbes(manifest: ShipManifest): Map<string, AuthoredProbe> {
+    const probes = new Map<string, AuthoredProbe>();
     const explicit = manifest.environmentProbes;
     if (explicit) {
         for (const probe of explicit) {
+            if (!probe.id) {
+                continue;
+            }
+            if (probe.shape === "sphere") {
+                const position = authoredVector(probe.spherePosition);
+                const radius = Number(probe.sphereRadius);
+                const influencePosition = authoredVector(probe.influenceSpherePosition);
+                const influenceRadius = Number(probe.influenceSphereRadius);
+                const innerRadius = Number(probe.influenceInnerSphereRadius);
+                if (!position || !Number.isFinite(radius) || radius <= 0) {
+                    continue;
+                }
+                probes.set(probe.id, {
+                    shape: "sphere",
+                    spherePosition: position,
+                    sphereRadius: radius,
+                    capturePosition: authoredVector(probe.capturePosition),
+                    influenceSpherePosition: influencePosition,
+                    influenceSphereRadius: Number.isFinite(influenceRadius) && influenceRadius > 0 ? influenceRadius : undefined,
+                    influenceInnerSphereRadius:
+                        Number.isFinite(innerRadius) && innerRadius >= 0 && (!Number.isFinite(influenceRadius) || innerRadius <= influenceRadius) ? innerRadius : undefined,
+                });
+                continue;
+            }
             const position = probe.boxPosition;
             const size = probe.boxSize;
             if (
-                !probe.id ||
                 !position ||
                 !size ||
                 position.length !== 3 ||
@@ -224,7 +302,8 @@ function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, Auth
             const influenceBoxSize = authoredVector(probe.influenceBoxSize, "positive");
             const influenceInnerBoxSize = authoredVector(probe.influenceInnerBoxSize, "nonNegative");
             const angle = Number(probe.angle ?? 0);
-            boxes.set(probe.id, {
+            probes.set(probe.id, {
+                shape: "box",
                 boxPosition: [...position],
                 boxSize: [...size],
                 capturePosition: authoredVector(probe.capturePosition),
@@ -237,7 +316,7 @@ function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, Auth
                 influenceInnerBoxSize: influenceBoxSize && influenceInnerBoxSize?.every((n, axis) => n <= influenceBoxSize[axis]!) ? influenceInnerBoxSize : undefined,
             });
         }
-        return boxes;
+        return probes;
     }
     for (const chunk of manifest.chunks || []) {
         const position = chunk.environmentProbe?.boxPosition;
@@ -245,12 +324,13 @@ function authoredLocalEnvironmentBoxes(manifest: ShipManifest): Map<string, Auth
         if (!chunk.id || !position || !size || position.length !== 3 || size.length !== 3 || ![...position, ...size].every(Number.isFinite) || !size.every((value) => value > 0)) {
             continue;
         }
-        boxes.set(chunk.id, {
+        probes.set(chunk.id, {
+            shape: "box",
             boxPosition: [...position],
             boxSize: [...size],
         });
     }
-    return boxes;
+    return probes;
 }
 
 async function assertLocalEnvironmentsReady(sourceDir: string, index: SourceLocalEnvironmentIndex): Promise<void> {
@@ -415,7 +495,7 @@ async function main(): Promise<void> {
     const generatedDir = path.join(opts.src, "environments");
     const localSource = await readLocalEnvironmentIndex(generatedDir);
     const manifest = JSON.parse(await readFile(path.join(opts.src, "ship_manifest.json"), "utf8")) as ShipManifest;
-    const authoredBoxes = authoredLocalEnvironmentBoxes(manifest);
+    const authoredProbes = authoredLocalEnvironmentProbes(manifest);
     if (localSource) {
         await assertLocalEnvironmentsReady(generatedDir, localSource);
     }
@@ -435,31 +515,69 @@ async function main(): Promise<void> {
         const published = await readPublishedLocalEnvironmentIndex(opts.out);
         const localRuntime: RuntimeLocalEnvironmentIndex = { probes: {} };
         for (const [probeId, probe] of Object.entries(localSource.probes ?? localSource.chunks ?? {})) {
-            const authored = authoredBoxes.get(probeId);
+            const authored = authoredProbes.get(probeId);
             const source = path.join(generatedDir, probe.env);
             const destination = path.join(outEnvironments, `${probeId}.env`);
             const copied = await copyIfChanged(source, destination);
             const bytes = (await stat(destination)).size;
             console.log(`${copied ? "copied " : "current"}  environments/${probeId}.env  ${mb(bytes)}`);
-            const boxPosition = authored?.boxPosition ?? probe.boxPosition;
-            const boxSize = authored?.boxSize ?? probe.boxSize;
             const previous = published?.probes[probeId];
-            const defaults = defaultInfluenceSizes(boxSize);
-            localRuntime.probes[probeId] = {
+            const common = {
                 url: `environments/${probeId}.env`,
                 // The generated index is in editor space, where X runs the
                 // other way; the runtime mirrors what it reads here, so the
                 // manifest - already glTF space - is the only safe source.
                 position: authored?.capturePosition ?? probe.position,
-                boxPosition,
-                boxSize,
-                influenceBoxPosition: authored?.influenceBoxPosition ?? previous?.influenceBoxPosition ?? boxPosition,
-                influenceBoxSize: authored?.influenceBoxSize ?? previous?.influenceBoxSize ?? defaults.outer,
-                influenceInnerBoxSize: authored?.influenceInnerBoxSize ?? previous?.influenceInnerBoxSize ?? defaults.inner,
-                angle: authored?.angle ?? previous?.angle ?? (Number.isFinite(probe.angle) ? -probe.angle! : 0),
                 resolution: probe.resolution,
                 bytes,
             };
+            const shape = authored?.shape ?? probe.shape ?? "box";
+            if (shape === "sphere") {
+                const spherePosition =
+                    authored?.shape === "sphere" ? authored.spherePosition : probe.shape === "sphere" ? probe.spherePosition : undefined;
+                const sphereRadius =
+                    authored?.shape === "sphere" ? authored.sphereRadius : probe.shape === "sphere" ? probe.sphereRadius : undefined;
+                if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius! <= 0) {
+                    throw new Error(`environment probe ${probeId} has invalid spherical projection data`);
+                }
+                const defaults = defaultInfluenceRadii(sphereRadius!);
+                const previousSphere = previous?.shape === "sphere" ? previous : undefined;
+                const outerRadius =
+                    (authored?.shape === "sphere" ? authored.influenceSphereRadius : undefined) ?? previousSphere?.influenceSphereRadius ?? defaults.outer;
+                const innerRadius =
+                    (authored?.shape === "sphere" ? authored.influenceInnerSphereRadius : undefined) ?? previousSphere?.influenceInnerSphereRadius ?? defaults.inner;
+                localRuntime.probes[probeId] = {
+                    ...common,
+                    shape: "sphere",
+                    spherePosition,
+                    sphereRadius: sphereRadius!,
+                    influenceSpherePosition:
+                        (authored?.shape === "sphere" ? authored.influenceSpherePosition : undefined) ?? previousSphere?.influenceSpherePosition ?? spherePosition,
+                    influenceSphereRadius: outerRadius,
+                    influenceInnerSphereRadius: Math.min(innerRadius, outerRadius),
+                };
+            } else {
+                const boxPosition = authored?.shape === "box" ? authored.boxPosition : probe.shape !== "sphere" ? probe.boxPosition : undefined;
+                const boxSize = authored?.shape === "box" ? authored.boxSize : probe.shape !== "sphere" ? probe.boxSize : undefined;
+                if (!boxPosition || !boxSize) {
+                    throw new Error(`environment probe ${probeId} has invalid box projection data`);
+                }
+                const defaults = defaultInfluenceSizes(boxSize);
+                const previousBox = previous?.shape !== "sphere" ? previous : undefined;
+                localRuntime.probes[probeId] = {
+                    ...common,
+                    boxPosition,
+                    boxSize,
+                    influenceBoxPosition: (authored?.shape === "box" ? authored.influenceBoxPosition : undefined) ?? previousBox?.influenceBoxPosition ?? boxPosition,
+                    influenceBoxSize: (authored?.shape === "box" ? authored.influenceBoxSize : undefined) ?? previousBox?.influenceBoxSize ?? defaults.outer,
+                    influenceInnerBoxSize:
+                        (authored?.shape === "box" ? authored.influenceInnerBoxSize : undefined) ?? previousBox?.influenceInnerBoxSize ?? defaults.inner,
+                    angle:
+                        (authored?.shape === "box" ? authored.angle : undefined) ??
+                        previousBox?.angle ??
+                        (probe.shape !== "sphere" && Number.isFinite(probe.angle) ? -probe.angle! : 0),
+                };
+            }
         }
         await writeFile(path.join(opts.out, "local-environments.json"), `${JSON.stringify(localRuntime, null, 1)}\n`);
     }

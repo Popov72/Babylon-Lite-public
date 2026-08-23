@@ -493,14 +493,14 @@
       <h2 id="probe-window-title">Environment probes</h2>
       <button id="btn-probe-close" type="button" title="Close probes window" aria-label="Close probes window">×</button>
     </div>
-    <p class="muted">Each box owns one local cubemap, independently from chunks.
-      Cyan marks the box centre; orange marks the point it is captured from.
-      Only geometry intersecting the box is rendered into the cubemap, and
+    <p class="muted">Each box or sphere owns one local cubemap, independently from chunks.
+      Cyan marks the projection-volume centre; orange marks the point it is captured from.
+      Only geometry intersecting the volume is rendered into the cubemap, and
       elements carrying a probeExcluded, dynamic, liquefiable or weapon
       behaviour are left out of it. Every probe is captured at the cubemap size
       set in Settings, which is one size for the whole ship. The influence
-      boxes are a separate question: violet marks where this cubemap fades out,
-      and the red box inside it where it is used at full strength. All three
+      volumes are a separate question: violet marks where this cubemap fades out,
+      and the red volume inside it where it is used at full strength. All three
       are pickable: drag to move, Ctrl+wheel to resize. The red box has no
       centre of its own — it is always concentric with the violet one — so it
       only resizes.</p>
@@ -508,9 +508,10 @@
       <select id="probe-list" size="12"></select>
       <div class="editor">
         <div class="row"><label>ID</label><input type="text" id="probe-id" maxlength="128"></div>
+        <div class="row"><label>Shape</label><select id="probe-shape"><option value="box">Box</option><option value="sphere">Sphere</option></select></div>
         <div class="row"><label title="Keep this probe's boxes on screen while another one is selected, drawn in dimmer colours.">Always visible</label><input type="checkbox" id="probe-show"></div>
         <div class="row"><label title="Draw this probe's captured cubemap on its box instead of a wireframe.">Env faces</label><input type="checkbox" id="probe-env"></div>
-        <h3 id="probe-head-box" class="probe-head"><span>Probe box</span>
+        <h3 id="probe-head-box" class="probe-head"><span id="probe-head-box-label">Probe box</span>
           <span class="sel" hidden>selected</span>
           <button type="button" id="btn-probe-eye-box" class="eye" aria-pressed="true"
                   title="Show or hide this probe's capture box, its centre and its camera in the viewport. No shortcut"
@@ -522,7 +523,7 @@
           <input type="number" id="probe-box-x" step="0.01">
           <input type="number" id="probe-box-y" step="0.01">
           <input type="number" id="probe-box-z" step="0.01"></div>
-        <div class="row"><label title="Full size of the projection box. Only geometry intersecting it is rendered into the cubemap.">Size</label>
+        <div class="row"><label id="probe-size-label" title="Full size of the projection box. Only geometry intersecting it is rendered into the cubemap.">Size</label>
           <input type="number" id="probe-size-x" min="0.01" step="0.01">
           <input type="number" id="probe-size-y" min="0.01" step="0.01">
           <input type="number" id="probe-size-z" min="0.01" step="0.01"></div>
@@ -530,23 +531,25 @@
           <input type="number" id="probe-camera-x" step="0.01">
           <input type="number" id="probe-camera-y" step="0.01">
           <input type="number" id="probe-camera-z" step="0.01"></div>
-        <h3 id="probe-head-influence" class="probe-head"><span>Influence box</span>
+        <h3 id="probe-head-influence" class="probe-head"><span id="probe-head-influence-label">Influence box</span>
           <span class="sel" hidden>selected</span>
+          <button type="button" id="btn-probe-influence-centre" class="probe-fix"
+                  title="Move the influence centre onto the probe box centre.">Centre on box</button>
           <button type="button" id="btn-probe-eye-influence" class="eye" aria-pressed="true"
                   title="Show or hide this probe's outer influence box in the viewport. No shortcut"
                   aria-label="Show or hide the influence box">
             <svg class="eye-on" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>
             <svg class="eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/><path d="M2.6 13.4 13.4 2.6"/></svg>
           </button></h3>
-        <div class="row"><label title="Centre of the volume this probe is blended over. Shared by both influence boxes, and independent of the projection box above.">Centre</label>
+        <div class="row"><label title="Centre of the volume this probe is blended over. Shared by both influence boxes, and independent of the projection box above — Centre on box puts it back on that box.">Centre</label>
           <input type="number" id="probe-influence-x" step="0.01">
           <input type="number" id="probe-influence-y" step="0.01">
           <input type="number" id="probe-influence-z" step="0.01"></div>
-        <div class="row"><label title="Full size of the outer influence box: this probe has faded to nothing at its faces.">Size</label>
+        <div class="row"><label id="probe-influence-size-label" title="Full size of the outer influence box: this probe has faded to nothing at its faces.">Size</label>
           <input type="number" id="probe-influence-size-x" min="0.01" step="0.01">
           <input type="number" id="probe-influence-size-y" min="0.01" step="0.01">
           <input type="number" id="probe-influence-size-z" min="0.01" step="0.01"></div>
-        <h3 id="probe-head-inner" class="probe-head"><span>Inner box</span>
+        <h3 id="probe-head-inner" class="probe-head"><span id="probe-head-inner-label">Inner box</span>
           <span class="sel" hidden>selected</span>
           <button type="button" id="btn-probe-eye-inner" class="eye" aria-pressed="true"
                   title="Show or hide this probe's inner full-strength box in the viewport. No shortcut"
@@ -554,7 +557,7 @@
             <svg class="eye-on" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/></svg>
             <svg class="eye-off" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8S4 3.9 8 3.9 14.5 8 14.5 8 12 12.1 8 12.1 1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="1.9"/><path d="M2.6 13.4 13.4 2.6"/></svg>
           </button></h3>
-        <div class="row"><label title="Full size of the inner box, inside which this probe is at full strength. Zero on an axis means no full-strength core. Never larger than the influence size. It has no centre of its own — it is always concentric with the influence box.">Size</label>
+        <div class="row"><label id="probe-inner-size-label" title="Full size of the inner box, inside which this probe is at full strength. Zero on an axis means no full-strength core. Never larger than the influence size. It has no centre of its own — it is always concentric with the influence box.">Size</label>
           <input type="number" id="probe-inner-size-x" min="0" step="0.01">
           <input type="number" id="probe-inner-size-y" min="0" step="0.01">
           <input type="number" id="probe-inner-size-z" min="0" step="0.01"></div>

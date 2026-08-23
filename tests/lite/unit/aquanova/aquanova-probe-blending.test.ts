@@ -2,13 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import {
     boxProbeNdf,
+    intersectsProbeProjection,
     intersectsProbeProjectionBox,
     selectContainingBoxProbe,
+    selectContainingProbe,
     selectPoiProbeBlend,
     selectPoiProbeCandidates,
+    selectStaticProbe,
     selectStaticBoxProbe,
+    sphereProbeNdf,
     type BoxProbeInfluence,
     type BoxProbeRegion,
+    type SphereProbeInfluence,
+    type SphereProbeRegion,
 } from "../../../../lab/lite/src/demos/aquanova/probe-blending";
 
 const probes: BoxProbeInfluence[] = [
@@ -64,6 +70,44 @@ describe("Aquanova POI probe blending", () => {
         expect(boxProbeNdf(probes[0]!, [2, 0, 0])).toBe(0);
         expect(boxProbeNdf(probes[0]!, [3, 0, 0])).toBe(0.5);
         expect(boxProbeNdf(probes[0]!, [4, 0, 0])).toBe(1);
+    });
+
+    it("computes spherical influence and blends it with box probes", () => {
+        const sphere: SphereProbeInfluence = {
+            id: "sphere",
+            shape: "sphere",
+            centre: [6, 0, 0],
+            innerRadius: 2,
+            outerRadius: 4,
+        };
+
+        expect(sphereProbeNdf(sphere, [6, 0, 0])).toBe(-1);
+        expect(sphereProbeNdf(sphere, [8, 0, 0])).toBe(0);
+        expect(sphereProbeNdf(sphere, [9, 0, 0])).toBe(0.5);
+        expect(sphereProbeNdf(sphere, [10, 0, 0])).toBe(1);
+        const blend = selectPoiProbeBlend([probes[0]!, sphere], [3, 0, 0]);
+        expect(blend.map((entry) => entry.id)).toEqual(["A", "sphere"]);
+        expect(blend[0]!.weight).toBeCloseTo(0.5);
+        expect(blend[1]!.weight).toBeCloseTo(0.5);
+    });
+
+    it("selects and intersects spherical projection volumes", () => {
+        const sphere: SphereProbeRegion = {
+            id: "sphere",
+            shape: "sphere",
+            projectionCentre: [3, 0, 0],
+            projectionRadius: 2,
+        };
+        const box: BoxProbeRegion = {
+            id: "box",
+            projectionCentre: [0, 0, 0],
+            projectionHalfSize: [1, 1, 1],
+        };
+
+        expect(selectContainingProbe([box, sphere], [3.5, 0, 0])?.id).toBe("sphere");
+        expect(intersectsProbeProjection(sphere, { centre: [5.25, 0, 0], halfSize: [0.5, 0.5, 0.5] })).toBe(true);
+        expect(intersectsProbeProjection(sphere, { centre: [6, 0, 0], halfSize: [0.25, 0.25, 0.25] })).toBe(false);
+        expect(selectStaticProbe([box, sphere], { centre: [5.25, 0, 0], halfSize: [0.5, 0.5, 0.5] })?.id).toBe("sphere");
     });
 
     it("rotates influence and projection boxes by their authored yaw", () => {

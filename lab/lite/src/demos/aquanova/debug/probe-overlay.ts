@@ -1,6 +1,6 @@
 // Debug visualization for the fragment-weighted cubemap blend.
 //
-// Each probe shows its full-influence inner box, zero-influence outer box, and capture point.
+// Each probe shows its full-influence inner volume, zero-influence outer volume, and capture point.
 // Only probes in the camera's current voxel show capture spheres or appear in the panel.
 
 import { addToScene, createCylinder, createSphere, createStandardMaterial, setMeshVisible, type EngineContext, type Material, type Mesh, type SceneContext } from "babylon-lite";
@@ -108,6 +108,26 @@ function addBox(
     return EDGE_PAIRS.map(([a, b]) => addEdge(engine, scene, corners[a]!, corners[b]!, material, thickness));
 }
 
+function addSphereWire(engine: EngineContext, scene: SceneContext, centre: readonly [number, number, number], radius: number, material: Material, thickness: number): Mesh[] {
+    const meshes: Mesh[] = [];
+    const segments = 24;
+    for (let plane = 0; plane < 3; plane++) {
+        for (let segment = 0; segment < segments; segment++) {
+            const point = (angle: number): [number, number, number] => {
+                const a = Math.cos(angle) * radius;
+                const b = Math.sin(angle) * radius;
+                return plane === 0
+                    ? [centre[0], centre[1] + a, centre[2] + b]
+                    : plane === 1
+                      ? [centre[0] + a, centre[1], centre[2] + b]
+                      : [centre[0] + a, centre[1] + b, centre[2]];
+            };
+            meshes.push(addEdge(engine, scene, point((segment / segments) * Math.PI * 2), point(((segment + 1) / segments) * Math.PI * 2), material, thickness));
+        }
+    }
+    return meshes;
+}
+
 function setVisible(meshes: readonly Mesh[], visible: boolean): void {
     for (const mesh of meshes) setMeshVisible(mesh, visible);
 }
@@ -123,8 +143,13 @@ export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, b
 
     probes.forEach((probe) => {
         const color = probe.debugColor;
-        boxMeshes.push(...addBox(engine, scene, probe.centre, probe.outerHalfSize, createUnlitMaterial(dim(color, 0.35)), 0.025));
-        boxMeshes.push(...addBox(engine, scene, probe.centre, probe.innerHalfSize, createUnlitMaterial(color), 0.045));
+        if (probe.shape === "sphere") {
+            boxMeshes.push(...addSphereWire(engine, scene, probe.centre, probe.outerRadius, createUnlitMaterial(dim(color, 0.35)), 0.025));
+            boxMeshes.push(...addSphereWire(engine, scene, probe.centre, probe.innerRadius, createUnlitMaterial(color), 0.045));
+        } else {
+            boxMeshes.push(...addBox(engine, scene, probe.centre, probe.outerHalfSize, createUnlitMaterial(dim(color, 0.35)), 0.025));
+            boxMeshes.push(...addBox(engine, scene, probe.centre, probe.innerHalfSize, createUnlitMaterial(color), 0.045));
+        }
 
         const marker = createSphere(engine, { diameter: 0.3, segments: 8 });
         marker.position.set(probe.capturePosition[0], probe.capturePosition[1], probe.capturePosition[2]);
@@ -166,9 +191,10 @@ export function createProbeOverlay({ engine, scene, canvas, probes, blendInfo, b
             `Camera voxel probes: ${selectedProbes.length}\n\n` +
             (selectedProbes.length
                 ? selectedProbes
-                      .map(
-                          (probe) =>
-                              `${probe.id}\n  centre(${vec(probe.centre)})\n  inner(${vec(probe.innerHalfSize.map((value) => value * 2))})\n  outer(${vec(probe.outerHalfSize.map((value) => value * 2))})`
+                      .map((probe) =>
+                          probe.shape === "sphere"
+                              ? `${probe.id} [sphere]\n  centre(${vec(probe.centre)})\n  inner radius(${probe.innerRadius.toFixed(2)})\n  outer radius(${probe.outerRadius.toFixed(2)})`
+                              : `${probe.id} [box]\n  centre(${vec(probe.centre)})\n  inner(${vec(probe.innerHalfSize.map((value) => value * 2))})\n  outer(${vec(probe.outerHalfSize.map((value) => value * 2))})`
                       )
                       .join("\n\n")
                 : "No camera voxel probes while blending is disabled.");

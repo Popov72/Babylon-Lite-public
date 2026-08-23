@@ -23,14 +23,32 @@ export interface ShipChunk {
     aabb: Aabb;
 }
 
-export interface ShipEnvironmentProbe {
+interface ShipEnvironmentProbeBase {
     id: string;
-    boxPosition: Vec3;
-    boxSize: Vec3;
     capturePosition: Vec3;
-    /** Probe yaw in degrees. Optional until the editor exports oriented probes. */
-    angle?: number;
 }
+
+export type ShipEnvironmentProbe = ShipEnvironmentProbeBase &
+    (
+        | {
+              shape?: "box";
+              boxPosition: Vec3;
+              boxSize: Vec3;
+              /** Probe yaw in degrees. Optional until the editor exports oriented probes. */
+              angle?: number;
+              influenceBoxPosition?: Vec3;
+              influenceBoxSize?: Vec3;
+              influenceInnerBoxSize?: Vec3;
+          }
+        | {
+              shape: "sphere";
+              spherePosition: Vec3;
+              sphereRadius: number;
+              influenceSpherePosition?: Vec3;
+              influenceSphereRadius?: number;
+              influenceInnerSphereRadius?: number;
+          }
+    );
 
 /**
  * Resolve an XZ position to the most specific containing chunk.

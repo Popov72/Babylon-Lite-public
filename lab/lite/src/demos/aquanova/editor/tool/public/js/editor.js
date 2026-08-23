@@ -2697,6 +2697,14 @@ function defaultProbeInfluence(boxPosition, boxSize) {
   };
 }
 
+function defaultSphereProbeInfluence(spherePosition, sphereRadius) {
+  return {
+    influenceSpherePosition: [...spherePosition],
+    influenceSphereRadius: sphereRadius + PROBE_BLEND_MARGIN,
+    influenceInnerSphereRadius: Math.max(0, sphereRadius - PROBE_BLEND_MARGIN),
+  };
+}
+
 /**
  * Which of a probe's three volumes the viewport draws.
  *
@@ -2716,15 +2724,28 @@ function probeVisibleParts(asked, standing) {
 }
 
 function cloneEnvironmentProbe(probe) {
-  return probe ? {
+  if (!probe) return null;
+  const shape = probe.shape === "sphere" ? "sphere" : "box";
+  return {
     id: probe.id,
-    boxPosition: [...probe.boxPosition],
-    boxSize: [...probe.boxSize],
+    shape,
+    ...(shape === "sphere"
+      ? {
+          spherePosition: [...probe.spherePosition],
+          sphereRadius: probe.sphereRadius,
+          influenceSpherePosition: [...probe.influenceSpherePosition],
+          influenceSphereRadius: probe.influenceSphereRadius,
+          influenceInnerSphereRadius: probe.influenceInnerSphereRadius,
+        }
+      : {
+          boxPosition: [...probe.boxPosition],
+          boxSize: [...probe.boxSize],
+          angle: probe.angle,
+          influenceBoxPosition: [...probe.influenceBoxPosition],
+          influenceBoxSize: [...probe.influenceBoxSize],
+          influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
+        }),
     capturePosition: [...probe.capturePosition],
-              angle: probe.angle,
-    influenceBoxPosition: [...probe.influenceBoxPosition],
-    influenceBoxSize: [...probe.influenceBoxSize],
-    influenceInnerBoxSize: [...probe.influenceInnerBoxSize],
     // View state, not ship data - see setEnvironmentProbeView. Carried here all
     // the same, because serialize() writes probes through this function and an
     // undo rebuilds the whole map: leaving them out would make every Ctrl+Z put
@@ -2732,7 +2753,7 @@ function cloneEnvironmentProbe(probe) {
     alwaysVisible: !!probe.alwaysVisible,
     envFaces: !!probe.envFaces,
     visibleParts: probeVisibleParts(probe.visibleParts),
-  } : null;
+  };
 }
 
 /** One authored local-environment volume, in editor world space. */
@@ -2761,21 +2782,41 @@ export function nextEnvironmentProbeId() {
 export function setEnvironmentProbe(id, probe, previousId = id, { history = true } = {}) {
   const key = validEnvironmentProbeId(id);
   const previous = String(previousId || "").trim();
-  const boxPosition = validProbeVector(probe?.boxPosition);
-  const boxSize = validProbeVector(probe?.boxSize, true);
   const capturePosition = validProbeVector(probe?.capturePosition);
-  const angle =Number(probe?.angle ?? state.environmentProbes.get(previous)?.angle ?? 0);
-  if (!key || !boxPosition || !boxSize || !capturePosition
-    || !Number.isFinite(angle)) return false;
+  const standing = state.environmentProbes.get(previous) || state.environmentProbes.get(key);
+  const shape = probe?.shape === "sphere" ? "sphere" : "box";
+  if (!key || !capturePosition) return false;
   if (!environmentProbeIdAvailable(key, previous)) return false;
-  const influence = probeInfluence(probe, boxPosition, boxSize);
-  if (!influence) return false;
+  let volume;
+  if (shape === "sphere") {
+    const spherePosition = validProbeVector(probe?.spherePosition);
+    const sphereRadius = Number(probe?.sphereRadius);
+    if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius <= 0) return false;
+    const defaults = defaultSphereProbeInfluence(spherePosition, sphereRadius);
+    const influenceSpherePosition = validProbeVector(probe?.influenceSpherePosition)
+      || defaults.influenceSpherePosition;
+    const influenceSphereRadius = Number(probe?.influenceSphereRadius ?? defaults.influenceSphereRadius);
+    const influenceInnerSphereRadius = Number(probe?.influenceInnerSphereRadius ?? defaults.influenceInnerSphereRadius);
+    if (!Number.isFinite(influenceSphereRadius) || influenceSphereRadius <= 0
+      || !Number.isFinite(influenceInnerSphereRadius) || influenceInnerSphereRadius < 0
+      || influenceInnerSphereRadius > influenceSphereRadius) return false;
+    volume = {
+      shape, spherePosition, sphereRadius, capturePosition,
+      influenceSpherePosition, influenceSphereRadius, influenceInnerSphereRadius,
+    };
+  } else {
+    const boxPosition = validProbeVector(probe?.boxPosition);
+    const boxSize = validProbeVector(probe?.boxSize, true);
+    const angle = Number(probe?.angle ?? standing?.angle ?? 0);
+    if (!boxPosition || !boxSize || !Number.isFinite(angle)) return false;
+    const influence = probeInfluence(probe, boxPosition, boxSize);
+    if (!influence) return false;
+    volume = { shape, boxPosition, boxSize, capturePosition, angle, ...influence };
+  }
   // A caller editing the numbers says nothing about the view flags, and must
   // not silently put the probe's boxes away: they stay as the record has them.
-  const standing = state.environmentProbes.get(previous) || state.environmentProbes.get(key);
   const next = {
-    id: key, boxPosition, boxSize, capturePosition,
-        angle, ...influence,
+    id: key, ...volume,
     alwaysVisible: !!(probe?.alwaysVisible ?? standing?.alwaysVisible),
     envFaces: !!(probe?.envFaces ?? standing?.envFaces),
     visibleParts: probeVisibleParts(probe?.visibleParts, standing?.visibleParts),
@@ -2859,9 +2900,29 @@ function probeInfluence(probe, boxPosition, boxSize) {
  */
 export function syncEnvironmentProbeTransform(id, position, size) {
   const probe = state.environmentProbes.get(id);
-  const boxPosition = validProbeVector(position);
-  const boxSize = validProbeVector(size, true);
-  if (!probe || !boxPosition || !boxSize) return false;
+  const nextPosition = validProbeVector(position);
+  const nextSize = validProbeVector(size, true);
+  if (!probe || !nextPosition || !nextSize) return false;
+  if (probe.shape === "sphere") {
+    const sphereRadius = Math.max(...nextSize) * 0.5;
+    const delta = nextPosition.map((value, axis) => value - probe.spherePosition[axis]);
+    const grow = sphereRadius - probe.sphereRadius;
+    const next = {
+      ...probe,
+      spherePosition: nextPosition,
+      sphereRadius,
+      capturePosition: probe.capturePosition.map((value, axis) => value + delta[axis]),
+      influenceSpherePosition: probe.influenceSpherePosition.map((value, axis) => value + delta[axis]),
+      influenceSphereRadius: Math.max(0.01, probe.influenceSphereRadius + grow),
+      influenceInnerSphereRadius: Math.max(0, probe.influenceInnerSphereRadius + grow),
+    };
+    if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+    state.environmentProbes.set(id, next);
+    emit("environment-probes");
+    return true;
+  }
+  const boxPosition = nextPosition;
+  const boxSize = nextSize;
   const delta = boxPosition.map((value, axis) => value - probe.boxPosition[axis]);
   const grow = boxSize.map((value, axis) => value - probe.boxSize[axis]);
   const next = {
@@ -2898,9 +2959,24 @@ export function syncEnvironmentProbeTransform(id, position, size) {
  */
 export function syncEnvironmentProbeInfluence(id, position, size) {
   const probe = state.environmentProbes.get(id);
-  const influenceBoxPosition = validProbeVector(position);
-  const influenceBoxSize = validProbeVector(size, true);
-  if (!probe || !influenceBoxPosition || !influenceBoxSize) return false;
+  const influencePosition = validProbeVector(position);
+  const influenceSize = validProbeVector(size, true);
+  if (!probe || !influencePosition || !influenceSize) return false;
+  if (probe.shape === "sphere") {
+    const influenceSphereRadius = Math.max(...influenceSize) * 0.5;
+    const next = {
+      ...probe,
+      influenceSpherePosition: influencePosition,
+      influenceSphereRadius,
+      influenceInnerSphereRadius: Math.min(probe.influenceInnerSphereRadius, influenceSphereRadius),
+    };
+    if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+    state.environmentProbes.set(id, next);
+    emit("environment-probes");
+    return true;
+  }
+  const influenceBoxPosition = influencePosition;
+  const influenceBoxSize = influenceSize;
   const next = {
     ...probe,
     influenceBoxPosition,
@@ -2926,6 +3002,14 @@ export function syncEnvironmentProbeInnerSize(id, size) {
   const probe = state.environmentProbes.get(id);
   const inner = validProbeVector(size);
   if (!probe || !inner) return false;
+  if (probe.shape === "sphere") {
+    const influenceInnerSphereRadius = Math.min(Math.max(0, Math.max(...inner) * 0.5), probe.influenceSphereRadius);
+    const next = { ...probe, influenceInnerSphereRadius };
+    if (JSON.stringify(next) === JSON.stringify(probe)) return false;
+    state.environmentProbes.set(id, next);
+    emit("environment-probes");
+    return true;
+  }
   const influenceInnerBoxSize = inner
     .map((value, axis) => Math.min(Math.max(0, value), probe.influenceBoxSize[axis]));
   const next = { ...probe, influenceInnerBoxSize };
@@ -4264,22 +4348,37 @@ async function restoreFrom(data) {
     :Array.isArray(data.environmentProbes)
       ? data.environmentProbes.map((probe) => ({
         id: probe.id,
-        boxPosition: Array.isArray(probe.boxPosition)
-          ? [-Number(probe.boxPosition[0]), Number(probe.boxPosition[1]),
-            Number(probe.boxPosition[2])] : null,
-        boxSize: probe.boxSize,
+        shape: probe.shape === "sphere" ? "sphere" : "box",
+        ...(probe.shape === "sphere"
+          ? {
+              spherePosition: Array.isArray(probe.spherePosition)
+                ? [-Number(probe.spherePosition[0]), Number(probe.spherePosition[1]),
+                  Number(probe.spherePosition[2])] : null,
+              sphereRadius: probe.sphereRadius,
+              influenceSpherePosition: Array.isArray(probe.influenceSpherePosition)
+                ? [-Number(probe.influenceSpherePosition[0]), Number(probe.influenceSpherePosition[1]),
+                  Number(probe.influenceSpherePosition[2])] : null,
+              influenceSphereRadius: probe.influenceSphereRadius,
+              influenceInnerSphereRadius: probe.influenceInnerSphereRadius,
+            }
+          : {
+              boxPosition: Array.isArray(probe.boxPosition)
+                ? [-Number(probe.boxPosition[0]), Number(probe.boxPosition[1]),
+                  Number(probe.boxPosition[2])] : null,
+              boxSize: probe.boxSize,
+              angle: Number.isFinite(Number(probe.angle)) ? -Number(probe.angle) : 0,
+              // Absent on anything written before influence volumes were authored,
+              // where the record takes the defaults instead - which are what that
+              // ship was already blending with.
+              influenceBoxPosition: Array.isArray(probe.influenceBoxPosition)
+                ? [-Number(probe.influenceBoxPosition[0]), Number(probe.influenceBoxPosition[1]),
+                  Number(probe.influenceBoxPosition[2])] : null,
+              influenceBoxSize: probe.influenceBoxSize,
+              influenceInnerBoxSize: probe.influenceInnerBoxSize,
+            }),
         capturePosition: Array.isArray(probe.capturePosition)
           ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]),
             Number(probe.capturePosition[2])] : null,
-                angle: Number.isFinite(Number(probe.angle)) ? -Number(probe.angle) : 0,
-        // Absent on anything written before influence volumes were authored,
-        // where the record takes the defaults instead - which are what that
-        // ship was already blending with.
-        influenceBoxPosition: Array.isArray(probe.influenceBoxPosition)
-          ? [-Number(probe.influenceBoxPosition[0]), Number(probe.influenceBoxPosition[1]),
-            Number(probe.influenceBoxPosition[2])] : null,
-        influenceBoxSize: probe.influenceBoxSize,
-        influenceInnerBoxSize: probe.influenceInnerBoxSize,
                 // Not a probe field any more - see legacyProbeResolution, which is the
                 // only thing that still reads it.
         resolution: probe.resolution,
@@ -4335,27 +4434,37 @@ async function restoreFrom(data) {
   }
   for (const probe of probes) {
     const id = validEnvironmentProbeId(probe?.id);
+    const capturePosition = validProbeVector(
+      probe?.capturePosition || probe?.spherePosition || probe?.boxPosition);
+    if (!id || !capturePosition || !environmentProbeIdAvailable(id)) continue;
+    if (probe?.shape === "sphere") {
+      const spherePosition = validProbeVector(probe.spherePosition);
+      const sphereRadius = Number(probe.sphereRadius);
+      if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius <= 0) continue;
+      const defaults = defaultSphereProbeInfluence(spherePosition, sphereRadius);
+      const influenceSpherePosition = validProbeVector(probe.influenceSpherePosition)
+        || defaults.influenceSpherePosition;
+      const outer = Number(probe.influenceSphereRadius);
+      const influenceSphereRadius = Number.isFinite(outer) && outer > 0
+        ? outer : defaults.influenceSphereRadius;
+      const inner = Number(probe.influenceInnerSphereRadius);
+      const influenceInnerSphereRadius = Number.isFinite(inner)
+        && inner >= 0 && inner <= influenceSphereRadius
+        ? inner : Math.min(defaults.influenceInnerSphereRadius, influenceSphereRadius);
+      setEnvironmentProbe(id, {
+        ...probe, shape: "sphere", spherePosition, sphereRadius, capturePosition,
+        influenceSpherePosition, influenceSphereRadius, influenceInnerSphereRadius,
+      }, id, { history: false });
+      continue;
+    }
     const boxPosition = validProbeVector(probe?.boxPosition);
     const boxSize = validProbeVector(probe?.boxSize, true);
-    const capturePosition = validProbeVector(
-      probe?.capturePosition || probe?.boxPosition);
-    const angle =Number(probe?.angle ?? 0);
-    if (!environmentProbeIdAvailable(id) || !boxPosition || !boxSize || !capturePosition
-      || !Number.isFinite(angle)) continue;
-    // A file is allowed to be wrong about its influence volumes without losing
-    // the probe: a refused pair falls back to the defaults, the same as one
-    // that was never written.
+    if (!boxPosition || !boxSize) continue;
     const influence = probeInfluence(probe, boxPosition, boxSize)
       || defaultProbeInfluence(boxPosition, boxSize);
-    state.environmentProbes.set(id, {
-      id, boxPosition, boxSize, capturePosition,
-            angle, ...influence,
-      // Only an undo snapshot carries these; a manifest keeps them in
-      // `editorPrefs`, which loadLayout() applies once the probes exist.
-      alwaysVisible: !!probe?.alwaysVisible,
-      envFaces: !!probe?.envFaces,
-      visibleParts: probeVisibleParts(probe?.visibleParts),
-    });
+    setEnvironmentProbe(id, {
+      ...probe, shape: "box", boxPosition, boxSize, capturePosition, ...influence,
+    }, id, { history: false });
   }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
   // `environment` / `editorEnvironment` blocks, which loadLayout() applies

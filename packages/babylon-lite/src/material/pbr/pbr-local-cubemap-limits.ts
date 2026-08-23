@@ -12,6 +12,8 @@ export const _PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS = UNIFORM_BUFFER_BYTES / 4;
 export const _PBR_LOCAL_ENVIRONMENT_PARALLAX_FLAG = 1;
 /** @internal Header flag replacing probe samples and final PBR output with debug colors. */
 export const _PBR_LOCAL_ENVIRONMENT_DEBUG_COLOR_FLAG = 2;
+/** @internal Per-probe metadata bit selecting spherical projection and influence. */
+export const _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG = 1 << 24;
 
 /** Maximum probe records that fit in the WebGPU-guaranteed 64 KiB uniform binding. */
 export const MAX_PBR_LOCAL_ENVIRONMENT_PROBES = Math.floor((_PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS - _PBR_LOCAL_ENVIRONMENT_HEADER_U32) / _PBR_LOCAL_ENVIRONMENT_PROBE_FLOATS);

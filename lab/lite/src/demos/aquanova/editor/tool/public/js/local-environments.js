@@ -26,7 +26,7 @@
 // probe is scene-referred radiance, and the runtime exposes it itself.
 
 import { state, whileBusy, setBusyMessage, withDeadline, CONFIG_DEFAULTS } from "./editor.js";
-import { meshesInProbeBox, renderListFor, setCaptureViewpoint, withRuntimeCapture, authoredMaterialOf } from "./runtime.js";
+import { meshesInProbeVolume, renderListFor, setCaptureViewpoint, withRuntimeCapture, authoredMaterialOf } from "./runtime.js";
 
 /**
  * How long any one step of a capture may take before it is called a failure.
@@ -202,8 +202,9 @@ function environmentTools() {
 function probeDigestSource(probe, meshes) {
   const parts = [
     `probe:${probe.id}`,
-    `box:${probe.boxPosition.map(round).join(",")}`,
-    `size:${probe.boxSize.map(round).join(",")}`,
+    ...(probe.shape === "sphere"
+      ? [`shape:sphere`, `sphere:${probe.spherePosition.map(round).join(",")}`, `radius:${round(probe.sphereRadius)}`]
+      : [`box:${probe.boxPosition.map(round).join(",")}`, `size:${probe.boxSize.map(round).join(",")}`]),
     `at:${probe.capturePosition.map(round).join(",")}`,
     `angle:${round(probe.angle || 0)}`,
     `res:${probeResolution()}`,
@@ -430,16 +431,24 @@ export async function generateLocalEnvironments(onProgress = () => {}, { force =
   return await whileBusy("checking environment probes…", async () => await withRuntimeCapture(async () => {
     const probes = [];
     for (const probe of state.environmentProbes.values()) {
-      const meshes = meshesInProbeBox(probe.boxPosition, probe.boxSize);
+      const meshes = meshesInProbeVolume(probe);
       probes.push({
         probe,
         meshes,
         declaration: {
           id: probe.id,
           position: probe.capturePosition,
-          boxPosition: probe.boxPosition,
-          boxSize: probe.boxSize,
-          angle: probe.angle || 0,
+          shape: probe.shape === "sphere" ? "sphere" : undefined,
+          ...(probe.shape === "sphere"
+            ? {
+                spherePosition: probe.spherePosition,
+                sphereRadius: probe.sphereRadius,
+              }
+            : {
+                boxPosition: probe.boxPosition,
+                boxSize: probe.boxSize,
+                angle: probe.angle || 0,
+              }),
           resolution: probeResolution(),
           hash: await digest(probeDigestSource(probe, meshes)),
         },

@@ -1368,6 +1368,44 @@ const PROBE_SECTIONS = [
   { part: "inner", label: "inner box", head: "probe-head-inner", eye: "btn-probe-eye-inner" },
 ];
 
+/** Below this the pane cannot show a difference: its fields step by 0.01 m. */
+const PROBE_CENTRE_EPSILON = 0.01;
+
+/**
+ * How far a probe's blend volumes sit from the box its cubemap is projected on.
+ *
+ * The two centres are independent on purpose, and the reference we implemented
+ * this from says so: Lagarde's influence volume is a separate artist-authored
+ * volume saying where a cubemap is worth using, with the inner range measured
+ * in ITS local space, while the projection box is the geometry proxy the
+ * reflection is parallax-corrected against and "doesn't need to match the
+ * cubemap centre". So a drifted influence centre is legal, not a fault - it is
+ * simply hard to undo by hand, the inner volume having no centre of its own to
+ * type into. Hence one number, read by the button that puts the pair back.
+ */
+function probeCentreDrift(probe) {
+  if (!probe) return null;
+  const sphere = probe.shape === "sphere";
+  const centre = sphere ? probe.influenceSpherePosition : probe.influenceBoxPosition;
+  const onto = sphere ? probe.spherePosition : probe.boxPosition;
+  if (!Array.isArray(centre) || !Array.isArray(onto)) return null;
+  const delta = centre.map((value, axis) => value - onto[axis]);
+  return {
+    sphere, onto, delta,
+    distance: Math.hypot(...delta),
+    label: sphere ? "projection sphere" : "probe box",
+  };
+}
+
+/** The drifted axes, as the pane would show them: "x −0.68, z +0.20". */
+function probeDriftAxes(drift) {
+  return drift.delta
+    .map((value, axis) => ({ axis: "xyz"[axis], value }))
+    .filter(({ value }) => Math.abs(value) >= PROBE_CENTRE_EPSILON)
+    .map(({ axis, value }) => `${axis} ${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(2)}`)
+    .join(", ");
+}
+
 const keepProbeWindowOnScreen = makeToolWindow("probe-modal", "probe-window-handle");
 function defaultProbeVolume() {
   let min = null;
@@ -1387,6 +1425,7 @@ function defaultProbeVolume() {
   // The influence volumes are left out on purpose: setEnvironmentProbe derives
   // them from the box, which is the one place that default is written down.
   return {
+    shape: "box",
     boxPosition: centre.asArray(),
     boxSize: size.asArray().map((n) => Math.max(0.01, n)),
     capturePosition: centre.asArray(),
@@ -1404,14 +1443,34 @@ function probeDraft() {
   const influenceBoxPosition = values.slice(9, 12);
   const influenceBoxSize = values.slice(12, 15);
   const influenceInnerBoxSize = values.slice(15, 18);
-  if (!values.every(Number.isFinite) || !boxSize.every((n) => n > 0)
-    || !influenceBoxSize.every((n) => n > 0)
+  if (!values.every(Number.isFinite)) return null;
+  const common = {
+    id: validEnvironmentProbeId($("probe-id").value),
+    capturePosition,
+  };
+  if ($("probe-shape").value === "sphere") {
+    const sphereRadius = boxSize[0];
+    const influenceSphereRadius = influenceBoxSize[0];
+    const influenceInnerSphereRadius = influenceInnerBoxSize[0];
+    if (sphereRadius <= 0 || influenceSphereRadius <= 0
+      || influenceInnerSphereRadius < 0 || influenceInnerSphereRadius > influenceSphereRadius) return null;
+    return {
+      ...common,
+      shape: "sphere",
+      spherePosition: boxPosition,
+      sphereRadius,
+      influenceSpherePosition: influenceBoxPosition,
+      influenceSphereRadius,
+      influenceInnerSphereRadius,
+    };
+  }
+  if (!boxSize.every((n) => n > 0) || !influenceBoxSize.every((n) => n > 0)
     || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
   return {
-    id: validEnvironmentProbeId($("probe-id").value),
+    ...common,
+    shape: "box",
     boxPosition,
     boxSize,
-    capturePosition,
     influenceBoxPosition,
     influenceBoxSize,
     influenceInnerBoxSize,
@@ -1470,6 +1529,20 @@ function setProbeField(id, value) {
   if (field !== document.activeElement) field.value = value;
 }
 
+function refreshProbeShape(shape) {
+  const sphere = shape === "sphere";
+  $("probe-shape").value = sphere ? "sphere" : "box";
+  $("probe-head-box-label").textContent = sphere ? "Projection sphere" : "Probe box";
+  $("probe-head-influence-label").textContent = sphere ? "Influence sphere" : "Influence box";
+  $("probe-head-inner-label").textContent = sphere ? "Inner sphere" : "Inner box";
+  $("probe-size-label").textContent = sphere ? "Radius" : "Size";
+  $("probe-influence-size-label").textContent = sphere ? "Radius" : "Size";
+  $("probe-inner-size-label").textContent = sphere ? "Radius" : "Size";
+  for (const fields of [PROBE_SIZE_FIELDS, PROBE_INFLUENCE_SIZE_FIELDS, PROBE_INNER_SIZE_FIELDS]) {
+    fields.slice(1).forEach((id) => { $(id).hidden = sphere; });
+  }
+}
+
 async function refreshProbeWindow(pick = probeSelected) {
   const request = ++probeRefreshRequest;
   const ids = alphabetical(environmentProbeIds());
@@ -1483,21 +1556,40 @@ async function refreshProbeWindow(pick = probeSelected) {
     `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
       + `${esc(id)}</option>`).join("");
   const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
+  const shape = probe?.shape === "sphere" ? "sphere" : "box";
+  refreshProbeShape(shape);
   setProbeField("probe-id", probe?.id || "");
   const values = probe
-    ? [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition,
-      ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
-      ...probe.influenceInnerBoxSize] : [];
+    ? shape === "sphere"
+      ? [...probe.spherePosition, probe.sphereRadius, probe.sphereRadius, probe.sphereRadius,
+        ...probe.capturePosition, ...probe.influenceSpherePosition,
+        probe.influenceSphereRadius, probe.influenceSphereRadius, probe.influenceSphereRadius,
+        probe.influenceInnerSphereRadius, probe.influenceInnerSphereRadius, probe.influenceInnerSphereRadius]
+      : [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition,
+        ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
+        ...probe.influenceInnerBoxSize] : [];
   PROBE_VALUE_FIELDS.forEach((id, index) => { setProbeField(id, values[index] ?? ""); });
   $("probe-show").checked = !!probe?.alwaysVisible;
   $("probe-env").checked = !!probe?.envFaces;
   $("probe-show").disabled = !probe;
   $("probe-env").disabled = !probe;
+  $("probe-shape").disabled = !probe;
   $("btn-probe-delete").disabled = !probe;
   // Capture takes the selected probe, so it lives with Delete and follows the
   // list. Capture all needs no selection at all, which is why it sits on the
   // Settings pane instead of in here.
   $("btn-capture-one").disabled = !probe;
+  // Offered only when there is something to put back, and saying how far it
+  // would move: the pair's centre is legally its own, so this is never advice.
+  const drift = probeCentreDrift(probe);
+  const centreOnBox = $("btn-probe-influence-centre");
+  centreOnBox.disabled = !drift || drift.distance < PROBE_CENTRE_EPSILON;
+  centreOnBox.textContent = shape === "sphere" ? "Centre on sphere" : "Centre on box";
+  centreOnBox.title = centreOnBox.disabled
+    ? `The influence centre is already on the ${drift ? drift.label : "probe box"} centre.`
+    : `Move the influence centre ${drift.distance.toFixed(2)} m onto the ${drift.label}`
+      + ` centre (${probeDriftAxes(drift)}). The inner volume has no centre of its`
+      + " own and rides it, so both blend volumes move.";
   refreshProbeSections();
   if (!probe) {
     $("probe-resolved").textContent = "No probe volumes. Press New to create one.";
@@ -1509,7 +1601,9 @@ async function refreshProbeWindow(pick = probeSelected) {
   const info = await localEnvironmentProbeOf(probe.id);
   if (request !== probeRefreshRequest || probe.id !== probeSelected) return;
   $("probe-resolved").textContent =
-    `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`
+    (shape === "sphere"
+      ? `sphere radius ${Number(probe.sphereRadius).toFixed(2)} m`
+      : `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`)
     + ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}`
     + ` · ${state.config.probeResolution}px cubemap`
     + ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
@@ -1565,6 +1659,37 @@ $("probe-list").addEventListener("change", (e) => {
   void showAndSelectProbe(probeSelected);
 });
 
+$("probe-shape").addEventListener("change", (event) => {
+  if (!probeSelected) return;
+  const probe = environmentProbeOf(probeSelected);
+  if (!probe) return;
+  const shape = event.target.value === "sphere" ? "sphere" : "box";
+  if (probe.shape === shape) return;
+  pushUndo();
+  const next = shape === "sphere"
+    ? {
+        shape,
+        spherePosition: probe.boxPosition,
+        sphereRadius: Math.max(...probe.boxSize) * 0.5,
+        capturePosition: probe.capturePosition,
+        influenceSpherePosition: probe.influenceBoxPosition,
+        influenceSphereRadius: Math.max(...probe.influenceBoxSize) * 0.5,
+        influenceInnerSphereRadius: Math.max(...probe.influenceInnerBoxSize) * 0.5,
+      }
+    : {
+        shape,
+        boxPosition: probe.spherePosition,
+        boxSize: [probe.sphereRadius * 2, probe.sphereRadius * 2, probe.sphereRadius * 2],
+        capturePosition: probe.capturePosition,
+        angle: 0,
+        influenceBoxPosition: probe.influenceSpherePosition,
+        influenceBoxSize: [probe.influenceSphereRadius * 2, probe.influenceSphereRadius * 2, probe.influenceSphereRadius * 2],
+        influenceInnerBoxSize: [probe.influenceInnerSphereRadius * 2, probe.influenceInnerSphereRadius * 2, probe.influenceInnerSphereRadius * 2],
+      };
+  setEnvironmentProbe(probeSelected, next, probeSelected, { history: false });
+  setStatus(`${probeSelected}: changed to ${shape} probe`);
+});
+
 let probePushed = false;
 
 for (const id of PROBE_VALUE_FIELDS) {
@@ -1617,8 +1742,8 @@ function commitProbe({ rename = false, quiet = false } = {}) {
   }
   const draft = probeDraft();
   if (!draft) {
-    return refuse("Enter numeric box/camera positions, positive box sizes, and an inner size"
-      + " from 0 up to the influence size.");
+    return refuse("Enter numeric volume/camera positions, positive sizes or radii, and an inner size/radius"
+      + " from 0 up to the influence value.");
   }
   $("probe-error").textContent = "";
   const previousId = probeSelected;
@@ -1686,6 +1811,22 @@ $("btn-probe-delete").addEventListener("click", () => {
   $("probe-error").textContent = "";
   void refreshProbeWindow();
   setStatus(`deleted environment probe ${gone}`);
+});
+
+$("btn-probe-influence-centre").addEventListener("click", () => {
+  if (!probeSelected) return;
+  const probe = environmentProbeOf(probeSelected);
+  const drift = probeCentreDrift(probe);
+  if (!drift || drift.distance < PROBE_CENTRE_EPSILON) return;
+  // A whole record, because that is what setEnvironmentProbe validates: only
+  // the influence centre changes, and the inner volume follows because it has
+  // never had a centre of its own to change.
+  const moved = drift.sphere
+    ? { ...probe, influenceSpherePosition: [...probe.spherePosition] }
+    : { ...probe, influenceBoxPosition: [...probe.boxPosition] };
+  if (!setEnvironmentProbe(probeSelected, moved)) return;
+  setStatus(`${probeSelected}: influence volumes moved ${drift.distance.toFixed(2)} m`
+    + ` onto the ${drift.label} centre`);
 });
 
 on("environment-probes", () => {

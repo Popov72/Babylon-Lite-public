@@ -16,31 +16,50 @@ import {
 } from "babylon-lite";
 import { LOCAL_ENVIRONMENTS_URL, toLite, type Vec3 } from "./constants.js";
 import {
-    boxProbeNdf,
-    selectContainingBoxProbe,
+    probeNdf,
+    selectContainingProbe,
     selectPoiProbeBlend,
-    selectStaticBoxProbe,
+    selectStaticProbe,
     type BoxProbeInfluence,
     type BoxProbeRegion,
     type ProbeBlendWeight,
     type ProbeWorldBounds,
+    type SphereProbeInfluence,
+    type SphereProbeRegion,
 } from "./probe-blending.js";
 
-export interface LocalEnvironmentProbe {
+interface LocalEnvironmentProbeBase {
     url: string;
     position: Vec3;
-    boxPosition: Vec3;
-    boxSize: Vec3;
-    /** Optional POI influence volume. Defaults to the parallax box expanded for overlap. */
-    influenceBoxPosition?: Vec3;
-    influenceBoxSize?: Vec3;
-    /** Full size of the 100%-influence inner box. */
-    influenceInnerBoxSize?: Vec3;
-    /** Probe yaw in exported degrees. Defaults to zero for legacy exports. */
-    angle?: number;
     resolution: number;
     bytes: number;
 }
+
+export type LocalEnvironmentProbe = LocalEnvironmentProbeBase &
+    (
+        | {
+              shape?: "box";
+              boxPosition: Vec3;
+              boxSize: Vec3;
+              /** Optional POI influence volume. Defaults to the parallax box expanded for overlap. */
+              influenceBoxPosition?: Vec3;
+              influenceBoxSize?: Vec3;
+              /** Full size of the 100%-influence inner box. */
+              influenceInnerBoxSize?: Vec3;
+              /** Probe yaw in exported degrees. Defaults to zero for legacy exports. */
+              angle?: number;
+          }
+        | {
+              shape: "sphere";
+              spherePosition: Vec3;
+              sphereRadius: number;
+              /** Optional POI influence volume. Defaults to the projection sphere expanded for overlap. */
+              influenceSpherePosition?: Vec3;
+              influenceSphereRadius?: number;
+              /** Radius of the 100%-influence inner sphere. */
+              influenceInnerSphereRadius?: number;
+          }
+    );
 
 export interface LocalEnvironmentIndex {
     probes?: Record<string, LocalEnvironmentProbe>;
@@ -62,10 +81,12 @@ export interface LocalEnvironmentBlendInfo {
     readonly cameraVoxelProbeIds: readonly string[];
 }
 
-export interface LocalEnvironmentProbeVolume extends BoxProbeInfluence, BoxProbeRegion {
+type ProbeVolumeShape = (BoxProbeInfluence & BoxProbeRegion) | (SphereProbeInfluence & SphereProbeRegion);
+
+export type LocalEnvironmentProbeVolume = ProbeVolumeShape & {
     readonly capturePosition: Vec3;
     readonly debugColor: Vec3;
-}
+};
 
 export interface LocalEnvironmentController extends LocalEnvironmentStats {
     /** Update gameplay/debug POI metadata and report the camera's current voxel probes. */
@@ -83,9 +104,9 @@ export interface LocalEnvironmentController extends LocalEnvironmentStats {
     dominantEnvironment(): EnvironmentTextures | undefined;
 }
 
-interface LoadedProbe extends LocalEnvironmentProbeVolume {
+type LoadedProbe = LocalEnvironmentProbeVolume & {
     environment: EnvironmentTextures;
-}
+};
 
 /** Default transition width on each side of a probe's parallax box. */
 const DEFAULT_BLEND_DISTANCE = 1.5;
@@ -118,6 +139,13 @@ function defaultInfluenceHalfSizes(boxSize: Vec3): {
     return {
         inner: [Math.max(0, half[0] - DEFAULT_BLEND_DISTANCE), Math.max(0, half[1] - DEFAULT_BLEND_DISTANCE), Math.max(0, half[2] - DEFAULT_BLEND_DISTANCE)],
         outer: [half[0] + DEFAULT_BLEND_DISTANCE, half[1] + DEFAULT_BLEND_DISTANCE, half[2] + DEFAULT_BLEND_DISTANCE],
+    };
+}
+
+function defaultInfluenceRadii(radius: number): { inner: number; outer: number } {
+    return {
+        inner: Math.max(0, radius - DEFAULT_BLEND_DISTANCE),
+        outer: radius + DEFAULT_BLEND_DISTANCE,
     };
 }
 
@@ -166,14 +194,19 @@ function probeVoxelGrid(probes: readonly LocalEnvironmentProbeVolume[]): {
     const minimum: [number, number, number] = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
     const maximum: [number, number, number] = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
     for (const probe of probes) {
-        const angle = probe.angleRadians ?? 0;
-        const cosine = Math.abs(Math.cos(angle));
-        const sine = Math.abs(Math.sin(angle));
-        const extent: [number, number, number] = [
-            cosine * probe.outerHalfSize[0] + sine * probe.outerHalfSize[2],
-            probe.outerHalfSize[1],
-            sine * probe.outerHalfSize[0] + cosine * probe.outerHalfSize[2],
-        ];
+        const extent: [number, number, number] =
+            probe.shape === "sphere"
+                ? [probe.outerRadius, probe.outerRadius, probe.outerRadius]
+                : (() => {
+                      const angle = probe.angleRadians ?? 0;
+                      const cosine = Math.abs(Math.cos(angle));
+                      const sine = Math.abs(Math.sin(angle));
+                      return [
+                          cosine * probe.outerHalfSize[0] + sine * probe.outerHalfSize[2],
+                          probe.outerHalfSize[1],
+                          sine * probe.outerHalfSize[0] + cosine * probe.outerHalfSize[2],
+                      ];
+                  })();
         for (let axis = 0; axis < 3; axis++) {
             minimum[axis] = Math.min(minimum[axis]!, probe.centre[axis]! - extent[axis]!);
             maximum[axis] = Math.max(maximum[axis]!, probe.centre[axis]! + extent[axis]!);
@@ -234,22 +267,39 @@ export async function applyLocalEnvironmentProbes(
                     skipSkybox: true,
                     skipGround: true,
                 });
-                const boxCentre = toLite(probe.boxPosition);
                 environments.set(probeId, environment);
-
-                const defaults = defaultInfluenceHalfSizes(probe.boxSize);
-                loadedProbes.push({
+                const common = {
                     id: probeId,
                     environment,
                     capturePosition: toLite(probe.position),
-                    projectionCentre: boxCentre,
-                    projectionHalfSize: halfSize(probe.boxSize),
-                    centre: probe.influenceBoxPosition ? toLite(probe.influenceBoxPosition) : boxCentre,
-                    innerHalfSize: probe.influenceInnerBoxSize ? halfSize(probe.influenceInnerBoxSize) : defaults.inner,
-                    outerHalfSize: probe.influenceBoxSize ? halfSize(probe.influenceBoxSize) : defaults.outer,
-                    angleRadians: toLiteYawRadians(probe.angle),
                     debugColor: probeDebugColor(loadedProbes.length),
-                });
+                };
+                if (probe.shape === "sphere") {
+                    const sphereCentre = toLite(probe.spherePosition);
+                    const defaults = defaultInfluenceRadii(probe.sphereRadius);
+                    loadedProbes.push({
+                        ...common,
+                        shape: "sphere",
+                        projectionCentre: sphereCentre,
+                        projectionRadius: probe.sphereRadius,
+                        centre: probe.influenceSpherePosition ? toLite(probe.influenceSpherePosition) : sphereCentre,
+                        innerRadius: probe.influenceInnerSphereRadius ?? defaults.inner,
+                        outerRadius: probe.influenceSphereRadius ?? defaults.outer,
+                    });
+                } else {
+                    const boxCentre = toLite(probe.boxPosition);
+                    const defaults = defaultInfluenceHalfSizes(probe.boxSize);
+                    loadedProbes.push({
+                        ...common,
+                        shape: "box",
+                        projectionCentre: boxCentre,
+                        projectionHalfSize: halfSize(probe.boxSize),
+                        centre: probe.influenceBoxPosition ? toLite(probe.influenceBoxPosition) : boxCentre,
+                        innerHalfSize: probe.influenceInnerBoxSize ? halfSize(probe.influenceInnerBoxSize) : defaults.inner,
+                        outerHalfSize: probe.influenceBoxSize ? halfSize(probe.influenceBoxSize) : defaults.outer,
+                        angleRadians: toLiteYawRadians(probe.angle),
+                    });
+                }
             } catch (err) {
                 missing.push(probeId);
                 console.warn(`[aquanova] local environment ${probeId} failed to load`, err);
@@ -268,17 +318,32 @@ export async function applyLocalEnvironmentProbes(
 
     await enablePbrLocalCubemap();
     const probeSet: PbrLocalEnvironmentProbeSet = createPbrLocalEnvironmentProbeSet(scene, {
-        probes: loadedProbes.map((probe) => ({
-            environment: probe.environment,
-            capturePosition: probe.capturePosition,
-            projectionPosition: probe.projectionCentre,
-            projectionSize: fullSize(probe.projectionHalfSize),
-            influencePosition: probe.centre,
-            influenceInnerSize: fullSize(probe.innerHalfSize),
-            influenceOuterSize: fullSize(probe.outerHalfSize),
-            angleRadians: probe.angleRadians,
-            debugColor: probe.debugColor,
-        })),
+        probes: loadedProbes.map((probe) =>
+            probe.shape === "sphere"
+                ? {
+                      environment: probe.environment,
+                      shape: "sphere" as const,
+                      capturePosition: probe.capturePosition,
+                      projectionPosition: probe.projectionCentre,
+                      projectionRadius: probe.projectionRadius,
+                      influencePosition: probe.centre,
+                      influenceInnerRadius: probe.innerRadius,
+                      influenceOuterRadius: probe.outerRadius,
+                      debugColor: probe.debugColor,
+                  }
+                : {
+                      environment: probe.environment,
+                      shape: "box" as const,
+                      capturePosition: probe.capturePosition,
+                      projectionPosition: probe.projectionCentre,
+                      projectionSize: fullSize(probe.projectionHalfSize),
+                      influencePosition: probe.centre,
+                      influenceInnerSize: fullSize(probe.innerHalfSize),
+                      influenceOuterSize: fullSize(probe.outerHalfSize),
+                      angleRadians: probe.angleRadians,
+                      debugColor: probe.debugColor,
+                  }
+        ),
         voxelGrid: probeVoxelGrid(loadedProbes),
     });
 
@@ -288,7 +353,7 @@ export async function applyLocalEnvironmentProbes(
         if (!source || !isPbrMaterial(source)) {
             continue;
         }
-        const probe = selectStaticBoxProbe(loadedProbes, meshWorldBounds(mesh)) ?? first;
+        const probe = selectStaticProbe(loadedProbes, meshWorldBounds(mesh)) ?? first;
         meshAssignments.push({ mesh, probeIndex: loadedProbes.indexOf(probe) });
     }
 
@@ -320,10 +385,20 @@ export async function applyLocalEnvironmentProbes(
                     setPbrLocalEnvironmentProbeSet(variant, probeSet);
                 } else {
                     const probe = loadedProbes[probeIndex]!;
-                    setPbrLocalEnvironment(variant, probe.environment, {
-                        projectionPosition: probe.projectionCentre,
-                        projectionSize: fullSize(probe.projectionHalfSize),
-                    });
+                    setPbrLocalEnvironment(
+                        variant,
+                        probe.environment,
+                        probe.shape === "sphere"
+                            ? {
+                                  shape: "sphere",
+                                  projectionPosition: probe.projectionCentre,
+                                  projectionRadius: probe.projectionRadius,
+                              }
+                            : {
+                                  projectionPosition: probe.projectionCentre,
+                                  projectionSize: fullSize(probe.projectionHalfSize),
+                              }
+                    );
                 }
                 delete (variant as { _renderFeatures?: unknown })._renderFeatures;
                 sourceVariants.set(variantKey, variant);
@@ -340,7 +415,7 @@ export async function applyLocalEnvironmentProbes(
         const voxelProbeIndices = getPbrLocalEnvironmentProbeGridCell(probeSet, position).probeIndices;
         const voxelProbes = voxelProbeIndices.map((index) => loadedProbes[index]!);
         const debugWeights = selectPoiProbeBlend(voxelProbes, position, MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES);
-        const contained = selectContainingBoxProbe(loadedProbes, position);
+        const contained = selectContainingProbe(loadedProbes, position);
         const weightedDominant = debugWeights.reduce<ProbeBlendWeight | undefined>((best, candidate) => (!best || candidate.weight > best.weight ? candidate : best), undefined);
         const dominant = contained ?? loadedProbes.find((probe) => probe.id === weightedDominant?.id) ?? first;
         info = {
@@ -350,7 +425,7 @@ export async function applyLocalEnvironmentProbes(
                       {
                           id: dominant.id,
                           weight: 1,
-                          ndf: boxProbeNdf(dominant, position),
+                          ndf: probeNdf(dominant, position),
                       },
                   ],
             dominantProbeId: dominant.id,

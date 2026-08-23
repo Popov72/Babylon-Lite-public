@@ -45,7 +45,8 @@ as a module id plus a transform, so a layout reloads exactly:
   "lights":   [ /* authored lights, riding a placement — see below */ ],
   "chunks":   [ { "id": "CH00_Storage", "node": "CHUNK_CH00_Storage", "aabb": {...} } ],
   "environmentProbes": [
-    { "id": "ENV0001", "boxPosition": [-8,2.5,0], "boxSize": [16,5,8],
+    { "id": "ENV0001", "shape": "box",
+      "boxPosition": [-8,2.5,0], "boxSize": [16,5,8],
       "capturePosition": [-8,2.5,0], "angle": 0,
       // where the runtime blends this probe, as opposed to what it projects
       "influenceBoxPosition": [-8,2.5,0], "influenceBoxSize": [19,8,11],
@@ -216,14 +217,14 @@ that was still wanted is one `Ctrl+Z` away.
 What counts as answered-to is the set of names `ship.glb` will actually carry,
 built by the same rules the exporter renames by, so the two cannot drift:
 
-| kept | because |
-| --- | --- |
-| `crate` | a placement's node name — or its id when it has none |
+| kept               | because                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| `crate`            | a placement's node name — or its id when it has none          |
 | `crate_primitive0` | a placement's own primitives, `_primitive0`, `_primitive1`, … |
-| `crate_Spin` | an animation node, `<node>_<clip>` |
-| `CH00_Storage` | a chunk holder |
-| `LIGHT_L0003` | a lamp |
-| `Door_D00` | a door id — no glb node, but a key the manifest carries |
+| `crate_Spin`       | an animation node, `<node>_<clip>`                            |
+| `CH00_Storage`     | a chunk holder                                                |
+| `LIGHT_L0003`      | a lamp                                                        |
+| `Door_D00`         | a door id — no glb node, but a key the manifest carries       |
 
 The derived names matter as much as the plain ones: an entry on
 `crate_primitive0` is how one part of a module gets a behaviour of its own, and
@@ -290,7 +291,7 @@ them survive being looked at.
 **Event subscriptions ask for the sources first, then the event.** Several
 sources on one subscription mean "any of these, they are equivalent" — the two
 halves of a fan, the five panels of a door — so the behaviour reacts whichever
-of them speaks. An event only *one* of them raises would therefore make the
+of them speaks. An event only _one_ of them raises would therefore make the
 group behave differently depending on which member fired, and the event list is
 the **intersection** of what all the chosen sources raise, not the union. Change
 the sources and the event list is rebuilt; the dependency is read from the
@@ -349,7 +350,7 @@ exception** and opens what it just attached, because attaching a behaviour is
 asking for its fields. The folds are remembered per element and per behaviour
 rather than in the DOM, since the panel rebuilds every form after every edit —
 a fold that sprang open each time you changed a field would be worse than none
-— and because they are kept by *position*, removing a behaviour slides the
+— and because they are kept by _position_, removing a behaviour slides the
 folds under it up with it, so the box that stays open is the one that was open.
 
 **What a behaviour is for is a tooltip on its name** — in the applied list, in
@@ -363,7 +364,7 @@ assignment either sets a value or takes the behaviour's, and saying which used
 to be a checkbox: a row reading `Override Splash sound category` directly above
 one reading `Splash sound category`, and a click spent agreeing to edit the
 thing you had just clicked on. The field itself carries the state now. It opens
-showing what the behaviour says, greyed to mean *this is not yours yet*, and the
+showing what the behaviour says, greyed to mean _this is not yours yet_, and the
 first change makes it yours — no ceremony, and nothing to notice if you were
 only reading. Handing it back is the one direction that still has to be asked
 for, so it is the only control left: a `↺` beside the label, appearing once
@@ -382,7 +383,7 @@ waterBigSplash` — because `{"quickSplash":["waterQuickSplash"]}` is a line of
 punctuation nobody should have to parse to find out which splash plays.
 
 > Which is what made **Sound categories** look broken on `itemLiquefactor`:
-> `weaponLiquefactor`'s *definition* holds the categories and the *assignment*
+> `weaponLiquefactor`'s _definition_ holds the categories and the _assignment_
 > is bare, which is a perfectly ordinary state — but it was reported as raw
 > JSON beside an unticked override box, so it read as noise rather than as an
 > answer. The value is now simply in the field, greyed, saying whose it is.
@@ -1112,7 +1113,7 @@ the same thing.
 | Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Behaviour        | inspector panel — attach metadata-defined behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each parameter with its typed control, and pick the `linked` nodes a liquefiable one melts with · the typed library opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Behaviour        | inspector panel — attach metadata-defined behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each parameter with its typed control, and pick the `linked` nodes a liquefiable one melts with · the typed library opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -1126,7 +1127,7 @@ the same thing.
 | Grid             | `G` · **Editor unlit** shows raw albedo with no lighting · **Settings ▸ Editor ▸ Exposure** — lower keeps pale panels off the tone-mapping shoulder, where their detail flattens out                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Palette          | hover a tile to spin the module through a full 360° turn · **drag the grip** between the palette and the viewport to resize it, double-click the grip to restore the default width                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Save             | `Ctrl+S` — writes `ship_manifest.json` **and** `ship.glb`, and stores the camera position, so reloading puts you back where you were · **Load asks first if you have unsaved changes**, since it discards the whole scene in one click — and so does closing or reloading the tab                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Demo             | **Start demo** publishes the ship **as last saved** into `lab/public/aquanova/` and opens the game in a tab — it does not save for you, so press `Ctrl+S` first if you want your latest edits in it · **Settings ▸ Demo ▸ Optimize ship** decides whether the textures are compressed on the way, off by default because that pass takes minutes · see [Publishing](#publishing)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Demo             | **Start demo** publishes the ship **as last saved** into `lab/public/aquanova/` and opens the game in a tab — it does not save for you, so press `Ctrl+S` first if you want your latest edits in it · **Settings ▸ Demo ▸ Optimize ship** decides whether the textures are compressed on the way, off by default because that pass takes minutes · see [Publishing](#publishing)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 **Every toolbar control names its shortcut in its tooltip**, or says outright
 that it has none. The keys are the whole point of the tool — the combos are a
@@ -3782,7 +3783,8 @@ Probes are authored in **Probes…** in the toolbar. Each one is:
 
 | | |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------- --- |
-| **box** | position and size of the volume the probe covers, in editor space |
+| **shape** | box or sphere; the same shape is used for finite parallax projection and influence |
+| **projection volume** | box centre/full size, or sphere centre/radius, in editor space |
 | **capture point** | where the six faces are rendered from — usually eye height, not the box centre |
 | **influence centre / size / inner size** | the volume the _runtime_ blends this probe over — see [The influence volumes](#the-influence-volumes) |
 
@@ -3791,10 +3793,10 @@ rather than a probe field — see [One cubemap size for the
 ship](#one-cubemap-size-for-the-ship).
 
 An element belongs to a probe when its bounding box **intersects** that probe's
-box, and the element's own bounds are the **union of all its primitives** — a
+box or sphere, and the element's own bounds are the **union of all its primitives** — a
 wall cannot have its trim band lit by the corridor and its face by the room.
-Where boxes overlap, the probe holding the larger share of the element wins, and
-an exact tie goes to the tighter box, so a cupboard nested inside a corridor's
+Where volumes overlap, the probe holding the larger share of the element wins, and
+an exact tie goes to the tighter volume, so a cupboard nested inside a corridor's
 probe still wins its own geometry. The share is a per-axis fraction rather than
 an overlap volume, because ship trim is frequently a zero-thickness sliver whose
 volume is exactly zero against every probe.
@@ -3811,9 +3813,15 @@ volume, each with its own heading:
 
 | section | rows |
 | ----------------- | ----------------- --- |
-| **Probe box** | Centre, Size, Camera |
-| **Influence box** | Centre, Size |
-| **Inner box** | Size |
+| **Probe box / Projection sphere** | Centre, Size or Radius, Camera |
+| **Influence box / sphere** | Centre, Size or Radius, and **Centre on box** |
+| **Inner box / sphere** | Size or Radius |
+
+The **Shape** selector converts all three volumes together. Box probes remain
+the default for old manifests. Sphere probes store explicit
+`spherePosition`/`sphereRadius`, `influenceSpherePosition`/
+`influenceSphereRadius`, and `influenceInnerSphereRadius` fields; radii are
+never inferred from one component of a box size.
 
 **ID**, **Always visible** and **Env faces** sit above all
 three, because they belong to the probe rather than to any one of its boxes. The line under the last
@@ -3911,6 +3919,22 @@ no **Position** row in the inspector and ignores a drag and the arrow keys.
 The runtime format carries a yaw angle in degrees for oriented projection and
 influence boxes. The current editor preserves that field but does not expose
 probe rotation yet, so newly authored probes use zero.
+
+**The pair has its own centre, and it is allowed to sit off the projection
+box.** That is the reference's model rather than an oversight: the influence
+volume says where a cubemap is worth using, the projection box is the geometry
+the reflection is parallax-corrected against, and Lagarde is explicit that the
+projection box need not be centred on the capture either. A corridor whose
+hand-over should begin early on one side is authored exactly that way. Putting
+the pair back, though, is not something to type: the red box has no centre to
+type into, it only ever rides the violet one. So **Centre on box**, beside the
+Influence heading, moves the pair onto the probe box in one undo step and says
+how far it went; it is inert when the two centres already agree to within the
+0.01 m the fields step by. It is **not** a check — a probe authored that way is
+authored, not broken — which is also why the offset is worth knowing about when
+the violet box's eye is off: the red box then appears adrift from the capture
+box with nothing on screen to explain it, and turning that eye back on is the
+answer.
 
 An inner size may be **zero** on an axis — a corridor narrower than the fade
 simply has no full-strength core — but never larger than the influence size on
@@ -4470,13 +4494,13 @@ test suite exercise the route without ever running the real script.
 
 **Settings ▸ Demo ▸ Optimize ship** decides whether the ship is compressed on
 the way out. It is **off** by default, and off is what the script has to be
-*told*: `sync-ship.ts` optimizes unless given `--no-ship-optimize`, and that is
+_told_: `sync-ship.ts` optimizes unless given `--no-ship-optimize`, and that is
 exactly the flag the unticked box sends.
 
 Off, a publish is a file copy — a second or two. On, it runs a KTX2 texture
 compressor over every image on the ship and a Meshopt pass over the geometry,
 which is minutes. Off is right for what a publish is usually for: walking the
-corridor whose wall you just moved. Tick it when what you are checking *is* the
+corridor whose wall you just moved. Tick it when what you are checking _is_ the
 shipped asset — load time, memory use, compression artefacts.
 
 Like the other editor preferences it is saved in the manifest's `editorPrefs`,

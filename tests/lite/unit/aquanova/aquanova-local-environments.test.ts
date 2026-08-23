@@ -49,11 +49,12 @@ function twoProbeIndex(): Record<string, unknown> {
             B: {
                 url: "environments/B.env",
                 position: [-2, 0, 0],
-                boxPosition: [-2, 0, 0],
-                boxSize: [10, 10, 10],
-                influenceBoxPosition: [-2, 0, 0],
-                influenceBoxSize: [8, 8, 8],
-                influenceInnerBoxSize: [2, 2, 2],
+                shape: "sphere",
+                spherePosition: [-2, 0, 0],
+                sphereRadius: 5,
+                influenceSpherePosition: [-2, 0, 0],
+                influenceSphereRadius: 4,
+                influenceInnerSphereRadius: 1,
                 resolution: 128,
                 bytes: 800,
             },
@@ -86,13 +87,15 @@ describe("Aquanova local environment probes", () => {
             metallic?: number;
             _renderFeatures?: number;
             _testLocalEnvironmentProbeSet?: unknown;
+            plugins?: unknown[];
         }
         const globalEnvironment = { name: "global" };
         const scene = {
             _envTextures: globalEnvironment,
             imageProcessing: { exposure: 0.8, contrast: 1.2 },
         };
-        const shared: TestMaterial = { kind: "pbr", roughness: 0.4, _renderFeatures: 17 };
+        const liquefyPlugin = { name: "liquefy" };
+        const shared: TestMaterial = { kind: "pbr", roughness: 0.4, _renderFeatures: 17, plugins: [liquefyPlugin] };
         const other: TestMaterial = { kind: "pbr", metallic: 0.7 };
         const first = { material: shared, worldMatrix: worldMatrixAt() };
         const second = { material: shared, worldMatrix: worldMatrixAt() };
@@ -111,6 +114,7 @@ describe("Aquanova local environment probes", () => {
         expect(third.material).not.toBe(other);
         expect(standard.material).toEqual({ kind: "standard" });
         expect(first.material).not.toHaveProperty("_renderFeatures");
+        expect(first.material.plugins).toEqual([liquefyPlugin]);
         expect(first.material).toHaveProperty("_testLocalEnvironmentProbeSet");
         expect(first.material._testLocalEnvironmentProbeSet).toBe(third.material._testLocalEnvironmentProbeSet);
         expect(lite.createPbrLocalEnvironmentProbeSet).toHaveBeenCalledWith(
@@ -129,7 +133,12 @@ describe("Aquanova local environment probes", () => {
                     }),
                     expect.objectContaining({
                         capturePosition: [2, 0, 0],
-                        angleRadians: 0,
+                        shape: "sphere",
+                        projectionPosition: [2, 0, 0],
+                        projectionRadius: 5,
+                        influencePosition: [2, 0, 0],
+                        influenceInnerRadius: 1,
+                        influenceOuterRadius: 4,
                     }),
                 ],
                 voxelGrid: {
@@ -197,7 +206,7 @@ describe("Aquanova local environment probes", () => {
         });
         expect(meshB.material._testLocalEnvironment).toMatchObject({
             environment: controller?.environment("B"),
-            options: { projectionPosition: [2, 0, 0], projectionSize: [10, 10, 10] },
+            options: { shape: "sphere", projectionPosition: [2, 0, 0], projectionRadius: 5 },
         });
         expect(controller?.updatePoi([5.5, 0, 0])).toMatchObject({
             dominantProbeId: "B",

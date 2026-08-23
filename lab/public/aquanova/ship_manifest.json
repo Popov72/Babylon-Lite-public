@@ -8,9 +8,11 @@
     "gltf": [
       "chunks[].aabb",
       "environmentProbes[].boxPosition",
+      "environmentProbes[].spherePosition",
       "environmentProbes[].capturePosition",
       "environmentProbes[].angle",
       "environmentProbes[].influenceBoxPosition",
+      "environmentProbes[].influenceSpherePosition",
       "collision",
       "moduleCollision",
       "portals",
@@ -44,8 +46,11 @@
       "adjacency",
       "space",
       "environmentProbes[].boxSize",
+      "environmentProbes[].sphereRadius",
       "environmentProbes[].influenceBoxSize",
-      "environmentProbes[].influenceInnerBoxSize"
+      "environmentProbes[].influenceInnerBoxSize",
+      "environmentProbes[].influenceSphereRadius",
+      "environmentProbes[].influenceInnerSphereRadius"
     ],
     "convert": {
       "note": "editor <-> glTF is its own inverse: negate X.",
@@ -181,6 +186,11 @@
   "environmentProbes": [
     {
       "id": "CH01_Corridor1",
+      "capturePosition": [
+        2.1080118962737684,
+        2.5,
+        2
+      ],
       "boxPosition": [
         2.1080118962737684,
         2.5,
@@ -190,11 +200,6 @@
         11.6,
         5,
         4.5
-      ],
-      "capturePosition": [
-        2.1080118962737684,
-        2.5,
-        2
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -208,13 +213,18 @@
         5.2
       ],
       "influenceInnerBoxSize": [
-        11,
-        3.5,
-        5
+        8,
+        3.6,
+        4.4
       ]
     },
     {
       "id": "CH01_Corridor2",
+      "capturePosition": [
+        10.313207630119352,
+        2.499047666788101,
+        -8.170461957037828
+      ],
       "boxPosition": [
         10.313207630119352,
         2.499047666788101,
@@ -223,12 +233,7 @@
       "boxSize": [
         4.7035,
         5.011,
-        24.648
-      ],
-      "capturePosition": [
-        10.313207630119352,
-        2.499047666788101,
-        -8.170461957037828
+        17
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -239,16 +244,21 @@
       "influenceBoxSize": [
         6,
         8.011,
-        27.648
+        20
       ],
       "influenceInnerBoxSize": [
         5,
         3.5,
-        17
+        13
       ]
     },
     {
       "id": "CH00_Storage",
+      "capturePosition": [
+        -7.95142,
+        2.5,
+        0.03219
+      ],
       "boxPosition": [
         -7.95142,
         2.5,
@@ -258,11 +268,6 @@
         8.0972,
         5,
         8.0644
-      ],
-      "capturePosition": [
-        -7.95142,
-        2.5,
-        0.03219
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -283,6 +288,11 @@
     },
     {
       "id": "CH01_CorridorEnd",
+      "capturePosition": [
+        14.079641277139773,
+        2.297625784585776,
+        -18.05311936597713
+      ],
       "boxPosition": [
         14.079641277139773,
         2.297625784585776,
@@ -292,11 +302,6 @@
         4.1035,
         5.011,
         4.648
-      ],
-      "capturePosition": [
-        14.079641277139773,
-        2.297625784585776,
-        -18.05311936597713
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -317,6 +322,11 @@
     },
     {
       "id": "CH01_Escape1",
+      "capturePosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
       "boxPosition": [
         4.6,
         1.5,
@@ -326,11 +336,6 @@
         6.5,
         1.68,
         1
-      ],
-      "capturePosition": [
-        4.6,
-        1.5,
-        -7.1
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -351,6 +356,11 @@
     },
     {
       "id": "CH01_Escape2",
+      "capturePosition": [
+        4.6,
+        1.5,
+        -7.1
+      ],
       "boxPosition": [
         4.6,
         1.5,
@@ -360,11 +370,6 @@
         6.5,
         1.68,
         1
-      ],
-      "capturePosition": [
-        4.6,
-        1.5,
-        -7.1
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -385,6 +390,11 @@
     },
     {
       "id": "CH01_Escape3",
+      "capturePosition": [
+        1.8089687753009538,
+        1.4978633255374065,
+        -9.969499588012695
+      ],
       "boxPosition": [
         1.8089687753009538,
         1.4978633255374065,
@@ -394,11 +404,6 @@
         1.102,
         1.7157,
         4.713
-      ],
-      "capturePosition": [
-        1.8089687753009538,
-        1.4978633255374065,
-        -9.969499588012695
       ],
       "angle": 0,
       "influenceBoxPosition": [
@@ -416,6 +421,28 @@
         1.2,
         1.713
       ]
+    },
+    {
+      "id": "CH01_CorridorTurn",
+      "capturePosition": [
+        9.476712316274643,
+        2.49647854315117,
+        1.6380013525485992
+      ],
+      "shape": "sphere",
+      "spherePosition": [
+        9.476712316274643,
+        2.49647854315117,
+        1.6380013525485992
+      ],
+      "sphereRadius": 3,
+      "influenceSpherePosition": [
+        9.476712316274643,
+        2.49647854315117,
+        1.6380013525485992
+      ],
+      "influenceSphereRadius": 5,
+      "influenceInnerSphereRadius": 1
     }
   ],
   "instances": [
@@ -14517,8 +14544,8 @@
     "shipOptimize": false,
     "probes": {
       "CH01_Escape1": {
-        "alwaysVisible": true,
-        "envFaces": true,
+        "alwaysVisible": false,
+        "envFaces": false,
         "visibleParts": {
           "box": true,
           "influence": false,
@@ -14526,8 +14553,8 @@
         }
       },
       "CH01_Escape2": {
-        "alwaysVisible": true,
-        "envFaces": true,
+        "alwaysVisible": false,
+        "envFaces": false,
         "visibleParts": {
           "box": true,
           "influence": false,
@@ -14536,7 +14563,16 @@
       },
       "CH01_Escape3": {
         "alwaysVisible": false,
-        "envFaces": true,
+        "envFaces": false,
+        "visibleParts": {
+          "box": true,
+          "influence": false,
+          "inner": false
+        }
+      },
+      "CH01_CorridorTurn": {
+        "alwaysVisible": false,
+        "envFaces": false,
         "visibleParts": {
           "box": true,
           "influence": false,

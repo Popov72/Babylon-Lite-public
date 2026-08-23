@@ -273,12 +273,25 @@ export function buildManifest() {  const layout = serialize();
 
   const environmentProbes = environmentProbeIds().map((id) => {
     const probe = environmentProbeOf(id);
-    return {
+    const common = {
       id,
-      boxPosition: toGltf(probe.boxPosition),
-      boxSize: r(probe.boxSize),
       capturePosition: toGltf(probe.capturePosition),
-      angle: -probe.angle,
+    };
+    return probe.shape === "sphere"
+      ? {
+          ...common,
+          shape: "sphere",
+          spherePosition: toGltf(probe.spherePosition),
+          sphereRadius: rn(probe.sphereRadius),
+          influenceSpherePosition: toGltf(probe.influenceSpherePosition),
+          influenceSphereRadius: rn(probe.influenceSphereRadius),
+          influenceInnerSphereRadius: rn(probe.influenceInnerSphereRadius),
+        }
+      : {
+          ...common,
+          boxPosition: toGltf(probe.boxPosition),
+          boxSize: r(probe.boxSize),
+          angle: -probe.angle,
       // The volume the runtime blends this probe over, which is a different
       // question from the volume it projects onto: the box above is the room's
       // walls, these two are where the cubemap starts and stops being the one
@@ -287,7 +300,7 @@ export function buildManifest() {  const layout = serialize();
       influenceBoxPosition: toGltf(probe.influenceBoxPosition),
       influenceBoxSize: r(probe.influenceBoxSize),
       influenceInnerBoxSize: r(probe.influenceInnerBoxSize),
-    };
+        };
   });
 
   const doors = [];
@@ -368,17 +381,22 @@ export function buildManifest() {  const layout = serialize();
     // lets a reader assert instead of remember.
     space: {
       gltf: ["chunks[].aabb", "environmentProbes[].boxPosition",
+        "environmentProbes[].spherePosition",
         "environmentProbes[].capturePosition",
         "environmentProbes[].angle",
         "environmentProbes[].influenceBoxPosition",
+        "environmentProbes[].influenceSpherePosition",
         "collision", "moduleCollision", "portals", "doors"],
       editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
       none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kits",
         "activeChunk", "fluidSim", "behaviors", "entities", "environment",
         "editorEnvironment", "editorPrefs", "adjacency", "space",
         "environmentProbes[].boxSize",
+        "environmentProbes[].sphereRadius",
         "environmentProbes[].influenceBoxSize",
-        "environmentProbes[].influenceInnerBoxSize"],
+        "environmentProbes[].influenceInnerBoxSize",
+        "environmentProbes[].influenceSphereRadius",
+        "environmentProbes[].influenceInnerSphereRadius"],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",
@@ -744,7 +762,8 @@ async function exportGlbInner() {
   }
 }
 
-function r(a) { return a.map((v) => Math.round(v * 1e4) / 1e4); }
+function rn(value) { return Math.round(value * 1e4) / 1e4; }
+function r(a) { return a.map(rn); }
 
 /** A placement's own primitives - its module's parts, and nothing else. */
 function artMeshes(node) {

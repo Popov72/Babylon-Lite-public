@@ -780,6 +780,28 @@ export async function main(): Promise<void> {
     canvas.dataset.dynamicCount = String(behaviorManager.dynamicMeshes.size);
     canvas.dataset.liquefiableCount = String(behaviorManager.liquefiableMeshes.size);
 
+    const LIQUEFY_EDGE = 0.6; // fire-glow band width at the dissolving boundary
+    type PluginMat = { plugins?: unknown[]; _uboVersion: number };
+    const liquefyStates = new Map<Mesh, LiquefyState>();
+
+    // Ship materials are shared, so every liquefiable mesh needs its own dissolve state. Install it
+    // before lighting and local-environment decorators clone the material: local probe assignments
+    // are held outside the material object, so cloning after applyLocalEnvironmentProbes would
+    // silently discard them.
+    for (const m of behaviorManager.dissolvableMeshes) {
+        const mat = m.material;
+        if (!mat || !isPbrMaterial(mat)) continue;
+        const st: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
+        const src = mat as unknown as PluginMat;
+        m.material = {
+            ...(mat as object),
+            _renderFeatures: undefined,
+            _uboVersion: 0,
+            plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => st, "pbr")],
+        } as unknown as Material;
+        liquefyStates.set(m, st);
+    }
+
     // ── Ship lighting ──────────────────────────────────────────────────────────────────────────
     // Every enabled ship mesh uses the authored runtime lamps. Build them before registerScene:
     // clustered-light state and the regular-light UBO layout are pipeline inputs.
@@ -2884,30 +2906,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     // the two must agree or what the audition shows is not what the game does.
     const LIQUEFY_SPEED = 1;
     const DEFAULT_SAMPLE_RADIUS = 0.03; // volume-sampling spacing when a fluidSim setting omits demoParams.particleRadius
-    const LIQUEFY_EDGE = 0.6; // fire-glow band width at the dissolving boundary
 
-    // Dissolve clip: give each liquefiable mesh its OWN material instance (a shallow clone — textures
-    // and build group are shared by reference) carrying a private liquefy plugin + state. The ship's
-    // materials are shared level-wide (many walls/props reuse e.g. MI_Trim_02), so attaching the clip
-    // to the shared material would make EVERY mesh using it clip/glow around the same hit point. Cloning
-    // per mesh isolates the dissolve to the shot target. Done BEFORE registerScene so each clone's
-    // pipeline is compiled with the plugin; disabled (no-op) until a shot fires.
-    type PluginMat = { plugins?: unknown[]; _uboVersion: number };
-    const liquefyStates = new Map<Mesh, LiquefyState>();
-    for (const m of behaviorManager.dissolvableMeshes) {
-        const mat = m.material;
-        if (!mat || !isPbrMaterial(mat)) continue;
-        const st: LiquefyState = { hit: [0, 0, 0], frontR: 0, edge: LIQUEFY_EDGE, enabled: false };
-        const src = mat as unknown as PluginMat;
-        const clone = {
-            ...(mat as object),
-            _renderFeatures: undefined,
-            _uboVersion: 0,
-            plugins: [...(src.plugins ?? []), createLiquefyPlugin(() => st, "pbr")],
-        } as unknown as Material;
-        m.material = clone;
-        liquefyStates.set(m, st);
-    }
     const bumpMat = (mat: Material): void => {
         (mat as unknown as PluginMat)._uboVersion++;
     };

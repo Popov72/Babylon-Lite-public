@@ -240,6 +240,26 @@ describe("PBR local cubemap projection", () => {
         expect(data[20]).toBeCloseTo(0.65);
     });
 
+    it("writes spherical single-probe projection data to the material UBO", () => {
+        const material = {} as PbrMaterialProps;
+        setPbrLocalEnvironment(material, makeEnvironment({ _sphericalHarmonics: new Float32Array(36) }), {
+            shape: "sphere",
+            projectionPosition: [1, 2, 3],
+            projectionRadius: 7,
+        });
+        const data = new Float32Array(8);
+        const offsets = new Map<string, number>([
+            ["vReflectionPosition", 0],
+            ["vReflectionSize", 16],
+        ]);
+
+        pbrExt.writeUbo!(data, material, offsets);
+
+        expect(Array.from(data.slice(0, 3))).toEqual([1, 2, 3]);
+        expect(Array.from(data.slice(4, 7))).toEqual([14, 14, 14]);
+        expect(pbrExt.detect!(material)).toEqual({ f: (1 << 24) | (1 << 31), f2: 0 });
+    });
+
     it("supplies complete local IBL without adding fields to ordinary PBR materials", async () => {
         const environment = makeEnvironment({
             _brdfLutView: {} as GPUTextureView,
@@ -334,7 +354,11 @@ describe("PBR local cubemap projection", () => {
         expect(result._fragmentWGSL).toContain("let candidateCount=min(localProbeGrid.indices[voxelBase],6u);");
         expect(result._fragmentWGSL).toContain("var ndfs:array<f32,6>");
         expect(result._fragmentWGSL).toContain("fn probeNdf(");
-        expect(result._fragmentWGSL).toContain("let axisNdf=(abs(localPosition)-innerHalfSize)/span;");
+        expect(result._fragmentWGSL).toContain("let axisNdf=(abs(localPosition)-innerExtent)/span;");
+        expect(result._fragmentWGSL).toContain("fn localProbeIsSphere(");
+        expect(result._fragmentWGSL).toContain("return (length(localPosition)-innerExtent.x)");
+        expect(result._fragmentWGSL).toContain("let determinant=b*b-a*(dot(localPos,localPos)-radius*radius);");
+        expect(result._fragmentWGSL).toContain("if(determinant<0.0){return worldRay;}");
         expect(result._fragmentWGSL).toContain("var nearestProbeIndex=voxelProbeIndex(voxelBase,0u);");
         expect(result._fragmentWGSL).toContain("return sampleOneLocalProbe(nearestProbeIndex");
         expect(result._fragmentWGSL).toContain("let boundaryWeight=(1.0-ndf/max(sumNdf,0.00001))/countMinusOne;");
@@ -446,12 +470,13 @@ describe("PBR local cubemap projection", () => {
                 },
                 {
                     environment: environment(512, 10),
+                    shape: "sphere",
                     capturePosition: [0, 0, 0],
                     projectionPosition: [0, 0, 0],
-                    projectionSize: [4, 4, 4],
+                    projectionRadius: 2,
                     influencePosition: [0, 0, 0],
-                    influenceInnerSize: [2, 2, 2],
-                    influenceOuterSize: [6, 6, 6],
+                    influenceInnerRadius: 1,
+                    influenceOuterRadius: 3,
                 },
             ],
             voxelGrid: {
@@ -469,6 +494,7 @@ describe("PBR local cubemap projection", () => {
         expect(set._uniformData[4 + 19]).toBeCloseTo(1);
         expect(set._uniformData[4 + 11]).toBeCloseTo(-0.2);
         expect(set._uniformU32[4 + 23]).toBe(0x996633);
+        expect(set._uniformU32[4 + 24 + 23]).toBe(0x01ff00ff);
         expect(device.createBuffer).toHaveBeenCalledWith(expect.objectContaining({ size: 65536, usage: expect.any(Number) }));
         expect(device.createBuffer).toHaveBeenCalledWith(expect.objectContaining({ mappedAtCreation: true }));
         expect(writes).toHaveLength(1);
@@ -528,6 +554,69 @@ describe("PBR local cubemap projection", () => {
 
         expect(getPbrLocalEnvironmentProbeGridCell(set, [3, 0, 0]).probeIndices).toEqual([0, 1]);
         expect(getPbrLocalEnvironmentProbeGridCell(set, [-3, 0, 3]).probeIndices).toEqual([0]);
+    });
+
+    it("voxelizes spherical outer influence with exact sphere-to-cell intersections", () => {
+        const { scene, environment } = makeProbeGridTestScene();
+        const set = createPbrLocalEnvironmentProbeSet(scene as never, {
+            probes: [
+                {
+                    environment,
+                    shape: "sphere",
+                    capturePosition: [0, 0, 0],
+                    projectionPosition: [0, 0, 0],
+                    projectionRadius: 1,
+                    influencePosition: [0, 0, 0],
+                    influenceInnerRadius: 0,
+                    influenceOuterRadius: 1,
+                },
+                {
+                    environment,
+                    capturePosition: [0, 0, 0],
+                    projectionPosition: [0, 0, 0],
+                    projectionSize: [4, 4, 4],
+                    influencePosition: [0, 0, 0],
+                    influenceInnerSize: [0, 0, 0],
+                    influenceOuterSize: [4, 4, 4],
+                },
+            ],
+            voxelGrid: {
+                minimum: [-2, -2, -2],
+                maximum: [2, 2, 2],
+                cellSize: 1,
+            },
+        });
+
+        expect(getPbrLocalEnvironmentProbeGridCell(set, [0.5, 0.5, 0.5]).probeIndices).toEqual([0, 1]);
+        expect(getPbrLocalEnvironmentProbeGridCell(set, [1.5, 1.5, 0.5]).probeIndices).toEqual([1]);
+    });
+
+    it("rejects invalid spherical projection and influence radii", () => {
+        const { scene, environment } = makeProbeGridTestScene();
+        const probe = {
+            environment,
+            shape: "sphere" as const,
+            capturePosition: [0, 0, 0] as const,
+            projectionPosition: [0, 0, 0] as const,
+            projectionRadius: 2,
+            influencePosition: [0, 0, 0] as const,
+            influenceInnerRadius: 3,
+            influenceOuterRadius: 2,
+        };
+
+        expect(() =>
+            createPbrLocalEnvironmentProbeSet(scene as never, {
+                probes: [probe],
+                voxelGrid: { minimum: [-2, -2, -2], maximum: [2, 2, 2], cellSize: 1 },
+            })
+        ).toThrow(/influenceInnerRadius/);
+        expect(() =>
+            setPbrLocalEnvironment({} as PbrMaterialProps, environment, {
+                shape: "sphere",
+                projectionPosition: [0, 0, 0],
+                projectionRadius: 0,
+            })
+        ).toThrow(/projectionRadius/);
     });
 
     it("fails explicitly when one voxel intersects more probes than maxCandidates", () => {

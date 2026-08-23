@@ -12,6 +12,7 @@ import { _getPbrLocalEnvironment, type PbrLocalEnvironmentState } from "../pbr-l
 import {
     _PBR_LOCAL_ENVIRONMENT_DEBUG_COLOR_FLAG,
     _PBR_LOCAL_ENVIRONMENT_PARALLAX_FLAG,
+    _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG,
     MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
     MAX_PBR_LOCAL_ENVIRONMENT_PROBES,
 } from "../pbr-local-cubemap-limits.js";
@@ -48,7 +49,7 @@ let s=sin(angle);
 return vec3f(v.x*c+v.z*s,v.y,-v.x*s+v.z*c);
 }`;
 
-const SINGLE_CUBEMAP_HELPER = `fn parallaxCorrectNormal(vertexPos:vec3f,origVec:vec3f,cubeSize:vec3f,cubePos:vec3f)->vec3f{
+const SINGLE_BOX_CUBEMAP_HELPER = `fn parallaxCorrectNormal(vertexPos:vec3f,origVec:vec3f,cubeSize:vec3f,cubePos:vec3f)->vec3f{
 let invOrigVec=vec3f(1.0)/origVec;
 let halfSize=cubeSize*0.5;
 let intersecAtMaxPlane=(cubePos+halfSize-vertexPos)*invOrigVec;
@@ -56,6 +57,19 @@ let intersecAtMinPlane=(cubePos-halfSize-vertexPos)*invOrigVec;
 let largestIntersec=max(intersecAtMaxPlane,intersecAtMinPlane);
 let distance=min(min(largestIntersec.x,largestIntersec.y),largestIntersec.z);
 return vertexPos+origVec*distance-cubePos;
+}`;
+
+const SINGLE_SPHERE_CUBEMAP_HELPER = `fn parallaxCorrectNormal(vertexPos:vec3f,origVec:vec3f,sphereSize:vec3f,spherePos:vec3f)->vec3f{
+let localPos=vertexPos-spherePos;
+let a=dot(origVec,origVec);
+let b=dot(localPos,origVec);
+let radius=sphereSize.x*0.5;
+let c=dot(localPos,localPos)-radius*radius;
+let determinant=b*b-a*c;
+if(determinant<0.0){return origVec;}
+let distance=(-b+sqrt(determinant))/max(a,0.00001);
+if(distance<=0.0){return origVec;}
+return localPos+origVec*distance;
 }`;
 
 const IBL_SCENE_IRRADIANCE = `let environmentIrradiance = (scene.vSphericalL00.rgb
@@ -105,12 +119,18 @@ return cellIndex*localProbeGrid.dimensionsAndStride.w;
 fn voxelProbeIndex(base:u32,slot:u32)->u32{
 return localProbeGrid.indices[base+1u+slot];
 }
-fn insideProbeBox(localPosition:vec3f,halfSize:vec3f)->bool{
-return all(abs(localPosition)<=halfSize);
+fn localProbeIsSphere(probe:LocalEnvironmentProbe)->bool{
+return (bitcast<u32>(probe.influenceOuterHalfSize.w)&${_PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG}u)!=0u;
 }
-fn probeNdf(localPosition:vec3f,innerHalfSize:vec3f,outerHalfSize:vec3f)->f32{
-let span=max(outerHalfSize-innerHalfSize,vec3f(0.00001));
-let axisNdf=(abs(localPosition)-innerHalfSize)/span;
+fn insideProbeVolume(localPosition:vec3f,extent:vec3f,isSphere:bool)->bool{
+return select(all(abs(localPosition)<=extent),length(localPosition)<=extent.x,isSphere);
+}
+fn probeNdf(localPosition:vec3f,innerExtent:vec3f,outerExtent:vec3f,isSphere:bool)->f32{
+if(isSphere){
+return (length(localPosition)-innerExtent.x)/max(outerExtent.x-innerExtent.x,0.00001);
+}
+let span=max(outerExtent-innerExtent,vec3f(0.00001));
+let axisNdf=(abs(localPosition)-innerExtent)/span;
 return max(axisNdf.x,max(axisNdf.y,axisNdf.z));
 }
 fn probeReflectionDirection(worldPos:vec3f,worldRay:vec3f,probe:LocalEnvironmentProbe)->vec3f{
@@ -121,6 +141,18 @@ let boxCentre=probe.projectionCentreAndLayer.xyz;
 let localPos=probeToLocal(worldPos-boxCentre,c,s);
 let localRay=probeToLocal(worldRay,c,s);
 let halfSize=probe.projectionHalfSizeAndLodScale.xyz;
+if(localProbeIsSphere(probe)){
+let a=dot(localRay,localRay);
+let b=dot(localPos,localRay);
+let radius=halfSize.x;
+let determinant=b*b-a*(dot(localPos,localPos)-radius*radius);
+if(determinant<0.0){return worldRay;}
+let distance=(-b+sqrt(determinant))/max(a,0.00001);
+if(distance<=0.0){return worldRay;}
+let localHit=localPos+localRay*distance;
+let localCapture=probeToLocal(probe.capturePositionAndLodBias.xyz-boxCentre,c,s);
+return probeToWorld(localHit-localCapture,c,s);
+}
 let invRay=vec3f(1.0)/localRay;
 let maxPlane=(halfSize-localPos)*invRay;
 let minPlane=(-halfSize-localPos)*invRay;
@@ -159,15 +191,16 @@ if(slot>=candidateCount){break;}
 let probeIndex=voxelProbeIndex(voxelBase,slot);
 let probe=localProbeData.probes[probeIndex];
 let localPosition=probeToLocal(worldPos-probe.influenceCentreAndCos.xyz,probe.influenceCentreAndCos.w,probe.influenceInnerHalfSizeAndSin.w);
-if(insideProbeBox(localPosition,probe.influenceInnerHalfSizeAndSin.xyz)){
+let isSphere=localProbeIsSphere(probe);
+if(insideProbeVolume(localPosition,probe.influenceInnerHalfSizeAndSin.xyz,isSphere)){
 return sampleOneLocalProbe(probeIndex,worldPos,worldRay,alphaG,envRotationY)*outputIntensity;
 }
-let rawNdf=probeNdf(localPosition,probe.influenceInnerHalfSizeAndSin.xyz,probe.influenceOuterHalfSize.xyz);
+let rawNdf=probeNdf(localPosition,probe.influenceInnerHalfSizeAndSin.xyz,probe.influenceOuterHalfSize.xyz,isSphere);
 if(rawNdf<nearestNdf){
 nearestNdf=rawNdf;
 nearestProbeIndex=probeIndex;
 }
-if(insideProbeBox(localPosition,probe.influenceOuterHalfSize.xyz)){
+if(insideProbeVolume(localPosition,probe.influenceOuterHalfSize.xyz,isSphere)){
 let ndf=clamp(rawNdf,0.0,1.0);
 ndfs[slot]=ndf;
 included[slot]=true;
@@ -352,19 +385,20 @@ let finalRadianceScaled=environmentRadiance*colorSpecularEnvReflectance*energyCo
 color=finalIrradiance+finalRadianceScaled+finalSpecularScaled+directDiffuse+emissive;`;
 }
 
-function createSingleFragment(ctx: _PbrFragCtx): ShaderFragment {
+function createSingleFragment(ctx: _PbrFragCtx, sphere: boolean): ShaderFragment {
     const uboFields: UboField[] = [
         { _name: "vReflectionPosition", _type: "vec3<f32>" },
         { _name: "vReflectionSize", _type: "vec3<f32>" },
         { _name: "localLodGenerationScale", _type: "f32" },
         ...LOCAL_SH_UBO_FIELDS,
     ];
+    const helper = sphere ? SINGLE_SPHERE_CUBEMAP_HELPER : SINGLE_BOX_CUBEMAP_HELPER;
     if (ctx._hasIbl) {
         return {
             _id: "local-cubemap",
             _dependencies: ["ibl"],
             _uboFields: uboFields,
-            _helperFunctions: SINGLE_CUBEMAP_HELPER,
+            _helperFunctions: helper,
             _pc: patchSingleSceneIbl,
         };
     }
@@ -377,7 +411,7 @@ function createSingleFragment(ctx: _PbrFragCtx): ShaderFragment {
             { _name: "iblTexture", _type: { _kind: "texture", _textureType: "texture_cube<f32>" }, _visibility: STAGE_FRAGMENT },
             { _name: "iblSampler", _type: { _kind: "sampler", _samplerType: "sampler" }, _visibility: STAGE_FRAGMENT },
         ],
-        _helperFunctions: `${IBL_HELPERS}\n${SINGLE_CUBEMAP_HELPER}`,
+        _helperFunctions: `${IBL_HELPERS}\n${helper}`,
         _fragmentSlots: {
             AI: standaloneIblCode(
                 "let R_raw=reflect(-V,N);let R=rotateY(parallaxCorrectNormal(input.worldPos,R_raw,material.vReflectionSize,material.vReflectionPosition),scene.envRotationY);",
@@ -498,13 +532,17 @@ export const pbrExt: PbrExt = {
     phase: "fragment",
     detect(material) {
         const state = _getPbrLocalEnvironment(material);
-        return state?.kind === "probes" ? { f: PBR_HAS_LOCAL_PROBE_SET, f2: 0 } : { f: state?.kind === "single" ? PBR_HAS_LOCAL_CUBEMAP : 0, f2: 0 };
+        return state?.kind === "probes"
+            ? { f: PBR_HAS_LOCAL_PROBE_SET, f2: 0 }
+            : { f: state?.kind === "single" ? PBR_HAS_LOCAL_CUBEMAP | (state.shape === "sphere" ? PBR_HAS_LOCAL_PROBE_SET : 0) : 0, f2: 0 };
     },
     frag(ctx) {
-        if ((ctx._features & PBR_HAS_LOCAL_PROBE_SET) !== 0) {
+        const hasLocalCubemap = (ctx._features & PBR_HAS_LOCAL_CUBEMAP) !== 0;
+        const hasProbeSetOrSphere = (ctx._features & PBR_HAS_LOCAL_PROBE_SET) !== 0;
+        if (hasProbeSetOrSphere && !hasLocalCubemap) {
             return createProbeArrayFragment(ctx);
         }
-        return (ctx._features & PBR_HAS_LOCAL_CUBEMAP) !== 0 ? createSingleFragment(ctx) : null;
+        return hasLocalCubemap ? createSingleFragment(ctx, hasProbeSetOrSphere) : null;
     },
     writeUbo(data, material, offsets) {
         const state = _getPbrLocalEnvironment(material);

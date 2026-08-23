@@ -211,12 +211,21 @@ export async function localEnvironmentProbeOf(id) {
     effective:
       authored ||
       (usableGenerated
-        ? {
-            id,
-            boxPosition: editorPoint(generated.boxPosition),
-            boxSize: generated.boxSize?.map(Number),
-            capturePosition: editorPoint(generated.position),
-          }
+        ? generated.shape === "sphere"
+          ? {
+              id,
+              shape: "sphere",
+              spherePosition: editorPoint(generated.spherePosition),
+              sphereRadius: Number(generated.sphereRadius),
+              capturePosition: editorPoint(generated.position),
+            }
+          : {
+              id,
+              shape: "box",
+              boxPosition: editorPoint(generated.boxPosition),
+              boxSize: generated.boxSize?.map(Number),
+              capturePosition: editorPoint(generated.position),
+            }
         : null),
     generated,
   };
@@ -234,8 +243,13 @@ function applyTextureBox(texture, id, index = localEnvironmentIndex, draft = nul
         }
       : null);
   if (!box) return;
-  texture.boundingBoxPosition = Vector3.FromArray(box.boxPosition);
-  texture.boundingBoxSize = Vector3.FromArray(box.boxSize);
+  if (box.shape === "sphere") {
+    texture.boundingBoxPosition = Vector3.FromArray(box.spherePosition);
+    texture.boundingBoxSize = new Vector3(box.sphereRadius * 2, box.sphereRadius * 2, box.sphereRadius * 2);
+  } else {
+    texture.boundingBoxPosition = Vector3.FromArray(box.boxPosition);
+    texture.boundingBoxSize = Vector3.FromArray(box.boxSize);
+  }
 }
 
 function applyLocalEnvironmentBoxes() {
@@ -300,13 +314,16 @@ function probePalette(dim) {
  * framed. Names carry the probe id so two probes on screen at once are two
  * nodes anybody - a test, the inspector, the scene explorer - can tell apart.
  */
-function ensureProbeGizmos(id) {
+function ensureProbeGizmos(id, shape) {
   const existing = probeGizmos.get(id);
-  if (existing) return existing;
-  const set = { id, dim: null };
+  if (existing?.shape === shape) return existing;
+  if (existing) disposeProbeGizmos(id);
+  const set = { id, shape, dim: null };
   set.box = new TransformNode(probeNodeName("BOX_ROOT", id), state.scene);
   set.box.metadata = { gizmo: true, localEnvironmentBox: true, probe: id };
-  set.boxMesh = MeshBuilder.CreateBox(probeNodeName("BOX", id), { size: 1 }, state.scene);
+  set.boxMesh = shape === "sphere"
+    ? MeshBuilder.CreateSphere(probeNodeName("SPHERE", id), { diameter: 1, segments: 24 }, state.scene)
+    : MeshBuilder.CreateBox(probeNodeName("BOX", id), { size: 1 }, state.scene);
   set.boxMesh.parent = set.box;
   set.boxMesh.isPickable = true;
   set.boxMesh.renderingGroupId = 3;
@@ -339,10 +356,10 @@ function ensureProbeGizmos(id) {
   // selectable part of the probe - but they are NOT handles on the capture box:
   // the box is what the cubemap sees, the influence is only where that cubemap
   // is worth using, and the two move and resize independently.
-  const influence = makeProbeVolume("INFLUENCE_BOX", id);
+  const influence = makeProbeVolume("INFLUENCE_BOX", id, shape);
   set.influence = influence.root;
   set.influenceMesh = influence.mesh;
-  const inner = makeProbeVolume("INNER_BOX", id);
+  const inner = makeProbeVolume("INNER_BOX", id, shape);
   set.inner = inner.root;
   set.innerMesh = inner.mesh;
   probeGizmos.set(id, set);
@@ -358,10 +375,12 @@ function probeNodeName(part, id) {
   return `LOCAL_ENVIRONMENT_${part}#${id}`;
 }
 
-function makeProbeVolume(part, id) {
+function makeProbeVolume(part, id, shape) {
   const root = new TransformNode(probeNodeName(`${part}_ROOT`, id), state.scene);
   root.metadata = { gizmo: true, localEnvironmentInfluenceBox: true, probe: id };
-  const mesh = MeshBuilder.CreateBox(probeNodeName(part, id), { size: 1 }, state.scene);
+  const mesh = shape === "sphere"
+    ? MeshBuilder.CreateSphere(probeNodeName(part.replace("BOX", "SPHERE"), id), { diameter: 1, segments: 24 }, state.scene)
+    : MeshBuilder.CreateBox(probeNodeName(part, id), { size: 1 }, state.scene);
   mesh.parent = root;
   mesh.isPickable = true;
   mesh.renderingGroupId = 3;
@@ -502,8 +521,9 @@ void main(void) {
   set.surfaceMaterial.setFloat(
     "surfaceAlpha", set.dim ? PROBE_SURFACE_DIM_ALPHA : PROBE_SURFACE_ALPHA);
   updateProbeSurfaceView(set.surfaceMaterial);
-  set.surface = MeshBuilder.CreateBox(
-    probeNodeName("BOX_SURFACE", set.id), { size: 1 }, state.scene);
+  set.surface = set.shape === "sphere"
+    ? MeshBuilder.CreateSphere(probeNodeName("SPHERE_SURFACE", set.id), { diameter: 1, segments: 32 }, state.scene)
+    : MeshBuilder.CreateBox(probeNodeName("BOX_SURFACE", set.id), { size: 1 }, state.scene);
   set.surface.material = set.surfaceMaterial;
   set.surface.isPickable = false;
   set.surface.renderingGroupId = 2;
@@ -623,25 +643,34 @@ async function drawEnvironmentProbe(id, request) {
     disposeProbeGizmos(id);
     return { id, info };
   }
-  const set = ensureProbeGizmos(id);
+  const shape = box.shape === "sphere" ? "sphere" : "box";
+  const set = ensureProbeGizmos(id, shape);
   applyProbePalette(set, id !== probeSelectedId);
   // Which volumes this probe draws is its own view state. A probe read straight
   // off a legacy generated index has none at all, and draws all three.
   const view = state.environmentProbes.get(id);
   const shows = (volume) => view?.visibleParts?.[volume] !== false;
   const showBox = shows("box");
-  set.box.position.copyFromFloats(...box.boxPosition);
-  set.box.scaling.copyFromFloats(...box.boxSize);
+  const projectionPosition = shape === "sphere" ? box.spherePosition : box.boxPosition;
+  const projectionSize = shape === "sphere"
+    ? [box.sphereRadius * 2, box.sphereRadius * 2, box.sphereRadius * 2]
+    : box.boxSize;
+  set.box.position.copyFromFloats(...projectionPosition);
+  set.box.scaling.copyFromFloats(...projectionSize);
   set.box.setEnabled(showBox);
-  set.centre.position.copyFromFloats(...box.boxPosition);
+  set.centre.position.copyFromFloats(...projectionPosition);
   set.centre.setEnabled(showBox);
   set.camera.position.copyFromFloats(...box.capturePosition);
   set.camera.setEnabled(showBox);
   // A probe read straight off a legacy generated index has no influence of its
   // own; showing nothing beats showing a volume the author never wrote.
-  const influenceCentre = probeVector(box.influenceBoxPosition);
-  const influenceSize = probeVector(box.influenceBoxSize);
-  const innerSize = probeVector(box.influenceInnerBoxSize);
+  const influenceCentre = probeVector(shape === "sphere" ? box.influenceSpherePosition : box.influenceBoxPosition);
+  const influenceSize = shape === "sphere"
+    ? [box.influenceSphereRadius * 2, box.influenceSphereRadius * 2, box.influenceSphereRadius * 2]
+    : probeVector(box.influenceBoxSize);
+  const innerSize = shape === "sphere"
+    ? [box.influenceInnerSphereRadius * 2, box.influenceInnerSphereRadius * 2, box.influenceInnerSphereRadius * 2]
+    : probeVector(box.influenceInnerBoxSize);
   if (influenceCentre && influenceSize) {
     set.influence.position.copyFromFloats(...influenceCentre);
     set.influence.scaling.copyFromFloats(...influenceSize);
@@ -669,7 +698,7 @@ async function drawEnvironmentProbe(id, request) {
   const texture = await localEnvironmentTextureForBox(id);
   if (request !== localEnvironmentBoxShowRequest || !texture
     || !probeGizmos.has(id) || !state.environmentProbes.get(id)?.envFaces) return { id, info };
-  const capturePosition = box.capturePosition || box.boxPosition;
+  const capturePosition = box.capturePosition || projectionPosition;
   set.surfaceMaterial.setTexture("environmentSampler", texture);
   set.surfaceMaterial.setVector3("capturePosition", Vector3.FromArray(capturePosition));
   set.surfaceMaterial.setMatrix("reflectionMatrix", texture.getReflectionTextureMatrix());
@@ -677,8 +706,8 @@ async function drawEnvironmentProbe(id, request) {
   const oppositeZ = state.scene.useRightHandedSystem ? !texture.invertZ : texture.invertZ;
   set.surfaceMaterial.setFloat("oppositeZ", oppositeZ ? -1 : 1);
   updateProbeSurfaceView(set.surfaceMaterial);
-  surface.position.copyFromFloats(...box.boxPosition);
-  surface.scaling.copyFromFloats(...box.boxSize);
+  surface.position.copyFromFloats(...projectionPosition);
+  surface.scaling.copyFromFloats(...projectionSize);
   surface.setEnabled(true);
   return { id, info };
 }
@@ -692,7 +721,9 @@ async function loadLocalEnvironments() {
     const entries = index?.probes || index?.chunks || {};
     await Promise.all(
       Object.entries(entries).map(async ([id, entry]) => {
-        if (!entry?.env || !entry?.boxPosition || !entry?.boxSize) return;
+        if (!entry?.env || (entry.shape === "sphere"
+          ? !entry?.spherePosition || !Number.isFinite(Number(entry?.sphereRadius))
+          : !entry?.boxPosition || !entry?.boxSize)) return;
         if (index?.probes && !environmentProbeOf(id)) return;
         const query = entry.hash ? `?h=${encodeURIComponent(entry.hash)}` : "";
         const texture = CubeTexture.CreateFromPrefilteredData(`/environments/${encodeURIComponent(entry.env)}${query}`, state.scene);
@@ -996,23 +1027,58 @@ function localEnvironmentProbeForBounds(min, max, environments = preview?.localE
   let bestShare = 0;
   let bestVolume = Infinity;
   for (const [id, texture] of environments || []) {
-    if (localEnvironmentIndex?.probes && !environmentProbeOf(id)) continue;
+    const authored = environmentProbeOf(id);
+    if (localEnvironmentIndex?.probes && !authored) continue;
     const centre = texture.boundingBoxPosition;
     const size = texture.boundingBoxSize;
-    let share = 1;
-    for (const axis of AXES) {
-      const half = size[axis] * 0.5;
-      const lo = Math.max(min[axis], centre[axis] - half);
-      const hi = Math.min(max[axis], centre[axis] + half);
-      if (hi < lo) {
-        share = 0;
-        break;
+    let share;
+    let volume;
+    if (authored?.shape === "sphere") {
+      let distanceSquared = 0;
+      for (const axis of AXES) {
+        const delta = centre[axis] < min[axis]
+          ? min[axis] - centre[axis]
+          : centre[axis] > max[axis] ? centre[axis] - max[axis] : 0;
+        distanceSquared += delta * delta;
       }
-      const extent = max[axis] - min[axis];
-      if (extent > 0) share *= (hi - lo) / extent;
+      if (distanceSquared > authored.sphereRadius * authored.sphereRadius) continue;
+      const samples = AXES.map((axis) => {
+        const extent = max[axis] - min[axis];
+        return extent <= SHARE_EPSILON
+          ? [(min[axis] + max[axis]) * 0.5]
+          : Array.from({ length: 5 }, (_, index) => min[axis] + extent * ((index + 0.5) / 5));
+      });
+      let inside = 0;
+      let count = 0;
+      for (const x of samples[0]) {
+        for (const y of samples[1]) {
+          for (const z of samples[2]) {
+            count++;
+            if ((x - centre.x) ** 2 + (y - centre.y) ** 2 + (z - centre.z) ** 2
+              <= authored.sphereRadius ** 2) inside++;
+          }
+        }
+      }
+      // Exact intersection above keeps thin boundary geometry eligible even
+      // when none of the finite-volume sample centres lands inside.
+      share = inside / count || SHARE_EPSILON;
+      volume = (4 / 3) * Math.PI * authored.sphereRadius ** 3;
+    } else {
+      share = 1;
+      for (const axis of AXES) {
+        const half = size[axis] * 0.5;
+        const lo = Math.max(min[axis], centre[axis] - half);
+        const hi = Math.min(max[axis], centre[axis] + half);
+        if (hi < lo) {
+          share = 0;
+          break;
+        }
+        const extent = max[axis] - min[axis];
+        if (extent > 0) share *= (hi - lo) / extent;
+      }
+      volume = size.x * size.y * size.z;
     }
     if (share <= 0) continue;
-    const volume = size.x * size.y * size.z;
     if (share > bestShare + SHARE_EPSILON || (share > bestShare - SHARE_EPSILON && volume < bestVolume)) {
       best = id;
       bestShare = share;
@@ -1484,6 +1550,30 @@ export function meshesInProbeBox(boxPosition, boxSize) {
     if (bounds.max.y < min.y || bounds.min.y > max.y) continue;
     if (bounds.max.z < min.z || bounds.min.z > max.z) continue;
     out.push(...group);
+  }
+  return out;
+}
+
+export function meshesInProbeVolume(probe) {
+  if (probe?.shape !== "sphere") {
+    return meshesInProbeBox(probe.boxPosition, probe.boxSize);
+  }
+  if (!preview) return [];
+  const centre = Vector3.FromArray(probe.spherePosition);
+  const radiusSquared = probe.sphereRadius * probe.sphereRadius;
+  const out = [];
+  for (const group of preview.elementMeshes.values()) {
+    if (probeExcluded(group)) continue;
+    const bounds = elementWorldBounds(group);
+    if (!bounds) continue;
+    let distanceSquared = 0;
+    for (const axis of ["x", "y", "z"]) {
+      const delta = centre[axis] < bounds.min[axis]
+        ? bounds.min[axis] - centre[axis]
+        : centre[axis] > bounds.max[axis] ? centre[axis] - bounds.max[axis] : 0;
+      distanceSquared += delta * delta;
+    }
+    if (distanceSquared <= radiusSquared) out.push(...group);
   }
   return out;
 }

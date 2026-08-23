@@ -2,6 +2,7 @@ export type ProbeBlendVec3 = readonly [number, number, number];
 
 export interface BoxProbeInfluence {
     readonly id: string;
+    readonly shape?: "box";
     readonly centre: ProbeBlendVec3;
     /** Half extents where this probe still has full influence. */
     readonly innerHalfSize: ProbeBlendVec3;
@@ -11,13 +12,35 @@ export interface BoxProbeInfluence {
     readonly angleRadians?: number;
 }
 
+export interface SphereProbeInfluence {
+    readonly id: string;
+    readonly shape: "sphere";
+    readonly centre: ProbeBlendVec3;
+    /** Radius where this probe still has full influence. */
+    readonly innerRadius: number;
+    /** Radius where this probe reaches zero influence. */
+    readonly outerRadius: number;
+}
+
+export type ProbeInfluence = BoxProbeInfluence | SphereProbeInfluence;
+
 export interface BoxProbeRegion {
     readonly id: string;
+    readonly shape?: "box";
     readonly projectionCentre: ProbeBlendVec3;
     readonly projectionHalfSize: ProbeBlendVec3;
     /** Yaw in radians. Defaults to zero. */
     readonly angleRadians?: number;
 }
+
+export interface SphereProbeRegion {
+    readonly id: string;
+    readonly shape: "sphere";
+    readonly projectionCentre: ProbeBlendVec3;
+    readonly projectionRadius: number;
+}
+
+export type ProbeRegion = BoxProbeRegion | SphereProbeRegion;
 
 export interface ProbeBlendWeight {
     readonly id: string;
@@ -59,8 +82,18 @@ export function boxProbeNdf(probe: BoxProbeInfluence, point: ProbeBlendVec3): nu
     return ndf;
 }
 
-function volume(probe: BoxProbeInfluence): number {
-    return probe.outerHalfSize[0] * probe.outerHalfSize[1] * probe.outerHalfSize[2] * 8;
+export function sphereProbeNdf(probe: SphereProbeInfluence, point: ProbeBlendVec3): number {
+    const distance = Math.hypot(point[0] - probe.centre[0], point[1] - probe.centre[1], point[2] - probe.centre[2]);
+    const span = probe.outerRadius - probe.innerRadius;
+    return span > EPSILON ? (distance - probe.innerRadius) / span : distance <= probe.outerRadius ? 0 : Number.POSITIVE_INFINITY;
+}
+
+export function probeNdf(probe: ProbeInfluence, point: ProbeBlendVec3): number {
+    return probe.shape === "sphere" ? sphereProbeNdf(probe, point) : boxProbeNdf(probe, point);
+}
+
+function volume(probe: ProbeInfluence): number {
+    return probe.shape === "sphere" ? (4 / 3) * Math.PI * probe.outerRadius ** 3 : probe.outerHalfSize[0] * probe.outerHalfSize[1] * probe.outerHalfSize[2] * 8;
 }
 
 /**
@@ -70,33 +103,50 @@ function volume(probe: BoxProbeInfluence): number {
  * must follow the physical room box instead of whichever influence weight happens to be larger.
  * If authored boxes overlap, the tighter box wins deterministically.
  */
-export function selectContainingBoxProbe<T extends BoxProbeRegion>(probes: readonly T[], point: ProbeBlendVec3): T | undefined {
+export function selectContainingProbe<T extends ProbeRegion>(probes: readonly T[], point: ProbeBlendVec3): T | undefined {
     let selected: T | undefined;
     let selectedVolume = Number.POSITIVE_INFINITY;
     for (const probe of probes) {
-        const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
-        let contains = true;
-        for (let axis = 0; axis < 3; axis++) {
-            if (Math.abs(local[axis]!) > probe.projectionHalfSize[axis]! + EPSILON) {
-                contains = false;
-                break;
+        let contains: boolean;
+        let probeVolume: number;
+        if (probe.shape === "sphere") {
+            contains =
+                Math.hypot(point[0] - probe.projectionCentre[0], point[1] - probe.projectionCentre[1], point[2] - probe.projectionCentre[2]) <= probe.projectionRadius + EPSILON;
+            probeVolume = (4 / 3) * Math.PI * probe.projectionRadius ** 3;
+        } else {
+            const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
+            contains = true;
+            for (let axis = 0; axis < 3; axis++) {
+                if (Math.abs(local[axis]!) > probe.projectionHalfSize[axis]! + EPSILON) {
+                    contains = false;
+                    break;
+                }
             }
+            probeVolume = probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2] * 8;
         }
         if (!contains) continue;
-        const boxVolume = probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2] * 8;
-        if (!selected || boxVolume < selectedVolume || (boxVolume === selectedVolume && probe.id.localeCompare(selected.id) < 0)) {
+        if (!selected || probeVolume < selectedVolume || (probeVolume === selectedVolume && probe.id.localeCompare(selected.id) < 0)) {
             selected = probe;
-            selectedVolume = boxVolume;
+            selectedVolume = probeVolume;
         }
     }
     return selected;
 }
 
-function projectionVolume(probe: BoxProbeRegion): number {
-    return probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2] * 8;
+/** @deprecated Use selectContainingProbe for mixed box/sphere probe sets. */
+export function selectContainingBoxProbe<T extends BoxProbeRegion>(probes: readonly T[], point: ProbeBlendVec3): T | undefined {
+    return selectContainingProbe(probes, point);
 }
 
-function projectionDistanceSquared(probe: BoxProbeRegion, point: ProbeBlendVec3): number {
+function projectionVolume(probe: ProbeRegion): number {
+    return probe.shape === "sphere" ? (4 / 3) * Math.PI * probe.projectionRadius ** 3 : probe.projectionHalfSize[0] * probe.projectionHalfSize[1] * probe.projectionHalfSize[2] * 8;
+}
+
+function projectionDistanceSquared(probe: ProbeRegion, point: ProbeBlendVec3): number {
+    if (probe.shape === "sphere") {
+        const distance = Math.hypot(point[0] - probe.projectionCentre[0], point[1] - probe.projectionCentre[1], point[2] - probe.projectionCentre[2]);
+        return Math.max(0, distance - probe.projectionRadius) ** 2;
+    }
     const local = probeLocalOffset(point, probe.projectionCentre, probe.angleRadians);
     let distanceSquared = 0;
     for (let axis = 0; axis < 3; axis++) {
@@ -135,21 +185,33 @@ export function intersectsProbeProjectionBox(probe: BoxProbeRegion, bounds: Prob
     return Math.abs(localZ) <= probeHalf[2] + absSine * bounds.halfSize[0] + absCosine * bounds.halfSize[2] + EPSILON;
 }
 
+export function intersectsProbeProjection(probe: ProbeRegion, bounds: ProbeWorldBounds): boolean {
+    if (probe.shape !== "sphere") {
+        return intersectsProbeProjectionBox(probe, bounds);
+    }
+    let distanceSquared = 0;
+    for (let axis = 0; axis < 3; axis++) {
+        const delta = Math.abs(probe.projectionCentre[axis]! - bounds.centre[axis]!) - bounds.halfSize[axis]!;
+        distanceSquared += Math.max(delta, 0) ** 2;
+    }
+    return distanceSquared <= probe.projectionRadius ** 2 + EPSILON;
+}
+
 /**
  * Resolve one immutable probe assignment for a mesh.
  *
  * A containing box wins first. Otherwise the nearest intersecting box wins. Geometry outside every
  * authored box falls back to the closest box so every PBR mesh still receives deterministic IBL.
  */
-export function selectStaticBoxProbe<T extends BoxProbeRegion>(probes: readonly T[], bounds: ProbeWorldBounds): T | undefined {
-    const containing = selectContainingBoxProbe(probes, bounds.centre);
+export function selectStaticProbe<T extends ProbeRegion>(probes: readonly T[], bounds: ProbeWorldBounds): T | undefined {
+    const containing = selectContainingProbe(probes, bounds.centre);
     if (containing) {
         return containing;
     }
     return probes
         .map((probe) => ({
             probe,
-            intersects: intersectsProbeProjectionBox(probe, bounds),
+            intersects: intersectsProbeProjection(probe, bounds),
             distanceSquared: projectionDistanceSquared(probe, bounds.centre),
         }))
         .sort(
@@ -161,11 +223,16 @@ export function selectStaticBoxProbe<T extends BoxProbeRegion>(probes: readonly 
         )[0]?.probe;
 }
 
+/** @deprecated Use selectStaticProbe for mixed box/sphere probe sets. */
+export function selectStaticBoxProbe<T extends BoxProbeRegion>(probes: readonly T[], bounds: ProbeWorldBounds): T | undefined {
+    return selectStaticProbe(probes, bounds);
+}
+
 /** Rank a conservative shader candidate set by POI distance without calculating shader weights. */
-export function selectPoiProbeCandidates(probes: readonly BoxProbeInfluence[], point: ProbeBlendVec3, maxProbes: number): number[] {
+export function selectPoiProbeCandidates(probes: readonly ProbeInfluence[], point: ProbeBlendVec3, maxProbes: number): number[] {
     if (maxProbes < 1) return [];
     return probes
-        .map((probe, index) => ({ index, probe, ndf: boxProbeNdf(probe, point) }))
+        .map((probe, index) => ({ index, probe, ndf: probeNdf(probe, point) }))
         .sort((a, b) => a.ndf - b.ndf || volume(a.probe) - volume(b.probe) || a.probe.id.localeCompare(b.probe.id))
         .slice(0, maxProbes)
         .map((candidate) => candidate.index);
@@ -178,11 +245,11 @@ export function selectPoiProbeCandidates(probes: readonly BoxProbeInfluence[], p
  * weights, not the bound texture order. This module intentionally has no Babylon-Lite dependencies
  * so the editor can port the same data and math directly to Babylon.js.
  */
-export function selectPoiProbeBlend(probes: readonly BoxProbeInfluence[], point: ProbeBlendVec3, maxProbes = 2): ProbeBlendWeight[] {
+export function selectPoiProbeBlend(probes: readonly ProbeInfluence[], point: ProbeBlendVec3, maxProbes = 2): ProbeBlendWeight[] {
     if (maxProbes < 1 || probes.length === 0) return [];
 
     const ranked = probes
-        .map((probe) => ({ probe, ndf: boxProbeNdf(probe, point) }))
+        .map((probe) => ({ probe, ndf: probeNdf(probe, point) }))
         .sort((a, b) => a.ndf - b.ndf || volume(a.probe) - volume(b.probe) || a.probe.id.localeCompare(b.probe.id));
 
     const inner = ranked.find((candidate) => candidate.ndf <= 0);

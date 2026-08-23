@@ -545,6 +545,15 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
    them to show or hide. Explicit, because the colour above would otherwise keep
    them looking live while they did nothing. */
 #probe-modal .editor h3.probe-head .eye:disabled { color: var(--muted); opacity: 0.4; }
+/* Putting the influence pair back on the capture box is offered where the drift
+   is read - beside the heading - rather than as three numbers to retype. It is
+   a legal place for the pair to be, so the button is an offer, not a warning:
+   ordinary weight, and inert when there is nothing to put back. */
+#probe-modal .editor h3.probe-head .probe-fix {
+  flex: 0 0 auto; padding: 1px 6px; font-size: 10px;
+  letter-spacing: 0; text-transform: none; color: var(--text);
+}
+#probe-modal .editor h3.probe-head .probe-fix:disabled { opacity: 0.4; }
 #chunk-modal .row input[type="number"], #probe-modal .row input[type="number"] { width: 72px; }
 #chunk-modal .row input[type="text"] { flex: 1 1 auto; min-width: 0; }
 #chunk-resolved { font-size: 11px; min-height: 14px; }
