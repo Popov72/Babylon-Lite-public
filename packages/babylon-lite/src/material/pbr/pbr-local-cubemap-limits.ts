@@ -4,8 +4,8 @@ const UNIFORM_BUFFER_BYTES = 64 * 1024;
 export const _PBR_LOCAL_ENVIRONMENT_CANDIDATE_CAPACITY = 12;
 /** @internal Probe count and flags occupy one vec4 before the probe records. */
 export const _PBR_LOCAL_ENVIRONMENT_HEADER_U32 = 4;
-/** @internal Six vec4 values per probe. */
-export const _PBR_LOCAL_ENVIRONMENT_PROBE_FLOATS = 24;
+/** @internal Seven vec4 values per probe. */
+export const _PBR_LOCAL_ENVIRONMENT_PROBE_FLOATS = 28;
 /** @internal Full 64 KiB UBO size expressed as floats. */
 export const _PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS = UNIFORM_BUFFER_BYTES / 4;
 /** @internal Header flag enabling oriented box projection. */

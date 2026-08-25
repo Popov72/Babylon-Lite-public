@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { PATH_TRANSLATION } from "../../../packages/babylon-lite/src/animation/types";
-import type { AnimationClip, NodeRest, SkeletonBinding, SkeletonData } from "../../../packages/babylon-lite/src/animation/types";
+import { PATH_TRANSLATION, PATH_WEIGHTS } from "../../../packages/babylon-lite/src/animation/types";
+import type { AnimationClip, MorphBinding, MorphTargetData, NodeRest, SkeletonBinding, SkeletonData } from "../../../packages/babylon-lite/src/animation/types";
 import type { EngineContext } from "../../../packages/babylon-lite/src/engine/engine";
 import type { Mat4 } from "../../../packages/babylon-lite/src/math/types";
 import { createAnimationController } from "../../../packages/babylon-lite/src/skeleton/skeleton-updater";
@@ -192,5 +192,43 @@ describe("CPU-only skeleton evaluation", () => {
 
         expect(boneMatrices[12]).toBeCloseTo(-2);
         expect(writeTexture).not.toHaveBeenCalled();
+    });
+
+    it("does not upload morph weights after their last mesh owner releases them", () => {
+        const runtimeMorphTargets = {
+            weightsBuffer: {} as GPUBuffer,
+            weights: new Float32Array(1),
+            _disposed: true,
+        } as MorphTargetData;
+        const binding: MorphBinding = {
+            nodeIdx: 0,
+            weightsBuffer: runtimeMorphTargets.weightsBuffer,
+            weights: runtimeMorphTargets.weights,
+            targetCount: 1,
+            runtimeMorphTargets,
+        };
+        const clip: AnimationClip = {
+            name: "morph",
+            duration: 1,
+            channels: [{ samplerIdx: 0, nodeIdx: 0, path: PATH_WEIGHTS }],
+            samplers: [
+                {
+                    input: new Float32Array([0, 1]),
+                    output: new Float32Array([0, 1]),
+                    interpolation: 0,
+                },
+            ],
+        };
+        const writeBuffer = vi.fn();
+        const engine = { _device: { queue: { writeBuffer } } } as unknown as EngineContext;
+        const ctrl = createAnimationController(clip, [], [], [binding]);
+        ctrl.playing = false;
+        ctrl.loop = false;
+        ctrl.time = 1;
+
+        ctrl.tick(0, engine);
+
+        expect(binding.weights[0]).toBe(1);
+        expect(writeBuffer).not.toHaveBeenCalled();
     });
 });

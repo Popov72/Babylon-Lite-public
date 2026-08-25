@@ -10,7 +10,7 @@
  *  Per-(view, mesh-feature-variant) shared state — composed shader, mesh
  *  BGL, pipeline cache — is cached on `view._geometry` keyed by the
  *  shader-relevant mesh-feature bits + (features, features2, sceneFeatures,
- *  lightMode, singleLightType). Per-mesh state (UBOs, bind group, sort
+ *  lightMode, singleLightType, pluginIndex). Per-mesh state (UBOs, bind group, sort
  *  centre) lives in the closure returned by {@link buildPbrGeometryRenderable}.
  *
  *  This module is imported only by {@link createPbrGeometryMaterialView} —
@@ -81,8 +81,8 @@ interface PbrGeometryViewResources {
     _alphaBlend: boolean;
 }
 
-function _variantKey(meshFeatures: number, sceneFeatures: number, lightMode: number, singleLightType: string): string {
-    return `${meshFeatures}:${sceneFeatures}:${lightMode}:${singleLightType}`;
+function _variantKey(meshFeatures: number, lightMode: number, singleLightType: string, pluginIndex: number): string {
+    return `${meshFeatures}:${lightMode}:${singleLightType}:${pluginIndex}`;
 }
 
 /** Build a {@link Renderable} for one mesh drawn through a PBR geometry view. */
@@ -141,10 +141,10 @@ export function buildPbrGeometryRenderable(scene: SceneContext, mesh: Mesh, view
     // Same fold as the forward pass (see pbr-renderable.ts): these bits key the composed variant, so
     // the Standard path must not pay to read them.
     const meshFeatures = _computeMeshFeatures(mesh, receiveShadows) | ((mesh as Mesh & { _primitiveFeatures?: number })._primitiveFeatures ?? 0);
+    const pluginIndex = source._pi ?? 0;
 
-    const sceneFeatures = ctx._sceneFeatures;
-    const variantKey = _variantKey(meshFeatures, sceneFeatures, lightMode, singleLightType);
-    const res = _ensureViewResources(view, engine, ctx, meshFeatures, sceneFeatures, lightMode, singleLightType, variantKey);
+    const variantKey = _variantKey(meshFeatures, lightMode, singleLightType, pluginIndex);
+    const res = _ensureViewResources(view, engine, ctx, meshFeatures, lightMode, singleLightType, pluginIndex, variantKey);
     // The geometry pass composes its OWN variant, so it needs the mesh's exotic primitive state
     // stamped on separately (see ComposedShader._prim). `variantKey` folds in meshFeatures, whose
     // topology bits this mirrors, so a cached variant only ever sees one value here.
@@ -348,9 +348,9 @@ function _ensureViewResources(
     engine: EngineContext,
     ctx: _PbrGeometryContext,
     meshFeatures: number,
-    sceneFeatures: number,
     lightMode: 0 | 1 | 2,
     singleLightType: string,
+    pluginIndex: number,
     variantKey: string
 ): PbrGeometryViewResources {
     let cache = view._geometry as Map<string, PbrGeometryViewResources> | undefined;
@@ -367,8 +367,8 @@ function _ensureViewResources(
 
     const features = view._renderFeatures.features;
     const features2 = view._renderFeatures.features2 ?? 0;
+    const sceneFeatures = ctx._sceneFeatures;
     const source = view.source as PbrMaterialProps;
-    const pluginIndex = source._pi ?? 0;
     const vbLayout = (source as unknown as { _vbLayout?: import("../../mesh/mesh.js").MeshVbLayout })._vbLayout;
     const vbKey = "";
     const uv2Mask = (source as { _uv2Mask?: number })._uv2Mask ?? 0;

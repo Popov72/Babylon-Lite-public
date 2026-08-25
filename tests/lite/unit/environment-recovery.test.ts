@@ -7,22 +7,32 @@ import type { EnvironmentRecoverySource } from "../../../packages/babylon-lite/s
 import type { EnvironmentTextures } from "../../../packages/babylon-lite/src/loader-env/load-env.js";
 import type { SceneContext } from "../../../packages/babylon-lite/src/scene/scene-core.js";
 
+const hdrMocks = vi.hoisted(() => ({
+    parseRGBE: vi.fn(() => ({ width: 1, height: 1, data: new Float32Array(3) })),
+    computeSHFromEquirect: vi.fn(() => new Float32Array(27)),
+    equirectToCubemapGPU: vi.fn(() => makeTexture("hdr-source")),
+    prefilterCubemapGPU: vi.fn(() => makeTexture("hdr-specular")),
+    generateBrdfLut: vi.fn(() => makeTexture("hdr-brdf")),
+}));
+
 vi.mock("../../../packages/babylon-lite/src/loader-env/rgbd-decode.js", () => ({
     uploadCubemapRGBD: vi.fn(() => makeTexture("specular")),
     decodeBrdfPng: vi.fn(() => makeTexture("brdf")),
 }));
 
 vi.mock("../../../packages/babylon-lite/src/loader-hdr/hdr-parser.js", () => ({
-    parseRGBE: vi.fn(() => ({ data: new Float32Array(3), width: 1, height: 1 })),
-    computeSHFromEquirect: vi.fn(() => new Float32Array(27)),
+    parseRGBE: hdrMocks.parseRGBE,
+    computeSHFromEquirect: hdrMocks.computeSHFromEquirect,
 }));
 
-vi.mock("../../../packages/babylon-lite/src/loader-hdr/hdr-ibl-pipeline.js", () => ({
-    HDR_LOD_GENERATION_SCALE: 0.8,
-    equirectToCubemapGPU: vi.fn(() => makeTexture("hdr-source")),
-    prefilterCubemapGPU: vi.fn(() => makeTexture("hdr-specular")),
-    generateBrdfLut: vi.fn(() => makeTexture("hdr-brdf")),
+vi.mock("../../../packages/babylon-lite/src/loader-hdr/hdr-ibl-pipeline.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../packages/babylon-lite/src/loader-hdr/hdr-ibl-pipeline.js")>()),
+    equirectToCubemapGPU: hdrMocks.equirectToCubemapGPU,
+    prefilterCubemapGPU: hdrMocks.prefilterCubemapGPU,
+    generateBrdfLut: hdrMocks.generateBrdfLut,
 }));
+
+import { HDR_LOD_GENERATION_SCALE } from "../../../packages/babylon-lite/src/loader-hdr/hdr-ibl-pipeline.js";
 
 /** The subset of the fake texture the ref-count assertions need. */
 type FakeTexture = { destroy: ReturnType<typeof vi.fn> };
@@ -113,11 +123,11 @@ function makeEngine(): EngineContext {
 
 function makeEnvironmentTextures(): EnvironmentTextures {
     return {
-        _specularCube: makeTexture("original-specular"),
-        _brdfLut: makeTexture("original-brdf"),
-        _irradianceSH: new Float32Array(27),
-        _sphericalHarmonics: new Float32Array(36),
-        _lodGenerationScale: 0.8,
+        specularCube: makeTexture("original-specular"),
+        brdfLut: makeTexture("original-brdf"),
+        irradianceSH: new Float32Array(27),
+        sphericalHarmonics: new Float32Array(36),
+        lodGenerationScale: 0.8,
     } as unknown as EnvironmentTextures;
 }
 
@@ -151,11 +161,6 @@ describe("rebuildSceneEnvironment", () => {
         kind: "env",
         url: "/assets/studio.env",
         brdfUrl: "/assets/brdf.png",
-    };
-    const hdrSource: EnvironmentRecoverySource = {
-        kind: "hdr",
-        url: "/assets/studio.hdr",
-        faceSize: 512,
     };
 
     it("is a no-op for a scene that never loaded an environment", async () => {
@@ -210,8 +215,8 @@ describe("rebuildSceneEnvironment", () => {
     it("preserves the EnvironmentTextures identity and its spherical harmonics across a rebuild", async () => {
         stubNetwork();
         const textures = makeEnvironmentTextures();
-        const originalHarmonics = textures._sphericalHarmonics;
-        const originalCube = textures._specularCube;
+        const originalHarmonics = textures.sphericalHarmonics;
+        const originalCube = textures.specularCube;
         const scene = makeScene(textures, envSource);
 
         await rebuildSceneEnvironment(makeEngine(), scene);
@@ -220,22 +225,29 @@ describe("rebuildSceneEnvironment", () => {
         expect(scene._envRecoverySource).toEqual(envSource);
         // Re-parsing the same file rebuilds an identical polynomial, so recovery reuses the existing
         // pre-scaled array rather than allocating a fresh one the scene UBO would have to re-read.
-        expect(textures._sphericalHarmonics).toBe(originalHarmonics);
-        expect(textures._specularCube).not.toBe(originalCube);
+        expect(textures.sphericalHarmonics).toBe(originalHarmonics);
+        expect(textures.specularCube).not.toBe(originalCube);
     });
 
-    it("restores HDR environments with Babylon's 0.8 reflection LOD scale", async () => {
+    it("preserves Babylon.js' HDR LOD generation scale across recovery", async () => {
         vi.stubGlobal(
             "fetch",
-            vi.fn(async () => new Response(new Uint8Array([1])))
+            vi.fn(async () => new Response(new ArrayBuffer(0)))
         );
         const textures = makeEnvironmentTextures();
-        textures._lodGenerationScale = 1;
-        const scene = makeScene(textures, hdrSource);
+        textures.lodGenerationScale = 1;
+        const source: EnvironmentRecoverySource = {
+            kind: "hdr",
+            url: "/assets/studio.hdr",
+            faceSize: 128,
+        };
+        const scene = makeScene(textures, source);
 
         await rebuildSceneEnvironment(makeEngine(), scene);
 
-        expect(textures._lodGenerationScale).toBe(0.8);
+        expect(HDR_LOD_GENERATION_SCALE).toBe(0.8);
+        expect(textures.lodGenerationScale).toBe(HDR_LOD_GENERATION_SCALE);
+        expect(hdrMocks.prefilterCubemapGPU).toHaveBeenCalledWith(expect.anything(), hdrMocks.equirectToCubemapGPU.mock.results[0]!.value, source.faceSize, 8);
     });
 
     it("releases every generation of replacement textures, not just the most recent one", async () => {
@@ -246,14 +258,14 @@ describe("rebuildSceneEnvironment", () => {
 
         await rebuildSceneEnvironment(engine, scene);
         const first = {
-            specularCube: textures._specularCube as unknown as FakeTexture,
-            brdfLut: textures._brdfLut as unknown as FakeTexture,
+            specularCube: textures.specularCube as unknown as FakeTexture,
+            brdfLut: textures.brdfLut as unknown as FakeTexture,
         };
 
         await rebuildSceneEnvironment(engine, scene);
         const second = {
-            specularCube: textures._specularCube as unknown as FakeTexture,
-            brdfLut: textures._brdfLut as unknown as FakeTexture,
+            specularCube: textures.specularCube as unknown as FakeTexture,
+            brdfLut: textures.brdfLut as unknown as FakeTexture,
         };
 
         expect(second.specularCube).not.toBe(first.specularCube);

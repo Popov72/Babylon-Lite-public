@@ -31,6 +31,8 @@ export interface _PbrFragCtx {
     readonly _uv2Mask?: number;
     /** @internal */
     readonly _hasIbl: boolean;
+    /** @internal Whether the scene, rather than only a material extension, supplies IBL. */
+    readonly _hasSceneIbl?: boolean;
     /** @internal */
     readonly _hasAnyNormal: boolean;
     /** @internal */
@@ -54,9 +56,9 @@ export interface _PbrBindCtx {
     /** @internal */
     readonly _material: unknown;
     /** @internal Populated for "vertex" phase (skeleton, morph). */
-    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null } | null;
-    /** @internal Populated for "ibl" phase. */
-    readonly _env?: { _brdfLutView: GPUTextureView; _brdfSampler: GPUSampler; _specularCubeView: GPUTextureView; _cubeSampler: GPUSampler } | null;
+    readonly _mesh?: { skeleton?: { boneTexture: GPUTexture } | null; morphTargets?: { deltasBuffer: GPUBuffer; weightsBuffer?: GPUBuffer } | null };
+    /** @internal Scene environment, or an active extension's fallback when the scene has none. */
+    readonly _env?: { brdfLutView: GPUTextureView; brdfSampler: GPUSampler; specularCubeView: GPUTextureView; cubeSampler: GPUSampler } | null;
     /** @internal Per-render-task scene-color snapshot for transmissive RTT refraction. */
     readonly _refractionTexture?: Texture2D | null;
 }
@@ -68,7 +70,7 @@ export interface _PbrBindCtx {
 export interface PbrExt {
     readonly id: string;
     readonly phase: PbrExtPhase;
-    /** Contribute feature bits for a given material. */
+    /** Contribute feature bits for a given material. Returns `{f,f2}` to OR in. */
     detect?(mat: unknown): { f: number; f2: number };
     /** Contribute a ShaderFragment (null if gated off for this variant). */
     frag?(ctx: _PbrFragCtx): ShaderFragment | null;

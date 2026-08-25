@@ -110,24 +110,16 @@ export interface PbrMaterialProps extends Material {
     /** Separate occlusion texture sampled with UV2 when occlusionTexCoord=1.
      *  R channel is occlusion. When set, ORM.r is NOT used for occlusion. */
     occlusionTexture?: Texture2D;
-    /** Baked lightmap texture. Blended into the shaded color after direct lighting and
-     *  IBL: added by default, or multiplied when `useLightmapAsShadowmap` is true.
-     *  Matches BJS PBRMaterial.lightmapTexture. Tree-shakable — only bundled when used. */
+    /** Baked lightmap texture. Added to the shaded color by default, or multiplied
+     *  when `useLightmapAsShadowmap` is true. Set via {@link setPbrLightmap}. */
     lightmapTexture?: Texture2D;
-    /** Lightmap intensity multiplier (BJS `lightmapTexture.level`). Default 1.0. */
+    /** Lightmap intensity multiplier (Babylon.js `lightmapTexture.level`). Default 1.0. */
     lightmapLevel?: number;
-    /** UV set the lightmap samples: 0 = TEXCOORD_0, 1 = TEXCOORD_1. Default 1, matching the
-     *  BJS convention (`lightmapTexture.coordinatesIndex = 1`). UV2 requires the mesh to
-     *  provide a `uv2` vertex buffer; without one the lightmap falls back to TEXCOORD_0. */
+    /** UV set sampled by the lightmap: 0 = TEXCOORD_0, 1 = TEXCOORD_1. Default 1. */
     lightmapCoordIndex?: 0 | 1;
-    /** When true, the lightmap is a baked shadowmap that multiplies the shaded color
-     *  instead of being added. Matches BJS PBRMaterial.useLightmapAsShadowmap. Default false. */
+    /** Multiply the shaded color by the lightmap instead of adding it. Default false. */
     useLightmapAsShadowmap?: boolean;
-    /** When true, the lightmap texture is in sRGB/gamma space and the shader applies
-     *  pow(lightmap, 2.2) before use. Matches BJS `GAMMALIGHTMAP` (i.e. a lightmap
-     *  `Texture` with `gammaSpace = true`, which is the BJS default). Default false —
-     *  as with `gammaAlbedo`, Lite assumes the texture already provides linear values
-     *  (e.g. an `rgba8unorm-srgb` format or a float lightmap). */
+    /** Decode the sampled lightmap from sRGB to linear before composition. Default false. */
     gammaLightmap?: boolean;
     /** @internal Scales dielectric F0 (default 1.0). Maps to BJS metallicF0Factor.
      *  Set via {@link setPbrMetallicReflectance}, which registers the extension. */

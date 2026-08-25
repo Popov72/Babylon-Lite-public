@@ -12,11 +12,10 @@ batchCount: u32,
 fn clusteredTexel(index:u32)->vec2<u32>{return vec2<u32>(index%clusteredLightParams.dataTextureWidth,index/clusteredLightParams.dataTextureWidth);}
 `;
 
-/** Direct-lighting loop over the clustered light set.
+/** Direct-lighting loop over a clustered light set.
  *
- *  `hasSpots` widens the per-light data-texture stride from 2 texels to 3 and
- *  emits the spot cone term. A point-only container keeps the narrower layout, so
- *  scenes without spot lights pay neither the extra texel fetch nor the branch.
+ *  Point-only and point+spot variants share the body generator, while the spot
+ *  cone string remains tree-shakable from point-only bundles.
  *
  *  Layout (rgba32float, `stride` texels per light):
  *    +0  position.xyz, range
@@ -28,17 +27,7 @@ fn clusteredTexel(index:u32)->vec2<u32>{return vec2<u32>(index%clusteredLightPar
  *  for range and `computeDirectionalLightFalloff_GLTF` for the cone. The cone's
  *  `lightAngleScale` / `lightAngleOffset` are derived from `cosHalfAngle` in the
  *  shader instead of being uploaded, which is exact for BJS' default inner angle of 0. */
-export function CLUSTERED_LIGHT_BLOCK(hasSpots: boolean): string {
-    const stride = hasSpots ? "3u" : "2u";
-    const cone = hasSpots
-        ? `let dirCone=textureLoad(clusteredLights,clusteredTexel(lightTexel+2u),0);
-if(dirCone.w>=0.0){
-let cd=dot(-dirCone.xyz,Lc);
-let coneAtt=saturate((cd-dirCone.w)/max(1.0-dirCone.w,0.001));
-rangeAtt*=coneAtt*coneAtt;
-}
-`
-        : "";
+function clusteredLightBlock(stride: string, cone: string): string {
     return `
 {
 let clip=scene.viewProjection*vec4<f32>(input.worldPos,1.0);
@@ -99,4 +88,23 @@ directSpecular+=Fc*Dc*Gc*NdotLc*lightRadiance;
 }
 }
 `;
+}
+
+/** @internal Point-only clustered shader. */
+export function _clusteredPointLightBlock(): string {
+    return clusteredLightBlock("2u", "");
+}
+
+/** @internal Point+spot clustered shader with smooth cone falloff. */
+export function _clusteredSpotLightBlock(): string {
+    return clusteredLightBlock(
+        "3u",
+        `let dirCone=textureLoad(clusteredLights,clusteredTexel(lightTexel+2u),0);
+if(dirCone.w>=0.0){
+let cd=dot(-dirCone.xyz,Lc);
+let coneAtt=saturate((cd-dirCone.w)/max(1.0-dirCone.w,0.001));
+rangeAtt*=coneAtt*coneAtt;
+}
+`
+    );
 }

@@ -29,10 +29,6 @@ export interface HdrLoadOptions {
     faceSize?: number;
     /** When true, render the HDR cubemap as the skybox background. */
     useCubemapSkybox?: boolean;
-    /** When true, skip the background skybox renderable entirely (neither the HDR cubemap
-     *  nor the solid fallback). Mirrors the same option on {@link loadEnvironment}: use it
-     *  when the caller builds and owns its own skybox from the returned textures. */
-    skipSkybox?: boolean;
     /** When true, skip the ground plane. */
     skipGround?: boolean;
     /** Skybox size matching BJS createDefaultEnvironment skyboxSize option. */
@@ -57,10 +53,6 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
     // 1. Fetch and parse RGBE
     const response = await fetch(url);
     if (!response.ok) {
-        // Without this a 404/500 HTML error page is handed straight to the RGBE parser,
-        // which fails with a misleading "Invalid HDR: missing #? signature" that names
-        // neither the status nor the failing URL. Deliberately terse — this loader ships
-        // in size-capped scene bundles.
         throw new Error(`HDR ${response.status}: ${url}`);
     }
     const buffer = await response.arrayBuffer();
@@ -101,12 +93,10 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
     // exposure/contrast at build time into their per-mesh UBO). Backgrounds cost nothing here:
     // each builder stamps its own rebuild descriptor onto the renderable it returns.
     const useHdr = !!options?.useCubemapSkybox;
-    const skipSkybox = !!options?.skipSkybox;
     const skipGround = !!options?.skipGround;
     engine._dlr?.h(scene, url, faceSize);
     scene._deferredBuilders.push(async () => {
-        const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
-        if (useHdr && !skipSkybox && textures._specularCubeView) {
+        if (useHdr && textures.specularCubeView) {
             let autoSkyboxSize = options?.skyboxSize;
             let rootPosition = options?.skyboxPosition;
             if (autoSkyboxSize === undefined || rootPosition === undefined) {
@@ -115,13 +105,15 @@ export async function loadHdrEnvironment(scene: SceneContext, url: string, optio
                 autoSkyboxSize = size.skyboxSize;
                 rootPosition = size.rootPosition;
             }
+            const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
             const { buildHdrSkyboxRenderable } = await import("../material/pbr/background-hdr-skybox.js");
             scene._renderables.push(await buildHdrSkyboxRenderable(scene, textures, autoSkyboxSize / 2, rootPosition, primaryColor));
         }
-        if ((!useHdr && !skipSkybox) || !skipGround) {
+        if (!useHdr || !skipGround) {
+            const primaryColor = scene.environmentPrimaryColor ?? [0.08697355964132344, 0.08697355964132344, 0.2122208331110881];
             const { computeSceneSize } = await import("../material/pbr/scene-size.js");
             const { groundSize, skyboxSize: autoSkyboxSize, rootPosition } = computeSceneSize(scene, options?.skyboxSize);
-            if (!useHdr && !skipSkybox) {
+            if (!useHdr) {
                 const { buildSolidSkyboxRenderable } = await import("../material/pbr/background-solid-skybox.js");
                 scene._renderables.push(buildSolidSkyboxRenderable(scene, textures, autoSkyboxSize / 2, rootPosition, primaryColor));
             }

@@ -409,17 +409,17 @@ let surfaceAlbedo=baseColor*(1.0-dielectricF0)*(1.0-metallic);`;
     // which clamps info.roughness upward). AA_factor_y is the IBL/alphaG additive bump.
     // Emitted unconditionally as vars so sheen/other fragments can reference them
     // without needing a define; when SPECULARAA is disabled they remain zero.
-    const specularAABlock = _hasSpecularAA
-        ? `var AA_factor_x=0.0;
-var AA_factor_y=0.0;
-{let nDfdx_AA=dpdx(N);
+    const specularAABlock = `var AA_factor_x=0.0;
+var AA_factor_y=0.0;${
+        _hasSpecularAA
+            ? `{let nDfdx_AA=dpdx(N);
 let nDfdy_AA=dpdy(N);
 let slopeSquare_AA=max(dot(nDfdx_AA,nDfdx_AA),dot(nDfdy_AA,nDfdy_AA));
 AA_factor_x=pow(saturate(slopeSquare_AA),0.333);
 AA_factor_y=sqrt(slopeSquare_AA)*0.75;
 alphaG+=AA_factor_y;}`
-        : `var AA_factor_x=0.0;
-var AA_factor_y=0.0;`;
+            : ""
+    }`;
 
     // Direct lighting block — use the compact non-looping shader for one non-shadow light,
     // and the generic multi-light loop for multiple lights or shadow receivers.
@@ -469,20 +469,8 @@ return vec4<f32>(color,finalAlpha);`
     const doubleSidedGeomFlip = _flatGeometricNormal ? "" : " N_geom = -N_geom;";
     const doubleSidedFlip = _hasDoubleSided ? `if (!frontFacing) { N = -N;${doubleSidedGeomFlip} }` : "";
 
-    // Light declarations, binding and index helper travel together — they are only ever all
-    // present or all absent, so they are built as one block (which also keeps this cheaper in
-    // bytes than three separate consts).
-    //
-    // A depth-only caster variant (`_noColorOutput`) emits `return;` as its ENTIRE fragment body,
-    // so it reads no light data and must not declare the lights binding either. The
-    // `lightsUniforms` struct only ships next to a light block, which the depth-only composer has
-    // no reason to carry, so declaring the binding anyway left it pointing at an undefined type.
-    // That is not a cosmetic warning: the WGSL fails to compile, which makes an invalid shader
-    // module -> invalid pipeline -> invalid render bundle -> the whole frame's command encoder
-    // fails to `finish()`. The shadow map is then never written (it keeps its zero-initialised
-    // contents), so every receiver inside the ortho footprint samples depth 0 and reads as fully
-    // occluded — casters render solid black and the "shadow" is really just the map's footprint
-    // sweeping around as the light turns.
+    // Depth-only casters read no light data. Keeping declarations and binding together also
+    // prevents a binding from referencing lightsUniforms when no light block defines it.
     const lightBlock =
         (_hasSingleLight || _hasMultiLight) && !_noColorOutput
             ? `${_hasMultiLight ? _multiLightWGSL : _singleLightWGSL}

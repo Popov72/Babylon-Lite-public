@@ -1,7 +1,12 @@
 import type { EnvironmentTextures } from "../../loader-env/load-env.js";
+import type { EngineContext } from "../../engine/engine.js";
+import type { Material } from "../material.js";
+import { getMaterialSource } from "../material-view.js";
 import type { PbrMaterialProps } from "./pbr-material.js";
 
 interface PbrLocalEnvironmentBaseOptions {
+    /** Cubemap capture position in world space. Defaults to projectionPosition. */
+    readonly capturePosition?: readonly [number, number, number];
     /** Centre of the parallax-projection volume in world space. */
     readonly projectionPosition: readonly [number, number, number];
 }
@@ -45,6 +50,8 @@ export type PbrLocalEnvironmentProbe = PbrLocalEnvironmentProbeBase &
               readonly projectionSize: readonly [number, number, number];
               /** Full extents where this probe has full influence. */
               readonly influenceInnerSize: readonly [number, number, number];
+              /** Centre of the outer influence box. Defaults to influencePosition. */
+              readonly influenceOuterPosition?: readonly [number, number, number];
               /** Full extents where this probe reaches zero influence. */
               readonly influenceOuterSize: readonly [number, number, number];
           }
@@ -62,19 +69,19 @@ export type PbrLocalEnvironmentProbe = PbrLocalEnvironmentProbeBase &
 export interface PbrLocalEnvironmentProbeSet {
     readonly probes: readonly PbrLocalEnvironmentProbe[];
     /** @internal Shared local-environment probe UBO. */
-    readonly _uniformBuffer: GPUBuffer;
+    _uniformBuffer: GPUBuffer;
     /** @internal Packed CPU mirror of {@link _uniformBuffer}. */
     readonly _uniformData: Float32Array;
     /** @internal Integer view over {@link _uniformData}. */
     readonly _uniformU32: Uint32Array;
     /** @internal Prefiltered cubemap array. */
-    readonly _texture: GPUTexture;
+    _texture: GPUTexture;
     /** @internal Cube-array view of {@link _texture}. */
-    readonly _textureView: GPUTextureView;
+    _textureView: GPUTextureView;
     /** @internal Shared trilinear sampler. */
-    readonly _sampler: GPUSampler;
+    _sampler: GPUSampler;
     /** @internal Dense world-space voxel lookup buffer. */
-    readonly _gridBuffer: GPUBuffer;
+    _gridBuffer: GPUBuffer;
     /** @internal Packed CPU mirror of {@link _gridBuffer}. */
     readonly _gridData: Uint32Array;
     /** @internal Minimum corner of the voxel grid. */
@@ -85,15 +92,24 @@ export interface PbrLocalEnvironmentProbeSet {
     readonly _gridDimensions: readonly [number, number, number];
     /** @internal U32 values stored per voxel, including its count. */
     readonly _gridStride: number;
-    /** @internal Device that owns the shared UBO. */
-    readonly _device: GPUDevice;
+    /** @internal Engine that owns the probe-set resources. */
+    readonly _engine: EngineContext;
+    /** @internal Device that owns the current resources. */
+    _device: GPUDevice;
+    /** @internal Recreate resources after the engine replaces its GPU device. */
+    readonly _ensureDevice: () => void;
 }
 
 export type PbrLocalEnvironmentState =
     | {
+          readonly kind: "environment";
+          readonly environment: EnvironmentTextures;
+      }
+    | {
           readonly kind: "single";
           readonly environment: EnvironmentTextures;
           readonly shape: "box" | "sphere";
+          readonly capturePosition: readonly [number, number, number];
           readonly projectionPosition: readonly [number, number, number];
           readonly projectionSize: readonly [number, number, number];
       }
@@ -106,7 +122,7 @@ let _states: WeakMap<object, PbrLocalEnvironmentState> | null = null;
 
 /** @internal */
 export function _getPbrLocalEnvironment(material: unknown): PbrLocalEnvironmentState | undefined {
-    return material && typeof material === "object" ? _states?.get(material) : undefined;
+    return material && typeof material === "object" ? _states?.get(getMaterialSource(material as Material)) : undefined;
 }
 
 /** @internal */

@@ -1,16 +1,19 @@
 import { defineConfig, type Plugin } from "vite";
 import { resolve } from "path";
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
-import type { IncomingMessage, ServerResponse } from "http";
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { spawn } from "child_process";
+import basicSsl from "@vitejs/plugin-basic-ssl";
 import { mapBabylonImport, type CompatTarget } from "../packages/babylon-lite-compat/src/bundler-resolve.js";
-import {
-    aquanovaFluidSimNames,
-    isValidAquanovaFluidSimName,
-    normalizeAquanovaFluidSimName,
-    renameAquanovaFluidSimReferences,
-    type AquanovaFluidSimManifest,
-} from "./aquanova-fluid-sim-authoring.js";
+
+/**
+ * On-device WebXR testing (e.g. Quest 3) requires a secure context, which for any
+ * non-localhost origin means HTTPS. Use `pnpm dev:lab:https` to serve the lab over HTTPS
+ * with a self-signed cert (via @vitejs/plugin-basic-ssl) and bind to all network
+ * interfaces so the headset can reach `https://<this-machine-ip>:5174` over the
+ * LAN — accept the one-time cert warning in the Quest Browser. Left off by
+ * default so the normal `pnpm dev:lab` flow stays plain HTTP on localhost.
+ */
+const LAB_HTTPS = process.argv.some((arg, index) => arg === "--mode=https" || (arg === "--mode" && process.argv[index + 1] === "https"));
 
 interface DemoConfigEntry {
     slug: string;
@@ -36,186 +39,6 @@ function readJson<T>(path: string, fallback: T): T {
 
 function escapeHtml(value: string): string {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function aquanovaFluidSimPlugin(): Plugin {
-    const sourceManifestPath = resolve(__dirname, "lite/src/demos/aquanova/editor/export/ship_manifest.json");
-    const publicManifestPath = resolve(__dirname, "public/aquanova/ship_manifest.json");
-    const presetDir = resolve(__dirname, "public/aquanova/fluidSim");
-    const readManifest = (): Record<string, unknown> & AquanovaFluidSimManifest =>
-        JSON.parse(readFileSync(sourceManifestPath, "utf8")) as Record<string, unknown> & AquanovaFluidSimManifest;
-    const sendJson = (res: ServerResponse, status: number, value: unknown): void => {
-        res.statusCode = status;
-        res.setHeader("Content-Type", "application/json; charset=utf-8");
-        res.setHeader("Cache-Control", "no-store");
-        res.end(JSON.stringify(value));
-    };
-    const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown>> => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        for await (const rawChunk of req) {
-            const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-            size += chunk.length;
-            if (size > 16 * 1024 * 1024) {
-                throw new Error("Preset exceeds the 16 MB authoring limit.");
-            }
-            chunks.push(chunk);
-        }
-        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error("Preset body must be a JSON object.");
-        }
-        return parsed as Record<string, unknown>;
-    };
-    const writeJsonAtomic = (path: string, value: unknown): void => {
-        const tempPath = `${path}.tmp`;
-        writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-        renameSync(tempPath, path);
-    };
-    const writeManifestFluidSims = (path: string, names: readonly string[]): void => {
-        const source = readFileSync(path, "utf8");
-        const current = aquanovaFluidSimNames(JSON.parse(source) as AquanovaFluidSimManifest);
-        if (current.length === names.length && current.every((name, index) => name === names[index])) return;
-        const pattern = /^(\s*)"fluidSim"\s*:\s*\[[^\]]*\]/m;
-        const match = pattern.exec(source);
-        if (!match) throw new Error("ship_manifest.json does not contain a fluidSim array.");
-        const indent = match[1] ?? "";
-        const itemIndent = /\n([ \t]+)"/.exec(match[0])?.[1] ?? `${indent}  `;
-        const replacement =
-            match[0].includes("\n") && names.length
-                ? `${indent}"fluidSim": [\n${names.map((name) => `${itemIndent}${JSON.stringify(name)}`).join(",\n")}\n${indent}]`
-                : `${indent}"fluidSim": [${names.map((name) => JSON.stringify(name)).join(", ")}]`;
-        const next = source.replace(pattern, replacement);
-        const tempPath = `${path}.tmp`;
-        writeFileSync(tempPath, next, "utf8");
-        renameSync(tempPath, path);
-    };
-    const writeFluidSimManifests = (names: readonly string[]): void => {
-        writeManifestFluidSims(sourceManifestPath, names);
-        writeManifestFluidSims(publicManifestPath, names);
-    };
-    const renameFluidSimInManifest = (path: string, previousName: string, nextName: string): void => {
-        const source = readFileSync(path, "utf8");
-        const renamed = renameAquanovaFluidSimReferences(source, previousName, nextName);
-        const tempPath = `${path}.tmp`;
-        writeFileSync(tempPath, renamed, "utf8");
-        renameSync(tempPath, path);
-    };
-
-    return {
-        name: "aquanova-fluid-sim-authoring",
-        configureServer(server) {
-            server.middlewares.use(async (req, res, next) => {
-                const requestUrl = new URL(req.url ?? "", "http://localhost");
-                const pathname = requestUrl.pathname;
-                const match = pathname.match(/^\/lab-api\/aquanova-fluid-sims(?:\/([^/]+))?$/);
-                if (!match) {
-                    next();
-                    return;
-                }
-                try {
-                    const encodedName = match[1];
-                    if (req.method === "GET" && !encodedName) {
-                        sendJson(res, 200, { names: aquanovaFluidSimNames(readManifest()) });
-                        return;
-                    }
-                    if (!encodedName) {
-                        sendJson(res, 405, { error: "A simulation name is required." });
-                        return;
-                    }
-                    const name = normalizeAquanovaFluidSimName(decodeURIComponent(encodedName));
-                    if (!isValidAquanovaFluidSimName(name)) {
-                        sendJson(res, 400, { error: "Simulation names may only contain letters, numbers, hyphens, and underscores." });
-                        return;
-                    }
-                    const presetPath = resolve(presetDir, `${name}.json`);
-                    if (req.method === "PUT") {
-                        const preset = await readJsonBody(req);
-                        const manifest = readManifest();
-                        const names = aquanovaFluidSimNames(manifest);
-                        const renameToValue = requestUrl.searchParams.get("renameTo");
-                        const targetName = normalizeAquanovaFluidSimName(renameToValue ?? name);
-                        if (!isValidAquanovaFluidSimName(targetName)) {
-                            sendJson(res, 400, { error: "Simulation names may only contain letters, numbers, hyphens, and underscores." });
-                            return;
-                        }
-                        const renaming = targetName !== name;
-                        const targetPresetPath = resolve(presetDir, `${targetName}.json`);
-                        if (renaming && (!names.includes(name) || !existsSync(presetPath))) {
-                            sendJson(res, 404, { error: `Simulation "${name}" does not exist.` });
-                            return;
-                        }
-                        if (renaming && (names.includes(targetName) || existsSync(targetPresetPath))) {
-                            sendJson(res, 409, { error: `Simulation "${targetName}" already exists.` });
-                            return;
-                        }
-                        const isNew = !names.includes(name);
-                        const nextNames = renaming ? names.map((entry) => (entry === name ? targetName : entry)) : [...names];
-                        if (isNew) {
-                            nextNames.push(targetName);
-                        }
-                        mkdirSync(presetDir, { recursive: true });
-                        const previousPreset = existsSync(presetPath) ? readFileSync(presetPath) : null;
-                        const previousTargetPreset = renaming && existsSync(targetPresetPath) ? readFileSync(targetPresetPath) : null;
-                        const previousSourceManifest = readFileSync(sourceManifestPath);
-                        const previousPublicManifest = readFileSync(publicManifestPath);
-                        try {
-                            writeJsonAtomic(targetPresetPath, preset);
-                            if (renaming) {
-                                renameFluidSimInManifest(sourceManifestPath, name, targetName);
-                                renameFluidSimInManifest(publicManifestPath, name, targetName);
-                                unlinkSync(presetPath);
-                            } else {
-                                writeFluidSimManifests(nextNames);
-                            }
-                        } catch (error) {
-                            if (previousPreset) {
-                                writeFileSync(presetPath, previousPreset);
-                            } else if (existsSync(presetPath)) {
-                                unlinkSync(presetPath);
-                            }
-                            if (renaming) {
-                                if (previousTargetPreset) {
-                                    writeFileSync(targetPresetPath, previousTargetPreset);
-                                } else if (existsSync(targetPresetPath)) {
-                                    unlinkSync(targetPresetPath);
-                                }
-                            }
-                            writeFileSync(sourceManifestPath, previousSourceManifest);
-                            writeFileSync(publicManifestPath, previousPublicManifest);
-                            throw error;
-                        }
-                        sendJson(res, 200, { name: targetName, names: nextNames });
-                        return;
-                    }
-                    if (req.method === "DELETE") {
-                        if (!existsSync(presetPath)) {
-                            sendJson(res, 404, { error: `Simulation "${name}" does not exist.` });
-                            return;
-                        }
-                        const manifest = readManifest();
-                        const names = aquanovaFluidSimNames(manifest).filter((entry) => entry !== name);
-                        manifest.fluidSim = names;
-                        const previousSourceManifest = readFileSync(sourceManifestPath);
-                        const previousPublicManifest = readFileSync(publicManifestPath);
-                        try {
-                            writeFluidSimManifests(manifest.fluidSim);
-                            unlinkSync(presetPath);
-                        } catch (error) {
-                            writeFileSync(sourceManifestPath, previousSourceManifest);
-                            writeFileSync(publicManifestPath, previousPublicManifest);
-                            throw error;
-                        }
-                        sendJson(res, 200, { name, names });
-                        return;
-                    }
-                    sendJson(res, 405, { error: `Method ${req.method ?? "unknown"} is not supported.` });
-                } catch (err) {
-                    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
-                }
-            });
-        },
-    };
 }
 
 /**
@@ -349,36 +172,6 @@ function pagesDemoPlugin(): Plugin {
     };
 }
 
-/**
- * Serve demo pages from their TypeScript SOURCE instead of the prebuilt bundle, so edits to a
- * demo hot-reload instead of needing `pnpm build:bundle-demo <name>`.
- *
- * Opt-in via LAB_DEMO_SRC=1, and dev-only. The bundle stays the default because it is what
- * production ships and what the bundle-size and perf tooling measure — running the lab off raw
- * sources would quietly hide anything the bundling step does (chunking, the WGSL minifier,
- * asset staging). This is a development convenience, not a second supported runtime.
- *
- * Assets still resolve correctly because demoAssetUrl() detects the /lite/src/ module URL and
- * anchors demo asset paths at the server root, where lab/public serves them in dev.
- */
-function demoSourcePlugin(): Plugin {
-    const enabled = process.env.LAB_DEMO_SRC?.trim() === "1";
-    return {
-        name: "lab-demo-source",
-        apply: "serve",
-        transformIndexHtml(html) {
-            if (!enabled) {
-                return html;
-            }
-            return html.replace(/src="\/lite\/bundle\/demos\/([\w-]+)\.js"/g, (match, name: string) => {
-                // Only redirect demos that actually have a source entry point; the rest (and any
-                // generated bundle) keep loading their built artifact.
-                return existsSync(resolve(__dirname, `lite/src/demos/${name}.ts`)) ? `src="/lite/src/demos/${name}.ts"` : match;
-            });
-        },
-    };
-}
-
 /** Serve reference images from the repo-root reference/lite/ directory */
 function serveReferenceImages(): Plugin {
     return {
@@ -400,15 +193,7 @@ function serveReferenceImages(): Plugin {
                         // overlay reiterates it next to the asset estimate, mirroring
                         // the build-time injection on the deployed flat demo site.
                         if (name.startsWith("demo-")) {
-                            const page = injectDemoEngineSize(readFileSync(filePath, "utf-8"), name.slice("demo-".length));
-                            // This middleware answers the request itself, so Vite's HTML pipeline
-                            // never runs unless we invoke it: without this the transformIndexHtml
-                            // hooks (notably the LAB_DEMO_SRC source redirect) are skipped and the
-                            // HMR client is never injected, so demo pages cannot live-reload.
-                            void server
-                                .transformIndexHtml(url, page, req.originalUrl)
-                                .then((out) => res.end(out))
-                                .catch(() => res.end(page));
+                            res.end(injectDemoEngineSize(readFileSync(filePath, "utf-8"), name.slice("demo-".length)));
                         } else {
                             createReadStream(filePath).pipe(res);
                         }
@@ -463,9 +248,9 @@ function serveReferenceImages(): Plugin {
                         return;
                     }
                 }
-                // Serve the generated aggregate bundle manifest. The tracked source of
-                // truth is one file per scene under public/bundle/manifest/; the single
-                // aggregate manifest.json is a (gitignored) build output. On a fresh
+                // Serve the generated aggregate bundle manifest. It is built from one
+                // file per scene under public/bundle/manifest/; the single aggregate
+                // manifest.json is a (gitignored) build output. On a fresh
                 // checkout it hasn't been built yet, so synthesize it on the fly from the
                 // per-scene files so the Bundle tab is populated without a full build.
                 if (url === "/bundle/manifest.json") {
@@ -550,11 +335,6 @@ function serveReferenceImages(): Plugin {
                         ".bin": "application/octet-stream",
                         ".glb": "model/gltf-binary",
                         ".env": "application/octet-stream",
-                        // Radiance HDR environment panorama (waterfall demo), fetched as an
-                        // ArrayBuffer and parsed by loadHdrEnvironment. Same trap as `.spec`
-                        // below: without an entry the SPA fallback returns index.html with a
-                        // 200, and the RGBE parser fails on "missing #? signature".
-                        ".hdr": "image/vnd.radiance",
                         ".wad": "application/octet-stream",
                         ".txt": "text/plain; charset=utf-8",
                         ".md": "text/markdown; charset=utf-8",
@@ -593,7 +373,7 @@ function serveReferenceImages(): Plugin {
                             return null;
                         }
                     };
-                    // Newest mtime across the tracked per-scene manifest files, used as a
+                    // Newest mtime across the per-scene manifest files, used as a
                     // fallback when the generated aggregate manifest.json isn't built yet.
                     const dirNewestMtime = (dir: string): number | null => {
                         try {
@@ -1073,7 +853,7 @@ function compatScenesPlugin(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [pagesDemoPlugin(), aquanovaFluidSimPlugin(), compatScenesPlugin(), demoSourcePlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin()],
+    plugins: [pagesDemoPlugin(), compatScenesPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin(), ...(LAB_HTTPS ? [basicSsl()] : [])],
     optimizeDeps: {
         // BJS uses prototype-patching side-effect imports (e.g. abstractEngine.dom.js).
         // babylon-lite uses ?raw WGSL imports that esbuild can't handle.
@@ -1099,10 +879,6 @@ export default defineConfig({
         },
     },
     server: {
-        // Bind to ALL network interfaces (0.0.0.0) so the dev server is reachable
-        // from other devices on the LAN (e.g. http://<your-machine-ip>:5174), not
-        // just http://localhost. Vite prints the "Network:" URL on startup.
-        host: true,
         // Default interactive port is 5174. Playwright test runs pass LAB_DEV_PORT
         // to spin up an ISOLATED server on a dedicated port (so test traffic never
         // competes with the interactive lab). strictPort is enabled only for that
@@ -1110,6 +886,9 @@ export default defineConfig({
         // interactive dev server keeps Vite's default auto-increment behavior.
         port: Number(process.env.LAB_DEV_PORT) || 5174,
         strictPort: !!process.env.LAB_DEV_PORT,
+        // With LAB_HTTPS, expose the server on the LAN so an XR headset can reach
+        // it by IP; @vitejs/plugin-basic-ssl supplies the self-signed cert.
+        ...(LAB_HTTPS ? { host: true } : {}),
         watch: {
             // On-demand tab generation writes many files under the Vite root that
             // would otherwise churn the single-threaded dev server (stalling the

@@ -1,15 +1,20 @@
 /**
- * Opt-in PBR box-projected local cubemap reflections.
+ * Opt-in per-material PBR environment overrides and local cubemap reflections.
  *
- * Local environment state, shader code, and GPU binding logic live entirely in
+ * Environment override state, shader code, and GPU binding logic live entirely in
  * this feature chunk. PBR scenes that do not call enablePbrLocalCubemap() retain
  * the ordinary material shape, shader path, and renderable update loop.
  */
 
 import { BU, TU } from "../../engine/gpu-flags.js";
 import { createMappedBuffer, createUniformBuffer } from "../../resource/gpu-buffers.js";
+import { getTrilinearSampler } from "../../resource/samplers.js";
 import type { SceneContext } from "../../scene/scene.js";
 import { _registerPbrExt } from "./pbr-flags.js";
+import { _installPbrExtensionIblResolver } from "./pbr-compose.js";
+import { _installPbrIblFallbackResolver } from "./pbr-pipeline.js";
+import { _enableDdsEnvironmentCopySource } from "../../loader-env/load-dds-env.js";
+import { _enableHdrEnvironmentCopySource } from "../../loader-hdr/hdr-ibl-pipeline.js";
 import {
     _initializePbrLocalCubemapLimits,
     _PBR_LOCAL_ENVIRONMENT_CANDIDATE_CAPACITY,
@@ -57,6 +62,16 @@ export interface PbrLocalEnvironmentProbeGridCell {
 }
 
 /**
+ * Override the environment used by one PBR material without parallax correction.
+ *
+ * Configure before scene registration. Call `enablePbrLocalCubemap()` before
+ * registering the scene so the environment-override shader path is available.
+ */
+export function setPbrEnvironment(material: PbrMaterialProps, environment: EnvironmentTextures): void {
+    _setPbrLocalEnvironment(material, { kind: "environment", environment });
+}
+
+/**
  * Assign one bounded local environment to a PBR material.
  *
  * Configure before scene registration. If bindings already exist, call
@@ -64,6 +79,8 @@ export interface PbrLocalEnvironmentProbeGridCell {
  */
 export function setPbrLocalEnvironment(material: PbrMaterialProps, environment: EnvironmentTextures, options: PbrLocalEnvironmentOptions): void {
     finiteVec3(options.projectionPosition, "local environment projectionPosition");
+    const capturePosition = options.capturePosition ?? options.projectionPosition;
+    finiteVec3(capturePosition, "local environment capturePosition");
     const projectionSize: [number, number, number] =
         options.shape === "sphere"
             ? (finitePositive(options.projectionRadius, "local environment projectionRadius"),
@@ -73,6 +90,7 @@ export function setPbrLocalEnvironment(material: PbrMaterialProps, environment: 
         kind: "single",
         environment,
         shape: options.shape ?? "box",
+        capturePosition: [...capturePosition],
         projectionPosition: [...options.projectionPosition],
         projectionSize,
     });
@@ -118,10 +136,20 @@ function validateProbe(probe: PbrLocalEnvironmentProbe, index: number): void {
     } else {
         finiteVec3(probe.projectionSize, `local probe ${index} projectionSize`, true);
         finiteVec3(probe.influenceInnerSize, `local probe ${index} influenceInnerSize`);
+        const outerPosition = probe.influenceOuterPosition ?? probe.influencePosition;
+        finiteVec3(outerPosition, `local probe ${index} influenceOuterPosition`);
         finiteVec3(probe.influenceOuterSize, `local probe ${index} influenceOuterSize`, true);
+        const angle = probe.angleRadians ?? 0;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const dx = outerPosition[0] - probe.influencePosition[0];
+        const dz = outerPosition[2] - probe.influencePosition[2];
+        const localOffset = [cosine * dx - sine * dz, outerPosition[1] - probe.influencePosition[1], sine * dx + cosine * dz];
         for (let axis = 0; axis < 3; axis++) {
-            if (probe.influenceInnerSize[axis]! < 0 || probe.influenceInnerSize[axis]! > probe.influenceOuterSize[axis]!) {
-                throw new Error(`[babylon-lite] local probe ${index} influenceInnerSize must be non-negative and no larger than influenceOuterSize`);
+            const innerHalf = probe.influenceInnerSize[axis]! * 0.5;
+            const outerHalf = probe.influenceOuterSize[axis]! * 0.5;
+            if (innerHalf < 0 || Math.abs(localOffset[axis]!) + innerHalf > outerHalf) {
+                throw new Error(`[babylon-lite] local probe ${index} inner influence box must be non-negative and contained by the outer influence box`);
             }
         }
     }
@@ -154,8 +182,9 @@ function writeProbe(data: Float32Array, u32: Uint32Array, probe: PbrLocalEnviron
         probe.shape === "sphere" ? [probe.influenceInnerRadius, probe.influenceInnerRadius, probe.influenceInnerRadius] : probe.influenceInnerSize.map((value) => value * 0.5);
     const influenceOuterHalf =
         probe.shape === "sphere" ? [probe.influenceOuterRadius, probe.influenceOuterRadius, probe.influenceOuterRadius] : probe.influenceOuterSize.map((value) => value * 0.5);
+    const influenceOuterPosition = probe.shape === "sphere" ? probe.influencePosition : (probe.influenceOuterPosition ?? probe.influencePosition);
     const angle = probe.angleRadians ?? 0;
-    const lodScale = probe.environment._lodGenerationScale ?? 0.8;
+    const lodScale = probe.environment.lodGenerationScale ?? 0.8;
     const lodBias = sourceMipOffset * (lodScale - 1);
 
     data.set(probe.projectionPosition, base);
@@ -168,8 +197,13 @@ function writeProbe(data: Float32Array, u32: Uint32Array, probe: PbrLocalEnviron
     data[base + 15] = Math.cos(angle);
     data.set(influenceInnerHalf, base + 16);
     data[base + 19] = Math.sin(angle);
-    data.set(influenceOuterHalf, base + 20);
-    u32[base + 23] = packDebugColor(probe.debugColor) | (probe.shape === "sphere" ? _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG : 0);
+    data.set(influenceOuterPosition, base + 20);
+    data.set(influenceOuterHalf, base + 24);
+    u32[base + 27] = packDebugColor(probe.debugColor) | (probe.shape === "sphere" ? _PBR_LOCAL_ENVIRONMENT_SPHERE_FLAG : 0);
+}
+
+function probeOuterPosition(probe: PbrLocalEnvironmentProbe): readonly [number, number, number] {
+    return probe.shape === "sphere" ? probe.influencePosition : (probe.influenceOuterPosition ?? probe.influencePosition);
 }
 
 const GRID_HEADER_U32 = 8;
@@ -181,6 +215,15 @@ interface BuiltProbeGrid {
     readonly cellSize: number;
     readonly dimensions: readonly [number, number, number];
     readonly stride: number;
+}
+
+interface ProbeGridLayout {
+    readonly minimum: readonly [number, number, number];
+    readonly dimensions: readonly [number, number, number];
+    readonly cellCount: number;
+    readonly stride: number;
+    readonly dataLength: number;
+    readonly byteLength: number;
 }
 
 function validateGrid(options: PbrLocalEnvironmentProbeGridOptions): void {
@@ -210,9 +253,10 @@ function probeOuterWorldExtent(probe: PbrLocalEnvironmentProbe): [number, number
 }
 
 function intersectsProbeOuterBox(probe: PbrLocalEnvironmentProbe, cellCentre: readonly number[], cellHalfSize: number): boolean {
-    const dx = cellCentre[0]! - probe.influencePosition[0];
-    const dy = cellCentre[1]! - probe.influencePosition[1];
-    const dz = cellCentre[2]! - probe.influencePosition[2];
+    const outerPosition = probeOuterPosition(probe);
+    const dx = cellCentre[0]! - outerPosition[0];
+    const dy = cellCentre[1]! - outerPosition[1];
+    const dz = cellCentre[2]! - outerPosition[2];
     if (probe.shape === "sphere") {
         const distanceToCellSquared = Math.max(Math.abs(dx) - cellHalfSize, 0) ** 2 + Math.max(Math.abs(dy) - cellHalfSize, 0) ** 2 + Math.max(Math.abs(dz) - cellHalfSize, 0) ** 2;
         return distanceToCellSquared <= probe.influenceOuterRadius ** 2 + GRID_EPSILON;
@@ -253,16 +297,22 @@ function probeNdfAtPoint(probe: PbrLocalEnvironmentProbe, point: readonly number
     const cosine = Math.cos(angle);
     const sine = Math.sin(angle);
     const local = [cosine * dx - sine * dz, dy, sine * dx + cosine * dz];
+    const outerPosition = probe.influenceOuterPosition ?? probe.influencePosition;
+    const outerDx = outerPosition[0] - probe.influencePosition[0];
+    const outerDz = outerPosition[2] - probe.influencePosition[2];
+    const outerOffset = [cosine * outerDx - sine * outerDz, outerPosition[1] - probe.influencePosition[1], sine * outerDx + cosine * outerDz];
     let ndf = Number.NEGATIVE_INFINITY;
     for (let axis = 0; axis < 3; axis++) {
         const inner = probe.influenceInnerSize[axis]! * 0.5;
         const outer = probe.influenceOuterSize[axis]! * 0.5;
-        ndf = Math.max(ndf, (Math.abs(local[axis]!) - inner) / Math.max(outer - inner, 0.00001));
+        const positive = local[axis]! >= 0;
+        const span = positive ? outerOffset[axis]! + outer - inner : -outerOffset[axis]! + outer - inner;
+        ndf = Math.max(ndf, (Math.abs(local[axis]!) - inner) / Math.max(span, 0.00001));
     }
     return ndf;
 }
 
-function buildProbeGrid(probes: readonly PbrLocalEnvironmentProbe[], options: PbrLocalEnvironmentProbeGridOptions): BuiltProbeGrid {
+function measureProbeGrid(options: PbrLocalEnvironmentProbeGridOptions): ProbeGridLayout {
     validateGrid(options);
     const minimum: [number, number, number] = [...options.minimum];
     const dimensions: [number, number, number] = [0, 0, 0];
@@ -273,18 +323,29 @@ function buildProbeGrid(probes: readonly PbrLocalEnvironmentProbe[], options: Pb
     if (!Number.isSafeInteger(cellCount) || cellCount < 1) {
         throw new Error("[babylon-lite] local probe voxel grid dimensions are too large");
     }
+    const stride = 1 + MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES;
+    const dataLength = GRID_HEADER_U32 + cellCount * stride;
+    const byteLength = dataLength * Uint32Array.BYTES_PER_ELEMENT;
+    if (!Number.isSafeInteger(dataLength) || !Number.isSafeInteger(byteLength)) {
+        throw new Error("[babylon-lite] local probe voxel grid dimensions are too large");
+    }
+    return { minimum, dimensions, cellCount, stride, dataLength, byteLength };
+}
 
+function buildProbeGrid(probes: readonly PbrLocalEnvironmentProbe[], options: PbrLocalEnvironmentProbeGridOptions, layout: ProbeGridLayout): BuiltProbeGrid {
+    const { minimum, dimensions, cellCount, stride, dataLength } = layout;
     const cells = Array.from({ length: cellCount }, () => [] as number[]);
     const cellHalfSize = options.cellSize * 0.5;
     const linearIndex = (x: number, y: number, z: number): number => (z * dimensions[1] + y) * dimensions[0] + x;
     for (let probeIndex = 0; probeIndex < probes.length; probeIndex++) {
         const probe = probes[probeIndex]!;
         const extent = probeOuterWorldExtent(probe);
+        const outerPosition = probeOuterPosition(probe);
         const starts: [number, number, number] = [0, 0, 0];
         const ends: [number, number, number] = [0, 0, 0];
         for (let axis = 0; axis < 3; axis++) {
-            starts[axis] = Math.max(0, Math.floor((probe.influencePosition[axis]! - extent[axis]! - minimum[axis]!) / options.cellSize));
-            ends[axis] = Math.min(dimensions[axis]! - 1, Math.floor((probe.influencePosition[axis]! + extent[axis]! - minimum[axis]!) / options.cellSize));
+            starts[axis] = Math.max(0, Math.floor((outerPosition[axis]! - extent[axis]! - minimum[axis]!) / options.cellSize));
+            ends[axis] = Math.min(dimensions[axis]! - 1, Math.floor((outerPosition[axis]! + extent[axis]! - minimum[axis]!) / options.cellSize));
         }
         for (let z = starts[2]; z <= ends[2]; z++) {
             for (let y = starts[1]; y <= ends[1]; y++) {
@@ -327,8 +388,7 @@ function buildProbeGrid(probes: readonly PbrLocalEnvironmentProbe[], options: Pb
         }
     }
 
-    const stride = 1 + MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES;
-    const data = new Uint32Array(GRID_HEADER_U32 + cellCount * stride);
+    const data = new Uint32Array(dataLength);
     const floats = new Float32Array(data.buffer);
     floats.set(minimum, 0);
     floats[3] = 1 / options.cellSize;
@@ -362,18 +422,23 @@ export function getPbrLocalEnvironmentProbeGridCell(set: PbrLocalEnvironmentProb
     };
 }
 
-/** Create a scene-owned local-probe texture array and shared uniform buffer. */
-export function createPbrLocalEnvironmentProbeSet(scene: SceneContext, options: PbrLocalEnvironmentProbeSetOptions): PbrLocalEnvironmentProbeSet {
-    const probes = options.probes.slice();
-    if (!probes.length || probes.length > MAX_PBR_LOCAL_ENVIRONMENT_PROBES) {
-        throw new Error(`[babylon-lite] local probe sets require 1..${MAX_PBR_LOCAL_ENVIRONMENT_PROBES} probes`);
-    }
-    probes.forEach(validateProbe);
+interface ProbeTextureLayout {
+    readonly targetSize: number;
+    readonly format: GPUTextureFormat;
+    readonly mipLevelCount: number;
+    readonly sourceMipOffsets: readonly number[];
+}
 
-    const textures = probes.map((probe) => probe.environment._specularCube);
+function measureProbeTextures(probes: readonly PbrLocalEnvironmentProbe[]): ProbeTextureLayout {
+    const textures = probes.map((probe) => probe.environment.specularCube);
     const targetSize = Math.min(...textures.map((texture) => texture.width));
     const format = textures[0]!.format;
     const sourceMipOffsets = textures.map((texture) => {
+        if ((texture.usage & TU.COPY_SRC) === 0) {
+            throw new Error(
+                "[babylon-lite] local probe cubemaps require COPY_SRC usage; call enablePbrLocalCubemap() before loading DDS or HDR probe environments, or create custom probe textures with COPY_SRC"
+            );
+        }
         if (texture.width !== texture.height || texture.depthOrArrayLayers !== 6 || texture.format !== format) {
             throw new Error("[babylon-lite] local probe cubemaps must be square six-face textures with one shared format");
         }
@@ -383,52 +448,119 @@ export function createPbrLocalEnvironmentProbeSet(scene: SceneContext, options: 
     if (mipLevelCount < 1) {
         throw new Error("[babylon-lite] local probe cubemaps have no common mip range");
     }
+    return { targetSize, format, mipLevelCount, sourceMipOffsets };
+}
 
-    const engine = scene.surface.engine;
-    const device = engine._device;
+function validateProbeSetDeviceLimits(device: GPUDevice, probeCount: number, gridByteLength: number): void {
     const maxTextureProbes = Math.floor(device.limits.maxTextureArrayLayers / 6);
-    if (probes.length > maxTextureProbes) {
-        throw new Error(`[babylon-lite] local probe set has ${probes.length} probes, but this device supports at most ${maxTextureProbes} cube-array probes`);
+    if (probeCount > maxTextureProbes) {
+        throw new Error(`[babylon-lite] local probe set has ${probeCount} probes, but this device supports at most ${maxTextureProbes} cube-array probes`);
     }
     const uniformBytes = _PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS * 4;
     if (device.limits.maxUniformBufferBindingSize < uniformBytes) {
         throw new Error(`[babylon-lite] local probe UBO requires ${uniformBytes} bytes, but this device supports ${device.limits.maxUniformBufferBindingSize}`);
     }
-    const grid = buildProbeGrid(probes, options.voxelGrid);
-    if (grid.data.byteLength > device.limits.maxStorageBufferBindingSize || grid.data.byteLength > device.limits.maxBufferSize) {
-        throw new Error(`[babylon-lite] local probe voxel grid requires ${grid.data.byteLength} bytes, exceeding this device's storage-buffer limits`);
+    if (gridByteLength > device.limits.maxStorageBufferBindingSize || gridByteLength > device.limits.maxBufferSize) {
+        throw new Error(`[babylon-lite] local probe voxel grid requires ${gridByteLength} bytes, exceeding this device's storage-buffer limits`);
     }
+}
+
+function createProbeTexture(device: GPUDevice, probes: readonly PbrLocalEnvironmentProbe[], layout: ProbeTextureLayout): GPUTexture {
     const texture = device.createTexture({
-        label: "pbr-local-environment-probes",
-        size: [targetSize, targetSize, probes.length * 6],
-        format,
+        label: "pbr-local-probes",
+        size: [layout.targetSize, layout.targetSize, probes.length * 6],
+        format: layout.format,
         dimension: "2d",
-        mipLevelCount,
+        mipLevelCount: layout.mipLevelCount,
         usage: TU.TEXTURE_BINDING | TU.COPY_DST,
     });
-    const encoder = device.createCommandEncoder({ label: "pbr-local-environment-probe-copy" });
-    for (let probeIndex = 0; probeIndex < probes.length; probeIndex++) {
-        const source = textures[probeIndex]!;
-        const sourceMipOffset = sourceMipOffsets[probeIndex]!;
-        for (let mip = 0; mip < mipLevelCount; mip++) {
-            const size = Math.max(1, targetSize >> mip);
-            for (let face = 0; face < 6; face++) {
-                encoder.copyTextureToTexture(
-                    { texture: source, mipLevel: mip + sourceMipOffset, origin: [0, 0, face] },
-                    { texture, mipLevel: mip, origin: [0, 0, probeIndex * 6 + face] },
-                    [size, size, 1]
-                );
+    try {
+        const encoder = device.createCommandEncoder({ label: "pbr-local-probe-copy" });
+        for (let probeIndex = 0; probeIndex < probes.length; probeIndex++) {
+            const source = probes[probeIndex]!.environment.specularCube;
+            const sourceMipOffset = layout.sourceMipOffsets[probeIndex]!;
+            for (let mip = 0; mip < layout.mipLevelCount; mip++) {
+                const size = Math.max(1, layout.targetSize >> mip);
+                for (let face = 0; face < 6; face++) {
+                    encoder.copyTextureToTexture(
+                        { texture: source, mipLevel: mip + sourceMipOffset, origin: [0, 0, face] },
+                        { texture, mipLevel: mip, origin: [0, 0, probeIndex * 6 + face] },
+                        [size, size, 1]
+                    );
+                }
             }
         }
+        device.queue.submit([encoder.finish()]);
+        return texture;
+    } catch (error) {
+        texture.destroy();
+        throw error;
     }
-    device.queue.submit([encoder.finish()]);
+}
+
+function ensureProbeSetDevice(set: PbrLocalEnvironmentProbeSet): void {
+    const device = set._engine._device;
+    if (set._device === device) {
+        return;
+    }
+    const layout = measureProbeTextures(set.probes);
+    validateProbeSetDeviceLimits(device, set.probes.length, set._gridData.byteLength);
+    for (let index = 0; index < set.probes.length; index++) {
+        writeProbe(set._uniformData, set._uniformU32, set.probes[index]!, index, layout.sourceMipOffsets[index]!);
+    }
+
+    let texture: GPUTexture | undefined;
+    let textureView: GPUTextureView | undefined;
+    let uniformBuffer: GPUBuffer | undefined;
+    let gridBuffer: GPUBuffer | undefined;
+    try {
+        texture = createProbeTexture(device, set.probes, layout);
+        textureView = texture.createView({ dimension: "cube-array", baseArrayLayer: 0, arrayLayerCount: set.probes.length * 6 });
+        uniformBuffer = createUniformBuffer(set._engine, set._uniformData, "pbr-local-probes");
+        gridBuffer = createMappedBuffer(set._engine, set._gridData, BU.STORAGE, "pbr-local-probe-grid");
+    } catch (error) {
+        texture?.destroy();
+        uniformBuffer?.destroy();
+        gridBuffer?.destroy();
+        throw error;
+    }
+
+    const previousUniformBuffer = set._uniformBuffer;
+    const previousGridBuffer = set._gridBuffer;
+    const previousTexture = set._texture;
+    set._uniformBuffer = uniformBuffer;
+    set._gridBuffer = gridBuffer;
+    set._texture = texture;
+    set._textureView = textureView;
+    set._sampler = getTrilinearSampler(set._engine);
+    set._device = device;
+    previousUniformBuffer?.destroy();
+    previousGridBuffer?.destroy();
+    previousTexture?.destroy();
+}
+
+/** Create a scene-owned local-probe texture array and shared uniform buffer. */
+export function createPbrLocalEnvironmentProbeSet(scene: SceneContext, options: PbrLocalEnvironmentProbeSetOptions): PbrLocalEnvironmentProbeSet {
+    const probes = options.probes.slice();
+    if (!probes.length || probes.length > MAX_PBR_LOCAL_ENVIRONMENT_PROBES) {
+        throw new Error(`[babylon-lite] local probe sets require 1..${MAX_PBR_LOCAL_ENVIRONMENT_PROBES} probes`);
+    }
+    probes.forEach(validateProbe);
+
+    const engine = scene.surface.engine;
+    const device = engine._device;
+    const textureLayout = measureProbeTextures(probes);
+    _initializePbrLocalCubemapLimits(undefined);
+    const gridLayout = measureProbeGrid(options.voxelGrid);
+    validateProbeSetDeviceLimits(device, probes.length, gridLayout.byteLength);
+    const grid = buildProbeGrid(probes, options.voxelGrid, gridLayout);
 
     const uniformData = new Float32Array(_PBR_LOCAL_ENVIRONMENT_UNIFORM_FLOATS);
     const uniformU32 = new Uint32Array(uniformData.buffer);
     uniformU32[0] = probes.length;
     uniformU32[3] = options.parallaxCorrection === false ? 0 : _PBR_LOCAL_ENVIRONMENT_PARALLAX_FLAG;
     for (let index = 0; index < probes.length; index++) {
-        writeProbe(uniformData, uniformU32, probes[index]!, index, sourceMipOffsets[index]!);
+        writeProbe(uniformData, uniformU32, probes[index]!, index, textureLayout.sourceMipOffsets[index]!);
     }
 
     const set: PbrLocalEnvironmentProbeSet = {
@@ -436,18 +568,20 @@ export function createPbrLocalEnvironmentProbeSet(scene: SceneContext, options: 
         _uniformBuffer: null as unknown as GPUBuffer,
         _uniformData: uniformData,
         _uniformU32: uniformU32,
-        _texture: texture,
-        _textureView: texture.createView({ dimension: "cube-array", baseArrayLayer: 0, arrayLayerCount: probes.length * 6 }),
-        _sampler: probes[0]!.environment._cubeSampler,
-        _gridBuffer: createMappedBuffer(engine, grid.data, BU.STORAGE, "pbr-local-environment-probe-grid"),
+        _texture: null as unknown as GPUTexture,
+        _textureView: null as unknown as GPUTextureView,
+        _sampler: null as unknown as GPUSampler,
+        _gridBuffer: null as unknown as GPUBuffer,
         _gridData: grid.data,
         _gridMinimum: grid.minimum,
         _gridCellSize: grid.cellSize,
         _gridDimensions: grid.dimensions,
         _gridStride: grid.stride,
-        _device: device,
+        _engine: engine,
+        _device: null as unknown as GPUDevice,
+        _ensureDevice: () => ensureProbeSetDevice(set),
     };
-    (set as { _uniformBuffer: GPUBuffer })._uniformBuffer = createUniformBuffer(engine, uniformData, "pbr-local-environment-probes");
+    set._ensureDevice();
     scene._disposables.push(() => {
         set._uniformBuffer.destroy();
         set._gridBuffer.destroy();
@@ -464,16 +598,23 @@ export function setPbrLocalEnvironmentProbeDebug(set: PbrLocalEnvironmentProbeSe
         return;
     }
     set._uniformU32[3] = next;
+    set._ensureDevice();
     const byteOffset = 3 * Uint32Array.BYTES_PER_ELEMENT;
     set._device.queue.writeBuffer(set._uniformBuffer, byteOffset, set._uniformData.buffer, set._uniformData.byteOffset + byteOffset, Uint32Array.BYTES_PER_ELEMENT);
 }
 
 let _enabled: Promise<void> | null = null;
 
-/** Enable bounded single-probe projection and initialize fragment-weighted probe arrays. */
+/** Enable bounded single-probe projection and initialize fragment-weighted probe arrays.
+ * Call before loading any DDS or HDR environment that will be used as a probe. */
 export function enablePbrLocalCubemap(options: PbrLocalCubemapInitOptions = {}): Promise<void> {
     _initializePbrLocalCubemapLimits(options.maxCandidates);
-    return (_enabled ??= import("./fragments/local-cubemap-fragment.js").then((mod) => {
-        mod.registerPbrLocalCubemapExt(_registerPbrExt);
+    _enableDdsEnvironmentCopySource();
+    _enableHdrEnvironmentCopySource();
+    return (_enabled ??= Promise.all([import("./fragments/local-cubemap-fragment.js"), import("./fragments/ibl-fragment.js")]).then(([local, ibl]) => {
+        _installPbrExtensionIblResolver(local._isPbrLocalCubemapIblVariant);
+        _installPbrIblFallbackResolver(local._getPbrLocalCubemapIblFallback);
+        local.registerPbrLocalCubemapExt(_registerPbrExt);
+        _registerPbrExt(ibl.pbrExt);
     }));
 }

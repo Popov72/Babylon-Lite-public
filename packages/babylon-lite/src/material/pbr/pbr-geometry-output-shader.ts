@@ -191,7 +191,7 @@ export function composePbrGeometryShader(
     attachments: readonly GeometryTextureType[],
     emitColor: boolean,
     uv2Mask = 0,
-    pluginIndex?: number
+    pluginIndex = 0
 ): ComposedShader {
     // Strip PBR_HAS_ALPHA_BLEND: the template's alpha-blend branch returns
     // `finalAlpha = saturate(alpha + luminanceOverAlpha²)` which we don't need

@@ -135,28 +135,18 @@ export function createAnimationController(
     nodeNames?: readonly (string | undefined)[]
 ): AnimationController {
     const numNodes = nodes.length;
-    const animatedTrsNodes = new Set<number>();
-    for (let channelIndex = 0; channelIndex < clip.channels.length; channelIndex++) {
-        const channel = clip.channels[channelIndex]!;
-        if (channel.nodeIdx >= 0 && (channel.path === PATH_TRANSLATION || channel.path === PATH_ROTATION || channel.path === PATH_SCALE)) {
-            animatedTrsNodes.add(channel.nodeIdx);
-        }
-    }
-    const clipSkeletons =
-        animatedTrsNodes.size === 0
-            ? []
-            : skeletons.filter((skeleton) =>
-                  skeleton.jointNodes.some((jointNode) => {
-                      let nodeIndex = jointNode;
-                      while (nodeIndex >= 0) {
-                          if (animatedTrsNodes.has(nodeIndex)) {
-                              return true;
-                          }
-                          nodeIndex = nodes[nodeIndex]?.parentIdx ?? -1;
-                      }
-                      return false;
-                  })
-              );
+    const clipSkeletons = skeletons.filter((skeleton) =>
+        skeleton.jointNodes.some((jointNode) =>
+            clip.channels.some((channel) => {
+                for (let nodeIndex = jointNode; nodeIndex >= 0; nodeIndex = nodes[nodeIndex]!.parentIdx) {
+                    if (channel.path < PATH_WEIGHTS && channel.nodeIdx === nodeIndex) {
+                        return true;
+                    }
+                }
+                return false;
+            })
+        )
+    );
     const requiresEngine = clipSkeletons.length > 0 || morphBindings.length > 0;
 
     // Plain node-TRS bindings: glTF translation/rotation/scale channels that target
