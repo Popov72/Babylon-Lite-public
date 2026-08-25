@@ -293,6 +293,22 @@ The `player` definition may set `characterStrength`, the maximum force applied
 to contacted dynamic bodies. It defaults to `10000`; setting it to `0`
 preserves collision while disabling player pushes.
 
+The `player` definition may also set two finite positive anti-gravity distance
+limits. `maxGrabDistance` defaults to `8 m` and limits initial centre-screen
+acquisition. `maxHeldObjectDistance` also defaults to `8 m` and measures
+player-centre to object-centre distance; a held body is automatically dropped
+with zero launch velocity as soon as that distance is exceeded.
+
+`submergedParticleCount` is a positive integer threshold, defaulting to `100`.
+Each physics update, the player asks `AquanovaFluidRuntime` for the latest
+visible-particle count in a column spanning the capsule diameter in X/Z, from
+the current eye height to `y = 1,000,000`. The eye-height calculation scales
+with the live capsule height, so crouching lowers the query's Y minimum. The
+player enters the submerged state only above the authored threshold and exits
+below half that threshold, keeping hysteresis in the player behavior rather
+than the delayed measurement service. While submerged, a translucent red
+full-screen layer is visible.
+
 The entity carrying `player` is a placement marker rather than scenery. Its
 mesh is hidden and non-pickable during scene setup, and the behavior disables
 collision for the complete owning entity when it starts. The marker is authored
@@ -391,19 +407,23 @@ events are ignored while the weapon is unowned, holstered, or still moving into
 position.
 
 `weaponAntiGravityGun` uses slot 2 and the same pickup, presentation, model
-detail, sway, and crosshair lifecycle. It has no audio. Its optional
-`maxGrabDistance` and `maxMass` parameters must be finite positive numbers and
-default to `6 m` and `100 kg`. The first trigger press may grab only a mesh with
-an explicit `dynamic` behavior whose configured mass is within that limit and
-whose centre-screen hit distance is within range.
+detail, sway, and crosshair lifecycle. It has no audio. Its optional `maxMass`
+parameter must be finite and positive and defaults to `100 kg`. The first
+trigger press may grab only a mesh with an explicit `dynamic` behavior whose
+configured mass is within that limit and whose centre-screen hit distance is
+within the player's `maxGrabDistance`. The former weapon-level
+`maxGrabDistance` remains accepted as a compatibility override for existing
+manifests.
 
 A grabbed body switches from dynamic to kinematic motion, has its velocities
 cleared, and is attracted toward a point `2.5 m` along the camera aim ray while
-retaining its orientation. It remains held after the first trigger is released.
-The next trigger press starts charging a throw. Releasing within `150 ms` drops
-the body with zero velocity; longer holds scale linearly to a mass-independent
-launch speed of `15 m/s`, capped after `2 s`. Holstering, disposal, target
-removal, or liquefaction drops the held body without throwing it.
+retaining its orientation. Each movement step sweeps the body's actual Havok
+shape and stops just before the first non-trigger collider, excluding the held
+body itself. It remains held after the first left button is released. The next
+left-button press immediately throws it at a mass-independent `15 m/s`; holding
+the button does not increase the force. The right button drops it with zero
+velocity. Holstering, disposal, target removal, or liquefaction also drops the
+held body without throwing it.
 
 The `dynamic` behavior may define `mass` in kilograms. It must be finite and
 positive and defaults to `10 kg`. That value is applied to the Havok rigid body

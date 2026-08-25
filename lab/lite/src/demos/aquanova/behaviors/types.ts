@@ -16,6 +16,12 @@ export interface PlayerBehaviorConfig {
     direction?: number[];
     /** Maximum force the character controller applies while pushing dynamic bodies. */
     characterStrength?: number;
+    /** Maximum centre-screen hit distance that the anti-gravity gun may grab. Defaults to 8 metres. */
+    maxGrabDistance?: number;
+    /** Maximum player-to-object distance before an anti-gravity-held body is released. Defaults to 8 metres. */
+    maxHeldObjectDistance?: number;
+    /** Visible particles above the player's head required to enter the submerged state. */
+    submergedParticleCount?: number;
 }
 
 export interface PickEntityRaiseEventConfig {
@@ -133,7 +139,7 @@ export interface WeaponLiquefactorBehaviorConfig {
 }
 
 export interface WeaponAntiGravityGunBehaviorConfig {
-    /** Maximum centre-screen hit distance that may be grabbed. Defaults to 6 metres. */
+    /** @deprecated Configure `player.maxGrabDistance` instead. Retained as a manifest compatibility override. */
     maxGrabDistance?: number;
     /** Maximum dynamic-body mass that may be grabbed. Defaults to 100 kilograms. */
     maxMass?: number;
@@ -149,6 +155,7 @@ export interface BehaviorConfig {
     linked?: string[];
     direction?: number[];
     characterStrength?: number;
+    maxHeldObjectDistance?: number;
     range?: number;
     sound?: string;
     sounds?: Record<string, string[]>;

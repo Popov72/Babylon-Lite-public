@@ -68,6 +68,7 @@ export interface AquanovaGameContext {
     readonly weaponInventory: WeaponInventoryRuntime;
     readonly weaponLiquefactor: WeaponLiquefactorRuntime;
     readonly weaponAntiGravityGun: WeaponAntiGravityGunRuntime;
+    readonly playerMaxGrabDistance: () => number;
     readonly dynamicMassOf: (mesh: Mesh) => number | null;
     readonly setCollisionShape: (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration) => void;
     readonly registerIntersectionTrigger: (entityName: string, playerOnly: boolean, callbacks: IntersectionTriggerCallbacks) => IntersectionTriggerRegistration;

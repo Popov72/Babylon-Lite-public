@@ -7,6 +7,7 @@ export interface AquanovaEventMap {
     weaponCycleRequested: { direction: -1 | 1 };
     weaponEquippedChanged: { slot: number | null };
     weaponTriggerPressed: { held: boolean };
+    weaponSecondaryPressed: Record<string, never>;
     hitWithWeapon: {
         mesh: Mesh;
         point: readonly [number, number, number] | null;

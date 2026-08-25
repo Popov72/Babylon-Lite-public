@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, copyFile, readFile, rm, writeFile, stat, access } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, open, readFile, rename, rm, writeFile, stat, access } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -191,6 +191,47 @@ function mb(bytes: number): string {
     return `${(bytes / 1048576).toFixed(2)} MB`;
 }
 
+/** Replace a published file only after a complete same-directory copy exists. */
+async function replaceFileAtomically(src: string, dst: string): Promise<void> {
+    const source = await stat(src);
+    const temp = path.join(path.dirname(dst), `.${path.basename(dst)}.${process.pid}.${Date.now()}.tmp`);
+    try {
+        await copyFile(src, temp);
+        const copied = await stat(temp);
+        if (copied.size !== source.size) {
+            throw Error(`incomplete copy of ${path.basename(src)}: expected ${source.size} bytes, got ${copied.size}`);
+        }
+        await rename(temp, dst);
+    } finally {
+        await rm(temp, { force: true });
+    }
+}
+
+/** Reject a GLB whose header declares bytes that are not present on disk. */
+async function assertCompleteGlb(file: string, label: string): Promise<void> {
+    const fileStat = await stat(file);
+    if (fileStat.size < 12) {
+        throw Error(`${label} is only ${fileStat.size} bytes`);
+    }
+    const header = Buffer.allocUnsafe(12);
+    const handle = await open(file, "r");
+    try {
+        const { bytesRead } = await handle.read(header, 0, header.byteLength, 0);
+        if (bytesRead !== header.byteLength) {
+            throw Error(`${label} header is truncated`);
+        }
+    } finally {
+        await handle.close();
+    }
+    if (header.readUInt32LE(0) !== 0x46546c67 || header.readUInt32LE(4) !== 2) {
+        throw Error(`${label} is not a GLB 2.0 file`);
+    }
+    const declaredLength = header.readUInt32LE(8);
+    if (declaredLength !== fileStat.size) {
+        throw Error(`${label} declares ${declaredLength} bytes but contains ${fileStat.size}`);
+    }
+}
+
 /** Copy only when the destination is missing or differs in size/mtime. */
 async function copyIfChanged(src: string, dst: string): Promise<boolean> {
     const s = await stat(src);
@@ -198,7 +239,7 @@ async function copyIfChanged(src: string, dst: string): Promise<boolean> {
     if (d && d.size === s.size && d.mtimeMs >= s.mtimeMs) {
         return false;
     }
-    await copyFile(src, dst);
+    await replaceFileAtomically(src, dst);
     return true;
 }
 
@@ -289,14 +330,7 @@ function authoredLocalEnvironmentProbes(manifest: ShipManifest): Map<string, Aut
             }
             const position = probe.boxPosition;
             const size = probe.boxSize;
-            if (
-                !position ||
-                !size ||
-                position.length !== 3 ||
-                size.length !== 3 ||
-                ![...position, ...size].every(Number.isFinite) ||
-                !size.every((value) => value > 0)
-            ) {
+            if (!position || !size || position.length !== 3 || size.length !== 3 || ![...position, ...size].every(Number.isFinite) || !size.every((value) => value > 0)) {
                 continue;
             }
             const influenceBoxSize = authoredVector(probe.influenceBoxSize, "positive");
@@ -430,6 +464,7 @@ async function publishShipGlb(
     destination: string,
     opts: Pick<Options, "shipOptimize" | "shipUastcLevel" | "shipEtc1sQuality" | "shipZstd" | "force">
 ): Promise<void> {
+    await assertCompleteGlb(source, "source ship.glb");
     if (!opts.shipOptimize) {
         const copied = await copyIfChanged(source, destination);
         console.log(`${copied ? "copied " : "current"}  ${path.basename(destination)}  (unoptimized)`);
@@ -478,7 +513,8 @@ async function publishShipGlb(
             "ship ETC1S texture compression"
         );
 
-        await copyFile(output, destination);
+        await assertCompleteGlb(output, "optimized ship.glb");
+        await replaceFileAtomically(output, destination);
         await writeFile(stampFile, stamp);
         const outputBytes = (await stat(destination)).size;
         console.log(`optimized  ${path.basename(destination)}  ${mb(sourceBytes.byteLength)} -> ${mb(outputBytes)}`);
@@ -533,17 +569,14 @@ async function main(): Promise<void> {
             };
             const shape = authored?.shape ?? probe.shape ?? "box";
             if (shape === "sphere") {
-                const spherePosition =
-                    authored?.shape === "sphere" ? authored.spherePosition : probe.shape === "sphere" ? probe.spherePosition : undefined;
-                const sphereRadius =
-                    authored?.shape === "sphere" ? authored.sphereRadius : probe.shape === "sphere" ? probe.sphereRadius : undefined;
+                const spherePosition = authored?.shape === "sphere" ? authored.spherePosition : probe.shape === "sphere" ? probe.spherePosition : undefined;
+                const sphereRadius = authored?.shape === "sphere" ? authored.sphereRadius : probe.shape === "sphere" ? probe.sphereRadius : undefined;
                 if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius! <= 0) {
                     throw new Error(`environment probe ${probeId} has invalid spherical projection data`);
                 }
                 const defaults = defaultInfluenceRadii(sphereRadius!);
                 const previousSphere = previous?.shape === "sphere" ? previous : undefined;
-                const outerRadius =
-                    (authored?.shape === "sphere" ? authored.influenceSphereRadius : undefined) ?? previousSphere?.influenceSphereRadius ?? defaults.outer;
+                const outerRadius = (authored?.shape === "sphere" ? authored.influenceSphereRadius : undefined) ?? previousSphere?.influenceSphereRadius ?? defaults.outer;
                 const innerRadius =
                     (authored?.shape === "sphere" ? authored.influenceInnerSphereRadius : undefined) ?? previousSphere?.influenceInnerSphereRadius ?? defaults.inner;
                 localRuntime.probes[probeId] = {
@@ -570,8 +603,7 @@ async function main(): Promise<void> {
                     boxSize,
                     influenceBoxPosition: (authored?.shape === "box" ? authored.influenceBoxPosition : undefined) ?? previousBox?.influenceBoxPosition ?? boxPosition,
                     influenceBoxSize: (authored?.shape === "box" ? authored.influenceBoxSize : undefined) ?? previousBox?.influenceBoxSize ?? defaults.outer,
-                    influenceInnerBoxSize:
-                        (authored?.shape === "box" ? authored.influenceInnerBoxSize : undefined) ?? previousBox?.influenceInnerBoxSize ?? defaults.inner,
+                    influenceInnerBoxSize: (authored?.shape === "box" ? authored.influenceInnerBoxSize : undefined) ?? previousBox?.influenceInnerBoxSize ?? defaults.inner,
                     angle:
                         (authored?.shape === "box" ? authored.angle : undefined) ??
                         previousBox?.angle ??

@@ -4,7 +4,9 @@
 // a capsule, the pod as a cylinder), plus every dissolvable prop's live rigid-body box and the
 // per-chunk static shell.
 //
-// There is only ONE collision representation now: the same primitives feed Havok and the fluid.
+// Authored primitives normally feed both Havok and the fluid. A setCollisionShape behavior may
+// deliberately replace only the fluid primitive with a special analytic shape such as a hollow
+// cylinder; the fluid-injected mode shows that effective representation.
 // (Until recently the fluid collided against an SDF baked from the raw triangles, so water and the
 // player genuinely saw different worlds and each needed its own overlay.)
 
@@ -114,6 +116,19 @@ export function fluidPrimitiveWireframeLines(primitive: FluidPrimitive): Vec3[][
     const b = primitive.b ?? primitive.a;
     const halfAxisLength = Math.max(Math.hypot(b[0] - primitive.a[0], b[1] - primitive.a[1], b[2] - primitive.a[2]) * 0.5, 5e-4);
     const lines = [ring(radius, (x, z) => point(x, halfAxisLength, z)), ring(radius, (x, z) => point(x, -halfAxisLength, z))];
+    if (primitive.kind === "hollowCylinder") {
+        const innerRadius = Math.max(Math.min(primitive.innerRadius ?? 0, radius), 1e-3);
+        lines.push(ring(innerRadius, (x, z) => point(x, halfAxisLength, z)), ring(innerRadius, (x, z) => point(x, -halfAxisLength, z)));
+        for (let rib = 0; rib < 8; rib++) {
+            const angle = (rib / 8) * Math.PI * 2;
+            for (const r of [radius, innerRadius]) {
+                const x = Math.cos(angle) * r;
+                const z = Math.sin(angle) * r;
+                lines.push([point(x, -halfAxisLength, z), point(x, halfAxisLength, z)]);
+            }
+        }
+        return lines;
+    }
     if (primitive.kind === "cylinder") {
         for (let rib = 0; rib < 8; rib++) {
             const angle = (rib / 8) * Math.PI * 2;
@@ -236,14 +251,15 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
     let injSignature = "";
     const vecKey = (v: readonly number[] | undefined): string => v?.map((n) => n.toFixed(3)).join(",") ?? "";
     /** Full visual identity, used to collapse the same primitive packed into several linked sims. */
-    const injVisualKey = (p: FluidPrimitive): string => `${p.kind}:${vecKey(p.a)}:${vecKey(p.b)}:${p.radius?.toFixed(3) ?? ""}:${vecKey(p.rotation)}`;
+    const injVisualKey = (p: FluidPrimitive): string =>
+        `${p.kind}:${vecKey(p.a)}:${vecKey(p.b)}:${p.radius?.toFixed(3) ?? ""}:${p.innerRadius?.toFixed(3) ?? ""}:${vecKey(p.rotation)}`;
     /** Geometry identity of a primitive — two prims with the same signature can share a mesh. */
     const injKey = (p: FluidPrimitive): string => {
         if (p.kind === "box") return `b:${p.b?.map((v) => v.toFixed(3)).join(",")}`;
         if (p.kind === "sphere") return `s:${p.radius?.toFixed(3)}`;
         const a = p.a,
             b = p.b ?? p.a;
-        return `${p.kind[0]}:${p.radius?.toFixed(3)}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
+        return `${p.kind}:${p.radius?.toFixed(3)}:${p.innerRadius?.toFixed(3) ?? ""}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
     };
     const buildInjMesh = (p: FluidPrimitive): Mesh => {
         const m = createLineSystem(engine, {

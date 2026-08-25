@@ -19,7 +19,7 @@ export { SoundManager } from "./sound-manager.js";
 export { TriggerBehavior } from "./trigger.js";
 export { PlayerBehavior } from "./player.js";
 export { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
-export { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "./weapon-anti-gravity-gun.js";
+export { WeaponAntiGravityGunBehavior, antiGravityCollisionMoveFraction } from "./weapon-anti-gravity-gun.js";
 export { WeaponInventory } from "./weapon-inventory.js";
 export type {
     Behavior,

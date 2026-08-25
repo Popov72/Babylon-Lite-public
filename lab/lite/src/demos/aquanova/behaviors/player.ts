@@ -1,6 +1,7 @@
 import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS } from "../constants.js";
+import type { FluidParticleAabb } from "../fluid-runtime.js";
 import type { AquanovaGameContext, JumpApertureAssist } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, PlayerBehaviorConfig } from "./types.js";
@@ -21,6 +22,11 @@ const APERTURE_LATERAL_SPEED = 1;
 const APERTURE_ASSIST_SECONDS = 1.5;
 const GROUND_ADHESION_SPEED = 2;
 const DEFAULT_CHARACTER_STRENGTH = 10_000;
+const DEFAULT_MAX_GRAB_DISTANCE = 8;
+const DEFAULT_MAX_HELD_OBJECT_DISTANCE = 8;
+const DEFAULT_SUBMERGED_PARTICLE_COUNT = 100;
+const SUBMERGED_EXIT_THRESHOLD_FACTOR = 0.5;
+const SUBMERGED_QUERY_MAX_Y = 1_000_000;
 const WALK_STEP_DISTANCE = 1.8;
 const RUN_STEP_DISTANCE = 2.4;
 const FOOTSTEP_VOLUME = 2.5;
@@ -96,6 +102,24 @@ export function playerCapsuleSpawnPosition(markerMin: readonly [number, number, 
     };
 }
 
+export function playerSubmersionAabb(
+    position: Readonly<{ x: number; y: number; z: number }>,
+    currentCapsuleHeight: number,
+    standingCapsuleHeight: number,
+    standingEyeHeight: number,
+    radius: number
+): FluidParticleAabb {
+    const eyeY = position.y + standingEyeHeight * (currentCapsuleHeight / standingCapsuleHeight);
+    return {
+        min: [position.x - radius, eyeY, position.z - radius],
+        max: [position.x + radius, SUBMERGED_QUERY_MAX_Y, position.z + radius],
+    };
+}
+
+export function playerSubmergedState(submerged: boolean, particleCount: number, enterThreshold: number): boolean {
+    return submerged ? particleCount >= enterThreshold * SUBMERGED_EXIT_THRESHOLD_FACTOR : particleCount > enterThreshold;
+}
+
 export class PlayerBehavior implements Behavior<"player"> {
     public readonly name = "player";
     public readonly mesh: Mesh;
@@ -134,7 +158,12 @@ export class PlayerBehavior implements Behavior<"player"> {
     private footstepDistance = 0;
     private footstepActive = false;
     private crosshair: HTMLDivElement | null = null;
+    private submergedOverlay: HTMLDivElement | null = null;
+    private submerged = false;
     private readonly characterStrength: number;
+    public readonly maxGrabDistance: number;
+    public readonly maxHeldObjectDistance: number;
+    public readonly submergedParticleCount: number;
 
     public constructor(entityName: string, meshes: readonly Mesh[], config: PlayerBehaviorConfig, context: AquanovaGameContext) {
         const mesh = meshes[0];
@@ -149,6 +178,21 @@ export class PlayerBehavior implements Behavior<"player"> {
             throw new Error(`[aquanova] player.characterStrength must be a finite non-negative number, received ${String(characterStrength)}`);
         }
         this.characterStrength = characterStrength;
+        const maxGrabDistance = config.maxGrabDistance ?? DEFAULT_MAX_GRAB_DISTANCE;
+        if (!Number.isFinite(maxGrabDistance) || maxGrabDistance <= 0) {
+            throw new Error(`[aquanova] player.maxGrabDistance must be a finite positive number, received ${String(maxGrabDistance)}`);
+        }
+        this.maxGrabDistance = maxGrabDistance;
+        const maxHeldObjectDistance = config.maxHeldObjectDistance ?? DEFAULT_MAX_HELD_OBJECT_DISTANCE;
+        if (!Number.isFinite(maxHeldObjectDistance) || maxHeldObjectDistance <= 0) {
+            throw new Error(`[aquanova] player.maxHeldObjectDistance must be a finite positive number, received ${String(maxHeldObjectDistance)}`);
+        }
+        this.maxHeldObjectDistance = maxHeldObjectDistance;
+        const submergedParticleCount = config.submergedParticleCount ?? DEFAULT_SUBMERGED_PARTICLE_COUNT;
+        if (!Number.isInteger(submergedParticleCount) || submergedParticleCount <= 0) {
+            throw new Error(`[aquanova] player.submergedParticleCount must be a positive integer, received ${String(submergedParticleCount)}`);
+        }
+        this.submergedParticleCount = submergedParticleCount;
         const direction = config.direction;
         this.yaw = direction && (direction[0] || direction[2]) ? Math.atan2(-direction[0]!, direction[2]!) : -Math.PI / 2;
         this.yawTarget = this.yaw;
@@ -166,8 +210,12 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.context.events.emit("entityEvent", { name: this.entityName, event: "disableCollision" });
         this.context.character.characterStrength = this.characterStrength;
         this.context.canvas.dataset.characterStrength = String(this.characterStrength);
+        this.context.canvas.dataset.maxGrabDistance = String(this.maxGrabDistance);
+        this.context.canvas.dataset.maxHeldObjectDistance = String(this.maxHeldObjectDistance);
+        this.context.canvas.dataset.submergedParticleThreshold = String(this.submergedParticleCount);
         this.updateCrouchDataset();
         this.createCrosshair();
+        this.createSubmergedOverlay();
         this.disposers.push(
             this.context.events.on("physicsStep", ({ deltaSeconds }) => {
                 this.update(deltaSeconds);
@@ -175,6 +223,7 @@ export class PlayerBehavior implements Behavior<"player"> {
             })
         );
         this.listen(this.context.canvas, "click", this.onClick);
+        this.listen(this.context.canvas, "contextmenu", this.onContextMenu);
         this.listen(this.context.canvas, "pointerdown", this.onPointerDown);
         this.listen(this.context.canvas, "pointercancel", this.onPointerCancel);
         this.listen(this.context.canvas, "pointermove", this.onPointerMove);
@@ -190,6 +239,8 @@ export class PlayerBehavior implements Behavior<"player"> {
         for (const dispose of this.disposers.splice(0)) dispose();
         this.crosshair?.remove();
         this.crosshair = null;
+        this.submergedOverlay?.remove();
+        this.submergedOverlay = null;
     }
 
     public get isNoclip(): boolean {
@@ -378,6 +429,10 @@ export class PlayerBehavior implements Behavior<"player"> {
                 this.freePosition.z + cos * cosPitch * this.targetDistance
             );
             this.updatePositionDataset(this.freePosition);
+            this.updateSubmersion({
+                min: [this.freePosition.x - this.context.capsuleRadius, this.freePosition.y, this.freePosition.z - this.context.capsuleRadius],
+                max: [this.freePosition.x + this.context.capsuleRadius, SUBMERGED_QUERY_MAX_Y, this.freePosition.z + this.context.capsuleRadius],
+            });
             return;
         }
 
@@ -469,6 +524,7 @@ export class PlayerBehavior implements Behavior<"player"> {
             }
         }
         this.updatePositionDataset(position);
+        this.updateSubmersion(playerSubmersionAabb(position, this.capsuleHeight(), this.context.capsuleHeight, this.context.eyeHeight, this.capsuleRadius()));
         this.updateFootsteps(!this.frozen && grounded && this.verticalVelocity <= 0 && (inputX !== 0 || inputZ !== 0), run > 1, position.x - previousX, position.z - previousZ);
         if (this.frozen) return;
         const eyeHeight = this.currentEyeHeight();
@@ -539,6 +595,10 @@ export class PlayerBehavior implements Behavior<"player"> {
         return this.context.character.shapeOptions.capsuleHeight ?? this.context.capsuleHeight;
     }
 
+    private capsuleRadius(): number {
+        return this.context.character.shapeOptions.capsuleRadius ?? this.context.capsuleRadius;
+    }
+
     private updateCrouchDataset(): void {
         this.context.canvas.dataset.crouched = String(this.isCrouched);
         this.context.canvas.dataset.capsuleHeight = this.capsuleHeight().toFixed(2);
@@ -566,6 +626,30 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.crosshair = crosshair;
     }
 
+    private createSubmergedOverlay(): void {
+        const overlay = document.createElement("div");
+        overlay.id = "aq-submerged";
+        overlay.style.cssText = "position:fixed;inset:0;z-index:14;pointer-events:none;background:rgba(255,0,0,.32);opacity:0;transition:opacity .15s linear;";
+        document.body.appendChild(overlay);
+        this.submergedOverlay = overlay;
+        this.context.canvas.dataset.submerged = "false";
+        this.context.canvas.dataset.submergedParticleCount = "0";
+    }
+
+    private updateSubmersion(aabb: FluidParticleAabb): void {
+        const particleCount = this.context.fluidSimulations.countParticlesInAabb(aabb);
+        this.context.canvas.dataset.submergedParticleCount = String(particleCount);
+        const submerged = playerSubmergedState(this.submerged, particleCount, this.submergedParticleCount);
+        if (submerged === this.submerged) {
+            return;
+        }
+        this.submerged = submerged;
+        this.context.canvas.dataset.submerged = String(submerged);
+        if (this.submergedOverlay) {
+            this.submergedOverlay.style.opacity = submerged ? "1" : "0";
+        }
+    }
+
     private readonly onClick = (): void => {
         if (this.context.isInspecting() || isGizmoInteracting(this.context.canvas)) return;
         if (document.pointerLockElement !== this.context.canvas) {
@@ -574,13 +658,24 @@ export class PlayerBehavior implements Behavior<"player"> {
     };
 
     private readonly onPointerDown = (event: PointerEvent): void => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 && event.button !== 2) return;
         if (document.pointerLockElement !== this.context.canvas || this.context.isInspecting() || isGizmoInteracting(this.context.canvas) || this.noclip) return;
+        if (event.button === 2) {
+            event.preventDefault();
+            this.context.events.emit("weaponSecondaryPressed", {});
+            return;
+        }
         if (this.weaponTriggerHeld) return;
         this.weaponTriggerHeld = true;
         const sequence = ++this.weaponTriggerSequence;
         this.context.events.emit("weaponTriggerPressed", { held: true });
         void this.fire(true, sequence);
+    };
+
+    private readonly onContextMenu = (event: MouseEvent): void => {
+        if (document.pointerLockElement === this.context.canvas) {
+            event.preventDefault();
+        }
     };
 
     private readonly onPointerUp = (event: PointerEvent): void => {

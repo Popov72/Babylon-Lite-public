@@ -65,6 +65,7 @@ import {
     PhysicsMotionType,
     PhysicsShapeType,
     physicsRaycast,
+    shapeCast,
     rebuildScenePbrPipelines,
     registerScene,
     registerUtilityLayer,
@@ -156,6 +157,7 @@ import { forEachFluidCollisionSet } from "./fluid-collision-lifecycle.js";
 import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
 import { fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
 import {
+    antiGravityCollisionMoveFraction,
     AquanovaBehaviorManager,
     PlayerBehavior,
     SoundManager,
@@ -354,7 +356,9 @@ export async function main(): Promise<void> {
     let updateAntiGravityGrab = (_deltaMs: number): boolean => false;
     let releaseAntiGravityGrab = (_throwSpeed: number): void => {};
     canvas.dataset.antiGravityGrabbed = "none";
-    canvas.dataset.antiGravityThrowSpeed = "0";    const weaponLiquefactor = {
+    canvas.dataset.antiGravityThrowSpeed = "0";
+    canvas.dataset.antiGravityBlocked = "false";
+    const weaponLiquefactor = {
         setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("liquefactor", weaponViewmodel, enabled, animated),
         setTargetDistance: (distance: number | null, restart = false): void => {
             weaponLaser.setTargetDistance(distance, restart);
@@ -1345,9 +1349,16 @@ export async function main(): Promise<void> {
             antiGravityGrabbedBody = null;
             canvas.dataset.antiGravityGrabbed = "none";
             canvas.dataset.antiGravityMass = "";
+            canvas.dataset.antiGravityBlocked = "false";
             return false;
         }
         if (d.wriggling) {
+            releaseAntiGravityGrab(0);
+            return false;
+        }
+        const p = d.proxy.position;
+        const playerPosition = character.getPosition();
+        if (Math.hypot(p.x - playerPosition.x, p.y - playerPosition.y, p.z - playerPosition.z) > (playerBehavior?.maxHeldObjectDistance ?? 8)) {
             releaseAntiGravityGrab(0);
             return false;
         }
@@ -1359,14 +1370,27 @@ export async function main(): Promise<void> {
         const targetY = cam.position.y + dy * invLength * 2.5;
         const targetZ = cam.position.z + dz * invLength * 2.5;
         const blend = 1 - Math.exp((-Math.max(0, deltaMs) * 12) / 1000);
-        const p = d.proxy.position;
+        const displacement: [number, number, number] = [(targetX - p.x) * blend, (targetY - p.y) * blend, (targetZ - p.z) * blend];
+        const shape = d.body._shape;
+        const hit =
+            shape && Math.hypot(...displacement) > 1e-8
+                ? shapeCast(world, {
+                      shape,
+                      rotation: d.proxy.rotationQuaternion,
+                      startPosition: p,
+                      endPosition: { x: p.x + displacement[0], y: p.y + displacement[1], z: p.z + displacement[2] },
+                      ignoreBodies: [d.body],
+                  })
+                : null;
+        const moveFraction = hit ? antiGravityCollisionMoveFraction(displacement, hit) : 1;
+        canvas.dataset.antiGravityBlocked = String(moveFraction < 1);
         setPhysicsBodyTransform(
             world,
             d.body,
             {
-                x: p.x + (targetX - p.x) * blend,
-                y: p.y + (targetY - p.y) * blend,
-                z: p.z + (targetZ - p.z) * blend,
+                x: p.x + displacement[0] * moveFraction,
+                y: p.y + displacement[1] * moveFraction,
+                z: p.z + displacement[2] * moveFraction,
             },
             d.proxy.rotationQuaternion
         );
@@ -1378,7 +1402,9 @@ export async function main(): Promise<void> {
         antiGravityGrabbedBody = null;
         canvas.dataset.antiGravityGrabbed = "none";
         canvas.dataset.antiGravityMass = "";
-        canvas.dataset.antiGravityThrowSpeed = String(throwSpeed);        if (!d?.body || !dynBodies.includes(d)) {
+        canvas.dataset.antiGravityThrowSpeed = String(throwSpeed);
+        canvas.dataset.antiGravityBlocked = "false";
+        if (!d?.body || !dynBodies.includes(d)) {
             return;
         }
         setPhysicsBodyMotionType(world, d.body, PhysicsMotionType.DYNAMIC);
@@ -1827,6 +1853,7 @@ export async function main(): Promise<void> {
             inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
             weaponAntiGravityGun,
             weaponLiquefactor,
+            playerMaxGrabDistance: () => playerBehavior?.maxGrabDistance ?? 8,
             dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
             setCollisionShape: setEntityCollisionShape,
             registerIntersectionTrigger: intersectionTriggers.register,

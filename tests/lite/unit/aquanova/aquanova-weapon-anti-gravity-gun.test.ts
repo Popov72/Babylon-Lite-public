@@ -3,16 +3,16 @@ import type { Mesh } from "../../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
 import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import type { AquanovaGameContext, WeaponAntiGravityGunRuntime } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
-import { WeaponAntiGravityGunBehavior, antiGravityThrowSpeed } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
+import { WeaponAntiGravityGunBehavior, antiGravityCollisionMoveFraction } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
 import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
-type WeaponContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
+type WeaponContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "playerMaxGrabDistance" | "dynamicMassOf">;
 
 function mesh(name: string): Mesh {
     return createSceneNode(name) as Mesh;
 }
 
-function createHarness(options: { maxGrabDistance?: number; maxMass?: number; mass?: number | null; enabled?: boolean } = {}) {
+function createHarness(options: { maxGrabDistance?: number; legacyWeaponMaxGrabDistance?: number; maxMass?: number; mass?: number | null; enabled?: boolean } = {}) {
     const events = new AquanovaEventManager();
     const weaponInventory = new WeaponInventory();
     weaponInventory.start(events);
@@ -35,9 +35,15 @@ function createHarness(options: { maxGrabDistance?: number; maxMass?: number; ma
         events,
         weaponInventory,
         weaponAntiGravityGun: runtime,
+        playerMaxGrabDistance: () => options.maxGrabDistance ?? 8,
         dynamicMassOf: vi.fn(() => (options.mass === undefined ? 10 : options.mass)),
     };
-    const behavior = new WeaponAntiGravityGunBehavior("itemAntiGravityGun", [mesh("weapon")], { maxGrabDistance: options.maxGrabDistance, maxMass: options.maxMass }, context);
+    const behavior = new WeaponAntiGravityGunBehavior(
+        "itemAntiGravityGun",
+        [mesh("weapon")],
+        { maxGrabDistance: options.legacyWeaponMaxGrabDistance, maxMass: options.maxMass },
+        context
+    );
     behavior.start();
     if (options.enabled !== false) {
         events.emit("entityEvent", { name: "itemAntiGravityGun", event: "enable" });
@@ -81,6 +87,11 @@ describe("Aquanova anti-gravity gun behavior", () => {
         distant.events.emit("weaponAimUpdated", { mesh: target, point: null, distance: 4.01 });
         expect(distant.runtime.grab).not.toHaveBeenCalled();
 
+        const legacyDistance = createHarness({ maxGrabDistance: 8, legacyWeaponMaxGrabDistance: 4, mass: 10 });
+        legacyDistance.events.emit("weaponTriggerPressed", { held: true });
+        legacyDistance.events.emit("weaponAimUpdated", { mesh: target, point: null, distance: 4.01 });
+        expect(legacyDistance.runtime.grab).not.toHaveBeenCalled();
+
         const heavy = createHarness({ maxMass: 20, mass: 20.01 });
         heavy.events.emit("weaponTriggerPressed", { held: true });
         heavy.events.emit("weaponAimUpdated", { mesh: target, point: null, distance: 2 });
@@ -92,7 +103,7 @@ describe("Aquanova anti-gravity gun behavior", () => {
         expect(staticTarget.runtime.grab).not.toHaveBeenCalled();
     });
 
-    it("keeps the first click grabbed, then drops or throws on the second release", () => {
+    it("keeps the first click grabbed, then throws immediately on the next left press", () => {
         const target = mesh("crate");
         const harness = createHarness();
 
@@ -102,17 +113,20 @@ describe("Aquanova anti-gravity gun behavior", () => {
         expect(harness.runtime.releaseGrab).not.toHaveBeenCalled();
 
         harness.events.emit("weaponTriggerPressed", { held: true });
-        harness.events.emit("frameEnd", { deltaMs: 100 });
+        expect(harness.runtime.releaseGrab).toHaveBeenLastCalledWith(15);
+        harness.events.emit("frameEnd", { deltaMs: 2000 });
         harness.events.emit("weaponTriggerReleased", {});
-        expect(harness.runtime.releaseGrab).toHaveBeenLastCalledWith(0);
+        expect(harness.runtime.releaseGrab).toHaveBeenCalledTimes(1);
+    });
 
+    it("drops a grabbed object on the right button", () => {
+        const target = mesh("crate");
+        const harness = createHarness();
         harness.events.emit("weaponTriggerPressed", { held: true });
         harness.events.emit("weaponAimUpdated", { mesh: target, point: null, distance: 2 });
         harness.events.emit("weaponTriggerReleased", {});
-        harness.events.emit("weaponTriggerPressed", { held: true });
-        harness.events.emit("frameEnd", { deltaMs: 2000 });
-        harness.events.emit("weaponTriggerReleased", {});
-        expect(harness.runtime.releaseGrab).toHaveBeenLastCalledWith(15);
+        harness.events.emit("weaponSecondaryPressed", {});
+        expect(harness.runtime.releaseGrab).toHaveBeenLastCalledWith(0);
     });
 
     it("drops a held body when holstered", () => {
@@ -126,11 +140,14 @@ describe("Aquanova anti-gravity gun behavior", () => {
         expect(harness.runtime.setEnabled).toHaveBeenLastCalledWith(false, true);
     });
 
-    it("validates parameters and caps charge after two seconds", () => {
-        expect(() => createHarness({ maxGrabDistance: 0 })).toThrow("maxGrabDistance");
+    it("validates parameters", () => {
+        expect(() => createHarness({ legacyWeaponMaxGrabDistance: 0 })).toThrow("maxGrabDistance");
         expect(() => createHarness({ maxMass: Number.NaN })).toThrow("maxMass");
-        expect(antiGravityThrowSpeed(100)).toBe(0);
-        expect(antiGravityThrowSpeed(2000)).toBe(15);
-        expect(antiGravityThrowSpeed(5000)).toBe(15);
+    });
+
+    it("stops short of incoming collisions but permits movement away from a contact", () => {
+        expect(antiGravityCollisionMoveFraction([1, 0, 0], { hasHit: false, fraction: 0, hitNormal: { x: 0, y: 0, z: 0 } })).toBe(1);
+        expect(antiGravityCollisionMoveFraction([1, 0, 0], { hasHit: true, fraction: 0.5, hitNormal: { x: -1, y: 0, z: 0 } })).toBeCloseTo(0.49);
+        expect(antiGravityCollisionMoveFraction([0, 1, 0], { hasHit: true, fraction: 0, hitNormal: { x: 0, y: 1, z: 0 } })).toBe(1);
     });
 });

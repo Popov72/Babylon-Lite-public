@@ -3,17 +3,24 @@ import type { AquanovaGameContext } from "./game-context.js";
 import type { Behavior, WeaponAntiGravityGunBehaviorConfig } from "./types.js";
 
 const WEAPON_SLOT = 2;
-const DEFAULT_MAX_GRAB_DISTANCE = 6;
 const DEFAULT_MAX_MASS = 100;
-const QUICK_DROP_MS = 150;
-const MAX_CHARGE_MS = 2000;
 const MAX_THROW_SPEED = 15;
 
-type WeaponAntiGravityGunContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "dynamicMassOf">;
+type WeaponAntiGravityGunContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "playerMaxGrabDistance" | "dynamicMassOf">;
 
-export function antiGravityThrowSpeed(chargeMs: number): number {
-    const normalized = Math.max(0, Math.min(MAX_CHARGE_MS, chargeMs) - QUICK_DROP_MS) / (MAX_CHARGE_MS - QUICK_DROP_MS);
-    return normalized * MAX_THROW_SPEED;
+export function antiGravityCollisionMoveFraction(
+    displacement: readonly [number, number, number],
+    hit: { readonly hasHit: boolean; readonly fraction: number; readonly hitNormal: { readonly x: number; readonly y: number; readonly z: number } },
+    skin = 0.01
+): number {
+    if (!hit.hasHit) {
+        return 1;
+    }
+    const approach = displacement[0] * hit.hitNormal.x + displacement[1] * hit.hitNormal.y + displacement[2] * hit.hitNormal.z;
+    if (approach >= -1e-8) {
+        return 1;
+    }
+    return Math.max(0, Math.min(1, hit.fraction - Math.max(0, skin) / -approach));
 }
 
 export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravityGun"> {
@@ -23,14 +30,12 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
     private readonly entityName: string;
     private readonly context: WeaponAntiGravityGunContext;
     private readonly disposers: Array<() => void> = [];
-    private readonly maxGrabDistance: number;
+    private readonly maxGrabDistanceOverride: number | null;
     private readonly maxMass: number;
     private owned = false;
     private equipped = false;
     private awaitingGrab = false;
     private grabbed = false;
-    private charging = false;
-    private chargeMs = 0;
 
     public constructor(entityName: string, meshes: readonly Mesh[], config: WeaponAntiGravityGunBehaviorConfig, context: WeaponAntiGravityGunContext) {
         const mesh = meshes[0];
@@ -41,7 +46,7 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
         this.mesh = mesh;
         this.config = config;
         this.context = context;
-        this.maxGrabDistance = positive(config.maxGrabDistance ?? DEFAULT_MAX_GRAB_DISTANCE, "maxGrabDistance");
+        this.maxGrabDistanceOverride = config.maxGrabDistance === undefined ? null : positive(config.maxGrabDistance, "maxGrabDistance");
         this.maxMass = positive(config.maxMass ?? DEFAULT_MAX_MASS, "maxMass");
     }
 
@@ -57,8 +62,8 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
             }),
             this.context.events.on("weaponEquippedChanged", ({ slot }) => this.setEquipped(slot === WEAPON_SLOT)),
             this.context.events.on("weaponTriggerPressed", () => this.pressTrigger()),
+            this.context.events.on("weaponSecondaryPressed", () => this.drop()),
             this.context.events.on("weaponAimUpdated", ({ mesh, distance }) => this.updateAim(mesh, distance)),
-            this.context.events.on("weaponTriggerReleased", () => this.releaseTrigger()),
             this.context.events.on("frameEnd", ({ deltaMs }) => this.update(deltaMs))
         );
     }
@@ -97,8 +102,8 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
             return;
         }
         if (this.grabbed) {
-            this.charging = true;
-            this.chargeMs = 0;
+            this.context.weaponAntiGravityGun.releaseGrab(MAX_THROW_SPEED);
+            this.grabbed = false;
             return;
         }
         this.awaitingGrab = true;
@@ -109,7 +114,7 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
             return;
         }
         this.awaitingGrab = false;
-        if (!mesh || distance === null || distance > this.maxGrabDistance) {
+        if (!mesh || distance === null || distance > (this.maxGrabDistanceOverride ?? this.context.playerMaxGrabDistance())) {
             return;
         }
         const mass = this.context.dynamicMassOf(mesh);
@@ -117,21 +122,6 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
             return;
         }
         this.grabbed = this.context.weaponAntiGravityGun.grab(mesh);
-    }
-
-    private releaseTrigger(): void {
-        if (!this.equipped) {
-            this.awaitingGrab = false;
-            return;
-        }
-        if (!this.grabbed || !this.charging) {
-            return;
-        }
-        const throwSpeed = antiGravityThrowSpeed(this.chargeMs);
-        this.context.weaponAntiGravityGun.releaseGrab(throwSpeed);
-        this.grabbed = false;
-        this.charging = false;
-        this.chargeMs = 0;
     }
 
     private update(deltaMs: number): void {
@@ -144,12 +134,6 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
         }
         if (!this.context.weaponAntiGravityGun.updateGrab(deltaMs)) {
             this.grabbed = false;
-            this.charging = false;
-            this.chargeMs = 0;
-            return;
-        }
-        if (this.charging) {
-            this.chargeMs = Math.min(MAX_CHARGE_MS, this.chargeMs + Math.max(0, deltaMs));
         }
     }
 
@@ -159,8 +143,6 @@ export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravity
         }
         this.awaitingGrab = false;
         this.grabbed = false;
-        this.charging = false;
-        this.chargeMs = 0;
     }
 }
 

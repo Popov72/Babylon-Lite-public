@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-21T18:41:31.585Z",
+  "savedAt": "2026-08-25T20:01:22.896Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -100,8 +100,8 @@
           4.4267
         ]
       },
-      "instanceCount": 37,
-      "meshCount": 74
+      "instanceCount": 38,
+      "meshCount": 75
     },
     {
       "id": "CH01_StorageC",
@@ -118,8 +118,8 @@
           4.774
         ]
       },
-      "instanceCount": 20,
-      "meshCount": 51
+      "instanceCount": 21,
+      "meshCount": 52
     },
     {
       "id": "CH02_StorageCTL",
@@ -144,18 +144,18 @@
       "node": "CHUNK_CH03_StorageC2",
       "aabb": {
         "min": [
-          -11.3,
+          7.226,
           -0.013,
           -20.774
         ],
         "max": [
           16.2534,
           5.006,
-          2.05
+          -3.3814
         ]
       },
-      "instanceCount": 46,
-      "meshCount": 129
+      "instanceCount": 45,
+      "meshCount": 128
     },
     {
       "id": "Test",
@@ -3795,7 +3795,7 @@
     {
       "id": "P0489",
       "module": "Aquanova/Props/Player",
-      "chunk": "CH03_StorageC2",
+      "chunk": "CH00_Storage",
       "position": [
         11,
         0,
@@ -3851,8 +3851,8 @@
         0
       ],
       "scale": [
-        0.65,
-        0.9,
+        1.01,
+        1.23,
         1
       ],
       "width": 4.211441993713379,
@@ -14025,6 +14025,20 @@
     "flip-test-ultra-high",
     "capsule-filling"
   ],
+  "behaviorPresets": {
+    "stdLiquefaction": {
+      "base": "liquefaction",
+      "fluidSim": [
+        "liquid-slow"
+      ]
+    },
+    "explosiveLiquefaction": {
+      "base": "liquefaction",
+      "fluidSim": [
+        "liquid-crate"
+      ]
+    }
+  },
   "entities": {
     "crate2": {
       "behaviors": [
@@ -14509,6 +14523,10 @@
       "behaviors": [
         {
           "name": "player"
+        },
+        {
+          "name": "probeExcluded",
+          "reflectionProbe": "exclude"
         }
       ]
     },
@@ -14549,7 +14567,7 @@
               "event": "visible"
             }
           ],
-          "shutdownDuration": 16
+          "shutdownDuration": 5
         },
         {
           "name": "hideEntity"
@@ -14610,19 +14628,19 @@
   },
   "view": {
     "position": [
-      9.76,
-      2.5,
-      -2.375
+      0.147,
+      2.535,
+      0.524
     ],
     "rotation": [
-      0.253,
-      665.734,
+      0.229,
+      -1.481,
       0
     ],
     "target": [
-      7.051,
-      -0.001,
-      6.921
+      -9.553,
+      0.265,
+      1.397
     ]
   },
   "environment": {
@@ -14691,7 +14709,7 @@
       "enabled": false,
       "centre": [
         -3.949,
-        1.822,
+        2.4901,
         2
       ],
       "normal": [
@@ -14703,22 +14721,22 @@
         [
           -3.949,
           0,
-          3.3687
+          4.1268
         ],
         [
           -3.949,
           0,
-          0.6313
+          -0.1268
         ],
         [
           -3.949,
-          3.644,
-          0.6313
+          4.9801,
+          -0.1268
         ],
         [
           -3.949,
-          3.644,
-          3.3687
+          4.9801,
+          4.1268
         ]
       ]
     },
@@ -14968,8 +14986,8 @@
         0,
         2
       ],
-      "width": 2.7374,
-      "height": 3.644,
+      "width": 4.2536,
+      "height": 4.9801,
       "triggerRadius": 3.5,
       "enabled": false,
       "sealed": false,
@@ -15158,19 +15176,5 @@
         "portal": "Portal_Door_D06"
       }
     ]
-  },
-  "behaviorPresets": {
-    "stdLiquefaction": {
-      "base": "liquefaction",
-      "fluidSim": [
-        "liquid-slow"
-      ]
-    },
-    "explosiveLiquefaction": {
-      "base": "liquefaction",
-      "fluidSim": [
-        "liquid-crate"
-      ]
-    }
   }
 }

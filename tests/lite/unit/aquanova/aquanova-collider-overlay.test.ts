@@ -48,6 +48,21 @@ describe("Aquanova collider overlay", () => {
         expect(lines.slice(2).every((line) => line[0]!.y === -2 && line[1]!.y === 2)).toBe(true);
     });
 
+    it("draws both walls of a hollow cylinder", () => {
+        const lines = fluidPrimitiveWireframeLines({
+            kind: "hollowCylinder",
+            a: [0, -2, 0],
+            b: [0, 2, 0],
+            innerRadius: 0.75,
+            radius: 1,
+        });
+
+        expect(lines).toHaveLength(20);
+        expect(lines.slice(0, 4).every((line) => line.length === 25 && line[0]!.y === line.at(-1)!.y)).toBe(true);
+        expect(Math.hypot(lines[0]![0]!.x, lines[0]![0]!.z)).toBeCloseTo(1);
+        expect(Math.hypot(lines[2]![0]!.x, lines[2]![0]!.z)).toBeCloseTo(0.75);
+    });
+
     it("draws capsule rings, body ribs, and hemispherical poles", () => {
         const lines = fluidPrimitiveWireframeLines({
             kind: "capsule",

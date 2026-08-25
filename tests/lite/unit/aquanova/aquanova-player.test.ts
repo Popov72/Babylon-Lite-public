@@ -4,6 +4,8 @@ import type { Mesh, PhysicsCharacterController } from "../../../../packages/baby
 import {
     PlayerBehavior,
     playerCapsuleSpawnPosition,
+    playerSubmergedState,
+    playerSubmersionAabb,
     playerSupportedMovementVelocity,
     playerWeaponSwayMultiplier,
     remainingForwardApertureAssist,
@@ -22,10 +24,20 @@ import {
 import type { AquanovaGameContext } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
 
 describe("Aquanova player", () => {
-    it("defaults to the intended dynamic-body push strength", () => {
+    it("defaults player force and anti-gravity distances", () => {
         const player = new PlayerBehavior("player", [{} as Mesh], {}, {} as AquanovaGameContext);
 
         expect((player as unknown as { characterStrength: number }).characterStrength).toBe(10_000);
+        expect(player.maxGrabDistance).toBe(8);
+        expect(player.maxHeldObjectDistance).toBe(8);
+        expect(player.submergedParticleCount).toBe(100);
+        expect(new PlayerBehavior("player", [{} as Mesh], { maxGrabDistance: 12 }, {} as AquanovaGameContext).maxGrabDistance).toBe(12);
+        expect(new PlayerBehavior("player", [{} as Mesh], { maxHeldObjectDistance: 12 }, {} as AquanovaGameContext).maxHeldObjectDistance).toBe(12);
+        expect(new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 250 }, {} as AquanovaGameContext).submergedParticleCount).toBe(250);
+        expect(() => new PlayerBehavior("player", [{} as Mesh], { maxGrabDistance: 0 }, {} as AquanovaGameContext)).toThrow("maxGrabDistance");
+        expect(() => new PlayerBehavior("player", [{} as Mesh], { maxHeldObjectDistance: 0 }, {} as AquanovaGameContext)).toThrow("maxHeldObjectDistance");
+        expect(() => new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 0 }, {} as AquanovaGameContext)).toThrow("submergedParticleCount");
+        expect(() => new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 1.5 }, {} as AquanovaGameContext)).toThrow("submergedParticleCount");
     });
 
     it("disables collision for its owning marker when started", () => {
@@ -46,9 +58,11 @@ describe("Aquanova player", () => {
         const player = new PlayerBehavior("playerMarker", [{} as Mesh], {}, context);
         const internals = player as unknown as {
             createCrosshair(): void;
+            createSubmergedOverlay(): void;
             listen(): void;
         };
         internals.createCrosshair = vi.fn();
+        internals.createSubmergedOverlay = vi.fn();
         internals.listen = vi.fn();
         vi.stubGlobal("window", {});
         vi.stubGlobal("document", {});
@@ -56,8 +70,31 @@ describe("Aquanova player", () => {
         try {
             player.start();
             expect(emit).toHaveBeenCalledWith("entityEvent", { name: "playerMarker", event: "disableCollision" });
+            expect(context.canvas.dataset.maxGrabDistance).toBe("8");
+            expect(context.canvas.dataset.maxHeldObjectDistance).toBe("8");
         } finally {
             player.dispose();
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it("maps the right mouse button to the secondary weapon action", () => {
+        const emit = vi.fn();
+        const canvas = { dataset: {} } as HTMLCanvasElement;
+        const context = {
+            canvas,
+            events: { emit },
+            isInspecting: () => false,
+        } as unknown as AquanovaGameContext;
+        const player = new PlayerBehavior("player", [{} as Mesh], {}, context);
+        const preventDefault = vi.fn();
+        vi.stubGlobal("document", { pointerLockElement: canvas });
+
+        try {
+            (player as unknown as { onPointerDown(event: PointerEvent): void }).onPointerDown({ button: 2, preventDefault } as unknown as PointerEvent);
+            expect(preventDefault).toHaveBeenCalledOnce();
+            expect(emit).toHaveBeenCalledWith("weaponSecondaryPressed", {});
+        } finally {
             vi.unstubAllGlobals();
         }
     });
@@ -90,6 +127,25 @@ describe("Aquanova player", () => {
             y: PLAYER_CAPSULE_HEIGHT / 2,
             z: 5,
         });
+    });
+
+    it("queries a tall column above the crouch-adjusted eye position", () => {
+        const position = { x: 2, y: 0.9, z: -3 };
+        const standing = playerSubmersionAabb(position, PLAYER_CAPSULE_HEIGHT, PLAYER_CAPSULE_HEIGHT, 0.62, PLAYER_CAPSULE_RADIUS);
+        const crouched = playerSubmersionAabb(position, CROUCH_CAPSULE_HEIGHT, PLAYER_CAPSULE_HEIGHT, 0.62, CROUCH_CAPSULE_RADIUS);
+
+        expect(standing.min).toEqual([1.7, 1.52, -3.3]);
+        expect(crouched.min[1]).toBeCloseTo(0.9 + 0.62 * (CROUCH_CAPSULE_HEIGHT / PLAYER_CAPSULE_HEIGHT));
+        expect(crouched.min[1]).toBeLessThan(standing.min[1]);
+        expect(standing.max).toEqual([2.3, 1_000_000, -2.7]);
+    });
+
+    it("applies player-owned hysteresis to delayed submerged counts", () => {
+        expect(playerSubmergedState(false, 100, 100)).toBe(false);
+        expect(playerSubmergedState(false, 101, 100)).toBe(true);
+        expect(playerSubmergedState(true, 75, 100)).toBe(true);
+        expect(playerSubmergedState(true, 50, 100)).toBe(true);
+        expect(playerSubmergedState(true, 49, 100)).toBe(false);
     });
 
     it("auto-crouches only during a forward jump when the aperture requires it", () => {
@@ -149,6 +205,7 @@ describe("Aquanova player", () => {
             eyeHeight: 0.62,
             canStand: () => true,
             jumpApertureAssist: () => ({ lateralOffset: 0.05 }),
+            fluidSimulations: { countParticlesInAabb: () => 0 },
         } as unknown as AquanovaGameContext;
         const player = new PlayerBehavior("player", [{} as Mesh], {}, context);
         const state = player as unknown as {
@@ -221,6 +278,7 @@ describe("Aquanova player", () => {
             eyeHeight: 0.62,
             canStand: () => true,
             jumpApertureAssist: () => null,
+            fluidSimulations: { countParticlesInAabb: () => 0 },
         } as unknown as AquanovaGameContext;
         const player = new PlayerBehavior("player", [{} as Mesh], {}, context);
         const state = player as unknown as { update(deltaSeconds: number): void };
