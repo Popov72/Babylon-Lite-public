@@ -113,10 +113,10 @@ export const pbrExt: PbrExt = {
         if (!ctx._env) {
             return b;
         }
-        entries.push({ binding: b++, resource: ctx._env._brdfLutView });
-        entries.push({ binding: b++, resource: ctx._env._brdfSampler });
-        entries.push({ binding: b++, resource: ctx._env._specularCubeView });
-        entries.push({ binding: b++, resource: ctx._env._cubeSampler });
+        entries.push({ binding: b++, resource: ctx._env.brdfLutView });
+        entries.push({ binding: b++, resource: ctx._env.brdfSampler });
+        entries.push({ binding: b++, resource: ctx._env.specularCubeView });
+        entries.push({ binding: b++, resource: ctx._env.cubeSampler });
         return b;
     },
 };

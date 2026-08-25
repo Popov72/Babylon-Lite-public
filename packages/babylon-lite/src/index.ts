@@ -347,29 +347,6 @@ export { setPbrAlphaCutoff } from "./material/pbr/set-alpha-cutoff.js";
 export { setPbrTransmission } from "./material/pbr/set-transmission.js";
 export { setPbrDispersion } from "./material/pbr/set-dispersion.js";
 export { setPbrEmissive } from "./material/pbr/set-emissive.js";
-export { enablePbrLightmap, setPbrLightmap } from "./material/pbr/enable-pbr-lightmap.js";
-export type { PbrLightmapOptions } from "./material/pbr/enable-pbr-lightmap.js";
-export {
-    clearPbrLocalEnvironment,
-    createPbrLocalEnvironmentProbeSet,
-    enablePbrLocalCubemap,
-    getPbrLocalEnvironmentProbeGridCell,
-    MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
-    MAX_PBR_LOCAL_ENVIRONMENT_PROBES,
-    setPbrEnvironment,
-    setPbrLocalEnvironment,
-    setPbrLocalEnvironmentProbeDebug,
-    setPbrLocalEnvironmentProbeSet,
-} from "./material/pbr/enable-pbr-local-cubemap.js";
-export type {
-    PbrLocalCubemapInitOptions,
-    PbrLocalEnvironmentOptions,
-    PbrLocalEnvironmentProbe,
-    PbrLocalEnvironmentProbeGridCell,
-    PbrLocalEnvironmentProbeGridOptions,
-    PbrLocalEnvironmentProbeSet,
-    PbrLocalEnvironmentProbeSetOptions,
-} from "./material/pbr/enable-pbr-local-cubemap.js";
 export type { MetallicReflectanceOptions } from "./material/pbr/set-metallic-reflectance.js";
 export {
     createShaderMaterial,
@@ -951,7 +928,6 @@ export {
     getPhysicsBodyLinearVelocity,
     getPhysicsBodyAngularVelocity,
     setPhysicsBodyAngularVelocity,
-    getPhysicsBodyAngularVelocity,
     setPhysicsBodyMotionType,
     setPhysicsBodyTransform,
     removePhysicsBody,

@@ -29,12 +29,10 @@ describe("fluid thickness debug view", () => {
         const source = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/fluid/fluid-surface-render.ts"), "utf8");
         expect(source).toContain("let support = select(0.0, contribution, nearFrontSurface(realViewPos.z, i.ndc));");
         expect(source).toContain("let support = select(0.0, contribution, nearFrontSurface(hit.z, i.ndc));");
-        expect(source).toContain("entryPoint: \"fsDepthFiltered\"");
-        expect(source).toContain("entryPoint: \"fsDepthFilteredAniso\"");
+        expect(source).toContain('entryPoint: "fsDepthFiltered"');
+        expect(source).toContain('entryPoint: "fsDepthFilteredAniso"');
         expect(source).toContain("surfaceSupport(i.ndc) <= oneMarker * 2.1");
-        expect(source).toContain(
-            "const rejectSparseSurface = currentSim.surfaceRejectSparseMarkers === true && thickW === depthW && thickH === depthH;"
-        );
+        expect(source).toContain("const rejectSparseSurface = currentSim.surfaceRejectSparseMarkers === true && thickW === depthW && thickH === depthH;");
         expect(source).toContain("pass.setBindGroup(2, getSurfaceSupportBindGroup(views.thick!));");
     });
 });

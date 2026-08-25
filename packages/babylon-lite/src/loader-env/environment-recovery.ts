@@ -20,7 +20,7 @@ export async function rebuildSceneEnvironment(engine: EngineContext, scene: Scen
     }
     // Only detach the textures once the rebuild is known to be possible: an early throw would
     // otherwise leave the scene without its environment while the error propagates.
-    const sphericalHarmonics = current._sphericalHarmonics;
+    const sphericalHarmonics = current.sphericalHarmonics;
     scene._envTextures = undefined;
 
     let replacement: EnvironmentTextures;
@@ -42,7 +42,7 @@ export async function rebuildSceneEnvironment(engine: EngineContext, scene: Scen
     // release only whichever pair happened to be installed last, so every earlier recovery would
     // leave behind an unmatched acquire. One disposable per device loss is negligible, and each
     // releases a distinct pair, so they never collapse into duplicates.
-    const { _specularCube: specularCube, _brdfLut: brdfLut } = current;
+    const { specularCube, brdfLut } = current;
     acquireGPUTexture(specularCube);
     acquireGPUTexture(brdfLut);
     scene._disposables.push(() => {
