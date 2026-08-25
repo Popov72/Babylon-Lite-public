@@ -120,7 +120,6 @@ describe("Aquanova entity toggle behaviors", () => {
             behaviors: [{ name: "enableEntity", events: [{ name: "startLiquefaction", source: "capsule" }] }],
         };
         const manager = new AquanovaBehaviorManager({
-            library: { enableEntity: {} },
             entities: undefined,
             doors: [door],
             meshesByEntityName: new Map(),

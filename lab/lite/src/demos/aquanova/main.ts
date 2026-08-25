@@ -89,10 +89,13 @@ import {
 } from "babylon-lite";
 import type { AnimationGroup, EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
+import { createFlipSim } from "babylon-lite/fluid/flip-sim.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
+import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
-import type { FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import { fluidShapeVolume } from "babylon-lite/fluid/sim-common.js";
+import type { FluidFlowConfig, FluidSim, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createLiquefyPlugin, liquefyFrontDistance } from "../liquefy-plugin.js";
 import { buildLitParticleColors } from "../particle-lit-colors.js";
 import type { LitColorScene } from "../particle-lit-colors.js";
@@ -118,6 +121,7 @@ import { buildRuntimeLights } from "./lights.js";
 import { buildManifestColliders, createWorldCollisionShape } from "./colliders.js";
 import { collisionShapesForModule, worldShapesForMatrix, type WorldCollisionShape } from "./collision-shapes.js";
 import {
+    hollowCylinderPrimitiveForMatrix,
     localizePrimitive,
     packPrimitive,
     packPrimitives,
@@ -133,7 +137,10 @@ import { chunkAt, fetchManifest } from "./manifest.js";
 import { createInspectOverlay } from "./debug/inspect-overlay.js";
 import { createPerfOverlay } from "./debug/perf-overlay.js";
 import { createFluidProfiler, type FluidProfilerImpl } from "../fluid/gpu-profiler.js";
+import { presetFromExportJson, type FluidExportJson } from "../fluid/preset-io.js";
+import { cellSizeForPhysicsScale, FLIP_DEFAULT_MARKERS_PER_CELL } from "../fluid/grid-settings.js";
 import { createColliderOverlay, visibleInjectedPrimitives } from "./debug/collider-overlay.js";
+import { createFluidSimulationOverlay, type FluidSimulationDebugSnapshot } from "./debug/fluid-simulation-overlay.js";
 import { createLightOverlay } from "./debug/light-overlay.js";
 import { createProbeOverlay } from "./debug/probe-overlay.js";
 import { createPortalOverlay } from "./debug/portal-overlay.js";
@@ -145,12 +152,19 @@ import { registerDoorEntityEventHandlers } from "./door-events.js";
 import { registerEntityCollisionEventHandlers } from "./entity-collision-events.js";
 import { createIntersectionTriggerRegistry } from "./intersection-triggers.js";
 import { createPersistentMeshEntityEventOperations, registerMeshEntityEventHandlers } from "./entity-events.js";
+import { forEachFluidCollisionSet } from "./fluid-collision-lifecycle.js";
 import { createExteriorMeshClassifier } from "./exterior-mesh-classifier.js";
 import { fetchFluidSetting, hexToRgb, type FluidFoamSetting, type FluidRenderSetting, type FluidSimSetting } from "./fluid-setting.js";
 import {
     AquanovaBehaviorManager,
     PlayerBehavior,
     SoundManager,
+    type FluidSimulationRegistration,
+    type FluidSimulationState,
+    fluidEmissionCompletionTarget,
+    fluidSimulationShutdownLifecycle,
+    fluidSimulationShutdownStepDelta,
+    type FluidSimShapeRegistration,
     type JumpApertureAssist,
     type LiquefiableBehaviorConfig,
     type MeshBehaviorAvailability,
@@ -217,15 +231,15 @@ export async function main(): Promise<void> {
     // giving ~19x the particles (6260 vs 330) and default physics instead of the file's.
     const fluidSettingNames = manifest?.fluidSim ?? [];
     const behaviorSettingNames = new Set<string>();
-    for (const b of Object.values(manifest?.behaviors ?? {})) {
-        if ("fluidSim" in b) {
-            for (const n of b.fluidSim ?? []) behaviorSettingNames.add(n);
+    for (const b of Object.values(manifest?.behaviorPresets ?? {})) {
+        if ("fluidSim" in b && Array.isArray(b.fluidSim)) {
+            for (const n of b.fluidSim) behaviorSettingNames.add(n);
         }
     }
     for (const e of Object.values(manifest?.entities ?? {})) {
         for (const ref of e?.behaviors ?? []) {
-            if ("fluidSim" in ref) {
-                for (const n of ref.fluidSim ?? []) behaviorSettingNames.add(n);
+            if ("fluidSim" in ref && Array.isArray(ref.fluidSim)) {
+                for (const n of ref.fluidSim) behaviorSettingNames.add(n);
             }
         }
     }
@@ -340,8 +354,7 @@ export async function main(): Promise<void> {
     let updateAntiGravityGrab = (_deltaMs: number): boolean => false;
     let releaseAntiGravityGrab = (_throwSpeed: number): void => {};
     canvas.dataset.antiGravityGrabbed = "none";
-    canvas.dataset.antiGravityThrowSpeed = "0";
-    const weaponLiquefactor = {
+    canvas.dataset.antiGravityThrowSpeed = "0";    const weaponLiquefactor = {
         setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("liquefactor", weaponViewmodel, enabled, animated),
         setTargetDistance: (distance: number | null, restart = false): void => {
             weaponLaser.setTargetDistance(distance, restart);
@@ -643,7 +656,7 @@ export async function main(): Promise<void> {
     soundManager.setEnabled(graphics.soundsEnabled);
     soundManager.setVolume(graphics.soundVolume);
     const behaviorManager = new AquanovaBehaviorManager({
-        library: manifest?.behaviors,
+        presets: manifest?.behaviorPresets,
         entities: manifest?.entities,
         doors: manifest?.doors,
         meshesByEntityName: meshesByNodeName,
@@ -1100,9 +1113,9 @@ export async function main(): Promise<void> {
     const collisionDisabledDynBodies = new Set<DynBody>();
 
     // ── The fluid's collision set ────────────────────────────────────────────────────────────────
-    // The same authored primitives the player collides against, handed to the fluid as an analytic
-    // field instead of a baked SDF grid. `worldAabb` is only used to pick which ones a given
-    // simulation needs; the solver evaluates the exact primitive.
+    // Authored primitives normally feed both Havok and the fluid. A setCollisionShape behavior can
+    // replace only its fluid representation with an analytic special shape. `worldAabb` is used
+    // only to select what a simulation needs; the solver evaluates the exact primitive.
     const shapeToPrimitive = (s: WorldCollisionShape): FluidPrimitive =>
         s.kind === "box"
             ? { kind: "box", a: s.centre, b: s.halfExtents ?? [0.05, 0.05, 0.05], rotation: s.rotation ?? [0, 0, 0, 1] }
@@ -1211,7 +1224,13 @@ export async function main(): Promise<void> {
 
     // Static collision primitives for the fluid: every authored placement EXCEPT the dissolvable
     // ones, which move (and later vanish) and so are tracked per body below.
-    const staticPrims: Array<{ id: string; prim: FluidPrimitive; min: [number, number, number]; max: [number, number, number] }> = [];
+    const staticPrims: Array<{
+        id?: string;
+        entityName?: string;
+        prim: FluidPrimitive;
+        min: [number, number, number];
+        max: [number, number, number];
+    }> = [];
     for (const [id, pl] of placementById) {
         if (behaviorManager.dissolvableInstanceIds.has(id)) continue;
         for (const s of pl.shapes) {
@@ -1219,18 +1238,11 @@ export async function main(): Promise<void> {
             staticPrims.push({ id, prim, ...primAabb(prim) });
         }
     }
-    canvas.dataset.fluidStaticPrims = String(staticPrims.length);
-
     /** A dissolvable prop's primitive, kept in its proxy's REST frame so a moved body can re-pose it. */
     const dynPrims = new Map<DynBody, { local: FluidPrimitive; rest: [number, number, number] }>();
-    const dynPrimsSkipped: string[] = [];
     for (const d of dynBodies) {
         const s = d.instanceId ? placementById.get(d.instanceId)?.shapes[0] : undefined;
         if (!s) {
-            // No authored collision → nothing for the fluid to collide with either. Reported because
-            // it is otherwise invisible: the prop still blocks the PLAYER (Havok) while water pours
-            // straight through it, which reads as a fluid bug rather than missing authoring.
-            dynPrimsSkipped.push(`${nodeNameOfMesh.get(d.mesh) ?? d.mesh.name}(${d.instanceId ?? "no-id"})`);
             continue;
         }
         const c = d.bounds.centre;
@@ -1239,11 +1251,55 @@ export async function main(): Promise<void> {
         // localizePrimitive knows a box's `b` is half extents and must not be re-based — see its doc.
         dynPrims.set(d, { local: localizePrimitive(p, c), rest: [c[0], c[1], c[2]] });
     }
-    if (dynPrimsSkipped.length) {
-        // eslint-disable-next-line no-console
-        console.warn(`[aquanova] ${dynPrimsSkipped.length} dynamic prop(s) have NO fluid collision primitive: ${dynPrimsSkipped.join(", ")}`);
-    }
-    canvas.dataset.fluidDynPrims = `${dynPrims.size}/${dynBodies.length}`;
+
+    const setEntityFluidSimShape = (entityName: string, registration: FluidSimShapeRegistration): void => {
+        const shape = registration.shape;
+        const handledDynamicBodies = new Set<DynBody>();
+        const handledStaticOwners = new Set<SceneNode>();
+        const replacedInstanceIds = new Set<string>();
+        const replacements: (typeof staticPrims)[number][] = [];
+        let targets = 0;
+
+        for (const mesh of registration.meshes) {
+            const dynamicBody = dynBodyByMesh.get(mesh);
+            if (dynamicBody) {
+                if (handledDynamicBodies.has(dynamicBody)) continue;
+                handledDynamicBodies.add(dynamicBody);
+                const primitive = hollowCylinderPrimitiveForMatrix(mesh.worldMatrix, shape.start, shape.height, shape.innerRadius, shape.outerRadius);
+                const centre = dynamicBody.bounds.centre;
+                dynPrims.set(dynamicBody, {
+                    local: localizePrimitive(primitive, centre),
+                    rest: [centre[0], centre[1], centre[2]],
+                });
+                targets++;
+                continue;
+            }
+
+            const owner = ownerOfMesh.get(mesh) ?? mesh;
+            if (handledStaticOwners.has(owner)) continue;
+            handledStaticOwners.add(owner);
+            const instanceId = instanceIdOfMesh(mesh);
+            if (instanceId && replacedInstanceIds.has(instanceId)) continue;
+            if (instanceId) replacedInstanceIds.add(instanceId);
+            const primitive = hollowCylinderPrimitiveForMatrix(mesh.worldMatrix, shape.start, shape.height, shape.innerRadius, shape.outerRadius);
+            replacements.push({
+                id: instanceId,
+                entityName,
+                prim: primitive,
+                ...primAabb(primitive),
+            });
+            targets++;
+        }
+
+        if (targets === 0) {
+            throw new Error(`[aquanova] setCollisionShape entity "${entityName}" produced no fluid simulation shapes`);
+        }
+        for (let i = staticPrims.length - 1; i >= 0; i--) {
+            const id = staticPrims[i]!.id;
+            if (id && replacedInstanceIds.has(id)) staticPrims.splice(i, 1);
+        }
+        staticPrims.push(...replacements);
+    };
 
     /** Hamilton product — compose two rotations (`a` applied after `b`). */
     const quatMul = (a: readonly [number, number, number, number], b: readonly [number, number, number, number]): [number, number, number, number] => [
@@ -1322,8 +1378,7 @@ export async function main(): Promise<void> {
         antiGravityGrabbedBody = null;
         canvas.dataset.antiGravityGrabbed = "none";
         canvas.dataset.antiGravityMass = "";
-        canvas.dataset.antiGravityThrowSpeed = String(throwSpeed);
-        if (!d?.body || !dynBodies.includes(d)) {
+        canvas.dataset.antiGravityThrowSpeed = String(throwSpeed);        if (!d?.body || !dynBodies.includes(d)) {
             return;
         }
         setPhysicsBodyMotionType(world, d.body, PhysicsMotionType.DYNAMIC);
@@ -1450,6 +1505,12 @@ export async function main(): Promise<void> {
         },
         exteriorMeshes: () => exteriorMeshes,
         canRestore: (mesh) => !gameplayHiddenMeshes.has(mesh) && !behaviorHiddenMeshes.has(mesh),
+        onChunkVisibilityChanged: (chunkId, visible) => {
+            behaviorManager.events.emit("entityEvent", {
+                name: chunkId,
+                event: visible ? "visible" : "notVisible",
+            });
+        },
     });
     registerDoorEntityEventHandlers(behaviorManager.events, manifest?.doors ?? [], (door, enabled) => {
         portalVisibility.setDoorEnabled(door, enabled);
@@ -1501,10 +1562,14 @@ export async function main(): Promise<void> {
         portalWorkload: () => portalVisibility.stats(),
         exteriorChunks: () => portalVisibility.exteriorChunks(),
         viewpoint: () => ({ position: cam.position, target: cam.target }),
-        fluidWorkload: () => ({
-            simulations: activeSims.length,
-            particles: activeSims.reduce((total, active) => total + active.sim.count, 0),
-        }),
+        fluidWorkload: () => {
+            const behaviorSims = [...behaviorFluidSims.values()].flatMap(({ activated, sim }) => (activated && sim ? [sim] : []));
+            return {
+                simulations: activeSims.length + behaviorSims.length,
+                pausedSimulations: [...behaviorFluidSims.values()].filter(({ activated, sim, state }) => activated && sim !== null && state === "paused").length,
+                particles: activeSims.reduce((total, active) => total + active.sim.count, 0) + behaviorSims.reduce((total, sim) => total + sim.count, 0),
+            };
+        },
         fluidStages: () => (fluidProfilerOn ? (fluidProfiler?.results() ?? null) : null),
         onToggle: (on) => {
             fluidProfilerOn = on && fluidProfiler !== null;
@@ -1651,7 +1716,7 @@ export async function main(): Promise<void> {
         }
         return [...bodies];
     };
-    const setEntityCollisionShape = (entityName: string, type: "aabb" | "mesh"): void => {
+    const setEntityCollisionShape = (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration): void => {
         const meshes = meshesByNodeName.get(entityName) ?? [];
         if (meshes.length === 0) throw new Error(`[aquanova] setCollisionShape entity "${entityName}" has no meshes`);
         const made: PhysicsBody[] = [];
@@ -1738,6 +1803,7 @@ export async function main(): Promise<void> {
         }
         if (made.length === 0) throw new Error(`[aquanova] setCollisionShape entity "${entityName}" produced no colliders`);
         behaviorCollisionBodiesByEntityName.set(entityName, made);
+        if (fluidSimShape) setEntityFluidSimShape(entityName, fluidSimShape);
     };
     const intersectionTriggers = createIntersectionTriggerRegistry(world, getPhysicsCharacterControllerBody(character), collisionBodiesOfEntity);
 
@@ -1782,6 +1848,17 @@ export async function main(): Promise<void> {
         // eslint-disable-next-line no-console
         console.warn("[aquanova] manifest has no player behavior; first-person controls are disabled");
     }
+    const dynPrimsSkipped = dynBodies.filter((body) => !dynPrims.has(body));
+    if (dynPrimsSkipped.length) {
+        // eslint-disable-next-line no-console
+        console.warn(
+            `[aquanova] ${dynPrimsSkipped.length} dynamic prop(s) have NO fluid collision primitive: ${dynPrimsSkipped
+                .map((body) => `${nodeNameOfMesh.get(body.mesh) ?? body.mesh.name}(${body.instanceId ?? "no-id"})`)
+                .join(", ")}`
+        );
+    }
+    canvas.dataset.fluidStaticPrims = String(staticPrims.length);
+    canvas.dataset.fluidDynPrims = `${dynPrims.size}/${dynBodies.length}`;
 
     // Test hook (QA): read the player position + nudge look/movement programmatically.
     (window as unknown as { __aquanova?: unknown }).__aquanova = {
@@ -1881,6 +1958,7 @@ export async function main(): Promise<void> {
         toggleColliders: (): void => colliderOverlay?.cycle(),
         toggleLights: (): void => lightOverlay?.toggle(),
         toggleProbeVolumes: (): void => probeOverlay?.toggle(),
+        toggleFluidSimulations: (): void => fluidSimulationOverlay?.toggle(),
         toggleNearestLight,
         runtimeLights: () => lights.lights,
         runtimeLitMeshes: (): string[] =>
@@ -1911,32 +1989,11 @@ export async function main(): Promise<void> {
         /** Full primitive data each running sim collides against — the exact values packed for the
          *  shader. Verbose, so kept separate from the `injectedPrims` summary. */
         fluidPrims: (): Array<{ sim: string; prims: FluidPrimitive[] }> => activeSims.map((a) => ({ sim: nodeNameOfMesh.get(a.mesh) ?? a.mesh.name, prims: a.collision.prims })),
-        /** Particles currently inside a world-space AABB. The direct test of whether the fluid is
-         *  respecting a collider: a solid box should contain (almost) none. */
-        waterInAabb: async (min: [number, number, number], max: [number, number, number]): Promise<{ total: number; inside: number }> => {
-            let total = 0;
-            let inside = 0;
-            for (const a of activeSims) {
-                const n = a.sim.count;
-                const bytes = n * 16;
-                const rb = device.createBuffer({ size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-                const enc = device.createCommandEncoder();
-                enc.copyBufferToBuffer(a.sim.positionBuffer, 0, rb, 0, bytes);
-                device.queue.submit([enc.finish()]);
-                await rb.mapAsync(GPUMapMode.READ);
-                const f = new Float32Array(rb.getMappedRange().slice(0));
-                rb.unmap();
-                rb.destroy();
-                for (let i = 0; i < n; i++) {
-                    const x = f[i * 4]!;
-                    const y = f[i * 4 + 1]!;
-                    const z = f[i * 4 + 2]!;
-                    total++;
-                    if (x >= min[0] && x <= max[0] && y >= min[1] && y <= max[1] && z >= min[2] && z <= max[2]) inside++;
-                }
-            }
-            return { total, inside };
-        },
+        /** Latest delayed count of visible particles inside a world-space AABB. */
+        waterInAabb: (min: [number, number, number], max: [number, number, number]): { total: number; inside: number } => ({
+            total: Number(canvas.dataset.particleCount ?? 0),
+            inside: behaviorManager.fluidSimulations.countParticlesInAabb({ min, max }),
+        }),
         roomAt: (): string => roomAt(),
         portalStats: (): { currentChunk: string; chunks: number; exteriorChunks: number; meshes: number; totalMeshes: number } => portalVisibility.stats(),
         portalExteriorChunks: (): readonly string[] => portalVisibility.exteriorChunks(),
@@ -2246,12 +2303,19 @@ export async function main(): Promise<void> {
         };
     };
 
-    const MAX_TOTAL = 200000;
+    // Large authored presets currently top out at 350k particles. Keep enough shared
+    // render capacity for one of those plus ordinary liquefaction blobs.
+    const MAX_TOTAL = 500000;
     const combinedPos = device.createBuffer({ label: "aq-combined-pos", size: MAX_TOTAL * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     const combinedDebug = device.createBuffer({ label: "aq-combined-debug", size: MAX_TOTAL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const combinedAlpha = device.createBuffer({ label: "aq-combined-alpha", size: MAX_TOTAL * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const alphaScratch = new Float32Array(MAX_TOTAL).fill(1);
     device.queue.writeBuffer(combinedAlpha, 0, alphaScratch);
+    behaviorManager.fluidSimulations.installParticleCounter({
+        device,
+        positionBuffer: combinedPos,
+        alphaBuffer: combinedAlpha,
+    });
     // Per-particle RGBA colour — filled per shot from the liquefied mesh's base-colour texture when its
     // fluidSim setting has useMeshColors (else the flat water tint below). Aggregated like combinedPos
     // each frame; the surface tints the water by it.
@@ -2397,6 +2461,9 @@ export async function main(): Promise<void> {
         surfaceTask.setProfiler(p);
         for (const a of activeSims) {
             (a.sim as { setProfiler?: (x: typeof p) => void }).setProfiler?.(p);
+        }
+        for (const entry of behaviorFluidSims.values()) {
+            (entry.sim as { setProfiler?: (x: typeof p) => void } | null)?.setProfiler?.(p);
         }
     };
     retargetTaa = (task: RenderTask): void => {
@@ -2605,6 +2672,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         slotsByInstanceId: Map<string, number[]>;
         /** Packed slots owned by a dynamic body, including bodies without an instance id. */
         slotsByBody: Map<DynBody, number[]>;
+        /** Packed behavior-specific fluid slots owned directly by an entity. */
+        slotsByEntityName: Map<string, number[]>;
         /** Player capsule slot, reserved in every non-ground-only set regardless of its initial domain. */
         playerSlot: number | null;
         spec: SceneSdfSpec;
@@ -2621,23 +2690,29 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         const moving: Array<{ body: DynBody; slot: number }> = [];
         const slotsByInstanceId = new Map<string, number[]>();
         const slotsByBody = new Map<DynBody, number[]>();
+        const slotsByEntityName = new Map<string, number[]>();
         let playerSlot: number | null = null;
         const addSlot = <Key>(map: Map<Key, number[]>, key: Key, slot: number): void => {
             const slots = map.get(key);
             if (slots) slots.push(slot);
             else map.set(key, [slot]);
         };
-        const addPrimitive = (primitive: FluidPrimitive, instanceId?: string, body?: DynBody): number => {
+        const addPrimitive = (primitive: FluidPrimitive, instanceId?: string, body?: DynBody, entityName?: string): number => {
             const slot = prims.length;
             prims.push(primitive);
             if (instanceId) addSlot(slotsByInstanceId, instanceId, slot);
             if (body) addSlot(slotsByBody, body, slot);
+            if (entityName) addSlot(slotsByEntityName, entityName, slot);
             return slot;
         };
         if (!groundOnly) {
             for (const s of staticPrims) {
-                if (!exclude.has(s.id) && !removedPlacements.has(s.id) && !collisionDisabledPlacements.has(s.id) && hit(s.min, s.max)) {
-                    addPrimitive(s.prim, s.id);
+                if (
+                    (!s.id || (!exclude.has(s.id) && !removedPlacements.has(s.id) && !collisionDisabledPlacements.has(s.id))) &&
+                    (!s.entityName || (!exclude.has(s.entityName) && entityCollisionStates.get(s.entityName) !== false)) &&
+                    hit(s.min, s.max)
+                ) {
+                    addPrimitive(s.prim, s.id, undefined, s.entityName);
                 }
             }
             for (const d of dynBodies) {
@@ -2670,6 +2745,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
             moving,
             slotsByInstanceId,
             slotsByBody,
+            slotsByEntityName,
             playerSlot,
             spec: { struct: SCENE_SDF_STRUCT, sdf: SCENE_SDF_BODY, buffer: sceneSdfUbo, sdfGrid: buffer },
         };
@@ -2684,11 +2760,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
             device.queue.writeBuffer(set.buffer, flagOffset * 4, new Float32Array([active ? 1 : 0]));
         }
     };
+    const refreshPlayerCollision = (set: CollisionSet): void => {
+        const slot = set.playerSlot;
+        if (slot === null) return;
+        const live = livePlayerPrimitive();
+        set.prims[slot] = live;
+        packPrimitive(set.scratch, slot, live);
+        device.queue.writeBuffer(set.buffer, (PRIM_HEADER + slot * PRIM_STRIDE) * 4, set.scratch, PRIM_HEADER + slot * PRIM_STRIDE, PRIM_STRIDE);
+    };
     const setPlacementCollisionActive = (instanceId: string, active: boolean): void => {
         if (active) collisionDisabledPlacements.delete(instanceId);
         else collisionDisabledPlacements.add(instanceId);
         const effectiveActive = active && !removedPlacements.has(instanceId);
-        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByInstanceId.get(instanceId) ?? [], effectiveActive);
+        forEachFluidCollisionSet(activeSims, behaviorFluidSims.values(), (collision) => {
+            setCollisionSlotsActive(collision, collision.slotsByInstanceId.get(instanceId) ?? [], effectiveActive);
+        });
     };
     const setDynBodyCollisionActive = (body: DynBody, active: boolean): void => {
         if (body.instanceId) {
@@ -2697,15 +2783,23 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         }
         if (active) collisionDisabledDynBodies.delete(body);
         else collisionDisabledDynBodies.add(body);
-        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByBody.get(body) ?? [], active);
+        forEachFluidCollisionSet(activeSims, behaviorFluidSims.values(), (collision) => {
+            setCollisionSlotsActive(collision, collision.slotsByBody.get(body) ?? [], active);
+        });
     };
     const retireDynBodyCollision = (body: DynBody): void => {
-        if (body.instanceId) {
-            removedPlacements.add(body.instanceId);
-            for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByInstanceId.get(body.instanceId) ?? [], false);
+        const instanceId = body.instanceId;
+        if (instanceId) {
+            removedPlacements.add(instanceId);
+            forEachFluidCollisionSet(activeSims, behaviorFluidSims.values(), (collision) => {
+                setCollisionSlotsActive(collision, collision.slotsByInstanceId.get(instanceId) ?? [], false);
+            });
             return;
         }
-        for (const sim of activeSims) setCollisionSlotsActive(sim.collision, sim.collision.slotsByBody.get(body) ?? [], false);
+        collisionDisabledDynBodies.add(body);
+        forEachFluidCollisionSet(activeSims, behaviorFluidSims.values(), (collision) => {
+            setCollisionSlotsActive(collision, collision.slotsByBody.get(body) ?? [], false);
+        });
     };
     const setPhysicsBodyCollisionActive = (body: PhysicsBody | null, active: boolean): void => {
         if (body?._shape) {
@@ -2728,6 +2822,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
             setDynBodyCollisionActive(body, active);
             if (body.body) bodies.add(body.body);
         }
+        forEachFluidCollisionSet(activeSims, behaviorFluidSims.values(), (collision) => {
+            setCollisionSlotsActive(collision, collision.slotsByEntityName.get(entityName) ?? [], active);
+        });
         for (const body of bodies) setPhysicsBodyCollisionActive(body, active);
     };
     let groundOnly = false;
@@ -2871,7 +2968,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     async function warmUpFluidPipelines(): Promise<void> {
         const methods = new Set<string>();
         for (const s of fluidSettings.values()) {
-            if (s) {
+            if (s?.method === "MLS-MPM" || s?.method === "PB-MPM") {
                 methods.add(s.method);
             }
         }
@@ -2896,8 +2993,34 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             sim.dispose();
             warmSet.buffer.destroy();
         }
+        const behaviorPreparations = [
+            ...new Map([...behaviorFluidSims.values()].flatMap((entry) => (entry.preparation ? [[entry.registration.settingName, entry.preparation] as const] : []))).values(),
+        ];
+        if (behaviorPreparations.length) {
+            const warmSet = buildCollisionSet({ min: [-1, -1, -1], max: [1, 1, 1] }, new Set());
+            try {
+                for (const preparation of behaviorPreparations) {
+                    const sim = buildBehaviorFluidWarmupSim(preparation);
+                    try {
+                        sim.setSceneSdf(warmSet.spec);
+                        const enc = device.createCommandEncoder({ label: "aq-behavior-fluid-warmup" });
+                        sim.step(enc, 1 / 60);
+                        device.queue.submit([enc.finish()]);
+                        await device.queue.onSubmittedWorkDone();
+                    } finally {
+                        sim.dispose();
+                    }
+                }
+            } finally {
+                warmSet.buffer.destroy();
+            }
+        }
         // eslint-disable-next-line no-console
-        console.log(`[aquanova] fluid pipelines warmed (${[...methods].join(", ")}) in ${(performance.now() - t0).toFixed(0)} ms`);
+        console.log(
+            `[aquanova] fluid pipelines warmed (${[...methods].join(", ")}; ${behaviorPreparations.length} behavior setting${behaviorPreparations.length === 1 ? "" : "s"}) in ${(
+                performance.now() - t0
+            ).toFixed(0)} ms`
+        );
     }
 
     const WRIGGLE_AMP = 0.016; // per-frame "pain" jitter amplitude (world units)    // Dissolve-front growth (world units / s). Matched to Liquefactor's SHIP-mode front (its gallery
@@ -2956,7 +3079,365 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         gridAabb: SimulationGridAabb;
     }
     const activeSims: ActiveSim[] = [];
+
+    interface BehaviorFluidSim {
+        registration: FluidSimulationRegistration;
+        preparation: BehaviorFluidPreparation | null;
+        state: FluidSimulationState;
+        activated: boolean;
+        sim: FluidSim | null;
+        flow: FluidFlowConfig | null;
+        collision: CollisionSet | null;
+        gridAabb: SimulationGridAabb | null;
+        timeScale: number;
+        shutdownElapsed: number;
+        opacity: number;
+        playerCollisionEnabled: boolean;
+        overflowWarned: boolean;
+        pendingDispose: boolean;
+        emissionTargetCount: number | null;
+        emissionCompleteRaised: boolean;
+    }
+
+    interface BehaviorFluidPreparation {
+        json: FluidExportJson;
+        method: "PBF" | "FLIP" | "MLS-MPM" | "PB-MPM";
+        preset: ReturnType<typeof presetFromExportJson>;
+        flow: FluidFlowConfig;
+        dx: number;
+        particleRadius: number;
+        count: number;
+        timeScale: number;
+    }
+
+    const behaviorFluidSims = new Map<FluidSimulationRegistration, BehaviorFluidSim>();
     for (const [entityName, active] of entityCollisionStates) applyEntityCollisionState(entityName, active);
+
+    const behaviorFluidGrid = (
+        registration: FluidSimulationRegistration,
+        preset: ReturnType<typeof presetFromExportJson>
+    ): { center: [number, number, number]; aabb: SimulationGridAabb } => {
+        const grid = preset.grid;
+        if (!grid || grid.size.some((value) => !Number.isFinite(value) || value <= 0)) {
+            throw new Error(`fluidSimulation "${registration.settingName}" requires a finite, positive gridSize.`);
+        }
+        const world = registration.anchor.worldMatrix;
+        const center: [number, number, number] = [world[12]!, world[13]!, world[14]!];
+        const half = grid.size.map((value) => value * 0.5) as [number, number, number];
+        return {
+            center,
+            aabb: {
+                min: [center[0] - half[0], center[1] - half[1], center[2] - half[2]],
+                max: [center[0] + half[0], center[1] + half[1], center[2] + half[2]],
+            },
+        };
+    };
+
+    const behaviorFluidFlowAt = (flow: FluidFlowConfig, center: readonly [number, number, number]): FluidFlowConfig => {
+        const toWorld = <T extends FluidFlowConfig["emitters"][number] | FluidFlowConfig["sinks"][number]>(object: T): T => {
+            const result = structuredClone(object);
+            result.transform.position = [result.transform.position[0] + center[0], result.transform.position[1] + center[1], result.transform.position[2] + center[2]];
+            return result;
+        };
+        return {
+            emitters: flow.emitters.map(toWorld),
+            sinks: flow.sinks.map(toWorld),
+            ...(flow.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: flow.initialEmittersFillCapacity } : {}),
+        };
+    };
+
+    const behaviorFluidFlow = (preset: ReturnType<typeof presetFromExportJson>, center: readonly [number, number, number]): FluidFlowConfig =>
+        behaviorFluidFlowAt(
+            {
+                emitters: preset.emitters ?? [],
+                sinks: preset.sinks ?? [],
+                ...(preset.initialEmittersFillCapacity !== undefined ? { initialEmittersFillCapacity: preset.initialEmittersFillCapacity } : {}),
+            },
+            center
+        );
+
+    const behaviorFluidParticleCount = (method: string, requestedCount: number, flow: FluidFlowConfig, particleRadius: number): number => {
+        const candidates = flow.emitters;
+        const particleVolume = Math.max((particleRadius * 2) ** 3, 1e-6);
+        const initialDemand = candidates
+            .filter((emitter) => emitter.behavior === "initial")
+            .reduce((sum, emitter) => sum + Math.ceil(fluidShapeVolume(emitter.shape, emitter.transform) / particleVolume), 0);
+        const inflowDemand = candidates.some((emitter) => emitter.behavior === "inflow") ? Math.max(initialDemand * 2, 20000) : 0;
+        const automatic = Math.max(initialDemand + inflowDemand, initialDemand || 20000);
+        const requested = method === "FLIP" && requestedCount > 0 ? Math.round(requestedCount) : automatic;
+        return Math.max(1, initialDemand, requested);
+    };
+
+    const prepareBehaviorFluidSim = (registration: FluidSimulationRegistration): BehaviorFluidPreparation => {
+        const json = registration.setting as FluidExportJson;
+        const method = json.meta?.method;
+        if (method !== "PBF" && method !== "FLIP" && method !== "MLS-MPM" && method !== "PB-MPM") {
+            throw new Error(`fluidSimulation "${registration.settingName}" has unsupported method "${String(method)}".`);
+        }
+        const preset = presetFromExportJson(json);
+        const { aabb } = behaviorFluidGrid(registration, preset);
+        const flow = behaviorFluidFlow(preset, [0, 0, 0]);
+        const scale = preset.physScale ?? 1;
+        const longestSide = Math.max(aabb.max[0] - aabb.min[0], aabb.max[1] - aabb.min[1], aabb.max[2] - aabb.min[2]);
+        const dx = method === "FLIP" && preset.gridResolution && preset.gridResolution > 0 ? longestSide / preset.gridResolution : cellSizeForPhysicsScale(method, scale);
+        const authoredParticleRadius = json.demoParams?.particleRadius;
+        const particleRadius =
+            authoredParticleRadius !== undefined && Number.isFinite(authoredParticleRadius) && authoredParticleRadius > 0 ? authoredParticleRadius : 0.09 * scale;
+        const count = behaviorFluidParticleCount(method, preset.count ?? 0, flow, particleRadius);
+        if (count > MAX_TOTAL) {
+            throw new RangeError(
+                `fluidSimulation "${registration.settingName}" needs ${count.toLocaleString()} particles, exceeding Aquanova's ${MAX_TOTAL.toLocaleString()} shared-fluid capacity.`
+            );
+        }
+        return {
+            json,
+            method,
+            preset,
+            flow,
+            dx,
+            particleRadius,
+            count,
+            timeScale: Math.min(100, Math.max(0.01, preset.simulationTimeScale ?? 1)),
+        };
+    };
+
+    const buildBehaviorFluidWarmupSim = (preparation: BehaviorFluidPreparation): FluidSim => {
+        const { method, preset } = preparation;
+        const markersPerCell = preset.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL;
+        const base = {
+            count: 1,
+            particleRadius: 0.05,
+            boundsMin: [-1, -1, -1] as [number, number, number],
+            boundsMax: [1, 1, 1] as [number, number, number],
+            groundY: -1,
+            spawnMin: [-0.25, -0.25, -0.25] as [number, number, number],
+            spawnMax: [0.25, 0.25, 0.25] as [number, number, number],
+        };
+        let sim: FluidSim;
+        if (method === "PBF") {
+            sim = createPbfSim(engine, { ...base, smoothingRadius: preparation.dx, maxPerCell: 48 });
+        } else if (method === "FLIP") {
+            sim = createFlipSim(engine, { ...base, dx: 0.5, markersPerCell });
+        } else if (method === "PB-MPM") {
+            sim = createPbMpmSim(engine, { ...base, dx: preparation.dx, material: preset.material ?? 0 });
+        } else {
+            sim = createMlsMpmSim(engine, {
+                ...base,
+                dx: preparation.dx,
+                activeBlocks: preset.activeBlocks ?? false,
+                pagedGrid: preset.pagedGrid ?? false,
+                ...(preset.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: preset.pagedGridMaxPages } : {}),
+                fusedBlockDiscovery: preset.fusedBlockDiscovery ?? false,
+            });
+        }
+        try {
+            for (const [key, value] of Object.entries(preset.schema ?? {})) {
+                sim.setParam(key, value);
+            }
+            sim.setFlow(structuredClone(preparation.flow));
+            sim.reset();
+            return sim;
+        } catch (error) {
+            sim.dispose();
+            throw error;
+        }
+    };
+
+    const buildBehaviorFluidSim = (entry: BehaviorFluidSim): void => {
+        if (entry.sim) return;
+        const preparation = (entry.preparation ??= prepareBehaviorFluidSim(entry.registration));
+        const { method, preset, dx, particleRadius, count } = preparation;
+        const { center, aabb } = behaviorFluidGrid(entry.registration, preset);
+        const flow = behaviorFluidFlowAt(preparation.flow, center);
+        const markersPerCell = preset.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL;
+        const schema = preset.schema ?? {};
+        const base = {
+            count,
+            particleRadius,
+            boundsMin: aabb.min,
+            boundsMax: aabb.max,
+            groundY: aabb.min[1],
+            spawnMin: aabb.min,
+            spawnMax: aabb.max,
+        };
+        let sim: FluidSim;
+        if (method === "PBF") {
+            sim = createPbfSim(engine, { ...base, smoothingRadius: dx, maxPerCell: 48 });
+        } else if (method === "FLIP") {
+            sim = createFlipSim(engine, { ...base, dx, markersPerCell });
+        } else if (method === "PB-MPM") {
+            sim = createPbMpmSim(engine, { ...base, dx, material: preset.material ?? 0 });
+        } else {
+            sim = createMlsMpmSim(engine, {
+                ...base,
+                dx,
+                activeBlocks: preset.activeBlocks ?? false,
+                pagedGrid: preset.pagedGrid ?? false,
+                ...(preset.pagedGridMaxPages !== undefined ? { pagedGridMaxPages: preset.pagedGridMaxPages } : {}),
+                fusedBlockDiscovery: preset.fusedBlockDiscovery ?? false,
+            });
+        }
+        let collision: CollisionSet | null = null;
+        try {
+            for (const [key, value] of Object.entries(schema)) {
+                sim.setParam(key, value);
+            }
+            sim.setFlow(flow);
+            sim.reset();
+            entry.emissionTargetCount = fluidEmissionCompletionTarget(
+                sim.count,
+                sim.activeCount ?? sim.count,
+                flow.emitters.some((emitter) => emitter.behavior === "inflow")
+            );
+            entry.emissionCompleteRaised = false;
+            collision = buildCollisionSet(aabb, new Set());
+            if (collision.playerSlot !== null && !entry.playerCollisionEnabled) {
+                setCollisionSlotsActive(collision, [collision.playerSlot], false);
+            }
+            sim.setSceneSdf(collision.spec);
+            (sim as { setProfiler?: (profiler: FluidProfilerImpl | null) => void }).setProfiler?.(fluidProfilerOn ? fluidProfiler : null);
+            entry.sim = sim;
+            entry.flow = flow;
+            entry.collision = collision;
+            entry.gridAabb = aabb;
+            entry.timeScale = preparation.timeScale;
+            entry.shutdownElapsed = 0;
+            entry.opacity = 1;
+        } catch (error) {
+            sim.dispose();
+            collision?.buffer.destroy();
+            throw error;
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+            `[aquanova] fluidSimulation "${entry.registration.entityName}" allocated — ${method}, ${count.toLocaleString()} particles, grid ${(aabb.max[0] - aabb.min[0]).toFixed(
+                2
+            )}×${(aabb.max[1] - aabb.min[1]).toFixed(2)}×${(aabb.max[2] - aabb.min[2]).toFixed(2)} m`
+        );
+    };
+
+    const activateBehaviorFluidSim = (entry: BehaviorFluidSim): void => {
+        const sim = entry.sim;
+        if (!sim) {
+            throw new Error(`fluidSimulation "${entry.registration.settingName}" was not allocated.`);
+        }
+        applyRenderSetting((entry.registration.setting as FluidExportJson).render);
+        activeSettingName = entry.registration.settingName;
+        virtualSim.particleRadius = sim.particleRadius;
+        virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
+        entry.activated = true;
+    };
+
+    const disposeBehaviorFluidSim = (entry: BehaviorFluidSim): void => {
+        entry.sim?.dispose();
+        entry.collision?.buffer.destroy();
+        entry.sim = null;
+        entry.flow = null;
+        entry.collision = null;
+        entry.gridAabb = null;
+        behaviorFluidSims.delete(entry.registration);
+    };
+
+    behaviorManager.fluidSimulations.installBackend({
+        register(registration) {
+            const entry: BehaviorFluidSim = {
+                registration,
+                preparation: null,
+                state: "registered",
+                activated: false,
+                sim: null,
+                flow: null,
+                collision: null,
+                gridAabb: null,
+                timeScale: 1,
+                shutdownElapsed: 0,
+                opacity: 1,
+                playerCollisionEnabled: true,
+                overflowWarned: false,
+                pendingDispose: false,
+                emissionTargetCount: null,
+                emissionCompleteRaised: false,
+            };
+            behaviorFluidSims.set(registration, entry);
+            try {
+                entry.preparation = prepareBehaviorFluidSim(registration);
+            } catch (error) {
+                console.error(`[aquanova] fluidSimulation "${registration.entityName}" could not prepare its CPU descriptor:`, error);
+            }
+        },
+        update(registration, state) {
+            const entry = behaviorFluidSims.get(registration);
+            if (!entry) return;
+            const previous = entry.state;
+            entry.state = state;
+            if (state === "disposed") {
+                disposeBehaviorFluidSim(entry);
+                return;
+            }
+            if (state === "running" || state === "shutdown") {
+                try {
+                    buildBehaviorFluidSim(entry);
+                    activateBehaviorFluidSim(entry);
+                } catch (error) {
+                    entry.state = "paused";
+                    console.error(`[aquanova] fluidSimulation "${registration.entityName}" could not start:`, error);
+                }
+            }
+            if (state === "shutdown" && previous !== "shutdown") {
+                entry.shutdownElapsed = 0;
+                entry.opacity = 1;
+            }
+        },
+        updateFlowObject(registration, kind, name, enabled) {
+            const entry = behaviorFluidSims.get(registration);
+            const flow = entry?.flow ?? entry?.preparation?.flow;
+            if (!entry || !flow) return;
+            const objects = kind === "emitter" ? flow.emitters : flow.sinks;
+            const object = objects.find((candidate) => candidate.name === name);
+            if (!object) {
+                throw new Error(`fluidSimulation "${registration.settingName}" has no ${kind} named "${name}".`);
+            }
+            object.enabled = enabled;
+            entry.sim?.setFlow(flow);
+        },
+        updatePlayerCollision(registration, enabled) {
+            const entry = behaviorFluidSims.get(registration);
+            if (!entry) return;
+            entry.playerCollisionEnabled = enabled;
+            const collision = entry.collision;
+            if (collision && collision.playerSlot !== null) {
+                if (enabled) refreshPlayerCollision(collision);
+                else setCollisionSlotsActive(collision, [collision.playerSlot], false);
+            }
+        },
+        unregister(registration) {
+            const entry = behaviorFluidSims.get(registration);
+            if (entry) disposeBehaviorFluidSim(entry);
+        },
+    });
+    const fluidSimulationOverlay = !LAB_DEBUG
+        ? null
+        : createFluidSimulationOverlay({
+              engine,
+              scene: debugUtility!.scene,
+              canvas,
+              simulations: (): FluidSimulationDebugSnapshot[] =>
+                  [...behaviorFluidSims.values()].map((entry) => {
+                      const preset = presetFromExportJson(entry.registration.setting as FluidExportJson);
+                      const configuredGrid = behaviorFluidGrid(entry.registration, preset);
+                      const aabb = entry.gridAabb ?? configuredGrid.aabb;
+                      const center: [number, number, number] = [(aabb.min[0] + aabb.max[0]) * 0.5, (aabb.min[1] + aabb.max[1]) * 0.5, (aabb.min[2] + aabb.max[2]) * 0.5];
+                      const flow = entry.flow ?? behaviorFluidFlow(preset, center);
+                      return {
+                          entityName: entry.registration.entityName,
+                          state: entry.state,
+                          center,
+                          size: [aabb.max[0] - aabb.min[0], aabb.max[1] - aabb.min[1], aabb.max[2] - aabb.min[2]],
+                          emitters: flow.emitters,
+                          sinks: flow.sinks,
+                      };
+                  }),
+          });
 
     interface CollectedSample {
         entry: PendingSample;
@@ -3694,15 +4175,29 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         canvas.dataset.taaAccum = String(taaOn && !taaMoving);
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         const growDt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
+        for (const entry of [...behaviorFluidSims.values()]) {
+            if (entry.pendingDispose) disposeBehaviorFluidSim(entry);
+        }
         // The player can enter a simulation domain long after it was built, so every set reserves a
         // capsule slot and refreshes it from the character controller immediately before fluid steps.
         for (const a of activeSims) {
-            const slot = a.collision.playerSlot;
-            if (slot === null) continue;
-            const live = livePlayerPrimitive();
-            a.collision.prims[slot] = live;
-            packPrimitive(a.collision.scratch, slot, live);
-            device.queue.writeBuffer(a.collision.buffer, (PRIM_HEADER + slot * PRIM_STRIDE) * 4, a.collision.scratch, PRIM_HEADER + slot * PRIM_STRIDE, PRIM_STRIDE);
+            refreshPlayerCollision(a.collision);
+        }
+        for (const entry of behaviorFluidSims.values()) {
+            const collision = entry.collision;
+            if (!collision) continue;
+            for (const moving of collision.moving) {
+                if (collision.prims[moving.slot]?.active === false) continue;
+                const live = livePrim(moving.body);
+                if (!live) continue;
+                collision.prims[moving.slot] = live;
+                packPrimitive(collision.scratch, moving.slot, live);
+                device.queue.writeBuffer(collision.buffer, (PRIM_HEADER + moving.slot * PRIM_STRIDE) * 4, collision.scratch, PRIM_HEADER + moving.slot * PRIM_STRIDE, PRIM_STRIDE);
+            }
+            const playerSlot = collision.playerSlot;
+            if (playerSlot !== null && entry.playerCollisionEnabled) {
+                refreshPlayerCollision(collision);
+            }
         }
         // Shots still waiting on their seed: shake the solid so the hit reads instantly. There is no
         // water to shake in lock-step yet — that starts with the ActiveSim below.
@@ -3721,6 +4216,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         }
         inspectOverlay?.onFrame();
         colliderOverlay?.onFrame(); // dynamic proxies move; the chunk changes as you walk
+        fluidSimulationOverlay?.onFrame();
         lightOverlay?.onFrame();
         probeOverlay?.onFrame();
         portalOverlay?.onFrame();
@@ -3805,6 +4301,39 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 }
             }
         }
+        for (const entry of [...behaviorFluidSims.values()]) {
+            const sim = entry.sim;
+            if (!sim || !entry.activated) continue;
+            if (!entry.emissionCompleteRaised && entry.emissionTargetCount !== null && (sim.activeCount ?? sim.count) >= entry.emissionTargetCount) {
+                entry.emissionCompleteRaised = true;
+                entry.registration.onEmissionComplete?.();
+            }
+            if (entry.state === "paused" || entry.state === "registered") {
+                sim.refreshPolygonSurface?.(engine._currentEncoder);
+                continue;
+            }
+            if (entry.state === "shutdown") {
+                const stepDt = fluidSimulationShutdownStepDelta(
+                    entry.shutdownElapsed,
+                    dt * entry.timeScale,
+                    entry.registration.shutdownDuration,
+                    entry.registration.shutdownAlphaDecay
+                );
+                if (stepDt > 0) {
+                    sim.step(engine._currentEncoder, stepDt);
+                    entry.shutdownElapsed += stepDt;
+                }
+                const lifecycle = fluidSimulationShutdownLifecycle(entry.shutdownElapsed, entry.registration.shutdownDuration, entry.registration.shutdownAlphaDecay);
+                entry.opacity = lifecycle.opacity;
+                if (lifecycle.stopped) {
+                    // The final step is already encoded against this sim's buffers. Destroy them
+                    // before the next frame records any work, after this frame has been submitted.
+                    entry.pendingDispose = true;
+                }
+                continue;
+            }
+            sim.step(engine._currentEncoder, dt * entry.timeScale);
+        }
         // Aggregate live particles into the shared surface buffer + per-particle alpha. During the
         // dissolve, reveal only particles inside the same noisy front that clips the solid; afterwards
         // the whole fluid is visible, and fading ramps it from 1→0.
@@ -3844,6 +4373,26 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 off += n;
             }
         }
+        for (const entry of behaviorFluidSims.values()) {
+            const sim = entry.sim;
+            if (!sim || !entry.activated) continue;
+            const n = sim.activeCount ?? sim.count;
+            if (off + n > MAX_TOTAL) {
+                if (!entry.overflowWarned) {
+                    entry.overflowWarned = true;
+                    console.error(
+                        `[aquanova] fluidSimulation "${entry.registration.entityName}" cannot be rendered: ${(
+                            off + n
+                        ).toLocaleString()} combined particles exceed the ${MAX_TOTAL.toLocaleString()} shared-fluid capacity.`
+                    );
+                }
+                continue;
+            }
+            engine._currentEncoder.copyBufferToBuffer(sim.positionBuffer, 0, combinedPos, off * 16, n * 16);
+            device.queue.writeBuffer(combinedColor, off * 16, colorScratch, 0, n * 4);
+            alphaScratch.fill(entry.opacity, off, off + n);
+            off += n;
+        }
         surfaceTask.setUseParticleColor(anyColor); // shared toggle: on when any active blob carries mesh colours
         if (off > 0) {
             device.queue.writeBuffer(combinedAlpha, 0, alphaScratch, 0, off);
@@ -3851,8 +4400,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         } else {
             virtualSim.count = 0;
         }
+        behaviorManager.fluidSimulations.recordParticleCount(engine._currentEncoder, off);
         canvas.dataset.particleCount = String(off);
-        canvas.dataset.activeSims = String(activeSims.length);
+        canvas.dataset.activeSims = String(activeSims.length + [...behaviorFluidSims.values()].filter(({ activated, sim }) => activated && sim !== null).length);
     });
     behaviorManager.bindSystemEvents(scene, world);
 
@@ -3861,6 +4411,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     await registerUtilityLayer(weaponLayer);
     await registerUtilityLayer(weaponGizmoLayer);
     if (debugUtility) await registerUtilityLayer(debugUtility);
+    await warmUpFluidPipelines();
     await startEngine(engine);
 
     const setEnvironmentIntensity = (value: number): void => {
@@ -3903,6 +4454,17 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                       get: () => inspectOverlay.isOn(),
                       set: (on: boolean): void => {
                           if (on !== inspectOverlay.isOn()) inspectOverlay.toggle();
+                      },
+                  },
+              ]
+            : []),
+        ...(fluidSimulationOverlay
+            ? [
+                  {
+                      label: "Fluid simulations (G)",
+                      get: () => fluidSimulationOverlay.isOn(),
+                      set: (on: boolean): void => {
+                          if (on !== fluidSimulationOverlay.isOn()) fluidSimulationOverlay.toggle();
                       },
                   },
               ]
@@ -4119,6 +4681,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         else if (event.code === "Digit2") behaviorManager.events.emit("weaponSlotSelected", { slot: 2 });
         else if (event.code === "KeyH") toggleNearestLight();
         else if (event.code === "KeyP") perfOverlay.toggle();
+        else if (event.code === "KeyG") fluidSimulationOverlay?.toggle();
         else if (event.code === "KeyB") toggleLocalCubemapBlending();
         else if (event.code === "KeyV") probeOverlay?.toggle();
         else if (event.code === "KeyU") controlPanel?.toggle();
@@ -4135,6 +4698,5 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         applyPortalDrawOrder(sceneTask);
         if (msaaSceneTask) applyPortalDrawOrder(msaaSceneTask as RenderTask);
     }
-    await warmUpFluidPipelines();
     canvas.dataset.ready = "true";
 }

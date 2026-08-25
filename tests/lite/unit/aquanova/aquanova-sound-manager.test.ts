@@ -8,6 +8,7 @@ const audio = vi.hoisted(() => ({
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
+    setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ describe("Aquanova sound manager", () => {
         audio.playStreamingSound.mockReset();
         audio.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
         audio.setMasterVolume.mockReset();
+        audio.setStreamingSoundVolume.mockReset();
         audio.stopStreamingSound.mockReset();
     });
 
@@ -53,5 +55,32 @@ describe("Aquanova sound manager", () => {
 
         manager.dispose();
         expect(audio.disposeAudioEngine).toHaveBeenCalledWith({ id: "audio-engine" });
+    });
+
+    it("fades playback in and delays stopping until a fade-out completes", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = new SoundManager();
+            const sound = await manager.load("ambient", "/sounds/ambient.mp3");
+
+            manager.play(sound, { fade: 2 });
+            expect(audio.setStreamingSoundVolume.mock.calls.slice(-2)).toEqual([
+                ["/sounds/ambient.mp3", 0, { shape: "none" }],
+                ["/sounds/ambient.mp3", 1, { duration: 2, shape: "linear" }],
+            ]);
+
+            manager.stop(sound, 3);
+            expect(audio.setStreamingSoundVolume).toHaveBeenLastCalledWith("/sounds/ambient.mp3", 0, { duration: 3, shape: "linear" });
+            expect(audio.stopStreamingSound).not.toHaveBeenCalled();
+
+            vi.advanceTimersByTime(2999);
+            expect(audio.stopStreamingSound).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(1);
+            expect(audio.stopStreamingSound).toHaveBeenCalledWith("/sounds/ambient.mp3");
+            expect(audio.setStreamingSoundVolume).toHaveBeenLastCalledWith("/sounds/ambient.mp3", 1, { shape: "none" });
+            manager.dispose();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

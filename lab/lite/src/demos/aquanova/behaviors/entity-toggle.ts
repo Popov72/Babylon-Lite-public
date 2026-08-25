@@ -1,7 +1,8 @@
 import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
-import type { Behavior, BehaviorEventSubscription, EntityToggleBehaviorConfig } from "./types.js";
+import type { Behavior, EntityToggleBehaviorConfig } from "./types.js";
 import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
+import { eventSubscriptionMatches, validateEventSubscriptions } from "./event-subscription.js";
 
 type EntityToggleContext = Pick<AquanovaGameContext, "events">;
 type EntityToggleBehaviorName = "disableCollision" | "disableEntity" | "enableCollision" | "enableEntity" | "hideEntity" | "removeEntity" | "showEntity";
@@ -24,7 +25,8 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
         config: EntityToggleBehaviorConfig,
         context: EntityToggleContext
     ) {
-        validateEventConfiguration(name, config);
+        assertBehaviorConfigKeys(config, name, ["events"]);
+        validateEventSubscriptions(name, config.events);
         this.name = name;
         this.mesh = meshes[0] ?? null;
         this.config = config;
@@ -44,7 +46,7 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
             return;
         }
         this.stopEntityEvent = this.context.events.on("entityEvent", ({ name, event }) => {
-            if (this.config.events?.some((subscription) => subscriptionMatches(subscription, name, event))) {
+            if (this.config.events?.some((subscription) => eventSubscriptionMatches(subscription, name, event))) {
                 this.context.events.emit("entityEvent", {
                     name: this.entityName,
                     event: this.outputEvent,
@@ -57,38 +59,6 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
         this.stopEntityEvent?.();
         this.stopEntityEvent = null;
     }
-}
-
-function validateEventConfiguration(name: EntityToggleBehaviorName, config: EntityToggleBehaviorConfig): void {
-    assertBehaviorConfigKeys(config, name, ["events"]);
-    if (config.events === undefined) {
-        return;
-    }
-    if (config.events.length === 0) {
-        throw new Error(`[aquanova] ${name}.events must contain at least one event`);
-    }
-    for (const event of config.events) {
-        assertBehaviorConfigKeys(event, `${name}.events[]`, ["name", "source"]);
-        if (!event.name) {
-            throw new Error(`[aquanova] ${name}.events[].name must be a non-empty event name`);
-        }
-        if (typeof event.source === "string" && !event.source) {
-            throw new Error(`[aquanova] ${name}.events[].source must be a non-empty entity or door name`);
-        }
-        if (Array.isArray(event.source) && event.source.length === 0) {
-            throw new Error(`[aquanova] ${name}.events[].source must contain at least one entity or door name`);
-        }
-        if (Array.isArray(event.source) && event.source.some((source) => !source)) {
-            throw new Error(`[aquanova] ${name}.events[].source entries must be non-empty entity or door names`);
-        }
-    }
-}
-
-function subscriptionMatches(subscription: BehaviorEventSubscription, source: string, event: string): boolean {
-    if (subscription.name !== event) {
-        return false;
-    }
-    return typeof subscription.source === "string" ? subscription.source === source : subscription.source.includes(source);
 }
 
 export class DisableEntityBehavior extends EntityToggleBehavior<"disableEntity"> {

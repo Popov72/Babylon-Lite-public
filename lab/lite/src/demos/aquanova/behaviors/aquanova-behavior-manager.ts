@@ -4,12 +4,13 @@ import * as behaviorConstructors from "./behavior-constructors.js";
 import { resolveDynamicMass } from "./dynamic.js";
 import { AquanovaEventManager } from "./aquanova-event-manager.js";
 import type { AquanovaGameContext } from "./game-context.js";
+import { AquanovaFluidRuntime } from "../fluid-runtime.js";
 import { PlayerBehavior } from "./player.js";
-import type { Behavior, BehaviorAssignment, BehaviorLibrary, Entities, LiquefiableBehaviorConfig } from "./types.js";
+import type { Behavior, BehaviorAssignment, BehaviorPresets, Entities, LiquefiableBehaviorConfig } from "./types.js";
 import { WeaponInventory } from "./weapon-inventory.js";
 
 export interface AquanovaBehaviorManagerOptions {
-    readonly library: BehaviorLibrary | undefined;
+    readonly presets?: BehaviorPresets;
     readonly entities: Entities | undefined;
     readonly doors?: readonly { readonly id: string; readonly behaviors?: readonly BehaviorAssignment[] }[];
     readonly meshesByEntityName: ReadonlyMap<string, readonly Mesh[]>;
@@ -40,6 +41,7 @@ export class AquanovaBehaviorManager {
     public readonly liquefiableMeshes = new Set<Mesh>();
     public readonly dissolvableMeshes = new Set<Mesh>();
     public readonly dissolvableInstanceIds = new Set<string>();
+    public readonly fluidSimulations = new AquanovaFluidRuntime();
     private readonly core: GenericBehaviorManager<AquanovaGameContext>;
     private readonly entityNameOf: (mesh: Mesh) => string;
     private readonly meshesByEntityName: ReadonlyMap<string, readonly Mesh[]>;
@@ -53,7 +55,7 @@ export class AquanovaBehaviorManager {
         this.entityNameOf = options.entityNameOf;
         this.meshesByEntityName = options.meshesByEntityName;
         this.core = new GenericBehaviorManager({
-            library: options.library,
+            presets: options.presets,
             entities: options.entities,
             meshlessOwners: Object.fromEntries((options.doors ?? []).map((door) => [door.id, { behaviors: door.behaviors }])),
             meshesByEntityName: options.meshesByEntityName,
@@ -118,14 +120,14 @@ export class AquanovaBehaviorManager {
         }
     }
 
-    public async start(context: Omit<AquanovaGameContext, "events" | "weaponInventory">): Promise<void> {
+    public async start(context: Omit<AquanovaGameContext, "events" | "fluidSimulations" | "weaponInventory">): Promise<void> {
         if (this.started) {
             throw new Error("[aquanova] behaviors are already started");
         }
         this.started = true;
         this.weaponInventory.start(this.events);
         try {
-            await this.core.start({ ...context, events: this.events, weaponInventory: this.weaponInventory });
+            await this.core.start({ ...context, events: this.events, fluidSimulations: this.fluidSimulations, weaponInventory: this.weaponInventory });
         } catch (error) {
             this.weaponInventory.dispose();
             this.started = false;
@@ -183,17 +185,18 @@ export class AquanovaBehaviorManager {
 
     public dispose(): void {
         this.core.dispose();
+        this.fluidSimulations.dispose();
         this.weaponInventory.dispose();
         this.events.dispose();
         this.started = false;
     }
 
-    private assignmentsOf(entityName: string): readonly BehaviorAssignment[] {
+    public assignmentsOf(entityName: string): readonly BehaviorAssignment[] {
         return this.core.assignmentsOf(entityName) as readonly BehaviorAssignment[];
     }
 
     private liquefiableConfigOf(entityName: string): LiquefiableBehaviorConfig | undefined {
-        const assignment = this.assignmentsOf(entityName).find((candidate) => candidate.liquefiable === true);
+        const assignment = this.assignmentsOf(entityName).find((candidate) => candidate.name === "liquefaction");
         return assignment as LiquefiableBehaviorConfig | undefined;
     }
 

@@ -5,6 +5,7 @@ import {
     playStreamingSound,
     preloadStreamingInstanceAsync,
     setMasterVolume,
+    setStreamingSoundVolume,
     stopStreamingSound,
 } from "babylon-lite";
 import type { AudioEngine, StreamingSound, StreamingSoundOptions, StreamingSoundPlayOptions } from "babylon-lite";
@@ -17,11 +18,17 @@ export interface ManagedSound {
     readonly sound: StreamingSound;
 }
 
+export interface ManagedSoundPlayOptions extends StreamingSoundPlayOptions {
+    /** Fade-in duration in seconds. Defaults to 0. */
+    fade?: number;
+}
+
 export class SoundManager {
     private engineInitialization: Promise<AudioEngine> | null = null;
     private engine: AudioEngine | null = null;
     private readonly loads = new Map<string, Promise<ManagedSound>>();
     private readonly activeLoops = new Set<ManagedSound>();
+    private readonly pendingStops = new Map<ManagedSound, ReturnType<typeof setTimeout>>();
     private enabled = true;
     private volume = 1;
 
@@ -37,14 +44,29 @@ export class SoundManager {
         return load;
     }
 
-    public play(sound: ManagedSound, options: StreamingSoundPlayOptions = {}): void {
+    public play(sound: ManagedSound, options: ManagedSoundPlayOptions = {}): void {
         if (!this.enabled) {
             return;
         }
-        if (Object.keys(options).length > 0) {
-            playStreamingSound(sound.sound, options);
+        const fade = validateFade(options.fade);
+        const interruptedFade = this.cancelPendingStop(sound);
+        const playOptions: StreamingSoundPlayOptions = {
+            ...(options.loop !== undefined ? { loop: options.loop } : {}),
+            ...(options.startOffset !== undefined ? { startOffset: options.startOffset } : {}),
+            ...(options.volume !== undefined ? { volume: options.volume } : {}),
+        };
+        if (fade > 0) {
+            setStreamingSoundVolume(sound.sound, 0, { shape: "none" });
+        } else if (interruptedFade) {
+            setStreamingSoundVolume(sound.sound, 1, { shape: "none" });
+        }
+        if (Object.keys(playOptions).length > 0) {
+            playStreamingSound(sound.sound, playOptions);
         } else {
             playStreamingSound(sound.sound);
+        }
+        if (fade > 0) {
+            setStreamingSoundVolume(sound.sound, 1, { duration: fade, shape: "linear" });
         }
         if (options.loop) {
             this.activeLoops.add(sound);
@@ -54,9 +76,19 @@ export class SoundManager {
         });
     }
 
-    public stop(sound: ManagedSound): void {
-        this.activeLoops.delete(sound);
-        stopStreamingSound(sound.sound);
+    public stop(sound: ManagedSound, fade = 0): void {
+        const duration = validateFade(fade);
+        this.cancelPendingStop(sound);
+        if (duration === 0) {
+            this.stopImmediately(sound);
+            return;
+        }
+        setStreamingSoundVolume(sound.sound, 0, { duration, shape: "linear" });
+        const timer = setTimeout(() => {
+            this.pendingStops.delete(sound);
+            this.stopImmediately(sound);
+        }, duration * 1000);
+        this.pendingStops.set(sound, timer);
     }
 
     public setEnabled(enabled: boolean): void {
@@ -75,6 +107,10 @@ export class SoundManager {
 
     public dispose(): void {
         this.stopActiveLoops();
+        for (const timer of this.pendingStops.values()) {
+            clearTimeout(timer);
+        }
+        this.pendingStops.clear();
         if (this.engine) {
             disposeAudioEngine(this.engine);
         }
@@ -110,8 +146,33 @@ export class SoundManager {
 
     private stopActiveLoops(): void {
         for (const sound of this.activeLoops) {
-            stopStreamingSound(sound.sound);
+            this.cancelPendingStop(sound);
+            this.stopImmediately(sound);
         }
         this.activeLoops.clear();
     }
+
+    private cancelPendingStop(sound: ManagedSound): boolean {
+        const timer = this.pendingStops.get(sound);
+        if (timer === undefined) {
+            return false;
+        }
+        clearTimeout(timer);
+        this.pendingStops.delete(sound);
+        return true;
+    }
+
+    private stopImmediately(sound: ManagedSound): void {
+        this.activeLoops.delete(sound);
+        stopStreamingSound(sound.sound);
+        setStreamingSoundVolume(sound.sound, 1, { shape: "none" });
+    }
+}
+
+function validateFade(fade: number | undefined): number {
+    const duration = fade ?? 0;
+    if (!Number.isFinite(duration) || duration < 0) {
+        throw new Error("[aquanova] sound fade must be finite and non-negative");
+    }
+    return duration;
 }

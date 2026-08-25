@@ -13,8 +13,10 @@ export interface BehaviorAssignment {
     readonly [key: string]: unknown;
 }
 
-export type BehaviorDefinition = Readonly<Record<string, unknown>>;
-export type BehaviorLibrary = Readonly<Record<string, BehaviorDefinition>>;
+export interface BehaviorPreset extends Readonly<Record<string, unknown>> {
+    readonly base: string;
+}
+export type BehaviorPresets = Readonly<Record<string, BehaviorPreset>>;
 export type BehaviorEntities = Readonly<Record<string, { readonly behaviors?: readonly BehaviorAssignment[] }>>;
 
 export type BehaviorConstructor<Context> = new (entityName: string, meshes: readonly Mesh[], assignment: BehaviorAssignment, context: Context) => Behavior;

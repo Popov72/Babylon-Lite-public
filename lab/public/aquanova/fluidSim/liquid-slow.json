@@ -1,6 +1,7 @@
 {
+  "formatVersion": 12,
   "meta": {
-    "demo": "liquefactor",
+    "demo": "aquanova-fluid-sim",
     "method": "MLS-MPM"
   },
   "physics": {
@@ -18,12 +19,92 @@
   },
   "demoParams": {
     "particleRadius": 0.025,
-    "useMeshColors": 0
+    "useMeshColors": 0,
+    "collisionNeighborhoodRadius": 12,
+    "forceStrength": 0.5,
+    "forceInfluenceRadius": 3.5
   },
-  "demoState": {},
+  "demoState": {
+    "simulationType": "mesh",
+    "samplingMode": "dense",
+    "fillStrategy": "auto"
+  },
+  "simulationDuration": 0,
+  "alphaDecay": 2,
+  "simulationTimeScale": 1,
+  "emitters": [
+    {
+      "id": "manual-source-1",
+      "name": "Manual source",
+      "enabled": true,
+      "behavior": "initial",
+      "transform": {
+        "position": [
+          0,
+          3,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "shape": {
+        "type": "box",
+        "size": [
+          3,
+          3,
+          3
+        ]
+      },
+      "sampling": "volume",
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "velocitySpace": "world",
+      "spread": 0
+    }
+  ],
+  "sinks": [],
   "showContainer": true,
+  "activeBlocks": false,
+  "pagedGrid": false,
+  "pagedGridMaxPages": 40000,
+  "fusedBlockDiscovery": false,
   "physicsParticleSize": 1,
+  "gridPosition": [
+    0,
+    0,
+    0
+  ],
+  "gridSize": [
+    10,
+    5,
+    10
+  ],
+  "showGridBounds": false,
   "particleCount": 0,
+  "freeCamera": {
+    "position": [
+      9.531002201846906,
+      2.8202898147644677,
+      0.5260545264952761
+    ],
+    "target": [
+      8.585702465334833,
+      2.7403751207952944,
+      0.8423171544455603
+    ]
+  },
   "render": {
     "renderAsSpheres": false,
     "waterColor": "#16a3c3",
@@ -31,6 +112,9 @@
     "particleSize": 0.7,
     "refractionStrength": 0.06,
     "specularPower": 41,
+    "reflectionExposure": 1,
+    "reflectionContrast": 1.1,
+    "waterReflectivity": 0.02,
     "surfaceDepthBlur": 29,
     "depthBlurEdgeThreshold": 41,
     "surfaceThicknessBlur": 11,
@@ -44,8 +128,22 @@
   },
   "foam": {
     "enableFoam": false,
+    "activeParticles": true,
+    "generateSpray": true,
+    "generateFoam": true,
+    "generateBubbles": true,
+    "surfaceFiltering": false,
     "trappedAirRate": 40,
     "waveCrestRate": 40,
+    "turbulenceRate": 0,
+    "energySpeedMin": 0.7071067811865476,
+    "energySpeedMax": 6.324555320336759,
+    "curvatureMin": 0.05,
+    "curvatureMax": 1.5,
+    "turbulenceMin": 0.1,
+    "turbulenceMax": 2.5,
+    "foamLayerDepth": 0,
+    "sprayDrag": 0,
     "foamLifetime": 2,
     "foamLifetimeMin": 0.3,
     "bubbleBuoyancy": 0.8,
@@ -75,6 +173,11 @@
   "grid": {
     "x": 10,
     "y": 5,
-    "z": 10
+    "z": 10,
+    "position": [
+      0,
+      0,
+      0
+    ]
   }
 }

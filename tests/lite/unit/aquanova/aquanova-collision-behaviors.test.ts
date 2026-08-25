@@ -32,6 +32,39 @@ describe("Aquanova collision behaviors", () => {
         );
     });
 
+    it("registers a validated mesh-local hollow cylinder for fluid simulations", () => {
+        const setCollisionShape = vi.fn();
+        const meshes = [mesh("pipe")];
+        const fluidSimShape = {
+            type: "hollowCylinder",
+            start: [1, 2, 3],
+            height: 4,
+            innerRadius: 0.75,
+            outerRadius: 1,
+        } as const;
+        const behavior = new SetCollisionShapeBehavior("pipe", meshes, { fluidSimShape }, { setCollisionShape });
+
+        behavior.start();
+
+        expect(setCollisionShape).toHaveBeenCalledWith("pipe", "aabb", {
+            meshes,
+            shape: fluidSimShape,
+        });
+    });
+
+    it("rejects malformed fluid simulation shapes", () => {
+        const make =
+            (fluidSimShape: unknown): (() => SetCollisionShapeBehavior) =>
+            () =>
+                new SetCollisionShapeBehavior("pipe", [mesh("pipe")], { fluidSimShape } as never, { setCollisionShape: vi.fn() });
+
+        expect(make({ type: "sphere" })).toThrow('fluidSimShape.type must be "hollowCylinder"');
+        expect(make({ type: "hollowCylinder", start: [0, 0], height: 1, innerRadius: 0.5, outerRadius: 1 })).toThrow("fluidSimShape.start must contain three finite numbers");
+        expect(make({ type: "hollowCylinder", start: [0, 0, 0], height: 0, innerRadius: 0.5, outerRadius: 1 })).toThrow("fluidSimShape.height must be positive");
+        expect(make({ type: "hollowCylinder", start: [0, 0, 0], height: 1, innerRadius: 1, outerRadius: 1 })).toThrow("fluidSimShape.outerRadius must be greater than innerRadius");
+        expect(make({ type: "hollowCylinder", start: [0, 0, 0], height: 1, innerRadius: 0.5, outerRadius: 1, extra: true })).toThrow("fluidSimShape.extra is not supported");
+    });
+
     it("raises entry and exit events on the trigger owner and forwards player filtering", () => {
         const events = new AquanovaEventManager();
         const setEnabled = vi.fn();

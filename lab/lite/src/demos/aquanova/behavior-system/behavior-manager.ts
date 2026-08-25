@@ -1,8 +1,16 @@
 import type { Mesh } from "babylon-lite";
-import type { Behavior, BehaviorAssignment, BehaviorConstructor, BehaviorConstructorNamespace, BehaviorEntities, BehaviorLibrary } from "./behavior.js";
+import type { Behavior, BehaviorAssignment, BehaviorConstructor, BehaviorConstructorNamespace, BehaviorEntities, BehaviorPresets } from "./behavior.js";
+
+function behaviorClassName(name: string): string {
+    return `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}Behavior`;
+}
+
+function constructorFor(constructors: BehaviorConstructorNamespace, name: string): unknown {
+    return constructors[behaviorClassName(name)];
+}
 
 export interface BehaviorManagerOptions {
-    readonly library?: BehaviorLibrary;
+    readonly presets?: BehaviorPresets;
     readonly entities?: BehaviorEntities;
     readonly meshlessOwners?: BehaviorEntities;
     readonly meshesByEntityName: ReadonlyMap<string, readonly Mesh[]>;
@@ -18,7 +26,7 @@ export interface BehaviorEntityMatch {
 
 export class BehaviorManager<Context> {
     public readonly instances: Behavior[] = [];
-    private readonly library: BehaviorLibrary | undefined;
+    private readonly presets: BehaviorPresets | undefined;
     private readonly entities: BehaviorEntities | undefined;
     private readonly meshlessOwners: BehaviorEntities | undefined;
     private readonly meshesByEntityName: ReadonlyMap<string, readonly Mesh[]>;
@@ -29,12 +37,17 @@ export class BehaviorManager<Context> {
     private started = false;
 
     public constructor(options: BehaviorManagerOptions) {
-        this.library = options.library;
+        this.presets = options.presets;
         this.entities = options.entities;
         this.meshlessOwners = options.meshlessOwners;
         this.meshesByEntityName = options.meshesByEntityName;
         this.constructors = options.constructors;
         this.shouldInstantiate = options.shouldInstantiate ?? (() => true);
+        for (const name of Object.keys(this.presets ?? {})) {
+            if (constructorFor(this.constructors, name)) {
+                throw new Error(`Behavior preset "${name}" conflicts with a base behavior of the same name`);
+            }
+        }
     }
 
     public assignmentsOf(entityName: string): readonly BehaviorAssignment[] {
@@ -44,11 +57,11 @@ export class BehaviorManager<Context> {
         }
         const references = this.entities?.[entityName]?.behaviors ?? this.meshlessOwners?.[entityName]?.behaviors ?? [];
         assignments = references.map((reference) => {
-            const base = this.library?.[reference.name];
-            if (!base) {
-                throw new Error(`Entity "${entityName}" references undefined behavior "${reference.name}"`);
-            }
-            return { ...base, ...reference };
+            const preset = this.presets?.[reference.name];
+            const behaviorName = preset?.base ?? reference.name;
+            const assignment = { ...(preset ?? {}), ...reference, name: behaviorName };
+            delete (assignment as { base?: unknown }).base;
+            return assignment;
         });
         this.assignmentCache.set(entityName, assignments);
         return assignments;
@@ -90,11 +103,12 @@ export class BehaviorManager<Context> {
                     if (!this.shouldInstantiate(assignment)) {
                         continue;
                     }
-                    const className = `${assignment.name[0]?.toUpperCase() ?? ""}${assignment.name.slice(1)}Behavior`;
-                    const Constructor = this.constructors[className];
+                    const className = behaviorClassName(assignment.name);
+                    const Constructor = constructorFor(this.constructors, assignment.name);
                     if (typeof Constructor !== "function") {
                         throw new Error(`Behavior "${assignment.name}" requires exported class "${className}"`);
                     }
+
                     const behavior = new (Constructor as BehaviorConstructor<Context>)(entityName, meshes, assignment, context);
                     this.instances.push(behavior);
                     this.entityNameByInstance.set(behavior, entityName);

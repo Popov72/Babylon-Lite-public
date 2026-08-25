@@ -5,7 +5,7 @@
 // this" or "what does this prop do" resolves it from here rather than inferring it from geometry.
 
 import type { ShipEnvironment } from "../ship-manifest.js";
-import type { BehaviorLibrary, BehaviorReference, Entities } from "./behaviors/index.js";
+import type { BehaviorPresets, BehaviorReference, Entities } from "./behaviors/index.js";
 import type { ShipCollisionShape, ShipInstance } from "./collision-shapes.js";
 import { MANIFEST_URL, type Vec3 } from "./constants.js";
 
@@ -107,14 +107,14 @@ export interface ShipDoor {
     behaviors?: BehaviorReference[];
 }
 
-// `behaviors` is a library of named behaviour definitions; `entities` assigns them to MESH NAMES,
-// optionally overriding parameters per entity. Mesh names are shared across rooms, so an entity
-// applies to every mesh carrying that name. Assignments remain separate so several strongly typed
-// behavior instances can coexist on one mesh. A liquefaction behavior without `fluidSim` inherits
-// the manifest's global list.
+// `behaviorPresets` contains optional named parameter profiles derived from base behaviors;
+// `entities` may assign either a base behavior or a preset to MESH NAMES, optionally overriding
+// parameters per entity. Mesh names are shared across rooms, so an entity applies to every mesh
+// carrying that name. Assignments remain separate so several strongly typed behavior instances can
+// coexist on one mesh. A liquefaction behavior without `fluidSim` inherits the global list.
 export interface ShipManifest {
     fluidSim?: string[]; // extensionless fluid-setting names under aquanova/fluidSim/ that a liquefied mesh may use
-    behaviors?: BehaviorLibrary; // behaviour name → definition
+    behaviorPresets?: BehaviorPresets; // preset name → base behavior and parameter overrides
     entities?: Entities; // mesh name → assigned behaviours
     chunks: ShipChunk[];
     /** Spatial reflection volumes, independent from rendering chunks. */

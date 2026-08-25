@@ -64,7 +64,6 @@ describe("generic behavior system", () => {
         }
 
         const manager = new BehaviorManager({
-            library: { first: {}, second: {} },
             entities: { entity: { behaviors: [{ name: "first" }, { name: "second" }] } },
             meshesByEntityName: new Map([["entity", meshes]]),
             constructors: { FirstBehavior, SecondBehavior },
@@ -84,13 +83,31 @@ describe("generic behavior system", () => {
 
     it("reports the class name required by an unknown behavior", async () => {
         const manager = new BehaviorManager({
-            library: { customAction: {} },
             entities: { entity: { behaviors: [{ name: "customAction" }] } },
             meshesByEntityName: new Map([["entity", [mesh("entity")]]]),
             constructors: {},
         });
 
         await expect(manager.start({})).rejects.toThrow('Behavior "customAction" requires exported class "CustomActionBehavior"');
+    });
+
+    it("rejects a preset whose name conflicts with a base behavior", () => {
+        class DynamicBehavior {
+            public readonly name = "dynamic";
+            public readonly mesh = null;
+            public init(): void {}
+            public start(): void {}
+            public dispose(): void {}
+        }
+
+        expect(
+            () =>
+                new BehaviorManager({
+                    presets: { dynamic: { base: "dynamic", mass: 20 } },
+                    meshesByEntityName: new Map(),
+                    constructors: { DynamicBehavior },
+                })
+        ).toThrow('Behavior preset "dynamic" conflicts with a base behavior of the same name');
     });
 
     it("constructs explicitly meshless behavior owners", async () => {
@@ -120,7 +137,6 @@ describe("generic behavior system", () => {
         }
 
         const manager = new BehaviorManager({
-            library: { door: {} },
             meshlessOwners: { Door_D06: { behaviors: [{ name: "door" }] } },
             meshesByEntityName: new Map(),
             constructors: { DoorBehavior },
@@ -137,7 +153,6 @@ describe("generic behavior system", () => {
     it("skips and reports behavior owners without runtime meshes", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         const manager = new BehaviorManager({
-            library: { dynamic: {} },
             entities: { missing: { behaviors: [{ name: "dynamic" }] } },
             meshesByEntityName: new Map(),
             constructors: {},
@@ -153,7 +168,6 @@ describe("generic behavior system", () => {
 
     it("constructs door behaviors declared in the entities map", async () => {
         const manager = new AquanovaBehaviorManager({
-            library: { enableEntity: {} },
             entities: {
                 Door_D00: {
                     behaviors: [
@@ -179,14 +193,14 @@ describe("generic behavior system", () => {
         manager.dispose();
     });
 
-    it("resolves Aquanova liquefaction aliases and handles every mesh in the entity", async () => {
+    it("resolves an Aquanova behavior preset to its base constructor", async () => {
         const first = mesh("first");
         const second = mesh("second");
         const events = new AquanovaEventManager();
         const liquefy = vi.fn();
         const manager = new BehaviorManager<AquanovaGameContext>({
-            library: { stdLiquefaction: { liquefiable: true } },
-            entities: { crate: { behaviors: [{ name: "stdLiquefaction" }] } },
+            presets: { stdLiquefaction: { base: "liquefaction", sound: "presetSplash" } },
+            entities: { crate: { behaviors: [{ name: "stdLiquefaction", sound: "entitySplash" }] } },
             meshesByEntityName: new Map([["crate", [first, second]]]),
             constructors: aquanovaBehaviorConstructors,
         });
@@ -200,8 +214,8 @@ describe("generic behavior system", () => {
         events.emit("hitWithWeapon", { mesh: second, point: [1, 2, 3], distance: 4 });
 
         expect(manager.instances).toHaveLength(1);
-        expect(manager.instances[0]?.name).toBe("stdLiquefaction");
-        expect(liquefy).toHaveBeenCalledWith(second, [1, 2, 3], expect.objectContaining({ name: "stdLiquefaction", liquefiable: true }));
+        expect(manager.instances[0]?.name).toBe("liquefaction");
+        expect(liquefy).toHaveBeenCalledWith(second, [1, 2, 3], expect.objectContaining({ name: "liquefaction", sound: "entitySplash" }));
 
         manager.dispose();
     });
@@ -211,7 +225,7 @@ describe("generic behavior system", () => {
         const linked = mesh("linked");
         const liquefy = vi.fn();
         const manager = new AquanovaBehaviorManager({
-            library: { stdLiquefaction: { liquefiable: true } },
+            presets: { stdLiquefaction: { base: "liquefaction" } },
             entities: { primary: { behaviors: [{ name: "stdLiquefaction", linked: ["linked"] }] } },
             meshesByEntityName: new Map([
                 ["primary", [primary]],
@@ -248,7 +262,7 @@ describe("generic behavior system", () => {
         const liquefy = vi.fn();
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
         const manager = new AquanovaBehaviorManager({
-            library: { stdLiquefaction: { liquefiable: true } },
+            presets: { stdLiquefaction: { base: "liquefaction" } },
             entities: {
                 stale: { behaviors: [{ name: "stdLiquefaction", linked: ["linked"] }] },
                 active: { behaviors: [{ name: "stdLiquefaction", linked: ["linked"] }] },
@@ -285,9 +299,9 @@ describe("generic behavior system", () => {
         const primary = mesh("primary");
         const linked = mesh("linked");
         const manager = new AquanovaBehaviorManager({
-            library: {
-                quickLiquefaction: { liquefiable: true, sound: "quickSplash" },
-                longLiquefaction: { liquefiable: true, sound: "longSplash" },
+            presets: {
+                quickLiquefaction: { base: "liquefaction", sound: "quickSplash" },
+                longLiquefaction: { base: "liquefaction", sound: "longSplash" },
             },
             entities: {
                 primary: { behaviors: [{ name: "quickLiquefaction", linked: ["linked"] }] },
@@ -315,9 +329,9 @@ describe("generic behavior system", () => {
         const second = mesh("second");
         const shared = mesh("shared");
         const manager = new AquanovaBehaviorManager({
-            library: {
-                quickLiquefaction: { liquefiable: true, sound: "quickSplash" },
-                longLiquefaction: { liquefiable: true, sound: "longSplash" },
+            presets: {
+                quickLiquefaction: { base: "liquefaction", sound: "quickSplash" },
+                longLiquefaction: { base: "liquefaction", sound: "longSplash" },
             },
             entities: {
                 first: { behaviors: [{ name: "quickLiquefaction", linked: ["shared"] }] },

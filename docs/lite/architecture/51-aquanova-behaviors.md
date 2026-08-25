@@ -38,34 +38,46 @@ weights are intentionally omitted because final influence is fragment-dependent.
 
 ## Typed behavior model
 
-The manifest's `behaviors` object is the source of truth for behavior names and
-parameters. The current definitions are:
+`behavior-definitions.json` is the catalog of executable base behaviors and
+their typed parameters. Entities may attach a base behavior directly. The
+manifest's optional `behaviorPresets` object defines named parameter profiles
+derived from one base behavior:
 
-| Behavior                | Responsibility                                          |
-| ----------------------- | ------------------------------------------------------- |
-| `dynamic`               | Makes a prop physically simulated and player-pushable   |
-| `anyLiquefaction`       | Liquefies with the manifest's default fluid setting     |
-| `stdLiquefaction`       | Liquefies with the standard fluid setting               |
-| `explosiveLiquefaction` | Liquefies with the explosive fluid setting              |
-| `player`                | Owns first-person controls and disables its marker      |
-| `weaponLiquefactor`     | Gates and drives the Liquefactor weapon                 |
-| `weaponAntiGravityGun`  | Grabs and throws dynamic rigid bodies                   |
-| `pickEntity`            | Collects an intersected entity and emits an event       |
-| `enableEntity`          | Enables its owner after a configured source event       |
-| `disableEntity`         | Disables its owner after a configured source event      |
-| `setCollisionShape`     | Replaces an entity collider from its visible geometry   |
-| `trigger`               | Raises owner events when its collider is entered/exited |
-| `playAnimation`         | Starts one animation clip from the ship glTF            |
+```json
+{
+    "behaviorPresets": {
+        "stdLiquefaction": {
+            "base": "liquefaction",
+            "fluidSim": ["liquid-slow"]
+        }
+    }
+}
+```
 
-Definition parameters are merged with per-entity overrides while retaining the
-behavior identity; assignments are never flattened into one anonymous parameter
-bag.
+Preset names must be distinct from base behavior names, and presets cannot
+derive from other presets. Preset values are merged with entity overrides, then
+the resolved base behavior is instantiated. The current base behaviors are:
 
-Liquefaction behavior names are data-driven. The constructor catalog exports
-`AnyLiquefactionBehavior`, `StdLiquefactionBehavior`, and
-`ExplosiveLiquefactionBehavior` as aliases of `LiquefiableBehavior`; each
-manifest name therefore follows the same dynamic class-name rule as every other
-behavior while sharing one implementation.
+| Behavior               | Responsibility                                          |
+| ---------------------- | ------------------------------------------------------- |
+| `dynamic`              | Makes a prop physically simulated and player-pushable   |
+| `liquefaction`         | Liquefies with an optional authored fluid setting       |
+| `player`               | Owns first-person controls and disables its marker      |
+| `weaponLiquefactor`    | Gates and drives the Liquefactor weapon                 |
+| `weaponAntiGravityGun` | Grabs and throws dynamic rigid bodies                   |
+| `pickEntity`           | Collects an intersected entity and emits an event       |
+| `enableEntity`         | Enables its owner after a configured source event       |
+| `disableEntity`        | Disables its owner after a configured source event      |
+| `sound`                | Plays or stops an authored sound                        |
+| `fluidSimulation`      | Runs an event-controlled authored fluid simulation      |
+| `setCollisionShape`    | Replaces an entity collider from its visible geometry   |
+| `trigger`              | Raises owner events when its collider is entered/exited |
+| `playAnimation`        | Starts one animation clip from the ship glTF            |
+
+The ship manifest uses `stdLiquefaction` and `explosiveLiquefaction` presets of
+the `liquefaction` base. A direct `liquefaction` assignment uses the behavior's
+defaults. At runtime all three resolve to `LiquefactionBehavior`; preset values
+and per-entity overrides remain data rather than separate constructor aliases.
 
 Each behavior receives:
 
@@ -100,10 +112,127 @@ treat that owner name as their `source`. `pickEntity` may define
 once. `target` is optional and defaults to the entity carrying `pickEntity`.
 Consumers ignore events addressed to other entities.
 
+Portal visibility also publishes chunk transitions through `entityEvent`.
+A chunk raises `visible` when it enters the portal traversal's displayed chunk
+set and `notVisible` when it leaves. Exterior-only shells seen through sky
+portals do not count as displayed chunks. Chunk event sources keep their raw
+chunk ID in the manifest and appear as `<ID> chunk` in editor source pickers.
+
 `setCollisionShape` builds a Havok box from each entity mesh group's world-space
 AABB by default. Explicit `{ "type": "mesh" }` instead builds a static
 triangle-mesh shape from every primitive owned by the entity. Mesh collision
 shapes are rejected on physically dynamic entities.
+
+`fluidSimulation` loads the extensionless `fluidSim` setting name from
+`public/aquanova/fluidSim/`. Its axis-aligned grid keeps the authored size but
+uses the behavior owner's world position instead of the position stored in the
+JSON; emitter and sink positions remain grid-local and are translated with that
+new center. The simulation is absent and does not render until the owner
+receives an event mapped to `enableSimulation`. `eventActions` maps an external
+entity or door's event to one of:
+
+- `enableSimulation`, `disableSimulation`, `pauseSimulation`,
+  `unpauseSimulation`, or `shutdownSimulation`;
+- `enablePlayerCollision` or `disablePlayerCollision`;
+- `enableEmitter` or `disableEmitter`, with a named `emitter`;
+- `enableSink` or `disableSink`, with a named `sink`.
+
+For example:
+
+```json
+{
+    "name": "fluidSimulation",
+    "fluidSim": "capsule-filling",
+    "eventActions": [
+        {
+            "source": ["valveA", "valveB"],
+            "event": "opened",
+            "action": "enableEmitter",
+            "emitter": "Main inlet"
+        },
+        {
+            "source": "controlPanel",
+            "event": "activated",
+            "action": "enableSimulation"
+        }
+    ]
+}
+```
+
+Behavior-owned simulations prepare only CPU-side descriptors during demo
+loading. A one-particle, small-grid throwaway solver for each unique authored
+setting exercises the exact method, parameter, flow, and collision-shader
+pipeline variants, relying on the browser's WGSL-source cache; its temporary
+buffers are disposed before the engine starts. The real grid, particle, and
+collision GPU buffers are allocated only on the simulation's first
+`enableSimulation` or `shutdownSimulation`, so unused behavior simulations
+consume no persistent fluid GPU memory while first-use shader compilation stays
+off the triggering frame.
+
+Flow-object actions received before the first `enableSimulation` update the
+prepared CPU descriptor's flow configuration without allocating a solver.
+Later actions update the live configuration without resetting its particles.
+Initial emitters still seed only when the solver is reset; live replenishment
+uses inflow emitters.
+
+`pauseSimulation` and `unpauseSimulation` affect only a simulation that has
+already been started by `enableSimulation`. Before that first
+start both actions are no-ops. After startup they pause and resume stepping
+respectively; like enable/disable and flow-object actions, both are ignored
+after shutdown begins.
+
+`enablePlayerCollision` and `disablePlayerCollision` control whether the
+behavior-owned simulation's fluid collides with the live player capsule. The
+setting is retained before the solver is allocated and updates the reserved
+player collision slot immediately when the simulation is already running. It
+remains mutable while the simulation is in its active shutdown phase, allowing
+an event to enable collision and start shutdown together. It does not affect
+liquefaction simulations.
+
+The fixed `emissionComplete` event is raised from the behavior owner exactly
+once when the aggregate active particle count reaches its emission target. For
+FLIP flows containing only Initial emitters, that target is the exact
+reset-time count computed by the solver from emitter volume, grid bounds,
+resolution-derived cell size, markers per cell, clipping, and configured
+capacity—the same inputs shown by the fluid UI. When any Inflow emitter exists,
+the target is the solver capacity because that emitter may be enabled later and
+continue filling dormant slots. Enabled sinks can prevent that target from ever
+being reached.
+
+`AquanovaFluidRuntime` is the shared behavior-facing service for authored fluid
+simulations and liquefaction water. In addition to the behavior simulation
+lifecycle, it owns a delayed GPU query over the combined visible particle
+stream. `countParticlesInAabb()` requests a world-space AABB sample and returns
+the latest completed count. A compute reduction tests the actual aggregated
+position and alpha buffers, copies only one four-byte counter to a three-buffer
+readback ring, and maps it on a later frame. Sampling is limited to once every
+six rendered frames; callers continue receiving the last completed count
+between samples. Invisible dissolve-front particles,
+fully faded water, inactive capacity, and particles omitted by aggregate
+capacity are therefore not counted. Temporal interpretation of delayed counts
+belongs to the caller.
+
+`shutdownSimulation` is irreversible. It resumes a paused or not-yet-enabled
+simulation, runs it at full opacity for `shutdownDuration` simulated seconds
+(default `10`), fades it over `shutdownAlphaDecay` additional simulated seconds
+(default `2`), then disposes its GPU and collision resources. Every later event
+action is ignored once shutdown begins.
+
+`sound` requires a non-empty `cues` array. Each cue contains an extensionless
+MP3 `sound` name, a `play` or `stop` `action`, optional `events`
+subscriptions, and optional `delay` and `fade` durations. A cue without
+subscriptions runs once at behavior startup. `delay` postpones that cue's
+action, while `fade` is a fade-in for `play` and a fade-out before `stop`; both
+are finite non-negative seconds and default to zero. Distinct MP3s are
+preloaded once per behavior, matching cues run in declaration order, and all
+subscriptions and delayed actions are cancelled together when the behavior is
+disposed.
+
+Behavior-owned simulations and liquefaction blobs share Aquanova's single
+particle-surface renderer. The most recently enabled fluid setting therefore
+controls the shared water look when several simulations overlap; particle
+positions, stepping, pause state, collision fields, opacity, and disposal remain
+independent per simulation.
 
 `trigger` accepts
 `{ "onIntersection": { "enterEvent": "activated",
@@ -327,9 +456,11 @@ those subsystems can move behind narrower services independently.
 
 Fluid collision primitives retain stable buffer slots with an `active` flag.
 When a placement stops being collidable, Aquanova updates only that flag in
-every running simulation; the collision shader skips inactive slots. A prop's
-collision is deactivated at the same point its Havok body is removed:
-immediately before the fluid simulation's first step.
+every running liquefaction and behavior-owned simulation; the collision shader
+skips inactive slots. A prop's collision is deactivated at the same point its
+Havok body is removed: immediately before the fluid simulation's first step.
+The retired state also excludes it from behavior-owned simulations enabled
+later.
 
 Primitive inclusion is tested against the exact world-space AABB passed to the
 fluid solver as its simulation grid. The liquefied mesh's sampled AABB is used

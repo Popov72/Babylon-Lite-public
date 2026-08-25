@@ -107,8 +107,7 @@ describe("Aquanova playAnimation behavior", () => {
         const firstPrimitive = mesh("fan-primitive-0");
         const secondPrimitive = mesh("fan-primitive-1");
         const manager = new AquanovaBehaviorManager({
-            library: { playAnimation: { animation: "Fan" } },
-            entities: { fan: { behaviors: [{ name: "playAnimation", loop: false }] } },
+            entities: { fan: { behaviors: [{ name: "playAnimation", animation: "Fan", loop: false }] } },
             meshesByEntityName: new Map([["fan", [firstPrimitive, secondPrimitive]]]),
             entityNameOf: () => "fan",
         });

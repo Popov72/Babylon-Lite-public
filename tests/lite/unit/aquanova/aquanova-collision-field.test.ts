@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
     localizePrimitive,
+    hollowCylinderPrimitiveForMatrix,
     packPrimitives,
     primBufferBytes,
     primitiveSdf,
@@ -20,6 +21,7 @@ import {
     PRIM_SPHERE,
     PRIM_CAPSULE,
     PRIM_CYLINDER,
+    PRIM_HOLLOW_CYLINDER,
     type FluidPrimitive,
 } from "../../../../lab/lite/src/demos/aquanova/collision-field";
 
@@ -125,6 +127,40 @@ describe("collision-field: cylinder", () => {
     });
 });
 
+describe("collision-field: hollow cylinder", () => {
+    const c: FluidPrimitive = {
+        kind: "hollowCylinder",
+        a: [0, 0, 0],
+        b: [0, 2, 0],
+        innerRadius: 1,
+        radius: 2,
+    };
+
+    it("is solid only in the finite annular wall", () => {
+        expect(primitiveSdf(c, [0, 1, 0])).toBeCloseTo(1, 6);
+        expect(primitiveSdf(c, [0.5, 1, 0])).toBeCloseTo(0.5, 6);
+        expect(primitiveSdf(c, [1.5, 1, 0])).toBeCloseTo(-0.5, 6);
+        expect(primitiveSdf(c, [2.5, 1, 0])).toBeCloseTo(0.5, 6);
+        expect(primitiveSdf(c, [1.5, 2.25, 0])).toBeCloseTo(0.25, 6);
+    });
+
+    it("transforms its local +Y endpoints and radial scale into world space", () => {
+        const world = new Float32Array([2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2, 0, 10, 20, 30, 1]);
+        expect(hollowCylinderPrimitiveForMatrix(world, [1, 2, 3], 4, 0.5, 1)).toEqual({
+            kind: "hollowCylinder",
+            a: [12, 26, 36],
+            b: [12, 38, 36],
+            innerRadius: 1,
+            radius: 2,
+        });
+    });
+
+    it("rejects transforms that would turn the circular tube into an ellipse", () => {
+        const world = new Float32Array([2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+        expect(() => hollowCylinderPrimitiveForMatrix(world, [0, 0, 0], 1, 0.5, 1)).toThrow("requires a mesh transform with equal X/Z scale and no shear");
+    });
+});
+
 describe("collision-field: union", () => {
     it("takes the nearest solid (min)", () => {
         const prims: FluidPrimitive[] = [
@@ -179,10 +215,11 @@ describe("collision-field: packing", () => {
             { kind: "sphere", a: [-1, -2, -3], radius: 2.5 },
             { kind: "capsule", a: [0, 0, 0], b: [0, 1, 0], radius: 0.25 },
             { kind: "cylinder", a: [1, 1, 1], b: [1, 3, 1], radius: 0.75 },
+            { kind: "hollowCylinder", a: [2, 2, 2], b: [2, 4, 2], innerRadius: 0.5, radius: 1 },
         ];
         const buf = new Float32Array(PRIM_HEADER + prims.length * PRIM_STRIDE);
         packPrimitives(buf, prims);
-        expect(buf[0]).toBe(4); // header count — the WGSL loop bound
+        expect(buf[0]).toBe(5); // header count — the WGSL loop bound
 
         const at = (i: number, k: number): number => buf[PRIM_HEADER + i * PRIM_STRIDE + k]!;
         expect(at(0, 0)).toBe(PRIM_BOX);
@@ -195,6 +232,9 @@ describe("collision-field: packing", () => {
         expect(at(1, 7)).toBe(2.5);
         expect(at(2, 0)).toBe(PRIM_CAPSULE);
         expect(at(3, 0)).toBe(PRIM_CYLINDER);
+        expect(at(4, 0)).toBe(PRIM_HOLLOW_CYLINDER);
+        expect(at(4, 7)).toBe(1);
+        expect(at(4, 8)).toBe(0.5);
     });
     it("defaults the optional fields rather than leaving them undefined", () => {
         const buf = new Float32Array(PRIM_HEADER + PRIM_STRIDE);
@@ -250,6 +290,15 @@ describe("localizePrimitive", () => {
         expect(local.a).toEqual([0, -0.36000000000000004, 0]);
         expect(local.b).toEqual([0, 0.6399999999999999, 0]);
         expect(local.radius).toBe(0.3);
+    });
+
+    it("re-bases both endpoints of a hollow cylinder while retaining both radii", () => {
+        const tube: FluidPrimitive = { kind: "hollowCylinder", a: [11, 0, 3], b: [11, 2, 3], innerRadius: 0.4, radius: 0.5 };
+        const local = localizePrimitive(tube, centre);
+        expect(local.a).toEqual([0, -0.56, 0]);
+        expect(local.b).toEqual([0, 1.44, 0]);
+        expect(local.innerRadius).toBe(0.4);
+        expect(local.radius).toBe(0.5);
     });
 
     it("handles a sphere, which has no b at all", () => {

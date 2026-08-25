@@ -5,6 +5,7 @@ import {
     chunkWorldAabb,
     createPortalFrustumPlanes,
     groupMeshesByChunks,
+    notifyChunkVisibilityChanges,
     polygonIntersectsPlanes,
     portalIntersectsAabb,
     traversePortalGraph,
@@ -30,6 +31,30 @@ function portal(id: string, chunkA: string, chunkB: string, z: number, enabled =
 }
 
 describe("Aquanova portal visibility", () => {
+    it("reports chunk visibility only when displayed membership changes", () => {
+        const changes: Array<{ chunkId: string; visible: boolean }> = [];
+        const notify = (chunkId: string, visible: boolean) => changes.push({ chunkId, visible });
+        let previous = new Set<string>();
+
+        let current = new Set(["CH01", "CH02"]);
+        notifyChunkVisibilityChanges(previous, current, notify);
+        previous = current;
+
+        current = new Set(["CH01", "CH02"]);
+        notifyChunkVisibilityChanges(previous, current, notify);
+        previous = current;
+
+        current = new Set(["CH02", "CH03"]);
+        notifyChunkVisibilityChanges(previous, current, notify);
+
+        expect(changes).toEqual([
+            { chunkId: "CH01", visible: true },
+            { chunkId: "CH02", visible: true },
+            { chunkId: "CH03", visible: true },
+            { chunkId: "CH01", visible: false },
+        ]);
+    });
+
     it("converts manifest portal coordinates to Lite space", () => {
         const chunks: ShipChunk[] = [
             { id: "A", aabb: { min: [-4, -1, -1], max: [0, 1, 1] } },

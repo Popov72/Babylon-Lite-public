@@ -2,7 +2,7 @@ import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { Behavior, LiquefiableBehaviorConfig } from "./types.js";
 
-/** Data-driven weapon-hit handling for every manifest behavior marked `liquefiable: true`. */
+/** Data-driven weapon-hit handling for every resolved `liquefaction` behavior. */
 export class LiquefiableBehavior implements Behavior {
     public readonly name: string;
     public readonly mesh: Mesh;

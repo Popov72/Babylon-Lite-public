@@ -387,6 +387,17 @@ describe("FLIP particle dispatch", () => {
         expect(demo).toContain("onPolygonSurface: (enabled)");
         expect(demo).toContain("controls.setPolygonTriangleCount");
         expect(demo).toContain("activeSim.refreshPolygonSurface?.(engine._currentEncoder)");
+        const aquanova = readFileSync(resolve(process.cwd(), "lab/lite/src/demos/aquanova-fluid-sim.ts"), "utf8");
+        expect(aquanova).toContain("createFluidPolygonSurfaceTask");
+        expect(aquanova).toContain("polygonSurfaceTask.setSims(runningSims())");
+        expect(aquanova).toContain("onPolygonSurface: () => syncPolygonSurfaceRendering()");
+        expect(aquanova).toContain("polygonSurface: (phys.polygonSurface ?? 0) >= 0.5");
+        expect(aquanova).toContain("particleSheeting: (phys.particleSheeting ?? 0) >= 0.5");
+        expect(aquanova).toContain("reseedParticles: (phys.reseedParticles ?? 0) >= 0.5");
+        expect(aquanova).toContain("pressureDiagnostics: (phys.pressureDiagnostics ?? 0) >= 0.5");
+        expect(aquanova).toContain("polygonSurfaceTask.setEnvMap");
+        expect(aquanova).toContain('polygonSurfaceTask.setWireframe(mode === "polygonWireframe")');
+        expect(aquanova).toContain("polygonSurfaces.reduce");
     });
 
     it("keeps FLIP whitewater lazy and runs it once after the final substep", () => {

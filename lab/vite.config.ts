@@ -4,6 +4,13 @@ import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, ren
 import type { IncomingMessage, ServerResponse } from "http";
 import { spawn } from "child_process";
 import { mapBabylonImport, type CompatTarget } from "../packages/babylon-lite-compat/src/bundler-resolve.js";
+import {
+    aquanovaFluidSimNames,
+    isValidAquanovaFluidSimName,
+    normalizeAquanovaFluidSimName,
+    renameAquanovaFluidSimReferences,
+    type AquanovaFluidSimManifest,
+} from "./aquanova-fluid-sim-authoring.js";
 
 interface DemoConfigEntry {
     slug: string;
@@ -35,11 +42,8 @@ function aquanovaFluidSimPlugin(): Plugin {
     const sourceManifestPath = resolve(__dirname, "lite/src/demos/aquanova/editor/export/ship_manifest.json");
     const publicManifestPath = resolve(__dirname, "public/aquanova/ship_manifest.json");
     const presetDir = resolve(__dirname, "public/aquanova/fluidSim");
-    const normalizeName = (value: string): string => value.replace(/\.json$/i, "").toLowerCase();
-    const validName = (value: string): boolean => /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value);
-    const readManifest = (): Record<string, unknown> & { fluidSim?: string[]; savedAt?: string } =>
-        JSON.parse(readFileSync(sourceManifestPath, "utf8")) as Record<string, unknown> & { fluidSim?: string[]; savedAt?: string };
-    const namesFromManifest = (manifest: { fluidSim?: string[] }): string[] => Array.from(new Set((manifest.fluidSim ?? []).map(normalizeName).filter(validName)));
+    const readManifest = (): Record<string, unknown> & AquanovaFluidSimManifest =>
+        JSON.parse(readFileSync(sourceManifestPath, "utf8")) as Record<string, unknown> & AquanovaFluidSimManifest;
     const sendJson = (res: ServerResponse, status: number, value: unknown): void => {
         res.statusCode = status;
         res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -70,7 +74,7 @@ function aquanovaFluidSimPlugin(): Plugin {
     };
     const writeManifestFluidSims = (path: string, names: readonly string[]): void => {
         const source = readFileSync(path, "utf8");
-        const current = namesFromManifest(JSON.parse(source) as { fluidSim?: string[] });
+        const current = aquanovaFluidSimNames(JSON.parse(source) as AquanovaFluidSimManifest);
         if (current.length === names.length && current.every((name, index) => name === names[index])) return;
         const pattern = /^(\s*)"fluidSim"\s*:\s*\[[^\]]*\]/m;
         const match = pattern.exec(source);
@@ -90,12 +94,20 @@ function aquanovaFluidSimPlugin(): Plugin {
         writeManifestFluidSims(sourceManifestPath, names);
         writeManifestFluidSims(publicManifestPath, names);
     };
+    const renameFluidSimInManifest = (path: string, previousName: string, nextName: string): void => {
+        const source = readFileSync(path, "utf8");
+        const renamed = renameAquanovaFluidSimReferences(source, previousName, nextName);
+        const tempPath = `${path}.tmp`;
+        writeFileSync(tempPath, renamed, "utf8");
+        renameSync(tempPath, path);
+    };
 
     return {
         name: "aquanova-fluid-sim-authoring",
         configureServer(server) {
             server.middlewares.use(async (req, res, next) => {
-                const pathname = (req.url ?? "").split("?")[0];
+                const requestUrl = new URL(req.url ?? "", "http://localhost");
+                const pathname = requestUrl.pathname;
                 const match = pathname.match(/^\/lab-api\/aquanova-fluid-sims(?:\/([^/]+))?$/);
                 if (!match) {
                     next();
@@ -104,15 +116,15 @@ function aquanovaFluidSimPlugin(): Plugin {
                 try {
                     const encodedName = match[1];
                     if (req.method === "GET" && !encodedName) {
-                        sendJson(res, 200, { names: namesFromManifest(readManifest()) });
+                        sendJson(res, 200, { names: aquanovaFluidSimNames(readManifest()) });
                         return;
                     }
                     if (!encodedName) {
                         sendJson(res, 405, { error: "A simulation name is required." });
                         return;
                     }
-                    const name = normalizeName(decodeURIComponent(encodedName));
-                    if (!validName(name)) {
+                    const name = normalizeAquanovaFluidSimName(decodeURIComponent(encodedName));
+                    if (!isValidAquanovaFluidSimName(name)) {
                         sendJson(res, 400, { error: "Simulation names may only contain letters, numbers, hyphens, and underscores." });
                         return;
                     }
@@ -120,30 +132,60 @@ function aquanovaFluidSimPlugin(): Plugin {
                     if (req.method === "PUT") {
                         const preset = await readJsonBody(req);
                         const manifest = readManifest();
-                        const names = namesFromManifest(manifest);
+                        const names = aquanovaFluidSimNames(manifest);
+                        const renameToValue = requestUrl.searchParams.get("renameTo");
+                        const targetName = normalizeAquanovaFluidSimName(renameToValue ?? name);
+                        if (!isValidAquanovaFluidSimName(targetName)) {
+                            sendJson(res, 400, { error: "Simulation names may only contain letters, numbers, hyphens, and underscores." });
+                            return;
+                        }
+                        const renaming = targetName !== name;
+                        const targetPresetPath = resolve(presetDir, `${targetName}.json`);
+                        if (renaming && (!names.includes(name) || !existsSync(presetPath))) {
+                            sendJson(res, 404, { error: `Simulation "${name}" does not exist.` });
+                            return;
+                        }
+                        if (renaming && (names.includes(targetName) || existsSync(targetPresetPath))) {
+                            sendJson(res, 409, { error: `Simulation "${targetName}" already exists.` });
+                            return;
+                        }
                         const isNew = !names.includes(name);
+                        const nextNames = renaming ? names.map((entry) => (entry === name ? targetName : entry)) : [...names];
                         if (isNew) {
-                            names.push(name);
-                            manifest.fluidSim = [...names];
+                            nextNames.push(targetName);
                         }
                         mkdirSync(presetDir, { recursive: true });
                         const previousPreset = existsSync(presetPath) ? readFileSync(presetPath) : null;
+                        const previousTargetPreset = renaming && existsSync(targetPresetPath) ? readFileSync(targetPresetPath) : null;
                         const previousSourceManifest = readFileSync(sourceManifestPath);
                         const previousPublicManifest = readFileSync(publicManifestPath);
                         try {
-                            writeJsonAtomic(presetPath, preset);
-                            writeFluidSimManifests(manifest.fluidSim ?? names);
+                            writeJsonAtomic(targetPresetPath, preset);
+                            if (renaming) {
+                                renameFluidSimInManifest(sourceManifestPath, name, targetName);
+                                renameFluidSimInManifest(publicManifestPath, name, targetName);
+                                unlinkSync(presetPath);
+                            } else {
+                                writeFluidSimManifests(nextNames);
+                            }
                         } catch (error) {
                             if (previousPreset) {
                                 writeFileSync(presetPath, previousPreset);
                             } else if (existsSync(presetPath)) {
                                 unlinkSync(presetPath);
                             }
+                            if (renaming) {
+                                if (previousTargetPreset) {
+                                    writeFileSync(targetPresetPath, previousTargetPreset);
+                                } else if (existsSync(targetPresetPath)) {
+                                    unlinkSync(targetPresetPath);
+                                }
+                            }
                             writeFileSync(sourceManifestPath, previousSourceManifest);
                             writeFileSync(publicManifestPath, previousPublicManifest);
                             throw error;
                         }
-                        sendJson(res, 200, { name, names });
+                        sendJson(res, 200, { name: targetName, names: nextNames });
                         return;
                     }
                     if (req.method === "DELETE") {
@@ -152,7 +194,7 @@ function aquanovaFluidSimPlugin(): Plugin {
                             return;
                         }
                         const manifest = readManifest();
-                        const names = namesFromManifest(manifest).filter((entry) => entry !== name);
+                        const names = aquanovaFluidSimNames(manifest).filter((entry) => entry !== name);
                         manifest.fluidSim = names;
                         const previousSourceManifest = readFileSync(sourceManifestPath);
                         const previousPublicManifest = readFileSync(publicManifestPath);

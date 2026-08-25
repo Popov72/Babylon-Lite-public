@@ -54,6 +54,20 @@ export interface PortalVisibility {
     portalStates(): Array<{ id: string; door?: string; enabled: boolean }>;
 }
 
+export function notifyChunkVisibilityChanges(
+    previous: ReadonlySet<string>,
+    current: ReadonlySet<string>,
+    callback: ((chunkId: string, visible: boolean) => void) | undefined
+): void {
+    if (!callback) return;
+    for (const chunkId of current) {
+        if (!previous.has(chunkId)) callback(chunkId, true);
+    }
+    for (const chunkId of previous) {
+        if (!current.has(chunkId)) callback(chunkId, false);
+    }
+}
+
 export interface PortalGraphTraversalOptions {
     startChunks: readonly string[];
     cameraPosition: Vec3;
@@ -81,6 +95,7 @@ interface PortalVisibilityOptions {
     dynamicChunkOfMesh?: (mesh: Mesh) => string | undefined;
     exteriorMeshes?: () => ReadonlySet<Mesh>;
     canRestore?: (mesh: Mesh) => boolean;
+    onChunkVisibilityChanged?: (chunkId: string, visible: boolean) => void;
 }
 
 const PLANE_EPSILON = 1e-5;
@@ -393,6 +408,7 @@ export function createPortalVisibility(options: PortalVisibilityOptions): Portal
     let currentExteriorChunks: string[] = [];
     let currentTraversals: PortalTraversal[] = [];
     let currentMeshOrder = new Map<Mesh, number>();
+    let previouslyDisplayedChunks = new Set<string>();
 
     const applyVisibility = (visible: ReadonlySet<Mesh>): number => {
         let displayed = 0;
@@ -490,11 +506,14 @@ export function createPortalVisibility(options: PortalVisibilityOptions): Portal
             }
             currentExteriorChunks = [...displayedExteriorChunks.keys()];
             currentMeshOrder = new Map(ordered.map((mesh, index) => [mesh, index]));
+            const displayedMeshCount = applyVisibility(visible);
+            notifyChunkVisibilityChanges(previouslyDisplayedChunks, displayedChunks, options.onChunkVisibilityChanged);
+            previouslyDisplayedChunks = displayedChunks;
             currentStats = {
                 currentChunk: startChunk,
                 chunks: displayedChunks.size,
                 exteriorChunks: currentExteriorChunks.length,
-                meshes: applyVisibility(visible),
+                meshes: displayedMeshCount,
                 totalMeshes: meshes.length,
             };
             options.canvas.dataset.portalChunk = startChunk;

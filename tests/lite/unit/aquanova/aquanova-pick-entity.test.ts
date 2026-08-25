@@ -14,6 +14,7 @@ const runtime = vi.hoisted(() => ({
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
     setMeshVisible: vi.fn(),
+    setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
 }));
 
@@ -103,6 +104,7 @@ describe("Aquanova pickEntity behavior", () => {
         runtime.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
         runtime.setMasterVolume.mockReset();
         runtime.setMeshVisible.mockReset();
+        runtime.setStreamingSoundVolume.mockReset();
         runtime.stopStreamingSound.mockReset();
     });
 

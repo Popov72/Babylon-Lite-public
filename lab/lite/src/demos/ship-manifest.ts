@@ -33,26 +33,6 @@ export interface ShipEnvironment {
 }
 
 /**
- * A behaviour definition from the manifest's global `behaviors` block, or the effective behaviour of
- * a mesh once its entity references have been flattened by {@link resolveBehavior}.
- */
-export interface ShipBehavior {
-    /** The mesh can be shot and turned into fluid. Implies {@link ShipBehavior.dynamic}. */
-    liquefiable?: boolean;
-    /** The mesh is driven by a Havok rigid body. Implied by `liquefiable`, so it need not be repeated. */
-    dynamic?: boolean;
-    /** Candidate fluidSim setting names; absent/empty inherits the manifest's global `fluidSim` list. */
-    fluidSim?: string[];
-    /**
-     * Mesh names that must liquefy at the same moment as this one (liquefiable behaviours only).
-     * Applied SHIP-WIDE: every mesh carrying a listed name melts, not just nearby instances.
-     */
-    linked?: string[];
-    /** Facing direction, in glTF space, for the marker behaviours (see {@link PLAYER_START_BEHAVIOR}). */
-    direction?: number[];
-}
-
-/**
  * Behaviour marking the entity that fixes the player's start position. The entity is a placement
  * marker only: the demo spawns the player at its node and then DISABLES it (hidden, non-pickable and
  * excluded from physics/SDF). Its optional `direction` parameter is the glTF-space vector the player
@@ -66,103 +46,6 @@ export const PLAYER_START_BEHAVIOR = "player_startpos";
  * glTF-space `direction`.
  */
 export const WEAPON_START_BEHAVIOR = "weapon_startpos";
-
-/**
- * An entity's reference to a named behaviour. Every key other than `name` is a parameter merged on
- * top of that behaviour, so one shared definition can be reused with per-entity tweaks.
- */
-export interface ShipBehaviorRef extends ShipBehavior {
-    /** Key into the manifest's global `behaviors` block. */
-    name: string;
-}
-
-/** The manifest's global `behaviors` block: behaviour name → definition. */
-export type ShipBehaviorLibrary = Record<string, ShipBehavior>;
-
-/** The manifest's `entities` block: MESH NAME → the behaviours assigned to it. */
-export type ShipEntities = Record<string, { behaviors?: ShipBehaviorRef[] }>;
-
-/**
- * Flatten the behaviours assigned to one mesh into a single effective behaviour.
- *
- * Each reference names a definition in the global `behaviors` block; the reference's own keys
- * (everything but `name`) are merged ON TOP, so an entity can parameterise a shared behaviour
- * without redefining it. A mesh may list several behaviours — they merge in order, later winning.
- *
- * @param library - the manifest's global `behaviors` block.
- * @param entities - the manifest's `entities` block.
- * @param meshName - the mesh name to resolve.
- * @returns the effective behaviour, or undefined when the mesh has none.
- */
-export function resolveBehavior(library: ShipBehaviorLibrary | undefined, entities: ShipEntities | undefined, meshName: string): ShipBehavior | undefined {
-    const refs = entities?.[meshName]?.behaviors;
-    if (!refs?.length) return undefined;
-    let out: ShipBehavior | undefined;
-    for (const ref of refs) {
-        const base = library?.[ref.name];
-        if (!base) {
-            // eslint-disable-next-line no-console
-            console.warn(`[ship-manifest] entity "${meshName}" references unknown behavior "${ref.name}"`);
-            continue;
-        }
-        const params: Partial<ShipBehaviorRef> = { ...ref };
-        delete params.name;
-        out = { ...(out ?? {}), ...base, ...params };
-    }
-    return out;
-}
-
-/**
- * Mesh names that must liquefy together with the owning mesh.
- *
- * @param b - the mesh's effective behaviour.
- * @returns the linked mesh names, with blank placeholder entries dropped.
- */
-export function linkedMeshNames(b: ShipBehavior | undefined): string[] {
-    return (b?.linked ?? []).filter((n) => typeof n === "string" && n.length > 0);
-}
-
-/**
- * Find the entity carrying a named behaviour — used for the singleton placement markers, whose
- * library definitions are empty, so the behaviour is identified by its NAME rather than by any flag
- * on the merged result.
- *
- * @param entities - the manifest's `entities` block.
- * @param behaviorName - the behaviour to look for.
- * @returns the entity name and the reference (carrying any parameters such as `direction`), or
- *          undefined when no entity declares it.
- */
-export function findEntityWithBehavior(entities: ShipEntities | undefined, behaviorName: string): { name: string; ref: ShipBehaviorRef } | undefined {
-    for (const [name, entity] of Object.entries(entities ?? {})) {
-        const ref = entity.behaviors?.find((r) => r.name === behaviorName);
-        if (ref) return { name, ref };
-    }
-    return undefined;
-}
-
-/**
- * Whether a mesh needs a rigid body.
- *
- * A liquefiable mesh is ALWAYS dynamic — it has to be shootable and physically present before it
- * melts — so the manifest doesn't repeat `dynamic: true` for it and this rule is applied here once
- * for every consumer.
- *
- * @param b - the mesh's behaviour entry, if any.
- * @returns true when the mesh should get a Havok body.
- */
-export function isDynamicBehavior(b: ShipBehavior | undefined): boolean {
-    return b !== undefined && (b.dynamic === true || b.liquefiable === true);
-}
-
-/**
- * Whether a mesh can be liquefied.
- *
- * @param b - the mesh's behaviour entry, if any.
- * @returns true when the mesh is liquefiable.
- */
-export function isLiquefiableBehavior(b: ShipBehavior | undefined): boolean {
-    return b?.liquefiable === true;
-}
 
 /** Default linear exposure when the manifest omits `environment.exposure`. */
 export const DEFAULT_SHIP_EXPOSURE = 1.3;

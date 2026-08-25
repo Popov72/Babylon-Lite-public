@@ -15,6 +15,7 @@ const audio = vi.hoisted(() => ({
     playStreamingSound: vi.fn(),
     preloadStreamingInstanceAsync: vi.fn(),
     setMasterVolume: vi.fn(),
+    setStreamingSoundVolume: vi.fn(),
     stopStreamingSound: vi.fn(),
 }));
 
@@ -103,6 +104,7 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         audio.playStreamingSound.mockReset();
         audio.preloadStreamingInstanceAsync.mockReset().mockResolvedValue(undefined);
         audio.setMasterVolume.mockReset();
+        audio.setStreamingSoundVolume.mockReset();
         audio.stopStreamingSound.mockReset();
     });
 

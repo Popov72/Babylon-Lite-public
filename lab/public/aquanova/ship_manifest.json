@@ -38,7 +38,7 @@
       "kits",
       "activeChunk",
       "fluidSim",
-      "behaviors",
+      "behaviorPresets",
       "entities",
       "environment",
       "editorEnvironment",
@@ -3812,6 +3812,28 @@
         1
       ],
       "node": "P0489"
+    },
+    {
+      "id": "P0490",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH01_StorageC",
+      "name": "trapFluidSim",
+      "position": [
+        -3.1,
+        1.5,
+        1.1
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.4,
+        0.4,
+        0.4
+      ],
+      "node": "trapFluidSim"
     }
   ],
   "markers": [
@@ -14000,57 +14022,9 @@
     "liquid-crate",
     "flip-test",
     "flip-test-high",
-    "flip-test-ultra-high"
+    "flip-test-ultra-high",
+    "capsule-filling"
   ],
-  "behaviors": {
-    "dynamic": {
-      "dynamic": true
-    },
-    "anyLiquefaction": {
-      "liquefiable": true
-    },
-    "stdLiquefaction": {
-      "fluidSim": [
-        "liquid-slow"
-      ],
-      "liquefiable": true
-    },
-    "explosiveLiquefaction": {
-      "fluidSim": [
-        "liquid-crate"
-      ],
-      "liquefiable": true
-    },
-    "probeExcluded": {
-      "reflectionProbe": "exclude"
-    },
-    "player": {},
-    "weaponLiquefactor": {
-      "sounds": {
-        "quickSplash": [
-          "waterQuickSplash"
-        ],
-        "bigSplash": [
-          "waterBigSplash"
-        ],
-        "longSplash": [
-          "waterLongSplash"
-        ]
-      }
-    },
-    "pickEntity": {},
-    "enableEntity": {},
-    "disableEntity": {},
-    "playAnimation": {},
-    "weaponAntiGravityGun": {},
-    "removeEntity": {},
-    "hideEntity": {},
-    "showEntity": {},
-    "disableCollision": {},
-    "setCollisionShape": {},
-    "trigger": {},
-    "enableCollision": {}
-  },
   "entities": {
     "crate2": {
       "behaviors": [
@@ -14058,7 +14032,9 @@
           "name": "explosiveLiquefaction"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true,
+          "mass": 50
         }
       ]
     },
@@ -14068,7 +14044,9 @@
           "name": "explosiveLiquefaction"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true,
+          "mass": 50
         }
       ]
     },
@@ -14079,7 +14057,9 @@
           "sound": "longSplash"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true,
+          "mass": 1000
         },
         {
           "name": "hideEntity",
@@ -14104,13 +14084,12 @@
     "Barrel2": {
       "behaviors": [
         {
-          "name": "stdLiquefaction",
-          "linked": [
-            "ssssssss"
-          ]
+          "name": "stdLiquefaction"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true,
+          "mass": 20
         }
       ]
     },
@@ -14120,7 +14099,9 @@
           "name": "stdLiquefaction"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true,
+          "mass": 20
         }
       ]
     },
@@ -14131,7 +14112,8 @@
           "sound": "bigSplash"
         },
         {
-          "name": "dynamic"
+          "name": "dynamic",
+          "dynamic": true
         },
         {
           "name": "playAnimation"
@@ -14162,10 +14144,22 @@
     "itemLiquefactor": {
       "behaviors": [
         {
-          "name": "probeExcluded"
+          "name": "probeExcluded",
+          "reflectionProbe": "exclude"
         },
         {
-          "name": "weaponLiquefactor"
+          "name": "weaponLiquefactor",
+          "sounds": {
+            "quickSplash": [
+              "waterQuickSplash"
+            ],
+            "bigSplash": [
+              "waterBigSplash"
+            ],
+            "longSplash": [
+              "waterLongSplash"
+            ]
+          }
         },
         {
           "name": "pickEntity",
@@ -14258,7 +14252,8 @@
     "itemAntiGravityGun": {
       "behaviors": [
         {
-          "name": "probeExcluded"
+          "name": "probeExcluded",
+          "reflectionProbe": "exclude"
         },
         {
           "name": "weaponAntiGravityGun"
@@ -14322,7 +14317,18 @@
       "behaviors": [
         {
           "name": "setCollisionShape",
-          "type": "mesh"
+          "type": "mesh",
+          "fluidSimShape": {
+            "type": "hollowCylinder",
+            "start": [
+              0,
+              0,
+              0
+            ],
+            "height": 4,
+            "innerRadius": 0.7,
+            "outerRadius": 1.2
+          }
         },
         {
           "name": "stdLiquefaction"
@@ -14503,6 +14509,101 @@
       "behaviors": [
         {
           "name": "player"
+        }
+      ]
+    },
+    "trapFluidSim": {
+      "behaviors": [
+        {
+          "name": "fluidSimulation",
+          "fluidSim": "capsule-filling",
+          "eventActions": [
+            {
+              "action": "disablePlayerCollision",
+              "source": "trapTrigger",
+              "event": "activated"
+            },
+            {
+              "action": "enableSimulation",
+              "source": "trapTrigger",
+              "event": "activated"
+            },
+            {
+              "action": "enablePlayerCollision",
+              "source": "trap",
+              "event": "endLiquefaction"
+            },
+            {
+              "action": "shutdownSimulation",
+              "source": "trap",
+              "event": "endLiquefaction"
+            },
+            {
+              "action": "pauseSimulation",
+              "source": "CH01_StorageC",
+              "event": "notVisible"
+            },
+            {
+              "action": "unpauseSimulation",
+              "source": "CH01_StorageC",
+              "event": "visible"
+            }
+          ],
+          "shutdownDuration": 16
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "disableCollision"
+        },
+        {
+          "name": "sound",
+          "cues": [
+            {
+              "events": [
+                {
+                  "source": "trapTrigger",
+                  "name": "activated"
+                }
+              ],
+              "sound": "cisternFilling",
+              "action": "play",
+              "fade": 1
+            },
+            {
+              "events": [
+                {
+                  "source": "trap",
+                  "name": "endLiquefaction"
+                }
+              ],
+              "sound": "cisternFilling",
+              "action": "stop",
+              "fade": 0.5
+            },
+            {
+              "events": [
+                {
+                  "source": "trap",
+                  "name": "endLiquefaction"
+                }
+              ],
+              "sound": "splashCisternWater",
+              "action": "play"
+            },
+            {
+              "events": [
+                {
+                  "source": "trapFluidSim",
+                  "name": "emissionComplete"
+                }
+              ],
+              "sound": "cisternFilling",
+              "action": "stop",
+              "fade": 1
+            }
+          ]
         }
       ]
     }
@@ -15057,5 +15158,19 @@
         "portal": "Portal_Door_D06"
       }
     ]
+  },
+  "behaviorPresets": {
+    "stdLiquefaction": {
+      "base": "liquefaction",
+      "fluidSim": [
+        "liquid-slow"
+      ]
+    },
+    "explosiveLiquefaction": {
+      "base": "liquefaction",
+      "fluidSim": [
+        "liquid-crate"
+      ]
+    }
   }
 }

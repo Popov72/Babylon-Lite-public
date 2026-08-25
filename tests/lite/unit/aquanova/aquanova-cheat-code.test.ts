@@ -25,10 +25,6 @@ describe("Aquanova cheat codes", () => {
         const liquefactor = mesh("liquefactor");
         const antiGravityGun = mesh("antiGravityGun");
         const manager = new AquanovaBehaviorManager({
-            library: {
-                weaponLiquefactor: {},
-                weaponAntiGravityGun: {},
-            },
             entities: {
                 itemLiquefactor: { behaviors: [{ name: "weaponLiquefactor" }] },
                 itemAntiGravityGun: { behaviors: [{ name: "weaponAntiGravityGun" }] },

@@ -306,6 +306,18 @@
                     "required": true,
                     "label": "Fluid simulation"
                 },
+                "shutdownDuration": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 10,
+                    "label": "Shutdown duration (s)"
+                },
+                "shutdownAlphaDecay": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 2,
+                    "label": "Shutdown alpha decay (s)"
+                },
                 "eventActions": {
                     "type": "array",
                     "minItems": 1,
@@ -375,18 +387,6 @@
                             }
                         }
                     }
-                },
-                "shutdownDuration": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 10,
-                    "label": "Shutdown duration (s)"
-                },
-                "shutdownAlphaDecay": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 2,
-                    "label": "Shutdown alpha decay (s)"
                 }
             }
         },

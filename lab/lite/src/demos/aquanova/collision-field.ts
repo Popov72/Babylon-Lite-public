@@ -23,18 +23,21 @@ export const PRIM_BOX = 0;
 export const PRIM_SPHERE = 1;
 export const PRIM_CAPSULE = 2;
 export const PRIM_CYLINDER = 3;
+export const PRIM_HOLLOW_CYLINDER = 4;
 /** Offset of the active flag inside one packed primitive. */
 export const PRIM_ACTIVE_OFFSET = 15;
 
 /** One collision primitive in world space, as the fluid sees it. */
 export interface FluidPrimitive {
-    kind: "box" | "sphere" | "capsule" | "cylinder";
-    /** Box/sphere centre, or the first end point of a capsule/cylinder axis. */
+    kind: "box" | "sphere" | "capsule" | "cylinder" | "hollowCylinder";
+    /** Box/sphere centre, or the first end point of an axial primitive. */
     a: readonly [number, number, number];
     /** Box HALF extents, or the second axis end point. Unused for a sphere. */
     b?: readonly [number, number, number];
-    /** Sphere/capsule/cylinder radius. */
+    /** Sphere/capsule/cylinder radius; outer radius for a hollow cylinder. */
     radius?: number;
+    /** Hollow-cylinder inner radius. `radius` is its outer radius. */
+    innerRadius?: number;
     /** Box orientation [x, y, z, w]. */
     rotation?: readonly [number, number, number, number];
     /** Linear velocity (m/s). Lets the solver recover boundary motion from -∂sdf/∂t. */
@@ -43,7 +46,13 @@ export interface FluidPrimitive {
     active?: boolean;
 }
 
-const KIND_CODE: Record<FluidPrimitive["kind"], number> = { box: PRIM_BOX, sphere: PRIM_SPHERE, capsule: PRIM_CAPSULE, cylinder: PRIM_CYLINDER };
+const KIND_CODE: Record<FluidPrimitive["kind"], number> = {
+    box: PRIM_BOX,
+    sphere: PRIM_SPHERE,
+    capsule: PRIM_CAPSULE,
+    cylinder: PRIM_CYLINDER,
+    hollowCylinder: PRIM_HOLLOW_CYLINDER,
+};
 
 /** Write one primitive into `out` at primitive index `i`. */
 export function packPrimitive(out: Float32Array, i: number, p: FluidPrimitive): void {
@@ -57,11 +66,18 @@ export function packPrimitive(out: Float32Array, i: number, p: FluidPrimitive): 
     out[o + 5] = b[1];
     out[o + 6] = b[2];
     out[o + 7] = p.radius ?? 0;
-    const q = p.rotation ?? [0, 0, 0, 1];
-    out[o + 8] = q[0];
-    out[o + 9] = q[1];
-    out[o + 10] = q[2];
-    out[o + 11] = q[3];
+    if (p.kind === "hollowCylinder") {
+        out[o + 8] = p.innerRadius ?? 0;
+        out[o + 9] = 0;
+        out[o + 10] = 0;
+        out[o + 11] = 1;
+    } else {
+        const q = p.rotation ?? [0, 0, 0, 1];
+        out[o + 8] = q[0];
+        out[o + 9] = q[1];
+        out[o + 10] = q[2];
+        out[o + 11] = q[3];
+    }
     const v = p.velocity ?? [0, 0, 0];
     out[o + 12] = v[0];
     out[o + 13] = v[1];
@@ -82,6 +98,51 @@ export function packPrimitives(out: Float32Array, prims: readonly FluidPrimitive
 
 /** Byte size of a buffer holding `capacity` primitives. */
 export const primBufferBytes = (capacity: number): number => (PRIM_HEADER + capacity * PRIM_STRIDE) * 4;
+
+/** Transform a local +Y hollow cylinder into the world-space axial primitive used by the solver. */
+export function hollowCylinderPrimitiveForMatrix(
+    world: ArrayLike<number>,
+    start: readonly [number, number, number],
+    height: number,
+    innerRadius: number,
+    outerRadius: number
+): FluidPrimitive {
+    const point = (x: number, y: number, z: number): [number, number, number] => [
+        world[0]! * x + world[4]! * y + world[8]! * z + world[12]!,
+        world[1]! * x + world[5]! * y + world[9]! * z + world[13]!,
+        world[2]! * x + world[6]! * y + world[10]! * z + world[14]!,
+    ];
+    const a = point(start[0], start[1], start[2]);
+    const b = point(start[0], start[1] + height, start[2]);
+    const axisLength = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const x: [number, number, number] = [world[0]!, world[1]!, world[2]!];
+    const y: [number, number, number] = [world[4]!, world[5]!, world[6]!];
+    const z: [number, number, number] = [world[8]!, world[9]!, world[10]!];
+    const xScale = Math.hypot(...x);
+    const yScale = Math.hypot(...y);
+    const zScale = Math.hypot(...z);
+    if (axisLength <= 1e-8 || xScale <= 1e-8 || yScale <= 1e-8 || zScale <= 1e-8) {
+        throw new Error("[aquanova] setCollisionShape.fluidSimShape resolves to a degenerate cylinder");
+    }
+    const dot = (left: readonly number[], right: readonly number[]): number => left[0]! * right[0]! + left[1]! * right[1]! + left[2]! * right[2]!;
+    const tolerance = 1e-5;
+    if (
+        Math.abs(xScale - zScale) > Math.max(xScale, zScale) * tolerance ||
+        Math.abs(dot(x, y)) > xScale * yScale * tolerance ||
+        Math.abs(dot(x, z)) > xScale * zScale * tolerance ||
+        Math.abs(dot(y, z)) > yScale * zScale * tolerance
+    ) {
+        throw new Error("[aquanova] setCollisionShape.fluidSimShape requires a mesh transform with equal X/Z scale and no shear");
+    }
+    const radialScale = (xScale + zScale) * 0.5;
+    return {
+        kind: "hollowCylinder",
+        a,
+        b,
+        innerRadius: innerRadius * radialScale,
+        radius: outerRadius * radialScale,
+    };
+}
 
 /**
  * Re-express a world-space primitive relative to `centre`, so a moving body can re-pose it by adding
@@ -158,7 +219,18 @@ export function primitiveSdf(p: FluidPrimitive, pt: readonly [number, number, nu
         const t = baba > 1e-12 ? Math.max(0, Math.min(1, paba / baba)) : 0;
         return Math.hypot(pax - bax * t, pay - bay * t, paz - baz * t) - r;
     }
-    // Capped cylinder (Inigo Quilez): flat ends, unlike the capsule's rounded caps.
+    if (p.kind === "hollowCylinder") {
+        const axisLength = Math.sqrt(baba);
+        const along = paba / baba;
+        const radial = Math.hypot(pax - bax * along, pay - bay * along, paz - baz * along);
+        const inner = p.innerRadius ?? 0;
+        const middle = (inner + r) * 0.5;
+        const halfThickness = (r - inner) * 0.5;
+        const radialBand = Math.abs(radial - middle) - halfThickness;
+        const axialBand = Math.abs(along - 0.5) * axisLength - axisLength * 0.5;
+        return Math.hypot(Math.max(radialBand, 0), Math.max(axialBand, 0)) + Math.min(Math.max(radialBand, axialBand), 0);
+    }
+    // Capped solid cylinder (Inigo Quilez): flat ends, unlike the capsule's rounded caps.
     if (baba < 1e-12) return Math.hypot(pax, pay, paz) - r;
     const px = pax * baba - bax * paba,
         py = pay * baba - bay * paba,
@@ -209,6 +281,19 @@ fn primSdf(o: u32, pt: vec3<f32>, dt: f32) -> f32 {
     let paba = dot(pa, ba);
     if (kind < 2.5) {
         return length(pa - ba * clamp(paba / baba, 0.0, 1.0)) - r;
+    }
+    if (kind > 3.5) {
+        let axisLength = sqrt(baba);
+        let along = paba / baba;
+        let radial = length(pa - ba * along);
+        let inner = sceneSdfGrid[o + 8u];
+        let middle = (inner + r) * 0.5;
+        let halfThickness = (r - inner) * 0.5;
+        let e = vec2<f32>(
+            abs(radial - middle) - halfThickness,
+            abs(along - 0.5) * axisLength - axisLength * 0.5
+        );
+        return length(max(e, vec2<f32>(0.0))) + min(max(e.x, e.y), 0.0);
     }
     let x = length(pa * baba - ba * paba) - r * baba;
     let y = abs(paba - baba * 0.5) - baba * 0.5;

@@ -24,7 +24,7 @@ export interface PerfOverlayOptions {
         target: { x: number; y: number; z: number };
     };
     /** Current fluid workload displayed independently of GPU timestamp availability. */
-    fluidWorkload?: () => { simulations: number; particles: number };
+    fluidWorkload?: () => { simulations: number; pausedSimulations: number; particles: number };
     /**
      * Latest fluid stage times in ms, or null when unavailable.
      *
@@ -154,8 +154,8 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
         const fmtVec = (value: { x: number; y: number; z: number }): string => `${value.x.toFixed(3)}, ${value.y.toFixed(3)}, ${value.z.toFixed(3)}`;
         const viewpointHead = view ? `Position ${fmtVec(view.position)}\nTarget   ${fmtVec(view.target)}` : "";
         const sceneHead = [chunkHead, portalHead, exteriorHead, exteriorIdHead, viewpointHead].filter(Boolean).join("\n");
-        const workload = fluidWorkload?.() ?? { simulations: 0, particles: 0 };
-        const fluidHead = `Fluid ${workload.simulations} sim(s)   ${workload.particles.toLocaleString("en-US")} particles`;
+        const workload = fluidWorkload?.() ?? { simulations: 0, pausedSimulations: 0, particles: 0 };
+        const fluidHead = `Fluid ${workload.simulations} sim(s)   ${workload.pausedSimulations} paused   ${workload.particles.toLocaleString("en-US")} particles`;
         if (lastStatus === "unsupported") {
             panel.textContent = `PERF (P)\n${head}\n${sceneHead}\n${fluidHead}\nGPU: timestamp-query unsupported on this device`;
             return;
