@@ -816,6 +816,7 @@ export { fluidPerParticleRecycleProbability, MAX_FLUID_EMITTERS, MAX_FLUID_POLYG
 export type {
     FluidEmitter,
     FluidFlowConfig,
+    FluidPolygonSurface,
     FluidProfiler,
     FluidShape,
     FluidSim,
@@ -828,6 +829,8 @@ export type {
 } from "./fluid/sim-common.js";
 export { createParticleRenderTask } from "./fluid/particle-render.js";
 export type { ParticleRenderOptions, ParticleRenderShaderOptions, ParticleRenderTask } from "./fluid/particle-render.js";
+export { createFluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
+export type { FluidPolygonSurfaceOptions, FluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

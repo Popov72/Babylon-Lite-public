@@ -106,6 +106,8 @@ export interface FluidExportJson {
     grid?: { x: number; y: number; z: number; position?: [number, number, number] };
     render: {
         renderAsSpheres: boolean;
+        /** FLIP polygon shading model. Optional for presets written before the ocean mode. */
+        polygonShader?: "physical" | "ocean";
         waterColor: string;
         absorption: number;
         particleSize: number;
@@ -179,7 +181,7 @@ export interface FluidExportJson {
 export function exportJsonFromPairState(demo: string, method: string, ps: PairState): FluidExportJson {
     const f = ps.foam;
     return {
-        formatVersion: 12,
+        formatVersion: 13,
         meta: { demo, method },
         physics: { ...ps.schema },
         demoParams: { ...ps.demoParams },
@@ -212,6 +214,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.freeCamera ? { freeCamera: { position: [...ps.freeCamera.position], target: [...ps.freeCamera.target] } } : {}),
         render: {
             renderAsSpheres: ps.renderMode === "spheres",
+            ...(ps.polygonShader !== undefined ? { polygonShader: ps.polygonShader } : {}),
             waterColor: ps.color,
             absorption: ps.absorption,
             particleSize: ps.size,
@@ -345,6 +348,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         ...(j.camera ? { camera: { ...j.camera } } : {}),
         ...(j.freeCamera ? { freeCamera: { position: [...j.freeCamera.position], target: [...j.freeCamera.target] } } : {}),
         renderMode: r.renderAsSpheres ? "spheres" : "surface",
+        ...(r.polygonShader !== undefined ? { polygonShader: r.polygonShader } : {}),
         refraction: r.refractionStrength,
         specular: r.specularPower,
         ...(r.reflectionExposure !== undefined ? { reflectionExposure: r.reflectionExposure } : {}),

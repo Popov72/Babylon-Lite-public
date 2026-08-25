@@ -3,7 +3,7 @@
 bl_info = {
     "name": "Babylon Lite Fluid JSON",
     "author": "Babylon Lite contributors",
-    "version": (3, 1, 0),
+    "version": (3, 2, 0),
     "blender": (4, 0, 0),
     "location": "Properties > Scene > Babylon Lite Fluid; File > Export",
     "description": "Export a native or add-on fluid setup to Babylon Lite JSON",
@@ -170,6 +170,9 @@ def derived_domain_values(scene, domain, grid_size):
         max_substeps = int(clamp(max(min_substeps, int(time_steps.value_max)), 1, 32))
         pressure_iterations = int(clamp(int(advanced.pressure_solver_max_iterations), 1, 100))
         pressure_tolerance = clamp(float(getattr(advanced, "pressure_solver_error_tolerance", 1e-3)), 0, 0.1)
+        surface = getattr(domain_props, "surface", None)
+        particle_sheeting = bool(getattr(surface, "enable_sheet_seeding", False))
+        sheeting_strength = clamp(float(getattr(surface, "sheet_fill_rate", 0.5)), 0.05, 1)
         return {
             "method": "FLIP",
             "particle_count": particle_count,
@@ -205,6 +208,10 @@ def derived_domain_values(scene, domain, grid_size):
                 "reseedTargetParticles": FLIP_MARKERS_PER_CELL,
                 "reseedMaxParticles": int(math.ceil(FLIP_MARKERS_PER_CELL * 1.5)),
                 "reseedInterval": 5,
+                "particleSheeting": 1 if particle_sheeting else 0,
+                "sheetingStrength": sheeting_strength,
+                "sheetingInterval": 5,
+                "polygonSurface": 1,
                 "viscosityIterations": 12,
                 "maxSubDtMs": 8.4,
             },
@@ -678,7 +685,7 @@ def default_preset(scene, grid_position, grid_size, emitters, sinks):
         simulation_time_scale = clamp(float(settings.time_scale), 0.01, 100)
         particle_count = derived["particle_count"]
     preset = {
-        "formatVersion": 12,
+        "formatVersion": 13,
         "meta": {"demo": "blender", "method": derived["method"]},
         "source": source_snapshot(scene, domain),
         "physics": derived["physics"],

@@ -109,7 +109,17 @@ initialMarkers = ceil(initialFluidVolume / cellSize^3 * markersPerCell)
 
 Each FLIP marker is one simulation particle. Initial active markers are derived from emitter volume, cell size, and marker density. Inflows append markers into the preallocated capacity, while sinks recycle slots. The Physics simulation section shows active markers, allocated capacity, and solver-buffer GPU memory, plus the values expected after restart. Editing an emitter, Particle capacity, Grid size, Grid position, or Resolution divisions updates this preview without interrupting the running simulation. Reset simulation reallocates only when Particle capacity or grid storage changes; emitter-behavior changes reuse the existing particle buffers and bind groups.
 
-Particle capacity is bounded by the active WebGPU device's `maxStorageBufferBindingSize` and `maxBufferSize`, and is allocated up front. If derived initial demand exceeds the selected capacity, or the MAC grid exceeds device limits, reset reduces Resolution divisions to the highest value that fits. If the minimum resolution still cannot fit, reset fails explicitly with the required initial markers and selected capacity.
+Particle capacity is bounded by the active WebGPU device's `maxStorageBufferBindingSize` and `maxBufferSize`, and is allocated up front. The staggered U/V/W faces are concatenated into packed MAC buffers, so grid resolution is also bounded by the smaller of those per-buffer limits independently of aggregate GPU memory. If derived initial demand exceeds the selected capacity, or a packed MAC buffer exceeds that binding limit, reset reduces Resolution divisions to the highest value that fits. The pending warning reports the requested grid dimensions, required packed-buffer size, and device binding limit. If the minimum resolution still cannot fit, reset fails explicitly with the required initial markers and selected capacity.
+
+### Opt-in Paged Grid
+
+FLIP can instead store its MAC grid in a bounded pool of 8 x 8 x 8-cell pages. Dense storage remains the default fast path and uses its original shaders and packed buffers without paging branches. In paged mode, active particles discover their containing page plus a one-page halo, a virtual-block lookup texture maps grid coordinates to physical pages, and cell/face passes use indirect dispatch sized from the discovered live-page count. Missing virtual cells and faces resolve to dedicated sentinel slots.
+
+Page capacity controls the maximum physical pool allocation, not the amount of work dispatched each frame. The default capacity is 8,000 pages. If discovery requires more pages, the overflow flag is surfaced in the controls and the simulation skips integration against the incomplete grid until capacity is increased. The UI reports live pages versus capacity and includes the bounded page pool in its GPU-memory estimate. Presets validate an incoming paged grid against the incoming page capacity, allowing paging and an otherwise oversized resolution to be enabled atomically.
+
+Paged FLIP currently supports Weighted Jacobi pressure projection, P2G/G2P transfer, classification and scene collision, extrapolation, surface tension fields, screen-space surface rendering, and foam. Multigrid pressure projection and polygon-surface reconstruction remain dense-only; enabling paging selects Weighted Jacobi and screen-space rendering. Dense and paged pipelines are compiled separately so opting out retains the original dense execution path.
+
+Switching between dense and paged FLIP at runtime copies marker positions, velocities, lifecycle slots, active-prefix bookkeeping, and flow timing/budgets GPU-to-GPU before the old backend is retired. Derived MAC-grid fields are intentionally rebuilt from the transferred markers on the next step. The diffuse foam pool is recreated and repopulates after the switch.
 
 ## Internal Architecture
 
@@ -343,7 +353,7 @@ Solid neighbours implement a zero-normal-gradient pressure boundary by not contr
 
 Pressure ping-pong buffers persist between substeps and rendered frames. Each solve starts from the previous projected state, while Jacobi writes zero into cells that are no longer fluid. This warm start is required for hydrostatic pressure to converge through deep liquid volumes with a bounded iteration count; clearing pressure every substep makes tall authored volumes numerically compress into a shallow marker layer.
 
-The geometric multigrid path solves the same fine-grid equation. Its hierarchy is allocated lazily when multigrid is first selected, so Jacobi retains its previous memory footprint. The fine level always uses the exact active operator, including ghost-fluid interface fractions and fractional-solid face weights. Restriction volume-weights the residual and carries a fluid-volume fraction to each coarse cell; coarse smoothing uses those fractions in its face coefficients instead of reverting to a binary uniform operator. Each V-cycle:
+The geometric multigrid path solves the same fine-grid equation. Its hierarchy is allocated lazily when multigrid is first selected, so Jacobi retains its previous memory footprint. The fine level always uses the exact active operator, including ghost-fluid interface fractions and fractional-solid face weights. Restriction volume-weights the residual and carries a fluid-volume fraction to each coarse cell. Coarse smoothing uses a binary Poisson operator so its point-residual equation remains consistent with the restriction normalization. Each V-cycle:
 
 1. applies two weighted-Jacobi pre-smoothing passes;
 2. computes the residual;
@@ -352,7 +362,7 @@ The geometric multigrid path solves the same fine-grid equation. Its hierarchy i
 5. trilinearly prolongates each correction;
 6. applies four post-smoothing passes per level.
 
-Residual restriction scales by four for the doubled cell width. A coarse cell remains fluid when any child has nonzero fluid volume, preventing thin boundary layers and channels from disappearing from the correction hierarchy; otherwise it is solid when it contains a solid child and air when all children are air. Prolongated corrections are damped by 0.5. Coarse correction buffers are cleared for each V-cycle, while the fine pressure field remains warm-started across substeps.
+Residual restriction uses `coarseRhs = 4 * sum(fluidFraction * residual) / childCount`: averaging over the complete represented `2 x 2 x 2` block preserves sparse free-surface volume, while the factor four accounts for the doubled cell width. Normalizing by only the occupied fluid fraction incorrectly promotes a single fluid child to a full coarse cell and recursively amplifies its residual; in a shallow moving-boundary pool that made the hierarchy non-finite. A coarse cell remains fluid when any child has nonzero fluid volume, preventing thin boundary layers and channels from disappearing from the correction hierarchy; otherwise it is solid when it contains a solid child and air when all children are air. Prolongated corrections are damped by 0.5. Coarse correction buffers are cleared for each V-cycle, while the fine pressure field remains warm-started across substeps.
 
 The optional relative tolerance is evaluated from the infinity norm of the exact fine-grid residual divided by the infinity norm of its right-hand side. Two staging buffers read this diagnostic asynchronously, so the CPU never stalls the submitted WebGPU queue. Completed samples raise or lower the next solve's cycle budget within `[1, multigridCycles]`. Zero tolerance preserves the previous fixed-cycle path. The same sample reports post-projection maximum divergence and fluid-cell count in the controls panel and canvas datasets. Diagnostic compute and staging resources are allocated only while diagnostics are displayed or a nonzero tolerance needs feedback, then released when both controls are disabled.
 
@@ -363,7 +373,8 @@ The divergence target also includes a bounded marker-density correction for comp
 Projection at a face between cells L and R:
 
 ```text
-uNew = uStar - (qR - qL) / dx
+uProjected = uStar - (qR - qL) / dx
+uNew = clamp(finiteOrZero(uProjected), -cflSpeed, cflSpeed)
 ```
 
 Air pressure is zero. Faces touching a solid cell remain at the solid boundary velocity. The FLIP delta stored for each valid face is:
@@ -372,7 +383,9 @@ Air pressure is zero. Faces touching a solid cell remain at the solid boundary v
 delta = projectedVelocity - oldFaceVelocity
 ```
 
-With `ghostFluid`, a fluid-to-air matrix coefficient is divided by the SDF-derived interface fraction `theta`, clamped away from zero. With `fractionalSolids`, every pressure coefficient is additionally multiplied by its MAC-face open fraction. The same interface fraction is used during projection. Multigrid uses this weighted operator for fine-grid pre-smoothing, residual evaluation, and post-smoothing, while coarse levels preserve restricted fluid-volume fractions as an approximate coefficient hierarchy.
+The projection clamp is a last-resort numerical guard, not a substitute for pressure convergence. It prevents a divergent V-cycle or non-finite pressure sample from injecting an unbounded MAC-face speed. RK2 advection independently length-clamps both its start and midpoint grid samples to the same CFL speed; clamping only the stored particle velocity is insufficient because an unchecked grid sample can otherwise teleport markers to the domain walls before the particle-velocity clamp runs.
+
+With `ghostFluid`, a fluid-to-air matrix coefficient is divided by the SDF-derived interface fraction `theta`, clamped away from zero. With `fractionalSolids`, every pressure coefficient is additionally multiplied by its MAC-face open fraction. The same interface fraction is used during projection. Multigrid uses this weighted operator for fine-grid pre-smoothing, residual evaluation, and post-smoothing. Coarse levels use binary fluid/air/solid coefficients and retain restricted fluid fractions only to volume-weight subsequent residual restriction.
 
 ### Velocity Extrapolation
 
@@ -439,6 +452,45 @@ if vn < 0:
 - Method switching recreates only solver-specific GPU state. Whiteboard's shared authored state continues through `carryMethodIndependentState()`.
 - FLIP has no PB-MPM material state and no MLS-MPM sparse-grid state.
 - Whitewater is opt-in through the shared `setFoam()` contract. The diffuse pool, uniforms, pipelines, active-list buffers, generation passes, and update passes are created only after foam is enabled. Reset and disable clear the pool.
+
+### Particle Sheeting
+
+The optional particle-sheeting pass complements conservative interior reseeding. It detects a liquid cell as a thin sheet only when air exists on both sides of at least one grid axis. A calm pool surface therefore does not request markers merely because it touches air on one side.
+
+Under-sampled sheet cells request markers up to `ceil(markersPerCell * sheetingStrength)`. A second GPU pass claims only lifecycle slots already marked free, positions them slightly inside the reconstructed interface with tangential jitter, samples their initial velocity from the MAC grid, and atomically activates them. The pass:
+
+- never reallocates or exceeds the configured particle capacity;
+- does not remove markers from the bulk liquid;
+- is capped to a strength-scaled `max(64, capacity / 1000)` insertions per pass;
+- runs at the configurable sheeting interval;
+- lazily enables the liquid SDF even when `liquidSdf` is not selected for pressure.
+
+Unlike conservative reseeding, sheeting may increase the active count. It stops naturally when no free lifecycle slots remain.
+
+### GPU Polygon Surface
+
+The optional polygon renderer reconstructs an indexed surface-net mesh directly from the particle level set. A render-only temporal SDF history filters small coherent interface changes before extraction; reset and reconstruction re-enable operations initialize that history from the current SDF. This history is not used by pressure, ghost-fluid boundaries, sheeting, or whitewater:
+
+1. One compute invocation per SDF cube averages all sign-changing edge intersections into a surface vertex and averages their SDF gradients into a normal.
+2. One compute invocation per SDF sample emits indexed quads around sign-changing X, Y, and Z edges.
+3. A one-thread finalize pass clamps the generated index count and writes `drawIndexedIndirect` arguments.
+4. The render task consumes the GPU vertex, index, and indirect buffers without CPU readback.
+
+Vertex storage is fixed at one 32-byte position/normal record per SDF cube. The triangle pool is bounded by `surfaceMaxTriangles` (one million by default) and the device storage-buffer limit; overflow is clipped rather than writing past the allocation. The renderer refracts the scene color, samples the environment, applies Fresnel/specular lighting, depth-tests against opaque scene geometry, and writes a liquid eye-depth target for foam occlusion.
+
+The level set is sampled at cell centres, while the authored simulation bounds lie on cell faces. When a side-wall cube transitions from the positive solid boundary layer to negative liquid, reconstruction snaps its X or Z vertex coordinate to that authored face. This closes the otherwise cell-wide inset on all four vertical walls without changing the SDF used by pressure, whitewater, or ray marching.
+
+While polygon rendering is active, two four-byte staging buffers asynchronously sample the indirect draw's index count every 15 simulation frames. The shared particle-usage readout displays the resulting triangle count below the particle count without mapping the mesh buffers or stalling the render loop; multi-simulation hosts sum completed samples from all rendered polygon surfaces.
+
+Selecting **Polygon surface** enables the SDF, mesh, and ray-marched shading passes lazily. The default remains the existing screen-space reconstruction, so legacy presets retain their output and cost.
+
+**Surface shader** switches both screen-space and polygon reconstruction between two fragment models without rebuilding or changing the simulation. **Physical refraction** is the existing background-transmission model: the screen-space path offsets the opaque scene by reconstructed normal and thickness, while the polygon path traces the liquid SDF and scene depth. **Ocean PBR** adapts the water material from [Babylon.js Playground YX6IB8#758](https://playground.babylonjs.com/?webgpu#YX6IB8#758): it uses a neutral body term multiplied by the authored water tint, the reference material's distance-dependent gloss constants, roughness-aware environment Fresnel, directional GGX specular, and crest-like back-light subsurface colour. Unlike the reference's fixed deep-ocean palette, the body term does not impose a magenta hue on white fountain water. Screen-space Ocean PBR uses accumulated fluid thickness as its Beer-Lambert optical path and applies the same normal-based background offset as physical refraction; the polygon path uses the entry-screen projection and a bounded facing-dependent path because closed-screen thickness is unavailable there. The transmitted background and tinted body are blended per channel by Beer-Lambert transmittance before Fresnel reflection and direct specular are applied. Absorption therefore follows standard control semantics: white water at `0` transmits the background fully apart from its surface reflection/specular, while positive values progressively reveal and attenuate the tinted body without amplification. For reflection, screen-space Ocean PBR averages the centre normal with four neighboring reconstructed depth normals, matching the spatial continuity of polygon SDF-gradient normals more closely; centered finite differences of that same field drive the shared normal-variance roughness formula and cubemap mip selection. This Ocean-only reflection normal does not alter refraction. The Playground's FFT displacement and turbulence textures are not used because FLIP already supplies surface geometry and a separate diffuse whitewater renderer. Physical refraction remains the default for legacy presets; the selected mode is stored per demo/method and round-tripped in the backward-compatible `render.polygonShader` field.
+
+**Reconstruction multiplier** selects an independent render grid from `1×` through `2×` in `0.25×` increments. Each axis uses `ceil(solverDimension * multiplier)` samples and spacing `solverDx / multiplier`. Polygon extraction always starts from the coherent solver-resolution liquid SDF. Above `1×`, that field is trilinearly interpolated at the finer render-grid cell centres before temporal stabilization and Surface Nets extraction. The multiplier therefore increases polygon tessellation without exposing individual marker spheres or changing pressure, velocity transfer, timestep selection, sheeting, or whitewater generation.
+
+Changing the multiplier reallocates its resolution-dependent buffers. While simulation is paused, FLIP rebuilds the liquid SDF and polygon buffers from the frozen particle positions on the next frame without advancing solver time, forces, lifecycle state, or whitewater.
+
+The multiplier increases SDF, vertex, and dispatch work cubically: `2×` has about eight times as many reconstruction cells as `1×`. Triangle storage remains bounded by `surfaceMaxTriangles`, and resource creation still enforces the WebGPU adapter's storage-buffer limits. The default is `1×` for preset and rendering compatibility.
 
 ### Whitewater
 
@@ -542,9 +594,27 @@ The optional uniform bytes are copied into a renderer-owned GPU buffer and updat
 | Initial fluid objects      | deterministic shared initial-emitter lattice                              |
 | Particle capacity          | user-selected fixed GPU allocation; active prefix is derived/dynamic      |
 | Particle reseeding         | legacy redistribution or opt-in min/target/max recycling and refill       |
+| Particle sheeting          | bounded free-slot insertion in under-sampled one-cell-thin surface sheets |
+| Polygon reconstruction     | GPU surface nets + indexed indirect rendering from the liquid SDF         |
 | Whitewater                 | opt-in trapped-air/wave-crest diffuse spray, foam, and bubbles            |
 
 Weighted Jacobi remains the compatibility default. Geometric multigrid adds volume-weighted coarse-grid correction without PCG's repeated global dot-product reductions. Fixed V-cycles remain available; tolerance mode adapts the next solve from asynchronous residual samples.
+
+Polygon reconstruction owns the compatibility solver-resolution liquid SDF and, above `1×`, a finer interpolated render field. Selecting GPU polygon mesh does not enable ghost-fluid pressure coupling and therefore does not change pressure, surface-normal, curvature, or whitewater-generation behavior. Its final SDF build, optional interpolation, surface-net extraction, and indexed draw are reported together under the `Surface render` GPU timing stage rather than `Simulation`. Iterative FLIP work reserves one timestamp pair for each whole `Simulation`, `Surface`, and `Foam gen` span instead of one pair per compute dispatch. Query usage therefore remains constant as substeps and pressure iterations increase, and later surface/foam records do not disappear into `Other`.
+
+Polygon shading normalizes interpolated SDF gradients defensively, falls back to the geometric triangle normal for degenerate gradients, and orients normals toward the view ray before Fresnel evaluation. Surface Nets blends one-cell central differences with a two-cell low-pass derivative before interpolating vertex normals; this preserves the reconstructed silhouette while preventing individual particle-scale SDF variations from becoming large optical facets. The continuous interpolated SDF-gradient normal also drives optical transport; using a flat geometric normal there would make refracted UVs jump at every Surface Nets triangle edge. Screen-space normal derivatives estimate residual subpixel normal variance; the shader broadens GGX roughness, lowers SSR confidence, and uses roughness-modified Schlick Fresnel for environment lighting as that variance rises. Smooth sheets retain strong grazing reflection, while unresolved folds converge toward their base reflectivity instead of alternating between transparent and white mirror patches. Surface-net quads use the simulation's left-handed outward winding, so the polygon pass explicitly uses clockwise front faces and culls back faces. Environment lookup uses the same cube-map Z convention and linear-to-display shaping as the screen-space water path, avoiding black Fresnel seams on folds and thin sheets.
+
+Strict whitewater filtering adapts to the selected surface-depth representation. The blurred screen-space surface retains the narrow marker-radius band and upward-facing patch test. Raw polygon depth uses a grid-scale band and accepts steep mesh facets while still requiring foam centres and fragments to follow the local mesh depth. The control is disabled while foam is off, and disabling foam clears it so a stale render-only filter cannot remain selected. The diffuse pool and generation remain identical; only render-time rejection tolerances differ.
+
+The polygon renderer does not infer optical thickness from a single rasterized back face. Each reconstructed surface exposes its GPU-resident liquid SDF, origin, dimensions, and cell spacing to the renderer. From the nearest rasterized front surface, the fragment shader refracts the view ray and conservatively marches through the liquid SDF while testing the opaque scene depth. Because the averaged Surface Nets position may be slightly outside the trilinear zero set, transport advances by a bounded SDF- and incidence-aware distance along the refracted ray before marching. The tracer also initializes its entry state from that biased origin and cannot accept an opaque-depth hit until it has entered negative liquid SDF. Together these measures keep the continuous SDF-gradient transport normal inside the represented liquid without reverting to discontinuous per-triangle geometric refraction or latching onto an unrelated foreground silhouette. The water segment ends at the first submerged opaque-scene hit or liquid-SDF exit, so an object inside the volume shortens Beer-Lambert attenuation instead of inheriting the distance to the fluid's geometric back wall. Scene-depth intersections use a bounded ray-depth delta and compare consecutive ray samples for depth continuity. At an SDF exit, the renderer projects the continuous entry-refraction ray over at most four reconstruction cells. It intentionally does not bend a second time using the noisy exit SDF normal: the opaque scene color is a completed 2D projection rather than geometry that can be followed after exit, and the extra bend redirected neighboring splash pixels to unrelated screen regions. Unresolved marches retain the original screen projection instead of their last arbitrary ray sample. The refraction-strength control blends the entry interface; zero therefore preserves the original screen coordinate exactly.
+
+Surface Nets cannot resolve a liquid layer thinner than one reconstruction cell. Beer-Lambert attenuation therefore applies a grid-scale minimum sheet thickness, projected along the geometric view angle and capped at three cells. This keeps large one-cell splashes optically coherent instead of alternating between nearly transparent background patches and deep-water cells, without introducing a back-face thickness pass.
+
+The same opaque scene depth builds a reverse-Z maximum Hi-Z pyramid immediately before the polygon draw. Reflection rays traverse scene depth with Hi-Z-assisted adaptive steps, reject paths that re-enter the current liquid volume, and fade to the environment cube map on misses and near screen edges. Coarse depth is manually bilinear-filtered before it changes the traversal rate, so mip-tile boundaries cannot appear as square reflection patches. Refraction uses the existing opaque scene-color target as its hit color; no planar above-water/below-water scene re-render is required, which keeps the method valid for FLIP sheets, walls, overhangs, and splashes. Absorption uses the marched world-space water distance and adds bounded in-scattering so open reconstruction boundaries do not become either fully transparent or black. Hi-Z construction and the polygon composite are both included in `Surface render` timing.
+
+The shared controls panel treats polygon rendering as a host capability rather than only a solver flag. Embedders provide both `onPhysicsParam` (which enables reconstruction in FLIP) and `onPolygonSurface` (which switches their render graph); without the render callback the checkbox remains visible but disabled instead of silently doing nothing. `FluidPolygonSurfaceTask.setSims()` renders multiple FLIP simulations through one shared front-surface depth target and opaque-scene Hi-Z pyramid, while binding each simulation's own liquid SDF for its draw. This lets multi-target hosts such as Aquanova use the same control and combined foam-depth policy.
+
+The shared **Debug (feature)** selector also exposes **Polygon wireframe**. Surface Nets emits a line-list index stream beside its triangle stream on the GPU, and the polygon task overlays those quad edges without CPU readback. A small clamped reverse-Z clip-space offset keeps nominally coplanar front edges above the filled depth while retaining depth rejection for hidden back edges. Both the Whiteboard and embedded Aquanova hosts route the selector to the polygon task while leaving screen-space debug modes unchanged.
 
 ## Dependencies
 
@@ -564,7 +634,7 @@ No module-level cache or registration side effect is added.
 - FLIP physics keys pass strict self-contained fluid JSON validation; unknown FLIP keys fail.
 - Legacy FLIP presets without pressure-solver or subcell fields continue to select weighted Jacobi with all optional quality paths disabled.
 - Method-independent Whiteboard merging preserves FLIP-specific physics while carrying gravity and authored state.
-- Format-11 export/import round-trips `meta.method = "FLIP"` and all FLIP physics values.
+- Format-13 export/import round-trips `meta.method = "FLIP"` and all FLIP physics values.
 - FLIP exports use the current velocity-damping, physical-material, and adaptive-timestep fields directly.
 
 ### Browser
@@ -577,11 +647,13 @@ No module-level cache or registration side effect is added.
 - Delete sinks reduce active count and an enabled inflow refills free slots.
 - Different authored initial-emitter heights retain measurably different settled particle heights at equal marker density.
 - FLIP marker-density estimation reports particles per authored MAC cell and warns above the high-density threshold.
-- Format-11 export/import round-trips FLIP resolution divisions, markers per cell, adaptive timestep controls, viscosity, and surface tension.
+- Format-13 export/import round-trips FLIP resolution divisions, marker density, sheeting, polygon reconstruction, adaptive timestep controls, viscosity, and surface tension.
 - A WebGPU regression dispatches nonzero viscosity and surface-tension passes and verifies finite particle velocity output.
 - WebGPU regressions execute multigrid V-cycles, verify pressure diagnostics and tolerance adaptation, preserve authored liquid volumes with both pressure solvers, and switch back to Jacobi without rebuilding.
 - A WebGPU regression grows a sparse marker cell through min/target/max reseeding, verifies diagnostics remain finite, and releases the optional reseed allocation live.
 - A WebGPU regression enables liquid SDF, ghost-fluid pressure, fractional faces, and moving-solid velocity together and validates finite output without WebGPU errors.
+- A WebGPU regression grows a thin sheet from unused marker capacity and verifies a non-empty, bounded indexed surface-net draw.
+- A WebGPU regression verifies that `2×` polygon reconstruction doubles render-grid dimensions, halves render-grid spacing, trilinearly matches the coherent solver SDF, leaves the simulation-pass count and diffuse whitewater buffer unchanged, and reports reconstruction under the surface-render timing stage.
 - A WebGPU regression compiles and draws a custom particle WGSL module, updates its uniform payload, restores the built-in shader, and confirms invalid WGSL surfaces a validation error.
 - A WebGPU regression verifies that FLIP foam is absent while disabled, generates diffuse particles under energetic surface motion, validates portable bindings, and clears on reset/disable.
 - The diffuse-count regression verifies exact dense and compact totals and the spray/foam/bubble breakdown without synchronous GPU readback.
@@ -599,16 +671,15 @@ No module-level cache or registration side effect is added.
 1. PCG with multigrid as a preconditioner for same-substep tolerance termination.
 2. Deterministic cell-sorted gather P2G to remove fixed-point atomics.
 3. APIC affine transfers.
-4. Surface-aware particle sheeting.
-5. ST-FLIP large-timestep reconstruction.
-6. Obstacle-driven dust generation as a separate diffuse-particle type.
-7. Optional polygon surface reconstruction; Blender scene comparison already uses the self-contained Babylon Lite JSON exporter.
+4. ST-FLIP large-timestep reconstruction.
+5. Obstacle-driven dust generation as a separate diffuse-particle type.
 
 ## File Manifest
 
 - `docs/lite/architecture/56-fluid-flip.md`
 - `packages/babylon-lite/src/fluid/flip-sim.ts`
 - `packages/babylon-lite/src/fluid/controls-panel.ts`
+- `packages/babylon-lite/src/fluid/polygon-surface-render.ts`
 - `lab/lite/src/demos/fluid.ts`
 - `lab/lite/src/demos/fluid/grid-settings.ts`
 - `lab/lite/src/demos/fluid/preset-io.ts`

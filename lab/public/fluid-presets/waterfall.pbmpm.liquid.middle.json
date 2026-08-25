@@ -42,7 +42,8 @@
     "camera": {
         "alpha": -2.096342275594117,
         "beta": 1.4153362767020206,
-        "radius": 62.965727191577955
+        "radius": 62.965727191577955,
+        "target": [0, 9.600000000000001, 0]
     },
     "render": {
         "renderAsSpheres": false,
@@ -84,14 +85,6 @@
         "foamSize": 0.5
     },
     "formatVersion": 5,
-    "gridPosition": [
-        0,
-        30,
-        0
-    ],
-    "gridSize": [
-        120,
-        60,
-        120
-    ]
+    "gridPosition": [0, 30, 0],
+    "gridSize": [120, 60, 120]
 }

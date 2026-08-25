@@ -16,6 +16,7 @@ import {
     gridSizeForBounds,
     gridWorldSize,
     highestFittingGridResolution,
+    scaleForGridResolution,
 } from "../../../../lab/lite/src/demos/fluid/grid-settings";
 
 describe("fluid grid settings", () => {
@@ -62,9 +63,10 @@ describe("fluid grid settings", () => {
     });
 
     it("retains legacy longest-axis conversion for old preset migration", () => {
-        expect(GRID_RESOLUTION_MAX).toBe(400);
+        expect(GRID_RESOLUTION_MAX).toBe(2000);
         expect(gridResolutionForScale("PBF", 1)).toBe(100);
         expect(gridResolutionForScale("FLIP", 1)).toBe(160);
+        expect(gridResolutionForScale("FLIP", scaleForGridResolution("FLIP", 2000, 24.9), 24.9)).toBe(2000);
         expect(cellSizeForGridResolution(200, 120)).toBeCloseTo(0.6);
     });
 

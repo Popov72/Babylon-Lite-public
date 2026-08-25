@@ -55,6 +55,30 @@ async function readDiffuse(device, pool) {
     return { active, lowActive, kinds, slotKinds, slotLives, slotVelocities };
 }
 
+async function readBufferWords(device, buffer) {
+    const readback = device.createBuffer({ size: buffer.size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(buffer, 0, readback, 0, buffer.size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const words = new Uint32Array(readback.getMappedRange().slice(0));
+    readback.unmap();
+    readback.destroy();
+    return words;
+}
+
+async function readBufferFloats(device, buffer) {
+    const readback = device.createBuffer({ size: buffer.size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(buffer, 0, readback, 0, buffer.size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const values = new Float32Array(readback.getMappedRange().slice(0));
+    readback.unmap();
+    readback.destroy();
+    return values;
+}
+
 async function step(engine, sim) {
     const encoder = engine._device.createCommandEncoder();
     sim.step(encoder, 1 / 60);
@@ -302,6 +326,103 @@ async function main() {
     await step(engine, advancedUpdateSim);
     const advancedUpdated = await readDiffuse(engine._device, advancedUpdateSim.diffuse);
 
+    const invariantOptions = {
+        count: 27,
+        initialPositions: filledPositions,
+        boundsMin: [0, 0, 0],
+        boundsMax: [5, 5, 5],
+        gridDim: [5, 5, 5],
+        dx: 1,
+        markersPerCell: 1,
+        particleRadius: 0.08,
+        gravity: 0,
+        pressureIterations: 2,
+        minSubsteps: 1,
+        maxSubsteps: 1,
+        maxSubDt: 1,
+        surfaceMaxTriangles: 4096,
+    };
+    const invariantBaselineSim = createFlipSim(engine, invariantOptions);
+    const invariantPolygonSim = createFlipSim(engine, invariantOptions);
+    engine._device.queue.writeBuffer(invariantBaselineSim.velocityBuffer, 0, sideVelocities);
+    engine._device.queue.writeBuffer(invariantPolygonSim.velocityBuffer, 0, sideVelocities);
+    const invariantFoam = { activeParticles: false, kTa: 10000, kWc: 10000, poolScale: 38, poolCapMax: 1024 };
+    invariantBaselineSim.setFoam(invariantFoam);
+    invariantPolygonSim.setFoam(invariantFoam);
+    invariantPolygonSim.setParam("polygonSurface", 1);
+    invariantPolygonSim.setParam("polygonReconstructionMultiplier", 2);
+    const baselineProfileStages = [];
+    const polygonProfileStages = [];
+    invariantBaselineSim.setProfiler({ pass: (stage) => { baselineProfileStages.push(stage); return undefined; } });
+    invariantPolygonSim.setProfiler({ pass: (stage) => { polygonProfileStages.push(stage); return undefined; } });
+    await step(engine, invariantBaselineSim);
+    await step(engine, invariantPolygonSim);
+    await step(engine, invariantBaselineSim);
+    await step(engine, invariantPolygonSim);
+    const baselineDiffuseWords = await readBufferWords(engine._device, invariantBaselineSim.diffuse.buffer);
+    const polygonDiffuseWords = await readBufferWords(engine._device, invariantPolygonSim.diffuse.buffer);
+    const polygonWhitewaterInvariant =
+        baselineDiffuseWords.length === polygonDiffuseWords.length &&
+        baselineDiffuseWords.every((word, index) => word === polygonDiffuseWords[index]);
+    const baselineSimulationPasses = baselineProfileStages.filter((stage) => stage === "Simulation").length;
+    const polygonSimulationPasses = polygonProfileStages.filter((stage) => stage === "Simulation").length;
+    const polygonSurfacePasses = polygonProfileStages.filter((stage) => stage === "Surface").length;
+    const polygonGridDimensions = invariantPolygonSim.polygonSurface?.gridDimensions;
+    const polygonGridSpacing = invariantPolygonSim.polygonSurface?.gridSpacing;
+    const polygonReconstructionMultiplier = invariantPolygonSim.polygonSurface?.reconstructionMultiplier;
+    for (let attempt = 0; attempt < 100 && invariantPolygonSim.polygonSurface?.triangleCount === undefined; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const polygonIndexCount = (invariantPolygonSim.polygonSurface?.triangleCount ?? 0) * 3;
+
+    const coarsePolygonSim = createFlipSim(engine, invariantOptions);
+    const finePolygonSim = createFlipSim(engine, invariantOptions);
+    coarsePolygonSim.setParam("polygonSurface", 1);
+    finePolygonSim.setParam("polygonSurface", 1);
+    finePolygonSim.setParam("polygonReconstructionMultiplier", 2);
+    await step(engine, coarsePolygonSim);
+    await step(engine, finePolygonSim);
+    const coarseSdf = await readBufferFloats(engine._device, coarsePolygonSim.polygonSurface.liquidSdfBuffer);
+    const fineSdf = await readBufferFloats(engine._device, finePolygonSim.polygonSurface.liquidSdfBuffer);
+    const coarseDim = coarsePolygonSim.polygonSurface.gridDimensions;
+    const fineDim = finePolygonSim.polygonSurface.gridDimensions;
+    const coarseAt = (x, y, z) => {
+        const qx = Math.min(coarseDim[0] - 1, Math.max(0, x));
+        const qy = Math.min(coarseDim[1] - 1, Math.max(0, y));
+        const qz = Math.min(coarseDim[2] - 1, Math.max(0, z));
+        return coarseSdf[qx + coarseDim[0] * (qy + coarseDim[1] * qz)];
+    };
+    let polygonSdfUpsampleMaxError = 0;
+    for (let z = 0; z < fineDim[2]; z++) {
+        for (let y = 0; y < fineDim[1]; y++) {
+            for (let x = 0; x < fineDim[0]; x++) {
+                const sx = (x + 0.5) / 2 - 0.5;
+                const sy = (y + 0.5) / 2 - 0.5;
+                const sz = (z + 0.5) / 2 - 0.5;
+                const bx = Math.floor(sx);
+                const by = Math.floor(sy);
+                const bz = Math.floor(sz);
+                const wx = sx - bx;
+                const wy = sy - by;
+                const wz = sz - bz;
+                const mix = (a, b, weight) => a + (b - a) * weight;
+                const z0 = mix(
+                    mix(coarseAt(bx, by, bz), coarseAt(bx + 1, by, bz), wx),
+                    mix(coarseAt(bx, by + 1, bz), coarseAt(bx + 1, by + 1, bz), wx),
+                    wy,
+                );
+                const z1 = mix(
+                    mix(coarseAt(bx, by, bz + 1), coarseAt(bx + 1, by, bz + 1), wx),
+                    mix(coarseAt(bx, by + 1, bz + 1), coarseAt(bx + 1, by + 1, bz + 1), wx),
+                    wy,
+                );
+                const expected = mix(z0, z1, wz);
+                const actual = fineSdf[x + fineDim[0] * (y + fineDim[1] * z)];
+                polygonSdfUpsampleMaxError = Math.max(polygonSdfUpsampleMaxError, Math.abs(actual - expected));
+            }
+        }
+    }
+
     const countDiffuse = engine._device.createBuffer({
         size: 8 * 32,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -341,6 +462,10 @@ async function main() {
     sideEmissionSim.dispose();
     turbulenceSim.dispose();
     advancedUpdateSim.dispose();
+    invariantBaselineSim.dispose();
+    invariantPolygonSim.dispose();
+    coarsePolygonSim.dispose();
+    finePolygonSim.dispose();
     denseCountTracker.dispose();
     activeCountTracker.dispose();
     countDiffuse.destroy();
@@ -365,6 +490,15 @@ async function main() {
         sideGenerated,
         turbulenceGenerated,
         advancedUpdated,
+        polygonWhitewaterInvariant,
+        baselineSimulationPasses,
+        polygonSimulationPasses,
+        polygonSurfacePasses,
+        polygonGridDimensions,
+        polygonGridSpacing,
+        polygonReconstructionMultiplier,
+        polygonIndexCount,
+        polygonSdfUpsampleMaxError,
         denseCounts,
         activeCounts,
     });
@@ -396,6 +530,15 @@ main().catch((error) => { canvas.dataset.error = error?.message ?? String(error)
         sideGenerated: { lowActive: number };
         turbulenceGenerated: { active: number };
         advancedUpdated: { slotKinds: number[]; slotLives: number[]; slotVelocities: number[][] };
+        polygonWhitewaterInvariant: boolean;
+        baselineSimulationPasses: number;
+        polygonSimulationPasses: number;
+        polygonSurfacePasses: number;
+        polygonGridDimensions: number[];
+        polygonGridSpacing: number;
+        polygonReconstructionMultiplier: number;
+        polygonIndexCount: number;
+        polygonSdfUpsampleMaxError: number;
         denseCounts: { total: number; spray: number; foam: number; bubble: number; capacity: number };
         activeCounts: { total: number; spray: number; foam: number; bubble: number; capacity: number };
     };
@@ -431,6 +574,15 @@ main().catch((error) => { canvas.dataset.error = error?.message ?? String(error)
     expect(result.advancedUpdated.slotKinds[1]).toBe(0);
     expect(result.advancedUpdated.slotVelocities[1]![0]).toBeGreaterThan(0);
     expect(result.advancedUpdated.slotVelocities[1]![0]).toBeLessThan(10);
+    expect(result.polygonWhitewaterInvariant).toBe(true);
+    expect(result.polygonSimulationPasses).toBe(result.baselineSimulationPasses);
+    expect(result.polygonSurfacePasses).toBeGreaterThan(0);
+    expect(result.polygonGridDimensions).toEqual([10, 10, 10]);
+    expect(result.polygonGridSpacing).toBe(0.5);
+    expect(result.polygonReconstructionMultiplier).toBe(2);
+    expect(result.polygonIndexCount).toBeGreaterThan(0);
+    expect(result.polygonIndexCount % 3).toBe(0);
+    expect(result.polygonSdfUpsampleMaxError).toBeLessThan(1e-5);
     expect(result.denseCounts).toEqual({ total: 4, spray: 1, foam: 2, bubble: 1, capacity: 8 });
     expect(result.activeCounts).toEqual(result.denseCounts);
 });

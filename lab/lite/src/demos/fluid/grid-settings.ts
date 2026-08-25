@@ -11,7 +11,7 @@ export const PBMPM_MAX_SCALE = 8;
 
 export const GRID_DOMAIN_LONGEST = 40;
 export const GRID_RESOLUTION_MIN = 16;
-export const GRID_RESOLUTION_MAX = 400;
+export const GRID_RESOLUTION_MAX = 2000;
 export const FLIP_DEFAULT_MARKERS_PER_CELL = 8;
 export const FLIP_HIGH_MARKERS_PER_CELL = 16;
 
@@ -77,6 +77,9 @@ export const scaleLimitsForMethod = (method: string): [number, number] =>
             : [MPM_MIN_SCALE, MPM_MAX_SCALE];
 
 export function gridResolutionLimitsForMethod(method: string, domainLongest = GRID_DOMAIN_LONGEST): [number, number] {
+    if (method === "FLIP") {
+        return [GRID_RESOLUTION_MIN, GRID_RESOLUTION_MAX];
+    }
     const [minScale, maxScale] = scaleLimitsForMethod(method);
     const baseResolution = baseGridResolutionForMethod(method, domainLongest);
     return [Math.max(GRID_RESOLUTION_MIN, Math.ceil(baseResolution / maxScale)), Math.min(GRID_RESOLUTION_MAX, Math.floor(baseResolution / minScale))];
@@ -92,6 +95,9 @@ export function rawScaleForGridResolution(method: string, resolution: number, do
 }
 
 export function scaleForGridResolution(method: string, resolution: number, domainLongest = GRID_DOMAIN_LONGEST): number {
+    if (method === "FLIP") {
+        return rawScaleForGridResolution(method, clampGridResolution(method, resolution, domainLongest), domainLongest);
+    }
     const [minScale, maxScale] = scaleLimitsForMethod(method);
     return Math.min(maxScale, Math.max(minScale, rawScaleForGridResolution(method, clampGridResolution(method, resolution, domainLongest), domainLongest)));
 }

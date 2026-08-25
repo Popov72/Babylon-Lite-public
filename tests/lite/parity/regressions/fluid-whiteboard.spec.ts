@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { PNG } from "pngjs";
 
 import { expect, test } from "../parity-fixtures";
 import { waitForCanvasReady } from "../compare-utils";
@@ -56,6 +57,75 @@ async function setCheckboxByInfo(page: Page, titlePrefix: string, checked: boole
     );
 }
 
+test("screen-space surface switches to Ocean PBR", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+
+    const canvas = page.locator("canvas");
+    await page.locator('select:has(option[value="PBF"]):has(option[value="FLIP"]):has(option[value="MLS-MPM"]):has(option[value="PB-MPM"])').selectOption("PBF");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-active-particle-count")), { timeout: 30_000 }).toBeGreaterThan(0);
+    const renderAsSpheres = page.locator("label").filter({ hasText: "Render as spheres" }).locator('input[type="checkbox"]');
+    await renderAsSpheres.uncheck();
+    await expect(canvas).toHaveAttribute("data-render", "surface");
+    await page.waitForTimeout(1_000);
+    await page.keyboard.press("p");
+    await expect(canvas).toHaveAttribute("data-paused", "true");
+    const shader = page.locator('[data-fluid-surface-shader="true"]');
+    await expect(shader).toHaveValue("physical");
+    const physical = PNG.sync.read(await canvas.screenshot());
+
+    await shader.selectOption("ocean");
+    await expect(canvas).toHaveAttribute("data-surface-shader", "ocean");
+    await page.waitForTimeout(500);
+    const ocean = PNG.sync.read(await canvas.screenshot());
+
+    let changedPixels = 0;
+    for (let offset = 0; offset < physical.data.length; offset += 4) {
+        const difference =
+            Math.abs(physical.data[offset]! - ocean.data[offset]!) +
+            Math.abs(physical.data[offset + 1]! - ocean.data[offset + 1]!) +
+            Math.abs(physical.data[offset + 2]! - ocean.data[offset + 2]!);
+        if (difference > 18) {
+            changedPixels++;
+        }
+    }
+    expect(changedPixels).toBeGreaterThan(1_000);
+});
+
+test("FLIP stage timing survives three substeps", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+
+    await page.locator('select:has(option[value="whiteboard"])').selectOption("whiteboard");
+    await page.getByRole("button", { name: "+ Emitter", exact: true }).click();
+    await page.locator('select:has(option[value="PBF"]):has(option[value="FLIP"]):has(option[value="MLS-MPM"]):has(option[value="PB-MPM"])').selectOption("FLIP");
+    await expect.poll(async () => Number(await page.locator("canvas").getAttribute("data-active-particle-count")), { timeout: 30_000 }).toBeGreaterThan(0);
+    test.skip((await page.getByText("GPU timing unavailable", { exact: false }).count()) > 0, "WebGPU timestamp queries are unavailable");
+
+    await page.locator('[data-fluid-physics-param="polygonSurface"] input[type="checkbox"]').check();
+    await page.getByLabel("Enable foam").check();
+    await page.locator('[data-fluid-physics-param="minSubsteps"] input[type="range"]').evaluate((input: HTMLInputElement) => {
+        input.value = "3";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    for (const stage of ["Simulation", "Foam gen", "Surface render", "Foam render"]) {
+        const row = page.locator(`[data-fluid-gpu-stage="${stage}"]`);
+        await expect
+            .poll(
+                async () => {
+                    const match = (await row.textContent())?.match(/([0-9.]+)\s*ms/);
+                    return match ? Number(match[1]) : 0;
+                },
+                { timeout: 45_000, message: `${stage} should retain a timestamp pair` }
+            )
+            .toBeGreaterThan(0);
+    }
+});
+
 test("Whiteboard preserves authored state across fluid methods", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/demo-fluid.html");
@@ -79,7 +149,12 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(page.getByText("Active foam particles", { exact: true })).toHaveCount(0);
     const foamCounts = controlsPanel.locator('[data-fluid-foam-counts="true"]');
     await expect(foamCounts).toHaveText("Disabled");
+    const strictSurfaceFiltering = page.getByLabel("Strict surface filtering");
+    await expect(strictSurfaceFiltering).toBeDisabled();
+    await expect(strictSurfaceFiltering).not.toBeChecked();
     await page.getByLabel("Enable foam").check();
+    await expect(strictSurfaceFiltering).toBeEnabled();
+    await strictSurfaceFiltering.check();
     await expect.poll(async () => foamCounts.locator("div").count(), { timeout: 15_000 }).toBe(4);
     const foamCountLines = await foamCounts.locator("div").allTextContents();
     expect(foamCountLines[0]).toContain("\u00a0/\u00a0");
@@ -91,6 +166,8 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
         .toEqual([foamCountLines[0]!.split(":")[0]!, "Foam", "Bubbles"]);
     await page.getByLabel("Generate spray").check();
     await page.getByLabel("Enable foam").uncheck();
+    await expect(strictSurfaceFiltering).toBeDisabled();
+    await expect(strictSurfaceFiltering).not.toBeChecked();
     await methodSelect.selectOption("PBF");
     await expect(canvas).toHaveAttribute("data-method", "PBF");
     await expect(page.getByText(/^Relaxation ε/)).toBeVisible();
@@ -180,12 +257,19 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
     await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
     await expect(page.getByText(/^FLIP ratio/)).toBeVisible();
+    const advancedNumerical = page.locator('[data-fluid-physics-group="advanced"]');
+    const advancedNumericalSummary = advancedNumerical.locator("summary");
+    await expect(page.getByText("Advanced numerical", { exact: true })).toHaveCount(1);
+    await advancedNumericalSummary.click();
+    await expect(advancedNumerical).not.toHaveAttribute("open", "");
+    await advancedNumericalSummary.click();
+    await expect(advancedNumerical).toHaveAttribute("open", "");
     const pressureSolver = page.locator('[data-fluid-physics-param="pressureSolver"] select');
     const pressureIterations = page.locator('[data-fluid-physics-param="pressureIterations"]');
     const pressureRelaxation = page.locator('[data-fluid-physics-param="pressureRelaxation"]');
     const multigridCycles = page.locator('[data-fluid-physics-param="multigridCycles"]');
     const pressureTolerance = page.locator('[data-fluid-physics-param="pressureTolerance"]');
-    const pressureDiagnostics = page.locator('[data-fluid-physics-param="pressureDiagnostics"] select');
+    const pressureDiagnostics = page.locator('[data-fluid-physics-param="pressureDiagnostics"] input[type="checkbox"]');
     await expect(pressureSolver).toHaveValue("0");
     await expect(pressureIterations).toBeVisible();
     await expect(pressureRelaxation).toBeVisible();
@@ -196,35 +280,88 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(pressureRelaxation).toBeHidden();
     await expect(multigridCycles).toBeVisible();
     await expect(pressureTolerance).toBeVisible();
-    await expect(pressureDiagnostics).toHaveValue("0");
-    await pressureDiagnostics.selectOption("1");
+    await expect(pressureDiagnostics).not.toBeChecked();
+    await pressureDiagnostics.check();
     await expect(canvas).toHaveAttribute("data-pressure-diagnostics", "true");
     await expect(page.locator('[data-fluid-pressure-diagnostics="true"]')).toContainText("Pressure residual:");
-    const liquidSdf = page.locator('[data-fluid-physics-param="liquidSdf"] select');
-    const ghostFluid = page.locator('[data-fluid-physics-param="ghostFluid"]');
-    const fractionalSolids = page.locator('[data-fluid-physics-param="fractionalSolids"] select');
-    const movingSolidBoundaries = page.locator('[data-fluid-physics-param="movingSolidBoundaries"]');
-    await expect(liquidSdf).toHaveValue("0");
-    await expect(ghostFluid).toBeHidden();
-    await liquidSdf.selectOption("1");
-    await expect(canvas).toHaveAttribute("data-liquid-sdf", "true");
+    const liquidSdf = page.locator('[data-fluid-physics-param="liquidSdf"] input[type="checkbox"]');
+    const ghostFluid = page.locator('[data-fluid-physics-param="ghostFluid"] input[type="checkbox"]');
+    const fractionalSolids = page.locator('[data-fluid-physics-param="fractionalSolids"] input[type="checkbox"]');
+    const movingSolidBoundaries = page.locator('[data-fluid-physics-param="movingSolidBoundaries"] input[type="checkbox"]');
+    await expect(liquidSdf).not.toBeChecked();
     await expect(ghostFluid).toBeVisible();
-    await ghostFluid.locator("select").selectOption("1");
+    await expect(ghostFluid).toBeDisabled();
+    await liquidSdf.check();
+    await expect(canvas).toHaveAttribute("data-liquid-sdf", "true");
+    await expect(ghostFluid).toBeEnabled();
+    await ghostFluid.check();
     await expect(canvas).toHaveAttribute("data-ghost-fluid", "true");
-    await expect(fractionalSolids).toHaveValue("0");
-    await expect(movingSolidBoundaries).toBeHidden();
-    await fractionalSolids.selectOption("1");
-    await expect(canvas).toHaveAttribute("data-fractional-solids", "true");
+    await liquidSdf.uncheck();
+    await expect(canvas).toHaveAttribute("data-liquid-sdf", "false");
+    await expect(ghostFluid).not.toBeChecked();
+    await expect(ghostFluid).toBeDisabled();
+    await expect(canvas).toHaveAttribute("data-ghost-fluid", "false");
+    await liquidSdf.check();
+    await expect(ghostFluid).toBeEnabled();
+    await expect(ghostFluid).not.toBeChecked();
+    await expect(fractionalSolids).not.toBeChecked();
     await expect(movingSolidBoundaries).toBeVisible();
-    await movingSolidBoundaries.locator("select").selectOption("1");
+    await expect(movingSolidBoundaries).toBeDisabled();
+    await fractionalSolids.check();
+    await expect(canvas).toHaveAttribute("data-fractional-solids", "true");
+    await expect(movingSolidBoundaries).toBeEnabled();
+    await movingSolidBoundaries.check();
     await expect(canvas).toHaveAttribute("data-moving-solid-boundaries", "true");
-    const reseedParticles = page.locator('[data-fluid-physics-param="reseedParticles"] select');
+    await fractionalSolids.uncheck();
+    await expect(canvas).toHaveAttribute("data-fractional-solids", "false");
+    await expect(movingSolidBoundaries).not.toBeChecked();
+    await expect(movingSolidBoundaries).toBeDisabled();
+    await expect(canvas).toHaveAttribute("data-moving-solid-boundaries", "false");
+    await fractionalSolids.check();
+    await expect(movingSolidBoundaries).toBeEnabled();
+    await expect(movingSolidBoundaries).not.toBeChecked();
+    const reseedParticles = page.locator('[data-fluid-physics-param="reseedParticles"] input[type="checkbox"]');
     const reseedMinimum = page.locator('[data-fluid-physics-param="reseedMinParticles"]');
-    await expect(reseedParticles).toHaveValue("0");
+    await expect(reseedParticles).not.toBeChecked();
     await expect(reseedMinimum).toBeHidden();
-    await reseedParticles.selectOption("1");
+    await reseedParticles.check();
     await expect(canvas).toHaveAttribute("data-reseed-particles", "true");
     await expect(reseedMinimum).toBeVisible();
+    const particleSheeting = page.locator('[data-fluid-physics-param="particleSheeting"] input[type="checkbox"]');
+    const sheetingStrength = page.locator('[data-fluid-physics-param="sheetingStrength"]');
+    const polygonSurface = page.locator('[data-fluid-physics-param="polygonSurface"] input[type="checkbox"]');
+    const polygonReconstruction = page.locator('[data-fluid-physics-param="polygonReconstructionMultiplier"]');
+    await expect(sheetingStrength).toBeHidden();
+    await expect(polygonReconstruction).toBeHidden();
+    await particleSheeting.check();
+    await expect(canvas).toHaveAttribute("data-particle-sheeting", "true");
+    await expect(sheetingStrength).toBeVisible();
+    await polygonSurface.check();
+    await expect(canvas).toHaveAttribute("data-polygon-surface", "true");
+    await expect(canvas).toHaveAttribute("data-render", "polygon");
+    const polygonShader = page.locator('[data-fluid-polygon-shader="true"]');
+    await expect(polygonShader).toHaveValue("physical");
+    await polygonShader.selectOption("ocean");
+    await expect(canvas).toHaveAttribute("data-polygon-shader", "ocean");
+    await expect(polygonReconstruction).toBeVisible();
+    const polygonReconstructionInput = polygonReconstruction.locator('input[type="range"]');
+    await expect(polygonReconstructionInput).toHaveValue("1");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-polygon-triangle-count")), { timeout: 30_000 }).toBeGreaterThan(0);
+    await page.keyboard.press("p");
+    await expect(canvas).toHaveAttribute("data-paused", "true");
+    await polygonReconstructionInput.evaluate((input: HTMLInputElement) => {
+        input.value = "2";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(canvas).toHaveAttribute("data-polygon-reconstruction-multiplier", "2");
+    const triangleCount = page.locator('[data-fluid-polygon-triangle-count="true"]');
+    await expect(triangleCount).toBeVisible();
+    await expect.poll(async () => Number(await canvas.getAttribute("data-polygon-triangle-count")), { timeout: 30_000 }).toBeGreaterThan(0);
+    await expect(triangleCount).toHaveText(/^Triangles:\u00a0[\d,]+$/);
+    await expect(canvas).toHaveAttribute("data-paused", "true");
+    await page.keyboard.press("p");
+    await expect(canvas).toHaveAttribute("data-paused", "false");
     await expect(page.getByText("FLIP advanced whitewater", { exact: true })).toBeVisible();
     await expect(page.getByText(/^Turbulence rate/)).toBeVisible();
     const advancedFlipFoam = page.locator("[data-fluid-flip-foam-advanced]");

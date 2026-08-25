@@ -117,6 +117,7 @@ export interface PairState {
     // ── Surface-render settings (per-pair, restored on switch). All optional so old
     //    presets/states without them fall back to the core render defaults. ──
     renderMode?: "surface" | "spheres";
+    polygonShader?: "physical" | "ocean";
     refraction?: number;
     specular?: number;
     /** Reflection tonemap (exposure + contrast) applied to the environment reflection, and the
@@ -139,9 +140,9 @@ export interface PairState {
     anisoSurfScale?: number;
     /** MLS-MPM active-block execution. Optional and defaults off. */
     activeBlocks?: boolean;
-    /** Sparse bounded grid-page storage. */
+    /** Sparse bounded grid-page storage for FLIP or MLS-MPM. */
     pagedGrid?: boolean;
-    /** Maximum live 4³-cell grid pages. */
+    /** Maximum live grid pages (8³ FLIP cells or 4³ MLS-MPM nodes). */
     pagedGridMaxPages?: number;
     /** Append active particle blocks directly during histogram construction. */
     fusedBlockDiscovery?: boolean;

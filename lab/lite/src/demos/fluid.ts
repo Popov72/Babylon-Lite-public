@@ -69,15 +69,24 @@ import {
     updateLineSystem,
 } from "babylon-lite";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
-import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim.js";
+import {
+    createFlipSim,
+    estimateFlipGpuBytes,
+    flipMacFaceBufferBytes,
+    FLIP_DEFAULT_PAGE_CAPACITY,
+    FLIP_PAGE_CELLS,
+    pagedFlipStorageCounts,
+    transferFlipSimState,
+} from "babylon-lite/fluid/flip-sim.js";
 import type { FluidEmitter, FluidFlowConfig, FluidShape, FluidSink } from "babylon-lite";
-import type { FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
+import type { FluidProfiler, FluidSim, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createParticleRenderTask } from "babylon-lite/fluid/particle-render.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
+import { createFluidPolygonSurfaceTask } from "babylon-lite/fluid/polygon-surface-render.js";
 import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamConfig } from "babylon-lite/fluid/sim-common.js";
 import type { AssetContainer, Mesh, Task, EnvironmentTextures, Renderable, Material, PbrMaterialProps, SceneNode, Vec3 } from "babylon-lite";
@@ -398,7 +407,12 @@ async function main(): Promise<void> {
     };
     const gridCellsForSettings = (grid: FluidGridSettings, method: string, physicsSize: number): [number, number, number] =>
         gridCellsForSize(grid.size, cellSizeForPhysicsScale(method, physicsSize));
-    const gridAllocationError = (grid: FluidGridSettings, method: string, physicsSize: number): string | undefined => {
+    const gridAllocationError = (
+        grid: FluidGridSettings,
+        method: string,
+        physicsSize: number,
+        flipPaging: { enabled: boolean; maxPages: number } = { enabled: flipPagedGrid, maxPages: flipPagedGridMaxPages }
+    ): string | undefined => {
         const cells = gridCellsForSettings(grid, method, physicsSize);
         const oversizedAxis = cells.findIndex((value) => value > GRID_CELLS_MAX);
         if (oversizedAxis >= 0) {
@@ -406,14 +420,16 @@ async function main(): Promise<void> {
         }
         const totalCells = cells[0] * cells[1] * cells[2];
         if (method === "FLIP") {
-            const totalFaces = (cells[0] + 1) * cells[1] * cells[2] + cells[0] * (cells[1] + 1) * cells[2] + cells[0] * cells[1] * (cells[2] + 1);
-            const faceBytes = totalFaces * 8;
             const maxBytes = Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize);
+            const faceBytes = flipPaging.enabled ? pagedFlipStorageCounts(flipPaging.maxPages).faces * 8 : flipMacFaceBufferBytes(cells);
             if (faceBytes > maxBytes) {
-                return `Grid size requires ${(faceBytes / (1024 * 1024)).toFixed(1)} MiB per FLIP MAC buffer at the current Physics particle size; this device supports at most ${(
+                return `${flipPaging.enabled ? `Page capacity ${flipPaging.maxPages.toLocaleString()}` : `Grid ${cells.join(" \u00d7 ")}`}\u00a0requires\u00a0${(
+                    faceBytes /
+                    (1024 * 1024)
+                ).toFixed(1)}\u00a0MiB per ${flipPaging.enabled ? "paged" : "packed"} FLIP MAC buffer;\u00a0this device's per-storage-buffer binding limit is\u00a0${(
                     maxBytes /
                     (1024 * 1024)
-                ).toFixed(1)} MiB.`;
+                ).toFixed(1)}\u00a0MiB.`;
             }
             return undefined;
         }
@@ -559,6 +575,19 @@ async function main(): Promise<void> {
             minSubsteps: 1,
             maxSubsteps: 8,
             cflNumber: 2,
+            pagedGrid: flipPagedGrid,
+            pagedGridMaxPages: flipPagedGridMaxPages,
+            onPagedGridPages: (requiredPages, capacity) => {
+                controls.setPagedGridStatus(`${requiredPages.toLocaleString()}\u00a0/\u00a0${capacity.toLocaleString()}\u00a0pages`);
+                canvas.dataset.pagedGridPages = String(requiredPages);
+                canvas.dataset.pagedGridPageCapacity = String(capacity);
+            },
+            onPagedGridOverflow: (requiredPages, capacity) => {
+                const message = `Page capacity exceeded: ${requiredPages.toLocaleString()} required, ${capacity.toLocaleString()} allocated. Increase Page capacity.`;
+                controls.setPagedGridStatus(message, true);
+                canvas.dataset.pagedGridOverflow = "true";
+                console.error(`[FLIP] ${message}`);
+            },
         });
 
         // Backend 3 — MLS-MPM (grid-transfer; scales to far more particles).
@@ -635,6 +664,12 @@ async function main(): Promise<void> {
     let flipParticleCapacityRequest = DEFAULT_PARTICLE_COUNT;
     let physicsScale = 1; // physics particle-size multiplier (rebuilds sims)
     let pbmpmMaterial = 0;
+    let flipPagedGrid = false;
+    const maxFlipPagedGridPages = Math.max(
+        1,
+        Math.floor((Math.min(engine._device.limits.maxStorageBufferBindingSize, engine._device.limits.maxBufferSize) / 8 - 1) / (FLIP_PAGE_CELLS * 3))
+    );
+    let flipPagedGridMaxPages = Math.min(maxFlipPagedGridPages, FLIP_DEFAULT_PAGE_CAPACITY);
     let mpmActiveBlocks = false;
     let mpmPagedGrid = false;
     const maxPagedGridPages = Math.max(1, Math.floor(engine._device.limits.maxStorageBufferBindingSize / 1024) - 1);
@@ -713,6 +748,14 @@ async function main(): Promise<void> {
     // shades the liquid surface (refraction of the scene).
     const surfaceTask = createFluidSurfaceTask(engine, scene, { bgRT: sceneColorRT, outRT: postRT, depthRT, camera: cam, sim: activeSim });
     addTask(scene, surfaceTask);
+    const polygonSurfaceTask = createFluidPolygonSurfaceTask(engine, scene, {
+        bgRT: sceneColorRT,
+        outRT: postRT,
+        depthRT,
+        camera: cam,
+        sim: activeSim,
+    });
+    addTask(scene, polygonSurfaceTask);
 
     // Foam (diffuse-particle) renderer — draws the active sim's spray/foam/bubble pool
     // as sprites OVER the composited fluid surface (added after surfaceTask), depth-
@@ -727,7 +770,7 @@ async function main(): Promise<void> {
         // submerged classification. Fetched per-frame (surfaceTask reallocates it
         // on resize / half-res), null in sphere/blit mode → foam falls back to "no
         // water" (spray/foam on top, no submerged bubbles).
-        getSurfaceDepth: () => surfaceTask.surfaceDepthView(),
+        getSurfaceDepth: () => polygonSurfaceTask.surfaceDepthView() ?? surfaceTask.surfaceDepthView(),
     });
     addTask(scene, foamTask);
     let simulationDuration = 0;
@@ -1010,13 +1053,24 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
     // Push the profiler (or null) to both backends + every render task. Re-called after
     // a sim rebuild / backend switch (the sims are recreated; the tasks persist).
     function applyProfiler(): void {
-        const p = timingEnabled ? profiler : null;
+        const p: FluidProfiler | null =
+            timingEnabled && profiler
+                ? {
+                      pass(stage) {
+                          return profiler!.pass(stage === "Surface" ? "Surface render" : stage);
+                      },
+                      stageSpan(stage) {
+                          return profiler!.stageSpan?.(stage === "Surface" ? "Surface render" : stage);
+                      },
+                  }
+                : null;
         pbfSim.setProfiler?.(p);
         flipSim.setProfiler?.(p);
         mpmSim.setProfiler?.(p);
         pbmpmSim.setProfiler?.(p);
         particleTask.setProfiler(p);
         surfaceTask.setProfiler(p);
+        polygonSurfaceTask.setProfiler(p);
         foamTask.setProfiler(p);
     }
     // Timing is always on when the GPU supports timestamp-query: create + wire the
@@ -1288,6 +1342,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             activeSky = slot.sky;
         }
         surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
+        polygonSurfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
     }
 
     function setHostSkyVisible(visible: boolean): void {
@@ -1501,6 +1556,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         }
         try {
             const fit = fitFlipResolutionToDevice();
+            const gridError = gridAllocationError(grid, "FLIP", physicsScale);
             const reason =
                 requestedPlan.required > requestedPlan.total
                     ? "The initial fluid requires " +
@@ -1508,7 +1564,7 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
                       " particles, but Particle capacity is " +
                       requestedPlan.total.toLocaleString() +
                       ". "
-                    : "This configuration exceeds this WebGPU device's grid capacity. ";
+                    : `${gridError ?? "This configuration exceeds this WebGPU device's grid capacity."}\u00a0`;
             return (
                 reason +
                 "When the simulation is restarted, Resolution divisions will be adjusted from\u00a0" +
@@ -1559,6 +1615,18 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             delete canvas.dataset.pressureIterationsUsed;
         }
         canvas.dataset.simulationGpuBytes = String(activeSim.gpuBytes);
+        const polygonSurface = methodName === "FLIP" ? activeSim.polygonSurface : undefined;
+        controls.setPolygonTriangleCount(polygonSurface?.triangleCount, polygonSurface !== undefined);
+        if (polygonSurface) {
+            canvas.dataset.polygonReconstructionMultiplier = String(polygonSurface.reconstructionMultiplier);
+        } else {
+            delete canvas.dataset.polygonReconstructionMultiplier;
+        }
+        if (polygonSurface?.triangleCount === undefined) {
+            delete canvas.dataset.polygonTriangleCount;
+        } else {
+            canvas.dataset.polygonTriangleCount = String(polygonSurface.triangleCount);
+        }
         if (methodName !== "FLIP") {
             controls.setParticleUsage(activeCount, activeSim.count, activeSim.gpuBytes);
             delete canvas.dataset.restartParticleCount;
@@ -1571,14 +1639,22 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
         const effectiveGrid = effectiveGridSettings();
         const cellSize = cellSizeForPhysicsScale("FLIP", physicsScale) * (gridSettings ? 1 : domainScale);
         const gridDim = gridCellsForSize(effectiveGrid.size, cellSize);
-        const restartGpuBytes = estimateFlipGpuBytes(plan.total, gridDim, (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
-            pressureDiagnostics:
-                (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 ||
-                (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
-            liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
-            fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
-            reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
-        });
+        const restartGpuBytes = estimateFlipGpuBytes(
+            plan.total,
+            gridDim,
+            !flipPagedGrid && (controls.getPhysicsValues("FLIP").pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi",
+            {
+                pagedGrid: flipPagedGrid,
+                pagedGridMaxPages: flipPagedGridMaxPages,
+                pressureDiagnostics: (controls.getPhysicsValues("FLIP").pressureDiagnostics ?? 0) >= 0.5 || (controls.getPhysicsValues("FLIP").pressureTolerance ?? 0) > 0,
+                liquidSdf: (controls.getPhysicsValues("FLIP").liquidSdf ?? 0) >= 0.5,
+                fractionalSolids: (controls.getPhysicsValues("FLIP").fractionalSolids ?? 0) >= 0.5,
+                reseedParticles: (controls.getPhysicsValues("FLIP").reseedParticles ?? 0) >= 0.5,
+                particleSheeting: (controls.getPhysicsValues("FLIP").particleSheeting ?? 0) >= 0.5,
+                polygonSurface: (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5,
+                polygonReconstructionMultiplier: controls.getPhysicsValues("FLIP").polygonReconstructionMultiplier ?? 1,
+            }
+        );
         const gridRestartPending =
             physicsScale !== builtPhysicsScale ||
             !gridSettingsEqual(gridSettings, builtGridSettings) ||
@@ -2233,6 +2309,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const rad = (deg * Math.PI) / 180;
         setEnvironmentRotation(scene, rad);
         surfaceTask.setEnvRotationY(rad);
+        polygonSurfaceTask.setEnvRotationY(rad);
     };
     envRotInput.oninput = () => applyEnvRotation(parseFloat(envRotInput.value));
     envRotRow.append(envRotHead, envRotInput);
@@ -2368,6 +2445,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             anisotropic: false,
             anisoSurfScale: 0.5,
             renderMode: "surface",
+            polygonShader: "physical",
             debug: "none",
             showContainer: true,
             activeBlocks: false,
@@ -2410,7 +2488,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 subsurfaceColor: "#b8d1f2",
             },
         },
-        gpu: { stages: ["Simulation", "Foam gen", "Surface", "Foam render", "Particles"], supported: profiler !== null },
+        gpu: { stages: ["Simulation", "Foam gen", "Surface render", "Foam render", "Particles"], supported: profiler !== null },
         on: {
             onMethod: (name) => switchPair(activeDemo!, name),
             onMaterial: (material) => switchPair(activeDemo!, methodName, quality, material),
@@ -2424,19 +2502,41 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 syncSimulationLifecycle();
             },
             onRenderMode: (spheres) => applyRenderMode(spheres),
+            onPolygonShader: (mode) => {
+                surfaceTask.setShadingMode(mode);
+                polygonSurfaceTask.setShadingMode(mode);
+                canvas.dataset.surfaceShader = mode;
+                canvas.dataset.polygonShader = mode;
+            },
             onColor: (rgb) => {
                 surfaceTask.setFluidColor(rgb);
+                polygonSurfaceTask.setFluidColor(rgb);
                 particleTask.setTint(rgb);
             },
-            onAbsorption: (v) => surfaceTask.setAbsorption(v),
+            onAbsorption: (v) => {
+                surfaceTask.setAbsorption(v);
+                polygonSurfaceTask.setAbsorption(v);
+            },
             onParticleSize: (s) => {
                 surfaceTask.setSizeScale(s);
                 particleTask.setSizeScale(s);
             },
-            onRefraction: (v) => surfaceTask.setRefractionStrength(v),
-            onSpecular: (v) => surfaceTask.setSpecularPower(v),
-            onReflection: (exposure, contrast) => surfaceTask.setEnvReflection(exposure, contrast),
-            onReflectivity: (v) => surfaceTask.setFresnelF0(v),
+            onRefraction: (v) => {
+                surfaceTask.setRefractionStrength(v);
+                polygonSurfaceTask.setRefractionStrength(v);
+            },
+            onSpecular: (v) => {
+                surfaceTask.setSpecularPower(v);
+                polygonSurfaceTask.setSpecularPower(v);
+            },
+            onReflection: (exposure, contrast) => {
+                surfaceTask.setEnvReflection(exposure, contrast);
+                polygonSurfaceTask.setEnvReflection(exposure, contrast);
+            },
+            onReflectivity: (v) => {
+                surfaceTask.setFresnelF0(v);
+                polygonSurfaceTask.setFresnelF0(v);
+            },
             onDepthBlur: (size, threshold) => surfaceTask.setDepthBlur(size, threshold),
             onThicknessBlur: (v) => surfaceTask.setThicknessBlur(v),
             onHalf: (on) => surfaceTask.setHalfRender(on),
@@ -2451,12 +2551,17 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onThicknessDownscale: (v) => surfaceTask.setThicknessDownscale(v),
             onShowContainer: (visible) => activeDemo?.setContainerVisible?.(importedScene ? false : visible),
             onDebug: (mode) => {
-                surfaceTask.setDebug(mode);
+                surfaceTask.setDebug(mode === "polygonWireframe" ? "none" : mode);
+                polygonSurfaceTask.setWireframe(mode === "polygonWireframe");
                 // Hide foam sprites while a surface debug texture is shown (they composite over it).
                 surfaceDebugActive = mode !== "none";
                 foamTask.setEnabled(foamRenderVisible());
             },
             onPhysicsParam: (k, v) => applyParam(activeSim, k, v),
+            onPolygonSurface: (enabled) => {
+                renderPolygonSurface = methodName === "FLIP" && enabled;
+                applyEffectiveRenderMode();
+            },
             onPhysScale: (s) => setPhysicsScale(s),
             onGridResolution: (resolution) => setGridResolution(resolution),
             onMarkersPerCell: (markersPerCell) => setMarkersPerCell(markersPerCell),
@@ -2474,19 +2579,38 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 rebuildSims(particleCount, physicsScale);
             },
             onPagedGrid: (enabled) => {
-                if (enabled === mpmPagedGrid) return;
-                mpmPagedGrid = enabled;
                 controls.setPagedGridStatus("");
                 canvas.dataset.pagedGridOverflow = "false";
+                if (methodName === "FLIP") {
+                    if (enabled === flipPagedGrid) return;
+                    flipPagedGrid = enabled;
+                    if (enabled) {
+                        const physics = controls.getPhysicsValues("FLIP");
+                        controls.setPhysics({ ...physics, pressureSolver: 0, polygonSurface: 0 });
+                    }
+                    rebuildSims(requestedParticleCount(), physicsScale, true);
+                    return;
+                }
+                if (enabled === mpmPagedGrid) return;
+                mpmPagedGrid = enabled;
                 rebuildSims(particleCount, physicsScale);
             },
             onPagedGridMaxPages: (pages) => {
-                const clampedPages = Math.min(pages, maxPagedGridPages);
+                const flip = methodName === "FLIP";
+                const clampedPages = Math.min(pages, flip ? maxFlipPagedGridPages : maxPagedGridPages);
                 controls.setPagedGridMaxPages(clampedPages);
-                if (clampedPages === mpmPagedGridMaxPages) return;
-                mpmPagedGridMaxPages = clampedPages;
                 controls.setPagedGridStatus("");
                 canvas.dataset.pagedGridOverflow = "false";
+                if (flip) {
+                    if (clampedPages === flipPagedGridMaxPages) return;
+                    flipPagedGridMaxPages = clampedPages;
+                    if (flipPagedGrid) {
+                        rebuildSims(requestedParticleCount(), physicsScale, true);
+                    }
+                    return;
+                }
+                if (clampedPages === mpmPagedGridMaxPages) return;
+                mpmPagedGridMaxPages = clampedPages;
                 if (mpmPagedGrid) {
                     rebuildSims(particleCount, physicsScale);
                 }
@@ -2548,6 +2672,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onFoamDebugTexture: (v) => foamTask.setDebugTexture(v),
         },
     });
+    surfaceTask.setShadingMode(controls.getValues().polygonShader);
+    polygonSurfaceTask.setShadingMode(controls.getValues().polygonShader);
+    canvas.dataset.surfaceShader = controls.getValues().polygonShader;
+    canvas.dataset.polygonShader = controls.getValues().polygonShader;
 
     // Prepend the scene-specific "Demo" section (scene dropdown + demo params + the
     // container-visibility toggle) into the component's demo slot.
@@ -3374,13 +3502,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 key === "ghostFluid" ||
                 key === "fractionalSolids" ||
                 key === "movingSolidBoundaries" ||
-                key === "reseedParticles")
+                key === "reseedParticles" ||
+                key === "particleSheeting" ||
+                key === "polygonSurface")
         ) {
             canvas.dataset[key] = value >= 0.5 ? "true" : "false";
         }
     }
 
-    function applyMethod(name: string): void {
+    function applyMethod(name: string, resetSimulation = true): void {
         activeSim = simForMethod(name);
         methodName = name;
         syncDeviceParticleCapacity(name);
@@ -3396,12 +3526,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             applyParam(activeSim, key, value);
         }
         applyFlow();
-        activeSim.reset();
+        if (resetSimulation) {
+            activeSim.reset();
+        }
         builtInitialFlowSignature = initialFlowSignature(activeFlow);
-        restartSimulationLifecycle();
-        clearSceneHoles();
+        if (resetSimulation) {
+            restartSimulationLifecycle();
+            clearSceneHoles();
+        }
         particleTask.setSim(activeSim);
         surfaceTask.setSim(activeSim);
+        polygonSurfaceTask.setSim(activeSim);
+        renderPolygonSurface = name === "FLIP" && (controls.getPhysicsValues("FLIP").polygonSurface ?? 0) >= 0.5;
+        applyEffectiveRenderMode();
         applyFoam(); // rebind the foam renderer + (re)enable foam on the new active sim
         applyProfiler(); // re-wire the GPU timing hook onto the rebuilt sims (tasks persist)
         controls.setMethod(name); // sync the method dropdown + component's current method (no side effect)
@@ -3410,8 +3547,14 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setVisiblePhysicsParams(name === "PB-MPM" ? pbmpmParamKeysForMaterial(pbmpmMaterial) : null);
         controls.setMaterial(pbmpmMaterial);
         canvas.dataset.method = methodName;
+        const currentPagedGrid = name === "FLIP" ? flipPagedGrid : mpmPagedGrid;
+        const currentPageCapacity = name === "FLIP" ? flipPagedGridMaxPages : mpmPagedGridMaxPages;
+        controls.setPagedGrid(currentPagedGrid);
+        controls.setPagedGridMaxPages(currentPageCapacity);
+        controls.setPagedGridStatus("");
         canvas.dataset.activeBlocks = mpmActiveBlocks ? "true" : "false";
-        canvas.dataset.pagedGrid = mpmPagedGrid ? "true" : "false";
+        canvas.dataset.pagedGrid = currentPagedGrid ? "true" : "false";
+        canvas.dataset.pagedGridMaxPages = String(currentPageCapacity);
         canvas.dataset.fusedBlockDiscovery = mpmFusedBlockDiscovery ? "true" : "false";
         refreshFlowUI();
     }
@@ -3423,7 +3566,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     // both applyRenderMode and onAnisotropic) to keep the sphere task and surface mode in sync.
     let renderSpheres = false;
     let renderAnisotropic = false;
+    let renderPolygonSurface = false;
     function applyEffectiveRenderMode(): void {
+        polygonSurfaceTask.setEnabled(false);
+        foamTask.setPolygonSurfaceDepth(false);
         if (renderSpheres && renderAnisotropic) {
             // Both ON: inspection view — show the true anisotropic ellipsoids as opaque lit
             // splats (the opaque sphere task is disabled so it doesn't overlap them).
@@ -3434,6 +3580,12 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             particleTask.setEnabled(true);
             surfaceTask.setMode("blit");
             canvas.dataset.render = "spheres";
+        } else if (renderPolygonSurface && methodName === "FLIP") {
+            particleTask.setEnabled(false);
+            surfaceTask.setMode("blit");
+            polygonSurfaceTask.setEnabled(true);
+            foamTask.setPolygonSurfaceDepth(true);
+            canvas.dataset.render = "polygon";
         } else {
             // Surface view. Anisotropy (when on) still shapes the surface itself, as before.
             particleTask.setEnabled(false);
@@ -3554,16 +3706,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
 
     // Rebuild all sims at a new particle count, physics size and active grid.
-    function rebuildSims(count: number, scale: number): void {
+    function rebuildSims(count: number, scale: number, preserveFlipState = false): void {
         if (methodName === "FLIP") {
             flipParticleCapacityRequest = Math.max(1, Math.round(count));
         }
         particleCount = flipParticleCapacity(count, scale);
         physicsScale = scale;
-        pbfSim.dispose();
-        flipSim.dispose();
-        mpmSim.dispose();
-        pbmpmSim.dispose();
+        const previous = { pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim };
+        if (!preserveFlipState) {
+            previous.pbf.dispose();
+            previous.flip.dispose();
+            previous.mpm.dispose();
+            previous.pbmpm.dispose();
+        }
         ({ pbf: pbfSim, flip: flipSim, mpm: mpmSim, pbmpm: pbmpmSim } = createSims(particleCount, scale));
         builtGridSettings = gridSettings ? cloneGridSettings(gridSettings) : undefined;
         builtGridMethod = methodName;
@@ -3572,7 +3727,24 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         builtWithGridFloor = importedCollisionActive || activeDemo?.useGridFloor === true;
         builtDomainScale = domainScale; // sims are now built at the current domain scale
         applySceneSdf();
-        applyMethod(methodName);
+        applyMethod(methodName, !preserveFlipState);
+        if (preserveFlipState) {
+            const encoder = engine._device.createCommandEncoder({ label: "flip-backend-state-transfer" });
+            const transferred = transferFlipSimState(encoder, previous.flip, flipSim);
+            if (transferred) {
+                engine._device.queue.submit([encoder.finish()]);
+            } else {
+                activeSim.reset();
+                restartSimulationLifecycle();
+                clearSceneHoles();
+            }
+            retireGpuResources(engine, () => {
+                previous.pbf.dispose();
+                previous.flip.dispose();
+                previous.mpm.dispose();
+                previous.pbmpm.dispose();
+            });
+        }
         syncGridControls();
         syncGridBoundsWireframe();
         syncFlowWireframe("emitter");
@@ -3613,6 +3785,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         markersPerCell: initialValues.markersPerCell,
         count: particleCount,
         renderMode: initialValues.renderMode,
+        polygonShader: initialValues.polygonShader,
         refraction: initialValues.refraction,
         specular: initialValues.specular,
         reflectionExposure: initialValues.reflectionExposure,
@@ -3665,6 +3838,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             count: RENDER_DEFAULTS.count,
             material: method === "PB-MPM" ? material : undefined,
             renderMode: sand ? "spheres" : RENDER_DEFAULTS.renderMode,
+            polygonShader: RENDER_DEFAULTS.polygonShader,
             refraction: RENDER_DEFAULTS.refraction,
             specular: RENDER_DEFAULTS.specular,
             reflectionExposure: RENDER_DEFAULTS.reflectionExposure,
@@ -3679,8 +3853,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             anisotropic: RENDER_DEFAULTS.anisotropic,
             anisoSurfScale: RENDER_DEFAULTS.anisoSurfScale,
             activeBlocks: method === "MLS-MPM" ? false : undefined,
-            pagedGrid: method === "MLS-MPM" ? false : undefined,
-            pagedGridMaxPages: method === "MLS-MPM" ? Math.max(1000, Math.round((RENDER_DEFAULTS.count * 27 * 1.5) / 64000) * 1000) : undefined,
+            pagedGrid: method === "MLS-MPM" || method === "FLIP" ? false : undefined,
+            pagedGridMaxPages:
+                method === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : method === "MLS-MPM" ? Math.max(1000, Math.round((RENDER_DEFAULTS.count * 27 * 1.5) / 64000) * 1000) : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? false : undefined,
             foam: { ...FOAM_DEFAULTS, surfaceFiltering: method === "FLIP" },
             showContainer: true,
@@ -3725,6 +3900,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             material: p.material ?? base.material,
             camera: p.camera ?? base.camera,
             renderMode: p.renderMode ?? base.renderMode,
+            polygonShader: p.polygonShader ?? base.polygonShader,
             refraction: p.refraction ?? base.refraction,
             specular: p.specular ?? base.specular,
             reflectionExposure: p.reflectionExposure ?? base.reflectionExposure,
@@ -3786,6 +3962,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
             camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: [cam.target.x, cam.target.y, cam.target.z] },
             renderMode: v.renderMode,
+            polygonShader: v.polygonShader,
             refraction: v.refraction,
             specular: v.specular,
             reflectionExposure: v.reflectionExposure,
@@ -3800,8 +3977,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             anisotropic: v.anisotropic,
             anisoSurfScale: v.anisoSurfScale,
             activeBlocks: method === "MLS-MPM" ? v.activeBlocks : undefined,
-            pagedGrid: method === "MLS-MPM" ? v.pagedGrid : undefined,
-            pagedGridMaxPages: method === "MLS-MPM" ? v.pagedGridMaxPages : undefined,
+            pagedGrid: method === "MLS-MPM" || method === "FLIP" ? v.pagedGrid : undefined,
+            pagedGridMaxPages: method === "MLS-MPM" || method === "FLIP" ? v.pagedGridMaxPages : undefined,
             fusedBlockDiscovery: method === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
             foam: v.foam,
             demoState: activeDemo!.snapshotState?.() ?? {},
@@ -3836,8 +4013,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 : Math.min(maxScale, Math.max(minScale, Math.round(st.physScale * 100) / 100));
         const nextMarkersPerCell = methodName === "FLIP" ? Math.max(1, Math.min(64, Math.round(st.markersPerCell ?? FLIP_DEFAULT_MARKERS_PER_CELL))) : flipMarkersPerCell;
         const markersPerCellChanged = methodName === "FLIP" && nextMarkersPerCell !== flipMarkersPerCell;
+        const pagedMethod = methodName === "MLS-MPM" || methodName === "FLIP";
+        const nextPagedGrid = pagedMethod ? (st.pagedGrid ?? false) : methodName === "FLIP" ? flipPagedGrid : mpmPagedGrid;
+        const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
+        const pageCapacityLimit = methodName === "FLIP" ? maxFlipPagedGridPages : maxPagedGridPages;
+        const defaultPageCapacity = methodName === "FLIP" ? FLIP_DEFAULT_PAGE_CAPACITY : Math.max(1000, Math.round((st.count * 27 * 1.5) / 64000) * 1000);
+        const nextPagedGridMaxPages = Math.min(
+            pageCapacityLimit,
+            pagedMethod ? (st.pagedGridMaxPages ?? defaultPageCapacity) : methodName === "FLIP" ? flipPagedGridMaxPages : mpmPagedGridMaxPages
+        );
+        const nextFusedBlockDiscovery = methodName === "MLS-MPM" ? (st.fusedBlockDiscovery ?? false) : mpmFusedBlockDiscovery;
         if (nextGridSettings) {
-            const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale);
+            const allocationError = gridAllocationError(nextGridSettings, methodName, nextPhysicsScale, {
+                enabled: methodName === "FLIP" ? nextPagedGrid : flipPagedGrid,
+                maxPages: methodName === "FLIP" ? nextPagedGridMaxPages : flipPagedGridMaxPages,
+            });
             if (allocationError) {
                 throw new Error(allocationError);
             }
@@ -3885,6 +4075,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (st.renderMode !== undefined) {
             controls.setRenderMode(st.renderMode === "spheres");
         }
+        if (st.polygonShader !== undefined) {
+            controls.setPolygonShader(st.polygonShader);
+        }
         if (st.refraction !== undefined) {
             controls.setRefraction(st.refraction);
         }
@@ -3923,17 +4116,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (st.anisoSurfScale !== undefined) {
             controls.setAnisotropySurfScale(st.anisoSurfScale);
         }
-        const nextPagedGrid = methodName === "MLS-MPM" ? (st.pagedGrid ?? false) : mpmPagedGrid;
-        const nextActiveBlocks = methodName === "MLS-MPM" ? nextPagedGrid || (st.activeBlocks ?? false) : mpmActiveBlocks;
-        const nextPagedGridMaxPages = Math.min(
-            maxPagedGridPages,
-            methodName === "MLS-MPM" ? (st.pagedGridMaxPages ?? Math.max(1000, Math.round((st.count * 27 * 1.5) / 64000) * 1000)) : mpmPagedGridMaxPages
-        );
-        const nextFusedBlockDiscovery = methodName === "MLS-MPM" ? (st.fusedBlockDiscovery ?? false) : mpmFusedBlockDiscovery;
+        if (methodName === "FLIP" && nextPagedGrid) {
+            const physics = controls.getPhysicsValues("FLIP");
+            controls.setPhysics({ ...physics, pressureSolver: 0, polygonSurface: 0 });
+        }
         controls.setActiveBlocks(nextActiveBlocks);
         controls.setPagedGrid(nextPagedGrid);
         controls.setPagedGridMaxPages(nextPagedGridMaxPages);
         controls.setPagedGridStatus("");
+        canvas.dataset.pagedGridOverflow = "false";
         controls.setFusedBlockDiscovery(nextFusedBlockDiscovery);
         // Foam block (optional). The component sets the enable state + config + UI here;
         // the authoritative push to the active sim happens via applyFoam() inside
@@ -3996,14 +4187,20 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             setMsaa(st.msaa);
         }
         const activeBlocksChanged =
-            methodName === "MLS-MPM" &&
-            (nextActiveBlocks !== mpmActiveBlocks ||
-                nextPagedGrid !== mpmPagedGrid ||
-                nextPagedGridMaxPages !== mpmPagedGridMaxPages ||
-                nextFusedBlockDiscovery !== mpmFusedBlockDiscovery);
+            (methodName === "MLS-MPM" &&
+                (nextActiveBlocks !== mpmActiveBlocks ||
+                    nextPagedGrid !== mpmPagedGrid ||
+                    nextPagedGridMaxPages !== mpmPagedGridMaxPages ||
+                    nextFusedBlockDiscovery !== mpmFusedBlockDiscovery)) ||
+            (methodName === "FLIP" && (nextPagedGrid !== flipPagedGrid || nextPagedGridMaxPages !== flipPagedGridMaxPages));
         mpmActiveBlocks = nextActiveBlocks;
-        mpmPagedGrid = nextPagedGrid;
-        mpmPagedGridMaxPages = nextPagedGridMaxPages;
+        if (methodName === "FLIP") {
+            flipPagedGrid = nextPagedGrid;
+            flipPagedGridMaxPages = nextPagedGridMaxPages;
+        } else if (methodName === "MLS-MPM") {
+            mpmPagedGrid = nextPagedGrid;
+            mpmPagedGridMaxPages = nextPagedGridMaxPages;
+        }
         mpmFusedBlockDiscovery = nextFusedBlockDiscovery;
         flipMarkersPerCell = nextMarkersPerCell;
         const gridChanged = !gridSettingsEqual(nextGridSettings, gridSettings) || !gridSettingsEqual(nextGridSettings, builtGridSettings);
@@ -4266,6 +4463,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         simulationStopped = lifecycle.stopped;
         particleTask.setOpacity(simulationOpacity);
         surfaceTask.setOpacity(simulationOpacity);
+        polygonSurfaceTask.setOpacity(simulationOpacity);
         foamTask.setOpacity(simulationOpacity);
         foamTask.setEnabled(foamRenderVisible());
         canvas.dataset.simulationOpacity = simulationOpacity.toFixed(3);
@@ -4374,7 +4572,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         }
         // "P" pauses: freeze the obstacles + the solver so the fluid stops advancing.
         // Rendering and the camera keep running, so you can inspect the frozen state;
-        // forces / holes resume on unpause.
+        // forces / holes resume on unpause. A reconstruction-only refresh is still
+        // allowed so polygon quality changes remain visible on the frozen particles.
+        if (paused || simulationStopped) {
+            activeSim.refreshPolygonSurface?.(engine._currentEncoder);
+        }
         if (!paused && !simulationStopped) {
             const stepDt = fluidSimulationStepDelta(simulationElapsed, dt * simulationTimeScale, simulationDuration, simulationAlphaDecay);
             if (!importedScene) {

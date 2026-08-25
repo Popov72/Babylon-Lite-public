@@ -328,6 +328,10 @@ function demoDebugEnabled(): boolean {
     return process.argv.includes("--debug") || process.env.LAB_DEMO_DEBUG === "1";
 }
 
+function demoSlugForBundleFile(fileName: string, slugs: readonly string[]): string | undefined {
+    return slugs.filter((slug) => fileName === `${slug}.js` || fileName.startsWith(`${slug}-`)).sort((first, second) => second.length - first.length)[0];
+}
+
 export async function buildDemo(slug: string): Promise<void> {
     const demoOutDir = resolve(demosDir, slug);
     rmSync(demoOutDir, { recursive: true, force: true });
@@ -409,8 +413,9 @@ export async function buildDemo(slug: string): Promise<void> {
         newNames.add(f);
         writeFileSync(resolve(demosDir, f), readFileSync(resolve(demoOutDir, f)));
     }
+    const demoSlugs = loadDemosConfig().map((demo) => demo.slug);
     for (const existing of readdirSync(demosDir)) {
-        if ((existing === `${slug}.js` || existing.startsWith(`${slug}-`)) && !newNames.has(existing)) {
+        if (demoSlugForBundleFile(existing, demoSlugs) === slug && !newNames.has(existing)) {
             rmSync(resolve(demosDir, existing));
         }
     }

@@ -37,12 +37,19 @@ describe("fluid preset grid migration", () => {
             const path = resolve(process.cwd(), "lab/public/fluid-presets", filename);
             const json = JSON.parse(readFileSync(path, "utf8")) as FluidExportJson;
             const preset = presetFromExportJson(json);
+            const currentFormat = filename.endsWith(".high.json");
 
-            expect(json.formatVersion, filename).toBe(5);
+            expect(json.formatVersion, filename).toBe(currentFormat ? 13 : 5);
             expect(json.physicsParticleSize, filename).toBe(particleSize);
             expect(json.gridPosition, filename).toEqual([0, 30, 0]);
             expect(json.gridSize, filename).toEqual([120, 60, 120]);
-            expect(json.demoParams, filename).toMatchObject({ sourceSpeed, emitRate, spread, frontBias });
+            if (currentFormat) {
+                expect(json.emitters, filename).toHaveLength(4);
+                expect(json.sinks, filename).toHaveLength(1);
+                expect(preset.legacyFlow, filename).toBe(false);
+            } else {
+                expect(json.demoParams, filename).toMatchObject({ sourceSpeed, emitRate, spread, frontBias });
+            }
             expect(preset.physScale, filename).toBe(particleSize);
             expect(preset.grid, filename).toEqual({ position: [0, 30, 0], size: [120, 60, 120] });
         }
@@ -52,12 +59,13 @@ describe("fluid preset grid migration", () => {
         const state = pairState();
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
+        state.polygonShader = "ocean";
         state.camera = { alpha: 0.25, beta: 1.1, radius: 18, target: [2, 3, 4] };
         state.freeCamera = { position: [5, 6, 7], target: [8, 9, 10] };
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
         const imported = presetFromExportJson(exported);
 
-        expect(exported.formatVersion).toBe(12);
+        expect(exported.formatVersion).toBe(13);
         expect(exported.gridPosition).toEqual(state.grid?.position);
         expect(exported.gridSize).toEqual(state.grid?.size);
         expect(exported.simulationDuration).toBe(12);
@@ -65,6 +73,8 @@ describe("fluid preset grid migration", () => {
         expect(imported.grid).toEqual(state.grid);
         expect(imported.simulationDuration).toBe(12);
         expect(imported.alphaDecay).toBe(2.5);
+        expect(exported.render.polygonShader).toBe("ocean");
+        expect(imported.polygonShader).toBe("ocean");
         expect(exported.camera).toEqual(state.camera);
         expect(imported.camera).toEqual(state.camera);
         expect(exported.freeCamera).toEqual(state.freeCamera);

@@ -191,6 +191,25 @@ describe("fluid flow reset seeding", () => {
         }
     });
 
+    it("preserves requested marker density when deriving a domain-clipped initial count", () => {
+        const source = emitter("initial", "initial", [0, 0, 0]);
+        source.shape.size = [4, 4, 4];
+        const config: FluidFlowConfig = { emitters: [source], sinks: [] };
+        const bounds = { min: [-1, -1, -1] as [number, number, number], max: [1, 1, 1] as [number, number, number] };
+
+        const particles = createFluidInitialParticles(8, config, 1, bounds, true)!;
+        const counts = countFluidInitialParticles(8, config, 1, bounds, true)!;
+
+        expect(particles.activeCount).toBe(8);
+        expect(counts.activeCount).toBe(8);
+        expect(particles.emitterCounts.get("initial")).toBe(8);
+        expect(counts.emitterCounts.get("initial")).toBe(8);
+        expectInsideBox(particles.positions, [0, 0, 0]);
+        for (const coordinate of particles.positions) {
+            expect(Math.abs(coordinate)).toBe(0.5);
+        }
+    });
+
     it("clips lattice sites to every supported volume shape", () => {
         const shapes: { shape: FluidShape; contains: (point: [number, number, number]) => boolean }[] = [
             { shape: { type: "box", size: [2, 2, 2] }, contains: ([x, y, z]) => Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) <= 1.000001 },
@@ -305,12 +324,12 @@ describe("fluid flow preset compatibility", () => {
     const waterfallPreset = (): FluidExportJson =>
         JSON.parse(readFileSync(resolve(process.cwd(), "lab/public/fluid-presets/waterfall.pbmpm.liquid.high.json"), "utf8")) as FluidExportJson;
 
-    it("marks the Waterfall preset for demo-owned flow reconstruction while retaining its grid", () => {
+    it("loads the current Waterfall preset's explicit flow and grid", () => {
         const preset = presetFromExportJson(waterfallPreset());
 
-        expect(preset.legacyFlow).toBe(true);
-        expect(preset.emitters).toBeUndefined();
-        expect(preset.sinks).toBeUndefined();
+        expect(preset.legacyFlow).toBe(false);
+        expect(preset.emitters).toHaveLength(4);
+        expect(preset.sinks).toHaveLength(1);
         expect(preset.grid).toEqual({ position: [0, 30, 0], size: [120, 60, 120] });
     });
 

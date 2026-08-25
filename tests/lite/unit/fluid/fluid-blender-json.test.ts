@@ -34,10 +34,10 @@ function glbBytes(): Uint8Array {
 }
 
 describe("Blender FLIP Fluids exporter", () => {
-    it("exports the format-12 quality-comparison settings", () => {
+    it("exports the format-13 quality-comparison settings", () => {
         const source = readFileSync(resolve(process.cwd(), "scripts/blender-fluid-addon.py"), "utf8");
-        expect(source).toContain('"version": (3, 1, 0)');
-        expect(source).toContain('"formatVersion": 12');
+        expect(source).toContain('"version": (3, 2, 0)');
+        expect(source).toContain('"formatVersion": 13');
         for (const key of [
             "pressureSolver",
             "multigridCycles",
@@ -52,9 +52,21 @@ describe("Blender FLIP Fluids exporter", () => {
             "reseedTargetParticles",
             "reseedMaxParticles",
             "reseedInterval",
+            "particleSheeting",
+            "sheetingStrength",
+            "sheetingInterval",
+            "polygonSurface",
         ]) {
             expect(source).toContain(`"${key}":`);
         }
+    });
+
+    it("accepts format-13 self-contained exports", () => {
+        const preset = validPreset();
+        const json = JSON.parse(selfContainedJson(preset)) as FluidExportJson;
+        json.formatVersion = 13;
+
+        expect(parseBlenderFluidJson(JSON.stringify(json)).preset.formatVersion).toBe(13);
     });
 });
 
@@ -270,6 +282,10 @@ describe("Blender fluid JSON", () => {
             reseedTargetParticles: 8,
             reseedMaxParticles: 12,
             reseedInterval: 5,
+            particleSheeting: 1,
+            sheetingStrength: 0.5,
+            sheetingInterval: 5,
+            polygonSurface: 1,
             viscosityIterations: 12,
             maxSubDtMs: 8.4,
         };

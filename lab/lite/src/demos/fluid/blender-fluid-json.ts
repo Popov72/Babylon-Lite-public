@@ -62,6 +62,10 @@ const PHYSICS_LIMITS: Record<string, Record<string, readonly [number, number]>> 
         reseedTargetParticles: [1, 64],
         reseedMaxParticles: [1, 96],
         reseedInterval: [1, 30],
+        particleSheeting: [0, 1],
+        sheetingStrength: [0.05, 1],
+        sheetingInterval: [1, 30],
+        polygonSurface: [0, 1],
         viscosityIterations: [1, 40],
         maxSubDtMs: [1, 20],
     },
@@ -107,6 +111,10 @@ const OPTIONAL_PHYSICS_KEYS: Record<string, ReadonlySet<string>> = {
         "reseedTargetParticles",
         "reseedMaxParticles",
         "reseedInterval",
+        "particleSheeting",
+        "sheetingStrength",
+        "sheetingInterval",
+        "polygonSurface",
     ]),
 };
 
@@ -423,6 +431,9 @@ function validateDemoState(value: unknown): void {
 function validateRender(value: unknown): void {
     const render = record(value, "manifest.preset.render");
     bool(render.renderAsSpheres, "manifest.preset.render.renderAsSpheres");
+    if (render.polygonShader !== undefined && render.polygonShader !== "physical" && render.polygonShader !== "ocean") {
+        fail('manifest.preset.render.polygonShader must be "physical" or "ocean"');
+    }
     const waterColor = text(render.waterColor, "manifest.preset.render.waterColor");
     if (!HEX_COLOR.test(waterColor)) {
         fail("manifest.preset.render.waterColor must be a #RRGGBB color");
@@ -549,9 +560,10 @@ function validatePreset(value: unknown): FluidExportJson {
         preset.formatVersion !== 9 &&
         preset.formatVersion !== 10 &&
         preset.formatVersion !== 11 &&
-        preset.formatVersion !== 12
+        preset.formatVersion !== 12 &&
+        preset.formatVersion !== 13
     ) {
-        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, or 12");
+        fail("manifest preset must use formatVersion 5, 6, 7, 8, 9, 10, 11, 12, or 13");
     }
     const meta = record(preset.meta, "manifest.preset.meta");
     if (meta.demo !== "blender") {
@@ -750,9 +762,10 @@ export function parseBlenderFluidJson(contents: string): BlenderFluidScene {
         preset.formatVersion !== 9 &&
         preset.formatVersion !== 10 &&
         preset.formatVersion !== 11 &&
-        preset.formatVersion !== 12
+        preset.formatVersion !== 12 &&
+        preset.formatVersion !== 13
     ) {
-        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, or 12");
+        fail("self-contained fluid JSON must use formatVersion 6, 7, 8, 9, 10, 11, 12, or 13");
     }
     const scene = record(preset.scene, "manifest.preset.scene");
     if (scene.encoding !== "base64") {

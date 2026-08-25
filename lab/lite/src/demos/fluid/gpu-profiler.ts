@@ -48,10 +48,9 @@ export interface FluidProfilerImpl extends FluidProfiler {
     dispose(): void;
 }
 
-// Query-set capacity. Two queries (begin + end) per timed pass; the fluid pipeline
-// tops out around ~100 passes/frame (MLS-MPM at 8 substeps + foam + surface), so 256
-// gives comfortable headroom. Passes beyond capacity get no timing (pass() returns
-// undefined) rather than erroring.
+// Query-set capacity. Iterative backends use stageSpan(), so substeps and solver
+// iterations consume one pair per stage rather than one pair per dispatch.
+// Remaining render passes fit comfortably; overflow still degrades safely.
 const CAPACITY = 256;
 // Mappable readback buffers cycled so a buffer is never re-used while its map is in
 // flight (guards against overlapping mapAsync on the same buffer).
@@ -166,6 +165,17 @@ export function createFluidProfiler(device: GPUDevice): FluidProfilerImpl {
     }
 
     return {
+        stageSpan(stage: string) {
+            const p = allocPair();
+            if (!p) {
+                return undefined;
+            }
+            frameRecords.push({ stage, begin: p.begin, end: p.end });
+            return {
+                begin: { querySet, beginningOfPassWriteIndex: p.begin },
+                end: { querySet, endOfPassWriteIndex: p.end },
+            };
+        },
         pass(stage: string): { querySet: GPUQuerySet; beginningOfPassWriteIndex: number; endOfPassWriteIndex: number } | undefined {
             const p = allocPair();
             if (!p) {

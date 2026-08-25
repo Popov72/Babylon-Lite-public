@@ -28,8 +28,8 @@ export interface PhysSchemaEntry {
     max: number;
     step: number;
     value: number;
-    /** Render as a dropdown instead of a range slider. */
-    control?: "slider" | "select";
+    /** Render as a range slider, dropdown, or boolean checkbox. */
+    control?: "slider" | "select" | "checkbox";
     /** Numeric dropdown choices used when control is "select". */
     options?: readonly { label: string; value: number }[];
     /** Show this control only while another numeric parameter has the given value. */
@@ -261,11 +261,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             group: "advanced",
             info: "Asynchronously samples pressure residual and post-projection divergence. Pressure tolerance enables the same sampling automatically.",
         },
@@ -276,11 +272,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             group: "advanced",
             info: "Builds a particle-derived narrow-band liquid signed-distance field for smoother interface normals and optional ghost-fluid pressure. Disabled by default and records no SDF passes.",
         },
@@ -291,11 +283,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             visibleWhen: { key: "liquidSdf", equals: 1 },
             group: "advanced",
             info: "Uses the liquid SDF to place the zero-pressure free surface between cell centres. Improves thin surfaces and volume behavior at additional GPU cost.",
@@ -307,11 +295,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             group: "advanced",
             info: "Samples the scene SDF at MAC-face corners and uses the open-area fraction in divergence and pressure projection. Disabled by default.",
         },
@@ -322,11 +306,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             visibleWhen: { key: "fractionalSolids", equals: 1 },
             group: "advanced",
             info: "Includes SDF-derived obstacle velocity in fractional boundary fluxes. Enable for animated obstacles; leave off for static scenes.",
@@ -338,11 +318,7 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             max: 1,
             step: 1,
             value: 0,
-            control: "select",
-            options: [
-                { label: "Off (fast)", value: 0 },
-                { label: "On", value: 1 },
-            ],
+            control: "checkbox",
             group: "advanced",
             info: "Redistributes markers from dense cells into sparse interior cells without increasing the global active count. Disabled by default and allocates no reseeding buffers.",
         },
@@ -385,6 +361,59 @@ export const DEFAULT_FLUID_SCHEMAS: Record<string, PhysSchemaEntry[]> = {
             value: 5,
             visibleWhen: { key: "reseedParticles", equals: 1 },
             info: "Number of FLIP substeps between rate-limited marker redistribution passes.",
+        },
+        {
+            key: "particleSheeting",
+            label: "Particle sheeting",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "checkbox",
+            group: "advanced",
+            info: "Adds markers from unused capacity only in under-sampled, one-cell-thin free-surface sheets. This preserves splash curtains without densifying the bulk liquid.",
+        },
+        {
+            key: "sheetingStrength",
+            label: "Sheeting strength",
+            min: 0.05,
+            max: 1,
+            step: 0.05,
+            value: 0.5,
+            visibleWhen: { key: "particleSheeting", equals: 1 },
+            info: "Fraction of the normal marker density restored in detected thin sheets. It also scales the rate-limited number of particles that may be added per pass.",
+        },
+        {
+            key: "sheetingInterval",
+            label: "Sheeting interval",
+            min: 1,
+            max: 30,
+            step: 1,
+            value: 5,
+            visibleWhen: { key: "particleSheeting", equals: 1 },
+            info: "Number of FLIP substeps between thin-sheet detection and insertion passes.",
+        },
+        {
+            key: "polygonSurface",
+            label: "Polygon surface",
+            min: 0,
+            max: 1,
+            step: 1,
+            value: 0,
+            control: "checkbox",
+            group: "advanced",
+            info: "Reconstructs an indexed surface-net mesh from the liquid SDF on the GPU. Refraction ray-marches the SDF and opaque scene depth; reflections use screen-space Hi-Z with an environment fallback. No mesh data is read back to the CPU.",
+        },
+        {
+            key: "polygonReconstructionMultiplier",
+            label: "Reconstruction multiplier",
+            min: 1,
+            max: 2,
+            step: 0.25,
+            value: 1,
+            group: "advanced",
+            visibleWhen: { key: "polygonSurface", equals: 1 },
+            info: "Render-only samples per FLIP cell axis. Values above 1 interpolate the coherent solver liquid SDF onto a finer polygon grid without changing pressure, whitewater, or timestep resolution. Cost grows cubically: 2× uses roughly 8× as many reconstruction cells.",
         },
         {
             key: "viscosityIterations",
@@ -670,6 +699,7 @@ export interface FluidControlValues {
     showGridBounds: boolean;
     count: number;
     renderMode: "surface" | "spheres";
+    polygonShader: "physical" | "ocean";
     refraction: number;
     specular: number;
     reflectionExposure: number;
@@ -739,13 +769,15 @@ export interface FluidControlsInitial {
     anisoSurfScale?: number;
     /** MLS-MPM sparse active-block execution. Defaults off. */
     activeBlocks?: boolean;
-    /** Bounded sparse page pool for the MLS-MPM grid. Defaults off. */
+    /** Bounded sparse page pool for FLIP or MLS-MPM. Defaults off. */
     pagedGrid?: boolean;
-    /** Maximum live 4³-cell pages in paged-grid mode. */
+    /** Maximum live grid pages in paged-grid mode (8³ for FLIP, 4³ for MLS-MPM). */
     pagedGridMaxPages?: number;
     /** Append active blocks directly from the particle histogram. Defaults off. */
     fusedBlockDiscovery?: boolean;
     renderMode: "surface" | "spheres";
+    /** Shading model used by the FLIP polygon renderer. */
+    polygonShader?: "physical" | "ocean";
     debug: string;
     showContainer: boolean;
     foam: FluidFoamValues;
@@ -759,6 +791,7 @@ export interface FluidControlsCallbacks {
     onSimulationDuration?(seconds: number): void;
     onAlphaDecay?(seconds: number): void;
     onRenderMode?(spheres: boolean): void;
+    onPolygonShader?(mode: "physical" | "ocean"): void;
     onColor?(rgb: [number, number, number]): void;
     onAbsorption?(v: number): void;
     onParticleSize?(v: number): void;
@@ -779,6 +812,8 @@ export interface FluidControlsCallbacks {
     onShowContainer?(visible: boolean): void;
     onDebug?(mode: FluidDebug): void;
     onPhysicsParam?(key: string, value: number): void;
+    /** Host renderer integration for the FLIP polygon-surface checkbox. */
+    onPolygonSurface?(enabled: boolean): void;
     onPhysScale?(scale: number): void;
     onGridResolution?(resolution: number): void;
     onMarkersPerCell?(markersPerCell: number): void;
@@ -855,6 +890,8 @@ export interface FluidControlsOptions {
     methods: string[];
     /** Options for the "Particles" dropdown. */
     particleCounts: number[];
+    /** Use a free-form positive integer input instead of the particle-count dropdown. */
+    particleCountInput?: boolean;
     /** Initial value for every control. */
     initial: FluidControlsInitial;
     /** "Physics particle size" slider range (defaults 0.5 … 3). */
@@ -900,12 +937,15 @@ export interface FluidControlsHandle {
     setMethod(method: string): void;
     setMaterial(material: number): void;
     setParticleCount(count: number): void;
+    setParticleCountVisible(visible: boolean): void;
     setActiveParticleCount(count: number): void;
     setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void;
+    setPolygonTriangleCount(count: number | undefined, visible: boolean): void;
     setPressureDiagnostics(diagnostics: FluidPressureDiagnostics | undefined): void;
     setSimulationDuration(seconds: number): void;
     setAlphaDecay(seconds: number): void;
     setRenderMode(spheres: boolean): void;
+    setPolygonShader(mode: "physical" | "ocean"): void;
     setColor(hex: string): void;
     setAbsorption(v: number): void;
     setParticleSize(v: number): void;
@@ -960,6 +1000,8 @@ const DEFAULT_PANEL_STYLE =
     "overflow:auto;resize:both;box-sizing:border-box;font:12px system-ui,-apple-system,'Segoe UI',sans-serif;" +
     "color:#dfe6ee;background:rgba(10,14,20,0.85);padding:10px 12px;border-radius:8px;pointer-events:auto;user-select:none;";
 const SELECT_STYLE = "width:100%;margin-bottom:8px;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
+const FLIP_GRID_RESOLUTION_MIN = 16;
+const FLIP_GRID_RESOLUTION_MAX = 2000;
 
 function hexToRgb(hex: string): [number, number, number] {
     return [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255];
@@ -1071,6 +1113,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     methodTitle.style.cssText = "font-weight:600;margin-bottom:6px;";
     const methodSel = document.createElement("select");
     methodSel.style.cssText = SELECT_STYLE;
+    methodSel.dataset.fluidMethod = "true";
     for (const name of opts.methods) {
         const opt = document.createElement("option");
         opt.value = name;
@@ -1116,8 +1159,18 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const particlesTitle = document.createElement("div");
     particlesTitle.textContent = "Particles";
     particlesTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
-    const particlesSel = document.createElement("select");
-    particlesSel.style.cssText = SELECT_STYLE;
+    const particlesControl = document.createElement(opts.particleCountInput ? "input" : "select");
+    particlesControl.style.cssText = SELECT_STYLE;
+    if (particlesControl instanceof HTMLInputElement) {
+        particlesControl.type = "number";
+        particlesControl.min = "1";
+        particlesControl.step = "1";
+    }
+    const particlesRow = document.createElement("div");
+    particlesRow.dataset.fluidParticleCountControl = "true";
+    particlesRow.append(particlesTitle, particlesControl);
+    let particleCountVisible = !opts.hideParticles;
+    let committedParticleCount = Math.max(0, Math.round(init.count));
     const particleCountLabel = (count: number): string =>
         count >= 1000000
             ? `${(count / 1000000).toFixed(count % 1000000 === 0 ? 0 : 1)}M`
@@ -1125,22 +1178,31 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
               ? `${(count / 1000).toFixed(count % 1000 === 0 ? 0 : 1)}k`
               : String(count);
     const ensureParticleCountOption = (count: number): void => {
-        if (particlesSel.querySelector(`option[value="${count}"]`)) {
+        if (!(particlesControl instanceof HTMLSelectElement) || particlesControl.querySelector(`option[value="${count}"]`)) {
             return;
         }
         const opt = document.createElement("option");
         opt.value = String(count);
         // "750k" below 1M and "1M" / "1.5M" at/above so larger counts read sensibly.
         opt.textContent = particleCountLabel(count);
-        const next = Array.from(particlesSel.options).find((candidate) => Number(candidate.value) > count);
-        particlesSel.insertBefore(opt, next ?? null);
+        const next = Array.from(particlesControl.options).find((candidate) => Number(candidate.value) > count);
+        particlesControl.insertBefore(opt, next ?? null);
     };
     for (const count of opts.particleCounts) {
         ensureParticleCountOption(count);
     }
     ensureParticleCountOption(init.count);
-    particlesSel.value = String(init.count);
-    particlesSel.onchange = () => on.onParticleCount?.(parseInt(particlesSel.value, 10));
+    particlesControl.value = String(init.count);
+    particlesControl.onchange = () => {
+        const count = Math.round(Number(particlesControl.value));
+        if (!Number.isFinite(count) || count < 1) {
+            particlesControl.value = String(committedParticleCount);
+            return;
+        }
+        committedParticleCount = count;
+        particlesControl.value = String(count);
+        on.onParticleCount?.(count);
+    };
     const formatParticleCount = (count: number): string => Math.max(0, Math.floor(count)).toLocaleString("en-US");
     const formatGpuBytes = (bytes: number): string => {
         const value = Math.max(0, bytes);
@@ -1162,13 +1224,16 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     particleUsageLabel.style.cssText = "display:block;margin-bottom:3px;";
     const currentParticleUsageValue = document.createElement("div");
     currentParticleUsageValue.style.cssText = "color:#9fb4cc;font-variant-numeric:tabular-nums;";
+    const polygonTriangleCountValue = document.createElement("div");
+    polygonTriangleCountValue.style.cssText = "display:none;color:#9fb4cc;font-variant-numeric:tabular-nums;";
+    polygonTriangleCountValue.dataset.fluidPolygonTriangleCount = "true";
     const restartParticleUsageValue = document.createElement("div");
     restartParticleUsageValue.style.cssText = "display:none;color:#e5bd68;font-variant-numeric:tabular-nums;";
     const particleGpuMemoryValue = document.createElement("div");
     particleGpuMemoryValue.style.cssText = "color:#7c8aa0;font-variant-numeric:tabular-nums;";
     const restartGpuMemoryValue = document.createElement("div");
     restartGpuMemoryValue.style.cssText = "display:none;color:#e5bd68;font-variant-numeric:tabular-nums;";
-    particleUsageRow.append(particleUsageLabel, currentParticleUsageValue, restartParticleUsageValue, particleGpuMemoryValue, restartGpuMemoryValue);
+    particleUsageRow.append(particleUsageLabel, currentParticleUsageValue, polygonTriangleCountValue, restartParticleUsageValue, particleGpuMemoryValue, restartGpuMemoryValue);
     const pressureDiagnosticsRow = document.createElement("div");
     pressureDiagnosticsRow.style.cssText = "display:none;margin:6px 0;font-size:11px;line-height:1.45;color:#9fb4cc;font-variant-numeric:tabular-nums;";
     pressureDiagnosticsRow.dataset.fluidPressureDiagnostics = "true";
@@ -1360,6 +1425,30 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         on.onParticleSize?.(s);
     };
     sizeRow.append(sizeHead, sizeInput);
+
+    const polygonShaderRow = document.createElement("div");
+    polygonShaderRow.style.cssText = "margin:2px 0 8px;";
+    const polygonShaderLabel = document.createElement("div");
+    polygonShaderLabel.textContent = "Surface shader";
+    polygonShaderLabel.style.cssText = "font-weight:600;margin:4px 0 6px;";
+    const polygonShaderSelect = document.createElement("select");
+    polygonShaderSelect.style.cssText = SELECT_STYLE;
+    polygonShaderSelect.dataset.fluidSurfaceShader = "true";
+    polygonShaderSelect.dataset.fluidPolygonShader = "true";
+    for (const option of [
+        { value: "physical", label: "Physical refraction" },
+        { value: "ocean", label: "Ocean PBR" },
+    ]) {
+        const element = document.createElement("option");
+        element.value = option.value;
+        element.textContent = option.label;
+        polygonShaderSelect.appendChild(element);
+    }
+    polygonShaderSelect.value = init.polygonShader ?? "physical";
+    polygonShaderSelect.onchange = () => {
+        on.onPolygonShader?.(polygonShaderSelect.value as "physical" | "ocean");
+    };
+    polygonShaderRow.append(polygonShaderLabel, polygonShaderSelect);
 
     // Surface-shading sliders (the two depth sliders share one setter, so track live).
     let surfRefraction = init.refraction;
@@ -1617,7 +1706,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     debugTitle.style.cssText = "font-weight:600;margin:4px 0 6px;";
     const debugSel = document.createElement("select");
     debugSel.style.cssText = SELECT_STYLE;
-    debugSel.title = "Thickness debug views compress the additive HDR values into grayscale so dense columns remain distinguishable instead of clipping to white.";
+    debugSel.title = "Thickness views compress additive HDR values into grayscale. Polygon wireframe overlays the GPU-reconstructed Surface Nets edges for topology debugging.";
+    debugSel.dataset.fluidDebug = "true";
     for (const o of [
         { value: "none", label: "None (final render)" },
         { value: "depth", label: "Depth" },
@@ -1625,6 +1715,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         { value: "thickness", label: "Thickness" },
         { value: "thicknessBlur", label: "Thickness (blurred)" },
         { value: "normals", label: "Normals" },
+        { value: "polygonWireframe", label: "Polygon wireframe" },
     ]) {
         const opt = document.createElement("option");
         opt.value = o.value;
@@ -1674,7 +1765,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     physInput.onchange = () => on.onPhysScale?.(parseFloat(physInput.value));
     physRow.append(physHead, physInput);
-    let gridResolution = Math.max(16, Math.min(400, Math.round(init.gridResolution ?? 160)));
+    let gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(init.gridResolution ?? 160)));
     const flipResolutionRow = document.createElement("div");
     flipResolutionRow.style.cssText = "display:none;margin:2px 0 8px;";
     flipResolutionRow.dataset.fluidGridResolution = "true";
@@ -1690,8 +1781,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     flipResolutionHead.append(flipResolutionLabel, flipResolutionValue);
     const flipResolutionInput = document.createElement("input");
     flipResolutionInput.type = "range";
-    flipResolutionInput.min = "16";
-    flipResolutionInput.max = "400";
+    flipResolutionInput.min = String(FLIP_GRID_RESOLUTION_MIN);
+    flipResolutionInput.max = String(FLIP_GRID_RESOLUTION_MAX);
     flipResolutionInput.step = "1";
     flipResolutionInput.value = String(gridResolution);
     flipResolutionInput.style.cssText = "width:100%;";
@@ -1831,8 +1922,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
 
     const applyFlipControlVisibility = (): void => {
         const flip = currentMethod === "FLIP";
-        particlesTitle.style.display = flip ? "none" : "";
-        particlesSel.style.display = flip ? "none" : "";
+        particlesRow.style.display = particleCountVisible && !flip ? "" : "none";
         physRow.style.display = flip ? "none" : "";
         flipResolutionRow.hidden = !flip;
         flipMarkersRow.hidden = !flip;
@@ -1893,20 +1983,21 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     );
     const [pagedGridRow, pagedGridChk] = makeActiveBlockOption(
         "Paged grid",
-        "MLS-MPM active-block mode only. Stores grid nodes in a bounded sparse page pool instead of allocating every cell in the full domain. The simulation freezes and reports an error if the page capacity is exceeded.",
+        "Opt-in sparse storage for FLIP and MLS-MPM. Allocates only pages near active fluid instead of every cell in the full domain. The dense backend remains the default fast path. The simulation freezes and reports an error if capacity is exceeded.",
         init.pagedGrid ?? false,
         (enabled) => {
             applyActiveBlockDependencies();
             on.onPagedGrid?.(enabled);
         }
     );
+    pagedGridRow.style.margin = "8px 0";
     const pagedGridCapacityRow = document.createElement("label");
     pagedGridCapacityRow.style.cssText = "display:block;margin:8px 0 8px 36px;";
     const pagedGridCapacityHead = document.createElement("div");
     pagedGridCapacityHead.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
     const pagedGridCapacityLabel = labelWithInfo(
         "Page capacity",
-        "Maximum number of live 4×4×4 grid pages. Higher values use more memory; exceeding the cap freezes the solver instead of integrating against a partial grid."
+        "Maximum number of live grid pages (8×8×8 cells for FLIP, 4×4×4 for MLS-MPM). Higher values use more memory; exceeding the cap freezes the solver instead of integrating against a partial grid."
     );
     const pagedGridCapacityValue = document.createElement("span");
     pagedGridCapacityHead.append(pagedGridCapacityLabel, pagedGridCapacityValue);
@@ -1927,12 +2018,13 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const pagedGridStatus = document.createElement("div");
     pagedGridStatus.style.cssText = "display:none;margin:4px 0 8px 36px;font-size:11px;color:#9fb3c8;";
     const applyActiveBlockDependencies = (): void => {
+        const flip = currentMethod === "FLIP";
         fusedBlockDiscoveryChk.disabled = !activeBlocksChk.checked;
-        pagedGridChk.disabled = !activeBlocksChk.checked;
-        activeBlocksChk.disabled = pagedGridChk.checked;
+        pagedGridChk.disabled = !flip && !activeBlocksChk.checked;
+        activeBlocksChk.disabled = !flip && pagedGridChk.checked;
         pagedGridCapacityInput.disabled = !pagedGridChk.checked;
         fusedBlockDiscoveryRow.style.opacity = activeBlocksChk.checked ? "1" : "0.5";
-        pagedGridRow.style.opacity = activeBlocksChk.checked ? "1" : "0.5";
+        pagedGridRow.style.opacity = flip || activeBlocksChk.checked ? "1" : "0.5";
         pagedGridCapacityRow.style.opacity = pagedGridChk.checked ? "1" : "0.5";
     };
     activeBlocksChk.onchange = () => {
@@ -1940,33 +2032,51 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         on.onActiveBlocks?.(activeBlocksChk.checked);
     };
     const applyActiveBlocksVisibility = (): void => {
-        const display = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
-        activeBlocksRow.style.display = display;
-        fusedBlockDiscoveryRow.style.display = display;
-        pagedGridRow.style.display = display;
-        pagedGridCapacityRow.style.display = display;
-        pagedGridStatus.style.display = display !== "none" && pagedGridStatus.textContent ? "block" : "none";
+        const mpmDisplay = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
+        const pagedDisplay = opts.showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "flex" : "none";
+        activeBlocksRow.style.display = mpmDisplay;
+        fusedBlockDiscoveryRow.style.display = mpmDisplay;
+        pagedGridRow.style.display = pagedDisplay;
+        pagedGridCapacityRow.style.display = pagedDisplay;
+        pagedGridStatus.style.display = pagedDisplay !== "none" && pagedGridStatus.textContent ? "block" : "none";
+        applyActiveBlockDependencies();
     };
     applyActiveBlockDependencies();
     applyActiveBlocksVisibility();
 
     // Per-method physics sliders can be filtered to only those relevant to the host's current
     // config (e.g. a PB-MPM material only uses a subset). null = show all. paramRows maps each
-    // slider's param key → its DOM row so the filter is a cheap display toggle (no rebuild).
+    // slider's param key → its DOM row/input so filtering and dependencies are cheap updates.
     const paramRows = new Map<string, HTMLElement>();
+    const paramInputs = new Map<string, HTMLInputElement | HTMLSelectElement>();
     let visibleParamKeys: Set<string> | null = null;
     const applyParamVisibility = (): void => {
         for (const [key, row] of paramRows) {
             const definition = (schemas[currentMethod] ?? []).find((entry) => entry.key === key);
             const dependency = definition?.visibleWhen;
-            const dependencyVisible = !dependency || (schemas[currentMethod] ?? []).find((entry) => entry.key === dependency.key)?.value === dependency.equals;
-            row.style.display = (!visibleParamKeys || visibleParamKeys.has(key)) && dependencyVisible ? "" : "none";
+            const dependencyApplies = !dependency || (schemas[currentMethod] ?? []).find((entry) => entry.key === dependency.key)?.value === dependency.equals;
+            const hostVisible = !visibleParamKeys || visibleParamKeys.has(key);
+            const hostSupported = on.onPhysicsParam !== undefined && (key !== "polygonSurface" || on.onPolygonSurface !== undefined);
+            const keepVisible = definition?.control === "checkbox";
+            row.style.display = hostVisible && (dependencyApplies || keepVisible) ? "" : "none";
+            const input = paramInputs.get(key);
+            if (input) {
+                if (!dependencyApplies && definition?.control === "checkbox" && input instanceof HTMLInputElement && input.checked) {
+                    input.checked = false;
+                    definition.value = 0;
+                    on.onPhysicsParam?.(key, 0);
+                }
+                input.disabled = !dependencyApplies || !hostSupported;
+            }
+            row.style.opacity = dependencyApplies && hostSupported ? "1" : "0.5";
         }
     };
     function buildSliders(name: string): void {
         sliderHost.replaceChildren();
         paramRows.clear();
-        let previousGroup: PhysSchemaEntry["group"];
+        paramInputs.clear();
+        let activeGroup: PhysSchemaEntry["group"];
+        let groupHost: HTMLElement = sliderHost;
         const groupLabels: Record<NonNullable<PhysSchemaEntry["group"]>, string> = {
             liquid: "Liquid",
             timestep: "Time stepping",
@@ -1974,16 +2084,51 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             advanced: "Advanced numerical",
         };
         for (const p of schemas[name] ?? []) {
-            if (p.group && p.group !== previousGroup) {
-                const heading = document.createElement("div");
-                heading.textContent = groupLabels[p.group];
-                heading.style.cssText = "font-weight:600;margin:10px 0 4px;color:#c7d7ea;";
-                sliderHost.appendChild(heading);
+            if (p.group && p.group !== activeGroup) {
+                activeGroup = p.group;
+                if (p.group === "advanced") {
+                    const details = document.createElement("details");
+                    details.open = true;
+                    details.dataset.fluidPhysicsGroup = p.group;
+                    const summary = document.createElement("summary");
+                    summary.textContent = groupLabels[p.group];
+                    summary.style.cssText = "font-weight:600;margin:10px 0 4px;color:#c7d7ea;cursor:pointer;user-select:none;";
+                    details.appendChild(summary);
+                    sliderHost.appendChild(details);
+                    groupHost = details;
+                } else {
+                    const heading = document.createElement("div");
+                    heading.textContent = groupLabels[p.group];
+                    heading.style.cssText = "font-weight:600;margin:10px 0 4px;color:#c7d7ea;";
+                    sliderHost.appendChild(heading);
+                    groupHost = sliderHost;
+                }
             }
-            previousGroup = p.group;
             const row = document.createElement("div");
             row.style.cssText = "margin:6px 0;";
             row.dataset.fluidPhysicsParam = p.key;
+            if (p.control === "checkbox") {
+                row.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.checked = p.value >= 0.5;
+                checkbox.onchange = () => {
+                    p.value = checkbox.checked ? 1 : 0;
+                    on.onPhysicsParam?.(p.key, p.value);
+                    if (p.key === "polygonSurface") {
+                        on.onPolygonSurface?.(checkbox.checked);
+                    }
+                    applyParamVisibility();
+                };
+                const label = document.createElement("label");
+                label.style.cssText = "display:flex;align-items:center;gap:6px;cursor:pointer;";
+                label.append(checkbox, labelWithInfo(p.label, p.info));
+                row.appendChild(label);
+                groupHost.appendChild(row);
+                paramRows.set(p.key, row);
+                paramInputs.set(p.key, checkbox);
+                continue;
+            }
             if (p.control === "select") {
                 const select = document.createElement("select");
                 select.style.cssText = SELECT_STYLE;
@@ -2001,8 +2146,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                     applyParamVisibility();
                 };
                 row.append(labelWithInfo(p.label, p.info), select);
-                sliderHost.appendChild(row);
+                groupHost.appendChild(row);
                 paramRows.set(p.key, row);
+                paramInputs.set(p.key, select);
                 continue;
             }
             const head = document.createElement("div");
@@ -2026,8 +2172,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 on.onPhysicsParam?.(p.key, v);
             };
             row.append(head, input);
-            sliderHost.appendChild(row);
+            groupHost.appendChild(row);
             paramRows.set(p.key, row);
+            paramInputs.set(p.key, input);
         }
         applyParamVisibility();
     }
@@ -2071,7 +2218,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     let foamGenerateFoam = init.foam.generateFoam ?? true;
     let foamGenerateSpray = init.foam.generateSpray ?? true;
     let foamGenerateBubbles = init.foam.generateBubbles ?? true;
-    let foamSurfaceFiltering = init.foam.surfaceFiltering ?? currentMethod === "FLIP";
+    let foamSurfaceFiltering = foamEnabled && (init.foam.surfaceFiltering ?? currentMethod === "FLIP");
 
     const foamUsageRow = document.createElement("div");
     foamUsageRow.dataset.fluidFoamCounts = "true";
@@ -2113,6 +2260,11 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     foamEnableRow.append(foamEnableChk, foamEnableText);
     foamEnableChk.onchange = () => {
         foamEnabled = foamEnableChk.checked;
+        if (!foamEnabled && foamSurfaceFiltering) {
+            foamSurfaceFiltering = false;
+            foamSurfaceFilteringChk.checked = false;
+            on.onFoamSurfaceFiltering?.(false);
+        }
         applyFoamKindAvailability();
         updateFoamParticleCounts(undefined, foamEnabled);
         on.onFoamEnable?.(foamEnabled);
@@ -2176,6 +2328,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamKindChecks[index]!.disabled = !foamEnabled;
             foamKindRows[index]!.style.opacity = foamEnabled ? "1" : "0.5";
         }
+        foamSurfaceFilteringChk.disabled = !foamEnabled;
+        foamSurfaceFilteringRow.style.opacity = foamEnabled ? "1" : "0.5";
     };
     applyFoamKindAvailability();
     updateFoamParticleCounts(undefined, foamEnabled);
@@ -2596,7 +2750,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         generalItems.push(materialRow);
     }
     if (!opts.hideParticles) {
-        generalItems.push(particlesTitle, particlesSel);
+        generalItems.push(particlesRow);
     }
     if (opts.showSimulationTiming) {
         generalItems.push(simulationDurationRow, alphaDecayRow);
@@ -2617,6 +2771,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             "Visual radius multiplier for the impostors the surface is built from. Larger blobs merge into a smoother, fatter surface; smaller ones read as more separate droplets. Purely cosmetic — the simulation is unaffected.",
         ],
         [absorbRow, "How strongly the water colour saturates with depth. Higher makes thin sheets read as tinted and deep water go opaque; 0 leaves the fluid clear."],
+        [
+            polygonShaderRow,
+            "Shading model for both screen-space and FLIP polygon surfaces. Physical refraction transmits the opaque scene through the water. Ocean PBR adapts Babylon.js Playground YX6IB8#758: opaque dark water with Beer-Lambert absorption, environment Fresnel, distance-dependent gloss, directional specular, and splash back-lighting.",
+        ],
         [refractionRow, "How far the background is displaced when seen through the fluid, scaled by the water's thickness. 0 disables refraction."],
         [specularRow, "Tightness of the specular highlight. Higher values give a smaller, sharper glint; lower values spread it into a broad sheen."],
         [
@@ -2708,6 +2866,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         renderItems.push(renderRow);
     }
     renderItems.push(
+        polygonShaderRow,
         absorbRow,
         refractionRow,
         specularRow,
@@ -2751,6 +2910,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     // Surface-only rows (hidden in "Render as spheres" mode). Water color + particle size affect
     // both renderers and the spheres toggle itself must stay visible, so they are excluded.
     surfaceOnlyRows.push(
+        polygonShaderRow,
         absorbRow,
         refractionRow,
         specularRow,
@@ -2816,6 +2976,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         };
         const makeTimingRow = (label: string): HTMLElement => {
             const { row, val } = makeStatRow(label);
+            row.dataset.fluidGpuStage = label;
             val.textContent = "\u2014 ms";
             timingValueEls[label] = val;
             return row;
@@ -2842,8 +3003,12 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             const td = Math.max(1, parseInt(thickDownInput.value, 10) || 1);
             const surfaceThick = Math.ceil(w / td) * Math.ceil(h / td) * (3 * 8);
             const foamBytes = foamEnabled ? px * (3 * 8) : 0;
+            const polygonSurfaceEnabled = currentMethod === "FLIP" && ((schemas.FLIP ?? []).find((entry) => entry.key === "polygonSurface")?.value ?? 0) > 0.5;
+            // RG32 eye depth, R32 back depth, and two full-resolution depth buffers.
+            // Eye depth (rg32f), private front depth, and the full r32f Hi-Z mip chain.
+            const polygonSurfaceBytes = polygonSurfaceEnabled ? px * 18 : 0;
             const sceneRT = px * (4 + 4);
-            return surfaceDepth + surfaceThick + foamBytes + sceneRT;
+            return surfaceDepth + surfaceThick + foamBytes + polygonSurfaceBytes + sceneRT;
         }
 
         const timingHeader = makeSubHeader("Timing");
@@ -2921,8 +3086,13 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         },
         setParticleCount(count: number): void {
             ensureParticleCountOption(count);
-            particlesSel.value = String(count);
+            committedParticleCount = Math.max(0, Math.round(count));
+            particlesControl.value = String(committedParticleCount);
             setParticleCapacity(count);
+        },
+        setParticleCountVisible(visible: boolean): void {
+            particleCountVisible = visible;
+            applyFlipControlVisibility();
         },
         setActiveParticleCount,
         setParticleUsage(activeCount: number, totalCount: number, gpuBytes: number, restartActiveCount?: number, restartTotalCount?: number, restartGpuBytes?: number): void {
@@ -2938,6 +3108,14 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                       }
                     : null;
             updateParticleUsage();
+        },
+        setPolygonTriangleCount(count: number | undefined, visible: boolean): void {
+            polygonTriangleCountValue.style.display = visible ? "block" : "none";
+            polygonTriangleCountValue.textContent = visible
+                ? count === undefined
+                    ? "Triangles:\u00a0Calculating..."
+                    : "Triangles:\u00a0" + formatParticleCount(Math.max(0, Math.floor(count)))
+                : "";
         },
         setPressureDiagnostics(diagnostics: FluidPressureDiagnostics | undefined): void {
             displayedPressureDiagnostics = diagnostics;
@@ -2956,6 +3134,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             renderChk.checked = spheres;
             on.onRenderMode?.(spheres);
             applySurfaceVisibility(spheres);
+        },
+        setPolygonShader(mode: "physical" | "ocean"): void {
+            polygonShaderSelect.value = mode;
+            on.onPolygonShader?.(mode);
         },
         setColor(hex: string): void {
             colorInput.value = hex;
@@ -3040,7 +3222,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             physVal.textContent = `${scale.toFixed(2)}\u00d7`;
         },
         setGridResolution(resolution: number): void {
-            gridResolution = Math.max(16, Math.min(400, Math.round(resolution)));
+            gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(resolution)));
             flipResolutionInput.value = String(gridResolution);
             flipResolutionValue.textContent = String(gridResolution);
         },
@@ -3084,7 +3266,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setPagedGridStatus(message: string, error = false): void {
             pagedGridStatus.textContent = message;
             pagedGridStatus.style.color = error ? "#ff8a80" : "#9fb3c8";
-            pagedGridStatus.style.display = message && opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "block" : "none";
+            pagedGridStatus.style.display = message && opts.showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "block" : "none";
         },
         setFusedBlockDiscovery(enabled: boolean): void {
             fusedBlockDiscoveryChk.checked = enabled;
@@ -3097,7 +3279,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             foamGenerateFoam = foam.generateFoam ?? true;
             foamGenerateSpray = foam.generateSpray ?? true;
             foamGenerateBubbles = foam.generateBubbles ?? true;
-            foamSurfaceFiltering = foam.surfaceFiltering ?? currentMethod === "FLIP";
+            foamSurfaceFiltering = foam.enabled && (foam.surfaceFiltering ?? currentMethod === "FLIP");
             foamGenerateFoamChk.checked = foamGenerateFoam;
             foamGenerateSprayChk.checked = foamGenerateSpray;
             foamGenerateBubblesChk.checked = foamGenerateBubbles;
@@ -3161,8 +3343,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 gridResolution,
                 markersPerCell,
                 showGridBounds: gridBoundsChk.checked,
-                count: currentMethod === "FLIP" ? flipParticleCapacity : parseInt(particlesSel.value, 10),
+                count: currentMethod === "FLIP" ? flipParticleCapacity : committedParticleCount,
                 renderMode: renderChk.checked ? "spheres" : "surface",
+                polygonShader: polygonShaderSelect.value as "physical" | "ocean",
                 refraction: surfRefraction,
                 specular: surfSpecular,
                 reflectionExposure: surfReflExposure,

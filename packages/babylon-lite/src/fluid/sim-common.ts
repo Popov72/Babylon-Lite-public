@@ -17,6 +17,15 @@ export interface FluidProfiler {
      *  structurally valid for BOTH GPUComputePassDescriptor.timestampWrites and
      *  GPURenderPassDescriptor.timestampWrites. */
     pass(stage: string): { querySet: GPUQuerySet; beginningOfPassWriteIndex: number; endOfPassWriteIndex: number } | undefined;
+    /** Optional begin/end descriptors for one stage spanning many GPU passes.
+     * Backends use this for iterative solvers so query usage stays constant as
+     * their substep or iteration count grows. */
+    stageSpan?(stage: string):
+        | {
+              begin: { querySet: GPUQuerySet; beginningOfPassWriteIndex: number };
+              end: { querySet: GPUQuerySet; endOfPassWriteIndex: number };
+          }
+        | undefined;
 }
 
 export interface FluidPressureDiagnostics {
@@ -32,6 +41,38 @@ export interface FluidPressureDiagnostics {
     readonly fluidCellCount: number;
     /** Multigrid cycles encoded for the sampled solve, or zero for another solver. */
     readonly pressureIterations: number;
+}
+
+/** GPU-resident indexed liquid surface produced by a simulation backend. The
+ * draw arguments use WebGPU's five-u32 drawIndexedIndirect layout. */
+export interface FluidPolygonSurface {
+    /** Interleaved position + normal vertices, two vec4<f32> values per grid cell. */
+    readonly vertexBuffer: GPUBuffer;
+    /** Triangle indices into vertexBuffer. */
+    readonly indexBuffer: GPUBuffer;
+    /** `[indexCount, instanceCount, firstIndex, baseVertex, firstInstance]`. */
+    readonly drawIndirect: GPUBuffer;
+    /** Optional line-list indices for the polygon wireframe debug overlay. */
+    readonly wireframeIndexBuffer?: GPUBuffer;
+    /** Indirect arguments for `wireframeIndexBuffer`. */
+    readonly wireframeDrawIndirect?: GPUBuffer;
+    readonly indexFormat: GPUIndexFormat;
+    readonly vertexStride: number;
+    readonly triangleCapacity: number;
+    /** Actual render-grid samples per solver-cell axis. */
+    readonly reconstructionMultiplier: number;
+    /** Latest asynchronously sampled generated-triangle count. Undefined until
+     * the first non-blocking indirect-argument readback completes. */
+    readonly triangleCount?: number;
+    /** GPU-resident liquid SDF sampled by the polygon renderer. Values are stored
+     * at MAC-cell centres in x-major order and remain negative inside liquid. */
+    readonly liquidSdfBuffer: GPUBuffer;
+    /** World-space minimum corner of the liquid-SDF grid. */
+    readonly gridOrigin: readonly [number, number, number];
+    /** Number of liquid-SDF cells along each axis. */
+    readonly gridDimensions: readonly [number, number, number];
+    /** Reconstruction-cell width in world units. */
+    readonly gridSpacing: number;
 }
 
 /** vec4<f32>-per-particle position + a per-particle speed the renderer reads.
@@ -66,12 +107,19 @@ export interface FluidSim {
     readonly debugNorm: number;
     /** Latest asynchronously completed pressure-quality sample. FLIP only. */
     readonly pressureDiagnostics?: FluidPressureDiagnostics;
+    /** Optional GPU-generated polygon liquid surface. FLIP exposes this while
+     * polygon reconstruction is enabled; no CPU readback is required to render it. */
+    readonly polygonSurface?: FluidPolygonSurface;
     /** Estimated total bytes of the GPU buffers this backend owns (particle state,
      *  neighbour grid, render positions, foam pool + uniforms). Re-read live: the
      *  foam pool is allocated lazily and re-sized, so the value grows once foam is on. */
     readonly gpuBytes: number;
     /** Encode one simulation step into `encoder`. `dt` is seconds. */
     step(encoder: GPUCommandEncoder, dt: number): void;
+    /** Rebuild a dirty polygon surface from the current particle state without
+     * advancing the simulation. FLIP uses this when reconstruction settings
+     * change while an application is paused. */
+    refreshPolygonSurface?(encoder: GPUCommandEncoder): void;
     /** Re-seed enabled initial volumes, reserve dormant capacity for inflows, or use the
      *  legacy spawn box when no enabled emitter exists. */
     reset(): void;
@@ -1431,6 +1479,31 @@ export interface FluidInitialParticleCounts {
     emitterCounts: ReadonlyMap<string, number>;
 }
 
+function distributeInitialParticles(totalCount: number, weights: readonly number[], emitters: readonly FluidEmitter[]): number[] {
+    const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+    if (!(totalWeight > 0) || totalCount <= 0) {
+        return weights.map(() => 0);
+    }
+    const allocations = weights.map((weight, index) => {
+        const exact = (totalCount * weight) / totalWeight;
+        return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
+    });
+    const left = totalCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
+    const ranked = [...allocations].sort((a, b) => {
+        const remainder = b.remainder - a.remainder;
+        if (remainder !== 0) {
+            return remainder;
+        }
+        const aid = emitters[a.index]!.id;
+        const bid = emitters[b.index]!.id;
+        return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
+    });
+    for (let index = 0; index < left; index++) {
+        ranked[index]!.count++;
+    }
+    return allocations.map((allocation) => allocation.count);
+}
+
 /** Counts reset-time Initial markers without allocating position or velocity arrays. */
 export function countFluidInitialParticles(
     count: number,
@@ -1455,28 +1528,26 @@ export function countFluidInitialParticles(
     }
     const hasInflow = enabled.some((emitter) => emitter.behavior === "inflow");
     const deriveCount = (hasInflow || deriveInitialCount) && !config.initialEmittersFillCapacity;
-    const requestedActiveCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
-    const allocations = volumes.map((volume, index) => {
-        const exact = (requestedActiveCount * volume) / total;
-        return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
-    });
-    const left = requestedActiveCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
-    const ranked = [...allocations].sort((a, b) => {
-        const remainder = b.remainder - a.remainder;
-        if (remainder !== 0) {
-            return remainder;
+    if (deriveCount && bounds && initial.every((emitter) => emitter.sampling === "volume")) {
+        const densityCount = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12))));
+        const densityAllocations = distributeInitialParticles(densityCount, volumes, initial);
+        const clippedCounts = initial.map((emitter, index) => countFluidInitialLattice(emitter, densityAllocations[index]!, volumes[index]!, bounds));
+        const activeCount = Math.min(
+            count,
+            clippedCounts.reduce((sum, value) => sum + value, 0)
+        );
+        const emitterAllocations = distributeInitialParticles(activeCount, clippedCounts, initial);
+        for (let index = 0; index < initial.length; index++) {
+            emitterCounts.set(initial[index]!.id, emitterAllocations[index]!);
         }
-        const aid = initial[a.index]!.id;
-        const bid = initial[b.index]!.id;
-        return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
-    });
-    for (let index = 0; index < left; index++) {
-        ranked[index]!.count++;
+        return { activeCount, emitterCounts };
     }
+    const requestedActiveCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
+    const allocations = distributeInitialParticles(requestedActiveCount, volumes, initial);
     let activeCount = 0;
-    for (const allocation of allocations) {
-        const emitter = initial[allocation.index]!;
-        const accepted = emitter.sampling === "volume" ? countFluidInitialLattice(emitter, allocation.count, volumes[allocation.index]!, bounds) : allocation.count;
+    for (let index = 0; index < allocations.length; index++) {
+        const emitter = initial[index]!;
+        const accepted = emitter.sampling === "volume" ? countFluidInitialLattice(emitter, allocations[index]!, volumes[index]!, bounds) : allocations[index]!;
         emitterCounts.set(emitter.id, accepted);
         activeCount += accepted;
     }
@@ -1520,32 +1591,50 @@ export function createFluidInitialParticles(
         return { positions: new Float32Array(0), velocities: new Float32Array(0), activeCount: 0, emitterCounts };
     }
     const deriveCount = (hasInflow || deriveInitialCount) && !config?.initialEmittersFillCapacity;
-    const activeCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
-    const allocations = volumes.map((volume, index) => {
-        const exact = (activeCount * volume) / total;
-        return { index, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
-    });
-    const left = activeCount - allocations.reduce((sum, allocation) => sum + allocation.count, 0);
-    const ranked = [...allocations].sort((a, b) => {
-        const remainder = b.remainder - a.remainder;
-        if (remainder !== 0) {
-            return remainder;
+    if (deriveCount && bounds && initial.every((emitter) => emitter.sampling === "volume")) {
+        const densityCount = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12))));
+        const densityAllocations = distributeInitialParticles(densityCount, volumes, initial);
+        const clippedPoints = initial.map((emitter, index) => createFluidInitialLattice(emitter, densityAllocations[index]!, volumes[index]!, bounds));
+        const activeCount = Math.min(
+            count,
+            clippedPoints.reduce((sum, points) => sum + points.length, 0)
+        );
+        const emitterAllocations = distributeInitialParticles(
+            activeCount,
+            clippedPoints.map((points) => points.length),
+            initial
+        );
+        const positions = new Float32Array(activeCount * 3);
+        const velocities = new Float32Array(activeCount * 3);
+        let cursor = 0;
+        for (let emitterIndex = 0; emitterIndex < initial.length; emitterIndex++) {
+            const emitter = initial[emitterIndex]!;
+            const points = clippedPoints[emitterIndex]!;
+            const emitterCount = emitterAllocations[emitterIndex]!;
+            for (let index = 0; index < emitterCount; index++) {
+                const point = points[Math.floor(((index + 0.5) * points.length) / emitterCount)]!;
+                const launch = fluidEmitterLaunchAtLocal(emitter, point);
+                positions[cursor] = launch.position[0];
+                velocities[cursor++] = launch.velocity[0];
+                positions[cursor] = launch.position[1];
+                velocities[cursor++] = launch.velocity[1];
+                positions[cursor] = launch.position[2];
+                velocities[cursor++] = launch.velocity[2];
+            }
+            emitterCounts.set(emitter.id, emitterCount);
         }
-        const aid = initial[a.index]!.id;
-        const bid = initial[b.index]!.id;
-        return aid < bid ? -1 : aid > bid ? 1 : a.index - b.index;
-    });
-    for (let i = 0; i < left; i++) {
-        ranked[i]!.count++;
+        return { positions, velocities, activeCount, emitterCounts };
     }
+    const activeCount = deriveCount ? Math.min(count, Math.max(0, Math.ceil(total / Math.max(particleVolume, 1e-12)))) : count;
+    const allocations = distributeInitialParticles(activeCount, volumes, initial);
     const positions = new Float32Array(activeCount * 3);
     const velocities = new Float32Array(activeCount * 3);
     let cursor = 0;
-    for (const allocation of allocations) {
-        const emitter = initial[allocation.index]!;
+    for (let allocationIndex = 0; allocationIndex < allocations.length; allocationIndex++) {
+        const emitter = initial[allocationIndex]!;
         const emitterStart = cursor;
-        const localPoints = emitter.sampling === "volume" ? createFluidInitialLattice(emitter, allocation.count, volumes[allocation.index]!, bounds) : undefined;
-        const launchCount = localPoints?.length ?? allocation.count;
+        const localPoints = emitter.sampling === "volume" ? createFluidInitialLattice(emitter, allocations[allocationIndex]!, volumes[allocationIndex]!, bounds) : undefined;
+        const launchCount = localPoints?.length ?? allocations[allocationIndex]!;
         for (let i = 0; i < launchCount; i++) {
             let launch = localPoints ? fluidEmitterLaunchAtLocal(emitter, localPoints[i]!) : sampleFluidEmitterLaunch(emitter);
             if (!localPoints && bounds && !fluidPointInsideBounds(launch.position, bounds)) {

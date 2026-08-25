@@ -68,7 +68,7 @@ function createPlaceholderCube(device: GPUDevice): GPUTextureView {
     return tex.createView({ dimension: "cube" });
 }
 
-export type FluidDebug = "none" | "depth" | "depthBlur" | "thickness" | "thicknessBlur" | "normals";
+export type FluidDebug = "none" | "depth" | "depthBlur" | "thickness" | "thicknessBlur" | "normals" | "polygonWireframe";
 
 export interface FluidSurfaceOptions {
     /** Offscreen scene colour (background) — sampled for refraction / blit. */
@@ -81,6 +81,8 @@ export interface FluidSurfaceOptions {
     camera: Camera;
     sim: FluidSim;
 }
+
+export type FluidSurfaceShading = "physical" | "ocean";
 
 // ── BJS-equivalent tunables (fluidRenderingTargetRenderer defaults) ──
 const DENSITY = 1.0;
@@ -1161,7 +1163,7 @@ struct Comp {
     // smoothstep contrast), and that transform lives in the scene's imageProcessing, which a demo
     // is free to change. As consts they silently drifted out of step with it; as uniforms the
     // caller can hand over its actual values (and expose them, which is how they get tuned).
-    env: vec4<f32>,     // envExposure, envContrast, fresnelF0, _
+    env: vec4<f32>,     // envExposure, envContrast, fresnelF0, oceanMode
 };
 @group(0) @binding(0) var depthTex: texture_2d<f32>;
 @group(0) @binding(1) var depthSamp: sampler;
@@ -1246,6 +1248,21 @@ fn depthViz(d: f32, cameraFar: f32) -> vec3<f32> {
 fn thicknessViz(t: f32) -> f32 {
     let value = max(t, 0.0);
     return value / (1.0 + value);
+}
+
+fn reconstructViewNormal(texCoord: vec2<f32>, depthTexel: vec2<f32>) -> vec3<f32> {
+    let centre = getViewPos(texCoord);
+    let maxStep = centre.z * u.camR.w * depthTexel.y * 2.0 * NORMAL_MAX_SLOPE;
+    let ax = axisDiff(texCoord, vec2<f32>(depthTexel.x, 0.0), centre, maxStep);
+    let ay = axisDiff(texCoord, vec2<f32>(0.0, depthTexel.y), centre, maxStep);
+    let crossNormal = cross(ax.d, ay.d);
+    let safeNormal = select(vec3<f32>(0.0, 0.0, -1.0), crossNormal, length(crossNormal) > 1.0e-6);
+    var normal = normalize(safeNormal);
+    let rayDirection = normalize(centre);
+    if (dot(normal, rayDirection) > 0.0) {
+        normal = -normal;
+    }
+    return normal;
 }
 
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -1363,21 +1380,49 @@ fn thicknessViz(t: f32) -> f32 {
         }
     }
     let lightDir = normalize((u.view * vec4<f32>(-u.b.xyz, 0.0)).xyz);
-    let H = normalize(lightDir - rayDir);
-    let specular = pow(max(0.0, dot(H, normal)), u.c.y) * surfaceOk
-        * smoothstep(SPECULAR_THICKNESS_MIN, SPECULAR_THICKNESS_FULL, thickness);
-
-    // Refraction of the scene background. refract() returns 0 on total internal
-    // reflection — fall back to the straight-through ray so no dark hole appears.
-    var refractionDir = refract(rayDir, normal, ETA);
-    if (dot(refractionDir, refractionDir) < 1e-6) { refractionDir = rayDir; }
-    let refrUV = texCoord + vec2<f32>(refractionDir.x, -refractionDir.y) * thickness * u.b.w;
-    let transmitted = textureSampleLevel(bgTex, bgSamp, clamp(refrUV, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
-    let transmittance = exp(-density * thickness * (1.0 - diffuseColor)); // Beer-Lambert
-    let refractionColor = transmitted * transmittance;
+    let viewToCamera = -rayDir;
+    let oceanMode = u.env.w > 0.5;
+    let viewDistance = length(viewPos);
+    let referenceRoughness = 0.311;
+    let distanceGloss = mix(
+        1.0 - referenceRoughness,
+        0.91,
+        1.0 / (1.0 + viewDistance * 0.0044));
+    var reflectionNormal = normal;
+    var normalVariance = 0.0;
+    if (oceanMode) {
+        let normalXp = reconstructViewNormal(
+            nTC + vec2<f32>(depthTexel.x, 0.0),
+            depthTexel);
+        let normalXn = reconstructViewNormal(
+            nTC - vec2<f32>(depthTexel.x, 0.0),
+            depthTexel);
+        let normalYp = reconstructViewNormal(
+            nTC + vec2<f32>(0.0, depthTexel.y),
+            depthTexel);
+        let normalYn = reconstructViewNormal(
+            nTC - vec2<f32>(0.0, depthTexel.y),
+            depthTexel);
+        reflectionNormal = normalize(
+            normal * 4.0 + normalXp + normalXn + normalYp + normalYn);
+        let normalDx =
+            (normalXp - normalXn) *
+            (0.5 * outputTexel.x / depthTexel.x);
+        let normalDy =
+            (normalYp - normalYn) *
+            (0.5 * outputTexel.y / depthTexel.y);
+        normalVariance = min(
+            0.5 * (dot(normalDx, normalDx) + dot(normalDy, normalDy)),
+            0.5);
+    }
+    let facing = max(dot(reflectionNormal, viewToCamera), 0.0);
+    let oceanRoughness = clamp(
+        sqrt((1.0 - distanceGloss) * (1.0 - distanceGloss) + normalVariance),
+        0.12,
+        1.0);
 
     // Environment reflection (transform the view-space reflected ray to world).
-    let reflViewDir = reflect(rayDir, normal);
+    let reflViewDir = reflect(rayDir, reflectionNormal);
     var reflW = reflViewDir.x * u.camR.xyz + reflViewDir.y * u.camU.xyz + reflViewDir.z * u.camF.xyz;
     // Apply the scene's environment yaw to the WORLD direction before this pass's own
     // world→cube mapping, exactly as the PBR IBL does — otherwise rotating the environment
@@ -1388,7 +1433,12 @@ fn thicknessViz(t: f32) -> f32 {
         let es = sin(er);
         reflW = vec3<f32>(reflW.x * ec + reflW.z * es, reflW.y, -reflW.x * es + reflW.z * ec);
     }
-    let reflLin = textureSampleLevel(envTex, envSamp, vec3<f32>(reflW.x, reflW.y, -reflW.z), 0.0).rgb;
+    let reflectionLod = select(0.0, oceanRoughness * 5.0, oceanMode);
+    let reflLin = textureSampleLevel(
+        envTex,
+        envSamp,
+        vec3<f32>(reflW.x, reflW.y, -reflW.z),
+        reflectionLod).rgb;
     var reflC = reflLin * u.env.x;
     reflC = pow(reflC, vec3<f32>(1.0 / 2.2));
     reflC = clamp(reflC, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -1397,12 +1447,102 @@ fn thicknessViz(t: f32) -> f32 {
     let reflectionColor = max(reflC, vec3<f32>(0.0));
 
     let f0 = u.env.z;
-    let fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - max(dot(normal, -rayDir), 0.0), 5.0), 0.0, u.c.x);
-    var finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
-    // Overlay the (saturated) mesh colour so the liquefied model's colours clearly show — the faint
-    // Beer-Lambert tint alone washes out to grey. Keeps some specular/refraction for a wet look.
-    if (meshColored) {
-        finalColor = mix(finalColor, diffuseColor, 0.72) + specular * 0.4;
+    var finalColor = backColor.rgb;
+    if (oceanMode) {
+        // Screen-space adaptation of Babylon.js Playground YX6IB8#758. The
+        // reconstructed depth supplies the normal, while accumulated thickness
+        // gives Beer-Lambert a real optical path instead of a geometric proxy.
+        let normalW = normalize(
+            reflectionNormal.x * u.camR.xyz +
+            reflectionNormal.y * u.camU.xyz +
+            reflectionNormal.z * u.camF.xyz);
+        let subsurfaceHalf = normalize(-reflectionNormal + lightDir);
+        let subsurfaceView = pow(clamp(dot(viewToCamera, -subsurfaceHalf), 0.0, 1.0), 5.0) * 30.0 * 0.15;
+        let thinCrest = 1.0 - smoothstep(u.extra.w * 4.0, u.extra.w * 16.0, thickness);
+        let splashCrest = 0.06 * smoothstep(0.1, 0.9, normalW.y) * mix(0.35, 1.0, thinCrest);
+        // Ocean mode is opaque, so it needs a body term where Fresnel reflection is
+        // weak. Keep ordinary water neutral; particle-authored colors retain the
+        // brighter scale used to make their mixed surface color legible.
+        let bodyScale = select(0.12, 0.35, meshColored);
+        let bodyColor = diffuseColor * bodyScale;
+        let subsurfaceColor = vec3<f32>(0.1541919, 0.8857628, 0.990566);
+        var waterColor = clamp(
+            bodyColor + subsurfaceColor * subsurfaceView * splashCrest,
+            vec3<f32>(0.0),
+            vec3<f32>(1.0));
+        let oceanOpticalPath = max(thickness, u.extra.w);
+        let oceanExtinction = max(vec3<f32>(1.0) - diffuseColor, vec3<f32>(0.05));
+        let oceanTransmittance = exp(
+            -max(density, 0.0) *
+            0.18 * oceanOpticalPath * oceanExtinction);
+        waterColor = waterColor * oceanTransmittance;
+        let displayWaterColor = pow(waterColor, vec3<f32>(1.0 / 2.2));
+        var oceanRefractionDir = refract(rayDir, normal, ETA);
+        if (dot(oceanRefractionDir, oceanRefractionDir) < 1e-6) {
+            oceanRefractionDir = rayDir;
+        }
+        let oceanRefractedUv =
+            texCoord +
+            vec2<f32>(oceanRefractionDir.x, -oceanRefractionDir.y) *
+            thickness * u.b.w;
+        let oceanBackground = textureSampleLevel(
+            bgTex,
+            bgSamp,
+            clamp(oceanRefractedUv, vec2<f32>(0.0), vec2<f32>(1.0)),
+            0.0).rgb;
+        let transmittedWater =
+            oceanBackground * oceanTransmittance +
+            displayWaterColor * (vec3<f32>(1.0) - oceanTransmittance);
+
+        let halfDirection = normalize(lightDir + viewToCamera);
+        let nDotL = max(dot(reflectionNormal, lightDir), 0.0);
+        let nDotV = max(facing, 1.0e-4);
+        let nDotH = max(dot(reflectionNormal, halfDirection), 0.0);
+        let vDotH = max(dot(viewToCamera, halfDirection), 0.0);
+        let alphaRoughness = oceanRoughness * oceanRoughness;
+        let alpha2 = alphaRoughness * alphaRoughness;
+        let denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+        let distribution = alpha2 / max(3.14159265 * denominator * denominator, 1.0e-5);
+        let geometryK = (oceanRoughness + 1.0) * (oceanRoughness + 1.0) / 8.0;
+        let geometryV = nDotV / (nDotV * (1.0 - geometryK) + geometryK);
+        let geometryL = nDotL / (nDotL * (1.0 - geometryK) + geometryK);
+        let directFresnel = f0 + (1.0 - f0) * pow(1.0 - vDotH, 5.0);
+        let oceanSpecular = min(
+            distribution * geometryV * geometryL * directFresnel /
+            max(4.0 * nDotV * max(nDotL, 1.0e-4), 1.0e-4),
+            1.25) * nDotL * surfaceOk;
+        let fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - facing, 5.0), 0.0, 1.0);
+        finalColor = clamp(
+            mix(transmittedWater, reflectionColor, fresnel) +
+            vec3<f32>(oceanSpecular * 0.08),
+            vec3<f32>(0.0),
+            vec3<f32>(1.0));
+        if (meshColored) {
+            finalColor = mix(finalColor, displayWaterColor, 0.35);
+        }
+    } else {
+        let H = normalize(lightDir - rayDir);
+        let specular = pow(max(0.0, dot(H, normal)), u.c.y) * surfaceOk
+            * smoothstep(SPECULAR_THICKNESS_MIN, SPECULAR_THICKNESS_FULL, thickness);
+
+        // Refraction of the scene background. refract() returns 0 on total
+        // internal reflection; fall back to straight-through to avoid holes.
+        var refractionDir = refract(rayDir, normal, ETA);
+        if (dot(refractionDir, refractionDir) < 1e-6) { refractionDir = rayDir; }
+        let refrUV = texCoord + vec2<f32>(refractionDir.x, -refractionDir.y) * thickness * u.b.w;
+        let transmitted = textureSampleLevel(
+            bgTex,
+            bgSamp,
+            clamp(refrUV, vec2<f32>(0.0), vec2<f32>(1.0)),
+            0.0).rgb;
+        let transmittance = exp(-density * thickness * (1.0 - diffuseColor));
+        let refractionColor = transmitted * transmittance;
+        let fresnel = clamp(f0 + (1.0 - f0) * pow(1.0 - facing, 5.0), 0.0, u.c.x);
+        finalColor = mix(refractionColor, reflectionColor, fresnel) + specular;
+        // Overlay saturated mesh colour while retaining a wet reflected surface.
+        if (meshColored) {
+            finalColor = mix(finalColor, diffuseColor, 0.72) + specular * 0.4;
+        }
     }
 
     // Fade the whole surface toward the background by the per-pixel particle alpha
@@ -1429,6 +1569,7 @@ export function createFluidSurfaceTask(
     setEnvMap(e: EnvMap): void;
     setDebug(d: FluidDebug): void;
     setFluidColor(rgb: [number, number, number]): void;
+    setShadingMode(mode: FluidSurfaceShading): void;
     setAbsorption(v: number): void;
     setHalfRender(on: boolean): void;
     setThicknessDownscale(factor: number): void;
@@ -1495,6 +1636,7 @@ export function createFluidSurfaceTask(
     let mode: "surface" | "blit" | "ellipsoidDebug" = "surface";
     let debug: FluidDebug = "none";
     let fluidColor: [number, number, number] = [...FLUID_COLOR];
+    let shadingMode: FluidSurfaceShading = "physical";
     let absorption = DENSITY; // Beer-Lambert absorption coefficient
     let halfRender = false;
     let thicknessDownscale = 2; // thickness textures: size = canvas / this factor (own knob)
@@ -2267,7 +2409,7 @@ export function createFluidSurfaceTask(
         comp[o + 5] = dl[1] / dlLen;
         comp[o + 6] = dl[2] / dlLen;
         comp[o + 7] = refractionStrength; // b
-        const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5 }[debug];
+        const debugMode = { none: 0, depth: 1, depthBlur: 2, thickness: 3, thicknessBlur: 4, normals: 5, polygonWireframe: 0 }[debug];
         comp[o + 8] = FRESNEL_CLAMP;
         comp[o + 9] = specularPower;
         comp[o + 10] = MINIMUM_THICKNESS;
@@ -2284,7 +2426,7 @@ export function createFluidSurfaceTask(
         comp[o + 4] = envExposure;
         comp[o + 5] = envContrast;
         comp[o + 6] = fresnelF0;
-        comp[o + 7] = 0; // env: reflection exposure/contrast, Fresnel F0, _
+        comp[o + 7] = shadingMode === "ocean" ? 1 : 0;
         device.queue.writeBuffer(compBuffer, 0, comp);
     }
 
@@ -2482,6 +2624,9 @@ export function createFluidSurfaceTask(
         },
         setFluidColor(rgb: [number, number, number]): void {
             fluidColor = rgb;
+        },
+        setShadingMode(next: FluidSurfaceShading): void {
+            shadingMode = next;
         },
         setAbsorption(v: number): void {
             absorption = v;

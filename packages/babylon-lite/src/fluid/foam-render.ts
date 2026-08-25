@@ -71,7 +71,7 @@ struct Splat {
     up: vec4<f32>,
     size: vec4<f32>,   // particleRadius, sizeScale, foamScale, sceneScale (accum->scene res)
     texel: vec4<f32>,  // 1/accumW, 1/accumH, surfBias, sceneBias
-    gains: vec4<f32>,  // sprayGain, foamGain, bubbleGain, _
+    gains: vec4<f32>,  // sprayGain, foamGain, bubbleGain, filtering mode (0 off, 1 screen, 2 polygon)
 };
 @group(0) @binding(0) var<uniform> u: Splat;
 struct Diffuse { p: vec4<f32>, v: vec4<f32> };
@@ -165,6 +165,7 @@ struct VOut {
     let hasWater = surfZ < 1e5;
     let inFront = i.eyeZ <= surfZ + u.texel.z;
     let kind = u32(i.kind + 0.5);
+    let polygonDepth = u.gains.w > 1.5;
     var outc = vec4<f32>(0.0);
     if (kind == 2u) {
         // Bubble: only when submerged (behind the surface, water in front).
@@ -214,6 +215,12 @@ struct VOut {
                 let surfaceNormal = normalize(cross(rightPos - leftPos, upPos - downPos));
                 let worldUpView = normalize((u.view * vec4<f32>(0.0, 1.0, 0.0, 0.0)).xyz);
                 orientationWeight = smoothstep(0.25, 0.65, abs(dot(surfaceNormal, worldUpView)));
+            }
+            if (polygonDepth) {
+                // Raw polygon depth follows the actual wave facets. Unlike the blurred
+                // screen-space field, steep valid facets must not be classified as
+                // detached foam merely because their normal is not close to world-up.
+                orientationWeight = 1.0;
             }
             let centrePixel = i.centreUv / u.texel.xy;
             let expectedZ = centreZ + dot(gradient, fragXY - centrePixel);
@@ -405,6 +412,7 @@ export function createFoamRenderTask(
     setSim(s: FluidSim): void;
     setEnabled(on: boolean): void;
     setSurfaceFiltering(on: boolean): void;
+    setPolygonSurfaceDepth(on: boolean): void;
     setOpacity(v: number): void;
     setSizeScale(s: number): void;
     setDebugByKind(on: boolean): void;
@@ -427,6 +435,7 @@ export function createFoamRenderTask(
     let currentSim = opts.sim;
     let enabled = true;
     let surfaceFiltering = false;
+    let polygonSurfaceDepth = false;
     let opacity = 1;
     let sizeScale = 1;
     let debugByKind = false;
@@ -556,12 +565,16 @@ export function createFoamRenderTask(
         splatData[43] = engine.canvas.width / Math.max(1, accW); // accum→scene res ratio (1 at full res)
         splatData[44] = 1 / Math.max(1, accW);
         splatData[45] = 1 / Math.max(1, accH);
-        splatData[46] = r * 1.5; // surfBias (eye-Z half-band for surface foam)
+        // Surface nets approximate the zero level set at MAC-cell resolution,
+        // while screen-space depth is already gap-filled around the marker splats.
+        // Give raw polygon depth a full-cell-scale band instead of the narrower
+        // marker-radius band, without weakening filtering in the established path.
+        splatData[46] = r * 1.5 * (polygonSurfaceDepth ? 2 : 1);
         splatData[47] = 0.02; // sceneBias (eye-Z bias vs opaque geometry)
         splatData[48] = 1.4; // sprayGain
         splatData[49] = 1.0; // foamGain
         splatData[50] = 1.0; // bubbleGain
-        splatData[51] = surfaceFiltering ? 1 : 0;
+        splatData[51] = surfaceFiltering ? (polygonSurfaceDepth ? 2 : 1) : 0;
         device.queue.writeBuffer(splatBuf, 0, splatData);
 
         device.queue.writeBuffer(blurXBuf, 0, new Float32Array([1, 0, blurRadius, 0]));
@@ -726,6 +739,10 @@ export function createFoamRenderTask(
         /** Enable stricter reconstructed-surface classification for foam and spray. */
         setSurfaceFiltering(on: boolean): void {
             surfaceFiltering = on;
+        },
+        /** Select the raw polygon depth policy for strict surface filtering. */
+        setPolygonSurfaceDepth(on: boolean): void {
+            polygonSurfaceDepth = on;
         },
         /** Fade all rendered diffuse particles without changing their pool. */
         setOpacity(v: number): void {
