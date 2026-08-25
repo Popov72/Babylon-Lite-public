@@ -125,9 +125,11 @@ lab/public/aquanova/*.hdr
 # so this is a size decision only: committing them would not make a fresh clone runnable anyway,
 # because ship.glb above is ignored too.
 lab/public/aquanova/skybox/
-# SMAA oracle: a vendored copy of the third-party glsl-smaa reference (MIT), used by
-# lab/lite/smaa-lab.html to validate our SMAA against it.
-# lab/lite/src/smaa-pipelines.ts's header says how to re-fetch it.
+# Local SMAA comparison/oracle workbench; intentionally excluded from the shipping feature.
+lab/lite/smaa-lab.html
+lab/lite/src/smaa-lab.ts
+lab/lite/src/smaa-pipelines.ts
+scripts/smaa-oracle-luts.ts
 lab/public/smaa-ref/
 scripts/smaa-ref/
 playwright-report/
