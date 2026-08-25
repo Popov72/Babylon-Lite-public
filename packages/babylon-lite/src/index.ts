@@ -319,6 +319,7 @@ export {
     getPbrLocalEnvironmentProbeGridCell,
     MAX_PBR_LOCAL_ENVIRONMENT_CANDIDATES,
     MAX_PBR_LOCAL_ENVIRONMENT_PROBES,
+    setPbrEnvironment,
     setPbrLocalEnvironment,
     setPbrLocalEnvironmentProbeDebug,
     setPbrLocalEnvironmentProbeSet,
