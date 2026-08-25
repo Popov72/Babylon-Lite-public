@@ -5,12 +5,22 @@
 
 import { instantiate, getModule } from "./kit.js";
 import { patchKhronosPbrNeutralShader } from "./shader-patches.js";
-import { renameEntityReferences, validateBehaviorConfig } from "./behavior-metadata.js";
+import { behaviorMetadata, behaviorMetadataNames, defaultBehaviorDefinition, renameEntityReferences, validateBehaviorConfig } from "./behavior-metadata.js";
 
 const {
-  Engine, Scene, UniversalCamera, HemisphericLight, Vector3,
-  Color3, Color4, Quaternion, Matrix, MeshBuilder,
-  HDRCubeTexture, ImageProcessingConfiguration, PointerEventTypes,
+    Engine,
+    Scene,
+    UniversalCamera,
+    HemisphericLight,
+    Vector3,
+    Color3,
+    Color4,
+    Quaternion,
+    Matrix,
+    MeshBuilder,
+    HDRCubeTexture,
+    ImageProcessingConfiguration,
+    PointerEventTypes,
 } = BABYLON;
 
 export const GRID_MAJOR = 4;      // kit tile size, metres
@@ -195,7 +205,7 @@ export const state = {
   // is usually there to look at the wall you just moved. See
   // SHIP_OPTIMIZE_DEFAULT and doStartDemo in main.js.
   shipOptimize: false,
-  behaviors: new Map(),    // behaviour name -> definition body, see setBehaviorDef
+    behaviors: new Map(), // preset name -> { base, ...parameter overrides }
   entities: new Map(),     // node name -> [{ name, linked: [] }]
   fluidSim: [],            // the global sim list from config.json
   // How the viewport is lit. The two together spell one of the three named
@@ -240,9 +250,7 @@ export const state = {
 
 /** Selection holds ids from any store; resolve without caring which. */
 export function entryOf(id) {
-  return state.placements.get(id) || state.markers.get(id)
-    || state.colliders.get(id) || state.lights.get(id)
-    || hooks.environmentProbeEntry(id) || null;
+    return state.placements.get(id) || state.markers.get(id) || state.colliders.get(id) || state.lights.get(id) || hooks.environmentProbeEntry(id) || null;
 }
 
 /**
@@ -256,10 +264,7 @@ export function entryOf(id) {
 export function ownerIdOf(mesh, placementsOnly = false) {
   const md = mesh?.metadata;
   if (!md) return null;
-  const id = md.placementRoot?.name
-    || (placementsOnly ? null
-      :md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name
-        || md.environmentProbeRoot?.metadata?.probe);
+    const id = md.placementRoot?.name || (placementsOnly ? null : md.markerRoot?.name || md.colliderRoot?.name || md.lightRoot?.name || md.environmentProbeRoot?.metadata?.probe);
   return id || null;
 }
 
@@ -319,8 +324,7 @@ export function groupExpand(ids) {
  * of one, has no anchor and falls back to the ordinary rules.
  */
 export function groupAnchor(entries) {
-  const list = entries.map((e) => (typeof e === "string" ? state.placements.get(e) : e))
-    .filter(Boolean);
+    const list = entries.map((e) => (typeof e === "string" ? state.placements.get(e) : e)).filter(Boolean);
   if (list.length < 2) return null;
   const group = list[0].group;
   if (!group || list.some((e) => e.group !== group)) return null;
@@ -403,9 +407,12 @@ export async function initScene(canvas) {
   cam.maxZ = 800;
   cam.angularSensibility = 2600;
   // movement is driven per-frame below, so the built-in key bindings are off
-  cam.keysUp = []; cam.keysDown = [];
-  cam.keysLeft = []; cam.keysRight = [];
-  cam.keysUpward = []; cam.keysDownward = [];
+    cam.keysUp = [];
+    cam.keysDown = [];
+    cam.keysLeft = [];
+    cam.keysRight = [];
+    cam.keysUpward = [];
+    cam.keysDownward = [];
   // setupPointer registers first on purpose: it needs to be able to swallow a
   // pointer-down that starts a drag before the camera turns it into a look
   setupPointer(scene);
@@ -684,9 +691,7 @@ export function setLightSetting(which, key, value) {
 
 export function setEnvIntensity(v) {
   const n = Number(v);
-  state.envIntensity = Number.isFinite(n)
-    ? Math.min(6, Math.max(0, n))
-    : ENV_INTENSITY_DEFAULT;
+    state.envIntensity = Number.isFinite(n) ? Math.min(6, Math.max(0, n)) : ENV_INTENSITY_DEFAULT;
   activeLightSet().strength = state.envIntensity;
   // The runtime preview drives Env per material - each mesh reflects its own
   // room's probe, and the strength has to ride the material that holds it - so
@@ -716,9 +721,7 @@ export function setRuntimeSpecularAA(on) {
  */
 export function setRuntimeRoughnessFactor(v) {
   const n = Number(v);
-  const next = Number.isFinite(n)
-    ? Math.min(2, Math.max(0.5, n))
-    : RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
+    const next = Number.isFinite(n) ? Math.min(2, Math.max(0.5, n)) : RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
   if (state.runtimeRoughnessFactor === next) return false;
   state.runtimeRoughnessFactor = next;
   emit("reflection");
@@ -735,9 +738,7 @@ export function setExposure(v) {
   // lifting well past the 0.55 the authoring rig wants. Exposure is the only
   // honest knob for that - the alternative is more lamp power, which is a
   // different decision.
-  state.exposure = Number.isFinite(n)
-    ? Math.min(4, Math.max(0.15, n))
-    : EXPOSURE_DEFAULT;
+    state.exposure = Number.isFinite(n) ? Math.min(4, Math.max(0.15, n)) : EXPOSURE_DEFAULT;
   activeLightSet().exposure = state.exposure;
   if (state.scene) state.scene.imageProcessingConfiguration.exposure = state.exposure;
   emit("modes");
@@ -755,7 +756,9 @@ export function activeLightSet() {
  * and not a failure.
  */
 export function resolveToneMapping(name) {
-  const key = String(name ?? "").toLowerCase().replace(/[^a-z]/g, "");
+    const key = String(name ?? "")
+        .toLowerCase()
+        .replace(/[^a-z]/g, "");
   const IPC = ImageProcessingConfiguration;
   if (!key) return IPC.TONEMAPPING_KHR_PBR_NEUTRAL;
   if (key.includes("none") || key.includes("off") || key.includes("linear")) return null;
@@ -855,10 +858,21 @@ export function setUnlit(on) {
  * different alphas and are often on screen together.
  */
 const TEXTURE_SLOTS = [
-  "albedoTexture", "diffuseTexture", "ambientTexture", "opacityTexture",
-  "reflectionTexture", "emissiveTexture", "reflectivityTexture", "specularTexture",
-  "metallicTexture", "microSurfaceTexture", "bumpTexture", "lightmapTexture",
-  "refractionTexture", "metallicReflectanceTexture", "detailMap",
+    "albedoTexture",
+    "diffuseTexture",
+    "ambientTexture",
+    "opacityTexture",
+    "reflectionTexture",
+    "emissiveTexture",
+    "reflectivityTexture",
+    "specularTexture",
+    "metallicTexture",
+    "microSurfaceTexture",
+    "bumpTexture",
+    "lightmapTexture",
+    "refractionTexture",
+    "metallicReflectanceTexture",
+    "detailMap",
 ];
 const ghostMats = new Map();
 // Set while the glTF exporter walks the scene: the veil is a way of looking,
@@ -874,7 +888,10 @@ export function ghostMaterialFor(mat, tag = "GHOST", alpha = 0.7) {
     for (const slot of TEXTURE_SLOTS) {
       const orig = mat[slot];
       const dup = g[slot];
-      if (orig && dup && dup !== orig) { dup.dispose(); g[slot] = orig; }
+            if (orig && dup && dup !== orig) {
+                dup.dispose();
+                g[slot] = orig;
+            }
     }
     g.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND;
     // Never cull: a single-sided wall would otherwise vanish the moment it is
@@ -971,12 +988,12 @@ export function screenBoundsOf(node) {
   const engine = scene.getEngine();
   const vp = state.camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
   const view = scene.getTransformMatrix();
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
   for (let i = 0; i < 8; i++) {
-    const c = new Vector3(
-      i & 1 ? b.max.x : b.min.x,
-      i & 2 ? b.max.y : b.min.y,
-      i & 4 ? b.max.z : b.min.z);
+        const c = new Vector3(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
     const p = Vector3.Project(c, Matrix.Identity(), view, vp);
     // behind the camera projects to a mirrored point that would wreck the box
     if (p.z < 0 || p.z > 1) continue;
@@ -1046,11 +1063,13 @@ export function screenHullOf(node) {
 function hullMeetsRect(hull, rect) {
   if (!hull || !hull.length) return false;
   if (hull.length < 3) {
-    return hull.some(([x, y]) =>
-      x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1);
+        return hull.some(([x, y]) => x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1);
   }
   // the rect's own two axes
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity;
   for (const [x, y] of hull) {
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
@@ -1060,12 +1079,21 @@ function hullMeetsRect(hull, rect) {
   if (maxX < rect.x0 || minX > rect.x1 || maxY < rect.y0 || minY > rect.y1) return false;
 
   // and one per hull edge
-  const corners = [[rect.x0, rect.y0], [rect.x1, rect.y0],
-    [rect.x1, rect.y1], [rect.x0, rect.y1],];
+    const corners = [
+        [rect.x0, rect.y0],
+        [rect.x1, rect.y0],
+        [rect.x1, rect.y1],
+        [rect.x0, rect.y1],
+    ];
   for (let i = 0; i < hull.length; i++) {
-    const a = hull[i], b = hull[(i + 1) % hull.length];
-    const ax = -(b[1] - a[1]), ay = b[0] - a[0];
-    let hLo = Infinity, hHi = -Infinity, rLo = Infinity, rHi = -Infinity;
+        const a = hull[i],
+            b = hull[(i + 1) % hull.length];
+        const ax = -(b[1] - a[1]),
+            ay = b[0] - a[0];
+        let hLo = Infinity,
+            hHi = -Infinity,
+            rLo = Infinity,
+            rHi = -Infinity;
     for (const [x, y] of hull) {
       const d = x * ax + y * ay;
       if (d < hLo) hLo = d;
@@ -1080,7 +1108,6 @@ function hullMeetsRect(hull, rect) {
   }
   return true;
 }
-
 
 /**
  * Every element the given canvas-space rect actually touches.
@@ -1122,9 +1149,7 @@ export function groundHeightAt(x, z, fromY, reach = FALL_LIMIT, skip = null) {
   const scene = state.scene;
   if (!scene) return null;
   const ray = new BABYLON.Ray(new Vector3(x, fromY, z), Vector3.Down(), reach);
-  const hit = scene.pickWithRay(ray, (m) =>
-    m.isPickable && m.isEnabled() && !!ownerIdOf(m, true)
-    && !(skip && skip(m)));
+    const hit = scene.pickWithRay(ray, (m) => m.isPickable && m.isEnabled() && !!ownerIdOf(m, true) && !(skip && skip(m)));
   return hit?.hit ? hit.pickedPoint.y : null;
 }
 
@@ -1177,7 +1202,9 @@ function buildGrid(scene) {
   mk("grid_axis", axis, new Color3(0.55, 0.36, 0.18));
 }
 
-export function setGridVisible(v) { gridNode.setEnabled(v); }
+export function setGridVisible(v) {
+    gridNode.setEnabled(v);
+}
 
 // -------------------------------------------------------------------- axes
 //
@@ -1314,7 +1341,11 @@ export function nodeBasis(node) {
   // rotation before it. That put the axes one turn behind.
   const m = node.computeWorldMatrix(true);
   const out = {};
-  for (const [a, row] of [["x", 0], ["y", 1], ["z", 2],]) {
+    for (const [a, row] of [
+        ["x", 0],
+        ["y", 1],
+        ["z", 2],
+    ]) {
     const r = m.getRow(row);
     const v = new Vector3(r.x, r.y, r.z);
     if (v.lengthSquared() < 1e-12) return null;    // degenerate, fall back to world
@@ -1348,13 +1379,19 @@ export function scaleAxes(mode = state.scaleAxis) {
 let axes = null;      // { root, id, space, anchor, arms, mats, marks, observer }
 
 /** The element currently showing its axes, or null. */
-export function axesTarget() { return axes?.id || null; }
+export function axesTarget() {
+    return axes?.id || null;
+}
 
 /** Which space the axes are drawn in - "world" or "local". */
-export function axesSpace() { return axes?.space || null; }
+export function axesSpace() {
+    return axes?.space || null;
+}
 
 /** Where the gizmo sits - "centre" of the visible mesh, or the node "origin". */
-export function axesAnchor() { return axes?.anchor || null; }
+export function axesAnchor() {
+    return axes?.anchor || null;
+}
 
 /** The id used for the armed ghost, which is not a placement and has no id. */
 export const GHOST_AXES = "__ghost__";
@@ -1434,19 +1471,16 @@ function buildAxes(scene, length) {
     // often not one of the drag axes, and a dim square would read as "off".
     mats[`${a}_mark`] = mk("_mark");
 
-    const shaft = MeshBuilder.CreateCylinder(`AXES_${a}_shaft`,
-      { height: length * 0.82, diameter: r * 2, tessellation: 10 }, scene);
+        const shaft = MeshBuilder.CreateCylinder(`AXES_${a}_shaft`, { height: length * 0.82, diameter: r * 2, tessellation: 10 }, scene);
     shaft.position.z = length * 0.41;
-    const head = MeshBuilder.CreateCylinder(`AXES_${a}_head`,
-      { height: length * 0.18, diameterTop: 0, diameterBottom: r * 5, tessellation: 12 }, scene);
+        const head = MeshBuilder.CreateCylinder(`AXES_${a}_head`, { height: length * 0.18, diameterTop: 0, diameterBottom: r * 5, tessellation: 12 }, scene);
     head.position.z = length * 0.91;
     // "a turn goes about this one": a curved arrow encircling the shaft, the
     // universal reading for rotation - and unmistakable against the straight
     // arrows it sits on.
     const rotMark = buildRotationArrow(scene, `AXES_${a}_rot`, length, r);
     // "a scale acts on this one": a cube sitting on the very tip
-    const scaleMark = MeshBuilder.CreateBox(`AXES_${a}_scale`,
-      { size: r * 5.5 }, scene);
+        const scaleMark = MeshBuilder.CreateBox(`AXES_${a}_scale`, { size: r * 5.5 }, scene);
     scaleMark.position.z = length * 1.04;
 
     for (const m of [shaft, head, scaleMark]) {
@@ -1495,22 +1529,18 @@ function buildRotationArrow(scene, name, length, r) {
     const t = (i / steps) * sweep;
     path.push(new Vector3(radius * Math.cos(t), radius * Math.sin(t), 0));
   }
-  const tube = MeshBuilder.CreateTube(`${name}_arc`,
-    { path, radius: r * 0.45, tessellation: 8, cap: BABYLON.Mesh.CAP_ALL }, scene);
+    const tube = MeshBuilder.CreateTube(`${name}_arc`, { path, radius: r * 0.45, tessellation: 8, cap: BABYLON.Mesh.CAP_ALL }, scene);
   tube.parent = node;
 
   // The head goes on the end of the arc, pointing along the tangent there.
-  const head = MeshBuilder.CreateCylinder(`${name}_head`,
-    { height: length * 0.065, diameterTop: 0, diameterBottom: r * 2, tessellation: 12 }, scene);
+    const head = MeshBuilder.CreateCylinder(`${name}_head`, { height: length * 0.065, diameterTop: 0, diameterBottom: r * 2, tessellation: 12 }, scene);
   head.position.copyFrom(path[path.length - 1]);
   const tangent = new Vector3(-Math.sin(sweep), Math.cos(sweep), 0).normalize();
   // Cones are built along +Y; turn that onto the tangent. Done by hand rather
   // than with lookAt(), which aims +Z and would need a second correction.
   const axis = Vector3.Cross(Vector3.Up(), tangent);
-  head.rotationQuaternion = axis.lengthSquared() < 1e-12
-    ? Quaternion.Identity()
-    : Quaternion.RotationAxis(axis.normalize(),
-      Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(Vector3.Up(), tangent)))));
+    head.rotationQuaternion =
+        axis.lengthSquared() < 1e-12 ? Quaternion.Identity() : Quaternion.RotationAxis(axis.normalize(), Math.acos(Math.min(1, Math.max(-1, Vector3.Dot(Vector3.Up(), tangent)))));
   head.parent = node;
   return node;
 }
@@ -1524,8 +1554,7 @@ function paintAxes() {
   for (const a of ["x", "y", "z"]) {
     const on = live.has(a);
     const c = AXIS_COLOR[a];
-    axes.mats[a].emissiveColor.copyFromFloats(
-      on ? c.r : c.r * 0.3, on ? c.g : c.g * 0.3, on ? c.b : c.b * 0.3);
+        axes.mats[a].emissiveColor.copyFromFloats(on ? c.r : c.r * 0.3, on ? c.g : c.g * 0.3, on ? c.b : c.b * 0.3);
     axes.mats[a].alpha = on ? 1 : 0.45;
     axes.marks.rot[a].setEnabled(rotationEnabled && a === state.rotAxis);
     axes.marks.scale[a].setEnabled(scaled.has(a));
@@ -1599,8 +1628,7 @@ function centreOffset(node, bounds) {
   // A flattened element (a zero scale on some axis) has no invertible frame and
   // no thickness to centre on either; the origin is the only honest answer.
   if (Math.abs(world.determinant()) < 1e-12) return null;
-  return Vector3.TransformCoordinates(b.min.add(b.max).scale(0.5),
-    Matrix.Invert(world));
+    return Vector3.TransformCoordinates(b.min.add(b.max).scale(0.5), Matrix.Invert(world));
 }
 
 /**
@@ -1622,9 +1650,7 @@ function anchorPoint(node) {
     axes.anchorNode = node;
     axes.anchorLocal = centreOffset(node);
   }
-  return axes.anchorLocal
-    ? Vector3.TransformCoordinates(axes.anchorLocal, world)
-    : world.getRow(3).toVector3();
+    return axes.anchorLocal ? Vector3.TransformCoordinates(axes.anchorLocal, world) : world.getRow(3).toVector3();
 }
 
 /**
@@ -1674,11 +1700,9 @@ export function showAxes(id, space = "world", anchor = "origin") {
   };
   const label = chip("axis-snap");
   const rotLabel = chip("axis-snap axis-rot");
-  const scaleLabels = { x: chip("axis-snap axis-scale"), y: chip("axis-snap axis-scale"),
-                        z: chip("axis-snap axis-scale") };
+    const scaleLabels = { x: chip("axis-snap axis-scale"), y: chip("axis-snap axis-scale"), z: chip("axis-snap axis-scale") };
 
-  axes = { ...built, id, space, anchor, label, rotLabel, scaleLabels, observer: null,
-           anchorNode: node, anchorLocal: anchor === "centre" ? centreOffset(node, bounds) : null };
+    axes = { ...built, id, space, anchor, label, rotLabel, scaleLabels, observer: null, anchorNode: node, anchorLocal: anchor === "centre" ? centreOffset(node, bounds) : null };
   paintAxes();
   orientAxes(node);
   // Position is re-read every frame rather than parented: parenting would
@@ -1687,7 +1711,10 @@ export function showAxes(id, space = "world", anchor = "origin") {
   // cursor, and deletion, without any event plumbing at all.
   axes.observer = state.scene.onBeforeRenderObservable.add(() => {
     const cur = axesNode(id);
-    if (!cur) { hideAxes(); return; }
+        if (!cur) {
+            hideAxes();
+            return;
+        }
     axes.root.position.copyFrom(anchorPoint(cur));
     sizeAxes();
     orientAxes(cur);
@@ -1709,16 +1736,22 @@ function placeChip(el, at, text) {
   if (!el) return;
   const scene = state.scene;
   const engine = scene.getEngine();
-  const w = engine.getRenderWidth(), h = engine.getRenderHeight();
-  const p = Vector3.Project(at, Matrix.Identity(), scene.getTransformMatrix(),
-    state.camera.viewport.toGlobal(w, h));
+    const w = engine.getRenderWidth(),
+        h = engine.getRenderHeight();
+    const p = Vector3.Project(at, Matrix.Identity(), scene.getTransformMatrix(), state.camera.viewport.toGlobal(w, h));
   // behind the camera projects to a mirrored point, which would park the chip
   // on the opposite side of the screen from the thing it belongs to
-  if (p.z < 0 || p.z > 1) { el.hidden = true; return; }
+    if (p.z < 0 || p.z > 1) {
+        el.hidden = true;
+        return;
+    }
   // Off the side of the canvas is just as wrong: the chips hang off the arrow
   // *tips*, which swing outside the viewport at close range, and #viewport does
   // not clip - one was measured sitting on a palette tile.
-  if (p.x < 0 || p.x > w || p.y < 0 || p.y > h) { el.hidden = true; return; }
+    if (p.x < 0 || p.x > w || p.y < 0 || p.y > h) {
+        el.hidden = true;
+        return;
+    }
   const box = engine.getRenderingCanvas().getBoundingClientRect();
   const host = document.getElementById("viewport")?.getBoundingClientRect();
   if (!host) return;
@@ -1753,18 +1786,18 @@ function stepChipText(key, value, unit = "") {
 
 function placeAxisLabel() {
   if (!axes) return;
-  placeChip(axes.label, axes.root.position,
-    stepChipText("pos", state.snap.pos, " m"));
+    placeChip(axes.label, axes.root.position, stepChipText("pos", state.snap.pos, " m"));
 
   const ring = axes.marks.rot[state.rotAxis];
   if (ring && axes.rotLabel) {
-    if (!ring.isEnabled()) { axes.rotLabel.hidden = true; } else {
+        if (!ring.isEnabled()) {
+            axes.rotLabel.hidden = true;
+        } else {
       // The curved arrow used to be mirrored for a negative step, back when a
       // step carried its own direction. The wheel carries it now - one way
       // turns, the other way turns back - so the step is a magnitude again and
       // the arrow has nothing to disagree with.
-      placeChip(axes.rotLabel, ring.getAbsolutePosition(),
-        stepChipText("rot", state.snap.rot, "°"));
+            placeChip(axes.rotLabel, ring.getAbsolutePosition(), stepChipText("rot", state.snap.rot, "°"));
     }
   }
 
@@ -1772,10 +1805,12 @@ function placeAxisLabel() {
     const el = axes.scaleLabels?.[a];
     const cube = axes.marks.scale[a];
     if (!el || !cube) continue;
-    if (!cube.isEnabled()) { el.hidden = true; continue; }
+        if (!cube.isEnabled()) {
+            el.hidden = true;
+            continue;
+        }
     cube.computeWorldMatrix(true);
-    placeChip(el, cube.getAbsolutePosition(),
-      stepChipText("scale", state.snap.scale));
+        placeChip(el, cube.getAbsolutePosition(), stepChipText("scale", state.snap.scale));
   }
 }
 
@@ -1833,9 +1868,11 @@ export function nearestToCursor(ids) {
     if (!e) continue;
     const b = screenBoundsOf(e.node);
     if (!b) continue;
-    const d = Math.hypot((b.minX + b.maxX) / 2 - scene.pointerX,
-      (b.minY + b.maxY) / 2 - scene.pointerY);
-    if (d < bestD) { bestD = d; best = id; }
+        const d = Math.hypot((b.minX + b.maxX) / 2 - scene.pointerX, (b.minY + b.maxY) / 2 - scene.pointerY);
+        if (d < bestD) {
+            bestD = d;
+            best = id;
+        }
   }
   return best;
 }
@@ -1863,15 +1900,16 @@ export function nudgeGridElevation(dir) {
  */
 export function cursorOnPlane(y) {
   const scene = state.scene;
-  const ray = scene.createPickingRay(scene.pointerX, scene.pointerY,
-    Matrix.Identity(), state.camera);
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, Matrix.Identity(), state.camera);
   if (Math.abs(ray.direction.y) < 1e-5) return null;
   const t = (y - ray.origin.y) / ray.direction.y;
   if (t <= 0) return null;
   return ray.origin.add(ray.direction.scale(t));
 }
 
-export function cursorOnGrid() { return cursorOnPlane(state.gridY); }
+export function cursorOnGrid() {
+    return cursorOnPlane(state.gridY);
+}
 
 /**
  * Where the cursor lands on a *vertical* plane through `origin`, used for
@@ -1884,8 +1922,7 @@ export function cursorOnGrid() { return cursorOnPlane(state.gridY); }
  */
 export function cursorOnVerticalPlane(origin) {
   const scene = state.scene;
-  const ray = scene.createPickingRay(scene.pointerX, scene.pointerY,
-    Matrix.Identity(), state.camera);
+    const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, Matrix.Identity(), state.camera);
   const n = state.camera.getDirection(Vector3.Forward());
   n.y = 0;
   if (n.lengthSquared() < 1e-6) return null;      // looking straight down
@@ -1937,7 +1974,10 @@ function setupPointer(scene) {
     }
     if (pi.type === PointerEventTypes.POINTERDOWN) {
       down.set(pi.event.button, {
-        x: pi.event.clientX, y: pi.event.clientY, t: performance.now(), travel: 0,
+                x: pi.event.clientX,
+                y: pi.event.clientY,
+                t: performance.now(),
+                travel: 0,
       });
       if (pi.event.button === 2) {
         rmbDown = true;
@@ -1964,8 +2004,7 @@ function setupPointer(scene) {
     }
     if (pi.event.button === 0) emit("pointerup", pi.event);
     if (!start) return;
-    const moved = Math.max(start.travel,
-      Math.hypot(pi.event.clientX - start.x, pi.event.clientY - start.y));
+        const moved = Math.max(start.travel, Math.hypot(pi.event.clientX - start.x, pi.event.clientY - start.y));
     if (moved > 4) return;                       // that was a drag, not a click
 
     if (pi.event.button === 2) {
@@ -1985,8 +2024,7 @@ function setupPointer(scene) {
     // first click always acts immediately - a placement tool cannot afford to
     // wait out a double-click timeout on every click.
     const now = performance.now();
-    const isDouble = now - lastTapAt < DOUBLE_CLICK_MS
-      && Math.hypot(pi.event.clientX - lastTapPos.x, pi.event.clientY - lastTapPos.y) < 6;
+        const isDouble = now - lastTapAt < DOUBLE_CLICK_MS && Math.hypot(pi.event.clientX - lastTapPos.x, pi.event.clientY - lastTapPos.y) < 6;
     lastTapAt = isDouble ? 0 : now;
     lastTapPos = { x: pi.event.clientX, y: pi.event.clientY };
 
@@ -2006,13 +2044,15 @@ function setupPointer(scene) {
     // the editor the missing release so neither camera look nor hover sticks.
     rmbGesture = true;
     const start = down.get(2);
-    canvas.dispatchEvent(new PointerEvent("pointerup", {
+        canvas.dispatchEvent(
+            new PointerEvent("pointerup", {
       button: 2,
       buttons: 0,
       clientX: start?.x || 0,
       clientY: start?.y || 0,
       bubbles: true,
-    }));
+            })
+        );
   });
 
   document.addEventListener("pointerlockerror", () => {
@@ -2068,7 +2108,9 @@ export function noteKey(code, isDown, ev) {
 }
 
 /** True while the right button is held - the camera-gesture modifier. */
-export function isRmbDown() { return rmbDown; }
+export function isRmbDown() {
+    return rmbDown;
+}
 
 /**
  * Fly speed, adjusted by the wheel while the right button is held - the same
@@ -2160,8 +2202,7 @@ function setupCameraMove(scene) {
  */
 export function pickUnderCursor() {
   const scene = state.scene;
-  const pick = scene.pick(scene.pointerX, scene.pointerY,
-    (m) => m.isPickable && m.isEnabled());
+    const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m.isPickable && m.isEnabled());
   const id = pick?.hit ? ownerIdOf(pick.pickedMesh) : null;
   if (id && entryOf(id)) return { kind: "entry", id, entry: entryOf(id), pick };
 
@@ -2200,10 +2241,7 @@ export async function placeAt(moduleId, position, opts = {}) {
   const node = await instantiate(moduleId, id);
   node.position.copyFrom(position);
   if (opts.rotation) {
-    node.rotationQuaternion = Quaternion.FromEulerAngles((
-      opts.rotation[0] * Math.PI) / 180, (
-      opts.rotation[1] * Math.PI) / 180, (
-      opts.rotation[2] * Math.PI) / 180);
+        node.rotationQuaternion = Quaternion.FromEulerAngles((opts.rotation[0] * Math.PI) / 180, (opts.rotation[1] * Math.PI) / 180, (opts.rotation[2] * Math.PI) / 180);
   }
   if (opts.scale) node.scaling.set(opts.scale[0], opts.scale[1], opts.scale[2]);
 
@@ -2234,7 +2272,10 @@ export async function placeAt(moduleId, position, opts = {}) {
   // because seeding those would add a second lamp beside every one of them.
   const seeded = opts.noLights ? [] : hooks.seedKitLights(id);
   applyVisibility();
-  if (!opts.silent) { emit("placements"); select([id]); }
+    if (!opts.silent) {
+        emit("placements");
+        select([id]);
+    }
   // Not folded into the branch above: a run of tiles dropped in one go places
   // every one but the first silently, and the lights panel still has to see
   // the lamps that came with them.
@@ -2331,15 +2372,21 @@ export async function duplicateSelected({ behaviors = true } = {}) {
     if (!e) continue;
     if (e.group && !regroup.has(e.group)) regroup.set(e.group, nextGroupId());
     const rot = eulerOf(e.node);
-    const copy = await placeAt(e.module,
-      e.node.position.add(new Vector3(state.snap.pos || 1, 0, 0)),
-      { rotation: rot, scale: e.node.scaling.asArray(), chunk: e.chunk, name: "",
-        group: regroup.get(e.group) || "", compound: e.compound,
+        const copy = await placeAt(e.module, e.node.position.add(new Vector3(state.snap.pos || 1, 0, 0)), {
+            rotation: rot,
+            scale: e.node.scaling.asArray(),
+            chunk: e.chunk,
+            name: "",
+            group: regroup.get(e.group) || "",
+            compound: e.compound,
         // A copy belongs wherever its original does. Read off the source rather
         // than off the mode so that a bench member cannot be duplicated into a
         // ship element sitting in a chunk that does not exist.
-        stage: e.stage, stageChunk: e.chunk,
-        silent: true, noLights: true, });
+            stage: e.stage,
+            stageChunk: e.chunk,
+            silent: true,
+            noLights: true,
+        });
     hooks.copyLightsTo(id, copy.id);
     copyBehaviorsTo(id, copy.id, { copy: behaviors });
     made.push(copy.id);
@@ -2403,8 +2450,9 @@ export function toggleSelect(ids) {
   const removing = state.selection.includes(list[0]);
   for (const id of list) {
     const i = state.selection.indexOf(id);
-    if (removing) { if (i >= 0) state.selection.splice(i, 1); }
-    else if (i < 0) state.selection.push(id);
+        if (removing) {
+            if (i >= 0) state.selection.splice(i, 1);
+        } else if (i < 0) state.selection.push(id);
   }
   emit("selection");
 }
@@ -2420,9 +2468,7 @@ export function toggleSelect(ids) {
 export function nudgeSelection(delta) {
   if (!state.selection.length) return;
   const basis = axisBasis(entryOf(state.selection[0])?.node);
-  const step = basis
-    ? basis.x.scale(delta.x).add(basis.y.scale(delta.y)).add(basis.z.scale(delta.z))
-    : delta;
+    const step = basis ? basis.x.scale(delta.x).add(basis.y.scale(delta.y)).add(basis.z.scale(delta.z)) : delta;
   pushUndo();
   for (const id of state.selection) {
     const e = entryOf(id);
@@ -2442,15 +2488,15 @@ export function focusSelection() {
 /** Frame these nodes, keeping the camera's current orientation. */
 export function focusNodes(nodes) {
   if (!nodes?.length) return;
-  let min = null, max = null;
+    let min = null,
+        max = null;
   for (const n of nodes) {
     const b = worldBounds(n);
     if (!b) continue;
     min = min ? Vector3.Minimize(min, b.min) : b.min.clone();
     max = max ? Vector3.Maximize(max, b.max) : b.max.clone();
   }
-  const c = min ? min.add(max).scale(0.5)
-    : nodes[0].getAbsolutePosition().clone();
+    const c = min ? min.add(max).scale(0.5) : nodes[0].getAbsolutePosition().clone();
   const size = min ? max.subtract(min).length() : 4;
   const dist = Math.max(4, size * 1.3);
 
@@ -2489,13 +2535,12 @@ const BRING_DROP = 6;        // how far below the spot a floor still counts
  * snapping here would align the origin and leave the body off-grid.
  */
 export function cameraDropPoint(size = 2, skip = null) {
-  const cam = state.camera, scene = state.scene;
+    const cam = state.camera,
+        scene = state.scene;
   if (!cam || !scene) return null;
   const fwd = cam.getDirection(Vector3.Forward()).normalize();
   const want = Math.min(Math.max(size * 0.9, BRING_NEAR), BRING_FAR);
-  const ahead = scene.pickWithRay(
-    new BABYLON.Ray(cam.position.clone(), fwd, want),
-    (m) => m.isPickable && m.isEnabled() && !(skip && skip(m)));
+    const ahead = scene.pickWithRay(new BABYLON.Ray(cam.position.clone(), fwd, want), (m) => m.isPickable && m.isEnabled() && !(skip && skip(m)));
   // Stop just short of what is in the way rather than on its surface, so the
   // piece does not start out intersecting the wall you were looking at.
   const dist = ahead?.hit ? Math.max(ahead.distance - 0.25, 0.5) : want;
@@ -2523,7 +2568,9 @@ export function cameraDropPoint(size = 2, skip = null) {
 export const SKYBOX_CHUNK = "__SKYBOX__";
 
 /** True for the one side value that names space instead of a room. */
-export function isSkyboxChunk(id) { return id === SKYBOX_CHUNK; }
+export function isSkyboxChunk(id) {
+    return id === SKYBOX_CHUNK;
+}
 
 export function addChunk(name) {
   if (!name || name === SKYBOX_CHUNK || state.chunks.includes(name)) return false;
@@ -2541,9 +2588,10 @@ export function addChunk(name) {
  * a portal to nowhere - so `removeChunk` refuses while this finds anything.
  */
 export function chunkUsers(name) {
-  const placements = shipPlacements().filter((e) => e.chunk === name).map((e) => e.id);
-  const doors = [...state.markers.values()]
-    .filter((m) => m.chunkA === name || m.chunkB === name).map((m) => m.id);
+    const placements = shipPlacements()
+        .filter((e) => e.chunk === name)
+        .map((e) => e.id);
+    const doors = [...state.markers.values()].filter((m) => m.chunkA === name || m.chunkB === name).map((m) => m.id);
   return { placements, doors };
 }
 
@@ -2616,9 +2664,7 @@ export function renameChunk(from, to) {
 /** A probe volume component: three finite numbers, optionally all positive. */
 function validProbeVector(value, positive = false) {
   const vector = value?.map(Number);
-  return vector?.length === 3
-    && vector.every((n) => Number.isFinite(n) && (!positive || n > 0))
-    ? vector : null;
+    return vector?.length === 3 && vector.every((n) => Number.isFinite(n) && (!positive || n > 0)) ? vector : null;
 }
 
 export function validEnvironmentProbeId(value) {
@@ -2650,7 +2696,9 @@ export const PROBE_PARTS = ["influence", "inner"];
  */
 export const PROBE_VOLUMES = ["box", "influence", "inner"];
 
-export function environmentProbePartId(id, part) { return `${id}#${part}`; }
+export function environmentProbePartId(id, part) {
+    return `${id}#${part}`;
+}
 
 export function environmentProbePartOf(id) {
   const text = String(id ?? "");
@@ -2658,16 +2706,14 @@ export function environmentProbePartOf(id) {
   if (at < 0) return null;
   const probe = text.slice(0, at);
   const part = text.slice(at + 1);
-  return PROBE_PARTS.includes(part) && state.environmentProbes.has(probe)
-    ? { probe, part } : null;
+    return PROBE_PARTS.includes(part) && state.environmentProbes.has(probe) ? { probe, part } : null;
 }
 
 /** Whether an id can identify a probe without shadowing another editor entry. */
 export function environmentProbeIdAvailable(value, currentId = null) {
   const id = validEnvironmentProbeId(value);
   if (!id) return false;
-  if (state.placements.has(id) || state.markers.has(id)
-    || state.colliders.has(id) || state.lights.has(id)) return false;
+    if (state.placements.has(id) || state.markers.has(id) || state.colliders.has(id) || state.lights.has(id)) return false;
   return id === currentId || !state.environmentProbes.has(id);
 }
 
@@ -2717,8 +2763,7 @@ function defaultSphereProbeInfluence(spherePosition, sphereRadius) {
 function probeVisibleParts(asked, standing) {
   const parts = {};
   for (const volume of PROBE_VOLUMES) {
-    parts[volume] = typeof asked?.[volume] === "boolean"
-      ? asked[volume] : standing?.[volume] !== false;
+        parts[volume] = typeof asked?.[volume] === "boolean" ? asked[volume] : standing?.[volume] !== false;
   }
   return parts;
 }
@@ -2793,16 +2838,25 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
     const sphereRadius = Number(probe?.sphereRadius);
     if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius <= 0) return false;
     const defaults = defaultSphereProbeInfluence(spherePosition, sphereRadius);
-    const influenceSpherePosition = validProbeVector(probe?.influenceSpherePosition)
-      || defaults.influenceSpherePosition;
+        const influenceSpherePosition = validProbeVector(probe?.influenceSpherePosition) || defaults.influenceSpherePosition;
     const influenceSphereRadius = Number(probe?.influenceSphereRadius ?? defaults.influenceSphereRadius);
     const influenceInnerSphereRadius = Number(probe?.influenceInnerSphereRadius ?? defaults.influenceInnerSphereRadius);
-    if (!Number.isFinite(influenceSphereRadius) || influenceSphereRadius <= 0
-      || !Number.isFinite(influenceInnerSphereRadius) || influenceInnerSphereRadius < 0
-      || influenceInnerSphereRadius > influenceSphereRadius) return false;
+        if (
+            !Number.isFinite(influenceSphereRadius) ||
+            influenceSphereRadius <= 0 ||
+            !Number.isFinite(influenceInnerSphereRadius) ||
+            influenceInnerSphereRadius < 0 ||
+            influenceInnerSphereRadius > influenceSphereRadius
+        )
+            return false;
     volume = {
-      shape, spherePosition, sphereRadius, capturePosition,
-      influenceSpherePosition, influenceSphereRadius, influenceInnerSphereRadius,
+            shape,
+            spherePosition,
+            sphereRadius,
+            capturePosition,
+            influenceSpherePosition,
+            influenceSphereRadius,
+            influenceInnerSphereRadius,
     };
   } else {
     const boxPosition = validProbeVector(probe?.boxPosition);
@@ -2816,13 +2870,13 @@ export function setEnvironmentProbe(id, probe, previousId = id, { history = true
   // A caller editing the numbers says nothing about the view flags, and must
   // not silently put the probe's boxes away: they stay as the record has them.
   const next = {
-    id: key, ...volume,
+        id: key,
+        ...volume,
     alwaysVisible: !!(probe?.alwaysVisible ?? standing?.alwaysVisible),
     envFaces: !!(probe?.envFaces ?? standing?.envFaces),
     visibleParts: probeVisibleParts(probe?.visibleParts, standing?.visibleParts),
   };
-  if (previous === key
-    && JSON.stringify(state.environmentProbes.get(key) || null) === JSON.stringify(next)) {
+    if (previous === key && JSON.stringify(state.environmentProbes.get(key) || null) === JSON.stringify(next)) {
     return false;
   }
   if (history) pushUndo();
@@ -2855,8 +2909,7 @@ export function setEnvironmentProbeView(id, patch) {
     envFaces: typeof patch.envFaces === "boolean" ? patch.envFaces : probe.envFaces,
     visibleParts: probeVisibleParts(patch.visibleParts, probe.visibleParts),
   };
-  if (next.alwaysVisible === probe.alwaysVisible && next.envFaces === probe.envFaces
-    && JSON.stringify(next.visibleParts) === JSON.stringify(probe.visibleParts)) return false;
+    if (next.alwaysVisible === probe.alwaysVisible && next.envFaces === probe.envFaces && JSON.stringify(next.visibleParts) === JSON.stringify(probe.visibleParts)) return false;
   state.environmentProbes.set(id, next);
   emit("environment-probes");
   return true;
@@ -2873,15 +2926,11 @@ export function setEnvironmentProbeView(id, patch) {
  */
 function probeInfluence(probe, boxPosition, boxSize) {
   const defaults = defaultProbeInfluence(boxPosition, boxSize);
-  const has = probe?.influenceBoxPosition || probe?.influenceBoxSize
-    || probe?.influenceInnerBoxSize;
+    const has = probe?.influenceBoxPosition || probe?.influenceBoxSize || probe?.influenceInnerBoxSize;
   if (!has) return defaults;
-  const influenceBoxPosition = validProbeVector(probe?.influenceBoxPosition)
-    || defaults.influenceBoxPosition;
-  const influenceBoxSize = validProbeVector(probe?.influenceBoxSize, true)
-    || defaults.influenceBoxSize;
-  const influenceInnerBoxSize = validProbeVector(probe?.influenceInnerBoxSize)
-    || defaults.influenceInnerBoxSize;
+    const influenceBoxPosition = validProbeVector(probe?.influenceBoxPosition) || defaults.influenceBoxPosition;
+    const influenceBoxSize = validProbeVector(probe?.influenceBoxSize, true) || defaults.influenceBoxSize;
+    const influenceInnerBoxSize = validProbeVector(probe?.influenceInnerBoxSize) || defaults.influenceInnerBoxSize;
   if (influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
   return { influenceBoxPosition, influenceBoxSize, influenceInnerBoxSize };
 }
@@ -2981,8 +3030,7 @@ export function syncEnvironmentProbeInfluence(id, position, size) {
     ...probe,
     influenceBoxPosition,
     influenceBoxSize,
-    influenceInnerBoxSize: probe.influenceInnerBoxSize
-      .map((value, axis) => Math.min(value, influenceBoxSize[axis])),
+        influenceInnerBoxSize: probe.influenceInnerBoxSize.map((value, axis) => Math.min(value, influenceBoxSize[axis])),
   };
   if (JSON.stringify(next) === JSON.stringify(probe)) return false;
   state.environmentProbes.set(id, next);
@@ -3010,8 +3058,7 @@ export function syncEnvironmentProbeInnerSize(id, size) {
     emit("environment-probes");
     return true;
   }
-  const influenceInnerBoxSize = inner
-    .map((value, axis) => Math.min(Math.max(0, value), probe.influenceBoxSize[axis]));
+    const influenceInnerBoxSize = inner.map((value, axis) => Math.min(Math.max(0, value), probe.influenceBoxSize[axis]));
   const next = { ...probe, influenceInnerBoxSize };
   if (JSON.stringify(next) === JSON.stringify(probe)) return false;
   state.environmentProbes.set(id, next);
@@ -3027,8 +3074,7 @@ export function removeEnvironmentProbe(id, history = true) {
   // selection still holding one would resolve to nothing from here on.
   const parts = new Set(PROBE_PARTS.map((part) => environmentProbePartId(id, part)));
   if (state.selection.some((selected) => selected === id || parts.has(selected))) {
-    state.selection = state.selection
-      .filter((selected) => selected !== id && !parts.has(selected));
+        state.selection = state.selection.filter((selected) => selected !== id && !parts.has(selected));
     emit("selection");
   }
   emit("environment-probes");
@@ -3141,11 +3187,11 @@ export function renamePlacement(id, name) {
 function renameEntityRefs(before, after) {
   if (!behaviorCatalog) return;
   for (const [name, body] of state.behaviors) {
-    renameEntityReferences(behaviorCatalog, name, body, before, after);
+        renameEntityReferences(behaviorCatalog, behaviorBaseName(name), body, before, after);
   }
   for (const [node, list] of state.entities) {
     for (const assignment of list) {
-      renameEntityReferences(behaviorCatalog, assignment.name, assignment, before, after);
+            renameEntityReferences(behaviorCatalog, behaviorBaseName(assignment.name), assignment, before, after);
       // The rename can have pointed a group at its own owner, which says
       // nothing and is the one thing `linked` may not contain.
       if (Array.isArray(assignment.linked)) assignment.linked = cleanLinked(assignment.linked, node);
@@ -3161,7 +3207,9 @@ function renameEntityRefs(before, after) {
  * nothing to say about which fields hold node names.
  */
 let behaviorCatalog = null;
-export function setBehaviorCatalog(catalog) { behaviorCatalog = catalog; }
+export function setBehaviorCatalog(catalog) {
+    behaviorCatalog = catalog;
+}
 
 function assertValidBehaviorConfig(name, value, partial, path) {
   if (!behaviorCatalog) {
@@ -3177,37 +3225,66 @@ function assertValidBehaviorConfig(name, value, partial, path) {
 //
 // Two halves, matching the manifest:
 //
-//   behaviors   a *library* of named definitions - "stdLiquefaction" is
-//               `{ liquefiable: true, fluidSim: [...] }`. The metadata-driven
-//               editor knows and validates every supported field.
-//   entities    which of those a node name carries, plus the `linked` node
-//               names some of them need - a door half links to its other half.
+//   behaviors   named presets derived from one catalog behavior.
+//   entities    which base behaviors or presets a node name carries, plus the
+//               `linked` node names some of them need.
 //
 // Both are keyed by NODE NAME - `nodeNameOf`, so a named element by its name
 // and an unnamed one by its id. Names are shared on purpose, so one entry can
 // govern every element carrying it; an id is carried by exactly one element, so
 // leaving something unnamed is how it comes to have behaviours of its own.
 
-/** Definition body for a behaviour name, or null. */
+/** Parameter overrides inherited from a preset, or base-behavior constants. */
 export function getBehaviorDef(name) {
-  const b = state.behaviors.get(String(name || "").trim());
-  return b ? JSON.parse(JSON.stringify(b)) : null;
+    const key = String(name || "").trim();
+    const preset = state.behaviors.get(key);
+    if (preset) {
+        const body = JSON.parse(JSON.stringify(preset));
+        delete body.base;
+        return body;
+    }
+    const metadata = behaviorMetadata(behaviorCatalog, key);
+    return metadata ? defaultBehaviorDefinition(metadata) : null;
 }
 
-/** Every behaviour in the library, in insertion order. */
-export function behaviorNames() { return [...state.behaviors.keys()]; }
+/** Raw named preset, including its base behavior identity. */
+export function getBehaviorPreset(name) {
+    const preset = state.behaviors.get(String(name || "").trim());
+    return preset ? JSON.parse(JSON.stringify(preset)) : null;
+}
+
+/** Every preset in insertion order. */
+export function behaviorNames() {
+    return [...state.behaviors.keys()];
+}
+
+/** Base catalog behaviors and named presets, sorted by the caller for display. */
+export function availableBehaviorNames() {
+    return [...new Set([...behaviorMetadataNames(behaviorCatalog), ...behaviorNames()])];
+}
+
+/** Executable catalog behavior behind a base name or preset name. */
+export function behaviorBaseName(name) {
+    const key = String(name || "").trim();
+    return state.behaviors.get(key)?.base ?? key;
+}
 
 /**
- * Create or replace a definition. The body must be a JSON *object*: the
- * manifest maps a name to a bag of flags, and an array or a bare number there
- * would be silently ignored by the runtime rather than rejected.
+ * Create or replace a named preset. `base` identifies one catalog behavior;
+ * the remaining fields are its shared parameter overrides.
  */
 export function setBehaviorDef(name, body) {
   const key = String(name || "").trim();
   if (!key) return false;
   if (!body || typeof body !== "object" || Array.isArray(body)) return false;
   const next = JSON.parse(JSON.stringify(body));
-  assertValidBehaviorConfig(key, next, true, `behavior "${key}"`);
+    const base = String(next.base || "").trim();
+    if (!base || !behaviorMetadata(behaviorCatalog, base) || behaviorMetadata(behaviorCatalog, key)) return false;
+    next.base = base;
+    if (base === "liquefaction") delete next.liquefiable;
+    const params = { ...next };
+    delete params.base;
+    assertValidBehaviorConfig(base, params, true, `behavior preset "${key}"`);
   if (JSON.stringify(state.behaviors.get(key) ?? null) === JSON.stringify(next)) return false;
   pushUndo();
   state.behaviors.set(key, next);
@@ -3215,7 +3292,7 @@ export function setBehaviorDef(name, body) {
   return true;
 }
 
-/** Delete a definition and strip it from every entity that carried it. */
+/** Delete a preset and strip it from every entity that carried it. */
 export function deleteBehaviorDef(name) {
   if (!state.behaviors.has(name)) return false;
   pushUndo();
@@ -3290,7 +3367,7 @@ export function copyBehaviorsTo(fromId, toId, { copy = true } = {}) {
  */
 export function addEntityBehavior(nodeName, behaviorName) {
   const node = String(nodeName || "").trim();
-  if (!node || !state.behaviors.has(behaviorName)) return false;
+    if (!node || !availableBehaviorNames().includes(behaviorName)) return false;
   const list = state.entities.get(node) || [];
   pushUndo();
   state.entities.set(node, [...list, { name: behaviorName, linked: [] }]);
@@ -3336,13 +3413,12 @@ export function setEntityLinked(nodeName, index, linked) {
 /** A `linked` list with the duplicates, the blanks and the self-reference out. */
 function cleanLinked(linked, node) {
   if (!Array.isArray(linked)) return [];
-  return [...new Set(linked.map((s) => String(s).trim()).filter(Boolean))]
-    .filter((n) => n !== node);          // linking a node to itself says nothing
+    return [...new Set(linked.map((s) => String(s).trim()).filter(Boolean))].filter((n) => n !== node); // linking a node to itself says nothing
 }
 
 /** True when a definition asks for liquefaction, which is what needs `linked`. */
 export function isLiquefiable(behaviorName) {
-  return getBehaviorDef(behaviorName)?.liquefiable === true;
+    return behaviorBaseName(behaviorName) === "liquefaction";
 }
 
 /**
@@ -3352,7 +3428,7 @@ export function isLiquefiable(behaviorName) {
  * mesh can be authored to melt without ever having been a rigid body.
  */
 export function isDynamicNode(nodeName) {
-  return entityBehaviors(nodeName).some((b) => getBehaviorDef(b.name)?.dynamic === true);
+    return entityBehaviors(nodeName).some((b) => behaviorBaseName(b.name) === "dynamic");
 }
 
 /**
@@ -3404,8 +3480,7 @@ export function behaviorParams(assignment) {
  * captures, both only while Run behaviours is on.
  */
 export function isHiddenAtStartNode(nodeName) {
-  return entityBehaviors(nodeName).some(
-    (b) => b.name === HIDE_ENTITY_BEHAVIOR && !Object.keys(behaviorParams(b)).length);
+    return entityBehaviors(nodeName).some((b) => behaviorBaseName(b.name) === HIDE_ENTITY_BEHAVIOR && !Object.keys(behaviorParams(b)).length);
 }
 
 /** The ship elements isHiddenAtStartNode speaks for, for the status line. */
@@ -3425,7 +3500,7 @@ export function behaviorHiddenPlacements() {
  *
  *  - `dynamic: true` — a rigid body. Its authored pose is a starting position,
  *    not a fact about the room.
- *  - `liquefiable: true` — it is going to melt. What the probe would record is
+ *  - `liquefaction` — it is going to melt. What the probe would record is
  *    its shape before the game begins.
  *  - `playAnimation` — its exported transform changes at runtime.
  *  - the weapon behaviour — a first-person viewmodel rides the camera, so it is
@@ -3440,9 +3515,9 @@ export function behaviorHiddenPlacements() {
  */
 export function isProbeExcludedNode(nodeName) {
   return entityBehaviors(nodeName).some((b) => {
-    if (WEAPON_BEHAVIORS.includes(b.name) || b.name === PLAY_ANIMATION_BEHAVIOR) return true;
-    const def = getBehaviorDef(b.name);
-    return def?.reflectionProbe === "exclude" || def?.dynamic === true || def?.liquefiable === true;
+        const base = behaviorBaseName(b.name);
+        if (WEAPON_BEHAVIORS.includes(base) || base === PLAY_ANIMATION_BEHAVIOR) return true;
+        return base === "probeExcluded" || base === "dynamic" || base === "liquefaction";
   });
 }
 
@@ -3480,10 +3555,15 @@ export function setEntityParams(nodeName, index, params) {
     if (next.direction.some((v) => v !== 0)) next.direction = next.direction.map((v) => Math.round(v * 1e4) / 1e4);
     else delete next.direction;
   }
-  assertValidBehaviorConfig(entry.name, {
-    ...(state.behaviors.get(entry.name) ?? {}),
+    assertValidBehaviorConfig(
+        behaviorBaseName(entry.name),
+        {
+            ...(getBehaviorDef(entry.name) ?? {}),
     ...behaviorParams(next),
-  }, false, `entity "${node}" behavior "${entry.name}"`);
+        },
+        false,
+        `entity "${node}" behavior "${entry.name}"`
+    );
   if (JSON.stringify(entry) === JSON.stringify(next)) return false;
   pushUndo();
   list[at] = next;
@@ -3530,7 +3610,8 @@ export function nodesNamed(name) {
   return placementsCarrying(key).length;
 }
 
-export function assignSelectionToChunk(chunk) {  if (!state.selection.length) return;
+export function assignSelectionToChunk(chunk) {
+    if (!state.selection.length) return;
   pushUndo();
   for (const id of state.selection) {
     const e = state.placements.get(id);
@@ -3555,7 +3636,9 @@ export function assignSelectionToChunk(chunk) {  if (!state.selection.length) re
  */
 const veilClones = new Map();          // element id -> the translucent stand-ins
 
-export function isVeilClone(mesh) { return !!mesh?.metadata?.veilClone; }
+export function isVeilClone(mesh) {
+    return !!mesh?.metadata?.veilClone;
+}
 
 /**
  * Editor furniture hanging off an element's node rather than part of its art.
@@ -3565,7 +3648,9 @@ export function isVeilClone(mesh) { return !!mesh?.metadata?.veilClone; }
  * is not a primitive to export, not a shape to measure, and veiling a wall must
  * not clone the lamp inside it.
  */
-export function isGizmoMesh(m) { return !!m?.metadata?.gizmo; }
+export function isGizmoMesh(m) {
+    return !!m?.metadata?.gizmo;
+}
 
 /**
  * A stand-in the Runtime view draws in place of an authored instance.
@@ -3575,7 +3660,9 @@ export function isGizmoMesh(m) { return !!m?.metadata?.gizmo; }
  * walks an element's meshes should see it - not the exporter, not the veil,
  * not the picker.
  */
-export function isRuntimeStandIn(m) { return !!m?.metadata?.runtimePreview; }
+export function isRuntimeStandIn(m) {
+    return !!m?.metadata?.runtimePreview;
+}
 
 function realMeshes(node) {
   return node.getChildMeshes().filter((m) => !isVeilClone(m) && !isGizmoMesh(m) && !isRuntimeStandIn(m));
@@ -3661,14 +3748,11 @@ export function applyVisibility() {
   // where that claim is being made: the Runtime view, with Run behaviours on.
   // The editor view has to keep drawing it, or a trap would be unselectable in
   // the only view you can author it in.
-  const hiddenAtStart = state.runtime && state.runBehaviors
-    ? (e) => isHiddenAtStartNode(nodeNameOf(e))
-    : () => false;
+    const hiddenAtStart = state.runtime && state.runBehaviors ? (e) => isHiddenAtStartNode(nodeNameOf(e)) : () => false;
 
   for (const e of state.placements.values()) {
     const veil = veilOf(e.id);
-    const on = (e.stage ? benchOf(e) === bench : !bench && geometryOn
-      && (!state.isolate || e.chunk === state.activeChunk) && !hiddenAtStart(e)) && veil !== "hidden";
+        const on = (e.stage ? benchOf(e) === bench : !bench && geometryOn && (!state.isolate || e.chunk === state.activeChunk) && !hiddenAtStart(e)) && veil !== "hidden";
     e.node.setEnabled(on);
     setVeil(e, veil === "ghost");
     for (const m of realMeshes(e.node)) {
@@ -3687,8 +3771,7 @@ export function applyVisibility() {
   const sidesOf = doorSideResolver();
   for (const mk of state.markers.values()) {
     const veil = veilOf(mk.id);
-    const joins = mk.type !== "door" || !state.isolate
-      || sidesOf(mk).includes(state.activeChunk);
+        const joins = mk.type !== "door" || !state.isolate || sidesOf(mk).includes(state.activeChunk);
     mk.node.setEnabled(!bench && geometryOn && joins && veil !== "hidden");
     setVeil(mk, veil === "ghost");
     for (const m of realMeshes(mk.node)) m.isPickable = veil !== "ghost";
@@ -3698,8 +3781,7 @@ export function applyVisibility() {
   // exist while it is open.
   for (const c of state.colliders.values()) {
     const veil = veilOf(c.id);
-    const on = (c.stage ? bench === "collision" : collisionOn && !bench
-      && (!state.isolate || c.chunk === state.activeChunk)) && veil !== "hidden";
+        const on = (c.stage ? bench === "collision" : collisionOn && !bench && (!state.isolate || c.chunk === state.activeChunk)) && veil !== "hidden";
     c.node.setEnabled(on);
     if (c.mesh) c.mesh.isPickable = veil !== "ghost";
   }
@@ -3716,10 +3798,13 @@ export function setShowLayer(layer) {
   state.showLayer = layer;
   // Selecting something and then hiding its layer would leave the gizmo and the
   // inspector acting on an element nobody can see.
-  if (state.selection.some((id) => {
+    if (
+        state.selection.some((id) => {
     const e = entryOf(id);
     return e && (e.type === "collider" ? layer === "geometry" : layer === "collision");
-  })) select([]);
+        })
+    )
+        select([]);
   applyVisibility();
   emit("modes");
   return true;
@@ -3739,7 +3824,8 @@ function doorSideResolver() {
     if (boxes) return boxes;
     boxes = [];
     for (const id of state.chunks) {
-      let min = null, max = null;
+            let min = null,
+                max = null;
       for (const p of state.placements.values()) {
         if (p.stage || p.chunk !== id) continue;
         const b = worldBounds(p.node);
@@ -3885,13 +3971,17 @@ export function unhideAll() {
   return n;
 }
 
-export function hiddenCount() { return state.hidden.size; }
+export function hiddenCount() {
+    return state.hidden.size;
+}
 
 /** How many are at each level, for the status bar. */
 export function veilCounts() {
-  let ghost = 0, hidden = 0;
+    let ghost = 0,
+        hidden = 0;
   for (const level of state.hidden.values()) {
-    if (level === "hidden") hidden++; else ghost++;
+        if (level === "hidden") hidden++;
+        else ghost++;
   }
   return { ghost, hidden };
 }
@@ -4011,7 +4101,6 @@ export function serializeEditorEnvironment() {
   };
 }
 
-
 /**
  * The editor's own view preferences, saved with the ship.
  *
@@ -4047,7 +4136,6 @@ export function serializeEditorPrefs() {
     probes,
   };
 }
-
 
 /**
  * Put the lighting back on load. Anything missing is left alone, so a manifest
@@ -4156,12 +4244,11 @@ export function serialize() {
     runtimeRoughnessFactor: state.runtimeRoughnessFactor,
     // Ship data, so it belongs on the undo stack with everything else - and it
     // survives the clearAll() that a restore begins with.
-    behaviors: Object.fromEntries(
-      [...state.behaviors].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))])),
+        behaviorPresets: Object.fromEntries([...state.behaviors].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))])),
     // Not ship data, but on the stack all the same: a restore clears it, so
     // leaving it out made every undo reveal what H had parked away.
-    hidden: [...state.hidden],    entities: Object.fromEntries([...state.entities]
-      .map(([k, v]) => [k, { behaviors: v.map((b) => ({ name: b.name, ...writeBehaviorParams(b) })) }])),
+        hidden: [...state.hidden],
+        entities: Object.fromEntries([...state.entities].map(([k, v]) => [k, { behaviors: v.map((b) => ({ name: b.name, ...writeBehaviorParams(b) })) }])),
     instances: shipPlacements().map((e) => ({
       id: e.id,
       module: e.module,
@@ -4188,8 +4275,7 @@ export function serialize() {
     // Live while the bench is open: state.stageLayout is only written when it
     // closes, so reading it directly made the dirty check blind to anything
     // staged since - and a save from the bench wrote the previous roster.
-    stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout)
-      .map((s) => ({ module: s.module, position: [...s.position] })),
+        stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout).map((s) => ({ module: s.module, position: [...s.position] })),
     config: { ...state.config },
   };
 }
@@ -4214,19 +4300,20 @@ export function loadModuleCollision(data, stageLayout) {
   state.moduleCollision = new Map();
   for (const [moduleId, shapes] of Object.entries(data || {})) {
     if (!Array.isArray(shapes) || !shapes.length) continue;
-    state.moduleCollision.set(moduleId, shapes
+        state.moduleCollision.set(
+            moduleId,
+            shapes
       .filter((s) => s && s.kind && Array.isArray(s.position))
       .map((s) => ({
         kind: s.kind,
         position: [...s.position],
         rotation: [...(s.rotation || [0, 0, 0])],
         scale: [...(s.scale || [1, 1, 1])],
-      })));
+                }))
+        );
   }
   if (Array.isArray(stageLayout)) {
-    state.stageLayout = stageLayout
-      .filter((s) => s && typeof s.module === "string" && Array.isArray(s.position))
-      .map((s) => ({ module: s.module, position: [...s.position] }));
+        state.stageLayout = stageLayout.filter((s) => s && typeof s.module === "string" && Array.isArray(s.position)).map((s) => ({ module: s.module, position: [...s.position] }));
   }
   applyVisibility();      // the inherited-collision preview is built from this
   emit("colliders");
@@ -4249,9 +4336,7 @@ export function moduleShapesFromRuntime(block) {
       if (!s?.kind || !Array.isArray(s.centre)) continue;
       const position = [-s.centre[0], s.centre[1], s.centre[2]];
       if (s.kind === "box") {
-        const q = Array.isArray(s.rotation)
-          ? new Quaternion(-s.rotation[0], s.rotation[1], s.rotation[2], -s.rotation[3])
-          : Quaternion.Identity();
+                const q = Array.isArray(s.rotation) ? new Quaternion(-s.rotation[0], s.rotation[1], s.rotation[2], -s.rotation[3]) : Quaternion.Identity();
         const e = q.toEulerAngles();
         made.push({
           kind: "box",
@@ -4352,33 +4437,31 @@ async function restoreFrom(data) {
         ...(probe.shape === "sphere"
           ? {
               spherePosition: Array.isArray(probe.spherePosition)
-                ? [-Number(probe.spherePosition[0]), Number(probe.spherePosition[1]),
-                  Number(probe.spherePosition[2])] : null,
+                              ? [-Number(probe.spherePosition[0]), Number(probe.spherePosition[1]), Number(probe.spherePosition[2])]
+                              : null,
               sphereRadius: probe.sphereRadius,
               influenceSpherePosition: Array.isArray(probe.influenceSpherePosition)
-                ? [-Number(probe.influenceSpherePosition[0]), Number(probe.influenceSpherePosition[1]),
-                  Number(probe.influenceSpherePosition[2])] : null,
+                              ? [-Number(probe.influenceSpherePosition[0]), Number(probe.influenceSpherePosition[1]), Number(probe.influenceSpherePosition[2])]
+                              : null,
               influenceSphereRadius: probe.influenceSphereRadius,
               influenceInnerSphereRadius: probe.influenceInnerSphereRadius,
             }
           : {
-              boxPosition: Array.isArray(probe.boxPosition)
-                ? [-Number(probe.boxPosition[0]), Number(probe.boxPosition[1]),
-                  Number(probe.boxPosition[2])] : null,
+                          boxPosition: Array.isArray(probe.boxPosition) ? [-Number(probe.boxPosition[0]), Number(probe.boxPosition[1]), Number(probe.boxPosition[2])] : null,
               boxSize: probe.boxSize,
               angle: Number.isFinite(Number(probe.angle)) ? -Number(probe.angle) : 0,
               // Absent on anything written before influence volumes were authored,
               // where the record takes the defaults instead - which are what that
               // ship was already blending with.
               influenceBoxPosition: Array.isArray(probe.influenceBoxPosition)
-                ? [-Number(probe.influenceBoxPosition[0]), Number(probe.influenceBoxPosition[1]),
-                  Number(probe.influenceBoxPosition[2])] : null,
+                              ? [-Number(probe.influenceBoxPosition[0]), Number(probe.influenceBoxPosition[1]), Number(probe.influenceBoxPosition[2])]
+                              : null,
               influenceBoxSize: probe.influenceBoxSize,
               influenceInnerBoxSize: probe.influenceInnerBoxSize,
             }),
         capturePosition: Array.isArray(probe.capturePosition)
-          ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]),
-            Number(probe.capturePosition[2])] : null,
+                    ? [-Number(probe.capturePosition[0]), Number(probe.capturePosition[1]), Number(probe.capturePosition[2])]
+                    : null,
                 // Not a probe field any more - see legacyProbeResolution, which is the
                 // only thing that still reads it.
         resolution: probe.resolution,
@@ -4398,9 +4481,7 @@ async function restoreFrom(data) {
       .filter((chunk) => chunk && typeof chunk === "object" && chunk.environmentProbe)
       .map((chunk, index) => {
         const legacy = chunk.environmentProbe;
-        const position = Array.isArray(legacy.boxPosition)
-          ? [-Number(legacy.boxPosition[0]), Number(legacy.boxPosition[1]),
-            Number(legacy.boxPosition[2])] : null;
+                const position = Array.isArray(legacy.boxPosition) ? [-Number(legacy.boxPosition[0]), Number(legacy.boxPosition[1]), Number(legacy.boxPosition[2])] : null;
         const generatedPosition = generated[chunk.id]?.position;
         const bounds = chunk.aabb;
         const automatic = Array.isArray(generatedPosition)
@@ -4434,37 +4515,53 @@ async function restoreFrom(data) {
   }
   for (const probe of probes) {
     const id = validEnvironmentProbeId(probe?.id);
-    const capturePosition = validProbeVector(
-      probe?.capturePosition || probe?.spherePosition || probe?.boxPosition);
+        const capturePosition = validProbeVector(probe?.capturePosition || probe?.spherePosition || probe?.boxPosition);
     if (!id || !capturePosition || !environmentProbeIdAvailable(id)) continue;
     if (probe?.shape === "sphere") {
       const spherePosition = validProbeVector(probe.spherePosition);
       const sphereRadius = Number(probe.sphereRadius);
       if (!spherePosition || !Number.isFinite(sphereRadius) || sphereRadius <= 0) continue;
       const defaults = defaultSphereProbeInfluence(spherePosition, sphereRadius);
-      const influenceSpherePosition = validProbeVector(probe.influenceSpherePosition)
-        || defaults.influenceSpherePosition;
+            const influenceSpherePosition = validProbeVector(probe.influenceSpherePosition) || defaults.influenceSpherePosition;
       const outer = Number(probe.influenceSphereRadius);
-      const influenceSphereRadius = Number.isFinite(outer) && outer > 0
-        ? outer : defaults.influenceSphereRadius;
+            const influenceSphereRadius = Number.isFinite(outer) && outer > 0 ? outer : defaults.influenceSphereRadius;
       const inner = Number(probe.influenceInnerSphereRadius);
-      const influenceInnerSphereRadius = Number.isFinite(inner)
-        && inner >= 0 && inner <= influenceSphereRadius
-        ? inner : Math.min(defaults.influenceInnerSphereRadius, influenceSphereRadius);
-      setEnvironmentProbe(id, {
-        ...probe, shape: "sphere", spherePosition, sphereRadius, capturePosition,
-        influenceSpherePosition, influenceSphereRadius, influenceInnerSphereRadius,
-      }, id, { history: false });
+            const influenceInnerSphereRadius =
+                Number.isFinite(inner) && inner >= 0 && inner <= influenceSphereRadius ? inner : Math.min(defaults.influenceInnerSphereRadius, influenceSphereRadius);
+            setEnvironmentProbe(
+                id,
+                {
+                    ...probe,
+                    shape: "sphere",
+                    spherePosition,
+                    sphereRadius,
+                    capturePosition,
+                    influenceSpherePosition,
+                    influenceSphereRadius,
+                    influenceInnerSphereRadius,
+                },
+                id,
+                { history: false }
+            );
       continue;
     }
     const boxPosition = validProbeVector(probe?.boxPosition);
     const boxSize = validProbeVector(probe?.boxSize, true);
     if (!boxPosition || !boxSize) continue;
-    const influence = probeInfluence(probe, boxPosition, boxSize)
-      || defaultProbeInfluence(boxPosition, boxSize);
-    setEnvironmentProbe(id, {
-      ...probe, shape: "box", boxPosition, boxSize, capturePosition, ...influence,
-    }, id, { history: false });
+        const influence = probeInfluence(probe, boxPosition, boxSize) || defaultProbeInfluence(boxPosition, boxSize);
+        setEnvironmentProbe(
+            id,
+            {
+                ...probe,
+                shape: "box",
+                boxPosition,
+                boxSize,
+                capturePosition,
+                ...influence,
+            },
+            id,
+            { history: false }
+        );
   }
   // Only from an undo snapshot: a *manifest* carries its lighting in the
   // `environment` / `editorEnvironment` blocks, which loadLayout() applies
@@ -4496,10 +4593,17 @@ async function restoreFrom(data) {
       continue;
     }
     await placeAt(inst.module, Vector3.FromArray(inst.position), {
-      id: inst.id, rotation: inst.rotation, scale: inst.scale,
-      chunk: inst.chunk, name: inst.name, group: inst.group, compound: inst.compound,
+            id: inst.id,
+            rotation: inst.rotation,
+            scale: inst.scale,
+            chunk: inst.chunk,
+            name: inst.name,
+            group: inst.group,
+            compound: inst.compound,
       // A layout is ship data whatever mode the editor happens to be in.
-      stage: false, silent: true, noLights: true,
+            stage: false,
+            silent: true,
+            noLights: true,
     });
   }
   applyVisibility();
@@ -4526,12 +4630,49 @@ async function restoreFrom(data) {
     }
     state.fluidSim = [...data.fluidSim];
   }
-  for (const [name, body] of Object.entries(data.behaviors || {})) {
+    function legacyBehaviorName(name) {
+        return name === "anyLiquefaction" ? "liquefaction" : name;
+    }
+
+    function legacyBehaviorPresets(definitions) {
+        const presets = {};
+        for (const name of ["stdLiquefaction", "explosiveLiquefaction"]) {
+            const body = definitions?.[name];
+            if (body && typeof body === "object" && !Array.isArray(body)) {
+                const preset = JSON.parse(JSON.stringify(body));
+                delete preset.liquefiable;
+                presets[name] = { base: "liquefaction", ...preset };
+            }
+        }
+        return presets;
+    }
+
+    function legacyDirectBehaviorParams(definitions, name) {
+        if (!definitions || name === "stdLiquefaction" || name === "explosiveLiquefaction") return {};
+        const body = definitions[name];
+        if (!body || typeof body !== "object" || Array.isArray(body)) return {};
+        const params = JSON.parse(JSON.stringify(body));
+        if (legacyBehaviorName(name) === "liquefaction") delete params.liquefiable;
+        return params;
+    }
+
+    const legacyDefinitions = data.behaviorPresets ? null : data.behaviors || {};
+    const presetData = data.behaviorPresets || legacyBehaviorPresets(legacyDefinitions);
+    for (const [name, body] of Object.entries(presetData)) {
     const key = String(name || "").trim();
     if (!key || !body || typeof body !== "object" || Array.isArray(body)) continue;
-    const definition = JSON.parse(JSON.stringify(body));
-    assertValidBehaviorConfig(key, definition, true, `behavior "${key}"`);
-    state.behaviors.set(key, definition);
+        const preset = JSON.parse(JSON.stringify(body));
+        const base = String(preset.base || "").trim();
+        if (!base || !behaviorMetadata(behaviorCatalog, base)) {
+            throw new Error(`behavior preset "${key}" references unknown base behavior "${base}"`);
+        }
+        if (behaviorMetadata(behaviorCatalog, key)) {
+            throw new Error(`behavior preset "${key}" conflicts with a base behavior of the same name`);
+        }
+        delete preset.base;
+        if (base === "liquefaction") delete preset.liquefiable;
+        assertValidBehaviorConfig(base, preset, true, `behavior preset "${key}"`);
+        state.behaviors.set(key, { base, ...preset });
   }
   for (const [node, list] of Object.entries(data.entities || {})) {
     const key = String(node || "").trim();
@@ -4544,19 +4685,31 @@ async function restoreFrom(data) {
       if (!b || typeof b !== "object" || Array.isArray(b)) {
         throw new Error(`entity "${key}" contains an invalid behavior assignment`);
       }
-      if (!b.name) {
+            const sourceName = String(b.name || "").trim();
+            if (!sourceName) {
         throw new Error(`entity "${key}" contains a behavior assignment without a name`);
       }
-      if (!state.behaviors.has(b.name)) {
-        throw new Error(`entity "${key}" references unknown behavior "${b.name}"`);
+            const name = legacyBehaviorName(sourceName);
+            if (!availableBehaviorNames().includes(name)) {
+                throw new Error(`entity "${key}" references unknown behavior "${name}"`);
       }
-      const params = readBehaviorParams(b);
-      assertValidBehaviorConfig(b.name, {
-        ...state.behaviors.get(b.name),
+            const params = {
+                ...legacyDirectBehaviorParams(legacyDefinitions, sourceName),
+                ...readBehaviorParams(b),
+            };
+            if (behaviorBaseName(name) === "liquefaction") delete params.liquefiable;
+            assertValidBehaviorConfig(
+                behaviorBaseName(name),
+                {
+                    ...(getBehaviorDef(name) ?? {}),
         ...behaviorParams(params),
-      }, false, `entity "${key}" behavior "${b.name}"`);
-      kept.push({ name: b.name, linked: [], ...params });
+                },
+                false,
+                `entity "${key}" behavior "${name}"`
+            );
+            kept.push({ name, linked: [], ...params });
     }
+
     if (kept.length) state.entities.set(key, kept);
   }
   emit("chunks");
@@ -4574,7 +4727,9 @@ let restoring = false;
  * One helper for both directions - the transform is its own inverse - so the
  * two can never drift apart.
  */
-function flipX(v) { return [-Number(v[0]), Number(v[1]), Number(v[2])]; }
+function flipX(v) {
+    return [-Number(v[0]), Number(v[1]), Number(v[2])];
+}
 
 /**
  * The parameters of an applied behaviour, on the way IN from the wire.
@@ -4614,7 +4769,9 @@ export function writeBehaviorParams(b) {
 }
 
 /** True while an undo/redo/load is rebuilding the scene - for tests. */
-export function isRestoring() { return restoring; }
+export function isRestoring() {
+    return restoring;
+}
 
 // ------------------------------------------------------------------- busy
 //
@@ -4633,8 +4790,12 @@ export function isRestoring() { return restoring; }
 let busyDepth = 0;
 let busyMessage = "";
 
-export function isBusy() { return busyDepth > 0; }
-export function busyLabel() { return busyMessage; }
+export function isBusy() {
+    return busyDepth > 0;
+}
+export function busyLabel() {
+    return busyMessage;
+}
 
 /** Run `fn` with the editor locked. Always unlocks, including on a throw. */
 export async function whileBusy(message, fn) {
@@ -4744,8 +4905,7 @@ const HISTORY_MAX_CHARS = 32 * 1024 * 1024;
 export function trimHistory(stack) {
   let chars = 0;
   for (const s of stack) chars += s.length;
-  while (stack.length > HISTORY_MAX_ENTRIES
-         || (stack.length > 1 && chars > HISTORY_MAX_CHARS)) {
+    while (stack.length > HISTORY_MAX_ENTRIES || (stack.length > 1 && chars > HISTORY_MAX_CHARS)) {
     chars -= stack[0].length;
     stack.shift();
   }
@@ -4773,17 +4933,20 @@ export function historyLimits() {
  */
 const histories = {
   ship: {
-    undo: [], redo: [],
+        undo: [],
+        redo: [],
     snapshot: () => serialize(),
     restore: (data) => deserialize(data),
   },
   collision: {
-    undo: [], redo: [],
+        undo: [],
+        redo: [],
     snapshot: () => hooks.serializeStage(),
     restore: (data) => hooks.restoreStage(data),
   },
   compound: {
-    undo: [], redo: [],
+        undo: [],
+        redo: [],
     snapshot: () => hooks.serializeBench(),
     restore: (data) => hooks.restoreBench(data),
   },
@@ -4823,8 +4986,12 @@ export function historyDepth() {
   return { undo: h.undo.length, redo: h.redo.length };
 }
 
-export async function undo() { await stepHistory("undo", "redo"); }
-export async function redo() { await stepHistory("redo", "undo"); }
+export async function undo() {
+    await stepHistory("undo", "redo");
+}
+export async function redo() {
+    await stepHistory("redo", "undo");
+}
 
 /**
  * Move one step between the active mode's two stacks.
@@ -4865,14 +5032,16 @@ export function eulerOf(node) {
 }
 
 export function setEuler(node, deg) {
-  node.rotationQuaternion = Quaternion.FromEulerAngles((
-    deg[0] * Math.PI) / 180, ( deg[1] * Math.PI) / 180, ( deg[2] * Math.PI) / 180);
+    node.rotationQuaternion = Quaternion.FromEulerAngles((deg[0] * Math.PI) / 180, (deg[1] * Math.PI) / 180, (deg[2] * Math.PI) / 180);
 }
 
-function round3(a) { return a.map((v) => Math.round(v * 1000) / 1000); }
+function round3(a) {
+    return a.map((v) => Math.round(v * 1000) / 1000);
+}
 
 export function worldBounds(node) {
-  let min = null, max = null;
+    let min = null,
+        max = null;
   for (const m of node.getChildMeshes()) {
     // A Runtime-view stand-in sits exactly on the mesh it stands in for, so it
     // cannot widen these bounds - but it can be the only mesh left when its
@@ -4881,8 +5050,7 @@ export function worldBounds(node) {
     // A light's gizmo rides the placement it lights. Measured with it, a wall
     // panel would report the lamp's size as its own and "Drop to plane" would
     // lift the panel off the floor by however far the lamp hangs below it.
-    if (isGizmoMesh(m) && m.metadata.lightRoot !== node
-      && m.metadata.environmentProbeRoot !== node) continue;
+        if (isGizmoMesh(m) && m.metadata.lightRoot !== node && m.metadata.environmentProbeRoot !== node) continue;
     m.computeWorldMatrix(true);
     const bb = m.getBoundingInfo().boundingBox;
     min = min ? Vector3.Minimize(min, bb.minimumWorld) : bb.minimumWorld.clone();
@@ -4906,8 +5074,7 @@ export function worldBounds(node) {
 const STRAY_CHUNK_SLACK = 0.5;
 
 function boxesTouch(a, b, slack = STRAY_CHUNK_SLACK) {
-  return ["x", "y", "z"].every((k) =>
-    Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]) >= -slack);
+    return ["x", "y", "z"].every((k) => Math.min(a.max[k], b.max[k]) - Math.max(a.min[k], b.min[k]) >= -slack);
 }
 
 function growBounds(into, bounds) {

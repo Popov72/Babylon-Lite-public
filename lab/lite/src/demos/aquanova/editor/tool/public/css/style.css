@@ -164,6 +164,10 @@ body.big-palette { --palette-w: 520px; }
 #palette-kit { width: 100%; margin-bottom: 6px; }
 #palette-search { width: 100%; margin-bottom: 6px; }
 
+/* Wide enough for a node name - "ShortWall_Band2_Straight" is typical - and
+   fixed, so the toolbar does not reflow as the box fills. */
+#find-box { width: 160px; }
+
 .tabs { display: flex; flex-wrap: wrap; gap: 3px; }
 .tabs button { padding: 2px 7px; font-size: 11px; }
 
@@ -366,6 +370,10 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis;
 }
 #dim-note { font-size: 9px; letter-spacing: 0; text-transform: none; }
+/* Three numbers on one line inside a 232px inspector: without min-width:0 the
+   triple pushes its own label out of the row rather than ellipsising, and the
+   exact values are in the title anyway. */
+#pos-world { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The light panel is two stacked forms - Blender's half and the engine's - so
    each gets a sub-heading a step below the h3 that names the whole thing. */

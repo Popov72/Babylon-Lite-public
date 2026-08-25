@@ -5,13 +5,35 @@
 // is a derived runtime artefact and is never read back.
 
 import {
-  state, serialize, deserialize, worldBounds, withAuthoredMaterials, shipPlacements,
-  loadModuleCollision, serializeModuleCollision, emit, hooks,
-  serializeView, applyView, serializeEnvironment, serializeEditorEnvironment,
-  serializeEditorPrefs, applyEditorPrefs,
-  applyEnvironment, whileBusy, withVeilSuspended,
-  isVeilClone, isGizmoMesh, isRuntimeStandIn, SKYBOX_CHUNK,
-  environmentProbeIds, environmentProbeOf, writeBehaviorParams, nodeNameOf, pushUndo,
+    state,
+    serialize,
+    deserialize,
+    worldBounds,
+    withAuthoredMaterials,
+    shipPlacements,
+    loadModuleCollision,
+    serializeModuleCollision,
+    emit,
+    hooks,
+    serializeView,
+    applyView,
+    serializeEnvironment,
+    serializeEditorEnvironment,
+    serializeEditorPrefs,
+    applyEditorPrefs,
+    applyEnvironment,
+    whileBusy,
+    withVeilSuspended,
+    isVeilClone,
+    isGizmoMesh,
+    isRuntimeStandIn,
+    SKYBOX_CHUNK,
+    environmentProbeIds,
+    environmentProbeOf,
+    writeBehaviorParams,
+    nodeNameOf,
+    pushUndo,
+    availableBehaviorNames,
 } from "./editor.js";
 import { portalOf } from "./markers.js";
 
@@ -32,9 +54,7 @@ function distanceToBox(p, box) {
 
 export function resolveDoorChunks(door, boxes) {
   const c = door.node.getAbsolutePosition();
-  const near = boxes
-    .map((b) => ({ id: b.id, d: distanceToBox(c, b) }))
-    .sort((x, y) => x.d - y.d);
+    const near = boxes.map((b) => ({ id: b.id, d: distanceToBox(c, b) })).sort((x, y) => x.d - y.d);
 
   let a = door.chunkA || "";
   let b = door.chunkB || "";
@@ -60,7 +80,9 @@ const inferChunks = resolveDoorChunks;
  * reads back - `instances`, `markers`, `view` - stay in editor space, because
  * they exist to rebuild the editor and never leave it.
  */
-function toGltf(v) { return [-v[0], v[1], v[2]]; }
+function toGltf(v) {
+    return [-v[0], v[1], v[2]];
+}
 
 /** An axis-aligned box mirrors on X, which swaps its own min and max. */
 function boxToGltf(min, max) {
@@ -91,18 +113,16 @@ export { nodeNameOf };
  * no longer exists are dropped, since the runtime would only ignore them.
  *
  */
-function serializeBehaviors() {
-  return Object.fromEntries(
-    [...state.behaviors].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]));
+function serializeBehaviorPresets() {
+    return Object.fromEntries([...state.behaviors].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]));
 }
 
 function serializeEntities() {
   const out = {};
+    const known = new Set(availableBehaviorNames());
   const nodes = [...state.entities.keys()];
   for (const node of nodes) {
-    const kept = (state.entities.get(node) || [])
-      .filter((b) => state.behaviors.has(b.name))
-      .map((b) => ({ name: b.name, ...writeBehaviorParams(b) }));
+        const kept = (state.entities.get(node) || []).filter((b) => known.has(b.name)).map((b) => ({ name: b.name, ...writeBehaviorParams(b) }));
     if (kept.length) out[node] = { behaviors: kept };
   }
   return out;
@@ -128,7 +148,8 @@ function shapeRecord(id, kind, world) {
   const ay = new Vector3(world.m[4], world.m[5], world.m[6]);
   const az = new Vector3(world.m[8], world.m[9], world.m[10]);
   const shape = {
-    id, kind,
+        id,
+        kind,
     centre: toGltf(r(centre.asArray())),
   };
 
@@ -159,7 +180,7 @@ function shapeRecord(id, kind, world) {
     // ends: its segment is its full height. Getting this wrong makes every
     // capsule a diameter taller in play than it looks in the editor.
     const span = kind === "capsule" ? Math.max(ay.length() - radius * 2, 0) : ay.length();
-    const half = ay.length() > 1e-9 ? ay.scale(0.5 * span / ay.length()) : Vector3.Zero();
+        const half = ay.length() > 1e-9 ? ay.scale((0.5 * span) / ay.length()) : Vector3.Zero();
     shape.pointA = toGltf(r(centre.subtract(half).asArray()));
     shape.pointB = toGltf(r(centre.add(half).asArray()));
   }
@@ -227,19 +248,23 @@ function moduleCollision() {
   const out = {};
   for (const [moduleId, shapes] of state.moduleCollision) {
     if (!shapes?.length) continue;
-    out[moduleId] = shapes.map((s, i) => shapeRecord(`${moduleId}:${i}`, s.kind,
+        out[moduleId] = shapes.map((s, i) =>
+            shapeRecord(
+                `${moduleId}:${i}`,
+                s.kind,
       Matrix.Compose(
         Vector3.FromArray(s.scale),
-        Quaternion.FromEulerAngles(
-          s.rotation[0] * Math.PI / 180,
-          s.rotation[1] * Math.PI / 180,
-          s.rotation[2] * Math.PI / 180),
-        Vector3.FromArray(s.position))));
+                    Quaternion.FromEulerAngles((s.rotation[0] * Math.PI) / 180, (s.rotation[1] * Math.PI) / 180, (s.rotation[2] * Math.PI) / 180),
+                    Vector3.FromArray(s.position)
+                )
+            )
+        );
   }
   return out;
 }
 
-export function buildManifest() {  const layout = serialize();
+export function buildManifest() {
+    const layout = serialize();
 
   // Every derived figure below - chunk bounds, portal corners - is read off a
   // world matrix, and Babylon only refreshes those at render time. An export
@@ -252,7 +277,8 @@ export function buildManifest() {  const layout = serialize();
   const boxes = [];
   const chunks = state.chunks.map((id) => {
     const members = shipPlacements().filter((p) => p.chunk === id);
-    let min = null, max = null;
+        let min = null,
+            max = null;
     let meshCount = 0;
     for (const m of members) {
       meshCount += m.node.getChildMeshes().filter((x) => !isVeilClone(x) && !isRuntimeStandIn(x)).length;
@@ -380,23 +406,45 @@ export function buildManifest() {  const layout = serialize();
     // of the prop, still looking perfectly plausible. Naming the fields here
     // lets a reader assert instead of remember.
     space: {
-      gltf: ["chunks[].aabb", "environmentProbes[].boxPosition",
+            gltf: [
+                "chunks[].aabb",
+                "environmentProbes[].boxPosition",
         "environmentProbes[].spherePosition",
         "environmentProbes[].capturePosition",
         "environmentProbes[].angle",
         "environmentProbes[].influenceBoxPosition",
         "environmentProbes[].influenceSpherePosition",
-        "collision", "moduleCollision", "portals", "doors"],
+                "collision",
+                "moduleCollision",
+                "portals",
+                "doors",
+            ],
       editor: ["instances", "markers", "colliders", "lights", "moduleShapes", "stageLayout", "view"],
-      none: ["generator", "schema", "savedAt", "units", "up", "grid", "config", "kits",
-        "activeChunk", "fluidSim", "behaviors", "entities", "environment",
-        "editorEnvironment", "editorPrefs", "adjacency", "space",
+            none: [
+                "generator",
+                "schema",
+                "savedAt",
+                "units",
+                "up",
+                "grid",
+                "config",
+                "kits",
+                "activeChunk",
+                "fluidSim",
+                "behaviorPresets",
+                "entities",
+                "environment",
+                "editorEnvironment",
+                "editorPrefs",
+                "adjacency",
+                "space",
         "environmentProbes[].boxSize",
         "environmentProbes[].sphereRadius",
         "environmentProbes[].influenceBoxSize",
         "environmentProbes[].influenceInnerBoxSize",
         "environmentProbes[].influenceSphereRadius",
-        "environmentProbes[].influenceInnerSphereRadius"],
+                "environmentProbes[].influenceInnerSphereRadius",
+            ],
       convert: {
         note: "editor <-> glTF is its own inverse: negate X.",
         point: "[-x, y, z]",
@@ -407,8 +455,7 @@ export function buildManifest() {  const layout = serialize();
         // glTF space, so converting it back needs the rotation as well as the
         // centre - a centre-only conversion leaves a turned box mirrored, and
         // looks right on anything symmetrical.
-        moduleCollision: "local to its module, in glTF space:"
-          + " convert centre AND rotation before composing onto a placement",
+                moduleCollision: "local to its module, in glTF space:" + " convert centre AND rotation before composing onto a placement",
       },
     },
     grid: { tile: 4 },
@@ -430,7 +477,8 @@ export function buildManifest() {  const layout = serialize();
     // id when it has none - and is the only handle the runtime needs. "id" is
     // the editor's, and is what the tool reloads from.
     instances: layout.instances.map((i) => ({
-      ...i, node: nodeNameOf(state.placements.get(i.id)) || i.id,
+            ...i,
+            node: nodeNameOf(state.placements.get(i.id)) || i.id,
     })),
     markers: layout.markers,
     // The editor's own record of every collision primitive: kind plus a plain
@@ -473,7 +521,7 @@ export function buildManifest() {  const layout = serialize();
     // but a loaded ship's own list wins - see restoreFrom - so the two cannot
     // drift apart behind your back.
     fluidSim: [...state.fluidSim],
-    behaviors: serializeBehaviors(),
+        behaviorPresets: serializeBehaviorPresets(),
     entities: serializeEntities(),
     // where you were standing when you saved, so a reload puts you back - the
     // ship's own viewpoint, which is not the live camera while the bench is open
@@ -505,7 +553,8 @@ export async function saveLayout(name) {
   // A failure here must not fail the save: the ship is already written, and
   // throwing would leave the editor believing it had unsaved work - which is
   // exactly what happened against a server too old to know this route.
-  let collision = null, collisionError = null;
+    let collision = null,
+        collisionError = null;
   try {
     collision = await saveCollision();
   } catch (e) {
@@ -516,23 +565,25 @@ export async function saveLayout(name) {
 
 /** Write the per-module collision to its own file. */
 export async function saveCollision() {
-  const body = JSON.stringify({
+    const body = JSON.stringify(
+        {
     generator: "SciFiShip layout tool",
     schema: 1,
     savedAt: new Date().toISOString(),
     units: "metres",
-    note: "Collision authored per kit module, in each module's local space."
-      + " Editor space: the manifest's own collision block is the mirrored,"
-      + " runtime-facing copy.",
+            note:
+                "Collision authored per kit module, in each module's local space." + " Editor space: the manifest's own collision block is the mirrored," + " runtime-facing copy.",
     moduleShapes: serializeModuleCollision(),
     // What is on the collision staging area - read live if it is open, and from
     // the last time it closed if it is not. Purely an authoring convenience,
     // and no part of the ship.
-    stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout)
-      .map((s) => ({ module: s.module, position: [...s.position] })),
+            stageLayout: (hooks.stageLayoutNow?.() || state.stageLayout).map((s) => ({ module: s.module, position: [...s.position] })),
     // and where you were standing on the bench, so a reload puts you back
     stageView: hooks.stageViewpoint?.() || null,
-  }, null, 2);
+        },
+        null,
+        2
+    );
   const res = await fetch("/api/collision", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -545,11 +596,15 @@ export async function saveCollision() {
 /** Write a recovery copy, apart from the ship you last chose to save. */
 export async function saveAutosave() {
   if (state.mode === "collision") hooks.harvestStage?.();
-  const body = JSON.stringify({
+    const body = JSON.stringify(
+        {
     ...buildManifest(),
     generator: "SciFiShip layout tool (auto-save)",
     autoSaved: true,
-  }, null, 2);
+        },
+        null,
+        2
+    );
   const res = await fetch("/api/autosave", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -614,7 +669,11 @@ export async function syncShip(optimize) {
     body: JSON.stringify({ optimize: !!optimize }),
   });
   let data = null;
-  try { data = await res.json(); } catch { /* answered with something that is not JSON */ }
+    try {
+        data = await res.json();
+    } catch {
+        /* answered with something that is not JSON */
+    }
   if (!data) return { ok: false, error: `server answered ${res.status}` };
   return data;
 }
@@ -739,7 +798,8 @@ async function exportGlbInner() {
       BABYLON.GLTF2Export.GLBAsync(state.scene, "ship", {
         shouldExportNode: (node) => exportable.has(node),
         exportWithoutWaitingForScene: false,
-      }));
+            })
+        );
     const blob = glb.glTFFiles["ship.glb"];
     const res = await fetch("/api/export", {
       method: "POST",
@@ -762,8 +822,12 @@ async function exportGlbInner() {
   }
 }
 
-function rn(value) { return Math.round(value * 1e4) / 1e4; }
-function r(a) { return a.map(rn); }
+function rn(value) {
+    return Math.round(value * 1e4) / 1e4;
+}
+function r(a) {
+    return a.map(rn);
+}
 
 /** A placement's own primitives - its module's parts, and nothing else. */
 function artMeshes(node) {
@@ -864,10 +928,20 @@ export function eventEntityNames() {
     if (list?.length && live.has(name)) names.add(name);
   }
   for (const m of state.markers.values()) if (m.type === "door") names.add(m.id);
+  for (const chunk of state.chunks) names.add(chunk);
   return [...names].sort((a, b) => a.localeCompare(b));
 }
 
-function namesOfPlacement(p) {
+/**
+ * Every name the exporter writes for one placed element.
+ *
+ * The node's own name first, then one per art mesh and per animation node -
+ * the same names a behaviour or an event is hung on, and the same ones the
+ * runtime prints when something goes wrong. Exported because the find box
+ * (main.js) has to resolve those inner names back to the element that owns
+ * them: `Fan_primitive0` is not selectable, but the fan is.
+ */
+export function namesOfPlacement(p) {
   const name = nodeNameOf(p);
   const names = [name];
   artMeshes(p.node).forEach((m, i) => names.push(`${name}_primitive${i}`));
@@ -899,9 +973,7 @@ function namesOfPlacement(p) {
  */
 export function pruneOrphanEntities() {
   const live = liveEntityNames();
-  const dropped = [...state.entities.keys()]
-    .filter((k) => !live.has(k))
-    .sort((a, b) => a.localeCompare(b));
+    const dropped = [...state.entities.keys()].filter((k) => !live.has(k)).sort((a, b) => a.localeCompare(b));
   if (!dropped.length) return dropped;
   pushUndo();
   for (const k of dropped) state.entities.delete(k);

@@ -36,8 +36,7 @@ page.on("console", (m) => {
 });
 
 await page.goto(URL, { waitUntil: "domcontentloaded" });
-await page.waitForFunction(() => document.querySelectorAll("#palette-list .item").length > 0,
-  null, { timeout: 60000 });
+await page.waitForFunction(() => document.querySelectorAll("#palette-list .item").length > 0, null, { timeout: 60000 });
 await page.waitForTimeout(2500);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
@@ -65,17 +64,18 @@ async function screenOf(world) {
       BABYLON.Vector3.FromArray(w),
       BABYLON.Matrix.Identity(),
       s.getTransformMatrix(),
-      s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight()));
+            s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight())
+        );
     const rect = e.getRenderingCanvas().getBoundingClientRect();
     return {
-      x: rect.x + p.x, y: rect.y + p.y,
+            x: rect.x + p.x,
+            y: rect.y + p.y,
       inside: p.x >= 0 && p.y >= 0 && p.x <= rect.width && p.y <= rect.height,
       camPos: s.activeCamera.position.asArray().map((v) => +v.toFixed(1)),
     };
   }, world);
   if (!r.inside) {
-    throw new Error(`world ${JSON.stringify(world)} projects off-canvas ` +
-      `(${r.x.toFixed(0)},${r.y.toFixed(0)}) from camera ${JSON.stringify(r.camPos)}`);
+        throw new Error(`world ${JSON.stringify(world)} projects off-canvas ` + `(${r.x.toFixed(0)},${r.y.toFixed(0)}) from camera ${JSON.stringify(r.camPos)}`);
   }
   return r;
 }
@@ -96,8 +96,7 @@ let g = await page.evaluate(async () => {
   return { active: i.ghostActive(), module: i.ghostModule(), pos: n?.position.asArray() };
 });
 check("ghost armed from palette", g.active && g.module === MODULE, g.module || "");
-check("ghost snapped to 4 m grid",
-  g.pos && g.pos.every((v) => Math.abs(v / 4 - Math.round(v / 4)) < 1e-6), JSON.stringify(g.pos));
+check("ghost snapped to 4 m grid", g.pos && g.pos.every((v) => Math.abs(v / 4 - Math.round(v / 4)) < 1e-6), JSON.stringify(g.pos));
 
 // ---- 1b. the ghost body must sit under the cursor, not at its own origin ----
 // Measured in screen space with snapping off, since "under the cursor" is a
@@ -119,9 +118,11 @@ const centred = await page.evaluate(async () => {
   await new Promise((r) => requestAnimationFrame(r));
 
   const root = s.getTransformNodeByName("GHOST");
-  let min = null, max = null;
+    let min = null,
+        max = null;
   for (const m of root.getChildMeshes()) {
-    m.computeWorldMatrix(true); m.refreshBoundingInfo();
+        m.computeWorldMatrix(true);
+        m.refreshBoundingInfo();
     const bb = m.getBoundingInfo().boundingBox;
     min = min ? BABYLON.Vector3.Minimize(min, bb.minimumWorld) : bb.minimumWorld.clone();
     max = max ? BABYLON.Vector3.Maximize(max, bb.maximumWorld) : bb.maximumWorld.clone();
@@ -131,25 +132,24 @@ const centred = await page.evaluate(async () => {
   const e = s.getEngine();
   const vp = s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight());
   const px = (v) => BABYLON.Vector3.Project(v, BABYLON.Matrix.Identity(), s.getTransformMatrix(), vp);
-  const pb = px(body), po = px(root.position);
+    const pb = px(body),
+        po = px(root.position);
   const proto = await (await import("/js/kit.js")).getProto("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
   ed.state.snap.pos = snapWas;
   return {
     bodyGap: Math.hypot(pb.x - s.pointerX, pb.y - s.pointerY),
     originGap: Math.hypot(po.x - s.pointerX, po.y - s.pointerY),
-    localCentre: proto._centre
-      ? [+proto._centre.x.toFixed(2), +proto._centre.y.toFixed(2), +proto._centre.z.toFixed(2)]
-      : null,
+        localCentre: proto._centre ? [+proto._centre.x.toFixed(2), +proto._centre.y.toFixed(2), +proto._centre.z.toFixed(2)] : null,
   };
 });
-check("ghost body lands under the cursor", centred.bodyGap < 12,
-  `body ${centred.bodyGap.toFixed(0)} px from the pointer`);
-check("compensation actually changes the result", centred.originGap > centred.bodyGap + 20,
-  `origin is ${centred.originGap.toFixed(0)} px away; module body sits ` +
-  `${JSON.stringify(centred.localCentre)} from its own origin`);
+check("ghost body lands under the cursor", centred.bodyGap < 12, `body ${centred.bodyGap.toFixed(0)} px from the pointer`);
+check(
+    "compensation actually changes the result",
+    centred.originGap > centred.bodyGap + 20,
+    `origin is ${centred.originGap.toFixed(0)} px away; module body sits ` + `${JSON.stringify(centred.localCentre)} from its own origin`
+);
 
-const cursorHidden = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().style.cursor);
+const cursorHidden = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().style.cursor);
 check("cursor hidden while placing", cursorHidden === "none", `cursor="${cursorHidden}"`);
 
 // ---- 1b2. a module whose body sits well above its origin ------------------
@@ -171,9 +171,11 @@ if (highModule) {
   const highFit = await page.evaluate(async () => {
     const s = window.__scene;
     const root = s.getTransformNodeByName("GHOST");
-    let min = null, max = null;
+        let min = null,
+            max = null;
     for (const m of root.getChildMeshes()) {
-      m.computeWorldMatrix(true); m.refreshBoundingInfo();
+            m.computeWorldMatrix(true);
+            m.refreshBoundingInfo();
       const bb = m.getBoundingInfo().boundingBox;
       min = min ? BABYLON.Vector3.Minimize(min, bb.minimumWorld) : bb.minimumWorld.clone();
       max = max ? BABYLON.Vector3.Maximize(max, bb.maximumWorld) : bb.maximumWorld.clone();
@@ -189,8 +191,7 @@ if (highModule) {
   });
   // the body has to land near the pointer *on screen*, which is the thing that
   // breaks when a tall module is tracked on the build plane instead
-  check("a high module still lands under the cursor", highFit.screenGap < 90,
-    `${highModule.id} body at y=${highFit.bodyY}, ${highFit.screenGap.toFixed(0)} px from the pointer`);
+    check("a high module still lands under the cursor", highFit.screenGap < 90, `${highModule.id} body at y=${highFit.bodyY}, ${highFit.screenGap.toFixed(0)} px from the pointer`);
 
   // its thumbnail must be framed from above too: setTarget re-derives alpha and
   // beta, which used to leave tall modules viewed from underneath
@@ -205,12 +206,12 @@ if (highModule) {
     });
     return { used: t.lastThumbView(), want: t.THUMB_VIEW };
   }, highModule.id);
-  check("thumbnails keep a canonical framing",
-    Math.abs(thumbView.used.beta - thumbView.want.beta) < 1e-6
-    && Math.abs(thumbView.used.alpha - thumbView.want.alpha) < 1e-6
-    && thumbView.used.beta < Math.PI / 2,
+    check(
+        "thumbnails keep a canonical framing",
+        Math.abs(thumbView.used.beta - thumbView.want.beta) < 1e-6 && Math.abs(thumbView.used.alpha - thumbView.want.alpha) < 1e-6 && thumbView.used.beta < Math.PI / 2,
     `alpha ${thumbView.used.alpha.toFixed(2)}, beta ${thumbView.used.beta.toFixed(2)} ` +
-    `(want ${thumbView.want.beta.toFixed(2)}, must stay under ${(Math.PI / 2).toFixed(2)} to look down)`);
+            `(want ${thumbView.want.beta.toFixed(2)}, must stay under ${(Math.PI / 2).toFixed(2)} to look down)`
+    );
   await page.evaluate((m) => import("/js/palette.js").then((p) => p.setBrush(m)), MODULE);
   await page.waitForTimeout(900);
   await page.mouse.move(aim.x, aim.y, { steps: 4 });
@@ -223,8 +224,7 @@ const ghostMat = await page.evaluate(async () => {
   const root = s.getTransformNodeByName("GHOST");
   const m = root.getChildMeshes()[0];
   const mat = m.material;
-  const proto = (await import("/js/kit.js")).getProto
-    ? await (await import("/js/kit.js")).getProto("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight") : null;
+    const proto = (await import("/js/kit.js")).getProto ? await (await import("/js/kit.js")).getProto("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight") : null;
   const srcMat = proto?.parts[0].mesh.material;
   const tex = mat.getActiveTextures().map((t) => t.name);
   const srcTex = srcMat ? srcMat.getActiveTextures().map((t) => t.name) : [];
@@ -238,12 +238,13 @@ const ghostMat = await page.evaluate(async () => {
     srcTex: srcTex.length,
   };
 });
-check("ghost uses the real textured material",
+check(
+    "ghost uses the real textured material",
   ghostMat.cls === "PBRMaterial" && ghostMat.textures > 0 && !ghostMat.sameAsSource,
-  `${ghostMat.cls}, ${ghostMat.textures} texture(s)`);
+    `${ghostMat.cls}, ${ghostMat.textures} texture(s)`
+);
 check("ghost is translucent", ghostMat.alpha > 0 && ghostMat.alpha < 1, `alpha=${ghostMat.alpha}`);
-check("ghost material shares source textures", ghostMat.shared,
-  `${ghostMat.textures} vs source ${ghostMat.srcTex}, scene has ${ghostMat.sceneTextures}`);
+check("ghost material shares source textures", ghostMat.shared, `${ghostMat.textures} vs source ${ghostMat.srcTex}, scene has ${ghostMat.sceneTextures}`);
 
 // ---- 1d. nothing may be backface-culled in the editor -----------------------
 const culling = await page.evaluate(async () => {
@@ -275,13 +276,16 @@ const rig = await page.evaluate(() => {
     downEnabled: down?.isEnabled(),
   };
 });
-check("a second hemisphere aims down, to light the undersides",
-  rig.hasBoth && rig.upDir[1] > 0 && rig.downDir[1] < 0
-    && rig.downIntensity > 0 && rig.downEnabled,
-  `up ${rig.upDir?.map((v) => v.toFixed(1))}, down ${rig.downDir?.map((v) => v.toFixed(1))} ` +
-  `at ${rig.downIntensity}`);
-check("the up-light's ground colour is black, so floors are not lit twice",
-  rig.downGround.every((v) => v === 0), `groundColor [${rig.downGround}]`);
+check(
+    "a second hemisphere aims down, to light the undersides",
+    rig.hasBoth && rig.upDir[1] > 0 && rig.downDir[1] < 0 && rig.downIntensity > 0 && rig.downEnabled,
+    `up ${rig.upDir?.map((v) => v.toFixed(1))}, down ${rig.downDir?.map((v) => v.toFixed(1))} ` + `at ${rig.downIntensity}`
+);
+check(
+    "the up-light's ground colour is black, so floors are not lit twice",
+    rig.downGround.every((v) => v === 0),
+    `groundColor [${rig.downGround}]`
+);
 
 // ---- 1d-ter. rotation composes, and the viewport knobs ---------------------
 // Rotation used to be accumulated in Euler space: read the triple, add a step,
@@ -293,28 +297,35 @@ const axisSpin = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.snap.rot = 90;
   const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([e.id]);
   const up = () => {
     const m = new BABYLON.Matrix();
     e.node.rotationQuaternion.toRotationMatrix(m);
-    return V.TransformCoordinates(V.Up(), m).asArray().map((v) => +v.toFixed(2));
+        return V.TransformCoordinates(V.Up(), m)
+            .asArray()
+            .map((v) => +v.toFixed(2));
   };
   const box = () => {
     const b = ed.worldBounds(e.node);
     return [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z].map((v) => +v.toFixed(2));
   };
   const out = {};
-  ed.state.rotAxis = "y"; i.rotateCurrent(1);       // yaw first: this is what broke X
+    ed.state.rotAxis = "y";
+    i.rotateCurrent(1); // yaw first: this is what broke X
   const start = up();
   ed.state.rotAxis = "x";
   const boxBefore = box();
   const cyc = [];
-  for (let k = 0; k < 4; k++) { i.rotateCurrent(1); cyc.push(up()); }
-  out.x = { start, cyc, distinct: new Set(cyc.map(JSON.stringify)).size,
-            back: JSON.stringify(cyc[3]) === JSON.stringify(start) };
+    for (let k = 0; k < 4; k++) {
+        i.rotateCurrent(1);
+        cyc.push(up());
+    }
+    out.x = { start, cyc, distinct: new Set(cyc.map(JSON.stringify)).size, back: JSON.stringify(cyc[3]) === JSON.stringify(start) };
   i.rotateCurrent(1);
   out.tipped = { before: boxBefore, after: box() };
   for (let k = 0; k < 3; k++) i.rotateCurrent(1);
@@ -323,19 +334,27 @@ const axisSpin = await page.evaluate(async () => {
     ed.state.rotAxis = axis;
     const s = up();
     const c = [];
-    for (let k = 0; k < 4; k++) { i.rotateCurrent(1); c.push(up()); }
+        for (let k = 0; k < 4; k++) {
+            i.rotateCurrent(1);
+            c.push(up());
+        }
     out[axis] = { back: JSON.stringify(c[3]) === JSON.stringify(s) };
   }
   ed.state.rotAxis = "y";
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("four 90° turns about X come back to the start",
+check(
+    "four 90° turns about X come back to the start",
   axisSpin.x.back && axisSpin.x.distinct === 4,
-  `${axisSpin.x.distinct} distinct orientations, ends at [${axisSpin.x.cyc[3]}]`);
-check("an X turn actually tips the element over",
+    `${axisSpin.x.distinct} distinct orientations, ends at [${axisSpin.x.cyc[3]}]`
+);
+check(
+    "an X turn actually tips the element over",
   axisSpin.tipped.before[1] > 1 && axisSpin.tipped.after[1] < 0.5 && axisSpin.tipped.after[2] > 1,
-  `${axisSpin.tipped.before} -> ${axisSpin.tipped.after}`);
+    `${axisSpin.tipped.before} -> ${axisSpin.tipped.after}`
+);
 check("Y and Z still come back round too", axisSpin.y.back && axisSpin.z.back);
 
 const knobs = await page.evaluate(async () => {
@@ -343,10 +362,16 @@ const knobs = await page.evaluate(async () => {
   const before = { state: ed.state.envIntensity, scene: window.__scene.environmentIntensity };
   ed.setEnvIntensity(3.2);
   const raised = { state: ed.state.envIntensity, scene: window.__scene.environmentIntensity };
-  ed.setEnvIntensity(9);   const high = ed.state.envIntensity;
-  ed.setEnvIntensity(-1);  const low = ed.state.envIntensity;
+    ed.setEnvIntensity(9);
+    const high = ed.state.envIntensity;
+    ed.setEnvIntensity(-1);
+    const low = ed.state.envIntensity;
   ed.setEnvIntensity(before.state);
-  return { before, raised, high, low,
+    return {
+        before,
+        raised,
+        high,
+        low,
            inertiaSlider: !!document.getElementById("inertia"),
            camInertia: ed.state.camera.inertia,
            rotOptions: [...document.getElementById("snap-rot").options].map((o) => o.value),
@@ -354,71 +379,76 @@ const knobs = await page.evaluate(async () => {
            scaleOptions: [...document.getElementById("snap-scale").options].map((o) => o.value),
            scaleLabels: [...document.getElementById("snap-scale").options].map((o) => o.text),
            posOptions: [...document.getElementById("snap-pos").options].map((o) => o.value),
-           posLabels: [...document.getElementById("snap-pos").options].map((o) => o.text) };
+        posLabels: [...document.getElementById("snap-pos").options].map((o) => o.text),
+    };
 });
-check("the Env slider drives the scene's IBL strength",
-  knobs.raised.state === 3.2 && knobs.raised.scene === 3.2,
-  `${knobs.before.scene} -> ${knobs.raised.scene}`);
-check("Env intensity is clamped", knobs.high === 6 && knobs.low === 0,
-  `high=${knobs.high}, low=${knobs.low}`);
-check("the inertia slider is gone and the camera is fixed at 0.75",
+check("the Env slider drives the scene's IBL strength", knobs.raised.state === 3.2 && knobs.raised.scene === 3.2, `${knobs.before.scene} -> ${knobs.raised.scene}`);
+check("Env intensity is clamped", knobs.high === 6 && knobs.low === 0, `high=${knobs.high}, low=${knobs.low}`);
+check(
+    "the inertia slider is gone and the camera is fixed at 0.75",
   !knobs.inertiaSlider && knobs.camInertia === 0.75,
-  `slider=${knobs.inertiaSlider}, inertia=${knobs.camInertia}`);
+    `slider=${knobs.inertiaSlider}, inertia=${knobs.camInertia}`
+);
 // A zero step is real for Move (free positioning while dragging) but
 // meaningless for a keyboard step: a step of zero simply does nothing, and it
 // fell back to a hidden default instead. `free` is the useful reading of the
 // same idea - a step small enough to dial in any value with the keys you
 // already use, rather than no step at all. All three lists say `free`; only
 // Move's is actually zero.
-check("Rot and Scale no longer offer a meaningless 'off'",
+check(
+    "Rot and Scale no longer offer a meaningless 'off'",
   !knobs.rotOptions.includes("0") && !knobs.scaleOptions.includes("0"),
-  `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`);
+    `rot [${knobs.rotOptions}], scale [${knobs.scaleOptions}]`
+);
 // The step used to carry a sign, back when a key turned and only ever one way.
 // The wheel turns both ways, so the sign went with it: the list is magnitudes
 // again, running from a fine step up to a quarter turn.
-check("the rotation step runs from a fine step up to a quarter turn",
-  knobs.rotOptions.join() === "0.5,5,15,45,90",
-  `[${knobs.rotOptions}]`);
-check("and the scale step starts at a fine one",
-  knobs.scaleOptions.join() === "0.01,0.05,0.1,0.25", `[${knobs.scaleOptions}]`);
-check("all three step lists call their loosest setting 'free'",
-  knobs.rotLabels.filter((t) => /free/.test(t)).length === 1
-    && knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1
-    && knobs.posLabels.filter((t) => /free/.test(t)).length === 1
-    && knobs.posLabels[0] === "free" && knobs.posOptions[0] === "0",
-  `move [${knobs.posLabels}], rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`);
+check("the rotation step runs from a fine step up to a quarter turn", knobs.rotOptions.join() === "0.5,5,15,45,90", `[${knobs.rotOptions}]`);
+check("and the scale step starts at a fine one", knobs.scaleOptions.join() === "0.01,0.05,0.1,0.25", `[${knobs.scaleOptions}]`);
+check(
+    "all three step lists call their loosest setting 'free'",
+    knobs.rotLabels.filter((t) => /free/.test(t)).length === 1 &&
+        knobs.scaleLabels.filter((t) => /free/.test(t)).length === 1 &&
+        knobs.posLabels.filter((t) => /free/.test(t)).length === 1 &&
+        knobs.posLabels[0] === "free" &&
+        knobs.posOptions[0] === "0",
+    `move [${knobs.posLabels}], rot [${knobs.rotLabels}], scale [${knobs.scaleLabels}]`
+);
 
 const rotSign = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [3, 0.4, 0.8] });
   ed.select([c.id]);
-  const wasStep = ed.state.snap.rot, wasAxis = ed.state.rotAxis;
+    const wasStep = ed.state.snap.rot,
+        wasAxis = ed.state.rotAxis;
   ed.state.rotAxis = "y";
   const run = (step, dir) => {
     c.node.rotationQuaternion = BABYLON.Quaternion.Identity();
     ed.state.snap.rot = step;
     i.rotateCurrent(dir);
-    return +(c.node.rotationQuaternion.toEulerAngles().y * 180 / Math.PI).toFixed(2);
+        return +((c.node.rotationQuaternion.toEulerAngles().y * 180) / Math.PI).toFixed(2);
   };
-  const out = { p90: run(90, 1), m90: run(90, -1), p45: run(45, 1), m45: run(45, -1),
-    p5: run(5, 1), m5: run(5, -1), free: run(0.5, 1), freeBack: run(0.5, -1) };
-  ed.state.snap.rot = wasStep; ed.state.rotAxis = wasAxis;
-  ed.clearAll(); ed.select([]);
+    const out = { p90: run(90, 1), m90: run(90, -1), p45: run(45, 1), m45: run(45, -1), p5: run(5, 1), m5: run(5, -1), free: run(0.5, 1), freeBack: run(0.5, -1) };
+    ed.state.snap.rot = wasStep;
+    ed.state.rotAxis = wasAxis;
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("the direction comes from the wheel, not the step",
-  rotSign.p90 === -rotSign.m90 && rotSign.p45 === -rotSign.m45 && rotSign.p5 === -rotSign.m5
-    && rotSign.p90 === 90,
-  `${rotSign.p90}/${rotSign.m90}, ${rotSign.p45}/${rotSign.m45}, ${rotSign.p5}/${rotSign.m5}`);
+check(
+    "the direction comes from the wheel, not the step",
+    rotSign.p90 === -rotSign.m90 && rotSign.p45 === -rotSign.m45 && rotSign.p5 === -rotSign.m5 && rotSign.p90 === 90,
+    `${rotSign.p90}/${rotSign.m90}, ${rotSign.p45}/${rotSign.m45}, ${rotSign.p5}/${rotSign.m5}`
+);
 // `free` is a fine step, not no step - a step of zero would simply do nothing,
 // which is why "off" was taken off these two lists in the first place.
-check("'free' turns by half a degree, either way",
-  Math.abs(rotSign.free - 0.5) < 1e-6 && Math.abs(rotSign.freeBack + 0.5) < 1e-6,
-  `${rotSign.free} / ${rotSign.freeBack}`);
+check("'free' turns by half a degree, either way", Math.abs(rotSign.free - 0.5) < 1e-6 && Math.abs(rotSign.freeBack + 0.5) < 1e-6, `${rotSign.free} / ${rotSign.freeBack}`);
 
 // The wheel already goes both ways, so the scale step needs no sign - but its
 // floor did need lowering. It sat at 5 cm, which is thicker than most of what
@@ -429,10 +459,13 @@ const scaleFree = await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [1, 1, 1] });
   ed.select([c.id]);
-  const wasStep = ed.state.snap.scale, wasAxis = ed.state.scaleAxis;
+    const wasStep = ed.state.snap.scale,
+        wasAxis = ed.state.scaleAxis;
   ed.state.scaleAxis = "y";
   const run = (step, dir, from) => {
     c.node.scaling.set(1, from, 1);
@@ -441,24 +474,31 @@ const scaleFree = await page.evaluate(async () => {
     return +c.node.scaling.y.toFixed(4);
   };
   const out = {
-    up: run(0.01, 1, 1), down: run(0.01, -1, 1),
+        up: run(0.01, 1, 1),
+        down: run(0.01, -1, 1),
     coarse: run(0.1, 1, 1),
     // and it can go below the old fixed floor, one fine step at a time
     thin: run(0.01, -1, 0.04),
     // while a coarse step keeps the floor it always had
     coarseFloor: run(0.1, -1, 0.06),
   };
-  ed.state.snap.scale = wasStep; ed.state.scaleAxis = wasAxis;
-  co.removeCollider(c.id, true); ed.clearAll(); ed.select([]);
+    ed.state.snap.scale = wasStep;
+    ed.state.scaleAxis = wasAxis;
+    co.removeCollider(c.id, true);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("'free' resizes by 0.01 a notch, up and down",
-  Math.abs(scaleFree.up - 1.01) < 1e-4 && Math.abs(scaleFree.down - 0.99) < 1e-4
-    && Math.abs(scaleFree.coarse - 1.1) < 1e-4,
-  `up ${scaleFree.up}, down ${scaleFree.down}, coarse ${scaleFree.coarse}`);
-check("and the floor is 1 cm, whatever step you got there with",
+check(
+    "'free' resizes by 0.01 a notch, up and down",
+    Math.abs(scaleFree.up - 1.01) < 1e-4 && Math.abs(scaleFree.down - 0.99) < 1e-4 && Math.abs(scaleFree.coarse - 1.1) < 1e-4,
+    `up ${scaleFree.up}, down ${scaleFree.down}, coarse ${scaleFree.coarse}`
+);
+check(
+    "and the floor is 1 cm, whatever step you got there with",
   Math.abs(scaleFree.thin - 0.03) < 1e-4 && Math.abs(scaleFree.coarseFloor - 0.01) < 1e-4,
-  `fine 0.04 -> ${scaleFree.thin}, coarse 0.06 -> ${scaleFree.coarseFloor}`);
+    `fine 0.04 -> ${scaleFree.thin}, coarse 0.06 -> ${scaleFree.coarseFloor}`
+);
 
 // ---- World/Local governs turning too ----------------------------------------
 // `R` turned about a world axis whatever the element was doing, so on a wall
@@ -470,23 +510,30 @@ const rotSpace = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const i = await import("/js/interact.js");
-  const V = BABYLON.Vector3, Q = BABYLON.Quaternion;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    const V = BABYLON.Vector3,
+        Q = BABYLON.Quaternion;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const c = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [3, 0.4, 1] });
   ed.select([c.id]);
-  const wasStep = ed.state.snap.rot, wasAxis = ed.state.rotAxis;
+    const wasStep = ed.state.snap.rot,
+        wasAxis = ed.state.rotAxis;
   ed.state.snap.rot = 90;
   const rows = () => {
     c.node.computeWorldMatrix(true);
     const m = c.node.getWorldMatrix();
     const row = (k) => {
       const q = m.getRow(k);
-      return new V(q.x, q.y, q.z).normalize().asArray().map((v) => +v.toFixed(3));
+            return new V(q.x, q.y, q.z)
+                .normalize()
+                .asArray()
+                .map((v) => +v.toFixed(3));
     };
     return { x: row(0), y: row(1), z: row(2) };
   };
   const run = (space, yawDeg, rotAxis) => {
-    c.node.rotationQuaternion = Q.FromEulerAngles(0, yawDeg * Math.PI / 180, 0);
+        c.node.rotationQuaternion = Q.FromEulerAngles(0, (yawDeg * Math.PI) / 180, 0);
     c.node.computeWorldMatrix(true);
     i.setAxisSpace(space);
     ed.state.rotAxis = rotAxis;
@@ -505,33 +552,35 @@ const rotSpace = await page.evaluate(async () => {
     aboutYLocal: run("local", 90, "y"),
   };
   i.setAxisSpace("world");
-  ed.state.snap.rot = wasStep; ed.state.rotAxis = wasAxis;
-  co.removeCollider(c.id, true); ed.clearAll(); ed.select([]);
+    ed.state.snap.rot = wasStep;
+    ed.state.rotAxis = wasAxis;
+    co.removeCollider(c.id, true);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
 const rotSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-check("nothing was hovered, so the checks below turned the element they meant to",
-  rotSpace.hovered === null, `${rotSpace.hovered}`);
-check("on an unturned element the two spaces agree exactly",
-  rotSame(rotSpace.flatWorld, rotSpace.flatLocal), JSON.stringify(rotSpace.flatWorld));
-check("but on a yawed wall, turning about X differs between them",
+check("nothing was hovered, so the checks below turned the element they meant to", rotSpace.hovered === null, `${rotSpace.hovered}`);
+check("on an unturned element the two spaces agree exactly", rotSame(rotSpace.flatWorld, rotSpace.flatLocal), JSON.stringify(rotSpace.flatWorld));
+check(
+    "but on a yawed wall, turning about X differs between them",
   !rotSame(rotSpace.yawedWorld, rotSpace.yawedLocal),
-  `world ${JSON.stringify(rotSpace.yawedWorld.x)}, local ${JSON.stringify(rotSpace.yawedLocal.x)}`);
+    `world ${JSON.stringify(rotSpace.yawedWorld.x)}, local ${JSON.stringify(rotSpace.yawedLocal.x)}`
+);
 // The definitive one: a turn leaves its own axis alone, so in local space the
 // element's own x row has to come out unchanged - it *is* the axis.
-check("a local X turn leaves the element's own X where it was, being the axis",
-  rotSame(rotSpace.yawedLocal.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedLocal.x));
-check("while a world X turn does not",
-  !rotSame(rotSpace.yawedWorld.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedWorld.x));
-check("about Y they agree on a yawed wall, its own Y being the world's",
-  rotSame(rotSpace.aboutYWorld, rotSpace.aboutYLocal), JSON.stringify(rotSpace.aboutYLocal));
+check("a local X turn leaves the element's own X where it was, being the axis", rotSame(rotSpace.yawedLocal.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedLocal.x));
+check("while a world X turn does not", !rotSame(rotSpace.yawedWorld.x, [0, 0, -1]), JSON.stringify(rotSpace.yawedWorld.x));
+check("about Y they agree on a yawed wall, its own Y being the world's", rotSame(rotSpace.aboutYWorld, rotSpace.aboutYLocal), JSON.stringify(rotSpace.aboutYLocal));
 
 // ---- 1d-quater. undo / redo ------------------------------------------------
 const history = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const base = ed.state.placements.size;
 
@@ -552,17 +601,20 @@ const history = await page.evaluate(async () => {
   const moved = ed.state.placements.get(a.id).node.position.x;
   await ed.undo();
   const backHome = ed.state.placements.get(a.id).node.position.x;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { base, added, undone, redone, homeX: home.x, moved, backHome };
 });
-check("undo removes what was just added, redo puts it back",
-  history.added === history.base + 1 && history.undone === history.base
-    && history.redone === history.base + 1,
-  `${history.base} -> ${history.added} -> ${history.undone} -> ${history.redone}`);
-check("undo restores an exact position, not an approximation",
-  Math.abs(history.moved - (history.homeX + 8)) < 1e-6
-    && Math.abs(history.backHome - history.homeX) < 1e-6,
-  `${history.homeX} -> ${history.moved} -> ${history.backHome}`);
+check(
+    "undo removes what was just added, redo puts it back",
+    history.added === history.base + 1 && history.undone === history.base && history.redone === history.base + 1,
+    `${history.base} -> ${history.added} -> ${history.undone} -> ${history.redone}`
+);
+check(
+    "undo restores an exact position, not an approximation",
+    Math.abs(history.moved - (history.homeX + 8)) < 1e-6 && Math.abs(history.backHome - history.homeX) < 1e-6,
+    `${history.homeX} -> ${history.moved} -> ${history.backHome}`
+);
 
 // A restore is not itself an edit. Restoring a spawn marker used to call
 // pushUndo(), which wiped the redo stack (so Ctrl+Y did nothing) and pushed a
@@ -573,7 +625,9 @@ const withSpawn = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   mk.addDoor(new V(2, 0, 2), { silent: true });
   const base = { placements: ed.state.placements.size, markers: ed.state.markers.size };
@@ -589,22 +643,23 @@ const withSpawn = await page.evaluate(async () => {
   const afterRedo = { n: ed.state.placements.size, markers: ed.state.markers.size };
   await ed.undo();
   await ed.undo();
-  const afterTwo = { n: ed.state.placements.size, markers: ed.state.markers.size,
-                     ids: [...ed.state.markers.keys()] };
+    const afterTwo = { n: ed.state.placements.size, markers: ed.state.markers.size, ids: [...ed.state.markers.keys()] };
 
   const guarded = ed.isRestoring() === false;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { base, twice, afterUndo, afterRedo, afterTwo, guarded };
 });
-check("redo works on a layout that has a marker",
-  withSpawn.afterUndo.n === withSpawn.twice - 1 && withSpawn.afterUndo.redo === 1
-    && withSpawn.afterRedo.n === withSpawn.twice,
-  `${withSpawn.twice} -> undo ${withSpawn.afterUndo.n} (redo depth ${withSpawn.afterUndo.redo})` +
-  ` -> redo ${withSpawn.afterRedo.n}`);
-check("undoing twice does not lose the marker",
-  withSpawn.afterTwo.n === withSpawn.base.placements
-    && withSpawn.afterTwo.markers === withSpawn.base.markers,
-  `${withSpawn.afterTwo.n} placements, markers [${withSpawn.afterTwo.ids}]`);
+check(
+    "redo works on a layout that has a marker",
+    withSpawn.afterUndo.n === withSpawn.twice - 1 && withSpawn.afterUndo.redo === 1 && withSpawn.afterRedo.n === withSpawn.twice,
+    `${withSpawn.twice} -> undo ${withSpawn.afterUndo.n} (redo depth ${withSpawn.afterUndo.redo})` + ` -> redo ${withSpawn.afterRedo.n}`
+);
+check(
+    "undoing twice does not lose the marker",
+    withSpawn.afterTwo.n === withSpawn.base.placements && withSpawn.afterTwo.markers === withSpawn.base.markers,
+    `${withSpawn.afterTwo.n} placements, markers [${withSpawn.afterTwo.ids}]`
+);
 check("the restore guard is released again", withSpawn.guarded);
 
 // ---- 1d-quinquies. renaming chunks and elements ----------------------------
@@ -617,8 +672,11 @@ const naming = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.addChunk("CH_A"); ed.addChunk("CH_B");
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.addChunk("CH_A");
+    ed.addChunk("CH_B");
   ed.state.activeChunk = "CH_A";
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.state.activeChunk = "CH_B";
@@ -643,23 +701,23 @@ const naming = await page.evaluate(async () => {
   const survived = ed.state.placements.get(a.id)?.name;
   ed.select([a.id]);
   const label = i.currentElement()?.module;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { ok, after, dup, blank, named, inManifest, survived, label };
 });
-check("renaming a chunk follows every reference to it",
-  naming.ok && naming.after.listed && naming.after.placement === "CH_Storage"
-    && naming.after.door === "CH_Storage" && naming.after.active === "CH_Storage",
-  `placement=${naming.after.placement}, door=${naming.after.door}, active=${naming.after.active}`);
-check("a chunk cannot be renamed onto an existing one, or to nothing",
-  naming.dup === false && naming.blank === false,
-  `duplicate=${naming.dup}, blank=${naming.blank}`);
-check("an element name is trimmed and kept in the manifest",
+check(
+    "renaming a chunk follows every reference to it",
+    naming.ok && naming.after.listed && naming.after.placement === "CH_Storage" && naming.after.door === "CH_Storage" && naming.after.active === "CH_Storage",
+    `placement=${naming.after.placement}, door=${naming.after.door}, active=${naming.after.active}`
+);
+check("a chunk cannot be renamed onto an existing one, or to nothing", naming.dup === false && naming.blank === false, `duplicate=${naming.dup}, blank=${naming.blank}`);
+check(
+    "an element name is trimmed and kept in the manifest",
   naming.named === "weapon locker" && naming.inManifest === "weapon locker",
-  `"${naming.named}" / manifest "${naming.inManifest}"`);
-check("an element name survives a save/load round-trip",
-  naming.survived === "weapon locker", `"${naming.survived}"`);
-check("a named element shows its name rather than its module",
-  naming.label === "weapon locker", `"${naming.label}"`);
+    `"${naming.named}" / manifest "${naming.inManifest}"`
+);
+check("an element name survives a save/load round-trip", naming.survived === "weapon locker", `"${naming.survived}"`);
+check("a named element shows its name rather than its module", naming.label === "weapon locker", `"${naming.label}"`);
 
 // ---- 1d-quinquies-bis. the chunks pane -------------------------------------
 // Deleting a chunk that still holds anything would turn one keystroke into
@@ -669,11 +727,14 @@ const pane = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   // The chunk list survives `clearAll` - it is the ship's layout, not its
   // contents - so it is emptied by hand to make the "last chunk" case reachable.
   ed.state.chunks = [];
-  ed.addChunk("CH_P_A"); ed.addChunk("CH_P_B");
+    ed.addChunk("CH_P_A");
+    ed.addChunk("CH_P_B");
   ed.state.activeChunk = "CH_P_A";
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
 
@@ -694,23 +755,23 @@ const pane = await page.evaluate(async () => {
   ed.renameChunk("CH_P_B", "CH_P_C");
   const rekeyed = ed.state.chunks.includes("CH_P_C");
   const last = ed.removeChunk("CH_P_C");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { busy, users, freed, gone, inManifest, survived, rekeyed, last };
 });
-check("a chunk that still holds something refuses to be deleted, and says what",
-  pane.busy.ok === false && pane.busy.reason === "in use"
-    && pane.users.placements.length === 1,
-  `${pane.busy.reason}, ${pane.users.placements.length} placement(s)`);
-check("an emptied chunk can be deleted, and the last one cannot",
-  pane.freed.ok === true && pane.gone && pane.last.ok === false
-    && pane.last.reason === "last",
-  `freed=${pane.freed.ok}, gone=${pane.gone}, last=${pane.last.reason}`);
-check("an empty room still reaches the manifest",
-  pane.inManifest.includes("CH_P_B"), pane.inManifest.join());
-check("the chunk list survives a save/load round-trip",
-  pane.survived.includes("CH_P_B"), pane.survived.join());
-check("renaming a chunk rekeys it",
-  pane.rekeyed === true, `rekeyed=${pane.rekeyed}`);
+check(
+    "a chunk that still holds something refuses to be deleted, and says what",
+    pane.busy.ok === false && pane.busy.reason === "in use" && pane.users.placements.length === 1,
+    `${pane.busy.reason}, ${pane.users.placements.length} placement(s)`
+);
+check(
+    "an emptied chunk can be deleted, and the last one cannot",
+    pane.freed.ok === true && pane.gone && pane.last.ok === false && pane.last.reason === "last",
+    `freed=${pane.freed.ok}, gone=${pane.gone}, last=${pane.last.reason}`
+);
+check("an empty room still reaches the manifest", pane.inManifest.includes("CH_P_B"), pane.inManifest.join());
+check("the chunk list survives a save/load round-trip", pane.survived.includes("CH_P_B"), pane.survived.join());
+check("renaming a chunk rekeys it", pane.rekeyed === true, `rekeyed=${pane.rekeyed}`);
 
 // The pane itself, driven through the DOM rather than through the module: the
 // wiring between the two is where the buttons that were removed from the
@@ -721,7 +782,9 @@ const paneUi = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const $ = (id) => document.getElementById(id);
   let refreshedAlone = false;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.chunks = [];
   ed.addChunk("CH_UI_A");
 
@@ -740,8 +803,7 @@ const paneUi = await page.evaluate(async () => {
 
   // Deleting a room that still holds something has to say what, in the pane.
   ed.state.activeChunk = "CH_UI_Renamed";
-  const obj = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new BABYLON.Vector3(0, 0, 0), { silent: true });
+    const obj = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(0, 0, 0), { silent: true });
   $("chunk-list").value = "CH_UI_Renamed";
   $("chunk-list").dispatchEvent(new Event("change"));
   // What the room holds is shown rather than left to be discovered by a
@@ -759,23 +821,23 @@ const paneUi = await page.evaluate(async () => {
 
   $("btn-chunk-close").click();
   const closed = $("chunk-modal").hidden;
-  ed.clearAll(); ed.select([]);
-  return { opened, added, listed, renamed, holds, refused, survived,
-           refusedId: obj.id, lastIsGrey: refreshedAlone, closed };
+    ed.clearAll();
+    ed.select([]);
+    return { opened, added, listed, renamed, holds, refused, survived, refusedId: obj.id, lastIsGrey: refreshedAlone, closed };
 });
-check("the Chunks pane opens, lists the ship's rooms and adds one",
+check(
+    "the Chunks pane opens, lists the ship's rooms and adds one",
   paneUi.opened && paneUi.added && paneUi.listed === 2 && paneUi.closed,
-  `open=${paneUi.opened}, ${paneUi.listed} listed, closed=${paneUi.closed}`);
-check("Apply renames the selected room",
-  paneUi.renamed === true, `renamed=${paneUi.renamed}`);
-check("the pane says what a room holds before you try to delete it",
-  /1\b/.test(paneUi.holds || ""), `"${paneUi.holds}"`);
-check("and Delete explains what is in the way instead of just failing",
-  /still holds/i.test(paneUi.refused) && paneUi.refused.includes(paneUi.refusedId)
-    && paneUi.survived,
-  `"${paneUi.refused}"`);
-check("and the last remaining chunk cannot be deleted at all",
-  paneUi.lastIsGrey === true, `disabled=${paneUi.lastIsGrey}`);
+    `open=${paneUi.opened}, ${paneUi.listed} listed, closed=${paneUi.closed}`
+);
+check("Apply renames the selected room", paneUi.renamed === true, `renamed=${paneUi.renamed}`);
+check("the pane says what a room holds before you try to delete it", /1\b/.test(paneUi.holds || ""), `"${paneUi.holds}"`);
+check(
+    "and Delete explains what is in the way instead of just failing",
+    /still holds/i.test(paneUi.refused) && paneUi.refused.includes(paneUi.refusedId) && paneUi.survived,
+    `"${paneUi.refused}"`
+);
+check("and the last remaining chunk cannot be deleted at all", paneUi.lastIsGrey === true, `disabled=${paneUi.lastIsGrey}`);
 
 // ---- 1d-quinquies-ter. independent environment probes ---------------------
 // Reflection volumes are authored independently from chunks: one probe may
@@ -828,18 +890,29 @@ const probes = await page.evaluate(async () => {
   // derived from the box it does have. The box itself depends on the camera,
   // so the check is the relationship rather than the numbers.
   const created = ed.environmentProbeOf(id);
-  const derivedInfluence = created.influenceBoxPosition.join() === created.boxPosition.join()
-    && created.influenceBoxSize.every((n, axis) => n === created.boxSize[axis] + 3)
-    && created.influenceInnerBoxSize.every(
-      (n, axis) => n === Math.max(0, created.boxSize[axis] - 3));
+    const derivedInfluence =
+        created.influenceBoxPosition.join() === created.boxPosition.join() &&
+        created.influenceBoxSize.every((n, axis) => n === created.boxSize[axis] + 3) &&
+        created.influenceInnerBoxSize.every((n, axis) => n === Math.max(0, created.boxSize[axis] - 3));
 
   const values = {
-    "probe-box-x": "1", "probe-box-y": "2", "probe-box-z": "3",
-    "probe-size-x": "8", "probe-size-y": "5", "probe-size-z": "12",
-    "probe-camera-x": "7", "probe-camera-y": "8", "probe-camera-z": "9",
-    "probe-influence-x": "1.5", "probe-influence-y": "2", "probe-influence-z": "3",
-    "probe-influence-size-x": "12", "probe-influence-size-y": "9", "probe-influence-size-z": "16",
-    "probe-inner-size-x": "4", "probe-inner-size-y": "1",
+        "probe-box-x": "1",
+        "probe-box-y": "2",
+        "probe-box-z": "3",
+        "probe-size-x": "8",
+        "probe-size-y": "5",
+        "probe-size-z": "12",
+        "probe-camera-x": "7",
+        "probe-camera-y": "8",
+        "probe-camera-z": "9",
+        "probe-influence-x": "1.5",
+        "probe-influence-y": "2",
+        "probe-influence-z": "3",
+        "probe-influence-size-x": "12",
+        "probe-influence-size-y": "9",
+        "probe-influence-size-z": "16",
+        "probe-inner-size-x": "4",
+        "probe-inner-size-y": "1",
         "probe-inner-size-z": "8",
     };
     for (const [field, value] of Object.entries(values)) type(field, value);
@@ -866,9 +939,7 @@ const probes = await page.evaluate(async () => {
     // Each volume is its own selectable part of the probe, and picking one of
     // its meshes has to resolve to that part rather than to the capture box.
     influenceOwners: [ed.ownerIdOf(outerBox), ed.ownerIdOf(innerBox)],
-    influencePartIds: [
-      ed.environmentProbePartId(id, "influence"), ed.environmentProbePartId(id, "inner"),
-    ],
+        influencePartIds: [ed.environmentProbePartId(id, "influence"), ed.environmentProbePartId(id, "inner")],
   };
 
   // An inner box outside its outer one would make the runtime's normalized
@@ -876,22 +947,19 @@ const probes = await page.evaluate(async () => {
   // Typing is quiet - "0.5" is unusable for a moment on its way in - so the
   // complaint arrives when the field is left, along with the good value back.
   type("probe-inner-size-x", "99");
-  const innerHeldWhileTyped =
-    ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
+    const innerHeldWhileTyped = ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
   type("probe-inner-size-x", "99", "blur");
-  const innerRefused = innerHeldWhileTyped
-    && /inner size/i.test($("probe-error").textContent)
-    && ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
+    const innerRefused = innerHeldWhileTyped && /inner size/i.test($("probe-error").textContent) && ed.environmentProbeOf(id).influenceInnerBoxSize.join() === "4,1,8";
   await new Promise((r) => setTimeout(r, 200));
   const innerFieldRestored = $("probe-inner-size-x").value === "4";
 
   ed.setEnvironmentProbe("ENV_OTHER", {
-    boxPosition: [30, 2, 0], boxSize: [2, 2, 2],
+        boxPosition: [30, 2, 0],
+        boxSize: [2, 2, 2],
         capturePosition: [30, 2, 0],
     });
     type("probe-id", "ENV_OTHER", "change");
-  const duplicateRefused = /already used/i.test($("probe-error").textContent)
-    && !!ed.environmentProbeOf(id);
+    const duplicateRefused = /already used/i.test($("probe-error").textContent) && !!ed.environmentProbeOf(id);
 
   // Any editor entry's id is off limits for a probe, not just another probe's.
   // The suite clears the ship before this block, so make something to collide
@@ -899,12 +967,9 @@ const probes = await page.evaluate(async () => {
   // A collider is the cheapest entry to conjure: generated geometry, no kit
   // module to load.
   const colliders = await import("/js/colliders.js");
-  const sceneId = colliders.addCollider(
-    "box", new BABYLON.Vector3(40, 1, 40), { silent: true })?.id;
+    const sceneId = colliders.addCollider("box", new BABYLON.Vector3(40, 1, 40), { silent: true })?.id;
   type("probe-id", sceneId, "change");
-  const sceneConflictRefused = !!sceneId
-    && /already used/i.test($("probe-error").textContent)
-    && !!ed.environmentProbeOf(id);
+    const sceneConflictRefused = !!sceneId && /already used/i.test($("probe-error").textContent) && !!ed.environmentProbeOf(id);
   colliders.removeCollider(sceneId, true);
 
   const renamedId = "storage_main";
@@ -961,7 +1026,8 @@ const probes = await page.evaluate(async () => {
   const innerBefore = innerEntry.node.position.asArray();
   ed.nudgeSelection(new BABYLON.Vector3(5, 0, 0));
   const innerAfterNudge = innerEntry.node.position.asArray();
-  const snapScale = ed.state.snap.scale, savedAxis = ed.state.scaleAxis;
+    const snapScale = ed.state.snap.scale,
+        savedAxis = ed.state.scaleAxis;
   ed.state.snap.scale = 0.5;
   ed.state.scaleAxis = "all";
   interact.scaleCurrent(1);
@@ -978,91 +1044,128 @@ const probes = await page.evaluate(async () => {
   captureButtons.emptiedDisabled = $("btn-capture-one").disabled;
   $("btn-probe-close").click();
   return {
-    opened, id, renamedId, live, authored, inManifest, survived, deleted,
-    renamed, duplicateRefused, sceneConflictRefused, sceneId,
-    transformed, beforeRotation, afterRotation, axes, captureButtons,
-    derivedInfluence, innerRefused, innerFieldRestored,
-    influenceDragged, innerResized, innerCanMove, innerPositionRow,
+        opened,
+        id,
+        renamedId,
+        live,
+        authored,
+        inManifest,
+        survived,
+        deleted,
+        renamed,
+        duplicateRefused,
+        sceneConflictRefused,
+        sceneId,
+        transformed,
+        beforeRotation,
+        afterRotation,
+        axes,
+        captureButtons,
+        derivedInfluence,
+        innerRefused,
+        innerFieldRestored,
+        influenceDragged,
+        innerResized,
+        innerCanMove,
+        innerPositionRow,
     innerMoveRefused: innerBefore.join() === innerAfterNudge.join(),
     closed: $("probe-modal").hidden,
   };
 });
-check("the Probes pane creates and deletes an independent probe volume",
+check(
+    "the Probes pane creates and deletes an independent probe volume",
   probes.opened && /^ENV\d{4}$/.test(probes.id) && probes.deleted && probes.closed,
-  `${probes.id}, opened=${probes.opened}, deleted=${probes.deleted}, closed=${probes.closed}`);
-check("probe IDs can be renamed but remain unique",
-  probes.renamed && probes.duplicateRefused && probes.sceneConflictRefused
-    && probes.authored?.id === probes.renamedId,
-  `${probes.id} -> ${probes.renamedId}, probe=${probes.duplicateRefused}, scene=${probes.sceneConflictRefused} (vs ${probes.sceneId})`);
-check("the probe box centre and capture camera are edited and drawn separately",
-  probes.live.separate
-    && probes.live.centre?.join() === "1,2,3"
-    && probes.live.camera?.join() === "7,8,9",
-  `${JSON.stringify(probes.live.centre)} / ${JSON.stringify(probes.live.camera)}`);
-check("the regular transform tools move and scale the probe box and carry its camera",
-  probes.transformed?.boxPosition?.join() === "3,5,7"
-    && probes.transformed?.boxSize?.join() === "10,6,14"
-    && probes.transformed?.capturePosition?.join() === "9,11,13"
-    && probes.axes === probes.renamedId,
-  JSON.stringify(probes.transformed));
-check("a new probe derives its influence volumes from the box it was given",
-  probes.derivedInfluence === true, JSON.stringify(probes.derivedInfluence));
-check("the influence volumes are authored, drawn, and selectable in their own right",
-  probes.live.outer?.join() === "12,9,16"
-    && probes.live.inner?.join() === "4,1,8"
-    && probes.live.influenceCentre?.join() === "1.5,2,3"
-    && probes.live.influenceCentre?.join() === probes.live.innerCentre?.join()
-    && probes.live.influencePickable
-    && probes.live.influenceOwners?.join() === probes.live.influencePartIds?.join(),
-  `${JSON.stringify(probes.live.outer)} / ${JSON.stringify(probes.live.inner)} @ ${JSON.stringify(probes.live.influenceCentre)}`
-  + ` owners ${JSON.stringify(probes.live.influenceOwners)}`);
-check("an inner influence box larger than its outer one is refused, and the field put back",
+    `${probes.id}, opened=${probes.opened}, deleted=${probes.deleted}, closed=${probes.closed}`
+);
+check(
+    "probe IDs can be renamed but remain unique",
+    probes.renamed && probes.duplicateRefused && probes.sceneConflictRefused && probes.authored?.id === probes.renamedId,
+    `${probes.id} -> ${probes.renamedId}, probe=${probes.duplicateRefused}, scene=${probes.sceneConflictRefused} (vs ${probes.sceneId})`
+);
+check(
+    "the probe box centre and capture camera are edited and drawn separately",
+    probes.live.separate && probes.live.centre?.join() === "1,2,3" && probes.live.camera?.join() === "7,8,9",
+    `${JSON.stringify(probes.live.centre)} / ${JSON.stringify(probes.live.camera)}`
+);
+check(
+    "the regular transform tools move and scale the probe box and carry its camera",
+    probes.transformed?.boxPosition?.join() === "3,5,7" &&
+        probes.transformed?.boxSize?.join() === "10,6,14" &&
+        probes.transformed?.capturePosition?.join() === "9,11,13" &&
+        probes.axes === probes.renamedId,
+    JSON.stringify(probes.transformed)
+);
+check("a new probe derives its influence volumes from the box it was given", probes.derivedInfluence === true, JSON.stringify(probes.derivedInfluence));
+check(
+    "the influence volumes are authored, drawn, and selectable in their own right",
+    probes.live.outer?.join() === "12,9,16" &&
+        probes.live.inner?.join() === "4,1,8" &&
+        probes.live.influenceCentre?.join() === "1.5,2,3" &&
+        probes.live.influenceCentre?.join() === probes.live.innerCentre?.join() &&
+        probes.live.influencePickable &&
+        probes.live.influenceOwners?.join() === probes.live.influencePartIds?.join(),
+    `${JSON.stringify(probes.live.outer)} / ${JSON.stringify(probes.live.inner)} @ ${JSON.stringify(probes.live.influenceCentre)}` +
+        ` owners ${JSON.stringify(probes.live.influenceOwners)}`
+);
+check(
+    "an inner influence box larger than its outer one is refused, and the field put back",
   probes.innerRefused === true && probes.innerFieldRestored === true,
-  `refused=${probes.innerRefused}, field restored=${probes.innerFieldRestored}`);
-check("the outer influence volume is moved and resized with the mouse, and takes the inner one down with it",
-  probes.influenceDragged?.influenceBoxPosition?.join() === "4,6,8"
-    && probes.influenceDragged?.influenceBoxSize?.join() === "9,8,7"
-    && probes.influenceDragged?.influenceInnerBoxSize?.join() === "6,2,7"
-    && probes.influenceDragged?.boxPosition?.join() === "3,5,7"
-    && probes.influenceDragged?.boxSize?.join() === "10,6,14",
-  JSON.stringify(probes.influenceDragged));
-check("the inner influence volume resizes but never moves, and offers no Position row",
-  probes.innerCanMove === false && probes.innerMoveRefused === true
-    && probes.innerPositionRow === true
-    && probes.innerResized?.influenceInnerBoxSize?.join() === "6.5,2.5,7"
-    && probes.innerResized?.influenceBoxPosition?.join() === "4,6,8"
-    && probes.innerResized?.influenceBoxSize?.join() === "9,8,7",
-  `canMove=${probes.innerCanMove}, moved=${!probes.innerMoveRefused},`
-  + ` row hidden=${probes.innerPositionRow}, ${JSON.stringify(probes.innerResized)}`);
-check("a probe drag carries its influence volumes and a resize keeps their margins",
-  probes.transformed?.influenceBoxPosition?.join() === "3.5,5,7"
-    && probes.transformed?.influenceBoxSize?.join() === "14,10,18"
-    && probes.transformed?.influenceInnerBoxSize?.join() === "6,2,10",
-  JSON.stringify(probes.transformed));
-check("environment probe boxes remain axis-aligned when rotation is requested",
+    `refused=${probes.innerRefused}, field restored=${probes.innerFieldRestored}`
+);
+check(
+    "the outer influence volume is moved and resized with the mouse, and takes the inner one down with it",
+    probes.influenceDragged?.influenceBoxPosition?.join() === "4,6,8" &&
+        probes.influenceDragged?.influenceBoxSize?.join() === "9,8,7" &&
+        probes.influenceDragged?.influenceInnerBoxSize?.join() === "6,2,7" &&
+        probes.influenceDragged?.boxPosition?.join() === "3,5,7" &&
+        probes.influenceDragged?.boxSize?.join() === "10,6,14",
+    JSON.stringify(probes.influenceDragged)
+);
+check(
+    "the inner influence volume resizes but never moves, and offers no Position row",
+    probes.innerCanMove === false &&
+        probes.innerMoveRefused === true &&
+        probes.innerPositionRow === true &&
+        probes.innerResized?.influenceInnerBoxSize?.join() === "6.5,2.5,7" &&
+        probes.innerResized?.influenceBoxPosition?.join() === "4,6,8" &&
+        probes.innerResized?.influenceBoxSize?.join() === "9,8,7",
+    `canMove=${probes.innerCanMove}, moved=${!probes.innerMoveRefused},` + ` row hidden=${probes.innerPositionRow}, ${JSON.stringify(probes.innerResized)}`
+);
+check(
+    "a probe drag carries its influence volumes and a resize keeps their margins",
+    probes.transformed?.influenceBoxPosition?.join() === "3.5,5,7" &&
+        probes.transformed?.influenceBoxSize?.join() === "14,10,18" &&
+        probes.transformed?.influenceInnerBoxSize?.join() === "6,2,10",
+    JSON.stringify(probes.transformed)
+);
+check(
+    "environment probe boxes remain axis-aligned when rotation is requested",
   JSON.stringify(probes.beforeRotation) === JSON.stringify(probes.afterRotation),
-  `${JSON.stringify(probes.beforeRotation)} -> ${JSON.stringify(probes.afterRotation)}`);
+    `${JSON.stringify(probes.beforeRotation)} -> ${JSON.stringify(probes.afterRotation)}`
+);
 check(
     "probe size and camera survive an editor round-trip",
     probes.authored?.boxSize?.join() === "10,6,14" && probes.authored?.capturePosition?.join() === "9,11,13" && JSON.stringify(probes.authored) === JSON.stringify(probes.survived),
     `${JSON.stringify(probes.authored)} / ${JSON.stringify(probes.survived)}`
 );
-check("the manifest stores probes at the root and converts both positions to glTF space",
-  probes.inManifest?.boxPosition?.join() === "-3,5,7"
-    && probes.inManifest?.capturePosition?.join() === "-9,11,13"
-    && probes.inManifest?.influenceBoxPosition?.join() === "-3.5,5,7"
-    && probes.inManifest?.boxSize?.join() === "10,6,14"
-    && probes.inManifest?.influenceBoxSize?.join() === "14,10,18" &&
+check(
+    "the manifest stores probes at the root and converts both positions to glTF space",
+    probes.inManifest?.boxPosition?.join() === "-3,5,7" &&
+        probes.inManifest?.capturePosition?.join() === "-9,11,13" &&
+        probes.inManifest?.influenceBoxPosition?.join() === "-3.5,5,7" &&
+        probes.inManifest?.boxSize?.join() === "10,6,14" &&
+        probes.inManifest?.influenceBoxSize?.join() === "14,10,18" &&
         probes.inManifest?.influenceInnerBoxSize?.join() === "6,2,10" &&
         probes.inManifest?.angle === 0,
     JSON.stringify(probes.inManifest)
 );
-check("Capture follows the selected probe, Capture all never needs one",
-  probes.captureButtons?.labels.join("|") === "Capture|Capture all"
-    && probes.captureButtons.emptyDisabled === true
-    && probes.captureButtons.pickedDisabled === false
-    && probes.captureButtons.emptiedDisabled === true
-    && probes.captureButtons.allDisabled === false,
+check(
+    "Capture follows the selected probe, Capture all never needs one",
+    probes.captureButtons?.labels.join("|") === "Capture|Capture all" &&
+        probes.captureButtons.emptyDisabled === true &&
+        probes.captureButtons.pickedDisabled === false &&
+        probes.captureButtons.emptiedDisabled === true &&
+        probes.captureButtons.allDisabled === false,
   JSON.stringify(probes.captureButtons)
 );
 check(
@@ -1084,8 +1187,11 @@ const probeRecentre = await page.evaluate(async () => {
   const wait = (ms = 120) => new Promise((r) => setTimeout(r, ms));
   const id = "ENV_DRIFT";
   ed.setEnvironmentProbe(id, {
-    boxPosition: [10, 0, 0], boxSize: [4, 4, 4], capturePosition: [10, 0, 0],
-    influenceBoxPosition: [10.7, 0, 0], influenceBoxSize: [8, 8, 8],
+        boxPosition: [10, 0, 0],
+        boxSize: [4, 4, 4],
+        capturePosition: [10, 0, 0],
+        influenceBoxPosition: [10.7, 0, 0],
+        influenceBoxSize: [8, 8, 8],
     influenceInnerBoxSize: [2, 2, 2],
   });
   $("btn-probes").click();
@@ -1110,21 +1216,29 @@ const probeRecentre = await page.evaluate(async () => {
   ed.removeEnvironmentProbe(id);
   return { offered, centred, inert, status, undone, offeredAgain };
 });
-check("Centre on box moves the influence pair onto the probe box, in one undo step",
-  probeRecentre.offered?.label === "Centre on box" && probeRecentre.offered.disabled === false
-    && /0\.70 m/.test(probeRecentre.offered.title)
-    && probeRecentre.centred?.influenceBoxPosition?.join() === "10,0,0"
-    && probeRecentre.centred?.influenceBoxSize?.join() === "8,8,8"
-    && probeRecentre.centred?.influenceInnerBoxSize?.join() === "2,2,2"
-    && probeRecentre.centred?.boxPosition?.join() === "10,0,0"
-    && /0\.70 m/.test(probeRecentre.status)
-    && probeRecentre.undone?.influenceBoxPosition?.join() === "10.7,0,0",
-  JSON.stringify({ offered: probeRecentre.offered, status: probeRecentre.status,
+check(
+    "Centre on box moves the influence pair onto the probe box, in one undo step",
+    probeRecentre.offered?.label === "Centre on box" &&
+        probeRecentre.offered.disabled === false &&
+        /0\.70 m/.test(probeRecentre.offered.title) &&
+        probeRecentre.centred?.influenceBoxPosition?.join() === "10,0,0" &&
+        probeRecentre.centred?.influenceBoxSize?.join() === "8,8,8" &&
+        probeRecentre.centred?.influenceInnerBoxSize?.join() === "2,2,2" &&
+        probeRecentre.centred?.boxPosition?.join() === "10,0,0" &&
+        /0\.70 m/.test(probeRecentre.status) &&
+        probeRecentre.undone?.influenceBoxPosition?.join() === "10.7,0,0",
+    JSON.stringify({
+        offered: probeRecentre.offered,
+        status: probeRecentre.status,
     centred: probeRecentre.centred?.influenceBoxPosition,
-    undone: probeRecentre.undone?.influenceBoxPosition }));
-check("and offers itself only while there is something to put back",
+        undone: probeRecentre.undone?.influenceBoxPosition,
+    })
+);
+check(
+    "and offers itself only while there is something to put back",
   probeRecentre.inert === true && probeRecentre.offeredAgain === true,
-  `after=${probeRecentre.inert}, after undo=${probeRecentre.offeredAgain}`);
+    `after=${probeRecentre.inert}, after undo=${probeRecentre.offeredAgain}`
+);
 
 const sphereProbe = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -1156,17 +1270,19 @@ const sphereProbe = await page.evaluate(async () => {
     gizmo: root ? { position: root.position.asArray(), scaling: root.scaling.asArray() } : null,
   };
 });
-check("spherical probes author, draw, export, and survive an editor round-trip",
-  sphereProbe.authored?.shape === "sphere"
-    && sphereProbe.authored?.sphereRadius === 5
-    && sphereProbe.authored?.influenceSphereRadius === 7
-    && sphereProbe.gizmo?.position?.join() === "2,3,4"
-    && sphereProbe.gizmo?.scaling?.join() === "10,10,10"
-    && sphereProbe.manifest?.shape === "sphere"
-    && sphereProbe.manifest?.spherePosition?.join() === "-2,3,4"
-    && sphereProbe.manifest?.sphereRadius === 5
-    && JSON.stringify(sphereProbe.authored) === JSON.stringify(sphereProbe.survived),
-  JSON.stringify(sphereProbe));
+check(
+    "spherical probes author, draw, export, and survive an editor round-trip",
+    sphereProbe.authored?.shape === "sphere" &&
+        sphereProbe.authored?.sphereRadius === 5 &&
+        sphereProbe.authored?.influenceSphereRadius === 7 &&
+        sphereProbe.gizmo?.position?.join() === "2,3,4" &&
+        sphereProbe.gizmo?.scaling?.join() === "10,10,10" &&
+        sphereProbe.manifest?.shape === "sphere" &&
+        sphereProbe.manifest?.spherePosition?.join() === "-2,3,4" &&
+        sphereProbe.manifest?.sphereRadius === 5 &&
+        JSON.stringify(sphereProbe.authored) === JSON.stringify(sphereProbe.survived),
+    JSON.stringify(sphereProbe)
+);
 
 // ---- 1d-quinquies-ter-bis. one cubemap size for the whole ship -------------
 // The runtime holds the captured environments in a cube texture ARRAY, and
@@ -1286,7 +1402,8 @@ const probeSections = await page.evaluate(async () => {
     influence: enabled(`LOCAL_ENVIRONMENT_INFLUENCE_BOX#${probeId}`),
     inner: enabled(`LOCAL_ENVIRONMENT_INNER_BOX#${probeId}`),
   });
-  const heads = () => [...document.querySelectorAll("#probe-modal .probe-head")].map((h) => ({
+    const heads = () =>
+        [...document.querySelectorAll("#probe-modal .probe-head")].map((h) => ({
     id: h.id,
     title: h.querySelector("span").textContent,
     eye: h.querySelector(".eye").getAttribute("aria-pressed"),
@@ -1304,9 +1421,8 @@ const probeSections = await page.evaluate(async () => {
   // Reading order: the pane's own children, so a row moved in the markup shows
   // up here rather than in a screenshot nobody looks at.
   const order = [...document.querySelectorAll("#probe-modal .editor > *")].map((el) =>
-    (el.tagName === "H3"
-      ? `H3:${el.querySelector("span").textContent}`
-      : (el.querySelector("label")?.textContent?.trim() || el.id)));
+        el.tagName === "H3" ? `H3:${el.querySelector("span").textContent}` : el.querySelector("label")?.textContent?.trim() || el.id
+    );
 
   const opening = { heads: heads(), gizmos: gizmos(id) };
 
@@ -1347,52 +1463,83 @@ const probeSections = await page.evaluate(async () => {
   ed.removeEnvironmentProbe(id);
   $("btn-probe-close").click();
   return {
-    order, opening, influenceHidden, boxHidden, restored,
-    innerSelected, influenceSelected, inShip, inPrefs, reloaded,
+        order,
+        opening,
+        influenceHidden,
+        boxHidden,
+        restored,
+        innerSelected,
+        influenceSelected,
+        inShip,
+        inPrefs,
+        reloaded,
   };
 });
-check("the probe pane is split into Probe box, Influence box and Inner box",
+check(
+    "the probe pane is split into Probe box, Influence box and Inner box",
     probeSections.order.join("|") ===
-        ["ID", "Shape", "Always visible", "Env faces", "H3:Probe box", "Centre", "Size", "Camera", "H3:Influence box", "Centre", "Size", "H3:Inner box", "Size", "probe-resolved"].join("|"),
+        [
+            "ID",
+            "Shape",
+            "Always visible",
+            "Env faces",
+            "H3:Probe box",
+            "Centre",
+            "Size",
+            "Camera",
+            "H3:Influence box",
+            "Centre",
+            "Size",
+            "H3:Inner box",
+            "Size",
+            "probe-resolved",
+        ].join("|"),
     probeSections.order.join(" · ")
 );
-check("each probe section owns an eye that shows and hides only its own volume",
-  probeSections.opening.heads.every((h) => h.eye === "true")
-    && Object.values(probeSections.opening.gizmos).every(Boolean)
-    && probeSections.influenceHidden.gizmos.influence === false
-    && probeSections.influenceHidden.gizmos.box === true
-    && probeSections.influenceHidden.gizmos.inner === true
-    && probeSections.influenceHidden.heads[1].eye === "false"
-    && probeSections.influenceHidden.heads[0].eye === "true"
-    && Object.values(probeSections.restored).every(Boolean),
-  `${JSON.stringify(probeSections.influenceHidden.gizmos)} → ${JSON.stringify(probeSections.restored)}`);
-check("hiding the probe box takes its centre, camera and selection with it",
-  probeSections.boxHidden.gizmos.box === false
-    && probeSections.boxHidden.gizmos.centre === false
-    && probeSections.boxHidden.gizmos.camera === false
-    && probeSections.boxHidden.gizmos.inner === true
-    && probeSections.boxHidden.selection.length === 0,
-  `${JSON.stringify(probeSections.boxHidden.gizmos)}, selection ${JSON.stringify(probeSections.boxHidden.selection)}`);
-check("the pane marks whichever box the viewport has selected",
-  probeSections.opening.heads[0].selected === true
-    && probeSections.opening.heads[0].badge === true
-    && probeSections.innerSelected.map((h) => h.selected).join() === "false,false,true"
-    && probeSections.innerSelected[2].badge === true
-    && probeSections.influenceSelected.map((h) => h.selected).join() === "false,true,false"
-    && probeSections.influenceSelected[1].badge === true,
-  `open=${JSON.stringify(probeSections.opening.heads.map((h) => h.selected))},`
-  + ` inner=${JSON.stringify(probeSections.innerSelected.map((h) => h.selected))},`
-  + ` influence=${JSON.stringify(probeSections.influenceSelected.map((h) => h.selected))}`);
-check("per-box visibility stays out of the ship and is saved beside it",
-  /"box":false/.test(probeSections.inPrefs)
-    && /"influence":false/.test(probeSections.inPrefs)
-    && /"inner":true/.test(probeSections.inPrefs)
-    && !/visibleParts/.test(probeSections.inShip)
-    && probeSections.reloaded.box === false
-    && probeSections.reloaded.influence === false
-    && probeSections.reloaded.inner === true,
-  `prefs ${probeSections.inPrefs} · ship ${probeSections.inShip}`
-  + ` · reloaded ${JSON.stringify(probeSections.reloaded)}`);
+check(
+    "each probe section owns an eye that shows and hides only its own volume",
+    probeSections.opening.heads.every((h) => h.eye === "true") &&
+        Object.values(probeSections.opening.gizmos).every(Boolean) &&
+        probeSections.influenceHidden.gizmos.influence === false &&
+        probeSections.influenceHidden.gizmos.box === true &&
+        probeSections.influenceHidden.gizmos.inner === true &&
+        probeSections.influenceHidden.heads[1].eye === "false" &&
+        probeSections.influenceHidden.heads[0].eye === "true" &&
+        Object.values(probeSections.restored).every(Boolean),
+    `${JSON.stringify(probeSections.influenceHidden.gizmos)} → ${JSON.stringify(probeSections.restored)}`
+);
+check(
+    "hiding the probe box takes its centre, camera and selection with it",
+    probeSections.boxHidden.gizmos.box === false &&
+        probeSections.boxHidden.gizmos.centre === false &&
+        probeSections.boxHidden.gizmos.camera === false &&
+        probeSections.boxHidden.gizmos.inner === true &&
+        probeSections.boxHidden.selection.length === 0,
+    `${JSON.stringify(probeSections.boxHidden.gizmos)}, selection ${JSON.stringify(probeSections.boxHidden.selection)}`
+);
+check(
+    "the pane marks whichever box the viewport has selected",
+    probeSections.opening.heads[0].selected === true &&
+        probeSections.opening.heads[0].badge === true &&
+        probeSections.innerSelected.map((h) => h.selected).join() === "false,false,true" &&
+        probeSections.innerSelected[2].badge === true &&
+        probeSections.influenceSelected.map((h) => h.selected).join() === "false,true,false" &&
+        probeSections.influenceSelected[1].badge === true,
+    `open=${JSON.stringify(probeSections.opening.heads.map((h) => h.selected))},` +
+        ` inner=${JSON.stringify(probeSections.innerSelected.map((h) => h.selected))},` +
+        ` influence=${JSON.stringify(probeSections.influenceSelected.map((h) => h.selected))}`
+);
+check(
+    "per-box visibility stays out of the ship and is saved beside it",
+    /"box":false/.test(probeSections.inPrefs) &&
+        /"influence":false/.test(probeSections.inPrefs) &&
+        /"inner":true/.test(probeSections.inPrefs) &&
+        !/visibleParts/.test(probeSections.inShip) &&
+        probeSections.reloaded.box === false &&
+        probeSections.reloaded.influence === false &&
+        probeSections.reloaded.inner === true,
+    `prefs ${probeSections.inPrefs} · ship ${probeSections.inShip}` + ` · reloaded ${JSON.stringify(probeSections.reloaded)}`
+);
 
 // ---- 1d-quinquies-quinquies. per-probe visibility and live editing ---------
 // Reading one probe against its neighbours means holding several on screen at
@@ -1423,11 +1570,13 @@ const probeView = await page.evaluate(async () => {
 
   ed.state.environmentProbes.clear();
   const near = {
-    boxPosition: [0, 2, 0], boxSize: [6, 4, 6],
+        boxPosition: [0, 2, 0],
+        boxSize: [6, 4, 6],
         capturePosition: [0, 2, 0],
     };
     const far = {
-    boxPosition: [20, 2, 0], boxSize: [6, 4, 6],
+        boxPosition: [20, 2, 0],
+        boxSize: [6, 4, 6],
         capturePosition: [20, 2, 0],
     };
     ed.setEnvironmentProbe("ENV_NEAR", near);
@@ -1457,14 +1606,19 @@ const probeView = await page.evaluate(async () => {
   await settle("ENV_NEAR");
   await wait(300);
   const together = {
-    near: drawn("ENV_NEAR"), far: drawn("ENV_FAR"),
-    nearBox: material("BOX", "ENV_NEAR"), farBox: material("BOX", "ENV_FAR"),
-    nearInner: material("INNER_BOX", "ENV_NEAR"), farInner: material("INNER_BOX", "ENV_FAR"),
+        near: drawn("ENV_NEAR"),
+        far: drawn("ENV_FAR"),
+        nearBox: material("BOX", "ENV_NEAR"),
+        farBox: material("BOX", "ENV_FAR"),
+        nearInner: material("INNER_BOX", "ENV_NEAR"),
+        farInner: material("INNER_BOX", "ENV_FAR"),
     // Env faces is per probe too, and a probe that is on screen without the
     // selection is exactly the one worth putting its own cubemap on.
-    nearFaces: faces("ENV_NEAR"), farFaces: faces("ENV_FAR"),
+        nearFaces: faces("ENV_NEAR"),
+        farFaces: faces("ENV_FAR"),
     // The checkboxes follow the probe, not the pane.
-    showTicked: $("probe-show").checked, envTicked: $("probe-env").checked,
+        showTicked: $("probe-show").checked,
+        envTicked: $("probe-env").checked,
   };
 
   // Picking a probe that is only on screen because it was asked to stay has to
@@ -1479,7 +1633,8 @@ const probeView = await page.evaluate(async () => {
   $("btn-probe-eye-influence").click();
   await wait(300);
   const eyes = {
-    nearInfluence: influenceOn("ENV_NEAR"), farInfluence: influenceOn("ENV_FAR"),
+        nearInfluence: influenceOn("ENV_NEAR"),
+        farInfluence: influenceOn("ENV_FAR"),
     nearEye: $("btn-probe-eye-influence").getAttribute("aria-pressed"),
   };
   // And the eye follows the probe the pane moves to, rather than staying where
@@ -1519,8 +1674,7 @@ const probeView = await page.evaluate(async () => {
   const undoKeptPick = $("probe-list").value;
   // Undo restores the whole record, so a probe asked to stay on screen must not
   // come down with it.
-  const undoKeptFlags = ed.environmentProbeOf("ENV_FAR").alwaysVisible === true
-    && drawn("ENV_FAR");
+    const undoKeptFlags = ed.environmentProbeOf("ENV_FAR").alwaysVisible === true && drawn("ENV_FAR");
 
   const manifest = mf.buildManifest();
   const inProbes = JSON.stringify(manifest.environmentProbes);
@@ -1549,64 +1703,100 @@ const probeView = await page.evaluate(async () => {
   // Always visible means "while I am working on the probes", not "for ever".
   $("btn-probe-close").click();
   await wait(300);
-  const left = ed.state.scene.meshes.filter((m) => m.name.startsWith("LOCAL_ENVIRONMENT_")).length
-    + ed.state.scene.transformNodes.filter((n) => n.name.startsWith("LOCAL_ENVIRONMENT_")).length;
+    const left =
+        ed.state.scene.meshes.filter((m) => m.name.startsWith("LOCAL_ENVIRONMENT_")).length +
+        ed.state.scene.transformNodes.filter((n) => n.name.startsWith("LOCAL_ENVIRONMENT_")).length;
   ed.removeEnvironmentProbe("ENV_NEAR");
   ed.removeEnvironmentProbe("ENV_FAR");
   return {
-    selectedOnly, farFlags, nearFlags, together, dimPickable, eyes,
-    typed, undone, undoKeptFlags, undoKeptPick, inProbes, prefs, cleared, restored, left,
-    shortList, tallList,
-  };
+        selectedOnly,
+        farFlags,
+        nearFlags,
+        together,
+        dimPickable,
+        eyes,
+        typed,
+        undone,
+        undoKeptFlags,
+        undoKeptPick,
+        inProbes,
+        prefs,
+        cleared,
+        restored,
+        left,
+        shortList,
+        tallList,
+    };
 });
-check("only the selected probe is drawn until another is asked to stay",
-  probeView.selectedOnly.near === true && probeView.selectedOnly.far === false
-    && probeView.together.near === true && probeView.together.far === true,
-  `${JSON.stringify(probeView.selectedOnly)} → ${JSON.stringify(probeView.together)}`);
-check("Always visible and Env faces belong to a probe, not to the pane",
-  probeView.farFlags.alwaysVisible === true && probeView.farFlags.envFaces === true
-    && probeView.nearFlags.alwaysVisible !== true && probeView.nearFlags.envFaces !== true
-    && probeView.together.showTicked === false && probeView.together.envTicked === false,
-  `far=${JSON.stringify([probeView.farFlags.alwaysVisible, probeView.farFlags.envFaces])},`
-  + ` near=${JSON.stringify([probeView.nearFlags.alwaysVisible, probeView.nearFlags.envFaces])},`
-  + ` ticks=${JSON.stringify([probeView.together.showTicked, probeView.together.envTicked])}`);
-check("the selected probe stays bright while the probes kept beside it go dim",
-  /_BRIGHT_/.test(probeView.together.nearBox) && /_DIM_/.test(probeView.together.farBox)
-    && /_BRIGHT_/.test(probeView.together.nearInner) && /_DIM_/.test(probeView.together.farInner)
-    && probeView.dimPickable === true,
-  `near=${probeView.together.nearBox}/${probeView.together.nearInner},`
-  + ` far=${probeView.together.farBox}/${probeView.together.farInner},`
-  + ` pickable=${probeView.dimPickable}`);
-check("env faces are asked for per probe, including one kept on screen without the selection",
+check(
+    "only the selected probe is drawn until another is asked to stay",
+    probeView.selectedOnly.near === true && probeView.selectedOnly.far === false && probeView.together.near === true && probeView.together.far === true,
+    `${JSON.stringify(probeView.selectedOnly)} → ${JSON.stringify(probeView.together)}`
+);
+check(
+    "Always visible and Env faces belong to a probe, not to the pane",
+    probeView.farFlags.alwaysVisible === true &&
+        probeView.farFlags.envFaces === true &&
+        probeView.nearFlags.alwaysVisible !== true &&
+        probeView.nearFlags.envFaces !== true &&
+        probeView.together.showTicked === false &&
+        probeView.together.envTicked === false,
+    `far=${JSON.stringify([probeView.farFlags.alwaysVisible, probeView.farFlags.envFaces])},` +
+        ` near=${JSON.stringify([probeView.nearFlags.alwaysVisible, probeView.nearFlags.envFaces])},` +
+        ` ticks=${JSON.stringify([probeView.together.showTicked, probeView.together.envTicked])}`
+);
+check(
+    "the selected probe stays bright while the probes kept beside it go dim",
+    /_BRIGHT_/.test(probeView.together.nearBox) &&
+        /_DIM_/.test(probeView.together.farBox) &&
+        /_BRIGHT_/.test(probeView.together.nearInner) &&
+        /_DIM_/.test(probeView.together.farInner) &&
+        probeView.dimPickable === true,
+    `near=${probeView.together.nearBox}/${probeView.together.nearInner},` +
+        ` far=${probeView.together.farBox}/${probeView.together.farInner},` +
+        ` pickable=${probeView.dimPickable}`
+);
+check(
+    "env faces are asked for per probe, including one kept on screen without the selection",
   probeView.together.farFaces === true && probeView.together.nearFaces === false,
-  `far=${probeView.together.farFaces}, near=${probeView.together.nearFaces}`);
-check("hiding one probe's influence box leaves the probe beside it alone",
-  probeView.eyes.nearInfluence === false && probeView.eyes.farInfluence === true
-    && probeView.eyes.nearEye === "false" && probeView.eyes.farEye === "true"
-    && probeView.eyes.backOnNear === "false",
-  `near=${probeView.eyes.nearInfluence}/${probeView.eyes.nearEye},`
-  + ` far=${probeView.eyes.farInfluence}/${probeView.eyes.farEye},`
-  + ` back on near=${probeView.eyes.backOnNear}`);
-check("typing into a probe field commits, and one visit to it is one undo entry",
-  probeView.typed.size === "1.25,4,6" && probeView.typed.entries === 1
-    && probeView.undone === "6,4,6",
-  `${JSON.stringify(probeView.typed)} → ${probeView.undone}`);
-check("undo puts a probe record back without taking its boxes off screen",
+    `far=${probeView.together.farFaces}, near=${probeView.together.nearFaces}`
+);
+check(
+    "hiding one probe's influence box leaves the probe beside it alone",
+    probeView.eyes.nearInfluence === false &&
+        probeView.eyes.farInfluence === true &&
+        probeView.eyes.nearEye === "false" &&
+        probeView.eyes.farEye === "true" &&
+        probeView.eyes.backOnNear === "false",
+    `near=${probeView.eyes.nearInfluence}/${probeView.eyes.nearEye},` +
+        ` far=${probeView.eyes.farInfluence}/${probeView.eyes.farEye},` +
+        ` back on near=${probeView.eyes.backOnNear}`
+);
+check(
+    "typing into a probe field commits, and one visit to it is one undo entry",
+    probeView.typed.size === "1.25,4,6" && probeView.typed.entries === 1 && probeView.undone === "6,4,6",
+    `${JSON.stringify(probeView.typed)} → ${probeView.undone}`
+);
+check(
+    "undo puts a probe record back without taking its boxes off screen",
   probeView.undoKeptFlags === true && probeView.undoKeptPick === "ENV_NEAR",
-  `flags=${probeView.undoKeptFlags}, pane on ${probeView.undoKeptPick}`);
-check("which probes are held on screen is saved beside the ship, not inside it",
-  /"ENV_FAR":\{"alwaysVisible":true,"envFaces":true,"visibleParts":\{"box":true,"influence":true,"inner":true\}\}/
-    .test(probeView.prefs)
-    && !/alwaysVisible|envFaces|visibleParts/.test(probeView.inProbes)
-    && probeView.cleared === false
-    && probeView.restored.drawn === true && probeView.restored.faces === true,
-  `prefs=${probeView.prefs}, cleared=${probeView.cleared},`
-  + ` restored=${JSON.stringify(probeView.restored)}`);
-check("closing the probes window takes every probe gizmo down with it",
-  probeView.left === 0, `${probeView.left} nodes left`);
-check("the probe list takes the room a taller window gains and gives it back",
+    `flags=${probeView.undoKeptFlags}, pane on ${probeView.undoKeptPick}`
+);
+check(
+    "which probes are held on screen is saved beside the ship, not inside it",
+    /"ENV_FAR":\{"alwaysVisible":true,"envFaces":true,"visibleParts":\{"box":true,"influence":true,"inner":true\}\}/.test(probeView.prefs) &&
+        !/alwaysVisible|envFaces|visibleParts/.test(probeView.inProbes) &&
+        probeView.cleared === false &&
+        probeView.restored.drawn === true &&
+        probeView.restored.faces === true,
+    `prefs=${probeView.prefs}, cleared=${probeView.cleared},` + ` restored=${JSON.stringify(probeView.restored)}`
+);
+check("closing the probes window takes every probe gizmo down with it", probeView.left === 0, `${probeView.left} nodes left`);
+check(
+    "the probe list takes the room a taller window gains and gives it back",
   probeView.tallList - probeView.shortList >= 350 && probeView.shortList > 0,
-  `${probeView.shortList}px at 460 → ${probeView.tallList}px at 860`);
+    `${probeView.shortList}px at 460 → ${probeView.tallList}px at 860`
+);
 
 // ---- 1d-sexies. names carry into the .glb ----------------------------------
 // glTF node names come straight off the Babylon nodes, so the export renames
@@ -1620,7 +1810,9 @@ const glbNames = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(4, 0, 0), { silent: true });
@@ -1638,17 +1830,19 @@ const glbNames = await page.evaluate(async () => {
   window.fetch = (url, opts) => {
     if (String(url).includes("/api/export")) {
       body = opts.body;
-      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response('{"ok":true,"bytes":0}', { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
-  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+    try {
+        await mf.exportGlb();
+    } finally {
+        window.fetch = realFetch;
+    }
 
   const buf = await body.arrayBuffer();
   const dv = new DataView(buf);
-  const json = JSON.parse(new TextDecoder()
-    .decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+    const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
 
   const man = mf.buildManifest();
   const out = {
@@ -1661,34 +1855,32 @@ const glbNames = await page.evaluate(async () => {
     leaf: man.doors[0]?.leaves[0],
     instanceNodes: Object.fromEntries(man.instances.map((x) => [x.id, x.node])),
     // the editor must look exactly as it did before the export
-    sceneNames: [...ed.state.placements.values()]
-      .flatMap((p) => [p.node.name, ...p.node.getChildMeshes().map((m) => m.name)]),
+        sceneNames: [...ed.state.placements.values()].flatMap((p) => [p.node.name, ...p.node.getChildMeshes().map((m) => m.name)]),
     ids: { a: a.id, b: b.id, c: c.id, d: d.id },
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
 
 const gNodes = glbNames.nodes;
-check("a named element's parent node takes the name",
-  glbNames.tally["weapon locker"] === 1
-    && gNodes.includes("weapon locker_primitive0")
-    && gNodes.includes("weapon locker_primitive1"),
-  JSON.stringify(gNodes.filter((n) => n.startsWith("weapon"))));
-check("elements sharing a name share the node name, so one behaviour governs both",
+check(
+    "a named element's parent node takes the name",
+    glbNames.tally["weapon locker"] === 1 && gNodes.includes("weapon locker_primitive0") && gNodes.includes("weapon locker_primitive1"),
+    JSON.stringify(gNodes.filter((n) => n.startsWith("weapon")))
+);
+check(
+    "elements sharing a name share the node name, so one behaviour governs both",
   glbNames.tally.door === 2 && !gNodes.some((n) => n.startsWith("door (")),
-  `${glbNames.tally.door} nodes called "door"`);
-check("an unnamed element still exports under its id",
-  glbNames.tally[glbNames.ids.d] === 1
-    && gNodes.includes(`${glbNames.ids.d}_primitive0`),
-  glbNames.ids.d);
-check("the manifest names each element as the .glb does",
-  glbNames.instanceNodes[glbNames.ids.a] === "weapon locker"
-    && glbNames.instanceNodes[glbNames.ids.b] === "door"
-    && glbNames.instanceNodes[glbNames.ids.d] === glbNames.ids.d,
-  JSON.stringify(glbNames.instanceNodes));
-check("a door leaf points at the leaf's node name",
-  glbNames.leaf?.node === "weapon locker", JSON.stringify(glbNames.leaf));
+    `${glbNames.tally.door} nodes called "door"`
+);
+check("an unnamed element still exports under its id", glbNames.tally[glbNames.ids.d] === 1 && gNodes.includes(`${glbNames.ids.d}_primitive0`), glbNames.ids.d);
+check(
+    "the manifest names each element as the .glb does",
+    glbNames.instanceNodes[glbNames.ids.a] === "weapon locker" && glbNames.instanceNodes[glbNames.ids.b] === "door" && glbNames.instanceNodes[glbNames.ids.d] === glbNames.ids.d,
+    JSON.stringify(glbNames.instanceNodes)
+);
+check("a door leaf points at the leaf's node name", glbNames.leaf?.node === "weapon locker", JSON.stringify(glbNames.leaf));
 
 // A window onto space: the portal still renders, but the far side cannot be
 // walked to. Written on the door for the collision work to read later.
@@ -1698,7 +1890,9 @@ const sealedDoor = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const d = mk.addDoor(new V(4, 0, 0), { silent: true });
   const fresh = mf.buildManifest().doors[0];
@@ -1721,20 +1915,25 @@ const sealedDoor = await page.evaluate(async () => {
     onDoor: built.doors[0].sealed,
     // not on the portal: only the door carries it for now
     onPortal: "sealed" in built.portals[0],
-    reloaded, afterUndo,
+        reloaded,
+        afterUndo,
     checkbox: document.getElementById("door-sealed").checked,
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("a door is an ordinary doorway unless sealed",
-  sealedDoor.byDefault === false, `${sealedDoor.byDefault}`);
-check("the Sealed box reaches the manifest's door record",
+check("a door is an ordinary doorway unless sealed", sealedDoor.byDefault === false, `${sealedDoor.byDefault}`);
+check(
+    "the Sealed box reaches the manifest's door record",
   sealedDoor.onDoor === true && sealedDoor.onPortal === false,
-  `door=${sealedDoor.onDoor}, on the portal too=${sealedDoor.onPortal}`);
-check("sealed survives a reload, and undo takes it back",
+    `door=${sealedDoor.onDoor}, on the portal too=${sealedDoor.onPortal}`
+);
+check(
+    "sealed survives a reload, and undo takes it back",
   sealedDoor.reloaded === true && sealedDoor.afterUndo === false,
-  `reloaded=${sealedDoor.reloaded}, after undo=${sealedDoor.afterUndo}`);
+    `reloaded=${sealedDoor.reloaded}, after undo=${sealedDoor.afterUndo}`
+);
 
 const enabledDoor = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -1762,20 +1961,16 @@ const enabledDoor = await page.evaluate(async () => {
     defaultPortal: byDefault.portals[0].enabled,
     disabledDoor: disabled.doors[0].enabled,
     disabledPortal: disabled.portals[0].enabled,
-    reloaded, afterUndo,
+        reloaded,
+        afterUndo,
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("doors and their portals are enabled by default",
-  enabledDoor.defaultDoor === true && enabledDoor.defaultPortal === true,
-  JSON.stringify(enabledDoor));
-check("the Enabled box reaches both manifest records",
-  enabledDoor.disabledDoor === false && enabledDoor.disabledPortal === false,
-  JSON.stringify(enabledDoor));
-check("enabled survives a reload, and undo restores it",
-  enabledDoor.reloaded === false && enabledDoor.afterUndo === true,
-  JSON.stringify(enabledDoor));
+check("doors and their portals are enabled by default", enabledDoor.defaultDoor === true && enabledDoor.defaultPortal === true, JSON.stringify(enabledDoor));
+check("the Enabled box reaches both manifest records", enabledDoor.disabledDoor === false && enabledDoor.disabledPortal === false, JSON.stringify(enabledDoor));
+check("enabled survives a reload, and undo restores it", enabledDoor.reloaded === false && enabledDoor.afterUndo === true, JSON.stringify(enabledDoor));
 
 // ---- 1d-quatervicies. collision primitives ---------------------------------
 // Unit shapes sized by scaling - but only the box takes an arbitrary scale.
@@ -1788,14 +1983,19 @@ const coll = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   const made = {};
   for (const k of co.COLLIDER_KINDS) made[k] = co.addCollider(k, new V(0, 0, 0), { silent: true });
 
-  made.sphere.node.scaling.set(2, 1, 1);  co.reconcileCollider(made.sphere);
-  made.capsule.node.scaling.set(3, 5, 1); co.reconcileCollider(made.capsule);
-  made.box.node.scaling.set(4, 2, 0.2);   co.reconcileCollider(made.box);
+    made.sphere.node.scaling.set(2, 1, 1);
+    co.reconcileCollider(made.sphere);
+    made.capsule.node.scaling.set(3, 5, 1);
+    co.reconcileCollider(made.capsule);
+    made.box.node.scaling.set(4, 2, 0.2);
+    co.reconcileCollider(made.box);
   made.cylinder.node.scaling.set(2, 6, 2);
   made.cylinder.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(Math.PI / 2, 0, 0);
 
@@ -1808,36 +2008,42 @@ const coll = await page.evaluate(async () => {
   const layout = ed.serialize();
   await ed.deserialize(JSON.parse(JSON.stringify(layout)));
   const out = {
-    kinds: [...ed.state.colliders.values()].map((c) => c.kind).sort().join(),
+        kinds: [...ed.state.colliders.values()]
+            .map((c) => c.kind)
+            .sort()
+            .join(),
     viaEntryOf,
     sphere: made.sphere.node.scaling.asArray(),
     capsule: made.capsule.node.scaling.asArray(),
     box: made.box.node.scaling.asArray(),
-    mBox: by.box, mSphere: by.sphere, mCyl: by.cylinder,
+        mBox: by.box,
+        mSphere: by.sphere,
+        mCyl: by.cylinder,
     inGlb: null,
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("all four primitives exist and survive a reload",
-  coll.kinds === "box,capsule,cylinder,sphere" && coll.viaEntryOf, coll.kinds);
-check("a sphere is forced round, and a capsule to one radius",
-  coll.sphere[0] === coll.sphere[1] && coll.sphere[1] === coll.sphere[2]
-    && coll.capsule[0] === coll.capsule[2] && coll.capsule[1] === 5,
-  `sphere [${coll.sphere}], capsule [${coll.capsule}]`);
-check("a box keeps whatever scale it is given",
-  coll.box.join() === "4,2,0.2", `[${coll.box}]`);
-check("the manifest speaks Havok's own parameters",
-  coll.mBox.halfExtents.join() === "2,1,0.1" && coll.mBox.rotation.length === 4
-    && Math.abs(coll.mSphere.radius - 0.6667) < 1e-3
-    && !("rotation" in coll.mSphere),
-  `box ${JSON.stringify(coll.mBox.halfExtents)}, sphere r=${coll.mSphere.radius}`);
-check("a turned capsule or cylinder carries its axis as two points",
+check("all four primitives exist and survive a reload", coll.kinds === "box,capsule,cylinder,sphere" && coll.viaEntryOf, coll.kinds);
+check(
+    "a sphere is forced round, and a capsule to one radius",
+    coll.sphere[0] === coll.sphere[1] && coll.sphere[1] === coll.sphere[2] && coll.capsule[0] === coll.capsule[2] && coll.capsule[1] === 5,
+    `sphere [${coll.sphere}], capsule [${coll.capsule}]`
+);
+check("a box keeps whatever scale it is given", coll.box.join() === "4,2,0.2", `[${coll.box}]`);
+check(
+    "the manifest speaks Havok's own parameters",
+    coll.mBox.halfExtents.join() === "2,1,0.1" && coll.mBox.rotation.length === 4 && Math.abs(coll.mSphere.radius - 0.6667) < 1e-3 && !("rotation" in coll.mSphere),
+    `box ${JSON.stringify(coll.mBox.halfExtents)}, sphere r=${coll.mSphere.radius}`
+);
+check(
+    "a turned capsule or cylinder carries its axis as two points",
   // rotated 90 degrees about X, so the segment runs along Z, not Y - which is
   // how Havok expresses an arbitrarily oriented capsule
-  Math.abs(coll.mCyl.pointA[2] + 3) < 1e-3 && Math.abs(coll.mCyl.pointB[2] - 3) < 1e-3
-    && Math.abs(coll.mCyl.pointA[1]) < 1e-3,
-  `A=${coll.mCyl.pointA} B=${coll.mCyl.pointB}`);
+    Math.abs(coll.mCyl.pointA[2] + 3) < 1e-3 && Math.abs(coll.mCyl.pointB[2] - 3) < 1e-3 && Math.abs(coll.mCyl.pointA[1]) < 1e-3,
+    `A=${coll.mCyl.pointA} B=${coll.mCyl.pointB}`
+);
 
 // ---- 1d-quinvicies. a capsule is drawn as a capsule ------------------------
 // A tube closed by two hemispheres, not a stretched sphere. Every other kind is
@@ -1846,13 +2052,16 @@ check("a turned capsule or cylinder carries its axis as two points",
 // ellipsoid. The old unit mesh was `height: 1, radius: 0.5`, and Babylon's
 // capsule height *includes* the caps - so `height - 2 x radius` left no tube at
 // all and every capsule in the editor was a lozenge.
-const capsProbe = await page.evaluate(async (sizes) => {
+const capsProbe = await page.evaluate(
+    async (sizes) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const mf = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+        i.cancelGhost();
+        ed.clearAll();
+        ed.select([]);
 
   const out = { cases: [], armed: co.COLLIDER_DEFAULT_SCALE.capsule };
   for (const [d, h] of sizes) {
@@ -1862,10 +2071,11 @@ const capsProbe = await page.evaluate(async (sizes) => {
     const raw = c.mesh.getVerticesData("position");
     const wm = c.mesh.getWorldMatrix();
     const pts = [];
-    for (let k = 0; k < raw.length; k += 3)
-      pts.push(V.TransformCoordinates(new V(raw[k], raw[k + 1], raw[k + 2]), wm));
+            for (let k = 0; k < raw.length; k += 3) pts.push(V.TransformCoordinates(new V(raw[k], raw[k + 1], raw[k + 2]), wm));
 
-    const s = c.node.scaling, rad = s.x / 2, half = Math.max(s.y / 2 - rad, 0);
+            const s = c.node.scaling,
+                rad = s.x / 2,
+                half = Math.max(s.y / 2 - rad, 0);
     // distance from every vertex to the capsule's own segment, less the radius:
     // zero everywhere is the definition of the surface
     let worst = 0;
@@ -1873,22 +2083,21 @@ const capsProbe = await page.evaluate(async (sizes) => {
       const y = Math.max(-half, Math.min(half, q.y));
       worst = Math.max(worst, Math.abs(Math.hypot(q.x, q.y - y, q.z) - rad));
     }
-    const ys = pts.map((q) => q.y), xs = pts.map((q) => q.x), zs = pts.map((q) => q.z);
-    const ring = (sign) => pts.filter((q) => Math.abs(q.y - sign * half) < 1e-4)
-      .map((q) => Math.hypot(q.x, q.z));
+            const ys = pts.map((q) => q.y),
+                xs = pts.map((q) => q.x),
+                zs = pts.map((q) => q.z);
+            const ring = (sign) => pts.filter((q) => Math.abs(q.y - sign * half) < 1e-4).map((q) => Math.hypot(q.x, q.z));
     const rings = [...ring(1), ...ring(-1)];
     const wsm = wm.m;
     out.cases.push({
       asked: [d, h],
       scale: s.asArray().map((v) => +v.toFixed(4)),
-      size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys),
-        Math.max(...zs) - Math.min(...zs)].map((v) => +v.toFixed(4)),
+                size: [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), Math.max(...zs) - Math.min(...zs)].map((v) => +v.toFixed(4)),
       offSurface: +worst.toFixed(5),
       tube: rings.length ? [Math.min(...rings), Math.max(...rings)].map((v) => +v.toFixed(5)) : null,
       // the mesh counter-scales its parent's Y, so what it ends up wearing is a
       // uniform scale - which is exactly why the caps stay round
-      worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]),
-        Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(4)),
+                worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]), Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(4)),
     });
     co.removeCollider(c.id, true);
   }
@@ -1898,44 +2107,52 @@ const capsProbe = await page.evaluate(async (sizes) => {
   const cCyl = co.addCollider("cylinder", new V(6, 0, 0), { silent: true, scale: [1, 3, 1] });
   const capShapes = mf.buildManifest().collision[ed.state.activeChunk] || [];
   out.rec = Object.fromEntries(capShapes.map((s) => [s.kind, s]));
-  ed.clearAll(); ed.select([]);
+        ed.clearAll();
+        ed.select([]);
   return out;
-}, [[1, 3], [1.6, 2.2], [1, 0.2]]);
+    },
+    [
+        [1, 3],
+        [1.6, 2.2],
+        [1, 0.2],
+    ]
+);
 
 for (const c of capsProbe.cases) {
   const [d, h] = c.asked;
   const wantH = Math.max(h, d);
-  check(`a ${d} x ${h} capsule is ${d} wide and ${wantH} tall, caps included`,
-    Math.abs(c.size[0] - d) < 1e-3 && Math.abs(c.size[2] - d) < 1e-3
-      && Math.abs(c.size[1] - wantH) < 1e-3, `[${c.size}] from scale [${c.scale}]`);
-  check(`every vertex of the ${d} x ${h} capsule lies on a true capsule`,
-    c.offSurface < 3e-3, `worst off-surface = ${c.offSurface} m`);
-  check(`the ${d} x ${h} capsule's mesh ends up uniformly scaled, so its caps are round`,
-    new Set(c.worldScale).size === 1, `[${c.worldScale}]`);
+    check(
+        `a ${d} x ${h} capsule is ${d} wide and ${wantH} tall, caps included`,
+        Math.abs(c.size[0] - d) < 1e-3 && Math.abs(c.size[2] - d) < 1e-3 && Math.abs(c.size[1] - wantH) < 1e-3,
+        `[${c.size}] from scale [${c.scale}]`
+    );
+    check(`every vertex of the ${d} x ${h} capsule lies on a true capsule`, c.offSurface < 3e-3, `worst off-surface = ${c.offSurface} m`);
+    check(`the ${d} x ${h} capsule's mesh ends up uniformly scaled, so its caps are round`, new Set(c.worldScale).size === 1, `[${c.worldScale}]`);
   if (h > d) {
-    check(`the ${d} x ${h} capsule has a straight tube of exactly its radius`,
+        check(
+            `the ${d} x ${h} capsule has a straight tube of exactly its radius`,
       c.tube && Math.abs(c.tube[0] - d / 2) < 1e-3 && Math.abs(c.tube[1] - d / 2) < 1e-3,
-      `tube radius ${c.tube} vs ${d / 2}`);
+            `tube radius ${c.tube} vs ${d / 2}`
+        );
   }
 }
 // A capsule shorter than it is wide has no tube left, so it *is* a sphere -
 // which is also the only thing Havok can make of it, its capsule being a
 // segment plus a radius.
-check("a capsule cannot be squashed below a sphere",
-  capsProbe.cases[2].scale.join() === "1,1,1", `[${capsProbe.cases[2].scale}]`);
-check("and it arms as a pill rather than as a sphere",
-  capsProbe.armed[1] > capsProbe.armed[0], `[${capsProbe.armed}]`);
+check("a capsule cannot be squashed below a sphere", capsProbe.cases[2].scale.join() === "1,1,1", `[${capsProbe.cases[2].scale}]`);
+check("and it arms as a pill rather than as a sphere", capsProbe.armed[1] > capsProbe.armed[0], `[${capsProbe.armed}]`);
 
-const capSeg = (s) => Math.hypot(s.pointB[0] - s.pointA[0], s.pointB[1] - s.pointA[1],
-  s.pointB[2] - s.pointA[2]);
-check("Havok's capsule segment is a diameter shorter than the drawn height",
-  Math.abs(capSeg(capsProbe.rec.capsule) + 2 * capsProbe.rec.capsule.radius
-    - capsProbe.rec.capsule.height) < 1e-6,
-  `segment ${capSeg(capsProbe.rec.capsule).toFixed(3)} + 2r ${2 * capsProbe.rec.capsule.radius}`
-  + ` vs height ${capsProbe.rec.capsule.height}`);
-check("but a cylinder's segment is still its whole height",
+const capSeg = (s) => Math.hypot(s.pointB[0] - s.pointA[0], s.pointB[1] - s.pointA[1], s.pointB[2] - s.pointA[2]);
+check(
+    "Havok's capsule segment is a diameter shorter than the drawn height",
+    Math.abs(capSeg(capsProbe.rec.capsule) + 2 * capsProbe.rec.capsule.radius - capsProbe.rec.capsule.height) < 1e-6,
+    `segment ${capSeg(capsProbe.rec.capsule).toFixed(3)} + 2r ${2 * capsProbe.rec.capsule.radius}` + ` vs height ${capsProbe.rec.capsule.height}`
+);
+check(
+    "but a cylinder's segment is still its whole height",
   Math.abs(capSeg(capsProbe.rec.cylinder) - capsProbe.rec.cylinder.height) < 1e-6,
-  `segment ${capSeg(capsProbe.rec.cylinder).toFixed(3)} vs height ${capsProbe.rec.cylinder.height}`);
+    `segment ${capSeg(capsProbe.rec.cylinder).toFixed(3)} vs height ${capsProbe.rec.cylinder.height}`
+);
 
 // ---- 1d-sexvicies. a collider is placed and moved like anything else -------
 // The Collision pane arms the ghost the same way the palette does: nothing
@@ -1945,12 +2162,13 @@ check("but a cylinder's segment is still its whole height",
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 });
 await page.waitForTimeout(200);
 
-const collCanvas = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+const collCanvas = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
 const collMid = {
   x: Math.round(collCanvas.x + collCanvas.width / 2),
   y: Math.round(collCanvas.y + collCanvas.height / 2),
@@ -1963,14 +2181,17 @@ const armedColl = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   return {
-    ghost: i.ghostActive(), kind: i.ghostCollider(), made: ed.state.colliders.size,
-    lit: document.querySelector('#collider-buttons button[data-kind="box"]')
-      .classList.contains("active"),
+        ghost: i.ghostActive(),
+        kind: i.ghostCollider(),
+        made: ed.state.colliders.size,
+        lit: document.querySelector('#collider-buttons button[data-kind="box"]').classList.contains("active"),
   };
 });
-check("the Collision pane arms a ghost, it does not drop a shape",
+check(
+    "the Collision pane arms a ghost, it does not drop a shape",
   armedColl.ghost && armedColl.kind === "box" && armedColl.made === 0 && armedColl.lit,
-  `ghost=${armedColl.ghost} kind=${armedColl.kind} made=${armedColl.made}`);
+    `ghost=${armedColl.ghost} kind=${armedColl.kind} made=${armedColl.made}`
+);
 
 await page.mouse.click(collMid.x, collMid.y);
 await page.waitForTimeout(300);
@@ -1979,14 +2200,18 @@ const droppedColl = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const c = [...ed.state.colliders.values()][0];
   return {
-    n: ed.state.colliders.size, id: c?.id, kind: c?.kind,
+        n: ed.state.colliders.size,
+        id: c?.id,
+        kind: c?.kind,
     pos: c ? c.node.position.asArray().map((v) => +v.toFixed(2)) : null,
     armed: i.ghostActive(),
   };
 });
-check("clicking lands one collider and stays armed for the next",
+check(
+    "clicking lands one collider and stays armed for the next",
   droppedColl.n === 1 && droppedColl.kind === "box" && droppedColl.armed,
-  `${droppedColl.n} placed, still armed=${droppedColl.armed}`);
+    `${droppedColl.n} placed, still armed=${droppedColl.armed}`
+);
 
 await page.keyboard.press("Escape");
 await page.evaluate(async () => (await import("/js/editor.js")).select([]));
@@ -1997,9 +2222,12 @@ const collAt = await page.evaluate(async (id) => {
   const c = ed.state.colliders.get(id);
   ed.state.scene.render();
   const e = ed.state.engine;
-  const p = BABYLON.Vector3.Project(c.node.getAbsolutePosition(),
-    BABYLON.Matrix.Identity(), ed.state.scene.getTransformMatrix(),
-    ed.state.camera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight()));
+    const p = BABYLON.Vector3.Project(
+        c.node.getAbsolutePosition(),
+        BABYLON.Matrix.Identity(),
+        ed.state.scene.getTransformMatrix(),
+        ed.state.camera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight())
+    );
   const r = e.getRenderingCanvas().getBoundingClientRect();
   return { x: Math.round(r.x + p.x), y: Math.round(r.y + p.y) };
 }, droppedColl.id);
@@ -2008,11 +2236,8 @@ await page.mouse.move(collAt.x, collAt.y);
 await page.waitForTimeout(250);
 await page.mouse.click(collAt.x, collAt.y);
 await page.waitForTimeout(300);
-const pickedColl = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("a collider can still be picked after it is deselected",
-  pickedColl.length === 1 && pickedColl[0] === droppedColl.id,
-  `selection=${JSON.stringify(pickedColl)}`);
+const pickedColl = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("a collider can still be picked after it is deselected", pickedColl.length === 1 && pickedColl[0] === droppedColl.id, `selection=${JSON.stringify(pickedColl)}`);
 
 await page.mouse.move(collMid.x + 150, collMid.y - 60);
 await page.waitForTimeout(150);
@@ -2030,21 +2255,22 @@ const landedColl = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const c = ed.state.colliders.get(id);
   return {
-    n: ed.state.colliders.size, enabled: !!c?.node.isEnabled(),
+        n: ed.state.colliders.size,
+        enabled: !!c?.node.isEnabled(),
     pos: c ? c.node.position.asArray().map((v) => +v.toFixed(2)) : null,
   };
 }, droppedColl.id);
-check("M carries a collider and drops the same one somewhere else",
-  carriedColl.mode === "move" && landedColl.n === 1 && landedColl.enabled
-    && landedColl.pos.join() !== droppedColl.pos.join(),
-  `mode=${carriedColl.mode}, ${droppedColl.pos} -> ${landedColl.pos}`);
+check(
+    "M carries a collider and drops the same one somewhere else",
+    carriedColl.mode === "move" && landedColl.n === 1 && landedColl.enabled && landedColl.pos.join() !== droppedColl.pos.join(),
+    `mode=${carriedColl.mode}, ${droppedColl.pos} -> ${landedColl.pos}`
+);
 
 // Ctrl+D on a collider arms a copy of the same primitive rather than falling
 // back to duplicateSelected(), which is the marker path.
 await page.mouse.move(collCanvas.x + 40, collCanvas.y + 40);  // hover beats selection
 await page.waitForTimeout(200);
-await page.evaluate(async (id) => (await import("/js/editor.js")).select([id]),
-  droppedColl.id);
+await page.evaluate(async (id) => (await import("/js/editor.js")).select([id]), droppedColl.id);
 await page.keyboard.press("Control+d");
 await page.waitForTimeout(400);
 const dupColl = await page.evaluate(async () => {
@@ -2052,14 +2278,15 @@ const dupColl = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { kind: i.ghostCollider(), n: ed.state.colliders.size };
 });
-check("Ctrl+D on a collider arms a copy of the same primitive",
-  dupColl.kind === "box" && dupColl.n === 1, `kind=${dupColl.kind}, ${dupColl.n} existing`);
+check("Ctrl+D on a collider arms a copy of the same primitive", dupColl.kind === "box" && dupColl.n === 1, `kind=${dupColl.kind}, ${dupColl.n} existing`);
 
 await page.keyboard.press("Escape");
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 });
 await page.waitForTimeout(200);
 
@@ -2070,7 +2297,11 @@ await page.waitForTimeout(200);
 // middle of a cell.
 await page.evaluate(async () => (await import("/js/editor.js")).setGridElevation(0));
 const cornerLands = [];
-for (const [dx, dy] of [[0, 0], [37, -23], [-91, 61]]) {
+for (const [dx, dy] of [
+    [0, 0],
+    [37, -23],
+    [-91, 61],
+]) {
   await page.click('#collider-buttons button[data-kind="box"]');
   await page.mouse.move(collMid.x + dx, collMid.y + dy);
   await page.waitForTimeout(250);
@@ -2078,21 +2309,27 @@ for (const [dx, dy] of [[0, 0], [37, -23], [-91, 61]]) {
   await page.waitForTimeout(250);
   await page.keyboard.press("Escape");
   await page.waitForTimeout(120);
-  cornerLands.push(await page.evaluate(async () => {
+    cornerLands.push(
+        await page.evaluate(async () => {
     const ed = await import("/js/editor.js");
     const list = [...ed.state.colliders.values()];
     const c = list[list.length - 1];
-    const p = c.node.position, s = c.node.scaling;
+            const p = c.node.position,
+                s = c.node.scaling;
     return { id: c.id, min: [p.x - s.x / 2, p.y - s.y / 2, p.z - s.z / 2].map((v) => +v.toFixed(4)) };
-  }));
+        })
+    );
 }
-check("a fresh primitive rests on the build plane",
+check(
+    "a fresh primitive rests on the build plane",
   cornerLands.every((l) => Math.abs(l.min[1]) < 1e-6),
-  `base heights ${cornerLands.map((l) => l.min[1]).join(", ")}`);
-check("its corner lands on a grid intersection",
-  cornerLands.every((l) => Math.abs(l.min[0] - Math.round(l.min[0])) < 1e-6
-    && Math.abs(l.min[2] - Math.round(l.min[2])) < 1e-6),
-  cornerLands.map((l) => `[${l.min}]`).join(" "));
+    `base heights ${cornerLands.map((l) => l.min[1]).join(", ")}`
+);
+check(
+    "its corner lands on a grid intersection",
+    cornerLands.every((l) => Math.abs(l.min[0] - Math.round(l.min[0])) < 1e-6 && Math.abs(l.min[2] - Math.round(l.min[2])) < 1e-6),
+    cornerLands.map((l) => `[${l.min}]`).join(" ")
+);
 
 // The build plane means a primitive's *base*, not its origin, or referencing
 // the centre would raise it by half its height on every single grab.
@@ -2110,13 +2347,14 @@ const drifted = await page.evaluate(async (id) => {
   const c = (await import("/js/editor.js")).state.colliders.get(id);
   return +(c.node.position.y - c.node.scaling.y / 2).toFixed(4);
 }, driftId);
-check("carrying one does not raise it off the plane", Math.abs(drifted) < 1e-6,
-  `base ${drifted} m after three grab/drop rounds`);
+check("carrying one does not raise it off the plane", Math.abs(drifted) < 1e-6, `base ${drifted} m after three grab/drop rounds`);
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 });
 await page.waitForTimeout(200);
 
@@ -2130,7 +2368,10 @@ const shell = await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    co.exitCollisionMode();
+    ed.clearAll();
+    ed.select([]);
   ed.loadModuleCollision({}, []);
 
   const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
@@ -2163,37 +2404,46 @@ const shell = await page.evaluate(async () => {
   const layout = ed.serialize();
   await ed.deserialize(JSON.parse(JSON.stringify(layout)));
   const roundTrip = ed.state.config.shellThickness;
-  const older = JSON.parse(JSON.stringify(layout)); delete older.config;
+    const older = JSON.parse(JSON.stringify(layout));
+    delete older.config;
   await ed.deserialize(older);
   const legacy = ed.state.config.shellThickness;
 
   ed.setConfig("shellThickness", 0.008);
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({}, []);
   return {
-    flatThin, wallThin, flatThick, undone, roundTrip, legacy,
+        flatThin,
+        wallThin,
+        flatThick,
+        undone,
+        roundTrip,
+        legacy,
     flatDepth: +(flatBounds.max.y - flatBounds.min.y).toFixed(6),
     wallDepth: +(wallBounds.max.x - wallBounds.min.x).toFixed(6),
     savedConfig: layout.config,
   };
 });
-check("the kit really does model a floor as a bare plane",
-  shell.flatDepth === 0, `local depth ${shell.flatDepth} m`);
-check("a flat module gets the shell thickness, not a metre",
-  Math.abs(shell.flatThin[1] - 0.008) < 1e-6, `[${shell.flatThin}]`);
-check("the shell is a minimum, so a 7.5 mm wall is brought up to it",
+check("the kit really does model a floor as a bare plane", shell.flatDepth === 0, `local depth ${shell.flatDepth} m`);
+check("a flat module gets the shell thickness, not a metre", Math.abs(shell.flatThin[1] - 0.008) < 1e-6, `[${shell.flatThin}]`);
+check(
+    "the shell is a minimum, so a 7.5 mm wall is brought up to it",
   shell.wallDepth < 0.008 && Math.abs(shell.wallThin[0] - 0.008) < 1e-6,
-  `a real ${shell.wallDepth} m fitted as [${shell.wallThin}]`);
-check("but a module thicker than the shell keeps its own size",
+    `a real ${shell.wallDepth} m fitted as [${shell.wallThin}]`
+);
+check(
+    "but a module thicker than the shell keeps its own size",
   Math.abs(shell.wallThin[2] - 4) < 1e-3 && Math.abs(shell.wallThin[1] - 1.9981) < 1e-3,
-  `wall fitted [${shell.wallThin}]`);
-check("the setting drives the fit",
-  Math.abs(shell.flatThick[1] - 0.05) < 1e-6, `at 0.05 m: [${shell.flatThick}]`);
-check("changing a setting is undoable", Math.abs(shell.undone - 0.008) < 1e-9,
-  `undo -> ${shell.undone}`);
-check("a setting round-trips through the layout",
+    `wall fitted [${shell.wallThin}]`
+);
+check("the setting drives the fit", Math.abs(shell.flatThick[1] - 0.05) < 1e-6, `at 0.05 m: [${shell.flatThick}]`);
+check("changing a setting is undoable", Math.abs(shell.undone - 0.008) < 1e-9, `undo -> ${shell.undone}`);
+check(
+    "a setting round-trips through the layout",
   Math.abs(shell.roundTrip - 0.033) < 1e-9 && Math.abs(shell.legacy - 0.008) < 1e-9,
-  `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},`
-  + ` a layout without one ${shell.legacy}`);
+    `saved ${JSON.stringify(shell.savedConfig)}, reloaded ${shell.roundTrip},` + ` a layout without one ${shell.legacy}`
+);
 
 // ---- 1d-sesquitricies. auto-save ------------------------------------------
 // A recovery copy written *beside* the ship, never over it, and only when
@@ -2207,7 +2457,10 @@ const auto = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   const i = await import("/js/interact.js");
   const co = await import("/js/colliders.js");
-  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    co.exitCollisionMode();
+    ed.clearAll();
+    ed.select([]);
   ed.setConfig("autoSaveMinutes", 2);
 
   const dirtyNow = () => {
@@ -2230,8 +2483,7 @@ const auto = await page.evaluate(async () => {
 
   // and the manifest never moved
   const manifestNow = await (await fetch("/api/layout")).json();
-  const manifestTouched = JSON.stringify(manifestNow.instances || [])
-    !== JSON.stringify(manifestWas.instances || []);
+    const manifestTouched = JSON.stringify(manifestNow.instances || []) !== JSON.stringify(manifestWas.instances || []);
 
   ed.setConfig("autoSaveMinutes", 0);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
@@ -2239,27 +2491,31 @@ const auto = await page.evaluate(async () => {
 
   const defaults = ed.CONFIG_DEFAULTS.autoSaveMinutes;
   ed.setConfig("autoSaveMinutes", 2);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return {
-    defaults, quiet, afterChange, again, whenOff, stillWarns, manifestTouched,
-    marked: !!file.autoSaved, instances: (file.instances || []).length,
+        defaults,
+        quiet,
+        afterChange,
+        again,
+        whenOff,
+        stillWarns,
+        manifestTouched,
+        marked: !!file.autoSaved,
+        instances: (file.instances || []).length,
   };
 });
 check("auto-save defaults to two minutes", auto.defaults === 2, `${auto.defaults}`);
-check("a tick with nothing changed writes nothing",
-  auto.quiet.wrote === false && auto.quiet.armed === true, JSON.stringify(auto.quiet));
-check("a tick after a change writes, and marks the file as an auto-save",
+check("a tick with nothing changed writes nothing", auto.quiet.wrote === false && auto.quiet.armed === true, JSON.stringify(auto.quiet));
+check(
+    "a tick after a change writes, and marks the file as an auto-save",
   auto.afterChange.wrote === true && auto.marked && auto.instances >= 1,
-  `${JSON.stringify(auto.afterChange)}, ${auto.instances} instances`);
-check("a second tick with nothing further changed writes nothing",
-  auto.again.wrote === false, JSON.stringify(auto.again));
-check("an auto-save never clears the unsaved-work warning",
-  auto.stillWarns === true, `${auto.stillWarns}`);
-check("and never writes over the ship you last saved",
-  auto.manifestTouched === false, `manifest changed: ${auto.manifestTouched}`);
-check("zero minutes turns it off, timer and tick alike",
-  auto.whenOff.armed === false && auto.whenOff.wrote === false,
-  JSON.stringify(auto.whenOff));
+    `${JSON.stringify(auto.afterChange)}, ${auto.instances} instances`
+);
+check("a second tick with nothing further changed writes nothing", auto.again.wrote === false, JSON.stringify(auto.again));
+check("an auto-save never clears the unsaved-work warning", auto.stillWarns === true, `${auto.stillWarns}`);
+check("and never writes over the ship you last saved", auto.manifestTouched === false, `manifest changed: ${auto.manifestTouched}`);
+check("zero minutes turns it off, timer and tick alike", auto.whenOff.armed === false && auto.whenOff.wrote === false, JSON.stringify(auto.whenOff));
 // ---- 1d-undetricies. the collision staging area ---------------------------
 // A mode, not a property of the selection. It opens empty, you stage whatever
 // modules you want to fit shapes to, and which element a shape belongs to is
@@ -2276,7 +2532,10 @@ const areaOpen = await page.evaluate(async (a) => {
   const kit = await import("/js/kit.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); co.exitCollisionMode(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    co.exitCollisionMode();
+    ed.clearAll();
+    ed.select([]);
   ed.loadModuleCollision({}, []);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   await ed.placeAt(a, new V(8, 0, 0), { silent: true });
@@ -2297,9 +2556,10 @@ const areaOpen = await page.evaluate(async (a) => {
         captureAllCursor: getComputedStyle(document.getElementById("btn-capture-all")).cursor,
     };
 }, PROP_A);
-check("the collision area opens empty, with the ship off screen",
-  areaOpen.mode && areaOpen.staged === 0 && areaOpen.shipShown === 0
-    && areaOpen.roomShapesShown === 0, JSON.stringify(areaOpen)
+check(
+    "the collision area opens empty, with the ship off screen",
+    areaOpen.mode && areaOpen.staged === 0 && areaOpen.shipShown === 0 && areaOpen.roomShapesShown === 0,
+    JSON.stringify(areaOpen)
 );
 check(
     "and Capture all is inert in here, and looks it, since a capture would photograph nothing",
@@ -2307,7 +2567,8 @@ check(
     `disabled ${areaOpen.captureAll}, ${areaOpen.captureAllPaint} against a live ${areaOpen.livePaint},` + ` cursor ${areaOpen.captureAllCursor}`
 );
 
-const stagedTwo = await page.evaluate(async ([a, b]) => {
+const stagedTwo = await page.evaluate(
+    async ([a, b]) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
@@ -2319,21 +2580,21 @@ const stagedTwo = await page.evaluate(async ([a, b]) => {
   let gap = Infinity;
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
-      gap = Math.min(gap, Math.max(boxes[i].min.x, boxes[j].min.x)
-        - Math.min(boxes[i].max.x, boxes[j].max.x));
+                gap = Math.min(gap, Math.max(boxes[i].min.x, boxes[j].min.x) - Math.min(boxes[i].max.x, boxes[j].max.x));
     }
   }
   return {
-    n: list.length, addedAgain: again.added, same: again.entry.id === first.entry.id,
+            n: list.length,
+            addedAgain: again.added,
+            same: again.entry.id === first.entry.id,
     gap: Math.round(gap * 100) / 100,
     chunkHidden: !ed.state.chunks.includes(ed.STAGE_CHUNK),
   };
-}, [PROP_A, PROP_B]);
-check("one instance per module, and re-staging returns the one already there",
-  stagedTwo.n === 2 && stagedTwo.addedAgain === false && stagedTwo.same,
-  `${stagedTwo.n} staged`);
-check("staged elements are spaced beyond twice the association margin",
-  stagedTwo.gap > 2 * 0.5, `${stagedTwo.gap} m clear, margin is 0.5 m`);
+    },
+    [PROP_A, PROP_B]
+);
+check("one instance per module, and re-staging returns the one already there", stagedTwo.n === 2 && stagedTwo.addedAgain === false && stagedTwo.same, `${stagedTwo.n} staged`);
+check("staged elements are spaced beyond twice the association margin", stagedTwo.gap > 2 * 0.5, `${stagedTwo.gap} m clear, margin is 0.5 m`);
 check("the stage chunk never joins the ship's chunk list", stagedTwo.chunkHidden);
 
 // Fit a box acts on the selection and says plainly when it cannot
@@ -2360,19 +2621,24 @@ const fitRules = await page.evaluate(async () => {
   const bounds = await kit.moduleBounds(list[0].module);
   out.ok = r.ok;
   out.fitted = r.collider.node.scaling.asArray().map((v) => +v.toFixed(3));
-  out.raw = bounds.max.subtract(bounds.min).asArray().map((v) => +v.toFixed(3));
+    out.raw = bounds.max
+        .subtract(bounds.min)
+        .asArray()
+        .map((v) => +v.toFixed(3));
   ed.setConfig("shellThickness", 0.008);
   return out;
 });
-check("fitting with nothing, or several, selected explains itself",
+check(
+    "fitting with nothing, or several, selected explains itself",
   /select the element/.test(fitRules.none) && /single element/.test(fitRules.many),
-  `${fitRules.none} / ${fitRules.many}`);
-check("fitting onto a shape rather than an element explains itself",
-  /collision shape/.test(fitRules.onShape), fitRules.onShape);
-check("the collision shell is a minimum thickness on every axis",
-  fitRules.ok && fitRules.fitted.every((v) => v >= 0.5 - 1e-6)
-    && fitRules.fitted.some((v, i) => Math.abs(v - fitRules.raw[i]) > 1e-6),
-  `raw ${JSON.stringify(fitRules.raw)} -> ${JSON.stringify(fitRules.fitted)} at shell 0.5`);
+    `${fitRules.none} / ${fitRules.many}`
+);
+check("fitting onto a shape rather than an element explains itself", /collision shape/.test(fitRules.onShape), fitRules.onShape);
+check(
+    "the collision shell is a minimum thickness on every axis",
+    fitRules.ok && fitRules.fitted.every((v) => v >= 0.5 - 1e-6) && fitRules.fitted.some((v, i) => Math.abs(v - fitRules.raw[i]) > 1e-6),
+    `raw ${JSON.stringify(fitRules.raw)} -> ${JSON.stringify(fitRules.fitted)} at shell 0.5`
+);
 
 // Fit a hull reads the element's own triangles rather than its bounding box,
 // and lays out as many boxes as the shape asks for. It is measured through the
@@ -2410,17 +2676,23 @@ const hullFit = await page.evaluate(async () => {
   // compose the records onto the element, the way the runtime has to
   target.node.computeWorldMatrix(true);
   const parent = target.node.getWorldMatrix();
-  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const min = [Infinity, Infinity, Infinity],
+        max = [-Infinity, -Infinity, -Infinity];
   for (const s of shapes) {
     const w = BABYLON.Matrix.Compose(
       new V(s.scale[0], s.scale[1], s.scale[2]),
       BABYLON.Quaternion.FromEulerAngles(...s.rotation.map((d) => (d * Math.PI) / 180)),
-      new V(s.position[0], s.position[1], s.position[2])).multiply(parent);
+            new V(s.position[0], s.position[1], s.position[2])
+        ).multiply(parent);
     for (const sx of [-0.5, 0.5]) {
       for (const sy of [-0.5, 0.5]) {
         for (const sz of [-0.5, 0.5]) {
           const p = V.TransformCoordinates(new V(sx, sy, sz), w);
-          for (const [k, v] of [[0, p.x], [1, p.y], [2, p.z]]) {
+                    for (const [k, v] of [
+                        [0, p.x],
+                        [1, p.y],
+                        [2, p.z],
+                    ]) {
             if (v < min[k]) min[k] = v;
             if (v > max[k]) max[k] = v;
           }
@@ -2438,30 +2710,30 @@ const hullFit = await page.evaluate(async () => {
   out.before = before;
   return out;
 });
-check("fitting a hull with nothing, or several, selected explains itself",
+check(
+    "fitting a hull with nothing, or several, selected explains itself",
   /select the element/.test(hullFit.none) && /single element/.test(hullFit.many),
-  `${hullFit.none} / ${hullFit.many}`);
-check("fitting a hull onto a shape rather than an element explains itself",
-  /collision shape/.test(hullFit.onShape), hullFit.onShape);
-check("a fitted hull is recorded exactly as it was made",
-  hullFit.ok && hullFit.recorded === hullFit.made && hullFit.made > 0
-    && hullFit.kinds.length === 1 && hullFit.kinds[0] === "box",
-  `${hullFit.made} made, ${hullFit.recorded} recorded, kinds ${hullFit.kinds}`);
-check("a fitted hull covers the geometry it was fitted to",
-  hullFit.coverage >= 0.97, `${(100 * hullFit.coverage).toFixed(1)}% of ${hullFit.module}`);
-check("a fitted hull spans its element rather than landing elsewhere",
-  [0, 1, 2].every((k) => hullFit.hull.min[k] <= hullFit.mesh.min[k] + 0.15
-    && hullFit.hull.max[k] >= hullFit.mesh.max[k] - 0.15),
-  `hull ${hullFit.hull.min.map((v) => v.toFixed(2))}..${hullFit.hull.max.map((v) => v.toFixed(2))}`
-  + ` mesh ${hullFit.mesh.min.map((v) => v.toFixed(2))}..${hullFit.mesh.max.map((v) => v.toFixed(2))}`);
-check("a confident hull is a tight one",
-  !hullFit.confident || [0, 1, 2].every((k) =>
-    hullFit.mesh.min[k] - hullFit.hull.min[k] < 0.35
-    && hullFit.hull.max[k] - hullFit.mesh.max[k] < 0.35),
-  `confident ${hullFit.confident}, by ${hullFit.how}`);
-check("undoing a fitted hull puts the old one back",
-  hullFit.afterUndo === hullFit.before, `${hullFit.recorded} -> ${hullFit.afterUndo},`
-  + ` wanted ${hullFit.before}`);
+    `${hullFit.none} / ${hullFit.many}`
+);
+check("fitting a hull onto a shape rather than an element explains itself", /collision shape/.test(hullFit.onShape), hullFit.onShape);
+check(
+    "a fitted hull is recorded exactly as it was made",
+    hullFit.ok && hullFit.recorded === hullFit.made && hullFit.made > 0 && hullFit.kinds.length === 1 && hullFit.kinds[0] === "box",
+    `${hullFit.made} made, ${hullFit.recorded} recorded, kinds ${hullFit.kinds}`
+);
+check("a fitted hull covers the geometry it was fitted to", hullFit.coverage >= 0.97, `${(100 * hullFit.coverage).toFixed(1)}% of ${hullFit.module}`);
+check(
+    "a fitted hull spans its element rather than landing elsewhere",
+    [0, 1, 2].every((k) => hullFit.hull.min[k] <= hullFit.mesh.min[k] + 0.15 && hullFit.hull.max[k] >= hullFit.mesh.max[k] - 0.15),
+    `hull ${hullFit.hull.min.map((v) => v.toFixed(2))}..${hullFit.hull.max.map((v) => v.toFixed(2))}` +
+        ` mesh ${hullFit.mesh.min.map((v) => v.toFixed(2))}..${hullFit.mesh.max.map((v) => v.toFixed(2))}`
+);
+check(
+    "a confident hull is a tight one",
+    !hullFit.confident || [0, 1, 2].every((k) => hullFit.mesh.min[k] - hullFit.hull.min[k] < 0.35 && hullFit.hull.max[k] - hullFit.mesh.max[k] < 0.35),
+    `confident ${hullFit.confident}, by ${hullFit.how}`
+);
+check("undoing a fitted hull puts the old one back", hullFit.afterUndo === hullFit.before, `${hullFit.recorded} -> ${hullFit.afterUndo},` + ` wanted ${hullFit.before}`);
 
 // The two hull settings. The tolerance is the single dial for how finely a
 // shape is approximated; the offset decides which side of the art the
@@ -2479,7 +2751,10 @@ const hullDials = await page.evaluate(async () => {
     for (const [k, v] of Object.entries(cfg)) ed.setConfig(k, v);
     const r = await co.fitHullToSelection();
     const shapes = ed.state.moduleCollision.get(target.module) || [];
-    let vol = 0, escape = -Infinity, shift = [0, 0, 0], slack = [0, 0, 0];
+        let vol = 0,
+            escape = -Infinity,
+            shift = [0, 0, 0],
+            slack = [0, 0, 0];
     const pts = [];
     for (const m of target.node.getChildMeshes()) {
       const pos = m.getVerticesData && m.getVerticesData("position");
@@ -2494,16 +2769,15 @@ const hullDials = await page.evaluate(async () => {
       vol += Math.abs(s.scale[0] * s.scale[1] * s.scale[2]);
       if (shapes.length !== 1) continue;
       const m = new BABYLON.Matrix();
-      BABYLON.Matrix.FromQuaternionToRef(BABYLON.Quaternion.FromEulerAngles(
-        ...s.rotation.map((d) => (d * Math.PI) / 180)), m);
+            BABYLON.Matrix.FromQuaternionToRef(BABYLON.Quaternion.FromEulerAngles(...s.rotation.map((d) => (d * Math.PI) / 180)), m);
       const ax = [0, 1, 2].map((k) => [m.m[k * 4], m.m[k * 4 + 1], m.m[k * 4 + 2]]);
       const half = [0, 1, 2].map((k) => Math.abs(s.scale[k]) / 2);
       // in the hull's own frame: where the art sits, and whether it fits
-      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+            const lo = [Infinity, Infinity, Infinity],
+                hi = [-Infinity, -Infinity, -Infinity];
       for (const p of pts) {
         for (let k = 0; k < 3; k++) {
-          const d = (p.x - s.position[0]) * ax[k][0] + (p.y - s.position[1]) * ax[k][1]
-            + (p.z - s.position[2]) * ax[k][2];
+                    const d = (p.x - s.position[0]) * ax[k][0] + (p.y - s.position[1]) * ax[k][1] + (p.z - s.position[2]) * ax[k][2];
           if (d < lo[k]) lo[k] = d;
           if (d > hi[k]) hi[k] = d;
           escape = Math.max(escape, Math.abs(d) - half[k]);
@@ -2514,8 +2788,7 @@ const hullDials = await page.evaluate(async () => {
       shift = [0, 1, 2].map((k) => +(-(lo[k] + hi[k]) / 2).toFixed(4));
       slack = [0, 1, 2].map((k) => +(2 * half[k] - (hi[k] - lo[k])).toFixed(3));
     }
-    return { n: shapes.length, ok: r.ok, vol: +vol.toFixed(3),
-      escape: +escape.toFixed(4), shift, slack };
+        return { n: shapes.length, ok: r.ok, vol: +vol.toFixed(3), escape: +escape.toFixed(4), shift, slack };
   };
 
   const out = { module: target.module };
@@ -2532,61 +2805,71 @@ const hullDials = await page.evaluate(async () => {
   for (const k of ["hullTolerance", "hullThickness", "hullOffset"]) ed.resetConfig(k);
   return out;
 });
-check("a tighter hull tolerance buys a closer approximation",
+check(
+    "a tighter hull tolerance buys a closer approximation",
   hullDials.fine.n > hullDials.coarse.n || hullDials.fine.vol < hullDials.coarse.vol,
-  `${hullDials.module}: ${hullDials.coarse.n} box/${hullDials.coarse.vol} m3`
-  + ` -> ${hullDials.fine.n} box/${hullDials.fine.vol} m3`);
+    `${hullDials.module}: ${hullDials.coarse.n} box/${hullDials.coarse.vol} m3` + ` -> ${hullDials.fine.n} box/${hullDials.fine.vol} m3`
+);
 const far = (v) => Math.max(...v.map(Math.abs));
-check("centered leaves the hull sitting on the middle of the art",
+check(
+    "centered leaves the hull sitting on the middle of the art",
   hullDials.mid.n !== 1 || far(hullDials.mid.shift) < 0.005,
-  `shift ${JSON.stringify(hullDials.mid.shift)}, slack ${JSON.stringify(hullDials.mid.slack)}`);
-check("an offset moves the hull off the art, by the slack it has to give",
-  hullDials.neg.n !== 1
-    || Math.abs(far(hullDials.neg.shift) - far(hullDials.neg.slack) / 2) < 0.01,
-  `shift ${JSON.stringify(hullDials.neg.shift)}, slack ${JSON.stringify(hullDials.neg.slack)}`);
-check("and the other offset is its mirror image",
-  hullDials.neg.n !== 1 || [0, 1, 2].every((k) =>
-    Math.abs(hullDials.pos.shift[k] + hullDials.neg.shift[k]) < 0.005),
-  `${JSON.stringify(hullDials.pos.shift)} vs ${JSON.stringify(hullDials.neg.shift)}`);
-check("an offset hull still contains its art",
-  hullDials.neg.escape <= 1e-3 && hullDials.pos.escape <= 1e-3
-    && hullDials.mid.escape <= 1e-3,
-  `escape ${hullDials.mid.escape} / ${hullDials.neg.escape} / ${hullDials.pos.escape}`);
-check("asking for the same offset twice does not move it twice",
+    `shift ${JSON.stringify(hullDials.mid.shift)}, slack ${JSON.stringify(hullDials.mid.slack)}`
+);
+check(
+    "an offset moves the hull off the art, by the slack it has to give",
+    hullDials.neg.n !== 1 || Math.abs(far(hullDials.neg.shift) - far(hullDials.neg.slack) / 2) < 0.01,
+    `shift ${JSON.stringify(hullDials.neg.shift)}, slack ${JSON.stringify(hullDials.neg.slack)}`
+);
+check(
+    "and the other offset is its mirror image",
+    hullDials.neg.n !== 1 || [0, 1, 2].every((k) => Math.abs(hullDials.pos.shift[k] + hullDials.neg.shift[k]) < 0.005),
+    `${JSON.stringify(hullDials.pos.shift)} vs ${JSON.stringify(hullDials.neg.shift)}`
+);
+check(
+    "an offset hull still contains its art",
+    hullDials.neg.escape <= 1e-3 && hullDials.pos.escape <= 1e-3 && hullDials.mid.escape <= 1e-3,
+    `escape ${hullDials.mid.escape} / ${hullDials.neg.escape} / ${hullDials.pos.escape}`
+);
+check(
+    "asking for the same offset twice does not move it twice",
   far(hullDials.again.shift.map((v, k) => v - hullDials.neg.shift[k])) < 0.005,
-  `${JSON.stringify(hullDials.neg.shift)} then ${JSON.stringify(hullDials.again.shift)}`);
-check("a setting that is a word rejects a word that is not on the list",
-  hullDials.rejected === false, `setConfig returned ${hullDials.rejected}`);
+    `${JSON.stringify(hullDials.neg.shift)} then ${JSON.stringify(hullDials.again.shift)}`
+);
+check("a setting that is a word rejects a word that is not on the list", hullDials.rejected === false, `setConfig returned ${hullDials.rejected}`);
 
 // association is by position, which is what makes copying a hull work
-const assoc = await page.evaluate(async ([a, b]) => {
+const assoc = await page.evaluate(
+    async ([a, b]) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const list = [...ed.state.placements.values()].filter((p) => p.stage);
-  const ea = list.find((p) => p.module === a), eb = list.find((p) => p.module === b);
+        const ea = list.find((p) => p.module === a),
+            eb = list.find((p) => p.module === b);
   const src = co.stageColliders()[0];
   const delta = eb.node.position.subtract(ea.node.position);
-  co.addCollider(src.kind, src.node.position.add(delta),
-    { stage: true, silent: true, scale: src.node.scaling.asArray() });
+        co.addCollider(src.kind, src.node.position.add(delta), { stage: true, silent: true, scale: src.node.scaling.asArray() });
   const h = co.harvestStage();
   const stray = co.addCollider("box", new BABYLON.Vector3(0, 0, 400), { stage: true, silent: true });
   const orphans = co.orphanCount();
   co.removeCollider(stray.id, true);
   return {
-    h, orphans,
+            h,
+            orphans,
     aLocal: (ed.state.moduleCollision.get(a) || [])[0]?.position,
     bLocal: (ed.state.moduleCollision.get(b) || [])[0]?.position,
-    counts: [(ed.state.moduleCollision.get(a) || []).length,
-      (ed.state.moduleCollision.get(b) || []).length],
+            counts: [(ed.state.moduleCollision.get(a) || []).length, (ed.state.moduleCollision.get(b) || []).length],
   };
-}, [PROP_A, PROP_B]);
-check("a shape is claimed by the element it sits on",
-  assoc.counts.join() === "1,1" && assoc.h.orphans === 0, JSON.stringify(assoc.counts));
-check("stored relative to it, so a copy dropped on another element matches",
+    },
+    [PROP_A, PROP_B]
+);
+check("a shape is claimed by the element it sits on", assoc.counts.join() === "1,1" && assoc.h.orphans === 0, JSON.stringify(assoc.counts));
+check(
+    "stored relative to it, so a copy dropped on another element matches",
   JSON.stringify(assoc.aLocal) === JSON.stringify(assoc.bLocal),
-  `${JSON.stringify(assoc.aLocal)} vs ${JSON.stringify(assoc.bLocal)}`);
-check("a shape belonging to nothing is counted rather than hidden",
-  assoc.orphans === 1, `${assoc.orphans}`);
+    `${JSON.stringify(assoc.aLocal)} vs ${JSON.stringify(assoc.bLocal)}`
+);
+check("a shape belonging to nothing is counted rather than hidden", assoc.orphans === 1, `${assoc.orphans}`);
 
 // taking an element off the area must not lose what was fitted to it
 const persist = await page.evaluate(async (a) => {
@@ -2602,12 +2885,9 @@ const persist = await page.evaluate(async (a) => {
   await co.stageModule(a, kit.instantiate, kit.moduleBounds);
   return { before, kept, leftOnArea, restored: co.stageColliders().length };
 }, PROP_A);
-check("deleting a staged element keeps its shapes on record",
-  persist.before === 1 && persist.kept === 1, `${persist.before} -> ${persist.kept}`);
-check("and takes only its own shapes off the area",
-  persist.leftOnArea === 1, `${persist.leftOnArea} left`);
-check("staging the module again brings them back",
-  persist.restored === 2, `${persist.restored} on the area`);
+check("deleting a staged element keeps its shapes on record", persist.before === 1 && persist.kept === 1, `${persist.before} -> ${persist.kept}`);
+check("and takes only its own shapes off the area", persist.leftOnArea === 1, `${persist.leftOnArea} left`);
+check("staging the module again brings them back", persist.restored === 2, `${persist.restored} on the area`);
 
 // Moving or turning a stand-in is a *view* operation: the hull is authored in
 // the module's own frame, so the shapes come with it and the record does not
@@ -2617,11 +2897,11 @@ const follow = await page.evaluate(async (prop) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
-  const frame = () => new Promise((r) =>
-    ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
+    const frame = () => new Promise((r) => ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
   const el = [...ed.state.placements.values()].find((p) => p.stage && p.module === prop);
   const shapes = co.stageColliders().filter((c) => c.host === el.id);
-  await frame(); await frame();
+    await frame();
+    await frame();
   const was = {
     shape: shapes[0].node.position.asArray().map((v) => +v.toFixed(3)),
     record: JSON.stringify(ed.state.moduleCollision.get(prop)),
@@ -2629,14 +2909,16 @@ const follow = await page.evaluate(async (prop) => {
   };
 
   el.node.position.addInPlace(new V(5, 0, 3));
-  await frame(); await frame();
+    await frame();
+    await frame();
   const moved = {
     shape: shapes[0].node.position.asArray().map((v) => +v.toFixed(3)),
     record: JSON.stringify(ed.state.moduleCollision.get(prop)),
   };
 
   el.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, Math.PI / 2, 0);
-  await frame(); await frame();
+    await frame();
+    await frame();
   const turned = {
     q: shapes[0].node.rotationQuaternion.asArray().map((v) => +v.toFixed(3)),
     record: JSON.stringify(ed.state.moduleCollision.get(prop)),
@@ -2656,20 +2938,23 @@ const follow = await page.evaluate(async (prop) => {
   await frame();
   return { was, moved, turned, deleted };
 }, PROP_A);
-check("a shape knows which staged element it belongs to",
-  follow.was.hosted >= 1, `${follow.was.hosted} hosted`);
-check("moving a staged element carries its shapes with it",
-  follow.moved.shape[0] === +(follow.was.shape[0] + 5).toFixed(3)
-    && follow.moved.shape[2] === +(follow.was.shape[2] + 3).toFixed(3),
-  `${JSON.stringify(follow.was.shape)} -> ${JSON.stringify(follow.moved.shape)}`);
-check("turning it turns them too",
-  Math.abs(Math.abs(follow.turned.q[1]) - 0.707) < 0.01, `q=${JSON.stringify(follow.turned.q)}`);
-check("and neither changes the hull that was authored",
+check("a shape knows which staged element it belongs to", follow.was.hosted >= 1, `${follow.was.hosted} hosted`);
+check(
+    "moving a staged element carries its shapes with it",
+    follow.moved.shape[0] === +(follow.was.shape[0] + 5).toFixed(3) && follow.moved.shape[2] === +(follow.was.shape[2] + 3).toFixed(3),
+    `${JSON.stringify(follow.was.shape)} -> ${JSON.stringify(follow.moved.shape)}`
+);
+check("turning it turns them too", Math.abs(Math.abs(follow.turned.q[1]) - 0.707) < 0.01, `q=${JSON.stringify(follow.turned.q)}`);
+check(
+    "and neither changes the hull that was authored",
   follow.moved.record === follow.was.record && follow.turned.record === follow.was.record,
-  "record held through a move and a turn");
-check("deleting a moved element still takes its shapes off the bench",
+    "record held through a move and a turn"
+);
+check(
+    "deleting a moved element still takes its shapes off the bench",
   follow.deleted.staged === 0 && follow.deleted.left === 0 && follow.deleted.stored >= 1,
-  JSON.stringify(follow.deleted));
+    JSON.stringify(follow.deleted)
+);
 
 // The bench has its own undo history. Its contents are deliberately not in
 // serialize(), so a *ship* snapshot restores as "no bench at all" - which is
@@ -2693,19 +2978,15 @@ const benchUndo = await page.evaluate(async (prop) => {
     mode: ed.state.mode === "collision",
   };
   await ed.redo();
-  return { shipBefore, shapesBefore, fitted, afterUndo,
-    afterRedo: co.stageColliders().length };
+    return { shipBefore, shapesBefore, fitted, afterUndo, afterRedo: co.stageColliders().length };
 }, PROP_A);
-check("Ctrl+Z on the bench undoes the edit and leaves the bench standing",
-  benchUndo.afterUndo.mode && benchUndo.afterUndo.staged === 2
-    && benchUndo.afterUndo.shapes === benchUndo.shapesBefore,
-  JSON.stringify(benchUndo.afterUndo));
-check("and never touches the ship",
-  benchUndo.afterUndo.ship === benchUndo.shipBefore,
-  `${benchUndo.shipBefore} -> ${benchUndo.afterUndo.ship}`);
-check("redo puts the bench edit back",
-  benchUndo.afterRedo === benchUndo.fitted,
-  `${benchUndo.afterRedo} of ${benchUndo.fitted}`);
+check(
+    "Ctrl+Z on the bench undoes the edit and leaves the bench standing",
+    benchUndo.afterUndo.mode && benchUndo.afterUndo.staged === 2 && benchUndo.afterUndo.shapes === benchUndo.shapesBefore,
+    JSON.stringify(benchUndo.afterUndo)
+);
+check("and never touches the ship", benchUndo.afterUndo.ship === benchUndo.shipBefore, `${benchUndo.shipBefore} -> ${benchUndo.afterUndo.ship}`);
+check("redo puts the bench edit back", benchUndo.afterRedo === benchUndo.fitted, `${benchUndo.afterRedo} of ${benchUndo.fitted}`);
 
 // Each side of the switch keeps its own viewpoint.
 const views = await page.evaluate(async () => {
@@ -2742,12 +3023,12 @@ const views = await page.evaluate(async () => {
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   return { bench, ship, backOnBench, backOnShip };
 });
-check("the bench keeps its own viewpoint across a switch, aim and all",
+check(
+    "the bench keeps its own viewpoint across a switch, aim and all",
   JSON.stringify(views.backOnBench) === JSON.stringify(views.bench),
-  `${JSON.stringify(views.bench)} -> ${JSON.stringify(views.backOnBench)}`);
-check("and the ship keeps its own",
-  JSON.stringify(views.backOnShip) === JSON.stringify(views.ship),
-  `${JSON.stringify(views.ship)} -> ${JSON.stringify(views.backOnShip)}`);
+    `${JSON.stringify(views.bench)} -> ${JSON.stringify(views.backOnBench)}`
+);
+check("and the ship keeps its own", JSON.stringify(views.backOnShip) === JSON.stringify(views.ship), `${JSON.stringify(views.ship)} -> ${JSON.stringify(views.backOnShip)}`);
 
 // Ctrl+D on the bench: a shape copies, a module stand-in does not.
 await page.mouse.move(collCanvas.x + 8, collCanvas.y + 8);   // selection, not hover
@@ -2764,18 +3045,20 @@ const dupShape = await page.evaluate(async () => {
   const n = ed.hooks.ghostNode();
   const ms = n ? n.getChildMeshes() : [];
   return {
-    kind: i.ghostCollider(), meshes: ms.length,
+        kind: i.ghostCollider(),
+        meshes: ms.length,
     // green, translucent, and edged - a bare mesh came out in the scene's
     // default grey, because ghostMaterialFor() returns null for no material
-    green: ms.some((m) => (m.material?.emissiveColor?.g ?? 0) > 0.5
-      && (m.material?.emissiveColor?.r ?? 1) < 0.4),
+        green: ms.some((m) => (m.material?.emissiveColor?.g ?? 0) > 0.5 && (m.material?.emissiveColor?.r ?? 1) < 0.4),
     clear: ms.every((m) => (m.material?.alpha ?? 1) < 1),
     edged: ms.some((m) => !!m.material?.wireframe),
   };
 });
-check("Ctrl+D on a shape arms a green, translucent, edged ghost",
-  dupShape.kind === "box" && dupShape.meshes === 2 && dupShape.green
-    && dupShape.clear && dupShape.edged, JSON.stringify(dupShape));
+check(
+    "Ctrl+D on a shape arms a green, translucent, edged ghost",
+    dupShape.kind === "box" && dupShape.meshes === 2 && dupShape.green && dupShape.clear && dupShape.edged,
+    JSON.stringify(dupShape)
+);
 await page.evaluate(async () => (await import("/js/interact.js")).cancelGhost());
 await page.waitForTimeout(200);
 
@@ -2791,15 +3074,17 @@ const benchRefused = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   return {
-    ghost: i.ghostActive(), brush: ed.state.brush,
+        ghost: i.ghostActive(),
+        brush: ed.state.brush,
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
     status: document.getElementById("status-text").textContent,
   };
 });
-check("Ctrl+D on a staged module is refused, and says why",
-  !benchRefused.ghost && !benchRefused.brush && benchRefused.staged === dupStaged
-    && /only be on the bench once/.test(benchRefused.status),
-  JSON.stringify(benchRefused));
+check(
+    "Ctrl+D on a staged module is refused, and says why",
+    !benchRefused.ghost && !benchRefused.brush && benchRefused.staged === dupStaged && /only be on the bench once/.test(benchRefused.status),
+    JSON.stringify(benchRefused)
+);
 
 // the whole point: none of this reaches the ship
 const stageLeak = await page.evaluate(async () => {
@@ -2812,12 +3097,15 @@ const stageLeak = await page.evaluate(async () => {
   window.fetch = (url, opts) => {
     if (String(url).includes("/api/export")) {
       body = opts.body;
-      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response('{"ok":true,"bytes":0}', { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
-  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+    try {
+        await mf.exportGlb();
+    } finally {
+        window.fetch = realFetch;
+    }
   const buf = await body.arrayBuffer();
   const dv = new DataView(buf);
   const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
@@ -2834,17 +3122,15 @@ const stageLeak = await page.evaluate(async () => {
     objectCount: document.getElementById("status-counts").textContent,
   };
 });
-check("the staging area reaches neither the manifest, the layout nor the .glb",
-  stageLeak.staged === 2 && stageLeak.inInstances === 0 && stageLeak.inLayout === 0
-    && stageLeak.inChunks === 0 && stageLeak.inGlb === 0,
-  `${stageLeak.staged} staged, ${stageLeak.inInstances}/${stageLeak.inLayout}/${stageLeak.inGlb} leaked`);
-check("staged shapes are not serialized as the ship's own",
-  stageLeak.roomColliders === 1, `${stageLeak.roomColliders}`);
-check("the per-module record is what the manifest carries",
-  stageLeak.modules === 2, `${stageLeak.modules} modules`);
+check(
+    "the staging area reaches neither the manifest, the layout nor the .glb",
+    stageLeak.staged === 2 && stageLeak.inInstances === 0 && stageLeak.inLayout === 0 && stageLeak.inChunks === 0 && stageLeak.inGlb === 0,
+    `${stageLeak.staged} staged, ${stageLeak.inInstances}/${stageLeak.inLayout}/${stageLeak.inGlb} leaked`
+);
+check("staged shapes are not serialized as the ship's own", stageLeak.roomColliders === 1, `${stageLeak.roomColliders}`);
+check("the per-module record is what the manifest carries", stageLeak.modules === 2, `${stageLeak.modules} modules`);
 
-check("and the object count still counts the ship, not the area",
-  /^2 objects/.test(stageLeak.objectCount), stageLeak.objectCount.split("·")[0].trim());
+check("and the object count still counts the ship, not the area", /^2 objects/.test(stageLeak.objectCount), stageLeak.objectCount.split("·")[0].trim());
 
 // X and H work here like anywhere else
 const modeTools = await page.evaluate(async () => {
@@ -2856,8 +3142,7 @@ const modeTools = await page.evaluate(async () => {
   // whose name merely contains "axis" was too weak to notice that X did nothing
   // at all on a collision shape - axesNode() looked in placements and markers
   // and never in colliders.
-  const arms = () => ["x", "y", "z"]
-    .every((a) => ed.state.scene.transformNodes.some((n) => n.name === `AXES_${a}`));
+    const arms = () => ["x", "y", "z"].every((a) => ed.state.scene.transformNodes.some((n) => n.name === `AXES_${a}`));
   ed.hideAxes();
   const onElement = ed.showAxes(el.id) && arms();
   ed.hideAxes();
@@ -2865,14 +3150,20 @@ const modeTools = await page.evaluate(async () => {
   ed.hideAxes();
   const viaToggle = !!ed.toggleAxes(shape.id) && arms();   // the path X takes
   ed.hideAxes();
-  ed.select([el.id]); ed.hideSelected("ghost"); const veiled = ed.veilCounts().ghost;
-  ed.select([el.id]); ed.hideSelected("hidden"); const gone = !el.node.isEnabled();
+    ed.select([el.id]);
+    ed.hideSelected("ghost");
+    const veiled = ed.veilCounts().ghost;
+    ed.select([el.id]);
+    ed.hideSelected("hidden");
+    const gone = !el.node.isEnabled();
   ed.unhideAll();
   return { onElement, onShape, viaToggle, veiled, gone, back: el.node.isEnabled() };
 });
-check("X draws axes on staged elements and on staged shapes",
+check(
+    "X draws axes on staged elements and on staged shapes",
   modeTools.onElement && modeTools.onShape && modeTools.viaToggle,
-  `element=${modeTools.onElement} shape=${modeTools.onShape} toggle=${modeTools.viaToggle}`);
+    `element=${modeTools.onElement} shape=${modeTools.onShape} toggle=${modeTools.viaToggle}`
+);
 
 // The right button is also the camera button. It cancels what is in your hand,
 // like Escape, but must never close the bench you are working on.
@@ -2891,8 +3182,7 @@ const benchAfterRmb = await page.evaluate(async () => {
     staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
   };
 });
-check("the right button does not close the collision area",
-  benchAfterRmb.mode === true && benchAfterRmb.staged === 2, JSON.stringify(benchAfterRmb));
+check("the right button does not close the collision area", benchAfterRmb.mode === true && benchAfterRmb.staged === 2, JSON.stringify(benchAfterRmb));
 
 // but it still puts down an armed shape
 await page.click('#collider-buttons button[data-kind="sphere"]');
@@ -2907,12 +3197,16 @@ const benchAfterCancel = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { ghost: i.ghostActive(), mode: ed.state.mode === "collision" };
 });
-check("the right button still puts down an armed shape",
+check(
+    "the right button still puts down an armed shape",
   wasArmed === true && benchAfterCancel.ghost === false && benchAfterCancel.mode === true,
-  `armed=${wasArmed}, ${JSON.stringify(benchAfterCancel)}`);
-check("H veils and hides staged elements, and gives them back",
+    `armed=${wasArmed}, ${JSON.stringify(benchAfterCancel)}`
+);
+check(
+    "H veils and hides staged elements, and gives them back",
   modeTools.veiled >= 1 && modeTools.gone && modeTools.back,
-  `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`);
+    `veiled=${modeTools.veiled} hidden=${modeTools.gone} restored=${modeTools.back}`
+);
 
 // leaving keeps everything, and collision travels in its own file
 const closed = await page.evaluate(async () => {
@@ -2940,42 +3234,46 @@ const closed = await page.evaluate(async () => {
   const back = await mf.loadCollision();
   const restored = ed.state.moduleCollision.size;
   await fetch("/api/collision", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
     body: JSON.stringify(original),
   });
 
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({});
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({});
   return {
-    after, wiped, restored,
+        after,
+        wiped,
+        restored,
     onDisk: Object.keys(onDisk.moduleShapes || {}).length,
     schema: onDisk.schema,
     backKeys: back ? Object.keys(back).length : 0,
   };
 });
-check("leaving clears the area and puts the ship back",
-  !closed.after.mode && closed.after.staged === 0 && closed.after.stageShapes === 0
-    && closed.after.shipShown === 2, JSON.stringify(closed.after));
+check(
+    "leaving clears the area and puts the ship back",
+    !closed.after.mode && closed.after.staged === 0 && closed.after.stageShapes === 0 && closed.after.shipShown === 2,
+    JSON.stringify(closed.after)
+);
 check("everything fitted survives the way out", closed.after.stored === 2);
-check("collision is written to its own file, apart from the ship",
-  closed.onDisk === 2 && closed.schema === 1, `${closed.onDisk} modules, schema ${closed.schema}`);
-check("and that file alone can restore it",
-  closed.wiped === 0 && closed.restored === 2 && closed.backKeys === 2,
-  `wiped to ${closed.wiped}, back to ${closed.restored}`);
+check("collision is written to its own file, apart from the ship", closed.onDisk === 2 && closed.schema === 1, `${closed.onDisk} modules, schema ${closed.schema}`);
+check("and that file alone can restore it", closed.wiped === 0 && closed.restored === 2 && closed.backKeys === 2, `wiped to ${closed.wiped}, back to ${closed.restored}`);
 
 // The manifest must carry a module's hull once, not once per placement: the
 // runtime instances it from `instances`, which already has every placement's
 // module, chunk and transform. Expanding it here as well grew as
 // placements x shapes rather than modules x shapes.
-const noDupes = await page.evaluate(async ([a]) => {
+const noDupes = await page.evaluate(
+    async ([a]) => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
   co.exitCollisionMode();
-  ed.clearAll(); ed.select([]);
-  ed.loadModuleCollision({ [a]: [
-    { kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
-  ] }, []);
+        ed.clearAll();
+        ed.select([]);
+        ed.loadModuleCollision({ [a]: [{ kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }] }, []);
   // six placements of the module, and one room shape that has no module at all
   for (let i = 0; i < 6; i++) await ed.placeAt(a, new V(i * 6, 0, 0), { silent: true });
   co.addCollider("sphere", new V(-8, 1, 0), { silent: true });
@@ -2989,33 +3287,41 @@ const noDupes = await page.evaluate(async ([a]) => {
     inModuleCollision: (man.moduleCollision[a] || []).length,
     inModuleShapes: (man.moduleShapes[a] || []).length,
     // everything the runtime needs to place the hull itself
-    instanceHasAll: man.instances.every((x) =>
-      x.module && x.chunk && x.position && x.rotation && x.scale),
+            instanceHasAll: man.instances.every((x) => x.module && x.chunk && x.position && x.rotation && x.scale),
   };
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+        ed.clearAll();
+        ed.select([]);
+        ed.loadModuleCollision({}, []);
   return out;
-}, [PROP_A]);
-check("a module's hull is written once, not once per placement",
+    },
+    [PROP_A]
+);
+check(
+    "a module's hull is written once, not once per placement",
   noDupes.placements === 6 && noDupes.inModuleCollision === 1,
-  `${noDupes.placements} placements, ${noDupes.inModuleCollision} record in moduleCollision`);
-check("and collision[chunk] carries only the room's own shapes",
+    `${noDupes.placements} placements, ${noDupes.inModuleCollision} record in moduleCollision`
+);
+check(
+    "and collision[chunk] carries only the room's own shapes",
   noDupes.inCollision === 1 && noDupes.kinds.join() === "sphere",
-  `${noDupes.inCollision} record(s): ${JSON.stringify(noDupes.kinds)}`);
-check("the authoring form is there too, once per module",
-  noDupes.inModuleShapes === 1, `${noDupes.inModuleShapes}`);
-check("and every instance carries what it takes to place the hull",
-  noDupes.instanceHasAll === true);
+    `${noDupes.inCollision} record(s): ${JSON.stringify(noDupes.kinds)}`
+);
+check("the authoring form is there too, once per module", noDupes.inModuleShapes === 1, `${noDupes.inModuleShapes}`);
+check("and every instance carries what it takes to place the hull", noDupes.instanceHasAll === true);
 
 // ---- 1d-trestricies. the bench keeps what you left on it ------------------
 // Coming back to a blank stage after stepping out to look at the ship was the
 // wrong default: the area is a workbench. The roster rides in the collision
 // file, so it survives a reload as well as a trip back to the ship.
-const bench = await page.evaluate(async ([a, b]) => {
+const bench = await page.evaluate(
+    async ([a, b]) => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+        ed.clearAll();
+        ed.select([]);
+        ed.loadModuleCollision({}, []);
   await ed.placeAt(a, new V(0, 0, 0), { silent: true });
   await ed.placeAt(a, new V(8, 0, 0), { silent: true });
 
@@ -3034,24 +3340,29 @@ const bench = await page.evaluate(async ([a, b]) => {
   await co.enterCollisionMode(kit.instantiate, kit.moduleBounds);
   const back = [...ed.state.placements.values()].filter((p) => p.stage);
   const out = {
-    roster, rosterAt, placed,
+            roster,
+            rosterAt,
+            placed,
     backModules: back.map((p) => p.module),
     backAt: back.map((p) => p.node.position.asArray().map((v) => +v.toFixed(3))),
     shapes: co.stageColliders().length,
   };
   co.exitCollisionMode();
   return out;
-}, [PROP_A, PROP_B]);
-const sameSpots = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length
-  && a.every((v, i) => (Array.isArray(v)
-    ? sameSpots(v, b[i]) : Math.abs(v - b[i]) < 1e-2));
-check("closing the area records what was on it",
+    },
+    [PROP_A, PROP_B]
+);
+const sameSpots = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => (Array.isArray(v) ? sameSpots(v, b[i]) : Math.abs(v - b[i]) < 1e-2));
+check(
+    "closing the area records what was on it",
   bench.roster.length === 2 && sameSpots(bench.rosterAt, bench.placed),
-  `${JSON.stringify(bench.roster)} at ${JSON.stringify(bench.rosterAt)}`);
-check("re-opening puts the same modules back in the same places",
-  JSON.stringify(bench.backModules) === JSON.stringify(bench.roster)
-    && sameSpots(bench.backAt, bench.placed),
-  `${JSON.stringify(bench.backAt)} vs ${JSON.stringify(bench.placed)}`);
+    `${JSON.stringify(bench.roster)} at ${JSON.stringify(bench.rosterAt)}`
+);
+check(
+    "re-opening puts the same modules back in the same places",
+    JSON.stringify(bench.backModules) === JSON.stringify(bench.roster) && sameSpots(bench.backAt, bench.placed),
+    `${JSON.stringify(bench.backAt)} vs ${JSON.stringify(bench.placed)}`
+);
 check("and their shapes come back with them", bench.shapes === 1, `${bench.shapes}`);
 
 // ---- 1d-quattuortricies. inherited collision is visible on the ship -------
@@ -3063,14 +3374,20 @@ const inherited = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const settle = () => new Promise((r) => setTimeout(r, 60));
-  ed.setShowLayer("both"); ed.applyVisibility(); await settle();
+    ed.setShowLayer("both");
+    ed.applyVisibility();
+    await settle();
   const both = co.previewCount();
-  ed.setShowLayer("collision"); ed.applyVisibility(); await settle();
+    ed.setShowLayer("collision");
+    ed.applyVisibility();
+    await settle();
   const collisionOnly = {
     preview: co.previewCount(),
     geo: [...ed.state.placements.values()].filter((p) => p.node.isEnabled()).length,
   };
-  ed.setShowLayer("geometry"); ed.applyVisibility(); await settle();
+    ed.setShowLayer("geometry");
+    ed.applyVisibility();
+    await settle();
   const geometryOnly = co.previewCount();
 
   // it follows isolation like everything else, being built through applyVisibility
@@ -3078,11 +3395,13 @@ const inherited = await page.evaluate(async () => {
   ed.state.isolate = true;
   ed.state.chunks = [...new Set([...ed.state.chunks, "CH_Nowhere"])];
   ed.state.activeChunk = "CH_Nowhere";
-  ed.applyVisibility(); await settle();
+    ed.applyVisibility();
+    await settle();
   const isolatedAway = co.previewCount();
   ed.state.isolate = false;
   ed.state.activeChunk = ed.state.chunks[0];
-  ed.applyVisibility(); await settle();
+    ed.applyVisibility();
+    await settle();
 
   // and never reaches the .glb
   const mf = await import("/js/manifest.js");
@@ -3091,33 +3410,36 @@ const inherited = await page.evaluate(async () => {
   window.fetch = (url, opts) => {
     if (String(url).includes("/api/export")) {
       body = opts.body;
-      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response('{"ok":true,"bytes":0}', { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
-  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+    try {
+        await mf.exportGlb();
+    } finally {
+        window.fetch = realFetch;
+    }
   const buf = await body.arrayBuffer();
   const dv = new DataView(buf);
   const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
-  const stowaways = (json.nodes || []).map((n) => String(n.name))
-    .filter((n) => /PREVIEW/i.test(n)).length;
+    const stowaways = (json.nodes || []).map((n) => String(n.name)).filter((n) => /PREVIEW/i.test(n)).length;
 
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
-  ed.applyVisibility(); await settle();
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({}, []);
+    ed.applyVisibility();
+    await settle();
   return { both, collisionOnly, geometryOnly, isolatedAway, stowaways, cleared: co.previewCount() };
 });
-check("inherited collision is drawn on every placement of its module",
-  inherited.both === 2, `${inherited.both} shapes for 2 placements`);
-check("Collision only shows it with the ship off screen",
-  inherited.collisionOnly.preview === 2 && inherited.collisionOnly.geo === 0,
-  JSON.stringify(inherited.collisionOnly));
+check("inherited collision is drawn on every placement of its module", inherited.both === 2, `${inherited.both} shapes for 2 placements`);
+check("Collision only shows it with the ship off screen", inherited.collisionOnly.preview === 2 && inherited.collisionOnly.geo === 0, JSON.stringify(inherited.collisionOnly));
 check("Ship only takes it off screen too", inherited.geometryOnly === 0);
-check("it follows chunk isolation, being built through applyVisibility",
-  inherited.isolatedAway === 0, `${inherited.isolatedAway} still drawn`);
-check("it is a preview, not data: never exported, and gone when the record is",
+check("it follows chunk isolation, being built through applyVisibility", inherited.isolatedAway === 0, `${inherited.isolatedAway} still drawn`);
+check(
+    "it is a preview, not data: never exported, and gone when the record is",
   inherited.stowaways === 0 && inherited.cleared === 0,
-  `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`);
+    `${inherited.stowaways} in the .glb, ${inherited.cleared} left after clearing`
+);
 
 // ---- and a capsule hull is drawn as a capsule out on the ship ---------------
 // A capsule is the one kind whose geometry depends on its proportions, so it
@@ -3131,12 +3453,12 @@ const previewCapsule = await page.evaluate(async (prop) => {
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
   const settle = () => new Promise((r) => setTimeout(r, 80));
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const measure = async (placementScale) => {
-    ed.clearAll(); ed.select([]);
-    ed.loadModuleCollision({ [prop]: [
-      { kind: "capsule", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 3, 1] },
-    ] }, []);
+        ed.clearAll();
+        ed.select([]);
+        ed.loadModuleCollision({ [prop]: [{ kind: "capsule", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 3, 1] }] }, []);
     await ed.placeAt(prop, new V(0, 0, 0), { scale: placementScale, silent: true });
     ed.setShowLayer("both");
     ed.applyVisibility();
@@ -3156,11 +3478,14 @@ const previewCapsule = await page.evaluate(async (prop) => {
     for (let i = 0; i < raw.length; i += 3) {
       pts.push(V.TransformCoordinates(new V(raw[i], raw[i + 1], raw[i + 2]), wm).subtract(origin));
     }
-    const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y), zs = pts.map((q) => q.z);
+        const xs = pts.map((q) => q.x),
+            ys = pts.map((q) => q.y),
+            zs = pts.map((q) => q.z);
     const width = Math.max(...xs) - Math.min(...xs);
     const depth = Math.max(...zs) - Math.min(...zs);
     const height = Math.max(...ys) - Math.min(...ys);
-    const rad = width / 2, half = Math.max(height / 2 - rad, 0);
+        const rad = width / 2,
+            half = Math.max(height / 2 - rad, 0);
     let worst = 0;
     for (const q of pts) {
       const y = Math.max(-half, Math.min(half, q.y));
@@ -3170,8 +3495,7 @@ const previewCapsule = await page.evaluate(async (prop) => {
     return {
       size: [width, height, depth].map((v) => +v.toFixed(3)),
       offSurface: +worst.toFixed(4),
-      worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]),
-        Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(3)),
+            worldScale: [Math.hypot(wsm[0], wsm[1], wsm[2]), Math.hypot(wsm[4], wsm[5], wsm[6]), Math.hypot(wsm[8], wsm[9], wsm[10])].map((v) => +v.toFixed(3)),
       holder: mesh.parent?.getClassName?.() ?? null,
     };
   };
@@ -3180,24 +3504,27 @@ const previewCapsule = await page.evaluate(async (prop) => {
   // and a capsule composed with that is an ellipsoid, which Havok has no shape
   // for. The preview shows what Havok gets, not a promise it cannot keep.
   const squashed = await measure([0.5, 1, 1]);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   ed.loadModuleCollision({}, []);
   return { plain, squashed };
 }, PROP_A);
-check("an inherited capsule is drawn 1 wide and 3 tall, as its hull says",
-  !previewCapsule.plain.missing
-    && previewCapsule.plain.size.join() === "1,3,1", JSON.stringify(previewCapsule.plain.size));
-check("every vertex of it lies on a true capsule, not a stretched sphere",
-  previewCapsule.plain.offSurface < 3e-3, `worst ${previewCapsule.plain.offSurface} m`);
-check("the size rides a holder, so the mesh keeps the counter-scale that rounds its caps",
-  previewCapsule.plain.holder === "TransformNode"
-    && new Set(previewCapsule.plain.worldScale).size === 1,
-  `${previewCapsule.plain.holder}, world scale ${JSON.stringify(previewCapsule.plain.worldScale)}`);
-check("and on an unevenly scaled placement it is still a capsule, radius averaged",
-  previewCapsule.squashed.offSurface < 3e-3
-    && previewCapsule.squashed.size[0] === previewCapsule.squashed.size[2]
-    && Math.abs(previewCapsule.squashed.size[0] - 0.75) < 1e-3,
-  `${JSON.stringify(previewCapsule.squashed.size)}, worst ${previewCapsule.squashed.offSurface}`);
+check(
+    "an inherited capsule is drawn 1 wide and 3 tall, as its hull says",
+    !previewCapsule.plain.missing && previewCapsule.plain.size.join() === "1,3,1",
+    JSON.stringify(previewCapsule.plain.size)
+);
+check("every vertex of it lies on a true capsule, not a stretched sphere", previewCapsule.plain.offSurface < 3e-3, `worst ${previewCapsule.plain.offSurface} m`);
+check(
+    "the size rides a holder, so the mesh keeps the counter-scale that rounds its caps",
+    previewCapsule.plain.holder === "TransformNode" && new Set(previewCapsule.plain.worldScale).size === 1,
+    `${previewCapsule.plain.holder}, world scale ${JSON.stringify(previewCapsule.plain.worldScale)}`
+);
+check(
+    "and on an unevenly scaled placement it is still a capsule, radius averaged",
+    previewCapsule.squashed.offSurface < 3e-3 && previewCapsule.squashed.size[0] === previewCapsule.squashed.size[2] && Math.abs(previewCapsule.squashed.size[0] - 0.75) < 1e-3,
+    `${JSON.stringify(previewCapsule.squashed.size)}, worst ${previewCapsule.squashed.offSurface}`
+);
 
 // And it keeps up with the ship. It is drawn from each placement's world
 // matrix and rebuilt only through applyVisibility(), which a move, a turn or a
@@ -3206,18 +3533,16 @@ check("and on an unevenly scaled placement it is still a capsule, radius average
 const previewFollows = await page.evaluate(async (prop) => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  const frame = () => new Promise((r) =>
-    ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
-  ed.clearAll(); ed.select([]);
-  ed.loadModuleCollision({ [prop]: [
-    { kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
-  ] }, []);
+    const frame = () => new Promise((r) => ed.state.scene.onAfterRenderObservable.addOnce(() => r()));
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({ [prop]: [{ kind: "box", position: [0, 0.5, 0], rotation: [0, 0, 0], scale: [1, 1, 1] }] }, []);
   const el = await ed.placeAt(prop, new V(0, 0, 0), { silent: true });
   ed.applyVisibility();
-  await frame(); await frame();
+    await frame();
+    await frame();
 
-  const shapes = () => ed.state.scene.transformNodes
-    .find((n) => n.name === "__COLLISION_PREVIEW")?.getChildMeshes() || [];
+    const shapes = () => ed.state.scene.transformNodes.find((n) => n.name === "__COLLISION_PREVIEW")?.getChildMeshes() || [];
   const nearest = () => {
     let d = Infinity;
     for (const m of shapes()) d = Math.min(d, V.Distance(m.getAbsolutePosition(), el.node.getAbsolutePosition()));
@@ -3226,32 +3551,40 @@ const previewFollows = await page.evaluate(async (prop) => {
   const before = { n: shapes().length, d: nearest() };
 
   el.node.position.addInPlace(new V(30, 0, 20));
-  await frame(); await frame(); await frame();
+    await frame();
+    await frame();
+    await frame();
   const afterMove = nearest();
 
   el.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, Math.PI / 2, 0);
-  await frame(); await frame(); await frame();
+    await frame();
+    await frame();
+    await frame();
   const afterTurn = nearest();
 
   ed.select([el.id]);
   ed.removeSelected();
-  await frame(); await frame(); await frame();
+    await frame();
+    await frame();
+    await frame();
   const afterDelete = shapes().length;
 
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({}, []);
   ed.applyVisibility();
-  await frame(); await frame();
+    await frame();
+    await frame();
   return { before, afterMove, afterTurn, afterDelete };
 }, PROP_A);
-check("an inherited hull is drawn on its element",
+check(
+    "an inherited hull is drawn on its element",
   previewFollows.before.n > 0 && previewFollows.before.d < 1.5,
-  `${previewFollows.before.n} meshes, ${previewFollows.before.d} m away`);
-check("moving a ship element carries its inherited hull",
-  previewFollows.afterMove < 1.5, `${previewFollows.afterMove} m away after a 36 m move`);
-check("turning it keeps the hull with it",
-  previewFollows.afterTurn < 1.5, `${previewFollows.afterTurn} m away after a 90 degree turn`);
-check("deleting it takes the hull with it",
-  previewFollows.afterDelete === 0, `${previewFollows.afterDelete} meshes left`);
+    `${previewFollows.before.n} meshes, ${previewFollows.before.d} m away`
+);
+check("moving a ship element carries its inherited hull", previewFollows.afterMove < 1.5, `${previewFollows.afterMove} m away after a 36 m move`);
+check("turning it keeps the hull with it", previewFollows.afterTurn < 1.5, `${previewFollows.afterTurn} m away after a 90 degree turn`);
+check("deleting it takes the hull with it", previewFollows.afterDelete === 0, `${previewFollows.afterDelete} meshes left`);
 
 // ---- 1d-quintricies. the palette says which modules are done --------------
 // Fitting a kit is a job you do a few modules at a time and come back to, and
@@ -3262,7 +3595,9 @@ const marks = await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   const kit = await import("/js/kit.js");
   const settle = () => new Promise((r) => setTimeout(r, 120));
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({}, []);
   await settle();
   const target = [...kit.getCatalogue().byId.keys()].find((m) => m.startsWith("Modular SciFi MegaKit/Props/"));
   const tile = () => document.querySelector(`#palette-list .item[data-id="${target}"]`);
@@ -3284,19 +3619,15 @@ const marks = await page.evaluate(async () => {
   await settle();
   const cleared = lit();
   co.exitCollisionMode();
-  ed.clearAll(); ed.select([]); ed.loadModuleCollision({}, []);
+    ed.clearAll();
+    ed.select([]);
+    ed.loadModuleCollision({}, []);
   await settle();
   return { target, before, after, cleared, title, stillLit: lit() };
 });
-check("a module with collision is marked in the palette",
-  marks.before === false && marks.after === true,
-  `${marks.target}: ${marks.before} -> ${marks.after}`);
-check("and the tile says how many shapes it carries",
-  /1 collision shape\b/.test(marks.title || ""), marks.title);
-check("the mark goes out when the shapes do",
-  marks.cleared === false && marks.stillLit === false,
-  `after removing ${marks.cleared}, after clearing ${marks.stillLit}`);
-
+check("a module with collision is marked in the palette", marks.before === false && marks.after === true, `${marks.target}: ${marks.before} -> ${marks.after}`);
+check("and the tile says how many shapes it carries", /1 collision shape\b/.test(marks.title || ""), marks.title);
+check("the mark goes out when the shapes do", marks.cleared === false && marks.stillLit === false, `after removing ${marks.cleared}, after clearing ${marks.stillLit}`);
 
 // ---- 1d-duotricies. the geometry / collision layer switch -----------------
 // It can only ever take things off screen, so chunk isolation and the Shift+H
@@ -3306,7 +3637,8 @@ const layers = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   co.addCollider("box", new V(2, 0.5, 0), { silent: true });
   co.addCollider("sphere", new V(4, 0.5, 0), { silent: true, scale: [2, 2, 2] });
@@ -3315,8 +3647,10 @@ const layers = await page.evaluate(async () => {
     col: [...ed.state.colliders.values()].filter((c) => c.node.isEnabled()).length,
   });
   const both = shown();
-  ed.setShowLayer("geometry"); const geoOnly = shown();
-  ed.setShowLayer("collision"); const colOnly = shown();
+    ed.setShowLayer("geometry");
+    const geoOnly = shown();
+    ed.setShowLayer("collision");
+    const colOnly = shown();
 
   // selecting something and then hiding its layer must drop it, or the gizmo
   // and the inspector act on an element nobody can see
@@ -3339,21 +3673,19 @@ const layers = await page.evaluate(async () => {
   ed.state.activeChunk = ed.state.chunks[0];
   ed.setShowLayer("both");
   ed.applyVisibility();
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { both, geoOnly, colOnly, afterHidingGeometry, afterHidingCollision, isolatedElsewhere };
 });
-check("both layers show by default",
-  layers.both.geo === 1 && layers.both.col === 2, JSON.stringify(layers.both));
-check("ship only takes the collision off screen",
-  layers.geoOnly.geo === 1 && layers.geoOnly.col === 0, JSON.stringify(layers.geoOnly));
-check("collision only takes the ship off screen",
-  layers.colOnly.geo === 0 && layers.colOnly.col === 2, JSON.stringify(layers.colOnly));
-check("hiding a layer drops any selection it hides",
+check("both layers show by default", layers.both.geo === 1 && layers.both.col === 2, JSON.stringify(layers.both));
+check("ship only takes the collision off screen", layers.geoOnly.geo === 1 && layers.geoOnly.col === 0, JSON.stringify(layers.geoOnly));
+check("collision only takes the ship off screen", layers.colOnly.geo === 0 && layers.colOnly.col === 2, JSON.stringify(layers.colOnly));
+check(
+    "hiding a layer drops any selection it hides",
   layers.afterHidingGeometry.length === 0 && layers.afterHidingCollision.length === 0,
-  `${JSON.stringify(layers.afterHidingGeometry)} / ${JSON.stringify(layers.afterHidingCollision)}`);
-check("isolation still gets the last word over the switch",
-  layers.isolatedElsewhere.geo === 0 && layers.isolatedElsewhere.col === 0,
-  JSON.stringify(layers.isolatedElsewhere));
+    `${JSON.stringify(layers.afterHidingGeometry)} / ${JSON.stringify(layers.afterHidingCollision)}`
+);
+check("isolation still gets the last word over the switch", layers.isolatedElsewhere.geo === 0 && layers.isolatedElsewhere.col === 0, JSON.stringify(layers.isolatedElsewhere));
 
 // ---- 1d-tertricies. what the inspector measures for a primitive -----------
 // Havok's own parameters, not a bounding box: a world AABB would show a sphere
@@ -3363,7 +3695,8 @@ const primDims = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const read = () => [
     document.getElementById("dim-x").textContent,
     document.getElementById("dim-y").textContent,
@@ -3372,40 +3705,51 @@ const primDims = await page.evaluate(async () => {
   ];
   const out = {};
   const box = co.addCollider("box", new V(0, 0, 0), { silent: true, scale: [4, 2, 0.2] });
-  ed.select([box.id]); out.box = read();
+    ed.select([box.id]);
+    out.box = read();
   const sph = co.addCollider("sphere", new V(6, 0, 0), { silent: true, scale: [3, 3, 3] });
-  ed.select([sph.id]); out.sphere = read();
+    ed.select([sph.id]);
+    out.sphere = read();
   const cap = co.addCollider("capsule", new V(12, 0, 0), { silent: true, scale: [2, 5, 2] });
   cap.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(Math.PI / 2, 0, 0);
-  ed.select([cap.id]); out.capsule = read();
+    ed.select([cap.id]);
+    out.capsule = read();
   const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 20), { silent: true });
-  ed.select([wall.id]); out.wall = read();
-  ed.clearAll(); ed.select([]);
+    ed.select([wall.id]);
+    out.wall = read();
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("a box reports its three sides",
-  primDims.box[0] === "4.00" && primDims.box[1] === "2.00" && primDims.box[2] === "0.20"
-    && primDims.box[3].includes("X/Y/Z"), JSON.stringify(primDims.box));
-check("a sphere reports one radius and says so",
+check(
+    "a box reports its three sides",
+    primDims.box[0] === "4.00" && primDims.box[1] === "2.00" && primDims.box[2] === "0.20" && primDims.box[3].includes("X/Y/Z"),
+    JSON.stringify(primDims.box)
+);
+check(
+    "a sphere reports one radius and says so",
   primDims.sphere[0] === "1.50" && primDims.sphere[1] === "—" && primDims.sphere[3].includes("radius"),
-  JSON.stringify(primDims.sphere));
-check("a turned capsule still reports radius and height",
+    JSON.stringify(primDims.sphere)
+);
+check(
+    "a turned capsule still reports radius and height",
   primDims.capsule[0] === "1.00" && primDims.capsule[1] === "5.00" && primDims.capsule[2] === "—",
-  JSON.stringify(primDims.capsule));
-check("a kit module still reports its bounding box",
-  primDims.wall[3].includes("X/Y/Z") && primDims.wall[1] === "2.00", JSON.stringify(primDims.wall));
+    JSON.stringify(primDims.capsule)
+);
+check("a kit module still reports its bounding box", primDims.wall[3].includes("X/Y/Z") && primDims.wall[1] === "2.00", JSON.stringify(primDims.wall));
 
-// ---- 1d-terdecies. the behaviour library and the entities that use it ------
-// `behaviors` is a library of named definitions; `entities` says which node
-// names carry which, plus the `linked` names some of them need. Both are keyed
-// by node name, which is why names must NOT be made unique.
+// ---- 1d-terdecies. behavior presets and the entities that use them ----------
+// Base behaviors come from the metadata catalog. `behaviorPresets` names
+// customized variants; `entities` can attach either kind.
 const bhv = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(4, 0, 0), { silent: true });
@@ -3414,23 +3758,21 @@ const bhv = await page.evaluate(async () => {
   ed.renamePlacement(b.id, "crate");       // same name on purpose
   ed.renamePlacement(c.id, "doorL");
 
-  const blank = ed.setBehaviorDef("   ", { dynamic: true });
+    const blank = ed.setBehaviorDef("   ", { base: "dynamic", dynamic: true });
   const notObject = ed.setBehaviorDef("bad", [1, 2, 3]);
   let unknownDefinition = false;
   try {
-    ed.setBehaviorDef("bad", { dynamic: true });
+        ed.setBehaviorDef("bad", { base: "missing", dynamic: true });
   } catch {
     unknownDefinition = true;
   }
-  ed.setBehaviorDef("anyLiquefaction", { liquefiable: true });
-  ed.setBehaviorDef("stdLiquefaction",
-    { liquefiable: true, fluidSim: ["viscosity-inplace"] });
-  ed.setBehaviorDef("dynamic", { dynamic: true });
+    ed.setBehaviorDef("crateLiquefaction", { base: "liquefaction" });
+    ed.setBehaviorDef("stdLiquefaction", { base: "liquefaction", fluidSim: ["viscosity-inplace"] });
 
-  ed.addEntityBehavior("crate", "anyLiquefaction");
+    ed.addEntityBehavior("crate", "crateLiquefaction");
   // The same behaviour twice is legal - the runtime builds one instance per
   // entry - so the second attach lands beside the first, not on top of it.
-  const twice = ed.addEntityBehavior("crate", "anyLiquefaction");
+    const twice = ed.addEntityBehavior("crate", "crateLiquefaction");
   const twiceListed = ed.entityBehaviors("crate").map((x) => x.name);
   ed.removeEntityBehavior("crate", 1);
   const afterOneRemoved = ed.entityBehaviors("crate").map((x) => x.name);
@@ -3440,11 +3782,11 @@ const bhv = await page.evaluate(async () => {
   ed.state.entities.get("doorL")[0].sound = "longSplash";
 
   const man = mf.buildManifest();
-  const written = JSON.parse(JSON.stringify(man.behaviors));
+    const written = JSON.parse(JSON.stringify(man.behaviorPresets));
   const entities = JSON.parse(JSON.stringify(man.entities));
 
   // deleting one has to strip it from the entities that carried it
-  ed.deleteBehaviorDef("anyLiquefaction");
+    ed.deleteBehaviorDef("crateLiquefaction");
   const afterDelete = { list: ed.behaviorNames(), crate: ed.entityBehaviors("crate") };
 
   // round trip through the undo snapshot
@@ -3457,55 +3799,106 @@ const bhv = await page.evaluate(async () => {
   const inRoom = ed.nodeNamesInChunk(ed.state.placements.get(c.id).chunk, "doorL");
   const liquefies = [ed.isLiquefiable("stdLiquefaction"), ed.isLiquefiable("dynamic")];
   const global = man.fluidSim;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const afterClearAll = { defs: ed.behaviorNames(), ents: ed.entityBehaviors("crate") };
-  return { blank, notObject, unknownDefinition, twice, twiceListed, afterOneRemoved, unknown, written,
-    entities, afterDelete,
-    wiped, restored, inRoom, liquefies, global, afterClearAll };
+    return {
+        blank,
+        notObject,
+        unknownDefinition,
+        twice,
+        twiceListed,
+        afterOneRemoved,
+        unknown,
+        written,
+        entities,
+        afterDelete,
+        wiped,
+        restored,
+        inRoom,
+        liquefies,
+        global,
+        afterClearAll,
+    };
 });
-check("a definition needs a metadata name and a JSON object for a body",
-  bhv.blank === false && bhv.notObject === false && bhv.unknownDefinition,
-  `blank=${bhv.blank}, array=${bhv.notObject}, unknown=${bhv.unknownDefinition}`);
-check("validated definition bodies are written unchanged",
+check(
+    "a preset needs a name, an object body, and a catalog base",
+    bhv.blank === false && bhv.notObject === false && !bhv.unknownDefinition,
+    `blank=${bhv.blank}, array=${bhv.notObject}, unknown=${bhv.unknownDefinition}`
+);
+check(
+    "validated definition bodies are written unchanged",
+    JSON.stringify(bhv.written.stdLiquefaction) === JSON.stringify({ base: "liquefaction", fluidSim: ["viscosity-inplace"] }),
   JSON.stringify(bhv.written.stdLiquefaction)
-    === JSON.stringify({ liquefiable: true, fluidSim: ["viscosity-inplace"] }),
-  JSON.stringify(bhv.written.stdLiquefaction));
-check("entities list the behaviours they carry",
-  bhv.entities.crate.behaviors[0].name === "anyLiquefaction"
-    && !("linked" in bhv.entities.crate.behaviors[0]),
-  JSON.stringify(bhv.entities.crate));
-check("linked is de-duplicated, drops self, and is omitted when empty",
-  bhv.entities.doorL.behaviors[0].linked.join() === "crate",
-  JSON.stringify(bhv.entities.doorL.behaviors[0]));
-check("per-entity sound categories are written beside the behavior name",
-  bhv.entities.doorL.behaviors[0].sound === "longSplash",
-  JSON.stringify(bhv.entities.doorL.behaviors[0]));
-check("a behaviour can be attached twice and removed by position, but not when it does not exist",
-  bhv.twice === true && bhv.unknown === false
-    && bhv.twiceListed?.join() === "anyLiquefaction,anyLiquefaction"
-    && bhv.afterOneRemoved?.join() === "anyLiquefaction",
-  `twice=${bhv.twice}, listed=${JSON.stringify(bhv.twiceListed)},`
-  + ` after remove=${JSON.stringify(bhv.afterOneRemoved)}, unknown=${bhv.unknown}`);
-check("deleting a definition strips it from the entities that used it",
-  !bhv.afterDelete.list.includes("anyLiquefaction") && bhv.afterDelete.crate.length === 0,
-  `library [${bhv.afterDelete.list}], crate ${JSON.stringify(bhv.afterDelete.crate)}`);
-check("per-entity sound categories survive undo snapshots",
-  bhv.restored[0]?.sound === "longSplash",
-  JSON.stringify(bhv.restored));
-check("behaviours ride the undo stack",
-  bhv.wiped === 0 && bhv.restored[0]?.name === "stdLiquefaction"
-    && bhv.restored[0].linked.join() === "crate",
-  `wiped=${bhv.wiped}, restored=${JSON.stringify(bhv.restored)}`);
-check("only liquefiable definitions ask for linked names",
-  bhv.liquefies[0] === true && bhv.liquefies[1] === false, JSON.stringify(bhv.liquefies));
-check("the linked candidates are the other named nodes in the room",
-  bhv.inRoom.join() === "crate", `[${bhv.inRoom}]`);
-check("the manifest carries the global sim list",
-  Array.isArray(bhv.global) && bhv.global.includes("liquid-slow"),
-  JSON.stringify(bhv.global));
-check("clearing the layout forgets the library and the entities",
-  bhv.afterClearAll.defs.length === 0 && bhv.afterClearAll.ents.length === 0,
-  JSON.stringify(bhv.afterClearAll));
+);
+check(
+    "entities list the behaviours they carry",
+    bhv.entities.crate.behaviors[0].name === "crateLiquefaction" && !("linked" in bhv.entities.crate.behaviors[0]),
+    JSON.stringify(bhv.entities.crate)
+);
+check("linked is de-duplicated, drops self, and is omitted when empty", bhv.entities.doorL.behaviors[0].linked.join() === "crate", JSON.stringify(bhv.entities.doorL.behaviors[0]));
+check("per-entity sound categories are written beside the behavior name", bhv.entities.doorL.behaviors[0].sound === "longSplash", JSON.stringify(bhv.entities.doorL.behaviors[0]));
+check(
+    "a behaviour can be attached twice and removed by position, but not when it does not exist",
+    bhv.twice === true && bhv.unknown === false && bhv.twiceListed?.join() === "crateLiquefaction,crateLiquefaction" && bhv.afterOneRemoved?.join() === "crateLiquefaction",
+    `twice=${bhv.twice}, listed=${JSON.stringify(bhv.twiceListed)},` + ` after remove=${JSON.stringify(bhv.afterOneRemoved)}, unknown=${bhv.unknown}`
+);
+check(
+    "deleting a definition strips it from the entities that used it",
+    !bhv.afterDelete.list.includes("crateLiquefaction") && bhv.afterDelete.crate.length === 0,
+    `library [${bhv.afterDelete.list}], crate ${JSON.stringify(bhv.afterDelete.crate)}`
+);
+check("per-entity sound categories survive undo snapshots", bhv.restored[0]?.sound === "longSplash", JSON.stringify(bhv.restored));
+check(
+    "behaviours ride the undo stack",
+    bhv.wiped === 0 && bhv.restored[0]?.name === "stdLiquefaction" && bhv.restored[0].linked.join() === "crate",
+    `wiped=${bhv.wiped}, restored=${JSON.stringify(bhv.restored)}`
+);
+check("only liquefiable definitions ask for linked names", bhv.liquefies[0] === true && bhv.liquefies[1] === false, JSON.stringify(bhv.liquefies));
+check("the linked candidates are the other named nodes in the room", bhv.inRoom.join() === "crate", `[${bhv.inRoom}]`);
+check("the manifest carries the global sim list", Array.isArray(bhv.global) && bhv.global.includes("liquid-slow"), JSON.stringify(bhv.global));
+check("clearing the layout forgets the library and the entities", bhv.afterClearAll.defs.length === 0 && bhv.afterClearAll.ents.length === 0, JSON.stringify(bhv.afterClearAll));
+
+const legacyBehaviors = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    await ed.deserialize({
+        chunks: ["CH00_Storage"],
+        activeChunk: "CH00_Storage",
+        instances: [],
+        markers: [],
+        behaviors: {
+            anyLiquefaction: { liquefiable: true, fluidSim: ["legacy-liquid"] },
+            stdLiquefaction: { liquefiable: true, fluidSim: ["legacy-standard"] },
+            dynamic: { dynamic: true, mass: 12 },
+        },
+        entities: {
+            direct: { behaviors: [{ name: "anyLiquefaction" }] },
+            preset: { behaviors: [{ name: "stdLiquefaction" }] },
+            moving: { behaviors: [{ name: "dynamic", mass: 20 }] },
+        },
+    });
+    const result = {
+        presets: Object.fromEntries(ed.behaviorNames().map((name) => [name, ed.getBehaviorPreset(name)])),
+        direct: ed.entityBehaviors("direct"),
+        preset: ed.entityBehaviors("preset"),
+        moving: ed.entityBehaviors("moving"),
+    };
+    ed.clearAll();
+    ed.select([]);
+    return result;
+});
+check(
+    "legacy behavior definitions migrate to catalog behaviors and presets",
+    legacyBehaviors.presets.stdLiquefaction?.base === "liquefaction" &&
+        !("liquefiable" in legacyBehaviors.presets.stdLiquefaction) &&
+        legacyBehaviors.direct[0]?.name === "liquefaction" &&
+        !("liquefiable" in legacyBehaviors.direct[0]) &&
+        legacyBehaviors.direct[0]?.fluidSim?.join() === "legacy-liquid" &&
+        legacyBehaviors.preset[0]?.name === "stdLiquefaction" &&
+        legacyBehaviors.moving[0]?.name === "dynamic" &&
+        legacyBehaviors.moving[0]?.mass === 20,
+    JSON.stringify(legacyBehaviors)
+);
 
 // the ship's own sim list wins over config.json: config is what a *new* ship
 // starts from, but a saved one carries the list it was authored against
@@ -3530,20 +3923,18 @@ const simList = await page.evaluate(async () => {
   const afterUndo = [...ed.state.fluidSim];
 
   ed.state.fluidSim = fromConfig;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { fromConfig, loaded, written, afterUndo, extensionError };
 });
-check("fluidSim names omit the file extension",
-  simList.extensionError.includes('fluidSim name "ship-only.json" must omit the .json extension'),
-  simList.extensionError);
-check("the manifest's fluidSim list is exported",
-  simList.written.join() === "ship-only,thick", `[${simList.written}]`);
-check("a loaded list takes precedence over the one from config.json",
-  simList.loaded.join() === "ship-only,thick"
-    && simList.fromConfig.join() !== simList.loaded.join(),
-  `config [${simList.fromConfig}] -> ship [${simList.loaded}]`);
-check("a snapshot without a list leaves the one in force alone",
-  simList.afterUndo.join() === "ship-only,thick", `[${simList.afterUndo}]`);
+check("fluidSim names omit the file extension", simList.extensionError.includes('fluidSim name "ship-only.json" must omit the .json extension'), simList.extensionError);
+check("the manifest's fluidSim list is exported", simList.written.join() === "ship-only,thick", `[${simList.written}]`);
+check(
+    "a loaded list takes precedence over the one from config.json",
+    simList.loaded.join() === "ship-only,thick" && simList.fromConfig.join() !== simList.loaded.join(),
+    `config [${simList.fromConfig}] -> ship [${simList.loaded}]`
+);
+check("a snapshot without a list leaves the one in force alone", simList.afterUndo.join() === "ship-only,thick", `[${simList.afterUndo}]`);
 
 // ---- 1d-quaterdecies. the behaviour panel and the library dialog ----------
 // The panel edits the *node name* - the one in the field, or the element's id
@@ -3554,7 +3945,9 @@ const bhvIds = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(6, 0, 0), { silent: true });
   ed.select([a.id]);
@@ -3562,7 +3955,8 @@ const bhvIds = await page.evaluate(async () => {
 });
 await page.waitForTimeout(200);
 
-const readPanel = () => page.evaluate(() => ({
+const readPanel = () =>
+    page.evaluate(() => ({
   shown: !document.getElementById("behavior-fields").hidden,
   applied: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
   hasLinkedPicker: !!document.querySelector('#bhv-applied [data-behavior-key="linked"]'),
@@ -3583,24 +3977,22 @@ const unfoldBehavior = async (at = 0) => {
 };
 
 const unnamed = await readPanel();
-check("an unnamed element carries behaviours under its id, and the panel says so",
-  unnamed.shown && /unnamed, so it stands alone under its id/.test(unnamed.count)
-    && new RegExp(`^${bhvIds.a} —`).test(unnamed.count),
-  `count="${unnamed.count}", hint="${unnamed.hint}"`);
+check(
+    "an unnamed element carries behaviours under its id, and the panel says so",
+    unnamed.shown && /unnamed, so it stands alone under its id/.test(unnamed.count) && new RegExp(`^${bhvIds.a} —`).test(unnamed.count),
+    `count="${unnamed.count}", hint="${unnamed.hint}"`
+);
 
-// Define two known behaviours through the metadata-driven dialog, exactly as a
-// user would. Unknown names are refused because there is no schema to edit.
+// Define one preset through the metadata-driven dialog. Base behaviors such as
+// dynamic are attachable directly and do not need duplicated definitions.
 await page.fill("#insp-name", "crate");
 await page.locator("#insp-name").blur();
 await page.waitForTimeout(200);
 await page.click("#btn-bhv-library");
 await page.waitForTimeout(150);
 await page.click("#btn-bhv-new");
-await page.selectOption("#bhv-name", "stdLiquefaction");
-await page.click("#btn-bhv-save");
-await page.waitForTimeout(150);
-await page.click("#btn-bhv-new");
-await page.selectOption("#bhv-name", "dynamic");
+await page.fill("#bhv-name", "stdLiquefaction");
+await page.selectOption("#bhv-base", "liquefaction");
 await page.click("#btn-bhv-save");
 await page.waitForTimeout(150);
 
@@ -3615,15 +4007,22 @@ const libBefore = await page.evaluate(() => {
     listed: [...document.getElementById("bhv-list").options].map((o) => o.value),
     offered: [...document.getElementById("bhv-add").options].map((o) => o.value),
     resize: getComputedStyle(win.querySelector(".panel")).resize,
-    left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
     fields: document.getElementById("bhv-fields").getBoundingClientRect().height,
     covers: rect.width >= window.innerWidth - 8,
   };
 });
-check("the library lists its definitions alphabetically, whatever order they were written in",
-  libBefore.listed.join() === "dynamic,stdLiquefaction"
-    && libBefore.offered.join() === "dynamic,stdLiquefaction",
-  `list=[${libBefore.listed}], add=[${libBefore.offered}]`);
+check(
+    "the library lists its definitions alphabetically, whatever order they were written in",
+    libBefore.listed.join() === "stdLiquefaction" &&
+        libBefore.offered.includes("dynamic") &&
+        libBefore.offered.includes("liquefaction") &&
+        libBefore.offered.includes("stdLiquefaction"),
+    `list=[${libBefore.listed}], add=[${libBefore.offered}]`
+);
 
 const bhvBar = await page.locator("#bhv-window-handle").boundingBox();
 await page.mouse.move(bhvBar.x + 40, bhvBar.y + bhvBar.height / 2);
@@ -3635,56 +4034,48 @@ const libMoved = await page.evaluate(() => {
   const rect = document.getElementById("bhv-modal").getBoundingClientRect();
   return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 });
-check("the library window is dragged by its titlebar, and does not cover the ship",
-  !libBefore.covers
-    && Math.abs(libMoved.left - libBefore.left - 130) < 2
-    && Math.abs(libMoved.top - libBefore.top - 70) < 2
-    && libMoved.width === libBefore.width,
-  `(${libBefore.left},${libBefore.top}) -> (${libMoved.left},${libMoved.top})`);
+check(
+    "the library window is dragged by its titlebar, and does not cover the ship",
+    !libBefore.covers && Math.abs(libMoved.left - libBefore.left - 130) < 2 && Math.abs(libMoved.top - libBefore.top - 70) < 2 && libMoved.width === libBefore.width,
+    `(${libBefore.left},${libBefore.top}) -> (${libMoved.left},${libMoved.top})`
+);
 
 // The grip is the browser's own, so this is also the check that the panel is
 // the element carrying the size: pulling it has to take the window with it.
 const bhvPanel = await page.locator("#bhv-modal .panel").boundingBox();
 await page.mouse.move(bhvPanel.x + bhvPanel.width - 4, bhvPanel.y + bhvPanel.height - 4);
 await page.mouse.down();
-await page.mouse.move(bhvPanel.x + bhvPanel.width + 76, bhvPanel.y + bhvPanel.height + 54,
-  { steps: 8 });
+await page.mouse.move(bhvPanel.x + bhvPanel.width + 76, bhvPanel.y + bhvPanel.height + 54, { steps: 8 });
 await page.mouse.up();
 await page.waitForTimeout(100);
 const libResized = await page.evaluate(() => {
   const rect = document.getElementById("bhv-modal").getBoundingClientRect();
   return {
-    width: rect.width, height: rect.height,
+        width: rect.width,
+        height: rect.height,
     fields: document.getElementById("bhv-fields").getBoundingClientRect().height,
   };
 });
-check("and pulled bigger from its corner, with the height going to the typed fields",
-  libBefore.resize === "both"
-    && libResized.width > libMoved.width + 60
-    && libResized.height > libMoved.height + 40
-    && libResized.fields > libBefore.fields + 40,
-  `resize=${libBefore.resize}, ${libMoved.width}x${libMoved.height}`
-  + ` -> ${libResized.width}x${libResized.height}, fields ${libBefore.fields} -> ${libResized.fields}`);
+check(
+    "and pulled bigger from its corner, with the height going to the typed fields",
+    libBefore.resize === "both" && libResized.width > libMoved.width + 60 && libResized.height > libMoved.height + 40 && libResized.fields > libBefore.fields + 40,
+    `resize=${libBefore.resize}, ${libMoved.width}x${libMoved.height}` + ` -> ${libResized.width}x${libResized.height}, fields ${libBefore.fields} -> ${libResized.fields}`
+);
 
 await page.click("#btn-bhv-close");
 await page.waitForTimeout(200);
-const defined = await page.evaluate(async () =>
-  (await import("/js/editor.js")).behaviorNames());
-check("the dialog creates typed definitions",
-  defined.join() === "stdLiquefaction,dynamic", `[${defined}]`);
+const defined = await page.evaluate(async () => (await import("/js/editor.js")).behaviorNames());
+check("the dialog creates typed definitions", defined.join() === "stdLiquefaction", `[${defined}]`);
 
 const named = await readPanel();
-check("naming the element unlocks Add, and the element count is shown",
-  !named.addOff && /"crate" — 1 element\b/.test(named.count), `"${named.count}"`);
+check("naming the element unlocks Add, and the element count is shown", !named.addOff && /"crate" — 1 element\b/.test(named.count), `"${named.count}"`);
 
 await page.selectOption("#bhv-add", "stdLiquefaction");
 await page.click("#btn-bhv-add");
 await page.waitForTimeout(250);
 const attached = await readPanel();
-check("Add attaches the behaviour to the node name",
-  attached.applied.join() === "stdLiquefaction", JSON.stringify(attached.applied));
-check("a liquefiable behaviour brings up the linked picker",
-  attached.hasLinkedPicker, `pickers=${attached.hasLinkedPicker}`);
+check("Add attaches the behaviour to the node name", attached.applied.join() === "stdLiquefaction", JSON.stringify(attached.applied));
+check("a liquefiable behaviour brings up the linked picker", attached.hasLinkedPicker, `pickers=${attached.hasLinkedPicker}`);
 
 // a second element, named differently, is a linkable neighbour in the same room
 await page.evaluate(async (ids) => (await import("/js/editor.js")).select([ids.b]), bhvIds);
@@ -3697,17 +4088,14 @@ await page.waitForTimeout(250);
 await page.click('#bhv-applied [data-behavior-key="linked"] .behavior-array-add');
 await page.waitForTimeout(250);
 const linkedNow = await page.evaluate(async () => {
-  const select = document.querySelector(
-    '#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
+    const select = document.querySelector('#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
   return {
     linked: (await import("/js/editor.js")).entityBehaviors("crate")[0].linked,
     options: [...(select?.options ?? [])].map((option) => option.value).filter(Boolean),
   };
 });
-check("the linked picker offers the other named nodes in the room",
-  linkedNow.options.join() === "crateB", `[${linkedNow.options}]`);
-check("picking a linked node stores it",
-  linkedNow.linked.join() === "crateB", `[${linkedNow.linked}]`);
+check("the linked picker offers the other named nodes in the room", linkedNow.options.join() === "crateB", `[${linkedNow.options}]`);
+check("picking a linked node stores it", linkedNow.linked.join() === "crateB", `[${linkedNow.linked}]`);
 
 // a dynamic-only behaviour has nothing to link, so no picker
 await page.selectOption("#bhv-add", "dynamic");
@@ -3717,9 +4105,11 @@ const both = await page.evaluate(() => ({
   applied: [...document.querySelectorAll("#bhv-applied .item .n")].map((e) => e.textContent),
   pickers: document.querySelectorAll('#bhv-applied [data-behavior-key="linked"]').length,
 }));
-check("only the liquefiable one gets a linked picker",
+check(
+    "only the liquefiable one gets a linked picker",
   both.applied.join() === "stdLiquefaction,dynamic" && both.pickers === 1,
-  `${JSON.stringify(both.applied)}, ${both.pickers} picker(s)`);
+    `${JSON.stringify(both.applied)}, ${both.pickers} picker(s)`
+);
 
 // Each behaviour is one box you can fold shut, and what it is for is on its
 // name rather than printed above its fields.
@@ -3742,35 +4132,37 @@ const folded = await page.evaluate(async () => {
   // rebuilding itself - which it does after every edit.
   const ed = await import("/js/editor.js");
   const id = [...ed.state.placements.values()].find((p) => p.name === "crate").id;
-  ed.select([]); ed.select([id]);
+    ed.select([]);
+    ed.select([id]);
   await new Promise((r) => setTimeout(r, 50));
   const rebuilt = shut();
   document.getElementById("btn-bhv-fold").click();
   return { opened, one, all, rebuilt, back: shut(), tips, prose, hidden, label, backLabel };
 });
-check("a behaviour folds on its own and every one folds at once",
-  folded.opened.join() === "false,false" && folded.one.join() === "true,false"
-    && folded.hidden === "none" && folded.all.join() === "true,true"
-    && folded.back.join() === "false,false",
-  JSON.stringify(folded));
-check("the fold-all button says what it will do next",
-  folded.label === "Fold all" && folded.backLabel === "Unfold all", JSON.stringify(folded));
-check("a fold survives the panel rebuilding itself",
-  folded.rebuilt.join() === "true,true", JSON.stringify(folded.rebuilt));
-check("a behaviour's description is on its name, not above its fields",
-  folded.prose === 0 && /liquef/i.test(folded.tips[0] ?? ""), JSON.stringify(folded.tips));
+check(
+    "a behaviour folds on its own and every one folds at once",
+    folded.opened.join() === "false,false" &&
+        folded.one.join() === "true,false" &&
+        folded.hidden === "none" &&
+        folded.all.join() === "true,true" &&
+        folded.back.join() === "false,false",
+    JSON.stringify(folded)
+);
+check("the fold-all button says what it will do next", folded.label === "Fold all" && folded.backLabel === "Unfold all", JSON.stringify(folded));
+check("a fold survives the panel rebuilding itself", folded.rebuilt.join() === "true,true", JSON.stringify(folded.rebuilt));
+check("a behaviour's description is on its name, not above its fields", folded.prose === 0 && /liquef/i.test(folded.tips[0] ?? ""), JSON.stringify(folded.tips));
 
 // Folded is the default - an element answers "what do you do" as a list of
 // names, not as every form it carries - and Add is the one exception.
 const foldDefault = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  const shut = () => [...document.querySelectorAll("#bhv-applied .bhv-entry")]
-    .map((box) => box.classList.contains("folded"));
+    const shut = () => [...document.querySelectorAll("#bhv-applied .bhv-entry")].map((box) => box.classList.contains("folded"));
   const idOf = (name) => [...ed.state.placements.values()].find((p) => p.name === name).id;
   const settle = () => new Promise((r) => setTimeout(r, 60));
 
   ed.addEntityBehavior("crateB", "stdLiquefaction");
-  ed.select([]); ed.select([idOf("crateB")]);
+    ed.select([]);
+    ed.select([idOf("crateB")]);
   await settle();
   const attached = shut();
 
@@ -3794,19 +4186,22 @@ const foldDefault = await page.evaluate(async () => {
   const afterRemove = shut();
 
   ed.removeEntityBehavior("crateB", 0);
-  ed.select([]); ed.select([idOf("crate")]);
+    ed.select([]);
+    ed.select([idOf("crate")]);
   await settle();
   return { attached, afterAdd, afterStrip, afterStripBack, afterRemove };
 });
-check("a behaviour opens folded, and only the one just added opens",
+check(
+    "a behaviour opens folded, and only the one just added opens",
   foldDefault.attached.join() === "true" && foldDefault.afterAdd.join() === "true,false",
-  JSON.stringify(foldDefault));
-check("the whole title strip folds it, and Remove still removes",
-  foldDefault.afterStrip.join() === "false,false"
-    && foldDefault.afterStripBack.join() === "true,false",
-  JSON.stringify(foldDefault));
-check("removing a behaviour slides the folds under it up with it",
-  foldDefault.afterRemove.join() === "false", JSON.stringify(foldDefault.afterRemove));
+    JSON.stringify(foldDefault)
+);
+check(
+    "the whole title strip folds it, and Remove still removes",
+    foldDefault.afterStrip.join() === "false,false" && foldDefault.afterStripBack.join() === "true,false",
+    JSON.stringify(foldDefault)
+);
+check("removing a behaviour slides the folds under it up with it", foldDefault.afterRemove.join() === "false", JSON.stringify(foldDefault.afterRemove));
 
 // isDynamicNode: only `dynamic: true` counts - liquefiable no longer implies it
 const dyn = await page.evaluate(async () => {
@@ -3821,23 +4216,21 @@ const dyn = await page.evaluate(async () => {
     dynamic: mf.buildManifest().entities.crateB.behaviors.find((b) => b.name === "dynamic"),
   };
 });
-check("`dynamic: true` makes a node dynamic",
-  dyn.dynamic && !dyn.unknown, JSON.stringify(dyn));
-check("an empty linked list is left out of the manifest",
-  !("linked" in dyn.dynamic), JSON.stringify(dyn.dynamic));
+check("`dynamic: true` makes a node dynamic", dyn.dynamic && !dyn.unknown, JSON.stringify(dyn));
+check("an empty linked list is left out of the manifest", !("linked" in dyn.dynamic), JSON.stringify(dyn.dynamic));
 
 await page.click("#bhv-applied [data-remove='1']");
 await page.waitForTimeout(250);
 const removed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return { names: ed.entityBehaviors("crate").map((b) => b.name),
+    return {
+        names: ed.entityBehaviors("crate").map((b) => b.name),
     // stdLiquefaction is liquefiable, which no longer implies dynamic
-    stillDynamic: ed.isDynamicNode("crate") };
+        stillDynamic: ed.isDynamicNode("crate"),
+    };
 });
-check("Remove detaches it again",
-  removed.names.join() === "stdLiquefaction", `[${removed.names}]`);
-check("liquefiable alone does not make a node dynamic",
-  !removed.stillDynamic, JSON.stringify(removed));
+check("Remove detaches it again", removed.names.join() === "stdLiquefaction", `[${removed.names}]`);
+check("liquefiable alone does not make a node dynamic", !removed.stillDynamic, JSON.stringify(removed));
 
 // Assignment parameters are typed overrides. The definition stays untouched,
 // and the manifest keeps the same wire shape.
@@ -3846,7 +4239,10 @@ check("liquefiable alone does not make a node dynamic",
 // nothing at runtime, which is exactly what the list is there to prevent.
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.setBehaviorDef("weaponLiquefactor", { sounds: { longSplash: ["waterLongSplash"] } });
+    ed.setBehaviorDef("testLiquefactor", {
+        base: "weaponLiquefactor",
+        sounds: { longSplash: ["waterLongSplash"] },
+    });
   const id = [...ed.state.placements.values()].find((p) => p.name === "crate").id;
   ed.select([]);
   ed.select([id]);
@@ -3867,26 +4263,23 @@ const paramsStored = await page.evaluate(async () => {
   };
 });
 const paramsWritten = paramsStored.written.find((b) => b.name === "stdLiquefaction");
-check("typed parameters are stored on the applied behaviour, not the definition",
-  paramsStored.entity?.sound === "longSplash"
-    && paramsStored.definition?.sound === undefined,
-  JSON.stringify(paramsStored.entity));
-check("typed parameters reach the unchanged manifest shape",
-  paramsWritten?.sound === "longSplash" && paramsWritten?.linked?.join() === "crateB",
-  JSON.stringify(paramsWritten));
+check(
+    "typed parameters are stored on the applied behaviour, not the definition",
+    paramsStored.entity?.sound === "longSplash" && paramsStored.definition?.sound === undefined,
+    JSON.stringify(paramsStored.entity)
+);
+check("typed parameters reach the unchanged manifest shape", paramsWritten?.sound === "longSplash" && paramsWritten?.linked?.join() === "crateB", JSON.stringify(paramsWritten));
 
 // Vector controls still edit in editor space, while the manifest writes glTF
 // space. The flip must be its own inverse, or undo would mirror the facing.
 const dirRoundTrip = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.setBehaviorDef("player", {});
   ed.addEntityBehavior("crate", "player");
   return ed.entityBehaviors("crate").findIndex((b) => b.name === "player");
 });
 await page.waitForTimeout(200);
 await unfoldBehavior(dirRoundTrip);
-const directionInputs = page.locator(
-  `[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-vector input`);
+const directionInputs = page.locator(`[data-behavior-form="${dirRoundTrip}"] [data-behavior-key="direction"] .behavior-vector input`);
 await directionInputs.nth(0).fill("-1");
 await directionInputs.nth(0).blur();
 await page.waitForTimeout(150);
@@ -3906,12 +4299,11 @@ const directionRoundTrip = await page.evaluate(async () => {
     after,
   };
 });
-check("a direction survives undo without mirroring itself",
-  directionRoundTrip.before.direction.join() === "-1,0,0"
-    && directionRoundTrip.snapshot.direction.join() === "1,0,0"
-    && directionRoundTrip.after?.direction.join() === "-1,0,0",
-  `editor ${directionRoundTrip.before.direction} -> stored ${directionRoundTrip.snapshot.direction}`
-  + ` -> back ${directionRoundTrip.after?.direction}`);
+check(
+    "a direction survives undo without mirroring itself",
+    directionRoundTrip.before.direction.join() === "-1,0,0" && directionRoundTrip.snapshot.direction.join() === "1,0,0" && directionRoundTrip.after?.direction.join() === "-1,0,0",
+    `editor ${directionRoundTrip.before.direction} -> stored ${directionRoundTrip.snapshot.direction}` + ` -> back ${directionRoundTrip.after?.direction}`
+);
 
 // isProbeExcludedNode: what an environment probe must not photograph. Five
 // separate reasons, because they are five separate facts about an element -
@@ -3919,19 +4311,12 @@ check("a direction survives undo without mirroring itself",
 // with the runtime is its name, not a flag in its body.
 const probeOut = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.setBehaviorDef("probeExcluded", { reflectionProbe: "exclude" });
-  ed.setBehaviorDef("weaponLiquefactor", { sounds: { fire: ["zap"] } });
-  ed.setBehaviorDef("weaponAntiGravityGun", {});
-  ed.setBehaviorDef("playAnimation", {});
-  ed.setBehaviorDef("dynamic", { dynamic: true });
-  ed.setBehaviorDef("anyLiquefaction", { liquefiable: true });
-  ed.setBehaviorDef("enableEntity", {});
   ed.addEntityBehavior("optedOut", "probeExcluded");
   ed.addEntityBehavior("gun", "weaponLiquefactor");
   ed.addEntityBehavior("gravityGun", "weaponAntiGravityGun");
   ed.addEntityBehavior("fan", "playAnimation");
   ed.addEntityBehavior("barrel", "dynamic");
-  ed.addEntityBehavior("icicle", "anyLiquefaction");
+    ed.addEntityBehavior("icicle", "liquefaction");
   ed.addEntityBehavior("plainDoor", "enableEntity");
   // the last one carries a harmless behaviour first, so this also proves the
   // test is over the whole list rather than just the first entry
@@ -3970,9 +4355,33 @@ await page.evaluate(async () => {
         activeChunk: "CH00_Storage",
         markers: [],
         instances: [
-            { id: "T1", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "trap", position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
-            { id: "T2", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "plainWall", position: [4, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
-            { id: "T3", module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", chunk: "CH00_Storage", name: "trapTrigger", position: [8, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+            {
+                id: "T1",
+                module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+                chunk: "CH00_Storage",
+                name: "trap",
+                position: [0, 0, 0],
+                rotation: [0, 0, 0],
+                scale: [1, 1, 1],
+            },
+            {
+                id: "T2",
+                module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+                chunk: "CH00_Storage",
+                name: "plainWall",
+                position: [4, 0, 0],
+                rotation: [0, 0, 0],
+                scale: [1, 1, 1],
+            },
+            {
+                id: "T3",
+                module: "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+                chunk: "CH00_Storage",
+                name: "trapTrigger",
+                position: [8, 0, 0],
+                rotation: [0, 0, 0],
+                scale: [1, 1, 1],
+            },
         ],
         behaviors: { hideEntity: {} },
         entities: {
@@ -4012,9 +4421,11 @@ const hideRule = await page.evaluate(async () => {
 });
 check(
     "an empty parameters box is what says 'hide me' — name and an empty linked are not parameters",
-    Object.keys(hideRule.bare).length === 0 && Object.keys(hideRule.linkedEmpty).length === 0
-        && Object.keys(hideRule.linkedFull).length === 1 && Object.keys(hideRule.withEvent).length === 1
-        && hideRule.hidden.join() === "trap",
+    Object.keys(hideRule.bare).length === 0 &&
+        Object.keys(hideRule.linkedEmpty).length === 0 &&
+        Object.keys(hideRule.linkedFull).length === 1 &&
+        Object.keys(hideRule.withEvent).length === 1 &&
+        hideRule.hidden.join() === "trap",
     JSON.stringify(hideRule)
 );
 
@@ -4042,26 +4453,14 @@ check(
     !hideRun.shown.trap && hideRun.shown.plainWall && hideRun.shown.trapTrigger,
     JSON.stringify(hideRun.shown)
 );
-check(
-    "and a probe neither renders nor digests it",
-    !hideRun.inProbe.trap && hideRun.inProbe.plainWall && hideRun.inProbe.trapTrigger,
-    JSON.stringify(hideRun.inProbe)
-);
-check(
-    "an event-driven hideEntity waits, so its own element stays",
-    hideRun.shown.trapTrigger && hideRun.inProbe.trapTrigger,
-    JSON.stringify(hideRun)
-);
+check("and a probe neither renders nor digests it", !hideRun.inProbe.trap && hideRun.inProbe.plainWall && hideRun.inProbe.trapTrigger, JSON.stringify(hideRun.inProbe));
+check("an event-driven hideEntity waits, so its own element stays", hideRun.shown.trapTrigger && hideRun.inProbe.trapTrigger, JSON.stringify(hideRun));
 
 await page.uncheck("#run-behaviors");
 await page.waitForTimeout(400);
 const hideOff = await hideState();
 const hideOffStatus = await page.textContent("#status-text");
-check(
-    "Run behaviours off puts it back — on screen, in the render list and in the digest",
-    hideOff.shown.trap && hideOff.inProbe.trap,
-    JSON.stringify(hideOff)
-);
+check("Run behaviours off puts it back — on screen, in the render list and in the digest", hideOff.shown.trap && hideOff.inProbe.trap, JSON.stringify(hideOff));
 check("and the status line says how many came back", /1 element\(s\) no longer hidden/.test(hideOffStatus), hideOffStatus);
 
 await page.check("#run-behaviors");
@@ -4079,11 +4478,7 @@ await page.evaluate(async () => {
 });
 await page.waitForTimeout(400);
 const hideParamed = await hideState();
-check(
-    "giving it an event subscription delays the action, and the element comes straight back",
-    hideParamed.shown.trap && hideParamed.inProbe.trap,
-    JSON.stringify(hideParamed)
-);
+check("giving it an event subscription delays the action, and the element comes straight back", hideParamed.shown.trap && hideParamed.inProbe.trap, JSON.stringify(hideParamed));
 
 await page.evaluate(async () => {
     const ed = await import("/js/editor.js");
@@ -4104,11 +4499,7 @@ await page.waitForFunction(
 );
 await page.waitForTimeout(400);
 const hideExit = await hideState();
-check(
-    "leaving the runtime view shows it again, setting or no setting",
-    hideExit.shown.trap && (await page.isChecked("#run-behaviors")),
-    JSON.stringify(hideExit.shown)
-);
+check("leaving the runtime view shows it again, setting or no setting", hideExit.shown.trap && (await page.isChecked("#run-behaviors")), JSON.stringify(hideExit.shown));
 
 // ---- Run behaviours: the runtime view plays what the game would play -------
 // A `playAnimation` element is animated on screen the way `play-animation.ts`
@@ -4375,7 +4766,7 @@ const animLibraryOpen = await page.isVisible("#bhv-modal");
 await page.click("#btn-bhv-close");
 await page.waitForTimeout(200);
 check(
-    "Edit behaviours… sits in Settings → Runtime and still opens the library",
+    "Edit preset behaviors… sits in Settings → Runtime and opens the preset editor",
     !animButton.inInspector && animButton.section === "Runtime" && animLibraryOpen,
     JSON.stringify(animButton) + ` open=${animLibraryOpen}`
 );
@@ -4399,13 +4790,15 @@ await page.evaluate(() => {
     window.fetch = (url, opts) => {
         if (String(url).includes("/api/sync-ship")) {
             window.__demo.posts.push({ method: opts?.method, body: JSON.parse(opts?.body || "{}") });
-            return Promise.resolve(new Response(JSON.stringify(window.__demo.reply),
-                { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response(JSON.stringify(window.__demo.reply), { status: 200, headers: { "Content-Type": "application/json" } }));
         }
         return window.__realFetch(url, opts);
     };
     window.__realOpen = window.open;
-    window.open = (u, name) => { window.__demo.opened.push([u, name]); return {}; };
+    window.open = (u, name) => {
+        window.__demo.opened.push([u, name]);
+        return {};
+    };
 });
 
 // Off by default, and off is what the script has to be *told* - its own default
@@ -4426,10 +4819,15 @@ const demoOff = await page.evaluate(async () => {
 });
 check(
     "Start demo publishes unoptimized by default, and opens the demo in a named tab",
-    demoOff.posts.length === 1 && demoOff.posts[0].method === "POST" && demoOff.posts[0].body.optimize === false
-        && demoOff.opened.length === 1 && demoOff.opened[0][0] === "http://localhost:5174/lite/demo-aquanova.html"
-        && demoOff.opened[0][1] === "aquanova-demo"
-        && demoOff.box === false && demoOff.setting === false && demoOff.default === false,
+    demoOff.posts.length === 1 &&
+        demoOff.posts[0].method === "POST" &&
+        demoOff.posts[0].body.optimize === false &&
+        demoOff.opened.length === 1 &&
+        demoOff.opened[0][0] === "http://localhost:5174/lite/demo-aquanova.html" &&
+        demoOff.opened[0][1] === "aquanova-demo" &&
+        demoOff.box === false &&
+        demoOff.setting === false &&
+        demoOff.default === false,
     JSON.stringify(demoOff)
 );
 check("and says which of the two it published", /published \(unoptimized\)/.test(demoOff.status), demoOff.status);
@@ -4451,8 +4849,7 @@ const demoOn = await page.evaluate(async () => {
 });
 check(
     "ticking Optimize ship asks for the compressed publish instead",
-    demoOn.setting === true && demoOn.posts.length === 1 && demoOn.posts[0].body.optimize === true
-        && /published \(optimized\)/.test(demoOn.status),
+    demoOn.setting === true && demoOn.posts.length === 1 && demoOn.posts[0].body.optimize === true && /published \(optimized\)/.test(demoOn.status),
     JSON.stringify(demoOn)
 );
 
@@ -4468,8 +4865,7 @@ const demoFailed = await page.evaluate(async () => {
 });
 check(
     "a failed publish opens nothing and says so, pointing at the script's output",
-    demoFailed.opened === 0 && /demo NOT started/.test(demoFailed.status)
-        && /exited with code 1/.test(demoFailed.status) && /console/.test(demoFailed.status),
+    demoFailed.opened === 0 && /demo NOT started/.test(demoFailed.status) && /exited with code 1/.test(demoFailed.status) && /console/.test(demoFailed.status),
     JSON.stringify(demoFailed)
 );
 
@@ -4484,8 +4880,7 @@ const demoNoScript = await page.evaluate(async () => {
 });
 check(
     "and a server that cannot run it at all quotes its own reason",
-    demoNoScript.opened === 0 && /tsx not found/.test(demoNoScript.status)
-        && !/exited with code/.test(demoNoScript.status),
+    demoNoScript.opened === 0 && /tsx not found/.test(demoNoScript.status) && !/exited with code/.test(demoNoScript.status),
     JSON.stringify(demoNoScript)
 );
 
@@ -4519,8 +4914,7 @@ const demoPrefs = await page.evaluate(async () => {
 });
 check(
     "Optimize ship is saved, restored, reset — and never on the undo stack",
-    demoPrefs.on === true && demoPrefs.restored === false && demoPrefs.undoable === false
-        && demoPrefs.afterReset === false && demoPrefs.box === false,
+    demoPrefs.on === true && demoPrefs.restored === false && demoPrefs.undoable === false && demoPrefs.afterReset === false && demoPrefs.box === false,
     JSON.stringify(demoPrefs)
 );
 
@@ -4550,31 +4944,35 @@ const doorBhv = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   ed.state.chunks = ["CH_DA", "CH_DB", "CH_DC"];
   ed.state.activeChunk = "CH_DA";
-  ed.setBehaviorDef("stdLiquefaction", { liquefiable: true });
+    ed.setBehaviorDef("stdLiquefaction", { base: "liquefaction" });
   // one named element per room, to prove the picker reads *both* sides
   const a = await ed.placeAt(M, new V(0, 0, 0), { chunk: "CH_DA", name: "leafL", silent: true });
   const b = await ed.placeAt(M, new V(6, 0, 0), { chunk: "CH_DB", name: "leafR", silent: true });
   await ed.placeAt(M, new V(30, 0, 0), { chunk: "CH_DC", name: "elsewhere", silent: true });
-  const door = mk.addDoor(new V(3, 0, 0),
-    { chunkA: "CH_DA", chunkB: "CH_DB", leaves: [a.id, b.id], silent: true });
+    const door = mk.addDoor(new V(3, 0, 0), { chunkA: "CH_DA", chunkB: "CH_DB", leaves: [a.id, b.id], silent: true });
   return { door: door.id, key: ed.entityNameOf(door), name: door.name ?? null };
 });
 await page.evaluate((id) => import("/js/editor.js").then((ed) => ed.select([id])), doorBhv.door);
 await page.waitForTimeout(200);
 
 const doorPanel = await readPanel();
-check("the behaviour panel opens on a door, keyed by its id",
-  doorPanel.shown && doorBhv.key === doorBhv.door && doorBhv.name === null
-    && new RegExp(`^${doorBhv.door} — a door, so it stands alone under its id$`)
-      .test(doorPanel.count) && !doorPanel.addOff,
-  `key="${doorBhv.key}", count="${doorPanel.count}"`);
+check(
+    "the behaviour panel opens on a door, keyed by its id",
+    doorPanel.shown &&
+        doorBhv.key === doorBhv.door &&
+        doorBhv.name === null &&
+        new RegExp(`^${doorBhv.door} — a door, so it stands alone under its id$`).test(doorPanel.count) &&
+        !doorPanel.addOff,
+    `key="${doorBhv.key}", count="${doorPanel.count}"`
+);
 
-const doorNameRow = await page.evaluate(() =>
-  document.getElementById("insp-name").parentElement.hidden);
+const doorNameRow = await page.evaluate(() => document.getElementById("insp-name").parentElement.hidden);
 check("a door is deliberately not nameable", doorNameRow === true, String(doorNameRow));
 
 // attach through the UI, exactly as a user would
@@ -4590,20 +4988,22 @@ const doorAttached = await page.evaluate(async () => {
   return {
     applied: ed.entityBehaviors(id).map((b) => b.name),
     candidates: (() => {
-      const select = document.querySelector(
-        '#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
+            const select = document.querySelector('#bhv-applied [data-behavior-key="linked"] .behavior-array-row select');
       return [...(select?.options ?? [])].map((option) => option.value).filter(Boolean);
     })(),
     exported: Object.keys(mf.buildManifest().entities || {}),
   };
 });
-check("a behaviour attached to a door is exported under the door's id",
-  doorAttached.applied.join() === "stdLiquefaction"
-    && doorAttached.exported.includes(doorBhv.door),
-  JSON.stringify(doorAttached.applied) + " -> " + JSON.stringify(doorAttached.exported));
-check("the linked picker offers both of the door's sides, and nothing else",
+check(
+    "a behaviour attached to a door is exported under the door's id",
+    doorAttached.applied.join() === "stdLiquefaction" && doorAttached.exported.includes(doorBhv.door),
+    JSON.stringify(doorAttached.applied) + " -> " + JSON.stringify(doorAttached.exported)
+);
+check(
+    "the linked picker offers both of the door's sides, and nothing else",
   doorAttached.candidates.slice().sort().join() === "leafL,leafR",
-  JSON.stringify(doorAttached.candidates));
+    JSON.stringify(doorAttached.candidates)
+);
 
 // A door id is a slot the editor hands back out, so deleting one has to take
 // its behaviours with it - or the next door placed would silently inherit them.
@@ -4617,31 +5017,32 @@ const doorGone = await page.evaluate(async () => {
   const afterDelete = ed.state.entities.has(id);
   const reused = mk.addDoor(new V(3, 0, 0), { silent: true });
   const inherited = ed.entityBehaviors(reused.id).map((b) => b.name);
-  ed.select([reused.id]); ed.removeSelected();
+    ed.select([reused.id]);
+    ed.removeSelected();
   // addDoor is silent, so it left no entry of its own: the two removals are the
   // whole stack, and undoing both is what puts the original door back.
-  await ed.undo(); await ed.undo();
-  return { id, afterDelete, reusedId: reused.id, inherited,
-    afterUndo: ed.entityBehaviors(id).map((b) => b.name) };
+    await ed.undo();
+    await ed.undo();
+    return { id, afterDelete, reusedId: reused.id, inherited, afterUndo: ed.entityBehaviors(id).map((b) => b.name) };
 });
-check("deleting a door drops its behaviours, and the reused id inherits nothing",
-  doorGone.afterDelete === false && doorGone.reusedId === doorGone.id
-    && doorGone.inherited.length === 0,
-  JSON.stringify(doorGone));
-check("undo brings a deleted door's behaviours back",
-  doorGone.afterUndo.join() === "stdLiquefaction", JSON.stringify(doorGone.afterUndo));
+check(
+    "deleting a door drops its behaviours, and the reused id inherits nothing",
+    doorGone.afterDelete === false && doorGone.reusedId === doorGone.id && doorGone.inherited.length === 0,
+    JSON.stringify(doorGone)
+);
+check("undo brings a deleted door's behaviours back", doorGone.afterUndo.join() === "stdLiquefaction", JSON.stringify(doorGone.afterUndo));
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   document.activeElement?.blur();
 });
 // Park the pointer back over the viewport. The wheel bindings live there, so
 // leaving the cursor on the inspector quietly turns every later wheel test into
 // a no-op - which is exactly what happened the first time this ran.
 {
-  const c = await page.evaluate(() =>
-    window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+    const c = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
   await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2, { steps: 3 });
 }
 
@@ -4654,7 +5055,9 @@ const gizmo = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.dragAxis = "xz";
 
   const a = await ed.placeAt(M, new V(0, 0, 0), { rotation: [0, 90, 0], silent: true });
@@ -4669,14 +5072,16 @@ const gizmo = await page.evaluate(async () => {
     if (!arm) return null;
     arm.computeWorldMatrix(true);
     const m = arm.getWorldMatrix();
-    return m.getRow(2).toVector3().normalize().asArray().map((v) => Math.round(v * 100) / 100);
+        return m
+            .getRow(2)
+            .toVector3()
+            .normalize()
+            .asArray()
+            .map((v) => Math.round(v * 100) / 100);
   };
-  const lit = () => ["x", "y", "z"].map((k) =>
-    ed.state.scene.getMaterialByName(`AXES_MAT_${k}`)?.alpha);
-  const marks = (kind) => ["x", "y", "z"]
-    .map((k) => (kind === "rot"
-      ? ed.state.scene.getTransformNodeByName(`AXES_${k}_rot`)
-      : ed.state.scene.getMeshByName(`AXES_${k}_${kind}`))?.isEnabled());
+    const lit = () => ["x", "y", "z"].map((k) => ed.state.scene.getMaterialByName(`AXES_MAT_${k}`)?.alpha);
+    const marks = (kind) =>
+        ["x", "y", "z"].map((k) => (kind === "rot" ? ed.state.scene.getTransformNodeByName(`AXES_${k}_rot`) : ed.state.scene.getMeshByName(`AXES_${k}_${kind}`))?.isEnabled());
 
   const before = !!ed.axesTarget();
   ed.select([a.id]);
@@ -4726,38 +5131,46 @@ const gizmo = await page.evaluate(async () => {
   ed.state.scene.render();
   const afterDelete = { target: ed.axesTarget(), node: !!ed.state.scene.getTransformNodeByName("AXES") };
   const leftover = ed.state.scene.meshes.filter((m) => m.name.startsWith("AXES_")).length;
-  ed.clearAll(); ed.select([]);
-  return { before, on, turned, yMode, rotY, rotX, scaleY, scaleAll, same, gone, moved,
-    movedTo, pos, afterDelete, leftover };
+    ed.clearAll();
+    ed.select([]);
+    return { before, on, turned, yMode, rotY, rotX, scaleY, scaleAll, same, gone, moved, movedTo, pos, afterDelete, leftover };
 });
-check("X shows the axes, and X again hides them",
+check(
+    "X shows the axes, and X again hides them",
   gizmo.before === false && gizmo.on !== null && gizmo.same === null && gizmo.gone,
-  `shown=${gizmo.on}, toggled off=${gizmo.same === null}`);
-check("the arrows are world-aligned, whatever the element is turned to",
+    `shown=${gizmo.on}, toggled off=${gizmo.same === null}`
+);
+check(
+    "the arrows are world-aligned, whatever the element is turned to",
   // the element carries a 90-degree Y turn; the gizmo must ignore it, because
   // a drag moves along the world axes and not the element's own
-  Math.abs(gizmo.turned.x[0] - 1) < 0.02 && Math.abs(gizmo.turned.y[1] - 1) < 0.02
-    && Math.abs(gizmo.turned.z[2] - 1) < 0.02,
-  `X->[${gizmo.turned.x}] Y->[${gizmo.turned.y}] Z->[${gizmo.turned.z}]`);
-check("the live drag axes are bright and the locked ones dimmed",
-  gizmo.turned.alpha[0] === 1 && gizmo.turned.alpha[2] === 1 && gizmo.turned.alpha[1] < 1
-    && gizmo.yMode.alpha[1] === 1 && gizmo.yMode.alpha[0] < 1 && gizmo.yMode.alpha[2] < 1,
-  `X/Z mode ${JSON.stringify(gizmo.turned.alpha)}, Y mode ${JSON.stringify(gizmo.yMode.alpha)}`);
-check("a curved arrow encircles the rotation axis, which V does not touch",
-  gizmo.rotY.join() === "false,true,false" && gizmo.rotX.ring.join() === "true,false,false"
+    Math.abs(gizmo.turned.x[0] - 1) < 0.02 && Math.abs(gizmo.turned.y[1] - 1) < 0.02 && Math.abs(gizmo.turned.z[2] - 1) < 0.02,
+    `X->[${gizmo.turned.x}] Y->[${gizmo.turned.y}] Z->[${gizmo.turned.z}]`
+);
+check(
+    "the live drag axes are bright and the locked ones dimmed",
+    gizmo.turned.alpha[0] === 1 && gizmo.turned.alpha[2] === 1 && gizmo.turned.alpha[1] < 1 && gizmo.yMode.alpha[1] === 1 && gizmo.yMode.alpha[0] < 1 && gizmo.yMode.alpha[2] < 1,
+    `X/Z mode ${JSON.stringify(gizmo.turned.alpha)}, Y mode ${JSON.stringify(gizmo.yMode.alpha)}`
+);
+check(
+    "a curved arrow encircles the rotation axis, which V does not touch",
+    gizmo.rotY.join() === "false,true,false" &&
+        gizmo.rotX.ring.join() === "true,false,false" &&
     // rotation on X while dragging on Y: the ring is on the dimmed arm
-    && gizmo.rotX.alpha[0] < 1,
-  `rot Y ${JSON.stringify(gizmo.rotY)}, rot X ${JSON.stringify(gizmo.rotX.ring)} ` +
-  `on a dimmed arm (alpha ${gizmo.rotX.alpha[0]})`);
-check("a cube on the tip marks the scale axis, all three when it is 'all'",
+        gizmo.rotX.alpha[0] < 1,
+    `rot Y ${JSON.stringify(gizmo.rotY)}, rot X ${JSON.stringify(gizmo.rotX.ring)} ` + `on a dimmed arm (alpha ${gizmo.rotX.alpha[0]})`
+);
+check(
+    "a cube on the tip marks the scale axis, all three when it is 'all'",
   gizmo.scaleY.join() === "false,true,false" && gizmo.scaleAll.join() === "true,true,true",
-  `Y ${JSON.stringify(gizmo.scaleY)}, all ${JSON.stringify(gizmo.scaleAll)}`);
-check("X on a different element moves the axes there",
-  gizmo.moved !== null && gizmo.pos[0] > 15,
-  `now on ${gizmo.movedTo} at x=${gizmo.pos[0]}`);
-check("deleting the element takes its axes with it, leaving no meshes behind",
+    `Y ${JSON.stringify(gizmo.scaleY)}, all ${JSON.stringify(gizmo.scaleAll)}`
+);
+check("X on a different element moves the axes there", gizmo.moved !== null && gizmo.pos[0] > 15, `now on ${gizmo.movedTo} at x=${gizmo.pos[0]}`);
+check(
+    "deleting the element takes its axes with it, leaving no meshes behind",
   gizmo.afterDelete.target === null && !gizmo.afterDelete.node && gizmo.leftover === 0,
-  `target=${gizmo.afterDelete.target}, ${gizmo.leftover} meshes left`);
+    `target=${gizmo.afterDelete.target}, ${gizmo.leftover} meshes left`
+);
 
 // ---- 1d-septendecies. Shift+X shows the element's own axes ------------------
 // Scaling is local, so on anything that has been turned a world gizmo cannot
@@ -4766,9 +5179,10 @@ const localGizmo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
-    { rotation: [0, 90, 0], silent: true });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { rotation: [0, 90, 0], silent: true });
   const dirs = () => {
     const out = {};
     for (const k of ["x", "y", "z"]) {
@@ -4786,36 +5200,44 @@ const localGizmo = await page.evaluate(async () => {
   // a mirrored element's local +X really does point the other way
   a.node.scaling.x = -1;
   a.node.computeWorldMatrix(true);
-  ed.toggleAxes(a.id, "world"); ed.toggleAxes(a.id, "local");
+    ed.toggleAxes(a.id, "world");
+    ed.toggleAxes(a.id, "local");
   const mirrored = dirs();
   // same element, same space toggles off; the other space re-aims instead
   const off = ed.toggleAxes(a.id, "local");
   ed.toggleAxes(a.id, "world");
   const swapped = ed.toggleAxes(a.id, "local");
   const stillOn = ed.axesTarget();
-  ed.hideAxes(); ed.clearAll(); ed.select([]);
+    ed.hideAxes();
+    ed.clearAll();
+    ed.select([]);
   return { world, local, mirrored, off, swapped, stillOn };
 });
-check("X stays world-aligned whatever the element is turned to",
-  localGizmo.world.space === "world"
-    && localGizmo.world.dirs.x.join() === "1,0,0"
-    && localGizmo.world.dirs.y.join() === "0,1,0"
-    && localGizmo.world.dirs.z.join() === "0,0,1",
-  JSON.stringify(localGizmo.world.dirs));
-check("Shift+X turns the arrows onto the element's own axes",
-  localGizmo.local.space === "local"
+check(
+    "X stays world-aligned whatever the element is turned to",
+    localGizmo.world.space === "world" && localGizmo.world.dirs.x.join() === "1,0,0" && localGizmo.world.dirs.y.join() === "0,1,0" && localGizmo.world.dirs.z.join() === "0,0,1",
+    JSON.stringify(localGizmo.world.dirs)
+);
+check(
+    "Shift+X turns the arrows onto the element's own axes",
+    localGizmo.local.space === "local" &&
     // a 90-degree Y turn sends local X to world -Z and local Z to world +X,
     // and leaves Y alone
-    && localGizmo.local.dirs.x.join() === "0,0,-1"
-    && localGizmo.local.dirs.y.join() === "0,1,0"
-    && localGizmo.local.dirs.z.join() === "1,0,0",
-  JSON.stringify(localGizmo.local.dirs));
-check("a mirrored element's local X points the other way",
+        localGizmo.local.dirs.x.join() === "0,0,-1" &&
+        localGizmo.local.dirs.y.join() === "0,1,0" &&
+        localGizmo.local.dirs.z.join() === "1,0,0",
+    JSON.stringify(localGizmo.local.dirs)
+);
+check(
+    "a mirrored element's local X points the other way",
   localGizmo.mirrored.x.join() === "0,0,1" && localGizmo.mirrored.z.join() === "1,0,0",
-  JSON.stringify(localGizmo.mirrored));
-check("the same space toggles off, the other space re-aims",
+    JSON.stringify(localGizmo.mirrored)
+);
+check(
+    "the same space toggles off, the other space re-aims",
   localGizmo.off === null && localGizmo.swapped !== null && localGizmo.stillOn !== null,
-  `off=${localGizmo.off}, swapped=${localGizmo.swapped}`);
+    `off=${localGizmo.off}, swapped=${localGizmo.swapped}`
+);
 
 // Showing the axes says which space you are thinking in, so moving and turning
 // follow it. You press Shift+X to see which way the element's own X grows
@@ -4825,44 +5247,53 @@ const axesSetSpace = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.state.camera.position = new V(4, 6, -7);
   ed.state.camera.setTarget(new V(0, 0.5, 0));
   i.setAxisSpace("world");
-  const key = (shift) => window.dispatchEvent(new KeyboardEvent("keydown",
-    { key: shift ? "X" : "x", code: "KeyX", shiftKey: shift, bubbles: true }));
-  const now = () => ({ space: ed.state.axisSpace, combo: document.getElementById("axis-space").value,
-    drawn: ed.axesSpace(), shown: ed.axesTarget() });
+    const key = (shift) => window.dispatchEvent(new KeyboardEvent("keydown", { key: shift ? "X" : "x", code: "KeyX", shiftKey: shift, bubbles: true }));
+    const now = () => ({ space: ed.state.axisSpace, combo: document.getElementById("axis-space").value, drawn: ed.axesSpace(), shown: ed.axesTarget() });
 
   const start = now();
-  key(true);  const toLocal = now();          // Shift+X -> local axes, local space
-  key(false); const toWorld = now();          // X re-aims -> world, world space
-  key(false); const hidden = now();           // same key again hides
+    key(true);
+    const toLocal = now(); // Shift+X -> local axes, local space
+    key(false);
+    const toWorld = now(); // X re-aims -> world, world space
+    key(false);
+    const hidden = now(); // same key again hides
   i.setAxisSpace("local");
-  key(false); const afterHiddenThenShow = now();
+    key(false);
+    const afterHiddenThenShow = now();
   // and hiding must not touch it
   i.setAxisSpace("local");
   const beforeHide = ed.state.axisSpace;
-  key(false); const afterHide = now();
-  ed.hideAxes(); ed.clearAll(); ed.select([]);
+    key(false);
+    const afterHide = now();
+    ed.hideAxes();
+    ed.clearAll();
+    ed.select([]);
   i.setAxisSpace("world");
   return { start, toLocal, toWorld, hidden, afterHiddenThenShow, beforeHide, afterHide };
 });
-check("Shift+X shows local axes and puts moving and turning in local space",
-  axesSetSpace.start.space === "world" && axesSetSpace.toLocal.drawn === "local"
-    && axesSetSpace.toLocal.space === "local" && axesSetSpace.toLocal.combo === "local",
-  `${axesSetSpace.start.space} -> ${axesSetSpace.toLocal.space},`
-  + ` gizmo ${axesSetSpace.toLocal.drawn}`);
-check("and X re-aims them to world and takes the space with it",
-  axesSetSpace.toWorld.drawn === "world" && axesSetSpace.toWorld.space === "world"
-    && axesSetSpace.toWorld.combo === "world",
-  `${axesSetSpace.toLocal.space} -> ${axesSetSpace.toWorld.space}`);
-check("hiding them says nothing about which space you want",
-  axesSetSpace.afterHide.shown === null
-    && axesSetSpace.afterHide.space === axesSetSpace.beforeHide,
-  `${axesSetSpace.beforeHide} -> ${axesSetSpace.afterHide.space}`);
+check(
+    "Shift+X shows local axes and puts moving and turning in local space",
+    axesSetSpace.start.space === "world" && axesSetSpace.toLocal.drawn === "local" && axesSetSpace.toLocal.space === "local" && axesSetSpace.toLocal.combo === "local",
+    `${axesSetSpace.start.space} -> ${axesSetSpace.toLocal.space},` + ` gizmo ${axesSetSpace.toLocal.drawn}`
+);
+check(
+    "and X re-aims them to world and takes the space with it",
+    axesSetSpace.toWorld.drawn === "world" && axesSetSpace.toWorld.space === "world" && axesSetSpace.toWorld.combo === "world",
+    `${axesSetSpace.toLocal.space} -> ${axesSetSpace.toWorld.space}`
+);
+check(
+    "hiding them says nothing about which space you want",
+    axesSetSpace.afterHide.shown === null && axesSetSpace.afterHide.space === axesSetSpace.beforeHide,
+    `${axesSetSpace.beforeHide} -> ${axesSetSpace.afterHide.space}`
+);
 
 // ---- the gizmo hangs on the middle of the mesh; Ctrl asks for the origin ----
 // A kit's authors put the node origin wherever suited the export, and on this
@@ -5064,44 +5495,44 @@ check(
     `${gizmoNear.far.dist} m -> ${gizmoNear.far.arm} m arms, ` + `${gizmoNear.close.dist} m -> ${gizmoNear.close.arm} m, back at ${gizmoNear.back.arm} m`
 );
 check("the camera really did get inside the 2 m mark too", gizmoNear.closer.dist < 2, `${gizmoNear.closer.dist} m`);
-check(
-    "and they halve again inside 2 m, to a quarter length",
-    Math.abs(gizmoNear.closer.arm - 0.5) < 1e-3,
-    `${gizmoNear.closer.dist} m -> ${gizmoNear.closer.arm} m arms`
-);
+check("and they halve again inside 2 m, to a quarter length", Math.abs(gizmoNear.closer.arm - 0.5) < 1e-3, `${gizmoNear.closer.dist} m -> ${gizmoNear.closer.arm} m arms`);
 
 // ---- 1d-octodecies. no target hides, and the ghost counts as a target -------
 const axesNoTarget = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.toggleAxes(a.id, "world");
   const shown = ed.axesTarget();
   ed.select([]);
-  ed.state.scene.pointerX = -500; ed.state.scene.pointerY = -500;
+    ed.state.scene.pointerX = -500;
+    ed.state.scene.pointerY = -500;
   return { id: a.id, shown };
 });
-await page.evaluate(() => window.dispatchEvent(
-  new KeyboardEvent("keydown", { key: "x", code: "KeyX", bubbles: true })));
+await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "x", code: "KeyX", bubbles: true })));
 await page.waitForTimeout(250);
 const axesCleared = await page.evaluate(async () => ({
   target: (await import("/js/editor.js")).axesTarget(),
   status: document.getElementById("status-text").textContent,
 }));
-check("X with nothing selected or hovered hides the axes",
-  axesNoTarget.shown === axesNoTarget.id && axesCleared.target === null
-    && /hidden/.test(axesCleared.status),
-  `was ${axesNoTarget.shown}, now ${axesCleared.target} — "${axesCleared.status}"`);
+check(
+    "X with nothing selected or hovered hides the axes",
+    axesNoTarget.shown === axesNoTarget.id && axesCleared.target === null && /hidden/.test(axesCleared.status),
+    `was ${axesNoTarget.shown}, now ${axesCleared.target} — "${axesCleared.status}"`
+);
 
 // the armed ghost has a rotation and a mirroring you set before dropping it,
 // which is exactly when the axes are worth seeing
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   // put the cursor back on screen: the ghost follows it, and one parked
   // off-canvas leaves it outside the frustum and rendering nothing
   const canvas = ed.state.engine.getRenderingCanvas();
@@ -5110,8 +5541,7 @@ await page.evaluate(async () => {
   await i.armGhost("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight");
 });
 await page.waitForTimeout(300);
-await page.evaluate(() => window.dispatchEvent(
-  new KeyboardEvent("keydown", { key: "x", code: "KeyX", bubbles: true })));
+await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "x", code: "KeyX", bubbles: true })));
 await page.waitForTimeout(350);
 const ghostAxes = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -5122,31 +5552,35 @@ const ghostAxes = await page.evaluate(async () => {
     status: document.getElementById("status-text").textContent,
   };
 });
-check("X shows the axes on the armed ghost",
-  ghostAxes.target === ghostAxes.ghostId && ghostAxes.node
-    && /Walls\/ShortWall/.test(ghostAxes.status),
-  `target=${ghostAxes.target}, status="${ghostAxes.status}"`);
+check(
+    "X shows the axes on the armed ghost",
+    ghostAxes.target === ghostAxes.ghostId && ghostAxes.node && /Walls\/ShortWall/.test(ghostAxes.status),
+    `target=${ghostAxes.target}, status="${ghostAxes.status}"`
+);
 
 await page.evaluate(async () => (await import("/js/interact.js")).cancelGhost());
 await page.waitForTimeout(350);
 const afterGhostCancel = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  const out = { target: ed.axesTarget(),
-                leftover: ed.state.scene.meshes.filter((m) => m.name.startsWith("AXES_")).length };
-  ed.clearAll(); ed.select([]);
+    const out = { target: ed.axesTarget(), leftover: ed.state.scene.meshes.filter((m) => m.name.startsWith("AXES_")).length };
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("cancelling the ghost takes its axes with it",
+check(
+    "cancelling the ghost takes its axes with it",
   afterGhostCancel.target === null && afterGhostCancel.leftover === 0,
-  `target=${afterGhostCancel.target}, ${afterGhostCancel.leftover} meshes left`);
+    `target=${afterGhostCancel.target}, ${afterGhostCancel.leftover} meshes left`
+);
 
 // ---- 1d-novendecies. T cycles the move snap, and the gizmo shows it --------
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const p = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new BABYLON.Vector3(0, 0, 0), { silent: true });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const p = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(0, 0, 0), { silent: true });
   ed.state.camera.position = new BABYLON.Vector3(0, 8, -12);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
   ed.state.camera.cameraDirection.setAll(0);
@@ -5167,8 +5601,7 @@ const snapLabel = await page.evaluate(() => {
     onScreen: !!r && r.width > 0 && r.left > host.left && r.right < host.right,
   };
 });
-check("the gizmo carries the move step at its origin",
-  snapLabel.text === "1 m" && snapLabel.onScreen, JSON.stringify(snapLabel));
+check("the gizmo carries the move step at its origin", snapLabel.text === "1 m" && snapLabel.onScreen, JSON.stringify(snapLabel));
 
 // The turn angle rides the curved arrow, the way the move step rides the
 // origin. It has to sit on the *ring*, not on the origin: the ring's node used
@@ -5179,20 +5612,25 @@ const rotLabel = await page.evaluate(async () => {
   const el = document.querySelector("#viewport .axis-rot");
   const snap = document.querySelector("#viewport .axis-snap:not(.axis-rot)");
   const host = document.getElementById("viewport").getBoundingClientRect();
-  const at = (n) => { const r = n.getBoundingClientRect(); return [r.left - host.left, r.top - host.top]; };
+    const at = (n) => {
+        const r = n.getBoundingClientRect();
+        return [r.left - host.left, r.top - host.top];
+    };
   const ring = ed.state.scene.getTransformNodeByName(`AXES_${ed.state.rotAxis}_rot`);
   ring?.computeWorldMatrix(true);
   return {
-    text: el?.textContent, hidden: el?.hidden,
+        text: el?.textContent,
+        hidden: el?.hidden,
     apart: el && snap ? Math.hypot(...at(el).map((v, i) => v - at(snap)[i])) : 0,
     ringOffOrigin: ring ? ring.getAbsolutePosition().length() : 0,
   };
 });
-check("the turn angle rides the curved arrow",
-  rotLabel.text === "90°" && rotLabel.hidden === false, JSON.stringify(rotLabel));
-check("it sits on the ring, not on top of the move step chip",
+check("the turn angle rides the curved arrow", rotLabel.text === "90°" && rotLabel.hidden === false, JSON.stringify(rotLabel));
+check(
+    "it sits on the ring, not on top of the move step chip",
   rotLabel.apart > 40 && rotLabel.ringOffOrigin > 0.5,
-  `${rotLabel.apart.toFixed(0)} px apart, ring ${rotLabel.ringOffOrigin.toFixed(2)} m from the origin`);
+    `${rotLabel.apart.toFixed(0)} px apart, ring ${rotLabel.ringOffOrigin.toFixed(2)} m from the origin`
+);
 
 // ---- the gizmo is never culled, and knows where it is -----------------------
 // It does not move by being re-parented: its root is re-positioned every frame
@@ -5210,9 +5648,7 @@ const gizmoCull = await page.evaluate(async (moduleId) => {
   const cam = ed.state.camera;
   // Blocks share the scene, and the chip checks below expect the gizmo this
   // one found. So: borrow it, and put everything back.
-  const had = { target: ed.axesTarget(), space: ed.axesSpace(),
-    selection: [...ed.state.selection],
-    pos: cam.position.clone(), rot: cam.rotation.clone() };
+    const had = { target: ed.axesTarget(), space: ed.axesSpace(), selection: [...ed.state.selection], pos: cam.position.clone(), rot: cam.rotation.clone() };
   const e = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   ed.select([e.id]);
   ed.showAxes(e.id, "world");
@@ -5225,11 +5661,14 @@ const gizmoCull = await page.evaluate(async (moduleId) => {
   const survey = () => {
     scene.render();
     const parts = scene.meshes.filter((m) => m.name.startsWith("AXES_") && m.isEnabled());
-    const active = new Set(scene.getActiveMeshes().data.filter(Boolean).map((m) => m.uniqueId));
-    const drift = parts.map((m) => +m.getBoundingInfo().boundingBox.centerWorld
-      .subtract(m.getAbsolutePosition()).length().toFixed(2));
-    return { enabled: parts.length, drawn: parts.filter((m) => active.has(m.uniqueId)).length,
-      drift: Math.max(...drift) };
+        const active = new Set(
+            scene
+                .getActiveMeshes()
+                .data.filter(Boolean)
+                .map((m) => m.uniqueId)
+        );
+        const drift = parts.map((m) => +m.getBoundingInfo().boundingBox.centerWorld.subtract(m.getAbsolutePosition()).length().toFixed(2));
+        return { enabled: parts.length, drawn: parts.filter((m) => active.has(m.uniqueId)).length, drift: Math.max(...drift) };
   };
   look([0, 0, 0], 8);
   const atOrigin = survey();
@@ -5253,12 +5692,10 @@ const gizmoCull = await page.evaluate(async (moduleId) => {
   scene.render();
   return { atOrigin, away, near, closer, restored: ed.axesTarget() === had.target };
 }, PROP_A);
-check("a gizmo on an element far from the origin keeps its bounding boxes with it",
-  gizmoCull.away.drift < 0.01, `${gizmoCull.away.drift} m behind the arrows`);
+check("a gizmo on an element far from the origin keeps its bounding boxes with it", gizmoCull.away.drift < 0.01, `${gizmoCull.away.drift} m behind the arrows`);
 for (const where of ["atOrigin", "away", "near", "closer"]) {
   const r = gizmoCull[where];
-  check(`every part of the gizmo is drawn (${where})`,
-    r.enabled > 0 && r.drawn === r.enabled, `${r.drawn} of ${r.enabled}`);
+    check(`every part of the gizmo is drawn (${where})`, r.enabled > 0 && r.drawn === r.enabled, `${r.drawn} of ${r.enabled}`);
 }
 check("and the block put back the gizmo it borrowed", gizmoCull.restored);
 
@@ -5274,13 +5711,19 @@ const rotFollowed = await page.evaluate(async () => {
   return {
     text: document.querySelector("#viewport .axis-rot")?.textContent,
     axis: ed.state.rotAxis,
-    onAxisArm: ring ? ring.getAbsolutePosition().asArray().map((v) => Math.abs(v) > 0.5) : null,
+        onAxisArm: ring
+            ? ring
+                  .getAbsolutePosition()
+                  .asArray()
+                  .map((v) => Math.abs(v) > 0.5)
+            : null,
   };
 });
-check("the angle chip follows Shift+R, and moves to the arm R picks",
-  rotFollowed.text === "free" && rotFollowed.axis === "x"
-    && rotFollowed.onAxisArm.join() === "true,false,false",
-  `${rotFollowed.text} on ${rotFollowed.axis}, at ${rotFollowed.onAxisArm}`);
+check(
+    "the angle chip follows Shift+R, and moves to the arm R picks",
+    rotFollowed.text === "free" && rotFollowed.axis === "x" && rotFollowed.onAxisArm.join() === "true,false,false",
+    `${rotFollowed.text} on ${rotFollowed.axis}, at ${rotFollowed.onAxisArm}`
+);
 // A chip says what its combo says. `free` is a real zero on Move but the finest
 // step there is on Rot and Scale - 0.5 degrees and 0.01 - so a chip that printed
 // the number while the toolbar said `free` made one setting look like two.
@@ -5304,34 +5747,32 @@ const freeChips = await page.evaluate(async () => {
 await page.waitForTimeout(500);
 const freeText = await page.evaluate(() => ({
   rot: document.querySelector("#viewport .axis-rot")?.textContent,
-  scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")]
-    .filter((e) => !e.hidden).map((e) => e.textContent))],
+    scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")].filter((e) => !e.hidden).map((e) => e.textContent))],
 }));
-check("the loosest step of each list is read off the combo, not written out again",
+check(
+    "the loosest step of each list is read off the combo, not written out again",
   freeChips.free.pos === 0 && freeChips.free.rot === 0.5 && freeChips.free.scale === 0.01,
-  JSON.stringify(freeChips.free));
-check("so the rot and scale chips say 'free' where the combo does",
-  freeText.rot === "free" && freeText.scale.join() === "free",
-  JSON.stringify(freeText));
+    JSON.stringify(freeChips.free)
+);
+check("so the rot and scale chips say 'free' where the combo does", freeText.rot === "free" && freeText.scale.join() === "free", JSON.stringify(freeText));
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.snap.rot = 5; ed.state.snap.scale = 0.05;
+    ed.state.snap.rot = 5;
+    ed.state.snap.scale = 0.05;
   document.getElementById("snap-rot").value = "5";
   document.getElementById("snap-scale").value = "0.05";
 });
 await page.waitForTimeout(500);
 const coarse = await page.evaluate(() => ({
   rot: document.querySelector("#viewport .axis-rot")?.textContent,
-  scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")]
-    .filter((e) => !e.hidden).map((e) => e.textContent))],
+    scale: [...new Set([...document.querySelectorAll("#viewport .axis-scale")].filter((e) => !e.hidden).map((e) => e.textContent))],
 }));
-check("and go back to the number for any other step",
-  coarse.rot === "5°" && coarse.scale.join() === "0.05",
-  JSON.stringify(coarse));
+check("and go back to the number for any other step", coarse.rot === "5°" && coarse.scale.join() === "0.05", JSON.stringify(coarse));
 // put the angle back for the tests below
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.snap.rot = 90; ed.state.rotAxis = "y";
+    ed.state.snap.rot = 90;
+    ed.state.rotAxis = "y";
   document.getElementById("snap-rot").value = "90";
   document.getElementById("rot-axis").value = "y";
 });
@@ -5355,12 +5796,9 @@ const scaleChips = await page.evaluate(async () => {
 await page.waitForTimeout(600);
 const sclShown = await page.evaluate(() => {
   const els = [...document.querySelectorAll("#viewport .axis-scale")];
-  return { total: els.length, shown: els.filter((e) => !e.hidden).length,
-           texts: [...new Set(els.filter((e) => !e.hidden).map((e) => e.textContent))] };
+    return { total: els.length, shown: els.filter((e) => !e.hidden).length, texts: [...new Set(els.filter((e) => !e.hidden).map((e) => e.textContent))] };
 });
-check("every lit scale cube carries the scale step",
-  sclShown.total === 3 && sclShown.shown === 3 && sclShown.texts.join() === "0.1",
-  JSON.stringify(sclShown));
+check("every lit scale cube carries the scale step", sclShown.total === 3 && sclShown.shown === 3 && sclShown.texts.join() === "0.1", JSON.stringify(sclShown));
 
 await page.keyboard.press("f");                // all -> x
 await page.waitForTimeout(400);
@@ -5370,12 +5808,9 @@ const sclOne = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const els = [...document.querySelectorAll("#viewport .axis-scale")];
   const lit = els.filter((e) => !e.hidden);
-  return { axis: ed.state.scaleAxis, step: ed.state.snap.scale,
-           shown: lit.length, text: lit[0]?.textContent };
+    return { axis: ed.state.scaleAxis, step: ed.state.snap.scale, shown: lit.length, text: lit[0]?.textContent };
 });
-check("one axis lights one chip, and Shift+F changes what it says",
-  sclOne.axis === "x" && sclOne.shown === 1 && sclOne.text === "0.25",
-  JSON.stringify(sclOne));
+check("one axis lights one chip, and Shift+F changes what it says", sclOne.axis === "x" && sclOne.shown === 1 && sclOne.text === "0.25", JSON.stringify(sclOne));
 
 // The chips hang off the arrow *tips*, which swing outside the viewport at
 // close range - and #viewport does not clip, so one was measured sitting on a
@@ -5395,16 +5830,15 @@ const strayChips = await page.evaluate(() => {
   const strays = [...document.querySelectorAll("#viewport .axis-snap")]
     .filter((e) => !e.hidden)
     .map((e) => e.getBoundingClientRect())
-    .filter((r) => r.left < host.left || r.right > host.right
-      || r.top < host.top || r.bottom > host.bottom);
+        .filter((r) => r.left < host.left || r.right > host.right || r.top < host.top || r.bottom > host.bottom);
   return strays.length;
 });
-check("no chip escapes the viewport onto the palette or the inspector",
-  strayChips === 0, `${strayChips} stray chip(s)`);
+check("no chip escapes the viewport onto the palette or the inspector", strayChips === 0, `${strayChips} stray chip(s)`);
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.scaleAxis = "all"; ed.state.snap.scale = 0.1;
+    ed.state.scaleAxis = "all";
+    ed.state.snap.scale = 0.1;
   document.getElementById("scale-axis").value = "all";
   document.getElementById("snap-scale").value = "0.1";
 });
@@ -5413,22 +5847,23 @@ const cycled = [];
 for (let k = 0; k < 3; k++) {
   await page.keyboard.press("Shift+V");
   await page.waitForTimeout(150);
-  cycled.push(await page.evaluate(async () => ({
+    cycled.push(
+        await page.evaluate(async () => ({
     snap: (await import("/js/editor.js")).state.snap.pos,
     combo: document.getElementById("snap-pos").value,
     label: document.querySelector("#viewport .axis-snap:not(.axis-rot)")?.textContent,
-  })));
+        }))
+    );
 }
 await page.keyboard.press("Control+v");
 await page.waitForTimeout(150);
 const back = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.pos);
-check("Shift+V walks the Move options forward",
-  cycled.map((c) => c.snap).join() === "2,4,0"
-    && cycled.every((c) => c.combo === String(c.snap)),
-  cycled.map((c) => c.snap).join(" -> "));
-check("the readout follows, and says what snapping off means",
-  cycled[0].label === "2 m" && cycled[2].label === "free",
-  `${cycled.map((c) => c.label).join(" -> ")}`);
+check(
+    "Shift+V walks the Move options forward",
+    cycled.map((c) => c.snap).join() === "2,4,0" && cycled.every((c) => c.combo === String(c.snap)),
+    cycled.map((c) => c.snap).join(" -> ")
+);
+check("the readout follows, and says what snapping off means", cycled[0].label === "2 m" && cycled[2].label === "free", `${cycled.map((c) => c.label).join(" -> ")}`);
 check("Ctrl+V walks them back", back === 4, `${back}`);
 
 // hiding the gizmo takes the readout with it
@@ -5438,7 +5873,8 @@ const noLabel = await page.evaluate(async () => {
   const gone = !document.querySelector("#viewport .axis-snap");
   ed.state.snap.pos = window.__snapWas;
   document.getElementById("snap-pos").value = String(window.__snapWas);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return gone;
 });
 check("hiding the axes removes the readout too", noLabel);
@@ -5448,7 +5884,9 @@ const nearest = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const left = await ed.placeAt(M, new V(-14, 0, 0), { silent: true });
   const right = await ed.placeAt(M, new V(14, 0, 0), { silent: true });
@@ -5464,18 +5902,24 @@ const nearest = await page.evaluate(async () => {
   };
   // the scene's pointer is global state that later tests read, so put it back
   const wasPointer = { x: ed.state.scene.pointerX, y: ed.state.scene.pointerY };
-  const aim = (p) => { ed.state.scene.pointerX = p.x; ed.state.scene.pointerY = p.y; };
+    const aim = (p) => {
+        ed.state.scene.pointerX = p.x;
+        ed.state.scene.pointerY = p.y;
+    };
   aim(at(left.id));
   const nearLeft = ed.nearestToCursor(ed.state.selection);
   aim(at(right.id));
   const nearRight = ed.nearestToCursor(ed.state.selection);
   aim(wasPointer);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { left: left.id, right: right.id, nearLeft, nearRight };
 });
-check("with several selected, the element nearest the cursor gets the axes",
+check(
+    "with several selected, the element nearest the cursor gets the axes",
   nearest.nearLeft === nearest.left && nearest.nearRight === nearest.right,
-  `cursor left -> ${nearest.nearLeft}, cursor right -> ${nearest.nearRight}`);
+    `cursor left -> ${nearest.nearLeft}, cursor right -> ${nearest.nearRight}`
+);
 
 // visible axes follow a single pick, so they never sit on the element you have
 // just moved away from
@@ -5484,7 +5928,9 @@ const follows = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(9, 0, 0), { silent: true });
   const c = await ed.placeAt(M, new V(18, 0, 0), { silent: true });
@@ -5533,15 +5979,17 @@ const follows = await page.evaluate(async () => {
     return { started, followed, onMulti, onNone, whenHidden, a: a.id, b: b.id, c: c.id, localStart, localKept, localTwice, worldKept, anchorKept, xForcesWorld, shiftXForcesLocal };
 });
 check("visible axes follow a single click to the new element", follows.started === follows.a && follows.followed === follows.b, `${follows.started} -> ${follows.followed}`);
-check("a multi-selection or an empty one leaves them where they are",
+check(
+    "a multi-selection or an empty one leaves them where they are",
   follows.onMulti === follows.b && follows.onNone === follows.b,
-  `multi=${follows.onMulti}, none=${follows.onNone}`);
-check("selecting does not conjure axes that were never shown",
-  follows.whenHidden === null, `${follows.whenHidden}`);
-check("a local gizmo is still local on the element you click next",
-  follows.localStart === "local" && follows.localKept.on === follows.b
-    && follows.localKept.space === "local" && follows.localTwice === "local",
-  `${follows.localStart} -> ${follows.localKept.space} -> ${follows.localTwice}`);
+    `multi=${follows.onMulti}, none=${follows.onNone}`
+);
+check("selecting does not conjure axes that were never shown", follows.whenHidden === null, `${follows.whenHidden}`);
+check(
+    "a local gizmo is still local on the element you click next",
+    follows.localStart === "local" && follows.localKept.on === follows.b && follows.localKept.space === "local" && follows.localTwice === "local",
+    `${follows.localStart} -> ${follows.localKept.space} -> ${follows.localTwice}`
+);
 check("and a world one is still world", follows.worldKept === "world", follows.worldKept);
 check(
     "and a centre-hung one is still hung on the centre",
@@ -5551,7 +5999,8 @@ check(
 check(
     "X and Shift+X still name the flavour outright",
   follows.xForcesWorld === "world" && follows.shiftXForcesLocal === "local",
-  `X -> ${follows.xForcesWorld}, Shift+X -> ${follows.shiftXForcesLocal}`);
+    `X -> ${follows.xForcesWorld}, Shift+X -> ${follows.shiftXForcesLocal}`
+);
 
 // ---- 1d-octodecies. Shift/Ctrl on E, F and V drive the axis modes ----------
 // One letter per action, its settings behind the modifiers: Shift picks the
@@ -5584,53 +6033,59 @@ for (let k = 0; k < 4; k++) {
   await page.waitForTimeout(120);
   sclCycle.push(await page.evaluate(async () => (await import("/js/editor.js")).state.scaleAxis));
 }
-check("R cycles the rotation axis",
-  rotCycle.join() === "x,z,y", rotCycle.join(" -> "));
-check("F cycles the scale axis",
-  sclCycle.join() === "x,y,z,all", sclCycle.join(" -> "));
+check("R cycles the rotation axis", rotCycle.join() === "x,z,y", rotCycle.join(" -> "));
+check("F cycles the scale axis", sclCycle.join() === "x,y,z,all", sclCycle.join(" -> "));
 
 const rotStep = [];
 for (let k = 0; k < 2; k++) {
   await page.keyboard.press("Shift+r");
   await page.waitForTimeout(120);
-  rotStep.push(await page.evaluate(async () => ({
+    rotStep.push(
+        await page.evaluate(async () => ({
     v: (await import("/js/editor.js")).state.snap.rot,
     combo: document.getElementById("snap-rot").value,
-  })));
+        }))
+    );
 }
 await page.keyboard.press("Control+r");
 await page.waitForTimeout(120);
 const rotStepBack = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.rot);
 // The list runs 0.5 to 90, so past 90 the cycle wraps round to the far end.
-check("Shift+R cycles the rotation angle, Ctrl+R goes back",
-  rotStep.map((r) => r.v).join() === "0.5,5" && rotStep.every((r) => r.combo === String(r.v))
-    && rotStepBack === 0.5,
-  `90 -> ${rotStep.map((r) => r.v).join(" -> ")} -> back ${rotStepBack}`);
+check(
+    "Shift+R cycles the rotation angle, Ctrl+R goes back",
+    rotStep.map((r) => r.v).join() === "0.5,5" && rotStep.every((r) => r.combo === String(r.v)) && rotStepBack === 0.5,
+    `90 -> ${rotStep.map((r) => r.v).join(" -> ")} -> back ${rotStepBack}`
+);
 
 const sclStep = [];
 for (let k = 0; k < 2; k++) {
   await page.keyboard.press("Shift+f");
   await page.waitForTimeout(120);
-  sclStep.push(await page.evaluate(async () => ({
+    sclStep.push(
+        await page.evaluate(async () => ({
     v: (await import("/js/editor.js")).state.snap.scale,
     combo: document.getElementById("snap-scale").value,
-  })));
+        }))
+    );
 }
 await page.keyboard.press("Control+f");
 await page.waitForTimeout(120);
 const sclStepBack = await page.evaluate(async () => (await import("/js/editor.js")).state.snap.scale);
-check("Shift+F cycles the scale step, Ctrl+F goes back",
-  sclStep.map((r) => r.v).join() === "0.25,0.01"
-    && sclStep.every((r) => r.combo === String(r.v)) && sclStepBack === 0.25,
-  `0.1 -> ${sclStep.map((r) => r.v).join(" -> ")} -> back ${sclStepBack}`);
+check(
+    "Shift+F cycles the scale step, Ctrl+F goes back",
+    sclStep.map((r) => r.v).join() === "0.25,0.01" && sclStep.every((r) => r.combo === String(r.v)) && sclStepBack === 0.25,
+    `0.1 -> ${sclStep.map((r) => r.v).join(" -> ")} -> back ${sclStepBack}`
+);
 
 // Put the four settings back where the rest of the run expects them. Leaving a
 // half-degree step behind is invisible here and turns every later rotation
 // check into a no-op that still reads as a pass on the wrong grounds.
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.snap.rot = 90; ed.state.rotAxis = "y";
-  ed.state.snap.scale = 0.1; ed.state.scaleAxis = "all";
+    ed.state.snap.rot = 90;
+    ed.state.rotAxis = "y";
+    ed.state.snap.scale = 0.1;
+    ed.state.scaleAxis = "all";
   document.getElementById("snap-rot").value = "90";
   document.getElementById("snap-scale").value = "0.1";
   document.getElementById("rot-axis").value = "y";
@@ -5650,37 +6105,168 @@ await page.evaluate(async (v) => {
 }, snapWas);
 
 const claimed = await page.evaluate(() => window.__prevented);
-check("Ctrl+R, Ctrl+F and Ctrl+V are all claimed from the browser",
-  claimed.length > 0 && claimed.every(([, p]) => p === true)
-    && new Set(claimed.map(([k]) => k)).size === 3,
-  JSON.stringify(claimed));
+check(
+    "Ctrl+R, Ctrl+F and Ctrl+V are all claimed from the browser",
+    claimed.length > 0 && claimed.every(([, p]) => p === true) && new Set(claimed.map(([k]) => k)).size === 3,
+    JSON.stringify(claimed)
+);
 
 // the numpad no longer cycles anything: one way to reach a setting, not two
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.rotAxis = "y"; ed.state.scaleAxis = "all";
+    ed.state.rotAxis = "y";
+    ed.state.scaleAxis = "all";
   document.getElementById("rot-axis").value = "y";
   document.getElementById("scale-axis").value = "all";
 });
 for (const code of ["NumpadDivide", "NumpadMultiply"]) {
-  await page.evaluate((c) => window.dispatchEvent(
-    new KeyboardEvent("keydown", { key: c === "NumpadDivide" ? "/" : "*", code: c, bubbles: true })), code);
+    await page.evaluate((c) => window.dispatchEvent(new KeyboardEvent("keydown", { key: c === "NumpadDivide" ? "/" : "*", code: c, bubbles: true })), code);
   await page.waitForTimeout(100);
 }
 const numpadGone = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { rot: ed.state.rotAxis, scl: ed.state.scaleAxis };
 });
-check("numpad / and * no longer cycle the axes",
-  numpadGone.rot === "y" && numpadGone.scl === "all", JSON.stringify(numpadGone));
+check("numpad / and * no longer cycle the axes", numpadGone.rot === "y" && numpadGone.scl === "all", JSON.stringify(numpadGone));
 
 // restore for the tests that follow
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.state.snap.rot = 90; ed.state.snap.scale = 0.1;
+    ed.state.snap.rot = 90;
+    ed.state.snap.scale = 0.1;
   document.getElementById("snap-rot").value = "90";
   document.getElementById("snap-scale").value = "0.1";
 });
+
+// ---- 1d-octodecies-bis. the find box ---------------------------------------
+// Ids and names are printed all over the tool and all over what it produces,
+// and until the find box the only way to act on one was to hunt for the element
+// by eye. What is looked for runs in the order those strings stop being
+// ambiguous: an id, then a node name - shared on purpose, so every element
+// carrying it travels - then the names *inside* an element, which are what a
+// behaviour or an export warning talks in and resolve to their owner. It is
+// click-and-type only: no shortcut, deliberately.
+const find = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const i = await import("/js/interact.js");
+    const mk = await import("/js/markers.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+    const cam = ed.state.camera;
+    const parked = { pos: cam.position.clone(), target: cam.getTarget().clone() };
+
+    const lone = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
+    const c1 = await ed.placeAt(M, new V(30, 0, 0), { silent: true });
+    const c2 = await ed.placeAt(M, new V(34, 0, 0), { silent: true });
+    ed.renamePlacement(c1.id, "crate");
+    ed.renamePlacement(c2.id, "crate");
+    const door = mk.addDoor(new V(6, 0, 0), { silent: true });
+
+    const box = document.getElementById("find-box");
+    const status = document.getElementById("status-text");
+    // How far the camera ended up from the middle of what it selected - the
+    // question "was it framed" asked without assuming where a module's body sits
+    // inside its own node. Its *position* rather than its target: framing backs
+    // off along the view direction and both camera types report a position
+    // straight away, while a target is only recomputed on the next render.
+    const framedBy = () => {
+        let min = null,
+            max = null;
+        for (const id of ed.state.selection) {
+            const b = ed.worldBounds(ed.entryOf(id)?.node);
+            if (!b) continue;
+            min = min ? V.Minimize(min, b.min) : b.min.clone();
+            max = max ? V.Maximize(max, b.max) : b.max.clone();
+        }
+        if (!min) return null;
+        return Math.round(V.Distance(cam.position, min.add(max).scale(0.5)) * 10) / 10;
+    };
+    // Enter is the deliberate "go", and the only path that reports a miss. The
+    // box is focused first because that is where the key would land in use, and
+    // because what it does with the focus afterwards is part of what is checked.
+    const go = (text) => {
+        box.focus();
+        box.value = text;
+        box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        return {
+            picked: [...ed.state.selection].sort(),
+            status: status.textContent,
+            framed: framedBy(),
+            focused: document.activeElement?.id ?? "",
+        };
+    };
+
+    const away = () => {
+        cam.position.copyFrom(new V(-60, 40, -60));
+        cam.setTarget(new V(-60, 0, -60));
+    };
+    away();
+    const byId = go(lone.id);
+    away();
+    const byName = go("crate");
+    away();
+    const folded = go("CRATE");
+    away();
+    const byPart = go("crate_primitive0");
+    away();
+    const byDoor = go(door.id);
+
+    ed.select([lone.id]);
+    const miss = go("no-such-thing");
+
+    box.value = "";
+    box.dispatchEvent(new Event("focus"));
+    const listed = [...document.getElementById("find-names").options].map((o) => o.value);
+
+    // The miss above deliberately kept the cursor in the box. Everything after
+    // this block presses keys at the ship, so hand the keyboard back and park
+    // the camera where the block found it.
+    box.blur();
+    cam.position.copyFrom(parked.pos);
+    cam.setTarget(parked.target);
+    const ids = { lone: lone.id, c1: c1.id, c2: c2.id, door: door.id };
+    ed.clearAll();
+    ed.select([]);
+    return { byId, byName, folded, byPart, byDoor, miss, listed, ids };
+});
+check(
+    "an id goes straight to its element and frames it",
+    find.byId.picked.join() === find.ids.lone && find.byId.status.includes("by id") && find.byId.framed < 25,
+    `${find.byId.picked.join()} · "${find.byId.status}" · camera ${find.byId.framed} m away`
+);
+check(
+    "a shared name takes every element carrying it, and frames the lot",
+    find.byName.picked.join() === [find.ids.c1, find.ids.c2].sort().join() && find.byName.status.includes("2 elements named crate") && find.byName.framed < 25,
+    `${find.byName.picked.join()} · "${find.byName.status}" · camera ${find.byName.framed} m away`
+);
+check("a name is matched whatever it is typed in", find.folded.picked.join() === [find.ids.c1, find.ids.c2].sort().join(), find.folded.picked.join());
+check(
+    "a name inside an element goes to the element that owns it",
+    find.byPart.picked.join() === [find.ids.c1, find.ids.c2].sort().join() && find.byPart.status.includes("is part of"),
+    `${find.byPart.picked.join()} · "${find.byPart.status}"`
+);
+check("a door is found by the id it answers to", find.byDoor.picked.join() === find.ids.door, find.byDoor.picked.join());
+check(
+    "a miss leaves the selection alone and says nothing was found",
+    find.miss.picked.join() === find.ids.lone && find.miss.status.includes('nothing here answers to "no-such-thing"'),
+    `${find.miss.picked.join()} · "${find.miss.status}"`
+);
+check(
+    "a hit hands the keyboard back to the ship, a miss keeps the cursor",
+    find.byId.focused !== "find-box" && find.miss.focused === "find-box",
+    `hit -> "${find.byId.focused}", miss -> "${find.miss.focused}"`
+);
+// Names are worth browsing; ids are pasted out of a message, one per element,
+// and would bury them. Parts are left out for the same reason every other list
+// in the tool leaves children out - both are still found when typed in full.
+check(
+    "the list under the box offers names and doors, not ids or parts",
+    find.listed.includes("crate") && find.listed.includes(find.ids.door) && !find.listed.includes(find.ids.lone) && !find.listed.includes("crate_primitive0"),
+    find.listed.join(" ")
+);
 
 // ---- 1d-duovicies. the manifest speaks glTF space -------------------------
 // The editor is a left-handed Babylon scene; the exporter mirrors X on the way
@@ -5693,14 +6279,17 @@ const handed = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const a = await ed.placeAt(M, new V(7, 0, 5), { silent: true });
   await ed.placeAt(M, new V(11, 0, 5), { silent: true });
   mk.addDoor(new V(9, 0, 5), { silent: true, leaves: [a.id] });
 
   // the chunk box spans every element in it, not just the first
-  let lo = Infinity, hi = -Infinity;
+    let lo = Infinity,
+        hi = -Infinity;
   for (const p of ed.state.placements.values()) {
     const b = ed.worldBounds(p.node);
     if (!b) continue;
@@ -5718,20 +6307,17 @@ const handed = await page.evaluate(async () => {
     instanceX: man.instances.find((x) => x.id === a.id).position[0],
     markerX: man.markers[0]?.position[0],
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("chunk boxes are mirrored, and min/max swap with them",
-  Math.abs(handed.aabb.min[0] + handed.editorMaxX) < 1e-3
-    && Math.abs(handed.aabb.max[0] + handed.editorMinX) < 1e-3
-    && handed.aabb.min[0] < handed.aabb.max[0],
-  `editor X ${handed.editorMinX}..${handed.editorMaxX} -> glTF ${handed.aabb.min[0]}..${handed.aabb.max[0]}`);
-check("doors and portals are mirrored too",
-  handed.doorX === -9 && handed.portalCentreX === -9,
-  `door ${handed.doorX}, portal ${handed.portalCentreX}`);
-check("the tool's own reload data stays in editor space",
-  handed.instanceX === 7 && handed.markerX === 9,
-  `instance ${handed.instanceX}, marker ${handed.markerX}`);
+check(
+    "chunk boxes are mirrored, and min/max swap with them",
+    Math.abs(handed.aabb.min[0] + handed.editorMaxX) < 1e-3 && Math.abs(handed.aabb.max[0] + handed.editorMinX) < 1e-3 && handed.aabb.min[0] < handed.aabb.max[0],
+    `editor X ${handed.editorMinX}..${handed.editorMaxX} -> glTF ${handed.aabb.min[0]}..${handed.aabb.max[0]}`
+);
+check("doors and portals are mirrored too", handed.doorX === -9 && handed.portalCentreX === -9, `door ${handed.doorX}, portal ${handed.portalCentreX}`);
+check("the tool's own reload data stays in editor space", handed.instanceX === 7 && handed.markerX === 9, `instance ${handed.instanceX}, marker ${handed.markerX}`);
 
 // ---- 1d-quinquies. the view is saved with the layout -----------------------
 // In the manifest, not in serialize(): that feeds the undo stack, and undoing
@@ -5759,24 +6345,27 @@ const view = await page.evaluate(async () => {
     rot: [ed.state.camera.rotation.x, ed.state.camera.rotation.y, ed.state.camera.rotation.z],
   };
   const ignoredOld = ed.applyView(undefined);       // manifests from before this
-  const inUndoState = "view" in (JSON.parse(JSON.stringify(ed.serialize())));
-  ed.clearAll(); ed.select([]);
+    const inUndoState = "view" in JSON.parse(JSON.stringify(ed.serialize()));
+    ed.clearAll();
+    ed.select([]);
   return { saved, afterUndo, applied, back, ignoredOld, inUndoState };
 });
-check("the manifest carries the camera position and rotation",
-  !!view.saved?.position && !!view.saved?.rotation
-    && Math.abs(view.saved.position[0] - 12) < 0.01,
-  `position [${view.saved?.position}], rotation [${view.saved?.rotation}]`);
-check("loading restores exactly where you were standing",
-  view.applied
-    && Math.abs(view.back.pos[0] - 12) < 0.01 && Math.abs(view.back.pos[2] + 33) < 0.01
-    && Math.abs(view.back.rot[1] + 1.05) < 0.01,
-  `[${view.back.pos.map((v) => v.toFixed(1))}] rot ${view.back.rot[1].toFixed(2)}`);
-check("undo does not move the camera",
+check(
+    "the manifest carries the camera position and rotation",
+    !!view.saved?.position && !!view.saved?.rotation && Math.abs(view.saved.position[0] - 12) < 0.01,
+    `position [${view.saved?.position}], rotation [${view.saved?.rotation}]`
+);
+check(
+    "loading restores exactly where you were standing",
+    view.applied && Math.abs(view.back.pos[0] - 12) < 0.01 && Math.abs(view.back.pos[2] + 33) < 0.01 && Math.abs(view.back.rot[1] + 1.05) < 0.01,
+    `[${view.back.pos.map((v) => v.toFixed(1))}] rot ${view.back.rot[1].toFixed(2)}`
+);
+check(
+    "undo does not move the camera",
   Math.abs(view.afterUndo[0] - 12) < 0.01 && !view.inUndoState,
-  `camera at [${view.afterUndo.map((v) => v.toFixed(1))}], view in undo snapshot=${view.inUndoState}`);
-check("a manifest saved before this simply has no view to apply",
-  view.ignoredOld === false);
+    `camera at [${view.afterUndo.map((v) => v.toFixed(1))}], view in undo snapshot=${view.inUndoState}`
+);
+check("a manifest saved before this simply has no view to apply", view.ignoredOld === false);
 
 // ---- 1d-duodecies. the lighting is saved with the layout -------------------
 // Exposure and IBL strength are properties of the ship, not of this browser, so
@@ -5789,7 +6378,10 @@ const envRound = await page.evaluate(async () => {
   // not this suite's business, so the flag is moved directly and
   // syncLightingMode() is asked to follow it: that is exactly what
   // setRuntimePreview does, minus the materials.
-  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
+    const runtimeMode = (on) => {
+        ed.state.runtime = on;
+        ed.syncLightingMode();
+    };
   runtimeMode(true);
   ed.setEnvIntensity(2.4);
   ed.setExposure(0.82);
@@ -5802,11 +6394,9 @@ const envRound = await page.evaluate(async () => {
     if (String(url).includes("/api/layout")) {
       if (opts?.method === "POST") {
         stored = opts.body;
-        return Promise.resolve(new Response('{"ok":true,"bytes":0}',
-          { status: 200, headers: { "Content-Type": "application/json" } }));
+                return Promise.resolve(new Response('{"ok":true,"bytes":0}', { status: 200, headers: { "Content-Type": "application/json" } }));
       }
-      return Promise.resolve(new Response(stored,
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response(stored, { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
@@ -5828,7 +6418,9 @@ const envRound = await page.evaluate(async () => {
       exposureStored: localStorage.getItem("editorExposure"),
       editorEnv: document.getElementById("editor-env").value,
     };
-  } finally { window.fetch = realFetch; }
+    } finally {
+        window.fetch = realFetch;
+    }
 
   const scene = {
     strength: ed.state.scene.environmentIntensity,
@@ -5843,50 +6435,56 @@ const envRound = await page.evaluate(async () => {
   runtimeMode(false);
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { saved, loaded: loaded?.environment, sliders, scene, inUndoState, ignoredOld };
 });
-check("the manifest carries an environment section",
-  envRound.saved?.strength === 2.4
-    && envRound.saved.toneMapping === "Khronos PBR Neutral"
+check(
+    "the manifest carries an environment section",
+    envRound.saved?.strength === 2.4 &&
+        envRound.saved.toneMapping === "Khronos PBR Neutral" &&
     // the exposure is the linear multiplier, exactly as the slider shows it:
     // the demos apply it as-is, so there is only one number to know
-    && envRound.saved.exposure === 0.82
+        envRound.saved.exposure === 0.82 &&
     // the two material dials ride here too - the game reads them as the
     // authored defaults, so they are ship values, not view preferences
-    && envRound.saved.specularAA === true
-    && envRound.saved.reflectionRoughness === 1
-    && Object.keys(envRound.saved).sort().join()
-      === "exposure,reflectionRoughness,specularAA,strength,toneMapping",
-  JSON.stringify(envRound.saved));
-check("loading puts the lighting back on the scene",
-  Math.abs(envRound.scene.authored - 2.4) < 1e-6
+        envRound.saved.specularAA === true &&
+        envRound.saved.reflectionRoughness === 1 &&
+        Object.keys(envRound.saved).sort().join() === "exposure,reflectionRoughness,specularAA,strength,toneMapping",
+    JSON.stringify(envRound.saved)
+);
+check(
+    "loading puts the lighting back on the scene",
+    Math.abs(envRound.scene.authored - 2.4) < 1e-6 &&
     // Babylon's scene-wide multiplier stays at 1 in the Runtime view on
     // purpose: Env rides each material there, because each one carries its own
     // room's probe, so a scene multiplier would be a second, invisible factor
     // on top of it. See setEnvIntensity.
-    && Math.abs(envRound.scene.strength - 1) < 1e-6
-    && Math.abs(envRound.scene.exposure - 0.82) < 1e-3,
-  `authored=${envRound.scene.authored}, scene=${envRound.scene.strength}, exposure=${envRound.scene.exposure}`);
-check("the sliders follow the loaded lighting",
-  parseFloat(envRound.sliders.env) === 2.4
+        Math.abs(envRound.scene.strength - 1) < 1e-6 &&
+        Math.abs(envRound.scene.exposure - 0.82) < 1e-3,
+    `authored=${envRound.scene.authored}, scene=${envRound.scene.strength}, exposure=${envRound.scene.exposure}`
+);
+check(
+    "the sliders follow the loaded lighting",
+    parseFloat(envRound.sliders.env) === 2.4 &&
     // 0.82 is deliberately off the slider's 0.05 step: the readout and the
     // stored value stay exact, only the thumb rounds
-    && envRound.sliders.exposureLabel === "0.82"
-    && Math.abs(parseFloat(envRound.sliders.exposure) - 0.82) <= 0.05,
-  JSON.stringify(envRound.sliders));
-check("the runtime rig is not written to this browser's storage",
+        envRound.sliders.exposureLabel === "0.82" &&
+        Math.abs(parseFloat(envRound.sliders.exposure) - 0.82) <= 0.05,
+    JSON.stringify(envRound.sliders)
+);
+check(
+    "the runtime rig is not written to this browser's storage",
   // It belongs to the ship. Copying it here is what used to let a session
   // spent in a runtime view overwrite the brightness the editor came up in:
   // storage tracks the *editor* slider, whatever the runtime one says.
-  parseFloat(envRound.sliders.envStored) === parseFloat(envRound.sliders.editorEnv)
-    && Math.abs(parseFloat(envRound.sliders.envStored) - 2.4) > 1e-6
-    && Math.abs(parseFloat(envRound.sliders.exposureStored) - 0.82) > 1e-3,
-  JSON.stringify(envRound.sliders));
-check("the environment now rides the undo snapshot",
-  envRound.inUndoState === true);
-check("a manifest saved before this simply has no environment to apply",
-  envRound.ignoredOld === false);
+    parseFloat(envRound.sliders.envStored) === parseFloat(envRound.sliders.editorEnv) &&
+        Math.abs(parseFloat(envRound.sliders.envStored) - 2.4) > 1e-6 &&
+        Math.abs(parseFloat(envRound.sliders.exposureStored) - 0.82) > 1e-3,
+    JSON.stringify(envRound.sliders)
+);
+check("the environment now rides the undo snapshot", envRound.inUndoState === true);
+check("a manifest saved before this simply has no environment to apply", envRound.ignoredOld === false);
 
 // ---- 1d-vicies. the lighting is undoable, one entry per gesture -------------
 // It used to be deliberately off the stack ("not an edit to the ship"). The
@@ -5896,7 +6494,9 @@ check("a manifest saved before this simply has no environment to apply",
 const lightUndo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.setLightSetting("runtime", "strength", 1.5);
   ed.setLightSetting("runtime", "exposure", 0.55);
   document.getElementById("runtime-env").value = "1.5";
@@ -5916,9 +6516,11 @@ const afterDrag = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { env: ed.state.lightSets.runtime.strength, depth: ed.historyDepth().undo };
 });
-check("dragging the runtime Env slider costs exactly one undo entry",
+check(
+    "dragging the runtime Env slider costs exactly one undo entry",
   Math.abs(afterDrag.env - 3.0) < 1e-6 && afterDrag.depth === lightUndo.depth + 1,
-  `${lightUndo.start} -> ${afterDrag.env}, stack ${lightUndo.depth} -> ${afterDrag.depth}`);
+    `${lightUndo.start} -> ${afterDrag.env}, stack ${lightUndo.depth} -> ${afterDrag.depth}`
+);
 
 // The editor's own rig is how you like to look at the ship, not part of it.
 // Spending the undo stack on it would push out the edits worth taking back.
@@ -5940,10 +6542,11 @@ const editorDrag = await page.evaluate(async () => {
     stored: localStorage.getItem("editorEnv"),
   };
 });
-check("dragging the editor Env slider changes the view and nothing else",
-  Math.abs(editorDrag.env - 2.6) < 1e-6 && Math.abs(editorDrag.live - 2.6) < 1e-6
-    && editorDrag.depth === afterDrag.depth && parseFloat(editorDrag.stored) === 2.6,
-  JSON.stringify(editorDrag));
+check(
+    "dragging the editor Env slider changes the view and nothing else",
+    Math.abs(editorDrag.env - 2.6) < 1e-6 && Math.abs(editorDrag.live - 2.6) < 1e-6 && editorDrag.depth === afterDrag.depth && parseFloat(editorDrag.stored) === 2.6,
+    JSON.stringify(editorDrag)
+);
 
 await page.evaluate(async () => (await import("/js/editor.js")).undo());
 await page.waitForTimeout(250);
@@ -5958,17 +6561,20 @@ const undone = await page.evaluate(async () => {
     editor: ed.state.lightSets.editor.strength,
   };
 });
-check("undo puts the runtime Env back, on the slider and its readout",
-  Math.abs(undone.env - 1.5) < 1e-6
-    && Math.abs(undone.slider - 1.5) < 1e-6 && undone.readout === "1.5"
+check(
+    "undo puts the runtime Env back, on the slider and its readout",
+    Math.abs(undone.env - 1.5) < 1e-6 &&
+        Math.abs(undone.slider - 1.5) < 1e-6 &&
+        undone.readout === "1.5" &&
     // and leaves the editor's rig, which the undo entry never covered, alone
-    && Math.abs(undone.editor - 2.6) < 1e-6 && Math.abs(undone.scene - 2.6) < 1e-6,
-  JSON.stringify(undone));
+        Math.abs(undone.editor - 2.6) < 1e-6 &&
+        Math.abs(undone.scene - 2.6) < 1e-6,
+    JSON.stringify(undone)
+);
 
 await page.evaluate(async () => (await import("/js/editor.js")).redo());
 await page.waitForTimeout(250);
-const redone = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.lightSets.runtime.strength);
+const redone = await page.evaluate(async () => (await import("/js/editor.js")).state.lightSets.runtime.strength);
 check("redo brings it back", Math.abs(redone - 3.0) < 1e-6, `${redone}`);
 
 // the *inactive* light set must travel too, or switching to a runtime view
@@ -5986,12 +6592,15 @@ const bothSets = await page.evaluate(async () => {
   ed.setLightSetting("editor", "exposure", 0.55);
   ed.setLightSetting("runtime", "strength", 1.5);
   ed.setLightSetting("runtime", "exposure", 0.55);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { before: before.strength, after: after.strength };
 });
-check("undo restores the light set the sliders are not editing",
+check(
+    "undo restores the light set the sliders are not editing",
   Math.abs(bothSets.before - 3.9) < 1e-6 && Math.abs(bothSets.after - 1.5) < 1e-6,
-  `runtime strength ${bothSets.before} -> ${bothSets.after}`);
+    `runtime strength ${bothSets.before} -> ${bothSets.after}`
+);
 
 // ---- 1d-unvicies. Load warns before discarding unsaved work -----------------
 // Load throws away the whole scene and sits one button from Save. Nothing else
@@ -5999,10 +6608,15 @@ check("undo restores the light set the sliders are not editing",
 const guard = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   window.__confirms = [];
   window.__realConfirm = window.confirm;
-  window.confirm = (msg) => { window.__confirms.push(msg); return window.__answer; };
+    window.confirm = (msg) => {
+        window.__confirms.push(msg);
+        return window.__answer;
+    };
   return true;
 });
 
@@ -6023,19 +6637,16 @@ const refused = await page.evaluate(async () => ({
   placements: (await import("/js/editor.js")).state.placements.size,
   status: document.getElementById("status-text").textContent,
 }));
-check("Load with unsaved changes asks first",
-  refused.prompts === 1 && /unsaved/i.test(refused.msg), `"${refused.msg}"`);
-check("answering no keeps the scene and says so",
-  refused.placements === dirty && /cancelled/i.test(refused.status),
-  `${refused.placements} placements, "${refused.status}"`);
+check("Load with unsaved changes asks first", refused.prompts === 1 && /unsaved/i.test(refused.msg), `"${refused.msg}"`);
+check("answering no keeps the scene and says so", refused.placements === dirty && /cancelled/i.test(refused.status), `${refused.placements} placements, "${refused.status}"`);
 
 // saving clears the warning: the changes are no longer unsaved
 await page.evaluate(async () => {
   const realFetch = window.fetch;
-  window.fetch = (url, opts) => (String(url).includes("/api/layout") && opts?.method === "POST"
-    ? Promise.resolve(new Response('{"ok":true,"bytes":10,"path":"x"}',
-      { status: 200, headers: { "Content-Type": "application/json" } }))
-    : realFetch(url, opts));
+    window.fetch = (url, opts) =>
+        String(url).includes("/api/layout") && opts?.method === "POST"
+            ? Promise.resolve(new Response('{"ok":true,"bytes":10,"path":"x"}', { status: 200, headers: { "Content-Type": "application/json" } }))
+            : realFetch(url, opts);
   document.getElementById("btn-save").click();
   await new Promise((r) => setTimeout(r, 500));
   window.fetch = realFetch;
@@ -6045,16 +6656,17 @@ await page.evaluate(async () => {
 await page.click("#btn-load");
 await page.waitForTimeout(900);
 const savedThenLoad = await page.evaluate(() => window.__confirms.length);
-check("saving clears the unsaved-changes warning", savedThenLoad === 0,
-  `${savedThenLoad} prompts after a save`);
+check("saving clears the unsaved-changes warning", savedThenLoad === 0, `${savedThenLoad} prompts after a save`);
 
 // and a load re-baselines too, so loading twice in a row never asks
-await page.evaluate(() => { window.__confirms.length = 0; window.__answer = false; });
+await page.evaluate(() => {
+    window.__confirms.length = 0;
+    window.__answer = false;
+});
 await page.click("#btn-load");
 await page.waitForTimeout(900);
 const loadTwice = await page.evaluate(() => window.__confirms.length);
-check("a load re-baselines, so loading again does not ask", loadTwice === 0,
-  `${loadTwice} prompts on the second load`);
+check("a load re-baselines, so loading again does not ask", loadTwice === 0, `${loadTwice} prompts on the second load`);
 
 // Closing or reloading the tab gets the same guard. The browser owns the
 // wording, so all we control is whether the event is cancelled.
@@ -6073,19 +6685,22 @@ const unloadDirty = await page.evaluate(async () => {
   dispatchEvent(e);
   return { prevented: e.defaultPrevented, returnValue: e.returnValue };
 });
-check("closing with unsaved changes warns",
+check(
+    "closing with unsaved changes warns",
   // A synthetic Event cannot model BeforeUnloadEvent exactly: its `returnValue`
   // is the legacy *boolean* alias for "not cancelled", so assigning "" reads
   // back as false rather than "". Either way it is falsy, which is precisely
   // what arms the browser's prompt - and `defaultPrevented` is the part that
   // actually matters.
   unloadDirty.prevented === true && !unloadDirty.returnValue,
-  JSON.stringify(unloadDirty));
+    JSON.stringify(unloadDirty)
+);
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   window.confirm = window.__realConfirm;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 // ---- 1d-vicies. the Runtime view silences the authoring rig ----------------
@@ -6096,10 +6711,11 @@ await page.evaluate(async () => {
 const runtimeRig = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
-  const rig = () => ed.state.scene.lights
-    .filter((l) => ["hemi", "hemiUp", "key", "fill"].includes(l.name))
-    .map((l) => l.intensity);
+    const runtimeMode = (on) => {
+        ed.state.runtime = on;
+        ed.syncLightingMode();
+    };
+    const rig = () => ed.state.scene.lights.filter((l) => ["hemi", "hemiUp", "key", "fill"].includes(l.name)).map((l) => l.intensity);
 
   const before = rig();
   runtimeMode(true);
@@ -6115,16 +6731,17 @@ const runtimeRig = await page.evaluate(async () => {
   runtimeMode(false);
   return { before, off, back, env, mode: ed.state.runtime };
 });
-check("the Runtime view silences the authoring rig, and only it",
-  runtimeRig.before.length === 4 && runtimeRig.off.every((v) => v === 0)
-    && runtimeRig.before.some((v) => v > 0),
-  `${JSON.stringify(runtimeRig.before)} -> ${JSON.stringify(runtimeRig.off)}`);
-check("switching back restores the authored intensities exactly",
-  runtimeRig.back.join() === runtimeRig.before.join() && !runtimeRig.mode,
-  JSON.stringify(runtimeRig.back));
-check("the exposure is written as the slider shows it, no conversion",
+check(
+    "the Runtime view silences the authoring rig, and only it",
+    runtimeRig.before.length === 4 && runtimeRig.off.every((v) => v === 0) && runtimeRig.before.some((v) => v > 0),
+    `${JSON.stringify(runtimeRig.before)} -> ${JSON.stringify(runtimeRig.off)}`
+);
+check("switching back restores the authored intensities exactly", runtimeRig.back.join() === runtimeRig.before.join() && !runtimeRig.mode, JSON.stringify(runtimeRig.back));
+check(
+    "the exposure is written as the slider shows it, no conversion",
   runtimeRig.env.exposure === 0.55 && runtimeRig.env.strength === 1.7,
-  `exposure ${runtimeRig.env.exposure}, strength ${runtimeRig.env.strength}`);
+    `exposure ${runtimeRig.env.exposure}, strength ${runtimeRig.env.strength}`
+);
 
 // ---- 1d-unvicies. two light sets, one per mode ----------------------------
 // The rig adds four lights the game does not have, so one pair of Env/Exposure
@@ -6133,11 +6750,16 @@ check("the exposure is written as the slider shows it, no conversion",
 const lightSets = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
-  const runtimeMode = (on) => { ed.state.runtime = on; ed.syncLightingMode(); };
+    const runtimeMode = (on) => {
+        ed.state.runtime = on;
+        ed.syncLightingMode();
+    };
   runtimeMode(false);
-  ed.setEnvIntensity(1.5); ed.setExposure(0.55);        // editor pair
+    ed.setEnvIntensity(1.5);
+    ed.setExposure(0.55); // editor pair
   runtimeMode(true);
-  ed.setEnvIntensity(3.2); ed.setExposure(1.1);         // runtime pair
+    ed.setEnvIntensity(3.2);
+    ed.setExposure(1.1); // runtime pair
   const inRuntime = { env: ed.state.envIntensity, exp: ed.state.exposure };
   runtimeMode(false);
   const backInEditor = { env: ed.state.envIntensity, exp: ed.state.exposure };
@@ -6146,7 +6768,8 @@ const lightSets = await page.evaluate(async () => {
   const written = { environment: man.environment, editorEnvironment: man.editorEnvironment };
 
   // a round trip must keep both pairs apart
-  ed.setEnvIntensity(0.1); ed.setExposure(0.2);
+    ed.setEnvIntensity(0.1);
+    ed.setExposure(0.2);
   ed.applyEnvironment(written.environment, written.editorEnvironment);
   const restored = {
     editor: { ...ed.state.lightSets.editor },
@@ -6161,31 +6784,35 @@ const lightSets = await page.evaluate(async () => {
     runtime: { ...ed.state.lightSets.runtime },
   };
 
-  ed.state.runtime = false; ed.syncLightingMode();
+    ed.state.runtime = false;
+    ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { inRuntime, backInEditor, written, restored, legacy };
 });
-check("each mode keeps its own Env/Exposure",
-  lightSets.inRuntime.env === 3.2 && lightSets.inRuntime.exp === 1.1
-    && lightSets.backInEditor.env === 1.5
-    && lightSets.backInEditor.exp === 0.55,
-  `runtime ${JSON.stringify(lightSets.inRuntime)}, editor ${JSON.stringify(lightSets.backInEditor)}`);
-check("the demos get the runtime pair, the editor pair is filed separately",
-  lightSets.written.environment.strength === 3.2
-    && lightSets.written.environment.exposure === 1.1
-    && lightSets.written.editorEnvironment.strength === 1.5
-    && lightSets.written.editorEnvironment.exposure === 0.55,
-  JSON.stringify(lightSets.written));
-check("a round trip keeps the two pairs apart",
-  lightSets.restored.runtime.strength === 3.2
-    && lightSets.restored.editor.strength === 1.5
-    && lightSets.restored.active.env === 1.5,
-  JSON.stringify(lightSets.restored));
-check("a manifest with one pair gives it to both, rather than to neither",
-  lightSets.legacy.editor.strength === 2 && lightSets.legacy.runtime.strength === 2
-    && lightSets.legacy.editor.exposure === 0.9,
-  JSON.stringify(lightSets.legacy));
+check(
+    "each mode keeps its own Env/Exposure",
+    lightSets.inRuntime.env === 3.2 && lightSets.inRuntime.exp === 1.1 && lightSets.backInEditor.env === 1.5 && lightSets.backInEditor.exp === 0.55,
+    `runtime ${JSON.stringify(lightSets.inRuntime)}, editor ${JSON.stringify(lightSets.backInEditor)}`
+);
+check(
+    "the demos get the runtime pair, the editor pair is filed separately",
+    lightSets.written.environment.strength === 3.2 &&
+        lightSets.written.environment.exposure === 1.1 &&
+        lightSets.written.editorEnvironment.strength === 1.5 &&
+        lightSets.written.editorEnvironment.exposure === 0.55,
+    JSON.stringify(lightSets.written)
+);
+check(
+    "a round trip keeps the two pairs apart",
+    lightSets.restored.runtime.strength === 3.2 && lightSets.restored.editor.strength === 1.5 && lightSets.restored.active.env === 1.5,
+    JSON.stringify(lightSets.restored)
+);
+check(
+    "a manifest with one pair gives it to both, rather than to neither",
+    lightSets.legacy.editor.strength === 2 && lightSets.legacy.runtime.strength === 2 && lightSets.legacy.editor.exposure === 0.9,
+    JSON.stringify(lightSets.legacy)
+);
 
 // ---- 1d-duovicies. every row on the Settings pane survives a save ----------
 // The pane is the ship's global settings, so nothing on it may be a value you
@@ -6239,34 +6866,42 @@ const settingsRoundTrip = await page.evaluate(async () => {
     bigPalette: ed.BIG_PALETTE_DEFAULT,
     strayChunkCheck: ed.STRAY_CHUNK_CHECK_DEFAULT,
   });
-  ed.state.runtime = false; ed.syncLightingMode();
+    ed.state.runtime = false;
+    ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { written, restored, legacy };
 });
-check("the material dials are written where the game reads them",
-  settingsRoundTrip.written.environment.specularAA === false
-    && settingsRoundTrip.written.environment.reflectionRoughness === 1.35,
-  JSON.stringify(settingsRoundTrip.written.environment));
-check("the editor's view preferences are written apart from the ship's",
-  settingsRoundTrip.written.editorPrefs.veilAlpha === 0.25
-    && settingsRoundTrip.written.editorPrefs.bigPalette === false
-    && settingsRoundTrip.written.editorPrefs.strayChunkCheck === false,
-  JSON.stringify(settingsRoundTrip.written.editorPrefs));
-check("every one of them comes back on load",
-  settingsRoundTrip.restored.specularAA === false
-    && settingsRoundTrip.restored.roughness === 1.35
-    && settingsRoundTrip.restored.veilAlpha === 0.25
-    && settingsRoundTrip.restored.bigPalette === false
-    && settingsRoundTrip.restored.strayChunkCheck === false,
-  JSON.stringify(settingsRoundTrip.restored));
-check("a manifest without the blocks leaves them where they are",
-  settingsRoundTrip.legacy.specularAA === false
-    && settingsRoundTrip.legacy.roughness === 1.35
-    && settingsRoundTrip.legacy.veilAlpha === 0.25
-    && settingsRoundTrip.legacy.bigPalette === false
-    && settingsRoundTrip.legacy.strayChunkCheck === false,
-  JSON.stringify(settingsRoundTrip.legacy));
+check(
+    "the material dials are written where the game reads them",
+    settingsRoundTrip.written.environment.specularAA === false && settingsRoundTrip.written.environment.reflectionRoughness === 1.35,
+    JSON.stringify(settingsRoundTrip.written.environment)
+);
+check(
+    "the editor's view preferences are written apart from the ship's",
+    settingsRoundTrip.written.editorPrefs.veilAlpha === 0.25 &&
+        settingsRoundTrip.written.editorPrefs.bigPalette === false &&
+        settingsRoundTrip.written.editorPrefs.strayChunkCheck === false,
+    JSON.stringify(settingsRoundTrip.written.editorPrefs)
+);
+check(
+    "every one of them comes back on load",
+    settingsRoundTrip.restored.specularAA === false &&
+        settingsRoundTrip.restored.roughness === 1.35 &&
+        settingsRoundTrip.restored.veilAlpha === 0.25 &&
+        settingsRoundTrip.restored.bigPalette === false &&
+        settingsRoundTrip.restored.strayChunkCheck === false,
+    JSON.stringify(settingsRoundTrip.restored)
+);
+check(
+    "a manifest without the blocks leaves them where they are",
+    settingsRoundTrip.legacy.specularAA === false &&
+        settingsRoundTrip.legacy.roughness === 1.35 &&
+        settingsRoundTrip.legacy.veilAlpha === 0.25 &&
+        settingsRoundTrip.legacy.bigPalette === false &&
+        settingsRoundTrip.legacy.strayChunkCheck === false,
+    JSON.stringify(settingsRoundTrip.legacy)
+);
 
 // ---- 1d-duovicies-bis. elements left in the wrong chunk --------------------
 // A chunk has no authored volume - its box is the union of what is assigned to
@@ -6280,8 +6915,11 @@ const strays = await page.evaluate(async () => {
   // The panel runs 4 m along z and is a few millimetres thick along x, so a
   // run of them 4 m apart in z is stuck together the way a real wall is.
   const wall = (x, z, chunk) => ed.placeAt(W, new V(x, 0, z), { silent: true, chunk });
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.addChunk("CH_SA"); ed.addChunk("CH_SB");
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.addChunk("CH_SA");
+    ed.addChunk("CH_SB");
 
   // Two rooms, a long way apart.
   for (const z of [0, 4, 8]) await wall(0, z, "CH_SA");
@@ -6314,7 +6952,8 @@ const strays = await page.evaluate(async () => {
   const solo = ed.strayChunkMembers().length;
   const second = await wall(0, -100, "CH_SOLO");
   const even = ed.strayChunkMembers().length;
-  ed.removePlacement(first.id); ed.removePlacement(second.id);
+    ed.removePlacement(first.id);
+    ed.removePlacement(second.id);
 
   // The setting silences it everywhere, including the Live checks panel.
   document.getElementById("stray-chunk-check").click();
@@ -6325,36 +6964,45 @@ const strays = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 50));
   const panelOn = document.getElementById("validation").textContent;
 
-  ed.clearAll(); ed.select([]);
-  return {
-    quiet, caught, both, stillMine, misplaced: misplaced.id,
-    proud: withProud, solo, even,
-    panelOff, panelOn, stateOff, stateOn: ed.state.strayChunkCheck,
-  };
+    ed.clearAll();
+    ed.select([]);
+    return {
+        quiet,
+        caught,
+        both,
+        stillMine,
+        misplaced: misplaced.id,
+        proud: withProud,
+        solo,
+        even,
+        panelOff,
+        panelOn,
+        stateOff,
+        stateOn: ed.state.strayChunkCheck,
+    };
 });
-check("a chunk whose members touch reports no strays",
-  strays.quiet.length === 0, JSON.stringify(strays.quiet));
-check("an element left in the wrong chunk is caught and the right chunk named",
-  strays.caught.length === 1
-    && strays.caught[0].id === strays.misplaced
-    && strays.caught[0].chunk === "CH_SA"
-    && strays.caught[0].host === "CH_SB",
-  JSON.stringify(strays.caught));
-check("two strays in one chunk are both reported, and one clear of every chunk names none",
-  strays.both.length === 2 && strays.stillMine
-    && strays.both.filter((s) => s.host === "CH_SB").length === 1
-    && strays.both.filter((s) => s.host === null).length === 1,
-  JSON.stringify(strays.both));
-check("a mounting offset is not a stray",
-  strays.proud === 1, `${strays.proud} stray(s), expected only the misplaced one`);
-check("a chunk just started, or split evenly, is left alone",
+check("a chunk whose members touch reports no strays", strays.quiet.length === 0, JSON.stringify(strays.quiet));
+check(
+    "an element left in the wrong chunk is caught and the right chunk named",
+    strays.caught.length === 1 && strays.caught[0].id === strays.misplaced && strays.caught[0].chunk === "CH_SA" && strays.caught[0].host === "CH_SB",
+    JSON.stringify(strays.caught)
+);
+check(
+    "two strays in one chunk are both reported, and one clear of every chunk names none",
+    strays.both.length === 2 && strays.stillMine && strays.both.filter((s) => s.host === "CH_SB").length === 1 && strays.both.filter((s) => s.host === null).length === 1,
+    JSON.stringify(strays.both)
+);
+check("a mounting offset is not a stray", strays.proud === 1, `${strays.proud} stray(s), expected only the misplaced one`);
+check(
+    "a chunk just started, or split evenly, is left alone",
   strays.solo === 1 && strays.even === 1,
-  `solo=${strays.solo} even=${strays.even}, expected only the misplaced one in both`);
-check("the stray-chunk setting silences the check and the Live checks panel",
-  strays.stateOff === false && strays.stateOn === true
-    && !/wrong chunk|touch nothing|sit in/i.test(strays.panelOff)
-    && /sit in CH_SB/.test(strays.panelOn),
-  `off="${strays.panelOff}" on="${strays.panelOn}"`);
+    `solo=${strays.solo} even=${strays.even}, expected only the misplaced one in both`
+);
+check(
+    "the stray-chunk setting silences the check and the Live checks panel",
+    strays.stateOff === false && strays.stateOn === true && !/wrong chunk|touch nothing|sit in/i.test(strays.panelOff) && /sit in CH_SB/.test(strays.panelOn),
+    `off="${strays.panelOff}" on="${strays.panelOn}"`
+);
 
 // A warning that names a piece is only worth reading if you can get to that
 // piece: every name a check prints is a way there.
@@ -6364,8 +7012,11 @@ const strayLink = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const wall = (x, z, chunk) => ed.placeAt(W, new V(x, 0, z), { silent: true, chunk });
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.addChunk("CH_LA"); ed.addChunk("CH_LB");
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.addChunk("CH_LA");
+    ed.addChunk("CH_LB");
   for (const z of [0, 4, 8]) await wall(0, z, "CH_LA");
   for (const z of [40, 44, 48]) await wall(0, z, "CH_LB");
   // The last one loudly, so the panel is looking at this ship and not at
@@ -6373,8 +7024,7 @@ const strayLink = await page.evaluate(async () => {
   const misplaced = await ed.placeAt(W, new V(0, 0, 52), { chunk: "CH_LA" });
   await new Promise((r) => setTimeout(r, 50));
   ed.select([]);
-  const link = [...document.querySelectorAll("#validation .check-ref")]
-    .find((node) => node.textContent === misplaced.id);
+    const link = [...document.querySelectorAll("#validation .check-ref")].find((node) => node.textContent === misplaced.id);
   const camera = ed.state.camera.position.clone();
   link?.click();
   await new Promise((r) => setTimeout(r, 50));
@@ -6387,29 +7037,30 @@ const strayLink = await page.evaluate(async () => {
     framed: BABYLON.Vector3.Distance(camera, ed.state.camera.position) > 1,
   };
 });
-check("a stray named in the checks panel selects and frames that element",
-  strayLink.named && strayLink.selected.join() === strayLink.misplaced && strayLink.framed
-    && /sit in CH_LB/.test(strayLink.text),
-  JSON.stringify(strayLink));
+check(
+    "a stray named in the checks panel selects and frames that element",
+    strayLink.named && strayLink.selected.join() === strayLink.misplaced && strayLink.framed && /sit in CH_LB/.test(strayLink.text),
+    JSON.stringify(strayLink)
+);
 
 // A door names itself in its own warnings, and that name goes to the door.
 const doorLink = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const door = mk.addDoor(new V(0, 0, 0));
   await new Promise((r) => setTimeout(r, 50));
-  const link = [...document.querySelectorAll("#validation .check-ref")]
-    .find((node) => node.textContent === door.id);
+    const link = [...document.querySelectorAll("#validation .check-ref")].find((node) => node.textContent === door.id);
   link?.click();
   await new Promise((r) => setTimeout(r, 50));
   const selected = [...ed.state.selection];
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { named: !!link, selected, door: door.id };
 });
-check("a door named in the checks panel is a way to that door",
-  doorLink.named && doorLink.selected.join() === doorLink.door, JSON.stringify(doorLink));
+check("a door named in the checks panel is a way to that door", doorLink.named && doorLink.selected.join() === doorLink.door, JSON.stringify(doorLink));
 
 // a negative exposure can only be the old stops format - the slider has never
 // gone below 0.15 - so it is converted rather than clamped up to the floor
@@ -6419,15 +7070,17 @@ const oldStops = await page.evaluate(async () => {
   const migrated = { ...ed.state.lightSets.runtime };
   ed.applyEnvironment({ strength: 1.7, exposure: 0.55 }, undefined);
   const literal = { ...ed.state.lightSets.runtime };
-  ed.state.runtime = false; ed.syncLightingMode();
+    ed.state.runtime = false;
+    ed.syncLightingMode();
   ed.setEnvIntensity(ed.ENV_INTENSITY_DEFAULT);
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   return { migrated, literal };
 });
-check("a negative exposure is read as the old stops and converted",
-  Math.abs(oldStops.migrated.exposure - 0.55) < 1e-3
-    && oldStops.literal.exposure === 0.55,
-  `-0.862 -> ${oldStops.migrated.exposure}, 0.55 -> ${oldStops.literal.exposure}`);
+check(
+    "a negative exposure is read as the old stops and converted",
+    Math.abs(oldStops.migrated.exposure - 0.55) < 1e-3 && oldStops.literal.exposure === 0.55,
+    `-0.862 -> ${oldStops.migrated.exposure}, 0.55 -> ${oldStops.literal.exposure}`
+);
 
 // the view transform comes from the manifest rather than being assumed
 const tone = await page.evaluate(async () => {
@@ -6441,15 +7094,21 @@ const tone = await page.evaluate(async () => {
   ed.setToneMapping("KHR_PBR_NEUTRAL");
   const neutral = read();
   ed.setToneMapping("Khronos PBR Neutral");
-  return { aces, off, neutral, IPC: {
+    return {
+        aces,
+        off,
+        neutral,
+        IPC: {
     aces: BABYLON.ImageProcessingConfiguration.TONEMAPPING_ACES,
     neutral: BABYLON.ImageProcessingConfiguration.TONEMAPPING_KHR_PBR_NEUTRAL,
-  } };
+        },
+    };
 });
-check("the tone mapping named in the manifest is the one applied",
-  tone.aces.type === tone.IPC.aces && tone.aces.on
-    && tone.neutral.type === tone.IPC.neutral && !tone.off.on,
-  `ACES=${tone.aces.type}, neutral=${tone.neutral.type}, none enabled=${tone.off.on}`);
+check(
+    "the tone mapping named in the manifest is the one applied",
+    tone.aces.type === tone.IPC.aces && tone.aces.on && tone.neutral.type === tone.IPC.neutral && !tone.off.on,
+    `ACES=${tone.aces.type}, neutral=${tone.neutral.type}, none enabled=${tone.off.on}`
+);
 
 // each rig keeps its own transform, or picking one in a runtime view would
 // silently restyle the editor too
@@ -6476,17 +7135,24 @@ const tonePerSet = await page.evaluate(async () => {
   ed.setLightSetting("editor", "toneMapping", "Khronos PBR Neutral");
   ed.setLightSetting("runtime", "toneMapping", "Khronos PBR Neutral");
   return {
-    live, restored, combos,
+        live,
+        restored,
+        combos,
     written: man.environment.toneMapping,
     writtenEditor: man.editorEnvironment.toneMapping,
   };
 });
-check("the two rigs keep their own view transform, through the manifest",
-  tonePerSet.live === "ACES" && tonePerSet.written === "Standard"
-    && tonePerSet.writtenEditor === "ACES"
-    && tonePerSet.restored.editor === "ACES" && tonePerSet.restored.runtime === "Standard"
-    && tonePerSet.combos.editor === "ACES" && tonePerSet.combos.runtime === "Standard",
-  JSON.stringify(tonePerSet));
+check(
+    "the two rigs keep their own view transform, through the manifest",
+    tonePerSet.live === "ACES" &&
+        tonePerSet.written === "Standard" &&
+        tonePerSet.writtenEditor === "ACES" &&
+        tonePerSet.restored.editor === "ACES" &&
+        tonePerSet.restored.runtime === "Standard" &&
+        tonePerSet.combos.editor === "ACES" &&
+        tonePerSet.combos.runtime === "Standard",
+    JSON.stringify(tonePerSet)
+);
 
 // ---- 1d-duovicies. one combo names the view, and the flags agree with it ----
 // The modes used to be checkboxes that could spell states nothing rendered.
@@ -6501,33 +7167,35 @@ const viewModes = await page.evaluate(async () => {
     ed.state.unlit = flags.unlit;
     derived[mode] = ed.viewMode();
   }
-  ed.state.runtime = false; ed.state.unlit = false;
+    ed.state.runtime = false;
+    ed.state.unlit = false;
   ed.syncLightingMode();
   return {
     derived,
     options: [...sel.options].map((o) => o.value),
     value: sel.value,
     // the controls it replaced
-    gone: ["unlit", "baked", "baked-diffuse-only", "env-intensity", "exposure",
-           "tone-mapping", "dynamic-env-intensity", "btn-export"]
-      .filter((id) => document.getElementById(id)),
+        gone: ["unlit", "baked", "baked-diffuse-only", "env-intensity", "exposure", "tone-mapping", "dynamic-env-intensity", "btn-export"].filter((id) =>
+            document.getElementById(id)
+        ),
     // both rigs on the Settings pane, neither on the toolbar
-    inSettings: ["editor-env", "editor-exposure", "editor-tone", "runtime-env",
-                 "runtime-exposure", "runtime-tone"]
-      .filter((id) => !document.getElementById("settings-pane")?.contains(document.getElementById(id))),
+        inSettings: ["editor-env", "editor-exposure", "editor-tone", "runtime-env", "runtime-exposure", "runtime-tone"].filter(
+            (id) => !document.getElementById("settings-pane")?.contains(document.getElementById(id))
+        ),
   };
 });
-check("the combo offers exactly the three view modes",
-  viewModes.options.join() === "editor,editor-unlit,runtime"
-    && viewModes.value === "editor",
-  `${viewModes.options.join()} — showing ${viewModes.value}`);
-check("every mode's flags name that mode back",
+check(
+    "the combo offers exactly the three view modes",
+    viewModes.options.join() === "editor,editor-unlit,runtime" && viewModes.value === "editor",
+    `${viewModes.options.join()} — showing ${viewModes.value}`
+);
+check(
+    "every mode's flags name that mode back",
   Object.entries(viewModes.derived).every(([k, v]) => k === v),
-  JSON.stringify(viewModes.derived));
-check("the toolbar controls it replaced are gone",
-  viewModes.gone.length === 0, `still present: ${viewModes.gone.join()}`);
-check("both lighting rigs live on the Settings pane",
-  viewModes.inSettings.length === 0, `not in Settings: ${viewModes.inSettings.join()}`);
+    JSON.stringify(viewModes.derived)
+);
+check("the toolbar controls it replaced are gone", viewModes.gone.length === 0, `still present: ${viewModes.gone.join()}`);
+check("both lighting rigs live on the Settings pane", viewModes.inSettings.length === 0, `not in Settings: ${viewModes.inSettings.join()}`);
 
 // ---- 1d-tervicies. Save writes the manifest and the glb together ------------
 // They describe one thing: the runtime loads the geometry from the glb and
@@ -6541,9 +7209,7 @@ const saveBoth = await page.evaluate(async () => {
     const u = String(url);
     if (opts?.method === "POST" && /\/api\/(layout|export|collision)/.test(u)) {
       posted.push(u.replace(location.origin, ""));
-      return Promise.resolve(new Response(
-        JSON.stringify({ ok: true, bytes: 1048576, path: "x" }),
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response(JSON.stringify({ ok: true, bytes: 1048576, path: "x" }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
@@ -6552,14 +7218,19 @@ const saveBoth = await page.evaluate(async () => {
     for (let i = 0; i < 200 && !posted.some((u) => u.includes("export")); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
-  } finally { window.fetch = realFetch; }
+    } finally {
+        window.fetch = realFetch;
+    }
   return { posted, status: document.getElementById("status-text").textContent };
 });
-check("one Save writes both files and says so",
-  saveBoth.posted.some((u) => u.includes("/api/layout"))
-    && saveBoth.posted.some((u) => u.includes("/api/export"))
-    && /saved \d+ bytes/.test(saveBoth.status) && /MB →/.test(saveBoth.status),
-  `${saveBoth.posted.join(" ")} — "${saveBoth.status}"`);
+check(
+    "one Save writes both files and says so",
+    saveBoth.posted.some((u) => u.includes("/api/layout")) &&
+        saveBoth.posted.some((u) => u.includes("/api/export")) &&
+        /saved \d+ bytes/.test(saveBoth.status) &&
+        /MB →/.test(saveBoth.status),
+    `${saveBoth.posted.join(" ")} — "${saveBoth.status}"`
+);
 
 // ---- 1d-tervicies-bis. Save drops behaviour entries nothing carries --------
 // Behaviours outlive the element that carried them while you work - deleting
@@ -6575,22 +7246,20 @@ const pruneSetup = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.state.chunks = ["CH_PRUNE"]; ed.state.activeChunk = "CH_PRUNE";
-  ed.setBehaviorDef("enableEntity", {});
-
-  const named = await ed.placeAt(M, new V(0, 0, 0),
-    { chunk: "CH_PRUNE", name: "crate", silent: true });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.state.chunks = ["CH_PRUNE"];
+    ed.state.activeChunk = "CH_PRUNE";
+    const named = await ed.placeAt(M, new V(0, 0, 0), { chunk: "CH_PRUNE", name: "crate", silent: true });
   const bare = await ed.placeAt(M, new V(6, 0, 0), { chunk: "CH_PRUNE", silent: true });
   const door = mk.addDoor(new V(3, 0, 0), { chunkA: "CH_PRUNE", silent: true });
   const lamp = l.addLight(named.id, { silent: true });
 
-  for (const key of ["crate", "crate_primitive0", bare.id, door.id, "CH_PRUNE",
-    `LIGHT_${lamp.id}`, "ghost", "oldName"]) {
+    for (const key of ["crate", "crate_primitive0", bare.id, door.id, "CH_PRUNE", `LIGHT_${lamp.id}`, "ghost", "oldName"]) {
     ed.addEntityBehavior(key, "enableEntity");
   }
-  return { named: named.id, bare: bare.id, door: door.id, lamp: lamp.id,
-    before: [...ed.state.entities.keys()].sort() };
+    return { named: named.id, bare: bare.id, door: door.id, lamp: lamp.id, before: [...ed.state.entities.keys()].sort() };
 });
 const pruned = await page.evaluate(async () => {
   const realFetch = window.fetch;
@@ -6599,9 +7268,7 @@ const pruned = await page.evaluate(async () => {
     const u = String(url);
     if (opts?.method === "POST" && /\/api\/(layout|export|collision)/.test(u)) {
       posted.push(u.replace(location.origin, ""));
-      return Promise.resolve(new Response(
-        JSON.stringify({ ok: true, bytes: 1048576, path: "x" }),
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response(JSON.stringify({ ok: true, bytes: 1048576, path: "x" }), { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
@@ -6610,7 +7277,9 @@ const pruned = await page.evaluate(async () => {
     for (let i = 0; i < 200 && !posted.some((u) => u.includes("export")); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }
-  } finally { window.fetch = realFetch; }
+    } finally {
+        window.fetch = realFetch;
+    }
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
   return {
@@ -6619,15 +7288,17 @@ const pruned = await page.evaluate(async () => {
     status: document.getElementById("status-text").textContent,
   };
 });
-check("a save drops the entries no node answers to, and names them",
-  !pruned.after.includes("ghost") && !pruned.after.includes("oldName")
-    && / — dropped 2 unused behaviour entries: ghost, oldName/.test(pruned.status),
-  `${JSON.stringify(pruned.after)} — "${pruned.status}"`);
-check("and keeps every name the export will actually carry",
-  ["crate", "crate_primitive0", pruneSetup.bare, pruneSetup.door, "CH_PRUNE",
-    `LIGHT_${pruneSetup.lamp}`].every((k) => pruned.after.includes(k))
-    && pruned.exported.includes("crate_primitive0"),
-  JSON.stringify(pruned.after));
+check(
+    "a save drops the entries no node answers to, and names them",
+    !pruned.after.includes("ghost") && !pruned.after.includes("oldName") && / — dropped 2 unused behaviour entries: ghost, oldName/.test(pruned.status),
+    `${JSON.stringify(pruned.after)} — "${pruned.status}"`
+);
+check(
+    "and keeps every name the export will actually carry",
+    ["crate", "crate_primitive0", pruneSetup.bare, pruneSetup.door, "CH_PRUNE", `LIGHT_${pruneSetup.lamp}`].every((k) => pruned.after.includes(k)) &&
+        pruned.exported.includes("crate_primitive0"),
+    JSON.stringify(pruned.after)
+);
 
 const pruneUndo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -6636,9 +7307,7 @@ const pruneUndo = await page.evaluate(async () => {
   await ed.redo();
   return back;
 });
-check("undo brings a dropped entry back",
-  pruneUndo.includes("ghost") && pruneUndo.includes("oldName"),
-  JSON.stringify(pruneUndo));
+check("undo brings a dropped entry back", pruneUndo.includes("ghost") && pruneUndo.includes("oldName"), JSON.stringify(pruneUndo));
 
 const pruneAuto = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -6646,9 +7315,9 @@ const pruneAuto = await page.evaluate(async () => {
   const realFetch = window.fetch;
   window.fetch = (url, opts) => {
     if (opts?.method === "POST" && String(url).includes("/api/autosave")) {
-      return Promise.resolve(new Response(
-        JSON.stringify({ ok: true, bytes: 42, path: "ship_autosave.json" }),
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(
+                new Response(JSON.stringify({ ok: true, bytes: 42, path: "ship_autosave.json" }), { status: 200, headers: { "Content-Type": "application/json" } })
+            );
     }
     return realFetch(url, opts);
   };
@@ -6662,11 +7331,11 @@ const pruneAuto = await page.evaluate(async () => {
     ed.setConfig("autoSaveMinutes", minutes);
   }
   const held = ed.state.entities.has("ghostAgain");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return held;
 });
-check("an auto-save is a recovery copy, so it drops nothing",
-  pruneAuto === true, String(pruneAuto));
+check("an auto-save is a recovery copy, so it drops nothing", pruneAuto === true, String(pruneAuto));
 
 // ---- 1d-septendecies. the inspector never shows a stale element ------------
 // `hidden` only works through the UA rule `[hidden] { display: none }`, and any
@@ -6677,7 +7346,9 @@ const stale = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const p = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.renamePlacement(p.id, "weaponHolder");
   mk.addDoor(new V(8, 0, 0), { silent: true });
@@ -6705,45 +7376,53 @@ const stale = await page.evaluate(async () => {
   const q = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   ed.select([p.id, q.id]);
   const onMulti = { ...read(), posX: document.getElementById("pos-x").value };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { onPlacement, onDoor, backAgain, onMulti, pId: p.id, qId: q.id };
 });
-check("a placement shows its name, chunk and behaviour",
-  stale.onPlacement.name === "weaponHolder" && stale.onPlacement.nameShown
-    && stale.onPlacement.chunkShown && stale.onPlacement.behaviour
-    && /^"weaponHolder" —/.test(stale.onPlacement.bhvCount),
-  JSON.stringify(stale.onPlacement));
+check(
+    "a placement shows its name, chunk and behaviour",
+    stale.onPlacement.name === "weaponHolder" &&
+        stale.onPlacement.nameShown &&
+        stale.onPlacement.chunkShown &&
+        stale.onPlacement.behaviour &&
+        /^"weaponHolder" —/.test(stale.onPlacement.bhvCount),
+    JSON.stringify(stale.onPlacement)
+);
 // The behaviour panel stays - a door carries behaviours under its id - but it
 // has to be keyed to the door, which is the staleness this whole block is about.
-check("selecting a door drops the previous element's name",
-  stale.onDoor.name === "" && !stale.onDoor.nameShown
-    && !stale.onDoor.chunkShown && stale.onDoor.behaviour
-    && /^Door_\w+ — a door,/.test(stale.onDoor.bhvCount),
-  JSON.stringify(stale.onDoor));
-check("selecting a placement again brings the fields back",
-  stale.backAgain.name === "weaponHolder" && stale.backAgain.nameShown
-    && stale.backAgain.chunkShown
-    && /^"weaponHolder" —/.test(stale.backAgain.bhvCount),
-  JSON.stringify(stale.backAgain));
+check(
+    "selecting a door drops the previous element's name",
+    stale.onDoor.name === "" && !stale.onDoor.nameShown && !stale.onDoor.chunkShown && stale.onDoor.behaviour && /^Door_\w+ — a door,/.test(stale.onDoor.bhvCount),
+    JSON.stringify(stale.onDoor)
+);
+check(
+    "selecting a placement again brings the fields back",
+    stale.backAgain.name === "weaponHolder" && stale.backAgain.nameShown && stale.backAgain.chunkShown && /^"weaponHolder" —/.test(stale.backAgain.bhvCount),
+    JSON.stringify(stale.backAgain)
+);
 
 // The id is read-only and always present - it is what doors, portals and
 // behaviours reference, and the only way to tell a renamed element from the
 // module it came from.
-check("the inspector shows the selected element's id",
-  stale.onPlacement.id === stale.pId && stale.onDoor.id.startsWith("Door_")
-    && stale.backAgain.id === stale.pId,
-  `placement "${stale.onPlacement.id}", door "${stale.onDoor.id}"`);
-check("a marker shows its type rather than repeating its id",
-  stale.onDoor.module === "door", `module="${stale.onDoor.module}"`);
-check("in a multi-selection the id names the element the transform belongs to",
-  stale.onMulti.id === stale.pId && stale.onMulti.module === "2 selected"
-    && stale.onMulti.posX === "0",
-  `id=${stale.onMulti.id}, module="${stale.onMulti.module}", pos-x=${stale.onMulti.posX}`);
-check("the id is not editable",
+check(
+    "the inspector shows the selected element's id",
+    stale.onPlacement.id === stale.pId && stale.onDoor.id.startsWith("Door_") && stale.backAgain.id === stale.pId,
+    `placement "${stale.onPlacement.id}", door "${stale.onDoor.id}"`
+);
+check("a marker shows its type rather than repeating its id", stale.onDoor.module === "door", `module="${stale.onDoor.module}"`);
+check(
+    "in a multi-selection the id names the element the transform belongs to",
+    stale.onMulti.id === stale.pId && stale.onMulti.module === "2 selected" && stale.onMulti.posX === "0",
+    `id=${stale.onMulti.id}, module="${stale.onMulti.module}", pos-x=${stale.onMulti.posX}`
+);
+check(
+    "the id is not editable",
   await page.evaluate(() => {
     const el = document.getElementById("insp-id");
     return el.tagName === "SPAN" && !el.isContentEditable;
-  }));
+    })
+);
 
 // ---- 1d-quindecies. the editor is locked while a load runs ----------------
 // A load rebuilds the scene one module at a time, so there is a long window in
@@ -6753,7 +7432,9 @@ const lockShape = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
 
   const seen = [];
@@ -6764,55 +7445,61 @@ const lockShape = await page.evaluate(async () => {
       label: ed.busyLabel(),
       overlay: !document.getElementById("busy").hidden,
       message: document.getElementById("busy-msg").textContent,
-      inert: ["toolbar", "palette", "viewport", "inspector"]
-        .every((id) => document.getElementById(id).inert),
+            inert: ["toolbar", "palette", "viewport", "inspector"].every((id) => document.getElementById(id).inert),
     };
     // nested, the way the boot autoload sits inside the boot itself
     await ed.whileBusy("inner", async () => seen.push(ed.isBusy()));
     seen.push(ed.isBusy());          // must still be locked after the inner one
   });
   return {
-    inside, seen,
+        inside,
+        seen,
     after: {
       busy: ed.isBusy(),
       overlay: !document.getElementById("busy").hidden,
-      inert: ["toolbar", "palette", "viewport", "inspector"]
-        .some((id) => document.getElementById(id).inert),
+            inert: ["toolbar", "palette", "viewport", "inspector"].some((id) => document.getElementById(id).inert),
     },
   };
 });
-check("a load raises the overlay and makes the panels inert",
-  lockShape.inside.busy && lockShape.inside.overlay && lockShape.inside.inert
-    && lockShape.inside.message === "loading ship…",
-  `overlay=${lockShape.inside.overlay}, inert=${lockShape.inside.inert}, ` +
-  `"${lockShape.inside.message}"`);
-check("nested loads do not unlock early",
-  lockShape.seen.every(Boolean), JSON.stringify(lockShape.seen));
-check("the lock is lifted when the load finishes",
+check(
+    "a load raises the overlay and makes the panels inert",
+    lockShape.inside.busy && lockShape.inside.overlay && lockShape.inside.inert && lockShape.inside.message === "loading ship…",
+    `overlay=${lockShape.inside.overlay}, inert=${lockShape.inside.inert}, ` + `"${lockShape.inside.message}"`
+);
+check("nested loads do not unlock early", lockShape.seen.every(Boolean), JSON.stringify(lockShape.seen));
+check(
+    "the lock is lifted when the load finishes",
   !lockShape.after.busy && !lockShape.after.overlay && !lockShape.after.inert,
-  `busy=${lockShape.after.busy}, overlay=${lockShape.after.overlay}`);
+    `busy=${lockShape.after.busy}, overlay=${lockShape.after.overlay}`
+);
 
 const lockThrows = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  try { await ed.whileBusy("boom", () => { throw new Error("nope"); }); } catch { /* expected */ }
+    try {
+        await ed.whileBusy("boom", () => {
+            throw new Error("nope");
+        });
+    } catch {
+        /* expected */
+    }
   return { busy: ed.isBusy(), overlay: !document.getElementById("busy").hidden };
 });
-check("a load that fails still unlocks",
-  !lockThrows.busy && !lockThrows.overlay, JSON.stringify(lockThrows));
+check("a load that fails still unlocks", !lockThrows.busy && !lockThrows.overlay, JSON.stringify(lockThrows));
 
 // and now for real: hold the lock open and try to break the scene through it
 const held = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   let release;
-  const gate = new Promise((r) => { release = r; });
+    const gate = new Promise((r) => {
+        release = r;
+    });
   window.__release = release;
   window.__locked = ed.whileBusy("loading ship…", () => gate);
   await new Promise((r) => setTimeout(r, 50));
   const p = [...ed.state.placements.values()][0];
   return { id: p.id, pos: p.node.position.asArray(), count: ed.state.placements.size };
 });
-const lockCanvas = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+const lockCanvas = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
 const lockMid = {
   x: lockCanvas.x + lockCanvas.width / 2,
   y: lockCanvas.y + lockCanvas.height / 2,
@@ -6838,23 +7525,26 @@ const survived = await page.evaluate(async () => {
     marquee: i.isMarqueeing(),
   };
 });
-check("no click, drag, Del, turn or hover gets through the lock",
-  survived.count === held.count
-    && JSON.stringify(survived.pos) === JSON.stringify(held.pos)
-    && survived.rot.every((v) => Math.abs(v) < 1e-6)
-    && survived.hovered === null && survived.selection === 0 && !survived.marquee,
-  `${survived.count} left at [${survived.pos}], rot [${survived.rot}], ` +
-  `hover=${survived.hovered}, ${survived.selection} selected`);
+check(
+    "no click, drag, Del, turn or hover gets through the lock",
+    survived.count === held.count &&
+        JSON.stringify(survived.pos) === JSON.stringify(held.pos) &&
+        survived.rot.every((v) => Math.abs(v) < 1e-6) &&
+        survived.hovered === null &&
+        survived.selection === 0 &&
+        !survived.marquee,
+    `${survived.count} left at [${survived.pos}], rot [${survived.rot}], ` + `hover=${survived.hovered}, ${survived.selection} selected`
+);
 
 await page.evaluate(async () => {
   window.__release();
   await window.__locked;
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 await page.waitForTimeout(200);
-const unlocked = await page.evaluate(async () =>
-  (await import("/js/editor.js")).isBusy());
+const unlocked = await page.evaluate(async () => (await import("/js/editor.js")).isBusy());
 check("releasing the load unlocks the editor again", unlocked === false);
 
 // The editor forces every material two-sided, but the glTF exporter must hand
@@ -6871,11 +7561,11 @@ const cullRestore = await page.evaluate(async () => {
   probe.dispose();
   return { authored, forcedOff, duringExport, afterExport };
 });
-check("authored culling restored for export",
-  cullRestore.authored === true && cullRestore.forcedOff === false
-    && cullRestore.duringExport === true && cullRestore.afterExport === false,
-  `born=${cullRestore.authored} editor=${cullRestore.forcedOff} ` +
-  `export=${cullRestore.duringExport} after=${cullRestore.afterExport}`);
+check(
+    "authored culling restored for export",
+    cullRestore.authored === true && cullRestore.forcedOff === false && cullRestore.duringExport === true && cullRestore.afterExport === false,
+    `born=${cullRestore.authored} editor=${cullRestore.forcedOff} ` + `export=${cullRestore.duringExport} after=${cullRestore.afterExport}`
+);
 
 // ---- 1f. unlit viewport mode -----------------------------------------------
 const unlit = await page.evaluate(async () => {
@@ -6889,18 +7579,17 @@ const unlit = await page.evaluate(async () => {
   const inherited = later.unlit;
   // and it must never reach the glTF export as KHR_materials_unlit
   const duringExport = await ed.withAuthoredMaterials(() => pbr().every((m) => !m.unlit));
-  const restored = pbr().filter((m) => m.name !== "UNLIT_PROBE").every((m) => m.unlit);
+    const restored = pbr()
+        .filter((m) => m.name !== "UNLIT_PROBE")
+        .every((m) => m.unlit);
   later.dispose();
   ed.setUnlit(false);
   const off = pbr().every((m) => !m.unlit);
   return { on, inherited, duringExport, restored, off, count: pbr().length };
 });
-check("Unlit switches every material to raw albedo",
-  unlit.on && unlit.off, `${unlit.count} PBR materials toggled`);
+check("Unlit switches every material to raw albedo", unlit.on && unlit.off, `${unlit.count} PBR materials toggled`);
 check("materials created later inherit the unlit mode", unlit.inherited);
-check("unlit never leaks into the export",
-  unlit.duringExport && unlit.restored,
-  `cleared during export=${unlit.duringExport}, restored after=${unlit.restored}`);
+check("unlit never leaks into the export", unlit.duringExport && unlit.restored, `cleared during export=${unlit.duringExport}, restored after=${unlit.restored}`);
 
 // ---- 1f-bis. emissive lift ---------------------------------------------------
 // Raw albedo alone leaves the darkest kit modules almost black, so unlit mode
@@ -6924,24 +7613,21 @@ const lift = await page.evaluate(async () => {
   ed.setUnlit(true);
   const lifted = plain.emissiveColor.equalsFloats(L, L, L) && plain.emissiveIntensity === 1;
   const stripKept = strip.emissiveColor.equalsFloats(0, 0.7, 1);
-  const noLiftInExport = await ed.withAuthoredMaterials(
-    () => plain.emissiveColor.equalsFloats(0.25, 0, 0) && plain.emissiveIntensity === 2);
+    const noLiftInExport = await ed.withAuthoredMaterials(() => plain.emissiveColor.equalsFloats(0.25, 0, 0) && plain.emissiveIntensity === 2);
   const liftBack = plain.emissiveColor.equalsFloats(L, L, L);
 
   ed.setUnlit(false);
   const restored = plain.emissiveColor.equalsFloats(0.25, 0, 0) && plain.emissiveIntensity === 2;
 
   strip.emissiveTexture.dispose();
-  plain.dispose(); strip.dispose();
+    plain.dispose();
+    strip.dispose();
   return { L, lifted, stripKept, noLiftInExport, liftBack, restored };
 });
-check("unlit lifts dark materials with a flat emissive",
-  lift.lifted, `lift=${lift.L}`);
+check("unlit lifts dark materials with a flat emissive", lift.lifted, `lift=${lift.L}`);
 check("materials with an emissive texture are left alone", lift.stripKept);
 check("the authored emissive comes back when unlit is turned off", lift.restored);
-check("the emissive lift never leaks into the export",
-  lift.noLiftInExport && lift.liftBack,
-  `cleared during export=${lift.noLiftInExport}, restored after=${lift.liftBack}`);
+check("the emissive lift never leaks into the export", lift.noLiftInExport && lift.liftBack, `cleared during export=${lift.noLiftInExport}, restored after=${lift.liftBack}`);
 
 // the kit sets its own emissive values *after* the material is constructed, so
 // the snapshot has to be re-taken then or unlit would restore a stale black.
@@ -6950,13 +7636,15 @@ const kitEmissive = await page.evaluate(async () => {
   const named = window.__scene.materials.find((m) => m.emissiveTexture && "unlit" in m);
   if (!named) return { skip: true };
   const before = named.emissiveColor.asArray();
-  ed.setUnlit(true); ed.setUnlit(false);
+    ed.setUnlit(true);
+    ed.setUnlit(false);
   return { skip: false, name: named.name, before, after: named.emissiveColor.asArray() };
 });
-check("a kit light keeps its authored emissive across an unlit round-trip",
+check(
+    "a kit light keeps its authored emissive across an unlit round-trip",
   kitEmissive.skip || kitEmissive.before.every((v, i) => Math.abs(v - kitEmissive.after[i]) < 1e-6),
-  kitEmissive.skip ? "(no emissive-texture material loaded)"
-    : `${kitEmissive.name} ${kitEmissive.before} -> ${kitEmissive.after}`);
+    kitEmissive.skip ? "(no emissive-texture material loaded)" : `${kitEmissive.name} ${kitEmissive.before} -> ${kitEmissive.after}`
+);
 
 // ---- 1e. a rotated ghost must not vanish -----------------------------------
 // The blocks above clear the scene, so re-arm the ghost these tests need.
@@ -6986,25 +7674,25 @@ const spin = await page.evaluate(async () => {
   }
   return seen;
 });
-check("ghost stays rendered through a full turn",
+check(
+    "ghost stays rendered through a full turn",
   spin.every((f) => f.visible && f.inActive === f.total),
-  spin.map((f) => `${f.deg}:${f.inActive}/${f.total}`).join(" "));
+    spin.map((f) => `${f.deg}:${f.inActive}/${f.total}`).join(" ")
+);
 
 // ---- 2. Shift+wheel turns, Ctrl+wheel resizes, the bare wheel zooms --------
 // The bare wheel is always the camera, which is what a wheel is for in a 3D
 // view. The two edits it can do sit on the two modifiers.
 await page.mouse.wheel(0, -120);
 await page.waitForTimeout(150);
-let rot = await page.evaluate(() =>
-  window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
+let rot = await page.evaluate(() => (window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180) / Math.PI);
 check("the bare wheel does not rotate the ghost", Math.abs(rot) < 0.01, `${rot.toFixed(2)}°`);
 
 await page.keyboard.down("Shift");
 await page.mouse.wheel(0, -120);
 await page.keyboard.up("Shift");
 await page.waitForTimeout(200);
-rot = await page.evaluate(() =>
-  window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
+rot = await page.evaluate(() => (window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180) / Math.PI);
 check("Shift+wheel turns the ghost 90°", Math.abs(Math.abs(rot) - 90) < 0.01, `${rot.toFixed(2)}°`);
 
 // and the other way, which is what retired the negative steps
@@ -7012,10 +7700,8 @@ await page.keyboard.down("Shift");
 await page.mouse.wheel(0, 120);
 await page.keyboard.up("Shift");
 await page.waitForTimeout(200);
-const rotBack = await page.evaluate(() =>
-  window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180 / Math.PI);
-check("and back the other way, which is why a step needs no sign",
-  Math.abs(rotBack) < 0.01, `${rot.toFixed(2)}° -> ${rotBack.toFixed(2)}°`);
+const rotBack = await page.evaluate(() => (window.__scene.getTransformNodeByName("GHOST").rotationQuaternion.toEulerAngles().y * 180) / Math.PI);
+check("and back the other way, which is why a step needs no sign", Math.abs(rotBack) < 0.01, `${rot.toFixed(2)}° -> ${rotBack.toFixed(2)}°`);
 
 // leave it turned, which is what the placement checks below read
 await page.keyboard.down("Shift");
@@ -7027,9 +7713,12 @@ await page.keyboard.down("Control");
 await page.mouse.wheel(0, -120);
 await page.keyboard.up("Control");
 await page.waitForTimeout(150);
-let scl = await page.evaluate(() =>
-  window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
-check("Ctrl+wheel scales ghost +0.1", scl.every((v) => Math.abs(v - 1.1) < 1e-6), JSON.stringify(scl));
+let scl = await page.evaluate(() => window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
+check(
+    "Ctrl+wheel scales ghost +0.1",
+    scl.every((v) => Math.abs(v - 1.1) < 1e-6),
+    JSON.stringify(scl)
+);
 
 // an edit, so it must not also dolly
 const camHeld = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
@@ -7038,9 +7727,11 @@ await page.mouse.wheel(0, -120);
 await page.keyboard.up("Control");
 await page.waitForTimeout(400);
 const camStill = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
-check("Ctrl+wheel resizes without moving the camera",
+check(
+    "Ctrl+wheel resizes without moving the camera",
   JSON.stringify(camHeld) === JSON.stringify(camStill),
-  `${camHeld.map((v) => v.toFixed(1))} -> ${camStill.map((v) => v.toFixed(1))}`);
+    `${camHeld.map((v) => v.toFixed(1))} -> ${camStill.map((v) => v.toFixed(1))}`
+);
 await page.keyboard.down("Control");
 await page.mouse.wheel(0, 120);            // undo the extra scale
 await page.keyboard.up("Control");
@@ -7066,26 +7757,33 @@ const zoom = await page.evaluate(async () => {
     return BABYLON.Vector3.Distance(before, cam.position);
   };
   const home = cam.position.clone();
-  cam.position.set(0, 6, -200); cam.cameraDirection.setAll(0); await settle();
+    cam.position.set(0, 6, -200);
+    cam.cameraDirection.setAll(0);
+    await settle();
   const far = await notch();
-  cam.position.set(0, 2, -6); cam.cameraDirection.setAll(0); await settle();
+    cam.position.set(0, 2, -6);
+    cam.cameraDirection.setAll(0);
+    await settle();
   const near = await notch();
   // a free camera has no pivot to collide with, so it keeps going at any range
-  cam.position.set(0, 0.4, -0.4); cam.cameraDirection.setAll(0); await settle();
+    cam.position.set(0, 0.4, -0.4);
+    cam.cameraDirection.setAll(0);
+    await settle();
   const veryNear = await notch();
-  cam.position.copyFrom(home); cam.cameraDirection.setAll(0);
+    cam.position.copyFrom(home);
+    cam.cameraDirection.setAll(0);
   return { far, near, veryNear };
 });
-check("dolly step is the same far and near",
+check(
+    "dolly step is the same far and near",
   // Relative, not absolute: what this guards against is a step that scales with
   // distance, which would make these differ by ~30x across 200 m vs 6 m. An
   // absolute 0.05 m window on a 2 m step was tight enough to fail on residual
   // camera inertia alone - measured 2.04 against 1.99, exactly on the boundary.
-  Math.abs(zoom.far - zoom.near) / Math.max(zoom.far, zoom.near) < 0.05
-    && zoom.far > 0.5,
-  `${zoom.far.toFixed(2)} m at 200 m out vs ${zoom.near.toFixed(2)} m at 6 m`);
-check("dolly still works when very close", zoom.veryNear > 0.5,
-  `moved ${zoom.veryNear.toFixed(2)} m from 0.4 m out`);
+    Math.abs(zoom.far - zoom.near) / Math.max(zoom.far, zoom.near) < 0.05 && zoom.far > 0.5,
+    `${zoom.far.toFixed(2)} m at 200 m out vs ${zoom.near.toFixed(2)} m at 6 m`
+);
+check("dolly still works when very close", zoom.veryNear > 0.5, `moved ${zoom.veryNear.toFixed(2)} m from 0.4 m out`);
 
 // The wheel tests above dolly the camera around, so put it back somewhere it
 // can actually see the origin before anything projects world points again.
@@ -7102,7 +7800,8 @@ await page.waitForTimeout(800);
 pt = await screenOf([0, 0, 0]);
 await page.mouse.move(pt.x, pt.y, { steps: 4 });
 await page.waitForTimeout(200);
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(700);
 
 let placed = await page.evaluate(async () => {
@@ -7118,13 +7817,10 @@ let placed = await page.evaluate(async () => {
     scale: e ? e.node.scaling.asArray() : null,
   };
 });
-check("click places the ghost", placed.count === 1,
-  `${placed.count} placement(s), armed=${placed.stillArmed}, brush=${placed.brush}, r=${placed.radius?.toFixed(1)}`);
+check("click places the ghost", placed.count === 1, `${placed.count} placement(s), armed=${placed.stillArmed}, brush=${placed.brush}, r=${placed.radius?.toFixed(1)}`);
 check("brush stays armed after placing", placed.stillArmed);
-check("placement keeps ghost rotation",
-  placed.rotY !== null && Math.abs(Math.abs(placed.rotY) - 90) < 0.01, `${placed.rotY}`);
-check("placement keeps ghost scale",
-  !!placed.scale && placed.scale.every((v) => Math.abs(v - 1.1) < 1e-6), JSON.stringify(placed.scale));
+check("placement keeps ghost rotation", placed.rotY !== null && Math.abs(Math.abs(placed.rotY) - 90) < 0.01, `${placed.rotY}`);
+check("placement keeps ghost scale", !!placed.scale && placed.scale.every((v) => Math.abs(v - 1.1) < 1e-6), JSON.stringify(placed.scale));
 
 // ---- 4. grid elevation ------------------------------------------------------
 await page.evaluate(() => import("/js/interact.js").then((i) => i.cancelGhost()));
@@ -7148,7 +7844,8 @@ check("numpad - lowers grid", elev === 4, `${elev} m`);
 // ---- 5. axis cycling --------------------------------------------------------
 await page.evaluate(async () => {
   const s = (await import("/js/editor.js")).state;
-  s.rotAxis = "y"; s.scaleAxis = "all";
+    s.rotAxis = "y";
+    s.scaleAxis = "all";
 });
 await page.keyboard.press("r");
 await page.waitForTimeout(120);
@@ -7174,11 +7871,11 @@ const focusTrap = await page.evaluate(async () => {
 });
 await page.keyboard.press("NumpadSubtract");
 await page.waitForTimeout(120);
-const whileFocused = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.gridY);
+const whileFocused = await page.evaluate(async () => (await import("/js/editor.js")).state.gridY);
 const box2 = await page.locator("#render-canvas").boundingBox();
 await page.mouse.move(box2.x + 40, box2.y + 40, { steps: 2 });
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(150);
 await page.keyboard.press("NumpadSubtract");
 await page.waitForTimeout(150);
@@ -7186,20 +7883,22 @@ const afterClickAway = await page.evaluate(async () => ({
   y: (await import("/js/editor.js")).state.gridY,
   focused: document.activeElement.id || document.activeElement.tagName,
 }));
-check("clicking the viewport frees the keyboard from the toolbar",
+check(
+    "clicking the viewport frees the keyboard from the toolbar",
   focusTrap.focused === "snap-pos" && afterClickAway.y < whileFocused,
-  `focus was ${focusTrap.focused}, grid ${focusTrap.before} -> ${whileFocused} (trapped) -> ${afterClickAway.y}`);
+    `focus was ${focusTrap.focused}, grid ${focusTrap.before} -> ${whileFocused} (trapped) -> ${afterClickAway.y}`
+);
 
 // main-row minus works too, for keyboards without a numpad
 const rowMinus = await page.evaluate(async () => (await import("/js/editor.js")).state.gridY);
 await page.keyboard.press("Minus");
 await page.waitForTimeout(150);
 const afterRowMinus = await page.evaluate(async () => (await import("/js/editor.js")).state.gridY);
-check("main-row minus also lowers the grid", afterRowMinus < rowMinus,
-  `${rowMinus} -> ${afterRowMinus}`);
+check("main-row minus also lowers the grid", afterRowMinus < rowMinus, `${rowMinus} -> ${afterRowMinus}`);
 await page.evaluate(async () => {
   const s = (await import("/js/editor.js")).state;
-  s.rotAxis = "y"; s.scaleAxis = "all";
+    s.rotAxis = "y";
+    s.scaleAxis = "all";
   (await import("/js/editor.js")).setGridElevation(0);
 });
 
@@ -7231,10 +7930,8 @@ let hov = await page.evaluate(async () => {
     dbgGhost: i.ghostActive(),
   };
 });
-check("hover picks the element", hov.id === target.id,
-  `${hov.id} | pointer ${JSON.stringify(hov.dbgPointer)} pick=${hov.dbgPick} ghost=${hov.dbgGhost}`);
-check("outline uses per-instance edges", hov.edged === hov.total && hov.edged > 0,
-  `${hov.edged}/${hov.total} instances edged`);
+check("hover picks the element", hov.id === target.id, `${hov.id} | pointer ${JSON.stringify(hov.dbgPointer)} pick=${hov.dbgPick} ghost=${hov.dbgGhost}`);
+check("outline uses per-instance edges", hov.edged === hov.total && hov.edged > 0, `${hov.edged}/${hov.total} instances edged`);
 check("no HighlightLayer in the scene", hov.effectLayers === 0, `${hov.effectLayers} effect layer(s)`);
 // Hover no longer redirects an edit, so with nothing selected there is nothing
 // to act on - pointing at a wall must not make it the thing R turns.
@@ -7244,8 +7941,7 @@ const hoverIsCurrent = await page.evaluate(async () => {
   ed.select([]);
   return { kind: i.currentElement()?.kind ?? null, hovered: !!i.hoveredId() };
 });
-check("a merely hovered element is not what an edit acts on",
-  hoverIsCurrent.hovered && hoverIsCurrent.kind === null, JSON.stringify(hoverIsCurrent));
+check("a merely hovered element is not what an edit acts on", hoverIsCurrent.hovered && hoverIsCurrent.kind === null, JSON.stringify(hoverIsCurrent));
 
 // ---- 7. the wheel leaves a merely-hovered element alone ---------------------
 const rotBefore = await page.evaluate(async () => {
@@ -7253,8 +7949,7 @@ const rotBefore = await page.evaluate(async () => {
   ed.select([]);
   return ed.eulerOf([...ed.state.placements.values()][0].node)[1];
 });
-const camBeforeHoverWheel = await page.evaluate(() =>
-  window.__scene.activeCamera.position.asArray());
+const camBeforeHoverWheel = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
 await page.mouse.wheel(0, 120);
 await page.waitForTimeout(500);
 const hoverWheel = await page.evaluate(async () => {
@@ -7266,11 +7961,12 @@ const hoverWheel = await page.evaluate(async () => {
     cam: window.__scene.activeCamera.position.asArray(),
   };
 });
-const camMovedOnHover = Math.hypot(
-  ...hoverWheel.cam.map((v, k) => v - camBeforeHoverWheel[k]));
-check("wheel over a hovered element dollies, does not rotate it",
+const camMovedOnHover = Math.hypot(...hoverWheel.cam.map((v, k) => v - camBeforeHoverWheel[k]));
+check(
+    "wheel over a hovered element dollies, does not rotate it",
   !!hoverWheel.hovered && Math.abs(hoverWheel.rot - rotBefore) < 1e-6 && camMovedOnHover > 0.5,
-  `hovering ${hoverWheel.hovered}, rotation held at ${rotBefore.toFixed(1)}, camera moved ${camMovedOnHover.toFixed(2)} m`);
+    `hovering ${hoverWheel.hovered}, rotation held at ${rotBefore.toFixed(1)}, camera moved ${camMovedOnHover.toFixed(2)} m`
+);
 
 // ---- 2c. right button + wheel sets the fly speed ---------------------------
 // Ctrl+WASD cannot do this: Ctrl+W closes the browser tab (reserved by Chrome,
@@ -7278,69 +7974,68 @@ check("wheel over a hovered element dollies, does not rotate it",
 const speedStart = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   ed.select([...ed.state.placements.keys()].slice(0, 1));
-  return { speed: ed.state.moveSpeed, selection: ed.state.selection.length,
-           cam: ed.state.camera.position.asArray() };
+    return { speed: ed.state.moveSpeed, selection: ed.state.selection.length, cam: ed.state.camera.position.asArray() };
 });
 await page.mouse.down({ button: "right" });
-for (let k = 0; k < 5; k++) { await page.mouse.wheel(0, -120); await page.waitForTimeout(50); }
+for (let k = 0; k < 5; k++) {
+    await page.mouse.wheel(0, -120);
+    await page.waitForTimeout(50);
+}
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(300);
 const speedUp = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return { speed: ed.state.moveSpeed, selection: ed.state.selection.length,
-           cam: ed.state.camera.position.asArray(),
-         };
+    return { speed: ed.state.moveSpeed, selection: ed.state.selection.length, cam: ed.state.camera.position.asArray() };
 });
-check("right button + wheel raises the fly speed",
-  speedUp.speed > speedStart.speed * 1.5,
-  `${speedStart.speed} -> ${speedUp.speed} m/s`);
-check("changing speed does not dolly the camera",
+check("right button + wheel raises the fly speed", speedUp.speed > speedStart.speed * 1.5, `${speedStart.speed} -> ${speedUp.speed} m/s`);
+check(
+    "changing speed does not dolly the camera",
   Math.hypot(...speedUp.cam.map((v, k) => v - speedStart.cam[k])) < 1e-6,
-  `camera moved ${Math.hypot(...speedUp.cam.map((v, k) => v - speedStart.cam[k])).toFixed(4)} m`);
+    `camera moved ${Math.hypot(...speedUp.cam.map((v, k) => v - speedStart.cam[k])).toFixed(4)} m`
+);
 // the release is not a click: it must not fire the cancel gesture
-check("changing speed does not cancel the selection",
-  speedUp.selection === speedStart.selection,
-  `${speedStart.selection} -> ${speedUp.selection} selected`);
+check("changing speed does not cancel the selection", speedUp.selection === speedStart.selection, `${speedStart.selection} -> ${speedUp.selection} selected`);
 // the HUD lost its speed row, so this control's only feedback is the status line
-check("the status line reports the fly speed",
-  new RegExp(`fly speed ${speedUp.speed} m/s`).test(
-    await page.evaluate(() => document.getElementById("status-text").textContent)),
-  await page.evaluate(() => document.getElementById("status-text").textContent));
+check(
+    "the status line reports the fly speed",
+    new RegExp(`fly speed ${speedUp.speed} m/s`).test(await page.evaluate(() => document.getElementById("status-text").textContent)),
+    await page.evaluate(() => document.getElementById("status-text").textContent)
+);
 
 await page.mouse.down({ button: "right" });
-for (let k = 0; k < 40; k++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(20); }
+for (let k = 0; k < 40; k++) {
+    await page.mouse.wheel(0, 120);
+    await page.waitForTimeout(20);
+}
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(300);
-const speedFloor = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.moveSpeed);
-check("the fly speed is clamped above zero", speedFloor >= 1.5 && speedFloor < 5,
-  `bottomed out at ${speedFloor} m/s`);
-await page.evaluate(async () => { (await import("/js/editor.js")).state.moveSpeed = 42; });
+const speedFloor = await page.evaluate(async () => (await import("/js/editor.js")).state.moveSpeed);
+check("the fly speed is clamped above zero", speedFloor >= 1.5 && speedFloor < 5, `bottomed out at ${speedFloor} m/s`);
+await page.evaluate(async () => {
+    (await import("/js/editor.js")).state.moveSpeed = 42;
+});
 
 // a plain right-click, with no wheel, must still cancel
 await page.mouse.down({ button: "right" });
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(250);
-const afterPlainRight = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.selection.length);
-check("a plain right-click still cancels", afterPlainRight === 0,
-  `${afterPlainRight} selected`);
+const afterPlainRight = await page.evaluate(async () => (await import("/js/editor.js")).state.selection.length);
+check("a plain right-click still cancels", afterPlainRight === 0, `${afterPlainRight} selected`);
 
 // A turn leaves a merely hovered element alone: edits go to the selection, so
 // that resting the pointer somewhere cannot decide what the next one turns.
-await page.evaluate(async () =>
-  (await import("/js/interact.js")).rotateCurrent(1));
+await page.evaluate(async () => (await import("/js/interact.js")).rotateCurrent(1));
 await page.waitForTimeout(200);
 const rotAfterHover = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  return { rot: ed.eulerOf([...ed.state.placements.values()][0].node)[1],
-    hovered: i.hoveredId(), selected: ed.state.selection.length };
+    return { rot: ed.eulerOf([...ed.state.placements.values()][0].node)[1], hovered: i.hoveredId(), selected: ed.state.selection.length };
 });
-check("a turn does not reach a merely hovered element",
-  !!rotAfterHover.hovered && rotAfterHover.selected === 0
-    && Math.abs(rotAfterHover.rot - rotBefore) < 1e-6,
-  `hovering ${rotAfterHover.hovered}, held at ${rotBefore.toFixed(1)}`);
+check(
+    "a turn does not reach a merely hovered element",
+    !!rotAfterHover.hovered && rotAfterHover.selected === 0 && Math.abs(rotAfterHover.rot - rotBefore) < 1e-6,
+    `hovering ${rotAfterHover.hovered}, held at ${rotBefore.toFixed(1)}`
+);
 // ...and turns it once it is actually selected
 const rotWhenSelected = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -7350,9 +8045,7 @@ const rotWhenSelected = await page.evaluate(async () => {
   i.rotateCurrent(1);
   return ed.eulerOf(e.node)[1];
 });
-check("but it does turn the selection",
-  Math.abs(Math.abs(rotWhenSelected - rotBefore) - 90) < 0.01,
-  `${rotBefore.toFixed(1)} -> ${rotWhenSelected.toFixed(1)}`);
+check("but it does turn the selection", Math.abs(Math.abs(rotWhenSelected - rotBefore) - 90) < 0.01, `${rotBefore.toFixed(1)} -> ${rotWhenSelected.toFixed(1)}`);
 
 const outlineSynced = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -7382,16 +8075,15 @@ const beforeGrab = await page.evaluate(async () => {
   return [...ed.state.placements.values()][0].node.position.asArray();
 });
 
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(500);
 const singleClick = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   return { selection: ed.state.selection.length, dragging: i.isDragging() };
 });
-check("single click selects without moving",
-  singleClick.selection === 1 && !singleClick.dragging,
-  `${singleClick.selection} selected, dragging=${singleClick.dragging}`);
+check("single click selects without moving", singleClick.selection === 1 && !singleClick.dragging, `${singleClick.selection} selected, dragging=${singleClick.dragging}`);
 
 // drag it to a new cell
 const dragTo = await screenOf([8, 0, 8]);
@@ -7422,19 +8114,23 @@ const dropped = await page.evaluate(async () => {
     cursor: window.__scene.getEngine().getRenderingCanvas().style.cursor,
   };
 });
-check("drag moves the element live", midDrag.dragging && midDrag.visible
-  && JSON.stringify(midDrag.pos) !== JSON.stringify(beforeGrab),
-  `${JSON.stringify(beforeGrab)} -> ${JSON.stringify(midDrag.pos)} while dragging`);
+check(
+    "drag moves the element live",
+    midDrag.dragging && midDrag.visible && JSON.stringify(midDrag.pos) !== JSON.stringify(beforeGrab),
+    `${JSON.stringify(beforeGrab)} -> ${JSON.stringify(midDrag.pos)} while dragging`
+);
 check("cursor hidden while dragging", midDrag.cursor === "none", `cursor="${midDrag.cursor}"`);
-check("drop ends the drag without duplicating",
-  !dropped.dragging && dropped.count === 1 && dropped.visible
-  && JSON.stringify(dropped.pos) !== JSON.stringify(beforeGrab),
-  `${dropped.count} placement at ${JSON.stringify(dropped.pos)}`);
+check(
+    "drop ends the drag without duplicating",
+    !dropped.dragging && dropped.count === 1 && dropped.visible && JSON.stringify(dropped.pos) !== JSON.stringify(beforeGrab),
+    `${dropped.count} placement at ${JSON.stringify(dropped.pos)}`
+);
 check("cursor restored after the drop", dropped.cursor !== "none", `cursor="${dropped.cursor}"`);
-check("dragging an element does not move the camera",
-  JSON.stringify(midDrag.camPos) === JSON.stringify(
-    await page.evaluate(async () => (await import("/js/editor.js")).state.camera.position.asArray())),
-  "camera untouched by the drag");
+check(
+    "dragging an element does not move the camera",
+    JSON.stringify(midDrag.camPos) === JSON.stringify(await page.evaluate(async () => (await import("/js/editor.js")).state.camera.position.asArray())),
+    "camera untouched by the drag"
+);
 
 // Esc mid-drag puts everything back
 const home = dropped.pos;
@@ -7452,10 +8148,11 @@ const restored = await page.evaluate(async () => {
   const e = [...ed.state.placements.values()][0];
   return { dragging: i.isDragging(), pos: e.node.position.asArray(), visible: e.node.isEnabled() };
 });
-check("Esc cancels a drag and restores the position",
-  !restored.dragging && restored.visible
-  && JSON.stringify(restored.pos) === JSON.stringify(home),
-  `${JSON.stringify(restored.pos)} vs ${JSON.stringify(home)}`);
+check(
+    "Esc cancels a drag and restores the position",
+    !restored.dragging && restored.visible && JSON.stringify(restored.pos) === JSON.stringify(home),
+    `${JSON.stringify(restored.pos)} vs ${JSON.stringify(home)}`
+);
 
 // ---- 8b. a drag moves the whole selection ----------------------------------
 const multiDrag = await page.evaluate(async (moduleId) => {
@@ -7464,7 +8161,8 @@ const multiDrag = await page.evaluate(async (moduleId) => {
   ed.clearAll();
   ed.state.snap.pos = 4;
   const cam = ed.state.camera;
-  cam.position.set(0, 16, -24); cam.cameraDirection.setAll(0);
+    cam.position.set(0, 16, -24);
+    cam.cameraDirection.setAll(0);
   cam.setTarget(new V(0, 0, 0));
   const a = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(moduleId, new V(8, 0, 4), { silent: true });
@@ -7494,16 +8192,18 @@ const multiAfter = await page.evaluate(async (ids) => {
 const d0 = multiAfter[0].map((v, i) => v - multiDrag.before[0][i]);
 const d1 = multiAfter[1].map((v, i) => v - multiDrag.before[1][i]);
 const d2 = multiAfter[2].map((v, i) => v - multiDrag.before[2][i]);
-check("drag moves every selected element",
-  Math.hypot(...d0) > 1 && JSON.stringify(d0) === JSON.stringify(d1),
-  `both moved by ${JSON.stringify(d0)}`);
+check("drag moves every selected element", Math.hypot(...d0) > 1 && JSON.stringify(d0) === JSON.stringify(d1), `both moved by ${JSON.stringify(d0)}`);
 check("unselected elements stay put", Math.hypot(...d2) === 0, `moved ${JSON.stringify(d2)}`);
-check("relative spacing is preserved",
-  JSON.stringify(multiAfter[1].map((v, i) => v - multiAfter[0][i]))
-  === JSON.stringify(multiDrag.before[1].map((v, i) => v - multiDrag.before[0][i])),
-  "offset between the two is unchanged");
-check("drag delta lands on the grid",
-  d0.every((v) => Math.abs(v / 4 - Math.round(v / 4)) < 1e-6), `delta ${JSON.stringify(d0)}`);
+check(
+    "relative spacing is preserved",
+    JSON.stringify(multiAfter[1].map((v, i) => v - multiAfter[0][i])) === JSON.stringify(multiDrag.before[1].map((v, i) => v - multiDrag.before[0][i])),
+    "offset between the two is unchanged"
+);
+check(
+    "drag delta lands on the grid",
+    d0.every((v) => Math.abs(v / 4 - Math.round(v / 4)) < 1e-6),
+    `delta ${JSON.stringify(d0)}`
+);
 
 // dragging an unselected element takes over the selection
 const takeover = await page.evaluate(async (ids) => {
@@ -7524,9 +8224,11 @@ const afterTakeover = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { selection: [...ed.state.selection] };
 });
-check("dragging an unselected element selects just it",
+check(
+    "dragging an unselected element selects just it",
   afterTakeover.selection.length === 1 && afterTakeover.selection[0] === takeover.id,
-  `selection is ${JSON.stringify(afterTakeover.selection)}`);
+    `selection is ${JSON.stringify(afterTakeover.selection)}`
+);
 
 // ---- 10. no leaked helper meshes -------------------------------------------
 const box = await page.locator("#render-canvas").boundingBox();
@@ -7541,16 +8243,13 @@ const leaks = await page.evaluate(async () => ({
   geometries: window.__scene.geometries.length,
   cursor: window.__scene.getEngine().getRenderingCanvas().style.cursor,
 }));
-check("no leaked ghost/hover/outline meshes",
-  leaks.ghost === 0 && leaks.hover === 0 && leaks.edged === 0 && !leaks.hovered,
-  JSON.stringify(leaks));
+check("no leaked ghost/hover/outline meshes", leaks.ghost === 0 && leaks.hover === 0 && leaks.edged === 0 && !leaks.hovered, JSON.stringify(leaks));
 
 // ---- 11. a tile lying exactly on the build plane must still be hoverable ----
 const flat = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const cat = (await import("/js/kit.js")).getCatalogue();
-  const floor = cat.categories.find((c) => c.name === "Platforms").modules
-    .find((m) => /floor|platform/i.test(m.name)) || cat.categories[1].modules[0];
+    const floor = cat.categories.find((c) => c.name === "Platforms").modules.find((m) => /floor|platform/i.test(m.name)) || cat.categories[1].modules[0];
   ed.clearAll();
   const e = await ed.placeAt(floor.id, new BABYLON.Vector3(0, 0, 0), { silent: true });
   const b = ed.worldBounds(e.node);
@@ -7559,10 +8258,8 @@ const flat = await page.evaluate(async () => {
 pt = await screenOf(flat.centre);
 await page.mouse.move(pt.x, pt.y, { steps: 4 });
 await page.waitForTimeout(400);
-const flatHover = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
-check("floor tile at y=0 beats the pick plane", flatHover === flat.id,
-  `${flat.module} minY=${flat.minY.toFixed(3)} -> ${flatHover}`);
+const flatHover = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
+check("floor tile at y=0 beats the pick plane", flatHover === flat.id, `${flat.module} minY=${flat.minY.toFixed(3)} -> ${flatHover}`);
 
 // ---- 12. a raised build plane must not block selection ----------------------
 const raised = await page.evaluate(async () => {
@@ -7575,10 +8272,8 @@ const raised = await page.evaluate(async () => {
 });
 await page.mouse.move(pt.x + 3, pt.y + 3, { steps: 4 });
 await page.waitForTimeout(400);
-const throughGrid = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
-check("raised grid does not block picking", throughGrid === flat.id,
-  `grid at y=20, hovered=${throughGrid}, pick-plane meshes=${raised.pickables}`);
+const throughGrid = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
+check("raised grid does not block picking", throughGrid === flat.id, `grid at y=20, hovered=${throughGrid}, pick-plane meshes=${raised.pickables}`);
 
 const groundStillWorks = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -7590,9 +8285,11 @@ const groundStillWorks = await page.evaluate(async () => {
   ed.setGridElevation(0);
   return { kind: hit.kind, hasPoint: !!off, y: off ? +off.y.toFixed(3) : null };
 });
-check("build plane still solved analytically",
+check(
+    "build plane still solved analytically",
   groundStillWorks.hasPoint && Math.abs(groundStillWorks.y - 2) < 1e-3,
-  `cursorOnGrid y=${groundStillWorks.y} (expected 2), pick kind=${groundStillWorks.kind}`);
+    `cursorOnGrid y=${groundStillWorks.y} (expected 2), pick kind=${groundStillWorks.kind}`
+);
 
 // ---- 13. drop to plane uses the current elevation ---------------------------
 const dropTo = await page.evaluate(async () => {
@@ -7604,8 +8301,7 @@ const dropTo = await page.evaluate(async () => {
   const b = ed.worldBounds(e.node);
   return { bottom: +b.min.y.toFixed(3), gridY: ed.state.gridY };
 });
-check("drop to plane uses the build plane", Math.abs(dropTo.bottom - dropTo.gridY) < 1e-3,
-  `bottom=${dropTo.bottom} plane=${dropTo.gridY}`);
+check("drop to plane uses the build plane", Math.abs(dropTo.bottom - dropTo.gridY) < 1e-3, `bottom=${dropTo.bottom} plane=${dropTo.gridY}`);
 
 // ---- 14. flying the free camera --------------------------------------------
 const nav = await page.evaluate(async () => {
@@ -7632,41 +8328,49 @@ const nav = await page.evaluate(async () => {
   const right = cam.getDirection(V.Right()).normalize();
   const home = cam.position.clone();
 
-  const dW = await fly("KeyW", {}, 400); cam.position.copyFrom(home);
-  const dD = await fly("KeyD", {}, 400); cam.position.copyFrom(home);
-  const dA = await fly("KeyA", {}, 400); cam.position.copyFrom(home);
-  const dSpace = await fly("Space", {}, 400); cam.position.copyFrom(home);
-  const dC = await fly("KeyC", {}, 400); cam.position.copyFrom(home);
-  const slow = await fly("KeyW", {}, 500); cam.position.copyFrom(home);
-  const fast = await fly("KeyW", { shiftKey: true }, 500); cam.position.copyFrom(home);
+    const dW = await fly("KeyW", {}, 400);
+    cam.position.copyFrom(home);
+    const dD = await fly("KeyD", {}, 400);
+    cam.position.copyFrom(home);
+    const dA = await fly("KeyA", {}, 400);
+    cam.position.copyFrom(home);
+    const dSpace = await fly("Space", {}, 400);
+    cam.position.copyFrom(home);
+    const dC = await fly("KeyC", {}, 400);
+    cam.position.copyFrom(home);
+    const slow = await fly("KeyW", {}, 500);
+    cam.position.copyFrom(home);
+    const fast = await fly("KeyW", { shiftKey: true }, 500);
+    cam.position.copyFrom(home);
 
   return {
     forward: dW.length(),
     wDotFwd: V.Dot(dW.normalize(), fwd),
     dDotRight: V.Dot(dD.normalize(), right),
     aDotRight: V.Dot(dA.normalize(), right),
-    spaceUp: dSpace.y, spaceLateral: Math.hypot(dSpace.x, dSpace.z),
+        spaceUp: dSpace.y,
+        spaceLateral: Math.hypot(dSpace.x, dSpace.z),
     cDown: dC.y,
     boost: fast.length() / Math.max(slow.length(), 1e-6),
   };
 });
-check("W flies along the view direction", nav.forward > 1 && nav.wDotFwd > 0.99,
-  `moved ${nav.forward.toFixed(2)} m, W·forward=${nav.wDotFwd.toFixed(3)}`);
-check("translation speed is ~42 m/s", nav.forward > 12 && nav.forward < 25,
-  `${nav.forward.toFixed(1)} m in 0.4 s`);
-check("D goes right, A goes left", nav.dDotRight > 0.99 && nav.aDotRight < -0.99,
-  `D·right=${nav.dDotRight.toFixed(3)}, A·right=${nav.aDotRight.toFixed(3)}`);
-check("Space rises, C descends",
+check("W flies along the view direction", nav.forward > 1 && nav.wDotFwd > 0.99, `moved ${nav.forward.toFixed(2)} m, W·forward=${nav.wDotFwd.toFixed(3)}`);
+check("translation speed is ~42 m/s", nav.forward > 12 && nav.forward < 25, `${nav.forward.toFixed(1)} m in 0.4 s`);
+check("D goes right, A goes left", nav.dDotRight > 0.99 && nav.aDotRight < -0.99, `D·right=${nav.dDotRight.toFixed(3)}, A·right=${nav.aDotRight.toFixed(3)}`);
+check(
+    "Space rises, C descends",
   nav.spaceUp > 1 && nav.cDown < -1 && nav.spaceLateral < 1e-6,
-  `Space +${nav.spaceUp.toFixed(2)} m, C ${nav.cDown.toFixed(2)} m, lateral ${nav.spaceLateral.toFixed(4)}`);
-check("Shift doubles the move speed", nav.boost > 1.8 && nav.boost < 2.2,
-  `${nav.boost.toFixed(2)}x`);
+    `Space +${nav.spaceUp.toFixed(2)} m, C ${nav.cDown.toFixed(2)} m, lateral ${nav.spaceLateral.toFixed(4)}`
+);
+check("Shift doubles the move speed", nav.boost > 1.8 && nav.boost < 2.2, `${nav.boost.toFixed(2)}x`);
 
 // Alt must not reach the browser: on Windows it focuses the menu bar, which
 // then swallows the following keystrokes and kills WASD entirely.
 await page.evaluate(() => {
   window.__altOut = {};
-  window.__altSpy = (e) => { if (e.key === "Alt") window.__altOut[e.type] = e.defaultPrevented; };
+    window.__altSpy = (e) => {
+        if (e.key === "Alt") window.__altOut[e.type] = e.defaultPrevented;
+    };
   window.addEventListener("keydown", window.__altSpy);
   window.addEventListener("keyup", window.__altSpy);
 });
@@ -7678,9 +8382,7 @@ const altFlags = await page.evaluate(() => {
   window.removeEventListener("keyup", window.__altSpy);
   return window.__altOut;
 });
-check("Alt is claimed from the browser menu",
-  altFlags.keydown === true && altFlags.keyup === true,
-  `keydown prevented=${altFlags.keydown}, keyup prevented=${altFlags.keyup}`);
+check("Alt is claimed from the browser menu", altFlags.keydown === true && altFlags.keyup === true, `keydown prevented=${altFlags.keydown}, keyup prevented=${altFlags.keyup}`);
 
 const altThenMove = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -7739,20 +8441,22 @@ const camAfter = await page.evaluate(async () => {
   const c = ed.state.camera;
   return { rot: c.rotation.asArray(), pos: c.position.asArray(), selection: ed.state.selection.length };
 });
-check("WASD translates even with the right button held",
+check(
+    "WASD translates even with the right button held",
   Math.hypot(...camAfter.pos.map((v, i) => v - camBefore.pos[i])) > 2,
-  `moved ${Math.hypot(...camAfter.pos.map((v, i) => v - camBefore.pos[i])).toFixed(2)} m`);
-check("the right button alone does not turn the view",
+    `moved ${Math.hypot(...camAfter.pos.map((v, i) => v - camBefore.pos[i])).toFixed(2)} m`
+);
+check(
+    "the right button alone does not turn the view",
   Math.hypot(...camAfter.rot.map((v, i) => v - camBefore.rot[i])) < 1e-6,
-  `rotation moved ${Math.hypot(...camAfter.rot.map((v, i) => v - camBefore.rot[i])).toFixed(5)}`);
-check("driving with the right button held does not cancel", camAfter.selection === 1,
-  `${camAfter.selection} still selected`);
+    `rotation moved ${Math.hypot(...camAfter.rot.map((v, i) => v - camBefore.rot[i])).toFixed(5)}`
+);
+check("driving with the right button held does not cancel", camAfter.selection === 1, `${camAfter.selection} still selected`);
 
 // a plain right-click with no steering must still cancel
 await page.mouse.click(mid.x, mid.y, { button: "right" });
 await page.waitForTimeout(300);
-const afterPlainRmb = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.selection.length);
+const afterPlainRmb = await page.evaluate(async () => (await import("/js/editor.js")).state.selection.length);
 check("plain RMB still cancels", afterPlainRmb === 0, `${afterPlainRmb} selected`);
 
 // ---- 14c. right-drag looks, left-drag never touches the camera --------------
@@ -7782,27 +8486,20 @@ const panAfter = await page.evaluate(async () => {
 });
 const moveDelta = Math.hypot(...panAfter.pos.map((v, i) => v - panBefore.pos[i]));
 const yawDelta = panAfter.rot[1] - panBefore.rot[1];
-check("right-drag looks around", Math.abs(yawDelta) > 0.05,
-  `yaw moved ${yawDelta.toFixed(3)}`);
-check("dragging right turns the view right", yawDelta > 0.05,
-  `yaw delta = ${yawDelta.toFixed(3)}`);
-check("looking does not move the camera", moveDelta < 1e-6,
-  `position moved ${moveDelta.toFixed(5)}`);
-check("right-drag does not cancel the selection", panAfter.selection === 1,
-  `${panAfter.selection} still selected`);
+check("right-drag looks around", Math.abs(yawDelta) > 0.05, `yaw moved ${yawDelta.toFixed(3)}`);
+check("dragging right turns the view right", yawDelta > 0.05, `yaw delta = ${yawDelta.toFixed(3)}`);
+check("looking does not move the camera", moveDelta < 1e-6, `position moved ${moveDelta.toFixed(5)}`);
+check("right-drag does not cancel the selection", panAfter.selection === 1, `${panAfter.selection} still selected`);
 
 // vertical right-drag pitches
-const pitchBefore = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.camera.rotation.asArray());
+const pitchBefore = await page.evaluate(async () => (await import("/js/editor.js")).state.camera.rotation.asArray());
 await page.mouse.move(mid.x, mid.y, { steps: 2 });
 await page.mouse.down({ button: "right" });
 await page.mouse.move(mid.x, mid.y + 120, { steps: 8 });
 await page.mouse.up({ button: "right" });
 await page.waitForTimeout(300);
-const pitchAfter = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.camera.rotation.asArray());
-check("dragging down pitches the view down", pitchAfter[0] - pitchBefore[0] > 0.05,
-  `pitch delta = ${(pitchAfter[0] - pitchBefore[0]).toFixed(3)}`);
+const pitchAfter = await page.evaluate(async () => (await import("/js/editor.js")).state.camera.rotation.asArray());
+check("dragging down pitches the view down", pitchAfter[0] - pitchBefore[0] > 0.05, `pitch delta = ${(pitchAfter[0] - pitchBefore[0]).toFixed(3)}`);
 
 // The whole point of moving look onto the right button: the left one is for
 // editing only, so a drag in empty space must not disturb the view at all.
@@ -7827,11 +8524,12 @@ const lookAfter = await page.evaluate(async () => {
   const c = (await import("/js/editor.js")).state.camera;
   return { pos: c.position.asArray(), rot: c.rotation.asArray() };
 });
-check("left-drag never moves the camera",
-  Math.hypot(...lookAfter.rot.map((v, i) => v - lookBefore.rot[i])) < 1e-6
-  && Math.hypot(...lookAfter.pos.map((v, i) => v - lookBefore.pos[i])) < 1e-6,
+check(
+    "left-drag never moves the camera",
+    Math.hypot(...lookAfter.rot.map((v, i) => v - lookBefore.rot[i])) < 1e-6 && Math.hypot(...lookAfter.pos.map((v, i) => v - lookBefore.pos[i])) < 1e-6,
   `rot moved ${Math.hypot(...lookAfter.rot.map((v, i) => v - lookBefore.rot[i])).toFixed(5)}, ` +
-  `pos moved ${Math.hypot(...lookAfter.pos.map((v, i) => v - lookBefore.pos[i])).toFixed(5)}`);
+        `pos moved ${Math.hypot(...lookAfter.pos.map((v, i) => v - lookBefore.pos[i])).toFixed(5)}`
+);
 
 const drift = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -7848,15 +8546,16 @@ const drift = await page.evaluate(async () => {
 });
 // movement runs through cameraDirection, so the camera coasts under the
 // inertia setting instead of stopping dead - what matters is that it converges
-check("camera coasts to a stop, does not run away",
+check(
+    "camera coasts to a stop, does not run away",
   drift.after < drift.coast * 0.2 && drift.after < 0.1,
-  `coasted ${drift.coast.toFixed(3)} m, then ${drift.after.toFixed(4)} m over the next 0.8 s`);
+    `coasted ${drift.coast.toFixed(3)} m, then ${drift.after.toFixed(4)} m over the next 0.8 s`
+);
 
 // ---- 15. right mouse button behaves like Escape -----------------------------
 await page.evaluate((m) => import("/js/palette.js").then((p) => p.setBrush(m)), MODULE);
 await page.waitForTimeout(900);
-const beforeRmb = await page.evaluate(async () =>
-  (await import("/js/interact.js")).ghostActive());
+const beforeRmb = await page.evaluate(async () => (await import("/js/interact.js")).ghostActive());
 await page.mouse.click(pt.x, pt.y, { button: "right" });
 await page.waitForTimeout(400);
 const afterRmb = await page.evaluate(async () => {
@@ -7864,9 +8563,7 @@ const afterRmb = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { ghost: i.ghostActive(), brush: ed.state.brush, selection: ed.state.selection.length };
 });
-check("RMB cancels like Escape",
-  beforeRmb && !afterRmb.ghost && !afterRmb.brush && afterRmb.selection === 0,
-  `ghost ${beforeRmb} -> ${afterRmb.ghost}, brush=${afterRmb.brush}`);
+check("RMB cancels like Escape", beforeRmb && !afterRmb.ghost && !afterRmb.brush && afterRmb.selection === 0, `ghost ${beforeRmb} -> ${afterRmb.ghost}, brush=${afterRmb.brush}`);
 
 // ---- 16. selection beats hover, and the wheel edits the whole selection -----
 const multi = await page.evaluate(async (moduleId) => {
@@ -7887,25 +8584,27 @@ const multi = await page.evaluate(async (moduleId) => {
   const afterScale = [a, b, c].map((e) => e.node.scaling.x);
   return { kind: cur?.kind, label: cur?.module, ids: cur?.ids?.length, before, after, beforeScale, afterScale };
 }, MODULE);
-check("selection is the current element", multi.kind === "selection" && multi.ids === 2,
-  `${multi.kind}, "${multi.label}"`);
-check("a turn goes to every selected element",
-  Math.abs(multi.after[0] - multi.before[0]) > 89 &&
-  Math.abs(multi.after[1] - multi.before[1]) > 89 &&
-  Math.abs(multi.after[2] - multi.before[2]) < 1e-6,
-  `${multi.before.map((v) => v.toFixed(0))} -> ${multi.after.map((v) => v.toFixed(0))} (third unselected)`);
-check("wheel scales every selected element",
+check("selection is the current element", multi.kind === "selection" && multi.ids === 2, `${multi.kind}, "${multi.label}"`);
+check(
+    "a turn goes to every selected element",
+    Math.abs(multi.after[0] - multi.before[0]) > 89 && Math.abs(multi.after[1] - multi.before[1]) > 89 && Math.abs(multi.after[2] - multi.before[2]) < 1e-6,
+    `${multi.before.map((v) => v.toFixed(0))} -> ${multi.after.map((v) => v.toFixed(0))} (third unselected)`
+);
+check(
+    "wheel scales every selected element",
   Math.abs(multi.afterScale[0] - multi.beforeScale[0] - 0.1) < 1e-6 &&
   Math.abs(multi.afterScale[1] - multi.beforeScale[1] - 0.1) < 1e-6 &&
   Math.abs(multi.afterScale[2] - multi.beforeScale[2]) < 1e-6,
-  `${multi.afterScale.map((v) => v.toFixed(2))}`);
+    `${multi.afterScale.map((v) => v.toFixed(2))}`
+);
 
 // The old test only claimed to hover; it never moved the pointer, so it was
 // really just asserting the no-hover fallback. Drive the real mouse instead.
 const precedenceSetup = await page.evaluate(async (moduleId) => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(moduleId, new V(8, 0, 0), { silent: true });
   // frame both, or projecting B's centre lands off-canvas
@@ -7929,15 +8628,17 @@ const precedence = await page.evaluate(async (ids) => {
   const bBefore = ed.eulerOf(ed.state.placements.get(ids.bId).node)[1];
   i.rotateCurrent(1);
   return {
-    hovered, kind,
+        hovered,
+        kind,
     aMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.aId).node)[1] - aBefore) > 1e-6,
     bMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.bId).node)[1] - bBefore) > 1e-6,
   };
 }, precedenceSetup);
-check("the selection is edited even with something else under the cursor",
-  precedence.hovered === precedenceSetup.bId && precedence.kind === "selection"
-    && precedence.aMoved && !precedence.bMoved,
-  `current=${precedence.kind}, hovered moved=${precedence.bMoved}, selected moved=${precedence.aMoved}`);
+check(
+    "the selection is edited even with something else under the cursor",
+    precedence.hovered === precedenceSetup.bId && precedence.kind === "selection" && precedence.aMoved && !precedence.bMoved,
+    `current=${precedence.kind}, hovered moved=${precedence.bMoved}, selected moved=${precedence.aMoved}`
+);
 
 // pointer off everything -> still the selection, unchanged
 await page.mouse.move(canvasBox.x + 12, canvasBox.y + 12, { steps: 4 });
@@ -7948,12 +8649,13 @@ const fallback = await page.evaluate(async (ids) => {
   const kind = i.currentElement()?.kind;
   const aBefore = ed.eulerOf(ed.state.placements.get(ids.aId).node)[1];
   i.rotateCurrent(1);
-  return { kind,
-    aMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.aId).node)[1] - aBefore) > 1e-6 };
+    return { kind, aMoved: Math.abs(ed.eulerOf(ed.state.placements.get(ids.aId).node)[1] - aBefore) > 1e-6 };
 }, precedenceSetup);
-check("and with nothing hovered it is the selection just the same",
+check(
+    "and with nothing hovered it is the selection just the same",
   fallback.kind === "selection" && fallback.aMoved,
-  `current=${fallback.kind}, selected moved=${fallback.aMoved}`);
+    `current=${fallback.kind}, selected moved=${fallback.aMoved}`
+);
 
 // ---- 17. Alt+E rotates about a shared, grid-snapped pivot ------------------
 // This used to be Alt+wheel; the wheel gave up rotation entirely, so the pivot
@@ -7983,14 +8685,16 @@ const pivotRot = await page.evaluate(async (moduleId) => {
     moved: before.some((p, k) => JSON.stringify(p) !== JSON.stringify(after[k])),
     radiiKept: before.every((p, k) => Math.abs(dist(p) - dist(after[k])) < 1e-4),
     yaw: ed.eulerOf(a.node)[1],
-    before, after,
+        before,
+        after,
   };
 }, MODULE);
-check("the Alt+E pivot is snapped to the grid", pivotRot.onGrid,
-  `pivot ${JSON.stringify(pivotRot.pivot)} with 4 m snap`);
-check("Alt+E swings the group about the pivot",
+check("the Alt+E pivot is snapped to the grid", pivotRot.onGrid, `pivot ${JSON.stringify(pivotRot.pivot)} with 4 m snap`);
+check(
+    "Alt+E swings the group about the pivot",
   pivotRot.moved && pivotRot.radiiKept && Math.abs(Math.abs(pivotRot.yaw) - 90) < 0.01,
-  `${JSON.stringify(pivotRot.before)} -> ${JSON.stringify(pivotRot.after)}, yaw ${pivotRot.yaw.toFixed(0)}`);
+    `${JSON.stringify(pivotRot.before)} -> ${JSON.stringify(pivotRot.after)}, yaw ${pivotRot.yaw.toFixed(0)}`
+);
 
 const noPivot = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -8020,7 +8724,8 @@ const delSetup = await page.evaluate(async (moduleId) => {
   const bb = ed.worldBounds(a.node);
   return {
     started: ed.state.placements.size,
-    aId: a.id, bId: b.id,
+        aId: a.id,
+        bId: b.id,
     aCentre: bb.min.add(bb.max).scale(0.5).asArray(),
   };
 }, MODULE);
@@ -8029,15 +8734,15 @@ const delSetup = await page.evaluate(async (moduleId) => {
 const hoverPt = await screenOf(delSetup.aCentre);
 await page.mouse.move(hoverPt.x, hoverPt.y, { steps: 4 });
 await page.waitForTimeout(400);
-const hovering = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
+const hovering = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
 await page.keyboard.press("Delete");
 await page.waitForTimeout(300);
-const afterHoverDel = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.placements.size);
-check("Del removes the hovered element when nothing is selected",
+const afterHoverDel = await page.evaluate(async () => (await import("/js/editor.js")).state.placements.size);
+check(
+    "Del removes the hovered element when nothing is selected",
   hovering === delSetup.aId && afterHoverDel === delSetup.started - 1,
-  `hovered ${hovering}, ${delSetup.started} -> ${afterHoverDel}`);
+    `hovered ${hovering}, ${delSetup.started} -> ${afterHoverDel}`
+);
 
 const delRules = await page.evaluate(async (moduleId) => {
   const ed = await import("/js/editor.js");
@@ -8049,7 +8754,8 @@ const delRules = await page.evaluate(async (moduleId) => {
   const bb = ed.worldBounds(a.node);
   return {
     started: ed.state.placements.size,
-    aId: a.id, bId: b.id,
+        aId: a.id,
+        bId: b.id,
     aCentre: bb.min.add(bb.max).scale(0.5).asArray(),
   };
 }, MODULE);
@@ -8061,17 +8767,13 @@ await page.mouse.move(dragFrom.x, dragFrom.y, { steps: 4 });
 await page.waitForTimeout(200);
 await page.mouse.down();
 await page.mouse.move(dragTo2.x, dragTo2.y, { steps: 8 });
-const midDragDel = await page.evaluate(async () =>
-  (await import("/js/interact.js")).isDragging());
+const midDragDel = await page.evaluate(async () => (await import("/js/interact.js")).isDragging());
 await page.keyboard.press("Delete");
 await page.waitForTimeout(200);
-const afterMidDragDel = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.placements.size);
+const afterMidDragDel = await page.evaluate(async () => (await import("/js/editor.js")).state.placements.size);
 await page.mouse.up();
 await page.waitForTimeout(200);
-check("Del does nothing while dragging",
-  midDragDel && afterMidDragDel === delRules.started,
-  `dragging=${midDragDel}, ${delRules.started} kept`);
+check("Del does nothing while dragging", midDragDel && afterMidDragDel === delRules.started, `dragging=${midDragDel}, ${delRules.started} kept`);
 
 // Hover outranks the selection: pointing at something is a more immediate
 // statement of intent than a selection made earlier. Fresh scene - the drag
@@ -8079,14 +8781,14 @@ check("Del does nothing while dragging",
 const delPrec = await page.evaluate(async (moduleId) => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(moduleId, new V(8, 0, 0), { silent: true });
   ed.state.camera.position = new V(5, 16, -13);
   ed.state.camera.setTarget(new V(5, 0, 0));
   const bb = ed.worldBounds(a.node);
-  return { started: ed.state.placements.size, aId: a.id, bId: b.id,
-           aCentre: bb.min.add(bb.max).scale(0.5).asArray() };
+    return { started: ed.state.placements.size, aId: a.id, bId: b.id, aCentre: bb.min.add(bb.max).scale(0.5).asArray() };
 }, MODULE);
 await page.waitForTimeout(500);
 
@@ -8098,20 +8800,19 @@ const hoverWins = await page.evaluate(async (ids) => {
   const i = await import("/js/interact.js");
   ed.select([ids.bId]);                       // select one, hover the other
   const hovered = i.hoveredId();
-  window.dispatchEvent(new KeyboardEvent("keydown",
-    { key: "Delete", code: "Delete", bubbles: true }));
-  return { hovered, left: ed.state.placements.size,
-           survivor: [...ed.state.placements.values()][0]?.id,
-           selection: [...ed.state.selection] };
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
+    return { hovered, left: ed.state.placements.size, survivor: [...ed.state.placements.values()][0]?.id, selection: [...ed.state.selection] };
 }, delPrec);
-check("Del takes the hovered element over the selection",
-  hoverWins.hovered === delPrec.aId
-    && hoverWins.left === delPrec.started - 1
-    && hoverWins.survivor === delPrec.bId,
-  `hovered ${hoverWins.hovered}, kept ${hoverWins.survivor}`);
-check("deleting the hovered element keeps the rest of the selection",
+check(
+    "Del takes the hovered element over the selection",
+    hoverWins.hovered === delPrec.aId && hoverWins.left === delPrec.started - 1 && hoverWins.survivor === delPrec.bId,
+    `hovered ${hoverWins.hovered}, kept ${hoverWins.survivor}`
+);
+check(
+    "deleting the hovered element keeps the rest of the selection",
   hoverWins.selection.length === 1 && hoverWins.selection[0] === delPrec.bId,
-  `selection now [${hoverWins.selection}]`);
+    `selection now [${hoverWins.selection}]`
+);
 
 // with nothing under the cursor it falls back to the selection
 await page.mouse.move(canvasBox.x + 12, canvasBox.y + 12, { steps: 4 });
@@ -8121,13 +8822,14 @@ const selDel = await page.evaluate(async (ids) => {
   const i = await import("/js/interact.js");
   ed.select([ids.bId]);
   const hovered = i.hoveredId();
-  window.dispatchEvent(new KeyboardEvent("keydown",
-    { key: "Delete", code: "Delete", bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
   return { hovered, left: ed.state.placements.size };
 }, delPrec);
-check("Del falls back to the selection with nothing hovered",
+check(
+    "Del falls back to the selection with nothing hovered",
   selDel.hovered === null && selDel.left === delPrec.started - 2,
-  `hovered=${selDel.hovered}, ${delPrec.started} -> ${selDel.left}`);
+    `hovered=${selDel.hovered}, ${delPrec.started} -> ${selDel.left}`
+);
 
 // ---- 18b. the inspector reports bounding-box dimensions --------------------
 const dims = await page.evaluate(async (moduleId) => {
@@ -8139,10 +8841,10 @@ const dims = await page.evaluate(async (moduleId) => {
   const a = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(moduleId, new V(12, 0, 0), { silent: true });
 
-  const read = () => ["dim-x", "dim-y", "dim-z"]
-    .map((id) => parseFloat(document.getElementById(id).textContent));
+    const read = () => ["dim-x", "dim-y", "dim-z"].map((id) => parseFloat(document.getElementById(id).textContent));
   const truth = (nodes) => {
-    let mn = null, mx = null;
+        let mn = null,
+            mx = null;
     for (const n of nodes) {
       const w = ed.worldBounds(n);
       mn = mn ? V.Minimize(mn, w.min) : w.min.clone();
@@ -8152,32 +8854,31 @@ const dims = await page.evaluate(async (moduleId) => {
   };
 
   ed.select([a.id]);
-  const single = read(), singleTruth = truth([a.node]);
+    const single = read(),
+        singleTruth = truth([a.node]);
 
   // the world box must follow a rotation
   ed.setEuler(a.node, [0, 90, 0]);
   ed.emit("transform");
-  const rotated = read(), rotatedTruth = truth([a.node]);
+    const rotated = read(),
+        rotatedTruth = truth([a.node]);
 
   ed.select([a.id, b.id]);
-  const combined = read(), combinedTruth = truth([a.node, b.node]);
+    const combined = read(),
+        combinedTruth = truth([a.node, b.node]);
   const note = document.getElementById("dim-note").textContent;
 
   return { single, singleTruth, rotated, rotatedTruth, combined, combinedTruth, note };
 }, MODULE);
 
-const near = (shown, real, tol = 0.011) =>
-  shown.every((v, i) => Math.abs(v - real[i]) <= tol);
-check("inspector shows the world bounding box",
-  near(dims.single, dims.singleTruth),
-  `${dims.single.join(" x ")} vs ${dims.singleTruth.map((v) => v.toFixed(2)).join(" x ")}`);
-check("dimensions follow a rotation",
-  near(dims.rotated, dims.rotatedTruth)
-  && Math.abs(dims.rotated[0] - dims.single[0]) > 0.5,
-  `${dims.single.join(" x ")} -> ${dims.rotated.join(" x ")} after 90 deg`);
-check("multi-selection shows the combined box",
-  near(dims.combined, dims.combinedTruth) && dims.note.includes("2 objects"),
-  `${dims.combined.join(" x ")}, note "${dims.note}"`);
+const near = (shown, real, tol = 0.011) => shown.every((v, i) => Math.abs(v - real[i]) <= tol);
+check("inspector shows the world bounding box", near(dims.single, dims.singleTruth), `${dims.single.join(" x ")} vs ${dims.singleTruth.map((v) => v.toFixed(2)).join(" x ")}`);
+check(
+    "dimensions follow a rotation",
+    near(dims.rotated, dims.rotatedTruth) && Math.abs(dims.rotated[0] - dims.single[0]) > 0.5,
+    `${dims.single.join(" x ")} -> ${dims.rotated.join(" x ")} after 90 deg`
+);
+check("multi-selection shows the combined box", near(dims.combined, dims.combinedTruth) && dims.note.includes("2 objects"), `${dims.combined.join(" x ")}, note "${dims.note}"`);
 
 // ---- 18c. negative (mirrored) scale ----------------------------------------
 const mirror = await page.evaluate(async (moduleId) => {
@@ -8214,13 +8915,13 @@ const mirror = await page.evaluate(async (moduleId) => {
   document.getElementById("scl-uniform").checked = true;
   return { afterMinus, afterMinusOne, afterWheelUp, afterWheelDown };
 }, MODULE);
-check("a partial '-' does not clobber the scale", mirror.afterMinus === 1,
-  `held at ${mirror.afterMinus} while typing`);
-check("inspector accepts a negative scale", mirror.afterMinusOne === -1,
-  `scale.x = ${mirror.afterMinusOne}`);
-check("wheel resizes a mirrored element, keeping the sign",
+check("a partial '-' does not clobber the scale", mirror.afterMinus === 1, `held at ${mirror.afterMinus} while typing`);
+check("inspector accepts a negative scale", mirror.afterMinusOne === -1, `scale.x = ${mirror.afterMinusOne}`);
+check(
+    "wheel resizes a mirrored element, keeping the sign",
   Math.abs(mirror.afterWheelUp - -1.1) < 1e-6 && Math.abs(mirror.afterWheelDown - -1) < 1e-6,
-  `-1 -> ${mirror.afterWheelUp} -> ${mirror.afterWheelDown}`);
+    `-1 -> ${mirror.afterWheelUp} -> ${mirror.afterWheelDown}`
+);
 
 // ---- 18c-bis. decimals can actually be typed -------------------------------
 // Editing a field applies the value and re-selects, which refreshes the whole
@@ -8230,10 +8931,11 @@ check("wheel resizes a mirrored element, keeping the sign",
 const decimalId = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   document.getElementById("scl-uniform").checked = false;
-  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new BABYLON.Vector3(0, 0, 0), { silent: true });
+    const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new BABYLON.Vector3(0, 0, 0), { silent: true });
   ed.select([e.id]);
   return e.id;
 });
@@ -8243,7 +8945,10 @@ async function typeField(sel, text) {
   await page.focus(sel);
   await page.keyboard.press("Control+a");
   await page.keyboard.press("Delete");
-  for (const ch of text) { await page.keyboard.type(ch); await page.waitForTimeout(60); }
+    for (const ch of text) {
+        await page.keyboard.type(ch);
+        await page.waitForTimeout(60);
+    }
   return page.inputValue(sel);
 }
 const typedX = await typeField("#pos-x", "2.75");
@@ -8254,43 +8959,47 @@ await page.waitForTimeout(300);
 const decimals = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const e = ed.state.placements.get(id);
-  return { x: e.node.position.x, sx: +e.node.scaling.x.toFixed(3),
-           rotY: +ed.eulerOf(e.node)[1].toFixed(2) };
+    return { x: e.node.position.x, sx: +e.node.scaling.x.toFixed(3), rotY: +ed.eulerOf(e.node)[1].toFixed(2) };
 }, decimalId);
-check("a decimal point survives being typed into the inspector",
+check(
+    "a decimal point survives being typed into the inspector",
   typedX === "2.75" && typedS === "0.05" && typedR === "22.5",
-  `pos-x "${typedX}", scl-x "${typedS}", rot-y "${typedR}"`);
-check("the typed decimals reach the element",
-  Math.abs(decimals.x - 2.75) < 1e-6 && Math.abs(decimals.sx - 0.05) < 1e-6
-    && Math.abs(decimals.rotY - 22.5) < 0.01,
-  `x=${decimals.x}, scale.x=${decimals.sx}, rotY=${decimals.rotY}`);
+    `pos-x "${typedX}", scl-x "${typedS}", rot-y "${typedR}"`
+);
+check(
+    "the typed decimals reach the element",
+    Math.abs(decimals.x - 2.75) < 1e-6 && Math.abs(decimals.sx - 0.05) < 1e-6 && Math.abs(decimals.rotY - 22.5) < 0.01,
+    `x=${decimals.x}, scale.x=${decimals.sx}, rotY=${decimals.rotY}`
+);
 
 // `input` fires per character, so "2.75" used to push four snapshots and cost
 // four Ctrl+Z. One visit to a field is now one entry.
 const undoOnce = await (async () => {
-  const before = await page.evaluate(async (id) =>
-    (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
+    const before = await page.evaluate(async (id) => (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
   await typeField("#pos-x", "9.25");
   await page.evaluate(() => document.activeElement.blur());
-  const typed = await page.evaluate(async (id) =>
-    (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
-  await page.evaluate(async () => { await (await import("/js/editor.js")).undo(); });
-  const after = await page.evaluate(async (id) =>
-    (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
+    const typed = await page.evaluate(async (id) => (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
+    await page.evaluate(async () => {
+        await (await import("/js/editor.js")).undo();
+    });
+    const after = await page.evaluate(async (id) => (await import("/js/editor.js")).state.placements.get(id).node.position.x, decimalId);
   return { before, typed, after };
 })();
-check("four keystrokes in one field cost a single undo",
+check(
+    "four keystrokes in one field cost a single undo",
   Math.abs(undoOnce.typed - 9.25) < 1e-6 && Math.abs(undoOnce.after - undoOnce.before) < 1e-6,
-  `${undoOnce.before} -> typed ${undoOnce.typed} -> undo ${undoOnce.after}`);
+    `${undoOnce.before} -> typed ${undoOnce.typed} -> undo ${undoOnce.after}`
+);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   document.getElementById("scl-uniform").checked = true;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 // ---- 18d. F flips on the current scale axis --------------------------------
-const press = (key, code, opts = {}) => page.evaluate(([k, c, o]) => window.dispatchEvent(
-  new KeyboardEvent("keydown", { key: k, code: c, bubbles: true, ...o })), [key, code, opts]);
+const press = (key, code, opts = {}) =>
+    page.evaluate(([k, c, o]) => window.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: c, bubbles: true, ...o })), [key, code, opts]);
 
 const flip = await page.evaluate(async (moduleId) => {
   const ed = await import("/js/editor.js");
@@ -8325,15 +9034,17 @@ const flip = await page.evaluate(async (moduleId) => {
   ed.state.scaleAxis = "all";
   return { oneX, oneZ, allResult, allScale, multi, both };
 }, MODULE);
-check("a mirror flips on the chosen axis",
+check(
+    "a mirror flips on the chosen axis",
   flip.oneX[0] === -1 && flip.oneX[2] === 1 && flip.oneZ[0] === -1 && flip.oneZ[2] === -1,
-  `x-flip ${JSON.stringify(flip.oneX)}, then z-flip ${JSON.stringify(flip.oneZ)}`);
-check("scale axis 'all' flips X, not all three",
+    `x-flip ${JSON.stringify(flip.oneX)}, then z-flip ${JSON.stringify(flip.oneZ)}`
+);
+check(
+    "scale axis 'all' flips X, not all three",
   flip.allResult.axis === "x" && JSON.stringify(flip.allScale) === JSON.stringify([-1, 1, 1]),
-  `axis=${flip.allResult.axis}, scale ${JSON.stringify(flip.allScale)}`);
-check("a mirror flips the whole selection",
-  flip.multi.count === 2 && flip.both.every((v) => v === -1),
-  `${flip.multi.count} objects, scale.y ${JSON.stringify(flip.both)}`);
+    `axis=${flip.allResult.axis}, scale ${JSON.stringify(flip.allScale)}`
+);
+check("a mirror flips the whole selection", flip.multi.count === 2 && flip.both.every((v) => v === -1), `${flip.multi.count} objects, scale.y ${JSON.stringify(flip.both)}`);
 
 // and it flips whatever is mid-drag
 const dragFlip = await page.evaluate(async (moduleId) => {
@@ -8341,7 +9052,8 @@ const dragFlip = await page.evaluate(async (moduleId) => {
   const V = BABYLON.Vector3;
   ed.clearAll();
   const cam = ed.state.camera;
-  cam.position.set(0, 12, -18); cam.cameraDirection.setAll(0);
+    cam.position.set(0, 12, -18);
+    cam.cameraDirection.setAll(0);
   cam.setTarget(new V(0, 0, 0));
   const a = await ed.placeAt(moduleId, new V(0, 0, 0), { silent: true });
   ed.select([]);
@@ -8363,19 +9075,15 @@ const midFlip = await page.evaluate(async () => {
 });
 await page.mouse.up();
 await page.waitForTimeout(200);
-check("Alt+F flips the element being dragged",
-  midFlip.dragging && midFlip.scale[0] === -1,
-  `dragging=${midFlip.dragging}, scale ${JSON.stringify(midFlip.scale)}`);
+check("Alt+F flips the element being dragged", midFlip.dragging && midFlip.scale[0] === -1, `dragging=${midFlip.dragging}, scale ${JSON.stringify(midFlip.scale)}`);
 
 // and the ghost, before it is even placed
 await page.evaluate((m) => import("/js/palette.js").then((p) => p.setBrush(m)), MODULE);
 await page.waitForTimeout(1000);
 await press("f", "KeyF", { altKey: true });
 await page.waitForTimeout(150);
-const ghostFlip = await page.evaluate(() =>
-  window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
-check("Alt+F flips the ghost before placing", ghostFlip[0] === -1,
-  `ghost scale ${JSON.stringify(ghostFlip)}`);
+const ghostFlip = await page.evaluate(() => window.__scene.getTransformNodeByName("GHOST").scaling.asArray());
+check("Alt+F flips the ghost before placing", ghostFlip[0] === -1, `ghost scale ${JSON.stringify(ghostFlip)}`);
 await page.evaluate(() => import("/js/palette.js").then((p) => p.setBrush(null)));
 
 // ---- 19. rapid clicks while placing must place, not grab -------------------
@@ -8396,9 +9104,11 @@ await page.waitForTimeout(1000);
 const placeSpot = await screenOf([0, 0, 0]);
 await page.mouse.move(placeSpot.x, placeSpot.y, { steps: 4 });
 await page.waitForTimeout(250);
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(60);
-await page.mouse.down(); await page.mouse.up();       // same spot, double-click speed
+await page.mouse.down();
+await page.mouse.up(); // same spot, double-click speed
 await page.waitForTimeout(700);
 const rapid = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -8409,9 +9119,7 @@ const rapid = await page.evaluate(async () => {
     grabbed: i.currentElement()?.kind === "ghost" && !!i.ghostModule(),
   };
 });
-check("double-click speed still places twice while armed",
-  rapid.placements === 2 && rapid.stillArmed,
-  `${rapid.placements} placed, still armed=${rapid.stillArmed}`);
+check("double-click speed still places twice while armed", rapid.placements === 2 && rapid.stillArmed, `${rapid.placements} placed, still armed=${rapid.stillArmed}`);
 await page.evaluate(() => import("/js/palette.js").then((p) => p.setBrush(null)));
 
 // ---- 1g. viewport exposure ---------------------------------------------------
@@ -8433,17 +9141,24 @@ const exposure = await page.evaluate(async () => {
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
 
   const contrast = () => {
-    s.render(); s.render();
+        s.render();
+        s.render();
     const cv = s.getEngine().getRenderingCanvas();
-    const g = document.createElement("canvas"); g.width = cv.width; g.height = cv.height;
+        const g = document.createElement("canvas");
+        g.width = cv.width;
+        g.height = cv.height;
     g.getContext("2d").drawImage(cv, 0, 0);
-    const d = g.getContext("2d").getImageData(
-      Math.floor(cv.width * 0.35), Math.floor(cv.height * 0.4),
-      Math.floor(cv.width * 0.3), Math.floor(cv.height * 0.3)).data;
-    let n = 0, sum = 0, sq = 0;
+        const d = g.getContext("2d").getImageData(Math.floor(cv.width * 0.35), Math.floor(cv.height * 0.4), Math.floor(cv.width * 0.3), Math.floor(cv.height * 0.3)).data;
+        let n = 0,
+            sum = 0,
+            sq = 0;
     for (let k = 0; k < d.length; k += 4) {
       const v = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
-      if (v > 40) { n++; sum += v; sq += v * v; }
+            if (v > 40) {
+                n++;
+                sum += v;
+                sq += v * v;
+            }
     }
     const mean = sum / Math.max(n, 1);
     return { mean, sd: Math.sqrt(Math.max(sq / Math.max(n, 1) - mean * mean, 0)) };
@@ -8454,23 +9169,22 @@ const exposure = await page.evaluate(async () => {
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   const tuned = contrast();
 
-  ed.setExposure(9);   const clampHi = ed.state.exposure;
-  ed.setExposure(0);   const clampLo = ed.state.exposure;
+    ed.setExposure(9);
+    const clampHi = ed.state.exposure;
+    ed.setExposure(0);
+    const clampLo = ed.state.exposure;
   ed.setExposure(ed.EXPOSURE_DEFAULT);
   ed.setGridVisible(true);
   ed.clearAll();
-  return { isDefault, startedAt, hot, tuned, clampHi, clampLo,
-           applied: s.imageProcessingConfiguration.exposure };
+    return { isDefault, startedAt, hot, tuned, clampHi, clampLo, applied: s.imageProcessingConfiguration.exposure };
 });
-check("scene starts at the tuned default exposure",
-  exposure.isDefault, `exposure = ${exposure.startedAt}`);
-check("lower exposure restores contrast on pale panels",
+check("scene starts at the tuned default exposure", exposure.isDefault, `exposure = ${exposure.startedAt}`);
+check(
+    "lower exposure restores contrast on pale panels",
   exposure.tuned.sd > exposure.hot.sd * 1.3,
-  `sd ${exposure.hot.sd.toFixed(2)} @1.0 -> ${exposure.tuned.sd.toFixed(2)} @${exposure.applied} ` +
-  `(mean ${exposure.hot.mean.toFixed(0)} -> ${exposure.tuned.mean.toFixed(0)})`);
-check("exposure is clamped to a sane range",
-  exposure.clampHi === 4 && exposure.clampLo === 0.15,
-  `high=${exposure.clampHi} low=${exposure.clampLo}`);
+    `sd ${exposure.hot.sd.toFixed(2)} @1.0 -> ${exposure.tuned.sd.toFixed(2)} @${exposure.applied} ` + `(mean ${exposure.hot.mean.toFixed(0)} -> ${exposure.tuned.mean.toFixed(0)})`
+);
+check("exposure is clamped to a sane range", exposure.clampHi === 4 && exposure.clampLo === 0.15, `high=${exposure.clampHi} low=${exposure.clampLo}`);
 
 // ---- 1h. palette turntables --------------------------------------------------
 // Thumbnails are lit again - unlit threw away too much - and hovering a tile
@@ -8495,26 +9209,24 @@ const spinning = await page.evaluate(async () => {
     seen.add(el?.querySelector(".turn")?.style.backgroundPositionX);
     await new Promise((r) => setTimeout(r, 120));
   }
-  return { ...pal.turntableState(), hasFilm: !!film,
-           size: film?.style.backgroundSize, distinct: seen.size };
+    return { ...pal.turntableState(), hasFilm: !!film, size: film?.style.backgroundSize, distinct: seen.size };
 });
-check("hovering a tile starts a turntable",
-  spinning.running && spinning.hasFilm && spinning.size === "1200% 100%",
-  `tile=${spinning.tile} size=${spinning.size}`);
-check("the turntable actually advances through frames",
-  spinning.distinct >= 6, `${spinning.distinct} distinct frame offsets seen`);
+check("hovering a tile starts a turntable", spinning.running && spinning.hasFilm && spinning.size === "1200% 100%", `tile=${spinning.tile} size=${spinning.size}`);
+check("the turntable actually advances through frames", spinning.distinct >= 6, `${spinning.distinct} distinct frame offsets seen`);
 
 const sheet = await page.evaluate(async () => {
   const r = await fetch("/api/turns");
   const { cached } = await r.json();
   if (!cached.length) return { cached: 0 };
   const img = new Image();
-  await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = `/api/turn/${cached[0]}`; });
+    await new Promise((ok, no) => {
+        img.onload = ok;
+        img.onerror = no;
+        img.src = `/api/turn/${cached[0]}`;
+    });
   return { cached: cached.length, w: img.naturalWidth, h: img.naturalHeight, key: cached[0] };
 });
-check("the sheet is cached server-side as 12 square frames",
-  sheet.cached > 0 && sheet.w === sheet.h * 12,
-  `${sheet.key} ${sheet.w}x${sheet.h}, ${sheet.cached} cached`);
+check("the sheet is cached server-side as 12 square frames", sheet.cached > 0 && sheet.w === sheet.h * 12, `${sheet.key} ${sheet.w}x${sheet.h}, ${sheet.cached} cached`);
 
 await page.mouse.move(1200, 700, { steps: 4 });
 await page.waitForTimeout(500);
@@ -8522,9 +9234,7 @@ const stopped = await page.evaluate(async () => {
   const pal = await import("/js/palette.js");
   return { ...pal.turntableState(), films: document.querySelectorAll("#palette-list .turn").length };
 });
-check("leaving the tile stops the turntable and cleans up",
-  !stopped.running && stopped.tile === null && stopped.films === 0,
-  `running=${stopped.running} films=${stopped.films}`);
+check("leaving the tile stops the turntable and cleans up", !stopped.running && stopped.tile === null && stopped.films === 0, `running=${stopped.running} films=${stopped.films}`);
 
 // Stills and turntables share one thumbnail scene but are triggered
 // independently - scrolling and hovering. A turntable keeps its module in the
@@ -8545,20 +9255,25 @@ const race = await page.evaluate(async () => {
   // force both to actually render rather than come back from the cache
   t.forgetCached(still.id);
   t.forgetCached(spin.id);
-  const thumbScene = BABYLON.EngineStore.Instances.map((e) => e.scenes[0])
-    .find((s) => s && s !== window.__scene);
+    const thumbScene = BABYLON.EngineStore.Instances.map((e) => e.scenes[0]).find((s) => s && s !== window.__scene);
 
-  let peakRoots = 0, worst = [];
+    let peakRoots = 0,
+        worst = [];
   const spy = setInterval(() => {
-    const roots = new Set(thumbScene.meshes.filter((m) => m.getTotalVertices() > 0)
-      .map((m) => m.name.replace(/_primitive\d+$/, "")));
-    if (roots.size > peakRoots) { peakRoots = roots.size; worst = [...roots]; }
+        const roots = new Set(thumbScene.meshes.filter((m) => m.getTotalVertices() > 0).map((m) => m.name.replace(/_primitive\d+$/, "")));
+        if (roots.size > peakRoots) {
+            peakRoots = roots.size;
+            worst = [...roots];
+        }
   }, 15);
 
   const img = document.createElement("img");
   const stillDone = new Promise((r) => {
     const iv = setInterval(() => {
-      if (img.src && img.src.length > 100) { clearInterval(iv); r(); }
+            if (img.src && img.src.length > 100) {
+                clearInterval(iv);
+                r();
+            }
     }, 40);
   });
   t.request(still, img);
@@ -8568,10 +9283,11 @@ const race = await page.evaluate(async () => {
   clearInterval(spy);
   return { skip: false, peakRoots, worst, ...t.thumbConcurrency() };
 });
-check("a still and a turntable never share the thumbnail scene",
+check(
+    "a still and a turntable never share the thumbnail scene",
   race.skip || (race.peakRoots <= 1 && race.peak <= 1),
-  race.skip ? "(modules not in catalogue)"
-    : `peak ${race.peak} render(s), ${race.peakRoots} module(s) on stage [${race.worst}]`);
+    race.skip ? "(modules not in catalogue)" : `peak ${race.peak} render(s), ${race.peakRoots} module(s) on stage [${race.worst}]`
+);
 
 // ---- 1h-bis. the kit picker --------------------------------------------------
 // The library spans five unrelated packs. Merged, their categories are one
@@ -8587,8 +9303,7 @@ const kitPicker = await page.evaluate(async () => {
   return {
     exists: !!sel,
     // above the search box: it decides what the search is searching
-    beforeSearch: [...head.children].indexOf(sel)
-      < [...head.children].indexOf(document.getElementById("palette-search")),
+        beforeSearch: [...head.children].indexOf(sel) < [...head.children].indexOf(document.getElementById("palette-search")),
     options: [...sel.options].map((o) => o.value),
         value: sel.value,
         fallback: kit.defaultKit(),
@@ -8613,13 +9328,12 @@ check(
     kitPicker.value === "Modular SciFi MegaKit" && kitPicker.fallback === "Modular SciFi MegaKit",
     `on "${kitPicker.value}", catalogue says "${kitPicker.fallback}"`
 );
-check("the tabs are the chosen kit's categories, not every kit's",
-  kitPicker.tabs[0] === "All" && kitPicker.tabs.includes("Walls")
-  && !kitPicker.tabs.includes("Enemies") && !kitPicker.tabs.includes("Rocks"),
-  `[${kitPicker.tabs}]`);
-check("and every tile shown belongs to that kit",
-  kitPicker.tiles > 0 && kitPicker.tiles === kitPicker.expected,
-  `${kitPicker.tiles} tiles, kit holds ${kitPicker.expected}`);
+check(
+    "the tabs are the chosen kit's categories, not every kit's",
+    kitPicker.tabs[0] === "All" && kitPicker.tabs.includes("Walls") && !kitPicker.tabs.includes("Enemies") && !kitPicker.tabs.includes("Rocks"),
+    `[${kitPicker.tabs}]`
+);
+check("and every tile shown belongs to that kit", kitPicker.tiles > 0 && kitPicker.tiles === kitPicker.expected, `${kitPicker.tiles} tiles, kit holds ${kitPicker.expected}`);
 
 // A category belongs to the kit it came from: leaving "Walls" selected while
 // showing a pack that has none would empty the palette with no clue why.
@@ -8646,33 +9360,34 @@ const kitSwitch = await page.evaluate(async () => {
   pick(other);
   const after = {
     tabs: tabs(),
-    active: [...document.getElementById("palette-tabs").children]
-      .find((b) => b.classList.contains("active"))?.textContent,
+        active: [...document.getElementById("palette-tabs").children].find((b) => b.classList.contains("active"))?.textContent,
     tiles: document.querySelectorAll("#palette-list .item").length,
-    kits: new Set([...document.querySelectorAll("#palette-list .item")]
-      .map((el) => el.dataset.id.split("/")[0])),
+        kits: new Set([...document.querySelectorAll("#palette-list .item")].map((el) => el.dataset.id.split("/")[0])),
     stored: localStorage.getItem("paletteKit"),
   };
   pick("Modular SciFi MegaKit");
   return {
-    other, narrowed, ...after, kits: [...after.kits],
+        other,
+        narrowed,
+        ...after,
+        kits: [...after.kits],
     back: document.querySelectorAll("#palette-list .item").length,
     pal: typeof pal.refreshPalette,
   };
 });
-check("a tab narrows the list to its category",
-  kitSwitch.narrowed > 0 && kitSwitch.narrowed < kitPicker.expected,
-  `${kitSwitch.narrowed} tiles`);
-check("switching kit shows only that kit's modules",
+check("a tab narrows the list to its category", kitSwitch.narrowed > 0 && kitSwitch.narrowed < kitPicker.expected, `${kitSwitch.narrowed} tiles`);
+check(
+    "switching kit shows only that kit's modules",
   kitSwitch.kits.length === 1 && kitSwitch.kits[0] === kitSwitch.other && kitSwitch.tiles > 0,
-  `${kitSwitch.tiles} tiles from [${kitSwitch.kits}]`);
-check("and drops a category the new kit does not have, rather than showing nothing",
+    `${kitSwitch.tiles} tiles from [${kitSwitch.kits}]`
+);
+check(
+    "and drops a category the new kit does not have, rather than showing nothing",
   kitSwitch.active === "All" && !kitSwitch.tabs.includes("Walls"),
-  `active "${kitSwitch.active}" of [${kitSwitch.tabs}]`);
-check("the choice is remembered for the next session",
-  kitSwitch.stored === kitSwitch.other, `stored "${kitSwitch.stored}"`);
-check("and switching back restores the first kit's list",
-  kitSwitch.back === kitPicker.expected, `${kitSwitch.back} tiles`);
+    `active "${kitSwitch.active}" of [${kitSwitch.tabs}]`
+);
+check("the choice is remembered for the next session", kitSwitch.stored === kitSwitch.other, `stored "${kitSwitch.stored}"`);
+check("and switching back restores the first kit's list", kitSwitch.back === kitPicker.expected, `${kitSwitch.back} tiles`);
 
 // A module nobody has previewed has to be loaded and rendered before there is
 // a picture at all, and a fresh kit queues a hundred and fifty of them. The
@@ -8691,26 +9406,23 @@ const pending = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 120));
   const tile = document.querySelector("#palette-list .item.thumb-pending");
   const msg = tile ? getComputedStyle(tile, "::before").content : null;
-  const covers = tile
-    ? getComputedStyle(tile, "::before").position === "absolute" : false;
+    const covers = tile ? getComputedStyle(tile, "::before").position === "absolute" : false;
   // and it goes away again once the picture is there
   const gone = await new Promise((resolve) => {
     const until = Date.now() + 30000;
     const iv = setInterval(() => {
       const still = document.querySelectorAll("#palette-list .item.thumb-pending").length;
-      if (!still || Date.now() > until) { clearInterval(iv); resolve(still); }
+            if (!still || Date.now() > until) {
+                clearInterval(iv);
+                resolve(still);
+            }
     }, 200);
   });
-  const withSrc = [...document.querySelectorAll("#palette-list .item img.thumb")]
-    .filter((i) => i.src).length;
+    const withSrc = [...document.querySelectorAll("#palette-list .item img.thumb")].filter((i) => i.src).length;
   return { msg, covers, gone, withSrc };
 });
-check("a tile being rendered says so instead of showing a blank thumbnail",
-  /Generating preview/.test(pending.msg || "") && pending.covers,
-  `${pending.msg}`);
-check("and the message goes away when the picture arrives",
-  pending.gone === 0 && pending.withSrc > 0,
-  `${pending.gone} still pending, ${pending.withSrc} filled`);
+check("a tile being rendered says so instead of showing a blank thumbnail", /Generating preview/.test(pending.msg || "") && pending.covers, `${pending.msg}`);
+check("and the message goes away when the picture arrives", pending.gone === 0 && pending.withSrc > 0, `${pending.gone} still pending, ${pending.withSrc} filled`);
 
 // FBX packs are read in the file's own units - Babylon parses UnitScaleFactor
 // and never applies it - so a tree arrives 248 units tall. Everything else here
@@ -8738,17 +9450,16 @@ const fbxUnits = await page.evaluate(async () => {
     fallback: kit.fbxMetresPerUnit(cm.buffer),
     // a format is packaging, not a category: a kit read through its `glTF/` or
     // `FBX/` folder would show one tab holding everything
-    formatTabs: kit.getCatalogue().kits.flatMap((k) =>
-      k.categories.filter((c) => /^(gltf|glb|fbx|obj|blend|source)$/i.test(c)).map((c) => `${k.name}/${c}`)),
+        formatTabs: kit.getCatalogue().kits.flatMap((k) => k.categories.filter((c) => /^(gltf|glb|fbx|obj|blend|source)$/i.test(c)).map((c) => `${k.name}/${c}`)),
   };
 });
-check("an FBX module is brought into metres from the unit its file declares",
+check(
+    "an FBX module is brought into metres from the unit its file declares",
   !fbxUnits.hasKit || (fbxUnits.size && fbxUnits.size[1] > 1 && fbxUnits.size[1] < 6),
-  `CommonTree_1 is ${fbxUnits.size} m`);
-check("and a file that declares nothing is read as centimetres, the FBX default",
-  fbxUnits.fallback === 0.01, `${fbxUnits.fallback}`);
-check("no kit offers a tab named after a file format",
-  fbxUnits.formatTabs.length === 0, `[${fbxUnits.formatTabs}]`);
+    `CommonTree_1 is ${fbxUnits.size} m`
+);
+check("and a file that declares nothing is read as centimetres, the FBX default", fbxUnits.fallback === 0.01, `${fbxUnits.fallback}`);
+check("no kit offers a tab named after a file format", fbxUnits.formatTabs.length === 0, `[${fbxUnits.formatTabs}]`);
 
 // Every kit keeps its texture atlases at the kit root while its models sit in
 // category folders, so each one leans on the loader rule that redirects a bare
@@ -8767,17 +9478,17 @@ const foldered = await page.evaluate(async () => {
     }
     if (!mod) continue;
     const proto = await kit.getProto(mod.id);
-    const textures = proto.parts
-      .map((p) => p.mesh.material && (p.mesh.material.albedoTexture || p.mesh.material.diffuseTexture))
-      .filter(Boolean);
+        const textures = proto.parts.map((p) => p.mesh.material && (p.mesh.material.albedoTexture || p.mesh.material.diffuseTexture)).filter(Boolean);
     await thumbs.requestTurntable(mod);
     out[name] = { id: mod.id, ready: textures.length > 0 && textures.every((t) => t.isReady()) };
   }
   return out;
 });
-check("a module from another kit finds the atlas its kit keeps at the root",
+check(
+    "a module from another kit finds the atlas its kit keeps at the root",
   Object.values(foldered).length > 0 && Object.values(foldered).every((m) => m.ready),
-  JSON.stringify(foldered));
+    JSON.stringify(foldered)
+);
 
 // A module built for this ship out of parts of a bought pack wears that pack's
 // trim, and Blender writes the path from the .gltf to the image: a URI that
@@ -8879,7 +9590,14 @@ check(
 const shape = await page.evaluate(async () => {
   const kit = await import("/js/kit.js");
   const ok = { categories: [], kits: [{ name: "K", modelDirs: [], rootTextures: [] }] };
-  const say = (cat) => { try { kit.assertCatalogueShape(cat); return null; } catch (e) { return e.message; } };
+    const say = (cat) => {
+        try {
+            kit.assertCatalogueShape(cat);
+            return null;
+        } catch (e) {
+            return e.message;
+        }
+    };
   return {
     current: say(kit.getCatalogue()),
     good: say(ok),
@@ -8887,12 +9605,12 @@ const shape = await page.evaluate(async () => {
     noKits: say({ categories: [] }),
   };
 });
-check("the catalogue the server is serving is one this page can read",
-  shape.current === null && shape.good === null, `${shape.current || shape.good}`);
-check("and a catalogue from an older server is refused, naming the cure",
-  shape.noField && shape.noField.includes("modelDirs") && /restart it/i.test(shape.noField)
-  && shape.noKits && shape.noKits.includes('"kits"'),
-  `${shape.noField}`);
+check("the catalogue the server is serving is one this page can read", shape.current === null && shape.good === null, `${shape.current || shape.good}`);
+check(
+    "and a catalogue from an older server is refused, naming the cure",
+    shape.noField && shape.noField.includes("modelDirs") && /restart it/i.test(shape.noField) && shape.noKits && shape.noKits.includes('"kits"'),
+    `${shape.noField}`
+);
 
 // Two materials are the same material when they read the same textures, not
 // when they share a name. Every Pirate model calls its material `Atlas` and
@@ -8920,7 +9638,8 @@ const identity = await page.evaluate(async () => {
     const a = await kit.getProto(prop.id);
     const b = await kit.getProto(character.id);
     const urlOf = (proto) => proto.parts.map((p) => p.mesh.material.albedoTexture?.url);
-    const propUrls = urlOf(a), charUrls = urlOf(b);
+        const propUrls = urlOf(a),
+            charUrls = urlOf(b);
     out.pirate = {
       // the character's own atlas, on every one of its parts - body and the
       // weapon in its hand alike
@@ -8956,12 +9675,12 @@ const identity = await page.evaluate(async () => {
   };
   return out;
 });
-check("a material is shared over its textures, not its name",
+check(
+    "a material is shared over its textures, not its name",
   identity.pirate?.character && identity.pirate.notTheProps && identity.pirate.shared,
-  JSON.stringify(identity.pirate?.urls));
-check("and the kit that names one atlas everywhere still shares it",
-  identity.mega && identity.mega.copies === 1 && identity.mega.names > 0,
-  JSON.stringify(identity.mega));
+    JSON.stringify(identity.pirate?.urls)
+);
+check("and the kit that names one atlas everywhere still shares it", identity.mega && identity.mega.copies === 1 && identity.mega.names > 0, JSON.stringify(identity.mega));
 
 // Quaternius' .fbx packs are exported with every face flat - the normals in
 // the file itself are as many as the mesh has corners, up to 159 degrees apart
@@ -8972,7 +9691,8 @@ const shading = await page.evaluate(async () => {
   const splitFraction = async (mod) => {
     const proto = await kit.getProto(mod.id);
     const m = proto.parts[0].mesh;
-    const pos = m.getVerticesData("position"), nor = m.getVerticesData("normal");
+        const pos = m.getVerticesData("position"),
+            nor = m.getVerticesData("normal");
     const at = new Map();
     for (let i = 0; i < pos.length; i += 3) {
       const k = [pos[i], pos[i + 1], pos[i + 2]].map((v) => Math.round(v * 1e4)).join(",");
@@ -8982,7 +9702,8 @@ const shading = await page.evaluate(async () => {
     let split = 0;
     for (const g of at.values()) {
       let diff = false;
-      for (const a of g) for (const b of g) {
+            for (const a of g)
+                for (const b of g) {
         const d = nor[a * 3] * nor[b * 3] + nor[a * 3 + 1] * nor[b * 3 + 1] + nor[a * 3 + 2] * nor[b * 3 + 2];
         if (Math.acos(Math.min(1, Math.max(-1, d))) > 0.02) diff = true;
       }
@@ -9007,10 +9728,11 @@ const shading = await page.evaluate(async () => {
     tree: tree ? await splitFraction(tree) : null,
   };
 });
-check("a pack exported flat is smoothed, creases kept",
-  shading.configured > 0 && shading.megaKitLeftAlone === null
-  && shading.tree && shading.tree.frac > 0 && shading.tree.frac < 0.2,
-  JSON.stringify(shading.tree));
+check(
+    "a pack exported flat is smoothed, creases kept",
+    shading.configured > 0 && shading.megaKitLeftAlone === null && shading.tree && shading.tree.frac > 0 && shading.tree.frac < 0.2,
+    JSON.stringify(shading.tree)
+);
 
 // The RPG pack's six see-through materials are the only ones in it that arrive
 // with no colour: Blender's FBX exporter writes Phong properties out of a
@@ -9026,7 +9748,8 @@ const potions = await page.evaluate(async () => {
     return null;
   };
   const materials = async (name) => {
-    const mod = find(name); if (!mod) return null;
+        const mod = find(name);
+        if (!mod) return null;
     const out = {};
     for (const p of (await kit.getProto(mod.id)).parts) {
       for (const sub of p.mesh.material.subMaterials || [p.mesh.material]) {
@@ -9039,10 +9762,11 @@ const potions = await page.evaluate(async () => {
   return { filled: await materials("Potion1_Filled"), empty: await materials("Potion1_Empty") };
 });
 const liquid = potions.filled?.Liquid_Red;
-check("a liquid the .fbx forgot to colour is coloured, and the glass sees through",
-  liquid && liquid.rgb[0] > 0.5 && liquid.rgb[1] < 0.2 && liquid.alpha === 1
-  && potions.filled.Glass.alpha < 1 && !potions.empty.Liquid_Red,
-  JSON.stringify(potions.filled));
+check(
+    "a liquid the .fbx forgot to colour is coloured, and the glass sees through",
+    liquid && liquid.rgb[0] > 0.5 && liquid.rgb[1] < 0.2 && liquid.alpha === 1 && potions.filled.Glass.alpha < 1 && !potions.empty.Liquid_Red,
+    JSON.stringify(potions.filled)
+);
 
 await page.fill("#palette-search", "");
 await page.waitForTimeout(300);
@@ -9053,7 +9777,9 @@ await page.waitForTimeout(300);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.camera.position = new BABYLON.Vector3(0, 3, -10);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
 });
@@ -9110,18 +9836,10 @@ const lmb = await cameraDelta(dragLmb);
 const rmb = await cameraDelta(dragRmb);
 const wasd = await cameraDelta(rmbWasd);
 const together = await cameraDelta(rmbDragAndWasd);
-check("right-drag is the only mouse gesture that looks",
-  rmb.dr > 0.02 && lmb.dr < 0.005,
-  `RMB drot=${rmb.dr}, LMB drot=${lmb.dr}`);
-check("no mouse gesture moves the camera any more",
-  rmb.dp < 0.05 && lmb.dp < 0.05,
-  `RMB dpos=${rmb.dp}, LMB dpos=${lmb.dp}`);
-check("the right button does nothing special to WASD - they translate",
-  wasd.dp > 0.5 && wasd.dr < 0.005,
-  `dpos=${wasd.dp}, drot=${wasd.dr}`);
-check("turning with the mouse and moving with WASD work at the same time",
-  together.dp > 0.5 && together.dr > 0.02,
-  `dpos=${together.dp}, drot=${together.dr}`);
+check("right-drag is the only mouse gesture that looks", rmb.dr > 0.02 && lmb.dr < 0.005, `RMB drot=${rmb.dr}, LMB drot=${lmb.dr}`);
+check("no mouse gesture moves the camera any more", rmb.dp < 0.05 && lmb.dp < 0.05, `RMB dpos=${rmb.dp}, LMB dpos=${lmb.dp}`);
+check("the right button does nothing special to WASD - they translate", wasd.dp > 0.5 && wasd.dr < 0.005, `dpos=${wasd.dp}, drot=${wasd.dr}`);
+check("turning with the mouse and moving with WASD work at the same time", together.dp > 0.5 && together.dr > 0.02, `dpos=${together.dp}, drot=${together.dr}`);
 
 // ---- 1i-bis. walk mode -------------------------------------------------------
 // Judging corridor heights and sight lines needs the player's eye, not a free
@@ -9130,7 +9848,9 @@ const walkSetup = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   for (let k = 0; k < 12; k++) {
     await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new V(k * 4, 0, 0));
   }
@@ -9148,43 +9868,41 @@ const grounded = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { walk: ed.state.walk, y: +ed.state.camera.position.y.toFixed(3) };
 });
-check("Walk drops the camera to eye height on the floor",
+check(
+    "Walk drops the camera to eye height on the floor",
   grounded.walk && Math.abs(grounded.y - walkSetup.eye) < 0.01,
-  `${walkSetup.from} m -> ${grounded.y} m (eye ${walkSetup.eye})`);
+    `${walkSetup.from} m -> ${grounded.y} m (eye ${walkSetup.eye})`
+);
 
 // pitched hard down, forward must still go forward - not into the floor
 await page.evaluate(async () => {
   (await import("/js/editor.js")).state.camera.rotation.x = 1.0;
 });
-const beforeWalk = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.camera.position.asArray());
+const beforeWalk = await page.evaluate(async () => (await import("/js/editor.js")).state.camera.position.asArray());
 await page.mouse.move(1100, 500, { steps: 2 });
 await page.keyboard.down("w");
 await page.waitForTimeout(500);
 await page.keyboard.up("w");
 await page.waitForTimeout(500);
-const afterWalk = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.camera.position.asArray());
-check("walking looks down without walking into the floor",
-  Math.abs(afterWalk[1] - walkSetup.eye) < 0.01
-    && Math.abs(afterWalk[0] - beforeWalk[0]) > 2,
-  `moved ${(afterWalk[0] - beforeWalk[0]).toFixed(2)} m along X, height ${afterWalk[1].toFixed(2)} m`);
+const afterWalk = await page.evaluate(async () => (await import("/js/editor.js")).state.camera.position.asArray());
+check(
+    "walking looks down without walking into the floor",
+    Math.abs(afterWalk[1] - walkSetup.eye) < 0.01 && Math.abs(afterWalk[0] - beforeWalk[0]) > 2,
+    `moved ${(afterWalk[0] - beforeWalk[0]).toFixed(2)} m along X, height ${afterWalk[1].toFixed(2)} m`
+);
 
 // walking covers ground at the same rate as flying - it is a viewpoint, not a
 // speed limit
 const walkPace = Math.abs(afterWalk[0] - beforeWalk[0]) / 0.5;
-check("walking is as quick as flying", walkPace > 15,
-  `about ${walkPace.toFixed(0)} m/s`);
+check("walking is as quick as flying", walkPace > 15, `about ${walkPace.toFixed(0)} m/s`);
 
 // Space/C must not fight the grounding
 await page.keyboard.down(" ");
 await page.waitForTimeout(600);
 await page.keyboard.up(" ");
 await page.waitForTimeout(400);
-const afterSpace = await page.evaluate(async () =>
-  +(await import("/js/editor.js")).state.camera.position.y.toFixed(3));
-check("Space does not fly while walking",
-  Math.abs(afterSpace - walkSetup.eye) < 0.01, `height ${afterSpace} m`);
+const afterSpace = await page.evaluate(async () => +(await import("/js/editor.js")).state.camera.position.y.toFixed(3));
+check("Space does not fly while walking", Math.abs(afterSpace - walkSetup.eye) < 0.01, `height ${afterSpace} m`);
 
 // stepping off the end of the floor must not drop the camera out of the world
 const offEdge = await page.evaluate(async () => {
@@ -9196,9 +9914,11 @@ const offEdge = await page.evaluate(async () => {
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   return { ground, y: c.position.y };
 });
-check("no floor underfoot leaves the camera where it is",
+check(
+    "no floor underfoot leaves the camera where it is",
   offEdge.ground === null && Math.abs(offEdge.y - walkSetup.eye) < 0.01,
-  `ground=${offEdge.ground}, height ${offEdge.y.toFixed(2)} m`);
+    `ground=${offEdge.ground}, height ${offEdge.y.toFixed(2)} m`
+);
 
 // Entering walk mode is the opposite case and must never be a no-op: a camera
 // parked over a gap, or below a floor, still has to end up at eye height.
@@ -9229,15 +9949,13 @@ const entering = await page.evaluate(async () => {
   out.fromHigh = +c.position.y.toFixed(2);
   return out;
 });
-check("entering Walk over empty space falls back to the build plane",
+check(
+    "entering Walk over empty space falls back to the build plane",
   Math.abs(entering.overNothing - (entering.gridY + walkSetup.eye)) < 0.01,
-  `height ${entering.overNothing} m, build plane at ${entering.gridY} m`);
-check("entering Walk from below the floor still stands on it",
-  Math.abs(entering.fromBelow - walkSetup.eye) < 0.01,
-  `0.2 m -> ${entering.fromBelow} m`);
-check("entering Walk from high above lands on the floor",
-  Math.abs(entering.fromHigh - walkSetup.eye) < 0.01,
-  `120 m -> ${entering.fromHigh} m`);
+    `height ${entering.overNothing} m, build plane at ${entering.gridY} m`
+);
+check("entering Walk from below the floor still stands on it", Math.abs(entering.fromBelow - walkSetup.eye) < 0.01, `0.2 m -> ${entering.fromBelow} m`);
+check("entering Walk from high above lands on the floor", Math.abs(entering.fromHigh - walkSetup.eye) < 0.01, `120 m -> ${entering.fromHigh} m`);
 
 await page.uncheck("#walk");
 await page.waitForTimeout(300);
@@ -9251,10 +9969,8 @@ await page.keyboard.down(" ");
 await page.waitForTimeout(600);
 await page.keyboard.up(" ");
 await page.waitForTimeout(400);
-const flewUp = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.camera.position.y);
-check("unticking Walk gives Space back",
-  flyAgain === false && flewUp > 6.5, `rose to ${flewUp.toFixed(2)} m`);
+const flewUp = await page.evaluate(async () => (await import("/js/editor.js")).state.camera.position.y);
+check("unticking Walk gives Space back", flyAgain === false && flewUp > 6.5, `rose to ${flewUp.toFixed(2)} m`);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 // ---- 1i-ter. Ctrl+D hands you the copy ---------------------------------------
@@ -9265,9 +9981,10 @@ const dupSetup = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
-    { rotation: [0, 90, 0], scale: [-1, 1, 1] });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { rotation: [0, 90, 0], scale: [-1, 1, 1] });
   ed.select([e.id]);
   ed.state.camera.position = new V(0, 14, -10);
   ed.state.camera.setTarget(new V(0, 0, 0));
@@ -9282,35 +9999,40 @@ const dupGhost = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const node = window.__scene.getTransformNodeByName("GHOST");
   return {
-    module: i.ghostModule(), kind: i.currentElement()?.kind, brush: ed.state.brush,
+        module: i.ghostModule(),
+        kind: i.currentElement()?.kind,
+        brush: ed.state.brush,
     count: ed.state.placements.size,
     scaling: node?.scaling.asArray(),
-    rotY: node ? +(node.rotationQuaternion.toEulerAngles().y * 180 / Math.PI).toFixed(1) : null,
+        rotY: node ? +((node.rotationQuaternion.toEulerAngles().y * 180) / Math.PI).toFixed(1) : null,
   };
 });
-check("Ctrl+D arms a ghost instead of dropping a copy",
-  dupGhost.kind === "ghost" && dupGhost.module === dupSetup.module
-    && dupGhost.count === dupSetup.count,
-  `ghost=${dupGhost.module}, still ${dupGhost.count} placement(s)`);
-check("the duplicate ghost keeps the source rotation and mirroring",
+check(
+    "Ctrl+D arms a ghost instead of dropping a copy",
+    dupGhost.kind === "ghost" && dupGhost.module === dupSetup.module && dupGhost.count === dupSetup.count,
+    `ghost=${dupGhost.module}, still ${dupGhost.count} placement(s)`
+);
+check(
+    "the duplicate ghost keeps the source rotation and mirroring",
   Math.abs(dupGhost.rotY - 90) < 0.5 && dupGhost.scaling[0] === -1,
-  `rotY=${dupGhost.rotY}, scale=[${dupGhost.scaling}]`);
-check("the duplicate arms the palette brush like any other module",
-  dupGhost.brush === dupSetup.module, `brush=${dupGhost.brush}`);
+    `rotY=${dupGhost.rotY}, scale=[${dupGhost.scaling}]`
+);
+check("the duplicate arms the palette brush like any other module", dupGhost.brush === dupSetup.module, `brush=${dupGhost.brush}`);
 
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(800);
 const dupPlaced = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const list = [...ed.state.placements.values()];
   const last = list[list.length - 1];
-  return { count: list.length, module: last.module,
-           rotY: +ed.eulerOf(last.node)[1].toFixed(1), scale: last.node.scaling.asArray() };
+    return { count: list.length, module: last.module, rotY: +ed.eulerOf(last.node)[1].toFixed(1), scale: last.node.scaling.asArray() };
 });
-check("clicking places the duplicate with its transform intact",
-  dupPlaced.count === dupSetup.count + 1 && Math.abs(dupPlaced.rotY - 90) < 0.5
-    && dupPlaced.scale[0] === -1,
-  `${dupPlaced.count} placements, rotY=${dupPlaced.rotY}, scale=[${dupPlaced.scale}]`);
+check(
+    "clicking places the duplicate with its transform intact",
+    dupPlaced.count === dupSetup.count + 1 && Math.abs(dupPlaced.rotY - 90) < 0.5 && dupPlaced.scale[0] === -1,
+    `${dupPlaced.count} placements, rotY=${dupPlaced.rotY}, scale=[${dupPlaced.scale}]`
+);
 
 // ---- ... and the lamps riding it -------------------------------------------
 // A light is part of what an element IS, so a duplicate has to bring the lamps
@@ -9325,18 +10047,20 @@ const dupLitSetup = await page.evaluate(async () => {
   const V = BABYLON.Vector3;
   // deliberately no clearAll: the axis section below still needs the wall the
   // block above placed
-  i.cancelGhost(); ed.select([]);
+    i.cancelGhost();
+    ed.select([]);
   // a module the kit lights on its own, so a re-seed would show up as a lamp
   // back at its default numbers
-  const src = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(12, 0, 0),
-    { silent: true, name: "port lamp" });
+    const src = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(12, 0, 0), { silent: true, name: "port lamp" });
   const seeded = lt.lightsOf(src.id);
   lt.setLightPart(seeded[0].id, "runtime", { intensity: 7, range: 3, color: [1, 0, 0] });
   lt.setLightTransform(seeded[0].id, { offset: [0, 1.25, 0] });
   // and a second the kit would never have put there
   lt.addLight(src.id, {
-    offset: [0, -1, 0], rotation: [0, 0, 180],
-    runtime: { type: "spot", intensity: 42, angle: 33 }, silent: true,
+        offset: [0, -1, 0],
+        rotation: [0, 0, 180],
+        runtime: { type: "spot", intensity: 42, angle: 33 },
+        silent: true,
   });
   ed.select([src.id]);
   ed.state.camera.position = new V(0, 14, -10);
@@ -9348,9 +10072,11 @@ await page.waitForTimeout(600);
 await page.mouse.move(1150, 520, { steps: 3 });
 await page.keyboard.press("Control+d");
 await page.waitForTimeout(900);
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(900);
-const dupLit = await page.evaluate(async ({ srcId, srcLampIds }) => {
+const dupLit = await page.evaluate(
+    async ({ srcId, srcLampIds }) => {
   const ed = await import("/js/editor.js");
   const lt = await import("/js/lights.js");
   const copyId = ed.state.selection[0];
@@ -9365,15 +10091,19 @@ const dupLit = await page.evaluate(async ({ srcId, srcLampIds }) => {
     distinct: lamps.length > 0 && lamps.every((l) => l.owner === copyId && !srcLampIds.includes(l.id)),
     source: lt.lightsOf(srcId).map(record),
   };
-}, { srcId: dupLitSetup.id, srcLampIds: dupLitSetup.ids });
-check("Ctrl+D copies the lamps the source is wearing, not the kit's defaults",
-  dupLit.fresh && dupLit.lamps.length === 2 && dupLit.distinct
-    && JSON.stringify(dupLit.lamps) === JSON.stringify(dupLitSetup.lamps),
-  JSON.stringify({ carried: dupLit.lamps, wanted: dupLitSetup.lamps }));
-check("the copy is nameless, so it is its own node, and leaves the source alone",
-  dupLit.name === ""
-    && JSON.stringify(dupLit.source) === JSON.stringify(dupLitSetup.lamps),
-  `name=${JSON.stringify(dupLit.name)}, source=${JSON.stringify(dupLit.source)}`);
+    },
+    { srcId: dupLitSetup.id, srcLampIds: dupLitSetup.ids }
+);
+check(
+    "Ctrl+D copies the lamps the source is wearing, not the kit's defaults",
+    dupLit.fresh && dupLit.lamps.length === 2 && dupLit.distinct && JSON.stringify(dupLit.lamps) === JSON.stringify(dupLitSetup.lamps),
+    JSON.stringify({ carried: dupLit.lamps, wanted: dupLitSetup.lamps })
+);
+check(
+    "the copy is nameless, so it is its own node, and leaves the source alone",
+    dupLit.name === "" && JSON.stringify(dupLit.source) === JSON.stringify(dupLitSetup.lamps),
+    `name=${JSON.stringify(dupLit.name)}, source=${JSON.stringify(dupLit.source)}`
+);
 
 // ---- Ctrl+D always arms on the floor plane ----------------------------------
 // In Y mode the cursor drives the *build plane* rather than the ghost's own
@@ -9394,14 +10124,15 @@ const dupAxis = await page.evaluate(async (id) => {
   ed.setGridElevation(0);                    // the plane, far below the source
   i.setDragAxis("y");
   const c = ed.state.camera;
-  c.cameraDirection.setAll(0); c.cameraRotation.set(0, 0);
-  c.position.set(4, 26, 6.001); c.rotation.set(Math.PI / 2, 0, 0);   // straight down
+    c.cameraDirection.setAll(0);
+    c.cameraRotation.set(0, 0);
+    c.position.set(4, 26, 6.001);
+    c.rotation.set(Math.PI / 2, 0, 0); // straight down
   ed.state.scene.render();
   return { was: ed.state.dragAxis, sourceY: e.node.position.y, gridY: ed.state.gridY };
 }, dupSetup.id);
 await page.waitForTimeout(400);
-const dupAxisCanvas = await page.evaluate(() =>
-  document.getElementById("render-canvas").getBoundingClientRect().toJSON());
+const dupAxisCanvas = await page.evaluate(() => document.getElementById("render-canvas").getBoundingClientRect().toJSON());
 const dupAxisMid = {
   x: Math.round(dupAxisCanvas.x + dupAxisCanvas.width / 2),
   y: Math.round(dupAxisCanvas.y + dupAxisCanvas.height / 2),
@@ -9416,22 +10147,27 @@ const dupAxisGhost = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const n = ed.hooks.ghostNode?.();
   return {
-    armed: !!n, y: n ? +n.position.y.toFixed(2) : null,
-    axis: ed.state.dragAxis, combo: document.getElementById("drag-axis").value,
+        armed: !!n,
+        y: n ? +n.position.y.toFixed(2) : null,
+        axis: ed.state.dragAxis,
+        combo: document.getElementById("drag-axis").value,
     gridY: +ed.state.gridY.toFixed(2),
     status: (document.getElementById("status")?.textContent || "").trim(),
   };
 });
 await page.keyboard.press("Escape");
 await page.waitForTimeout(300);
-check("Ctrl+D from Y mode puts the drag axis back on the floor",
+check(
+    "Ctrl+D from Y mode puts the drag axis back on the floor",
   dupAxis.was === "y" && dupAxisGhost.axis === "xz" && dupAxisGhost.combo === "xz",
-  `${dupAxis.was} -> ${dupAxisGhost.axis}, combo ${dupAxisGhost.combo}`);
-check("so the copy arms at its source's height, not down on the build plane",
+    `${dupAxis.was} -> ${dupAxisGhost.axis}, combo ${dupAxisGhost.combo}`
+);
+check(
+    "so the copy arms at its source's height, not down on the build plane",
   dupAxisGhost.armed && Math.abs(dupAxisGhost.y - 9.5) < 0.01,
-  `ghost at ${dupAxisGhost.y} m, plane at ${dupAxisGhost.gridY} m`);
-check("and the status line says the axis moved",
-  /X\/Z/.test(dupAxisGhost.status.split("\n")[0]), dupAxisGhost.status.split("\n")[0].trim());
+    `ghost at ${dupAxisGhost.y} m, plane at ${dupAxisGhost.gridY} m`
+);
+check("and the status line says the axis moved", /X\/Z/.test(dupAxisGhost.status.split("\n")[0]), dupAxisGhost.status.split("\n")[0].trim());
 
 // Every way of arming a ghost does it, not only Ctrl+D. The reset lives in
 // interact.js beside the three functions that assign the ghost, because there
@@ -9454,8 +10190,7 @@ const armAxis = await page.evaluate(async (id) => {
     for (let k = 0; k < 60 && !ed.hooks.ghostNode?.(); k++) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    const out = { axis: ed.state.dragAxis, combo: document.getElementById("drag-axis").value,
-      ghost: !!ed.hooks.ghostNode?.() };
+        const out = { axis: ed.state.dragAxis, combo: document.getElementById("drag-axis").value, ghost: !!ed.hooks.ghostNode?.() };
     i.cancelGhost();
     return out;
   };
@@ -9468,13 +10203,14 @@ const armAxis = await page.evaluate(async (id) => {
     carry: await arm(() => i.grabSelection()),
   };
 }, dupSetup.id);
-for (const [how, r] of [["a palette tile", armAxis.palette], ["a collision shape button", armAxis.shape],
-  ["a Ctrl+D copy of a selection", armAxis.copy]]) {
-  check(`arming from ${how} puts the axis back on the floor`,
-    r.ghost && r.axis === "xz" && r.combo === "xz", JSON.stringify(r));
+for (const [how, r] of [
+    ["a palette tile", armAxis.palette],
+    ["a collision shape button", armAxis.shape],
+    ["a Ctrl+D copy of a selection", armAxis.copy],
+]) {
+    check(`arming from ${how} puts the axis back on the floor`, r.ghost && r.axis === "xz" && r.combo === "xz", JSON.stringify(r));
 }
-check("but an M carry is left in Y mode, raising being the whole point of it",
-  armAxis.carry.ghost && armAxis.carry.axis === "y", JSON.stringify(armAxis.carry));
+check("but an M carry is left in Y mode, raising being the whole point of it", armAxis.carry.ghost && armAxis.carry.axis === "y", JSON.stringify(armAxis.carry));
 
 await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
@@ -9491,7 +10227,9 @@ const carrySet = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const a = await ed.placeAt(M, new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt(M, new V(8, 0, 0), { rotation: [0, 90, 0], silent: true });
@@ -9502,22 +10240,30 @@ const carrySet = await page.evaluate(async () => {
   const g = await i.grabSelection();
   return {
     ids: [a.id, b.id, c.id],
-    carrying: i.ghostCount(), mode: i.ghostMode(),
+        carrying: i.ghostCount(),
+        mode: i.ghostMode(),
     // the originals go out of sight while the ghost stands in for them
     originalsOn: [a, b, c].map((e) => e.node.isEnabled()),
     // and the set keeps its shape: distinct offsets from the anchor
-    spread: g ? g.items.map((it) => it.node.position.asArray().map((v) => +v.toFixed(2)).join()) : [],
+        spread: g
+            ? g.items.map((it) =>
+                  it.node.position
+                      .asArray()
+                      .map((v) => +v.toFixed(2))
+                      .join()
+              )
+            : [],
   };
 });
-check("G picks the whole selection up", carrySet.carrying === 3 && carrySet.mode === "move",
-  `${carrySet.carrying} items, mode ${carrySet.mode}`);
-check("the originals step aside while it is carried",
-  carrySet.originalsOn.join() === "false,false,false", `${carrySet.originalsOn}`);
-check("the set keeps its shape on the cursor",
+check("G picks the whole selection up", carrySet.carrying === 3 && carrySet.mode === "move", `${carrySet.carrying} items, mode ${carrySet.mode}`);
+check("the originals step aside while it is carried", carrySet.originalsOn.join() === "false,false,false", `${carrySet.originalsOn}`);
+check(
+    "the set keeps its shape on the cursor",
   // one at the anchor, one 8 m along X, one 8 m along Z - lengths alone would
   // not tell the last two apart
   new Set(carrySet.spread).size === 3 && carrySet.spread.includes("0,0,0"),
-  `offsets [${carrySet.spread.join(" | ")}]`);
+    `offsets [${carrySet.spread.join(" | ")}]`
+);
 
 // Esc puts them back exactly, having moved nothing
 const carryEsc = await page.evaluate(async (ids) => {
@@ -9531,10 +10277,11 @@ const carryEsc = await page.evaluate(async (ids) => {
     ghost: i.ghostActive(),
   };
 }, carrySet.ids);
-check("Esc puts a carried selection back untouched",
-  carryEsc.on.join() === "true,true,true" && carryEsc.at.join() === "0,8,0"
-    && carryEsc.ghost === false,
-  `enabled ${carryEsc.on}, x ${carryEsc.at}`);
+check(
+    "Esc puts a carried selection back untouched",
+    carryEsc.on.join() === "true,true,true" && carryEsc.at.join() === "0,8,0" && carryEsc.ghost === false,
+    `enabled ${carryEsc.on}, x ${carryEsc.at}`
+);
 
 // dropping moves the originals rather than duplicating them
 const carryDropped = await page.evaluate(async (ids) => {
@@ -9558,13 +10305,16 @@ const carryDropped = await page.evaluate(async (ids) => {
     ghost: i.ghostActive(),
   };
 }, carrySet.ids);
-check("dropping a carried selection moves it, and does not copy it",
+check(
+    "dropping a carried selection moves it, and does not copy it",
   carryDropped.count === 3 && carryDropped.on.join() === "true,true,true" && carryDropped.ghost === false,
-  `${carryDropped.count} placements, enabled ${carryDropped.on}`);
-check("the set lands with its shape, turns and mirroring intact",
-  carryDropped.dx === 8 && carryDropped.dz === 8 && Math.abs(carryDropped.rotB - 90) < 0.5
-    && carryDropped.sclC[0] === -1,
-  `dx=${carryDropped.dx}, dz=${carryDropped.dz}, rotB=${carryDropped.rotB}, scaleC=[${carryDropped.sclC}]`);
+    `${carryDropped.count} placements, enabled ${carryDropped.on}`
+);
+check(
+    "the set lands with its shape, turns and mirroring intact",
+    carryDropped.dx === 8 && carryDropped.dz === 8 && Math.abs(carryDropped.rotB - 90) < 0.5 && carryDropped.sclC[0] === -1,
+    `dx=${carryDropped.dx}, dz=${carryDropped.dz}, rotB=${carryDropped.rotB}, scaleC=[${carryDropped.sclC}]`
+);
 
 // ---- a grab is relative: it starts in place and follows how far you move ---
 // It used to teleport the elements onto the cursor the moment the key went
@@ -9577,7 +10327,8 @@ const relGrab = await page.evaluate(async () => {
   // Deliberately does not clear the scene: the blocks around this one share
   // their placements, and wiping them here left the next test reaching into
   // elements that no longer existed.
-  i.cancelGhost(); ed.select([]);
+    i.cancelGhost();
+    ed.select([]);
   // The move step is a global other blocks cycle, and a grab snaps its *delta*
   // to it - at 4 m a 3 m drag would land 4 m away and this would read as a bug
   // in the grab rather than in the test.
@@ -9588,8 +10339,7 @@ const relGrab = await page.evaluate(async () => {
     target: ed.state.camera.getTarget().asArray(),
   };
   // off the 1 m grid on purpose, so a re-snap would show
-  const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(10.27, 0, 3.4),
-    { silent: true });
+    const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(10.27, 0, 3.4), { silent: true });
   // Look almost straight down, so the plane the ghost tracks (one through the
   // module's body, a metre up on a wall) and the y = 0 plane this test projects
   // onto agree to within millimetres instead of a metre of parallax. Inertia
@@ -9614,9 +10364,11 @@ const grabbedAt = await page.evaluate(async () => {
   const n = ed.hooks.ghostNode();
   return n ? n.position.asArray().map((v) => +v.toFixed(3)) : null;
 });
-check("a grab starts exactly where the element already was",
+check(
+    "a grab starts exactly where the element already was",
   JSON.stringify(grabbedAt) === JSON.stringify(relGrab.at),
-  `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(grabbedAt)}`);
+    `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(grabbedAt)}`
+);
 
 // drive the cursor to a point exactly 3 m along X and Z from where it started
 const grabTo = await screenOf([13.27, 0, 6.4]);
@@ -9627,9 +10379,11 @@ const movedTo = await page.evaluate(async () => {
   const n = ed.hooks.ghostNode();
   return n ? n.position.asArray().map((v) => +v.toFixed(3)) : null;
 });
-check("and then follows the cursor by exactly that far, offset and all",
+check(
+    "and then follows the cursor by exactly that far, offset and all",
   movedTo && Math.abs(movedTo[0] - 13.27) < 0.01 && Math.abs(movedTo[2] - 6.4) < 0.01,
-  `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(movedTo)} (wanted 13.27, 6.4)`);
+    `${JSON.stringify(relGrab.at)} -> ${JSON.stringify(movedTo)} (wanted 13.27, 6.4)`
+);
 await page.evaluate(async (was) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
@@ -9643,7 +10397,6 @@ await page.evaluate(async (was) => {
   ed.state.camera.setTarget(BABYLON.Vector3.FromArray(was.camWas.target));
 }, relGrab);
 
-
 // Ctrl+D on several: copies, originals untouched
 const dupMany = await page.evaluate(async (ids) => {
   const ed = await import("/js/editor.js");
@@ -9651,7 +10404,8 @@ const dupMany = await page.evaluate(async (ids) => {
   ed.select(ids);
   const g = await i.grabSelection({ copy: true });
   const out = {
-    carrying: i.ghostCount(), mode: i.ghostMode(),
+        carrying: i.ghostCount(),
+        mode: i.ghostMode(),
     originalsOn: ids.map((id) => ed.state.placements.get(id).node.isEnabled()),
   };
   const root = ed.state.scene.getTransformNodeByName("GHOST");
@@ -9659,23 +10413,25 @@ const dupMany = await page.evaluate(async (ids) => {
   await i.dropGhost();
   out.after = ed.state.placements.size;
   out.selected = ed.state.selection.length;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 }, carrySet.ids);
-check("Ctrl+D on a multi-selection carries copies, leaving the originals put",
-  dupMany.carrying === 3 && dupMany.mode === "copy"
-    && dupMany.originalsOn.join() === "true,true,true",
-  `${dupMany.carrying} items, mode ${dupMany.mode}, originals ${dupMany.originalsOn}`);
-check("dropping the copies adds them and selects them",
-  dupMany.after === 6 && dupMany.selected === 3,
-  `${dupMany.after} placements, ${dupMany.selected} selected`);
+check(
+    "Ctrl+D on a multi-selection carries copies, leaving the originals put",
+    dupMany.carrying === 3 && dupMany.mode === "copy" && dupMany.originalsOn.join() === "true,true,true",
+    `${dupMany.carrying} items, mode ${dupMany.mode}, originals ${dupMany.originalsOn}`
+);
+check("dropping the copies adds them and selects them", dupMany.after === 6 && dupMany.selected === 3, `${dupMany.after} placements, ${dupMany.selected} selected`);
 
 // ---- 1d-tervicies. the middle button deletes -------------------------------
 const mmb = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(0, 0, 0), { silent: true });
   ed.state.camera.position = new V(0, 8, -0.2);
   ed.state.camera.setTarget(new V(0, 0, 0));
@@ -9693,13 +10449,12 @@ await page.mouse.move(mmbAt.x, mmbAt.y, { steps: 4 });
 await page.waitForTimeout(250);
 await page.mouse.click(mmbAt.x, mmbAt.y, { button: "middle" });
 await page.waitForTimeout(500);
-const mmbAfter = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.placements.size);
-check("the middle button deletes what the cursor is over",
-  mmb.before === 1 && mmbAfter === 0, `${mmb.before} -> ${mmbAfter} placements`);
+const mmbAfter = await page.evaluate(async () => (await import("/js/editor.js")).state.placements.size);
+check("the middle button deletes what the cursor is over", mmb.before === 1 && mmbAfter === 0, `${mmb.before} -> ${mmbAfter} placements`);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 // The ghost rides the build plane, so duplicating something on an upper deck
@@ -9708,7 +10463,9 @@ const dupHigh = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.setGridElevation(0);
   const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 12, 0), { silent: true });
   ed.select([e.id]);
@@ -9723,27 +10480,29 @@ await page.waitForTimeout(900);
 const highGhost = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const n = window.__scene.getTransformNodeByName("GHOST");
-  return { gridY: ed.state.gridY, ghostY: n ? n.position.y : null,
-           hud: document.getElementById("hud-elev").textContent };
+    return { gridY: ed.state.gridY, ghostY: n ? n.position.y : null, hud: document.getElementById("hud-elev").textContent };
 });
-check("duplicating keeps the source's height without moving the build plane",
+check(
+    "duplicating keeps the source's height without moving the build plane",
   // Moving the plane was the old behaviour, and it meant Ctrl+D silently
   // changed where *everything placed afterwards* would land.
-  Math.abs(highGhost.gridY - dupHigh.gridBefore) < 1e-6
-    && Math.abs(highGhost.ghostY - dupHigh.sourceY) < 1e-6,
-  `plane held at ${highGhost.gridY} m, ghost at ${highGhost.ghostY} m`
-  + ` from a source at ${dupHigh.sourceY} m`);
+    Math.abs(highGhost.gridY - dupHigh.gridBefore) < 1e-6 && Math.abs(highGhost.ghostY - dupHigh.sourceY) < 1e-6,
+    `plane held at ${highGhost.gridY} m, ghost at ${highGhost.ghostY} m` + ` from a source at ${dupHigh.sourceY} m`
+);
 
-await page.mouse.down(); await page.mouse.up();
+await page.mouse.down();
+await page.mouse.up();
 await page.waitForTimeout(800);
 const highPlaced = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const list = [...ed.state.placements.values()];
   return list.map((e) => e.node.position.y);
 });
-check("the copy lands at the same elevation as its source",
+check(
+    "the copy lands at the same elevation as its source",
   highPlaced.length === 2 && highPlaced.every((y) => Math.abs(y - dupHigh.sourceY) < 1e-6),
-  `heights [${highPlaced.map((y) => y.toFixed(2))}]`);
+    `heights [${highPlaced.map((y) => y.toFixed(2))}]`
+);
 await page.evaluate(async () => {
   (await import("/js/interact.js")).cancelGhost();
   (await import("/js/palette.js")).setBrush(null);
@@ -9756,7 +10515,8 @@ const dupMulti = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   i.cancelGhost();
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const b = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(8, 0, 0), { silent: true });
   ed.select([a.id, b.id]);
@@ -9764,9 +10524,7 @@ const dupMulti = await page.evaluate(async () => {
   await ed.duplicateSelected();
   return { before, after: ed.state.placements.size, ghost: i.ghostActive() };
 });
-check("several selected still duplicate in place",
-  dupMulti.after === dupMulti.before * 2 && !dupMulti.ghost,
-  `${dupMulti.before} -> ${dupMulti.after}, ghost=${dupMulti.ghost}`);
+check("several selected still duplicate in place", dupMulti.after === dupMulti.before * 2 && !dupMulti.ghost, `${dupMulti.before} -> ${dupMulti.after}, ghost=${dupMulti.ghost}`);
 await page.evaluate(async () => {
   (await import("/js/interact.js")).cancelGhost();
   (await import("/js/palette.js")).setBrush(null);
@@ -9780,7 +10538,9 @@ const qSetup = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.snap.pos = 1;
   ed.state.dragAxis = "xz";
   const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
@@ -9788,8 +10548,7 @@ const qSetup = await page.evaluate(async () => {
   ed.state.camera.position = new V(0, 6, -14);
   ed.state.camera.setTarget(new V(0, 1, 0));
   const bb = ed.worldBounds(e.node);
-  return { id: e.id, centre: bb.min.add(bb.max).scale(0.5).asArray(),
-           start: e.node.position.asArray(), axis: ed.state.dragAxis };
+    return { id: e.id, centre: bb.min.add(bb.max).scale(0.5).asArray(), start: e.node.position.asArray(), axis: ed.state.dragAxis };
 });
 await page.waitForTimeout(600);
 const qPt = await screenOf(qSetup.centre);
@@ -9822,12 +10581,8 @@ const layout = await page.evaluate(async () => {
   ed.releaseAllKeys();
   return out;
 });
-check("V flips the drag plane on either keyboard layout",
-  layout.vOnQwerty === "y" && layout.vOnAzerty === "y",
-  `QWERTY=${layout.vOnQwerty}, AZERTY=${layout.vOnAzerty}`);
-check("Q is unavailable on AZERTY, where it is the strafe-left key",
-  layout.qOnAzerty === "xz",
-  `code KeyA left the axis at ${layout.qOnAzerty}`);
+check("V flips the drag plane on either keyboard layout", layout.vOnQwerty === "y" && layout.vOnAzerty === "y", `QWERTY=${layout.vOnQwerty}, AZERTY=${layout.vOnAzerty}`);
+check("Q is unavailable on AZERTY, where it is the strafe-left key", layout.qOnAzerty === "xz", `code KeyA left the axis at ${layout.qOnAzerty}`);
 
 // that probe drove the camera a little; put it back before aiming the mouse
 await page.evaluate(async () => {
@@ -9846,9 +10601,7 @@ const qOn = await page.evaluate(async () => ({
   options: [...document.getElementById("drag-axis").options].map((o) => o.value),
 }));
 check("V flips the drag plane to up/down", qOn.axis === "y", qOn.axis);
-check("the toolbar combo shows the drag axis, and offers all four",
-  qOn.combo === "y" && qOn.options.join() === "xz,y,x,z",
-  `"${qOn.combo}" of [${qOn.options}]`);
+check("the toolbar combo shows the drag axis, and offers all four", qOn.combo === "y" && qOn.options.join() === "xz,y,x,z", `"${qOn.combo}" of [${qOn.options}]`);
 
 // Every toolbar control says what its shortcut is, or says it has none. The
 // keys are the whole point of the tool - the combos are a readout of modal
@@ -9863,13 +10616,18 @@ const tips = await page.evaluate(() => {
     // a label wrapping a checkbox is one control with the checkbox, not two
     const t = (el.title || el.closest("label")?.title || "").trim();
     const id = el.id || el.textContent.trim().slice(0, 20);
-    if (!t) { missing.push(id); continue; }
+        if (!t) {
+            missing.push(id);
+            continue;
+        }
     // either it names a key, or it says outright that there is none
     if (!/(Ctrl|Shift|Alt|numpad|\b[A-Z]\b|no shortcut)/i.test(t)) bare.push(id);
   }
   const named = (id) => document.getElementById(id)?.title || "";
   return {
-    count: controls.length, missing, bare,
+        count: controls.length,
+        missing,
+        bare,
     move: named("snap-pos"),
     moveLabel: [...bar.querySelectorAll("label")].find((l) => l.textContent.trim() === "Move")?.title || "",
     rotAxis: named("rot-axis"),
@@ -9878,19 +10636,23 @@ const tips = await page.evaluate(() => {
     save: named("btn-save"),
   };
 });
-check("every toolbar control carries a tooltip",
-  tips.missing.length === 0 && tips.count > 20,
-  `${tips.count} controls, missing: [${tips.missing}]`);
-check("every tooltip names its shortcut, or says there is none",
-  tips.bare.length === 0, `no key mentioned on: [${tips.bare}]`);
-check("the Move step tooltip names its keys, which were undiscoverable",
+check("every toolbar control carries a tooltip", tips.missing.length === 0 && tips.count > 20, `${tips.count} controls, missing: [${tips.missing}]`);
+check("every tooltip names its shortcut, or says there is none", tips.bare.length === 0, `no key mentioned on: [${tips.bare}]`);
+check(
+    "the Move step tooltip names its keys, which were undiscoverable",
   /Shift\+V/.test(tips.move) && /Ctrl\+V/.test(tips.move) && /Shift\+V/.test(tips.moveLabel),
-  `"${tips.move}"`);
-check("the axis combos name their cycling keys",
-  /Shift\+wheel/.test(tips.rotAxis) && /\bR\b/.test(tips.rotAxis)
-    && /Ctrl\+wheel/.test(tips.scaleAxis) && /Alt\+F/.test(tips.scaleAxis)
-    && /\bF\b/.test(tips.scaleAxis) && /\bV\b/.test(tips.dragAxis),
-  `rot "${tips.rotAxis}" · scale "${tips.scaleAxis}"`);
+    `"${tips.move}"`
+);
+check(
+    "the axis combos name their cycling keys",
+    /Shift\+wheel/.test(tips.rotAxis) &&
+        /\bR\b/.test(tips.rotAxis) &&
+        /Ctrl\+wheel/.test(tips.scaleAxis) &&
+        /Alt\+F/.test(tips.scaleAxis) &&
+        /\bF\b/.test(tips.scaleAxis) &&
+        /\bV\b/.test(tips.dragAxis),
+    `rot "${tips.rotAxis}" · scale "${tips.scaleAxis}"`
+);
 check("Save still names Ctrl+S", /Ctrl\+S/.test(tips.save), `"${tips.save}"`);
 
 // ---- a press has to look like a press ---------------------------------------
@@ -9923,13 +10685,14 @@ const tapped = await page.evaluate((accent) => {
     toggle: flash("btn-isolate"),
   };
 }, ACCENT);
-check("Save, Load, Export and the rest go orange the instant they are pressed",
+check(
+    "Save, Load, Export and the rest go orange the instant they are pressed",
   tapped.actions.every((r) => r.lit && r.marked),
-  tapped.actions.map((r) => `${r.id} ${r.idle}->${r.during}`).join(", "));
+    tapped.actions.map((r) => `${r.id} ${r.idle}->${r.during}`).join(", ")
+);
 // A toggle latches solid orange and stays there, which says the same thing for
 // longer - flashing a slightly different orange first only muddies it.
-check("a toggle button is left to its own latched state",
-  tapped.toggle.marked === false, `class marked=${tapped.toggle.marked}`);
+check("a toggle button is left to its own latched state", tapped.toggle.marked === false, `class marked=${tapped.toggle.marked}`);
 
 const tapClears = await page.evaluate(() => {
   const real = document.getElementById("btn-focus");
@@ -9946,8 +10709,7 @@ const tapGone = await page.evaluate(() => {
   stunt.remove();
   return still;
 });
-check("and the flash takes itself off again",
-  tapClears && !tapGone, `on at click=${tapClears}, still on later=${tapGone}`);
+check("and the flash takes itself off again", tapClears && !tapGone, `on at click=${tapClears}, still on later=${tapGone}`);
 
 await page.mouse.down();
 await page.mouse.move(qPt.x + 10, qPt.y - 150, { steps: 10 });
@@ -9958,36 +10720,40 @@ const qMoved = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   return ed.state.placements.get(id).node.position.asArray();
 }, qSetup.id);
-check("a drag in Y mode only changes the height",
-  qMoved[1] - qSetup.start[1] > 0.5
-    && Math.abs(qMoved[0] - qSetup.start[0]) < 1e-6
-    && Math.abs(qMoved[2] - qSetup.start[2]) < 1e-6,
-  `[${qSetup.start}] -> [${qMoved.map((v) => v.toFixed(2))}]`);
+check(
+    "a drag in Y mode only changes the height",
+    qMoved[1] - qSetup.start[1] > 0.5 && Math.abs(qMoved[0] - qSetup.start[0]) < 1e-6 && Math.abs(qMoved[2] - qSetup.start[2]) < 1e-6,
+    `[${qSetup.start}] -> [${qMoved.map((v) => v.toFixed(2))}]`
+);
 
 // V cycles rather than toggles now: xz -> y -> x -> z -> xz
 const qCycle = [];
 for (let k = 0; k < 3; k++) {
   await page.keyboard.press("v");
   await page.waitForTimeout(150);
-  qCycle.push(await page.evaluate(async () => ({
+    qCycle.push(
+        await page.evaluate(async () => ({
     axis: (await import("/js/editor.js")).state.dragAxis,
     combo: document.getElementById("drag-axis").value,
-  })));
+        }))
+    );
 }
 const qBack = qCycle[qCycle.length - 1];
-check("V cycles through every drag axis and back to the floor",
-  qCycle.map((s) => s.axis).join() === "x,z,xz"
-    && qCycle.every((s) => s.combo === s.axis),
-  qCycle.map((s) => s.axis).join(" -> "));
-check("V flips back to the floor plane, combo and all",
-  qBack.axis === "xz" && qBack.combo === "xz", `${qBack.axis}, "${qBack.combo}"`);
+check(
+    "V cycles through every drag axis and back to the floor",
+    qCycle.map((s) => s.axis).join() === "x,z,xz" && qCycle.every((s) => s.combo === s.axis),
+    qCycle.map((s) => s.axis).join(" -> ")
+);
+check("V flips back to the floor plane, combo and all", qBack.axis === "xz" && qBack.combo === "xz", `${qBack.axis}, "${qBack.combo}"`);
 
 const heightNow = qMoved[1];
-const qPt2 = await screenOf(await page.evaluate(async (id) => {
+const qPt2 = await screenOf(
+    await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const bb = ed.worldBounds(ed.state.placements.get(id).node);
   return bb.min.add(bb.max).scale(0.5).asArray();
-}, qSetup.id));
+    }, qSetup.id)
+);
 await page.mouse.move(qPt2.x, qPt2.y, { steps: 4 });
 await page.waitForTimeout(250);
 await page.mouse.down();
@@ -9999,17 +10765,18 @@ const qFloor = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   return ed.state.placements.get(id).node.position.asArray();
 }, qSetup.id);
-check("a drag in X/Z mode leaves the height alone",
-  Math.abs(qFloor[1] - heightNow) < 1e-6
-    && Math.hypot(qFloor[0] - qMoved[0], qFloor[2] - qMoved[2]) > 0.5,
-  `height held at ${qFloor[1].toFixed(2)}, moved ` +
-  `${Math.hypot(qFloor[0] - qMoved[0], qFloor[2] - qMoved[2]).toFixed(2)} m across`);
+check(
+    "a drag in X/Z mode leaves the height alone",
+    Math.abs(qFloor[1] - heightNow) < 1e-6 && Math.hypot(qFloor[0] - qMoved[0], qFloor[2] - qMoved[2]) > 0.5,
+    `height held at ${qFloor[1].toFixed(2)}, moved ` + `${Math.hypot(qFloor[0] - qMoved[0], qFloor[2] - qMoved[2]).toFixed(2)} m across`
+);
 
 // ---- single-axis drags: one coordinate moves, the others do not -------------
 // A diagonal drag is the test that matters: it would move on both axes in X/Z
 // mode, so anything left on the locked axis is the constraint failing.
 for (const axis of ["x", "z"]) {
-  const before = await page.evaluate(async ([id, a]) => {
+    const before = await page.evaluate(
+        async ([id, a]) => {
     const ed = await import("/js/editor.js");
     const i = await import("/js/interact.js");
     i.setDragAxis(a);
@@ -10019,7 +10786,9 @@ for (const axis of ["x", "z"]) {
       centre: bb.min.add(bb.max).scale(0.5).asArray(),
       combo: document.getElementById("drag-axis").value,
     };
-  }, [qSetup.id, axis]);
+        },
+        [qSetup.id, axis]
+    );
   const aim = await screenOf(before.centre);
   await page.mouse.move(aim.x, aim.y, { steps: 4 });
   await page.waitForTimeout(200);
@@ -10028,15 +10797,15 @@ for (const axis of ["x", "z"]) {
   await page.waitForTimeout(150);
   await page.mouse.up();
   await page.waitForTimeout(300);
-  const after = await page.evaluate(async (id) =>
-    (await import("/js/editor.js")).state.placements.get(id).node.position.asArray(),
-  qSetup.id);
+    const after = await page.evaluate(async (id) => (await import("/js/editor.js")).state.placements.get(id).node.position.asArray(), qSetup.id);
   const d = [0, 1, 2].map((k) => after[k] - before.pos[k]);
   const moved = axis === "x" ? d[0] : d[2];
   const locked = axis === "x" ? d[2] : d[0];
-  check(`a drag in ${axis.toUpperCase()}-only mode moves on ${axis.toUpperCase()} alone`,
+    check(
+        `a drag in ${axis.toUpperCase()}-only mode moves on ${axis.toUpperCase()} alone`,
     Math.abs(moved) > 0.5 && Math.abs(locked) < 1e-6 && Math.abs(d[1]) < 1e-6,
-    `delta [${d.map((v) => v.toFixed(2))}]`);
+        `delta [${d.map((v) => v.toFixed(2))}]`
+    );
 }
 await page.evaluate(async () => (await import("/js/interact.js")).setDragAxis("xz"));
 
@@ -10062,20 +10831,22 @@ const spSetup = await page.evaluate(async (id) => {
   ed.state.camera.position = new V(0, 16, 0.001);
   ed.state.camera.setTarget(V.Zero());          // straight down: screen +x is world +x
   const bb = ed.worldBounds(e.node);
-  return { centre: bb.min.add(bb.max).scale(0.5).asArray(),
-    space: ed.state.axisSpace, combo: document.getElementById("axis-space").value,
-    options: [...document.getElementById("axis-space").options].map((o) => o.value) };
+    return {
+        centre: bb.min.add(bb.max).scale(0.5).asArray(),
+        space: ed.state.axisSpace,
+        combo: document.getElementById("axis-space").value,
+        options: [...document.getElementById("axis-space").options].map((o) => o.value),
+    };
 }, qSetup.id);
 await page.waitForTimeout(500);
 
-check("the move space starts on the world's axes",
-  spSetup.space === "world" && spSetup.combo === "world"
-    && spSetup.options.join() === "world,local", JSON.stringify(spSetup));
+check("the move space starts on the world's axes", spSetup.space === "world" && spSetup.combo === "world" && spSetup.options.join() === "world,local", JSON.stringify(spSetup));
 
 // One gesture, four combinations: across the screen is world X, up the screen
 // is world Z, and the wall's own X lies along world Z because it is turned.
 async function spDrag(space, dx, dy) {
-  const from = await page.evaluate(async ([id, s]) => {
+    const from = await page.evaluate(
+        async ([id, s]) => {
     const ed = await import("/js/editor.js");
     const i = await import("/js/interact.js");
     const e = ed.state.placements.get(id);
@@ -10083,7 +10854,9 @@ async function spDrag(space, dx, dy) {
     i.setAxisSpace(s);
     const bb = ed.worldBounds(e.node);
     return { pos: e.node.position.asArray(), centre: bb.min.add(bb.max).scale(0.5).asArray() };
-  }, [qSetup.id, space]);
+        },
+        [qSetup.id, space]
+    );
   const at = await screenOf(from.centre);
   await page.mouse.move(at.x, at.y, { steps: 4 });
   await page.waitForTimeout(250);
@@ -10092,8 +10865,7 @@ async function spDrag(space, dx, dy) {
   await page.waitForTimeout(150);
   await page.mouse.up();
   await page.waitForTimeout(250);
-  const to = await page.evaluate(async (id) =>
-    (await import("/js/editor.js")).state.placements.get(id).node.position.asArray(), qSetup.id);
+    const to = await page.evaluate(async (id) => (await import("/js/editor.js")).state.placements.get(id).node.position.asArray(), qSetup.id);
   return to.map((v, k) => +(v - from.pos[k]).toFixed(3));
 }
 
@@ -10102,20 +10874,17 @@ const spWorldUp = await spDrag("world", 0, -150);
 const spLocalAcross = await spDrag("local", 150, 0);
 const spLocalUp = await spDrag("local", 0, -150);
 
-check("world + X only: dragging across the screen slides on world X",
-  Math.abs(spWorldAcross[0]) > 0.5 && Math.abs(spWorldAcross[2]) < 1e-6,
-  `[${spWorldAcross}]`);
-check("world + X only: dragging up the screen moves nothing at all",
-  Math.hypot(...spWorldUp) < 1e-6, `[${spWorldUp}]`);
+check("world + X only: dragging across the screen slides on world X", Math.abs(spWorldAcross[0]) > 0.5 && Math.abs(spWorldAcross[2]) < 1e-6, `[${spWorldAcross}]`);
+check("world + X only: dragging up the screen moves nothing at all", Math.hypot(...spWorldUp) < 1e-6, `[${spWorldUp}]`);
 // The two are exact opposites, which is the whole claim: the axis really turned
 // with the element rather than the constraint simply being dropped.
-check("local + X only on a turned wall: up the screen slides it on world Z",
-  Math.abs(spLocalUp[0]) < 1e-6 && Math.abs(spLocalUp[2]) > 0.5, `[${spLocalUp}]`);
-check("local + X only on a turned wall: across the screen moves nothing",
-  Math.hypot(...spLocalAcross) < 1e-6, `[${spLocalAcross}]`);
-check("and the travel is the same length either way, only turned",
+check("local + X only on a turned wall: up the screen slides it on world Z", Math.abs(spLocalUp[0]) < 1e-6 && Math.abs(spLocalUp[2]) > 0.5, `[${spLocalUp}]`);
+check("local + X only on a turned wall: across the screen moves nothing", Math.hypot(...spLocalAcross) < 1e-6, `[${spLocalAcross}]`);
+check(
+    "and the travel is the same length either way, only turned",
   Math.abs(Math.hypot(...spWorldAcross) - Math.hypot(...spLocalUp)) < 1e-2,
-  `${Math.hypot(...spWorldAcross).toFixed(3)} vs ${Math.hypot(...spLocalUp).toFixed(3)}`);
+    `${Math.hypot(...spWorldAcross).toFixed(3)} vs ${Math.hypot(...spLocalUp).toFixed(3)}`
+);
 
 // An arrow nudge names its own axis, so it ignores the axis combo - but it must
 // still agree with a drag about which way that axis points.
@@ -10125,28 +10894,28 @@ const spNudge = await page.evaluate(async (id) => {
   const V = BABYLON.Vector3;
   const e = ed.state.placements.get(id);
   const run = (space, yawDeg) => {
-    e.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, yawDeg * Math.PI / 180, 0);
+        e.node.rotationQuaternion = BABYLON.Quaternion.FromEulerAngles(0, (yawDeg * Math.PI) / 180, 0);
     e.node.position.set(0, 0, 0);
     i.setAxisSpace(space);
     ed.nudgeSelection(new V(1, 0, 0));
     return e.node.position.asArray().map((v) => +v.toFixed(4));
   };
-  const out = { worldTurned: run("world", 90), localFlat: run("local", 0),
-    localTurned: run("local", 90), localDiagonal: run("local", 45) };
+    const out = { worldTurned: run("world", 90), localFlat: run("local", 0), localTurned: run("local", 90), localDiagonal: run("local", 45) };
   i.setAxisSpace("world");
   return out;
 }, qSetup.id);
-check("an arrow nudge in world space is world X however the wall is turned",
-  spNudge.worldTurned.join() === "1,0,0", `[${spNudge.worldTurned}]`);
-check("in local space on an unturned element it is the same thing",
-  spNudge.localFlat.join() === "1,0,0", `[${spNudge.localFlat}]`);
-check("but on a turned wall it runs along the wall instead",
-  Math.abs(spNudge.localTurned[0]) < 1e-3
-    && Math.abs(Math.abs(spNudge.localTurned[2]) - 1) < 1e-3, `[${spNudge.localTurned}]`);
-check("at 45 degrees it splits the step without changing its length",
-  Math.abs(Math.hypot(...spNudge.localDiagonal) - 1) < 1e-3
-    && Math.abs(spNudge.localDiagonal[0] - Math.abs(spNudge.localDiagonal[2])) < 1e-3,
-  `[${spNudge.localDiagonal}]`);
+check("an arrow nudge in world space is world X however the wall is turned", spNudge.worldTurned.join() === "1,0,0", `[${spNudge.worldTurned}]`);
+check("in local space on an unturned element it is the same thing", spNudge.localFlat.join() === "1,0,0", `[${spNudge.localFlat}]`);
+check(
+    "but on a turned wall it runs along the wall instead",
+    Math.abs(spNudge.localTurned[0]) < 1e-3 && Math.abs(Math.abs(spNudge.localTurned[2]) - 1) < 1e-3,
+    `[${spNudge.localTurned}]`
+);
+check(
+    "at 45 degrees it splits the step without changing its length",
+    Math.abs(Math.hypot(...spNudge.localDiagonal) - 1) < 1e-3 && Math.abs(spNudge.localDiagonal[0] - Math.abs(spNudge.localDiagonal[2])) < 1e-3,
+    `[${spNudge.localDiagonal}]`
+);
 
 // Y is the key, next to V, and the combo has to follow it - a mode you cannot
 // see is a mode you will forget you are in.
@@ -10160,18 +10929,14 @@ const spAfterY = await page.evaluate(async () => ({
 }));
 await page.keyboard.press("y");
 await page.waitForTimeout(150);
-const spBackY = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.axisSpace);
+const spBackY = await page.evaluate(async () => (await import("/js/editor.js")).state.axisSpace);
 // Ctrl+Y is redo and is claimed before the switch: it must not toggle as well.
 await page.keyboard.press("Control+y");
 await page.waitForTimeout(150);
-const spCtrlY = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.axisSpace);
+const spCtrlY = await page.evaluate(async () => (await import("/js/editor.js")).state.axisSpace);
 
-check("Y switches to local space and the combo says so",
-  spAfterY.state === "local" && spAfterY.combo === "local", JSON.stringify(spAfterY));
-check("and it says which key goes back",
-  /\bY\b/.test(spAfterY.status) && /local|own/i.test(spAfterY.status), spAfterY.status);
+check("Y switches to local space and the combo says so", spAfterY.state === "local" && spAfterY.combo === "local", JSON.stringify(spAfterY));
+check("and it says which key goes back", /\bY\b/.test(spAfterY.status) && /local|own/i.test(spAfterY.status), spAfterY.status);
 check("Y again returns to the world's axes", spBackY === "world", spBackY);
 check("Ctrl+Y is still redo and leaves the space alone", spCtrlY === "world", spCtrlY);
 
@@ -10185,8 +10950,7 @@ const spCombo = await page.evaluate(async () => {
   el.dispatchEvent(new Event("change", { bubbles: true }));
   return { local, world: (await import("/js/editor.js")).state.axisSpace };
 });
-check("the combo drives the mode as well as the key",
-  spCombo.local === "local" && spCombo.world === "world", JSON.stringify(spCombo));
+check("the combo drives the mode as well as the key", spCombo.local === "local" && spCombo.world === "world", JSON.stringify(spCombo));
 
 await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
@@ -10194,7 +10958,8 @@ await page.evaluate(async (id) => {
   const e = ed.state.placements.get(id);
   e.node.rotationQuaternion = BABYLON.Quaternion.Identity();
   e.node.position.set(0, 0, 0);
-  i.setAxisSpace("world"); i.setDragAxis("xz");
+    i.setAxisSpace("world");
+    i.setDragAxis("xz");
   ed.state.snap.pos = 1;
   ed.state.camera.position = new BABYLON.Vector3(0, 6, -14);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 1, 0));
@@ -10208,8 +10973,12 @@ await page.waitForTimeout(400);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.setGridElevation(0); ed.state.snap.pos = 1; ed.state.dragAxis = "xz";
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.setGridElevation(0);
+    ed.state.snap.pos = 1;
+    ed.state.dragAxis = "xz";
   // well above the height the plane will be raised to: a build plane level with
   // the camera makes the X/Z ray parallel to it, and nothing can track that
   ed.state.camera.position = new BABYLON.Vector3(0, 26, -20);
@@ -10222,7 +10991,8 @@ const gCv = await page.evaluate(() => {
   const r = window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
 });
-const ghostAt = () => page.evaluate(async () => {
+const ghostAt = () =>
+    page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const n = window.__scene.getTransformNodeByName("GHOST");
   return { y: n?.position.y, x: n?.position.x, grid: ed.state.gridY };
@@ -10246,19 +11016,25 @@ await page.mouse.move(gCv.x + gCv.w * 0.35, gCv.y + gCv.h * 0.55, { steps: 10 })
 await page.waitForTimeout(350);
 const gBack = await ghostAt();
 
-check("V lifts the ghost, and the build plane with it",
+check(
+    "V lifts the ghost, and the build plane with it",
   gUp.y > gFlat.y + 0.5 && Math.abs(gUp.grid - gUp.y) < 1e-6,
-  `ghost ${gFlat.y} -> ${gUp.y} m, build plane ${gFlat.grid} -> ${gUp.grid} m`);
-check("a ghost constrained to Y does not drift sideways",
-  Math.abs(gSide.x - gUp.x) < 1e-6, `x ${gUp.x} -> ${gSide.x}`);
-check("flipping back to X/Z keeps the height the ghost was raised to",
+    `ghost ${gFlat.y} -> ${gUp.y} m, build plane ${gFlat.grid} -> ${gUp.grid} m`
+);
+check("a ghost constrained to Y does not drift sideways", Math.abs(gSide.x - gUp.x) < 1e-6, `x ${gUp.x} -> ${gSide.x}`);
+check(
+    "flipping back to X/Z keeps the height the ghost was raised to",
   Math.abs(gBack.grid - gSide.grid) < 1e-6 && Math.abs(gBack.x - gSide.x) > 0.5,
-  `plane held at ${gBack.grid} m, x ${gSide.x} -> ${gBack.x}`);
+    `plane held at ${gBack.grid} m, x ${gSide.x} -> ${gBack.x}`
+);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.setGridElevation(0); ed.state.dragAxis = "xz";
-  ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.setGridElevation(0);
+    ed.state.dragAxis = "xz";
+    ed.clearAll();
+    ed.select([]);
   (await import("/js/palette.js")).setBrush(null);
 });
 
@@ -10271,31 +11047,42 @@ const tall = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  ed.state.snap.pos = 1; ed.state.dragAxis = "xz";
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    ed.state.snap.pos = 1;
+    ed.state.dragAxis = "xz";
   const e = await ed.placeAt("Modular SciFi MegaKit/Columns/Column_Large3", new V(0, 0, 0), { silent: true });
   ed.select([]);
   const bb = ed.worldBounds(e.node);
-  const cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
+    const cx = (bb.min.x + bb.max.x) / 2,
+        cz = (bb.min.z + bb.max.z) / 2;
   const grabY = bb.min.y + (bb.max.y - bb.min.y) * 0.75;
   ed.state.camera.position = new V(cx, 1.7, cz - 9);     // eye level
   ed.state.camera.setTarget(new V(cx, grabY, cz));       // looking up at the grab
   ed.state.camera.cameraDirection.setAll(0);
-  return { id: e.id, start: e.node.position.asArray(), grab: [cx, grabY, cz],
-           height: +(bb.max.y - bb.min.y).toFixed(1) };
+    return { id: e.id, start: e.node.position.asArray(), grab: [cx, grabY, cz], height: +(bb.max.y - bb.min.y).toFixed(1) };
 });
 await page.waitForTimeout(800);
 const planes = await page.evaluate(async (g) => {
   const ed = await import("/js/editor.js");
-  const s = window.__scene, e = s.getEngine();
-  const v = BABYLON.Vector3.Project(BABYLON.Vector3.FromArray(g), BABYLON.Matrix.Identity(),
-    s.getTransformMatrix(), s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight()));
-  s.pointerX = v.x; s.pointerY = v.y;
+    const s = window.__scene,
+        e = s.getEngine();
+    const v = BABYLON.Vector3.Project(
+        BABYLON.Vector3.FromArray(g),
+        BABYLON.Matrix.Identity(),
+        s.getTransformMatrix(),
+        s.activeCamera.viewport.toGlobal(e.getRenderWidth(), e.getRenderHeight())
+    );
+    s.pointerX = v.x;
+    s.pointerY = v.y;
   return { atBase: !!ed.cursorOnPlane(0), atGrab: !!ed.cursorOnPlane(g[1]) };
 }, tall.grab);
-check("looking up, the plane at the base is unreachable but the grab point is not",
+check(
+    "looking up, the plane at the base is unreachable but the grab point is not",
   planes.atBase === false && planes.atGrab === true,
-  `base=${planes.atBase}, grab=${planes.atGrab}`);
+    `base=${planes.atBase}, grab=${planes.atGrab}`
+);
 
 const tallPt = await screenOf(tall.grab);
 await page.mouse.move(tallPt.x, tallPt.y, { steps: 4 });
@@ -10303,17 +11090,18 @@ await page.waitForTimeout(300);
 await page.mouse.down();
 await page.mouse.move(tallPt.x + 130, tallPt.y + 10, { steps: 10 });
 await page.waitForTimeout(200);
-const tallDragging = await page.evaluate(async () =>
-  (await import("/js/interact.js")).isDragging());
+const tallDragging = await page.evaluate(async () => (await import("/js/interact.js")).isDragging());
 await page.mouse.up();
 await page.waitForTimeout(300);
 const tallMoved = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   return ed.state.placements.get(id).node.position.asArray();
 }, tall.id);
-check("a tall element drags when grabbed near the top from a low camera",
+check(
+    "a tall element drags when grabbed near the top from a low camera",
   tallDragging && Math.abs(tallMoved[0] - tall.start[0]) > 0.5,
-  `${tall.height} m column moved ${(tallMoved[0] - tall.start[0]).toFixed(2)} m`);
+    `${tall.height} m column moved ${(tallMoved[0] - tall.start[0]).toFixed(2)} m`
+);
 
 // Direction matters as much as movement. The plane mapping *inverts* once the
 // plane is above the camera - looking up, higher on screen is nearer - so
@@ -10333,25 +11121,25 @@ async function tallDrag(id, grab, dxPx, dyPx) {
   const mode = await page.evaluate(async () => (await import("/js/interact.js")).dragMode());
   await page.mouse.up();
   await page.waitForTimeout(220);
-  const pos = await page.evaluate(async (i) => (await import("/js/editor.js"))
-    .state.placements.get(i).node.position.asArray(), id);
+    const pos = await page.evaluate(async (i) => (await import("/js/editor.js")).state.placements.get(i).node.position.asArray(), id);
   return { mode, pos };
 }
 // camera sits at -z looking towards +z, so "away" is +z
 const pushed = await tallDrag(tall.id, tall.grab, 0, -120);
 const pulled = await tallDrag(tall.id, tall.grab, 0, 120);
 const sided = await tallDrag(tall.id, tall.grab, 150, 0);
-check("an eye-level grab uses the screen-space mapping",
-  pushed.mode === "screen", `mode=${pushed.mode}`);
-check("mouse away pushes the element away, and back pulls it back",
+check("an eye-level grab uses the screen-space mapping", pushed.mode === "screen", `mode=${pushed.mode}`);
+check(
+    "mouse away pushes the element away, and back pulls it back",
   pushed.pos[2] > 0.5 && pulled.pos[2] < -0.5,
-  `up -> z=${pushed.pos[2].toFixed(2)}, down -> z=${pulled.pos[2].toFixed(2)}`);
-check("mouse right moves the element right",
-  sided.pos[0] > 0.5, `x=${sided.pos[0].toFixed(2)}`);
+    `up -> z=${pushed.pos[2].toFixed(2)}, down -> z=${pulled.pos[2].toFixed(2)}`
+);
+check("mouse right moves the element right", sided.pos[0] > 0.5, `x=${sided.pos[0].toFixed(2)}`);
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 // ---- 1i-quinquies. selection and hover are mutually exclusive ---------------
@@ -10361,7 +11149,9 @@ const exclusive = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const e = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.state.camera.position = new V(0, 10, -10);
   ed.state.camera.setTarget(new V(0, 1, 0));
@@ -10370,32 +11160,36 @@ const exclusive = await page.evaluate(async () => {
 });
 await page.waitForTimeout(700);
 const exclusiveId = exclusive.id;
-const stillPt = await screenOf(await page.evaluate(async (id) => {
+const stillPt = await screenOf(
+    await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const bb = ed.worldBounds(ed.state.placements.get(id).node);
   return bb.min.add(bb.max).scale(0.5).asArray();
-}, exclusiveId));
+    }, exclusiveId)
+);
 await page.mouse.move(stillPt.x, stillPt.y, { steps: 4 });
 await page.waitForTimeout(350);
 const hoveredUnselected = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { hovered: i.hoveredId(), kind: i.currentElement()?.kind };
 });
-check("an unselected element under the cursor is hovered, but not edited",
+check(
+    "an unselected element under the cursor is hovered, but not edited",
   hoveredUnselected.hovered === exclusive.id && hoveredUnselected.kind === undefined,
-  `hovered=${hoveredUnselected.hovered}, current=${hoveredUnselected.kind}`);
+    `hovered=${hoveredUnselected.hovered}, current=${hoveredUnselected.kind}`
+);
 
 const afterSelect = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   ed.select([id]);                       // select the very element under the cursor
-  return { hovered: i.hoveredId(), kind: i.currentElement()?.kind,
-           selection: ed.state.selection.length };
+    return { hovered: i.hoveredId(), kind: i.currentElement()?.kind, selection: ed.state.selection.length };
 }, exclusiveId);
-check("selecting the hovered element drops the hover at once",
-  afterSelect.hovered === null && afterSelect.kind === "selection"
-    && afterSelect.selection === 1,
-  `hovered=${afterSelect.hovered}, current=${afterSelect.kind}`);
+check(
+    "selecting the hovered element drops the hover at once",
+    afterSelect.hovered === null && afterSelect.kind === "selection" && afterSelect.selection === 1,
+    `hovered=${afterSelect.hovered}, current=${afterSelect.kind}`
+);
 
 // and it stays carryDropped when the pointer moves over it again
 await page.mouse.move(stillPt.x + 30, stillPt.y + 20, { steps: 3 });
@@ -10405,9 +11199,7 @@ const reHover = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   return { hovered: i.hoveredId(), kind: i.currentElement()?.kind };
 });
-check("a selected element is never re-hovered",
-  reHover.hovered === null && reHover.kind === "selection",
-  `hovered=${reHover.hovered}, current=${reHover.kind}`);
+check("a selected element is never re-hovered", reHover.hovered === null && reHover.kind === "selection", `hovered=${reHover.hovered}, current=${reHover.kind}`);
 
 // ---- 1i-septies. no hover while driving the camera -------------------------
 // Looking around sweeps the cursor over the whole scene, so hovering would
@@ -10416,7 +11208,9 @@ const rmbHover = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const e = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_3Plates", new V(0, 0, 0), { silent: true });
   ed.select([]);
   ed.state.camera.position = new V(0, 10, -10);
@@ -10427,8 +11221,7 @@ const rmbHover = await page.evaluate(async () => {
 });
 await page.waitForTimeout(700);
 const rmbPt = await screenOf(rmbHover.centre);
-const hoveredNow = async () => page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
+const hoveredNow = async () => page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
 
 await page.mouse.move(rmbPt.x, rmbPt.y, { steps: 4 });
 await page.waitForTimeout(350);
@@ -10443,17 +11236,12 @@ await page.mouse.up({ button: "right" });
 await page.waitForTimeout(350);
 const rmbAfter = await hoveredNow();
 
-check("pressing the right button drops the hover at once",
-  rmbBefore === rmbHover.id && rmbOnPress === null,
-  `${rmbBefore} -> ${rmbOnPress}`);
-check("moving over an element with the right button held does not hover it",
-  rmbHeld === null, `hovered=${rmbHeld}`);
-check("releasing the right button brings the hover back without a mouse move",
-  rmbAfter === rmbHover.id, `hovered=${rmbAfter}`);
+check("pressing the right button drops the hover at once", rmbBefore === rmbHover.id && rmbOnPress === null, `${rmbBefore} -> ${rmbOnPress}`);
+check("moving over an element with the right button held does not hover it", rmbHeld === null, `hovered=${rmbHeld}`);
+check("releasing the right button brings the hover back without a mouse move", rmbAfter === rmbHover.id, `hovered=${rmbAfter}`);
 
 // ---- 1i-octies. cursor hidden while driving, and rectangle select ----------
-const rmbCursor = await page.evaluate(() =>
-  window.__scene.getEngine().getRenderingCanvas().style.cursor);
+const rmbCursor = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().style.cursor);
 await page.mouse.down({ button: "right" });
 await page.waitForTimeout(200);
 const heldPointer = await page.evaluate(() => {
@@ -10469,16 +11257,15 @@ const freePointer = await page.evaluate(() => ({
   cursor: window.__scene.getEngine().getRenderingCanvas().style.cursor,
   locked: document.pointerLockElement !== null,
 }));
-check("the cursor is hidden while the right button is held",
+check(
+    "the cursor is hidden while the right button is held",
   rmbCursor !== "none" && heldPointer.cursor === "none" && freePointer.cursor !== "none",
-  `"${rmbCursor}" -> "${heldPointer.cursor}" -> "${freePointer.cursor}"`);
-check("RMB look locks the pointer until release",
-  heldPointer.locked && !freePointer.locked,
-  `held=${heldPointer.locked}, released=${!freePointer.locked}`);
+    `"${rmbCursor}" -> "${heldPointer.cursor}" -> "${freePointer.cursor}"`
+);
+check("RMB look locks the pointer until release", heldPointer.locked && !freePointer.locked, `held=${heldPointer.locked}, released=${!freePointer.locked}`);
 await page.mouse.click(rmbPt.x, rmbPt.y, { button: "right" });
 await page.waitForTimeout(200);
-check("a quick RMB click cannot leave a late pointer lock behind",
-  await page.evaluate(() => document.pointerLockElement === null));
+check("a quick RMB click cannot leave a late pointer lock behind", await page.evaluate(() => document.pointerLockElement === null));
 
 // ---- 1i-nonies. no context menu anywhere in the editor ---------------------
 // The right button is a camera control, so the menu is never wanted. It is also
@@ -10488,10 +11275,19 @@ check("a quick RMB click cannot leave a late pointer lock behind",
 await page.evaluate(() => {
   window.__menus = [];
   // deferred so the read happens once every other listener has had its say
-  addEventListener("contextmenu", (e) => setTimeout(() => window.__menus.push({
+    addEventListener(
+        "contextmenu",
+        (e) =>
+            setTimeout(
+                () =>
+                    window.__menus.push({
     target: e.target.tagName + (e.target.id ? `#${e.target.id}` : ""),
     prevented: e.defaultPrevented,
-  }), 0), true);
+                    }),
+                0
+            ),
+        true
+    );
 });
 const menuPts = await page.evaluate(() => {
   const box = (sel) => {
@@ -10530,38 +11326,47 @@ for (const at of [menuPts.search, menuPts.toolbar, menuPts.inspector]) {
 }
 
 const menus = await page.evaluate(() => window.__menus);
-check("a right-drag released on the canvas raises no menu",
+check(
+    "a right-drag released on the canvas raises no menu",
   menus.slice(0, canvasMenuCount).every((m) => m.prevented === true),
-  JSON.stringify(menus.slice(0, canvasMenuCount)));
-check("a right-drag driven past the canvas edge raises no menu",
+    JSON.stringify(menus.slice(0, canvasMenuCount))
+);
+check(
+    "a right-drag driven past the canvas edge raises no menu",
   menus.slice(canvasMenuCount, edgeMenuCount).every((m) => m.prevented === true),
-  JSON.stringify(menus.slice(canvasMenuCount, edgeMenuCount)));
-check("no editor area raises a menu, text fields included",
-  menus.length === edgeMenuCount + 3
-    && menus.slice(edgeMenuCount).every((m) => m.prevented === true),
-  JSON.stringify(menus.map((m) => `${m.target}:${m.prevented}`)));
+    JSON.stringify(menus.slice(canvasMenuCount, edgeMenuCount))
+);
+check(
+    "no editor area raises a menu, text fields included",
+    menus.length === edgeMenuCount + 3 && menus.slice(edgeMenuCount).every((m) => m.prevented === true),
+    JSON.stringify(menus.map((m) => `${m.target}:${m.prevented}`))
+);
 
 // the loading overlay is the one place there is no scene to hang a handler off
 const busyMenu = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   window.__menus.length = 0;
   let release;
-  const gate = new Promise((r) => { release = r; });
+    const gate = new Promise((r) => {
+        release = r;
+    });
   const done = ed.whileBusy("loading ship…", () => gate);
   await new Promise((r) => setTimeout(r, 50));
   const overlay = document.getElementById("busy").getBoundingClientRect();
-  document.getElementById("busy").dispatchEvent(new MouseEvent("contextmenu", {
-    bubbles: true, cancelable: true,
-    clientX: overlay.x + overlay.width / 2, clientY: overlay.y + overlay.height / 2,
-  }));
+    document.getElementById("busy").dispatchEvent(
+        new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: overlay.x + overlay.width / 2,
+            clientY: overlay.y + overlay.height / 2,
+        })
+    );
   release();
   await done;
   await new Promise((r) => setTimeout(r, 20));
   return window.__menus;
 });
-check("the loading overlay raises no menu either",
-  busyMenu.length === 1 && busyMenu[0].prevented === true && busyMenu[0].target === "DIV#busy",
-  JSON.stringify(busyMenu));
+check("the loading overlay raises no menu either", busyMenu.length === 1 && busyMenu[0].prevented === true && busyMenu[0].target === "DIV#busy", JSON.stringify(busyMenu));
 await page.evaluate(() => document.querySelector("#palette-search").blur());
 await page.keyboard.press("Escape");
 
@@ -10569,11 +11374,12 @@ const rectIds = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const made = [];
   for (let k = 0; k < 4; k++) {
-    made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-      new V(k * 6, 0, 0), { silent: true })).id);
+        made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(k * 6, 0, 0), { silent: true })).id);
   }
   ed.select([]);
   ed.state.camera.position = new V(9, 16, -16);
@@ -10603,10 +11409,11 @@ const banded = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { sel: [...ed.state.selection], leftover: !!document.querySelector("#viewport .marquee") };
 });
-check("dragging from empty space rubber-bands a selection",
-  banding.marqueeing && banding.visible && banded.sel.length === 2
-    && banded.sel[0] === rectIds[0] && !banded.leftover,
-  `selected [${banded.sel}] of ${rectIds.length}, overlay cleaned up=${!banded.leftover}`);
+check(
+    "dragging from empty space rubber-bands a selection",
+    banding.marqueeing && banding.visible && banded.sel.length === 2 && banded.sel[0] === rectIds[0] && !banded.leftover,
+    `selected [${banded.sel}] of ${rectIds.length}, overlay cleaned up=${!banded.leftover}`
+);
 
 // Ctrl adds to what is already selected
 await page.keyboard.down("Control");
@@ -10616,11 +11423,12 @@ await page.mouse.move(cv.x + cv.w * 0.98, cv.y + cv.h * 0.9, { steps: 12 });
 await page.mouse.up();
 await page.keyboard.up("Control");
 await page.waitForTimeout(350);
-const added = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("Ctrl + rectangle adds to the selection rather than replacing it",
+const added = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check(
+    "Ctrl + rectangle adds to the selection rather than replacing it",
   added.length > banded.sel.length && banded.sel.every((id) => added.includes(id)),
-  `[${banded.sel}] -> [${added}]`);
+    `[${banded.sel}] -> [${added}]`
+);
 
 // with the mode on, a rectangle can start on top of a module
 const modeOn = await page.evaluate(async () => {
@@ -10630,8 +11438,7 @@ const modeOn = await page.evaluate(async () => {
   const b = ed.screenBoundsOf(ed.state.placements.get([...ed.state.placements.keys()][0]).node);
   return { on: ed.state.selectMode, box: b };
 });
-const startOn = { x: cv.x + (modeOn.box.minX + modeOn.box.maxX) / 2,
-                  y: cv.y + (modeOn.box.minY + modeOn.box.maxY) / 2 };
+const startOn = { x: cv.x + (modeOn.box.minX + modeOn.box.maxX) / 2, y: cv.y + (modeOn.box.minY + modeOn.box.maxY) / 2 };
 await page.mouse.move(startOn.x, startOn.y, { steps: 3 });
 await page.mouse.down();
 await page.mouse.move(cv.x + cv.w * 0.55, cv.y + cv.h * 0.9, { steps: 12 });
@@ -10648,11 +11455,11 @@ const modeSel = await page.evaluate(async () => {
   document.getElementById("btn-select-rect").click();
   return { sel: ed.state.selection.length, firstX: moved, off: ed.state.selectMode };
 });
-check("Rect select mode bands instead of moving the module under the cursor",
-  modeOn.on && onModule.marqueeing && !onModule.dragging
-    && modeSel.sel > 0 && Math.abs(modeSel.firstX) < 1e-6,
-  `marqueeing=${onModule.marqueeing}, dragging=${onModule.dragging}, ` +
-  `${modeSel.sel} selected, module still at x=${modeSel.firstX}`);
+check(
+    "Rect select mode bands instead of moving the module under the cursor",
+    modeOn.on && onModule.marqueeing && !onModule.dragging && modeSel.sel > 0 && Math.abs(modeSel.firstX) < 1e-6,
+    `marqueeing=${onModule.marqueeing}, dragging=${onModule.dragging}, ` + `${modeSel.sel} selected, module still at x=${modeSel.firstX}`
+);
 check("the toggle turns back off", modeSel.off === false);
 
 // Esc abandons a rectangle in progress
@@ -10669,9 +11476,7 @@ const escaped = await page.evaluate(async () => {
 });
 await page.mouse.up();
 await page.waitForTimeout(200);
-check("Esc abandons the rectangle and selects nothing",
-  escaped.sel === 0 && !escaped.leftover,
-  `${escaped.sel} selected, overlay left=${escaped.leftover}`);
+check("Esc abandons the rectangle and selects nothing", escaped.sel === 0 && !escaped.leftover, `${escaped.sel} selected, overlay left=${escaped.leftover}`);
 
 // ---- 1i-decies. a rectangle catches markers too ----------------------------
 // The player spawn is an element you select, drag and delete like any other,
@@ -10684,7 +11489,9 @@ const spawnRect = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   mk.addDoor(new V(8, 0, 0), { silent: true });
   ed.state.camera.position = new V(4, 12, -14);
@@ -10698,23 +11505,20 @@ await page.mouse.down();
 await page.mouse.move(cv.x + cv.w - 8, cv.y + cv.h - 8, { steps: 12 });
 await page.mouse.up();
 await page.waitForTimeout(350);
-const caught = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("a rectangle selects markers, not just placements",
-  caught.some((id) => id.startsWith("Door_")) && caught.includes(spawnRect.wall)
-    && caught.length === 2,
-  `[${caught}]`);
+const caught = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("a rectangle selects markers, not just placements", caught.some((id) => id.startsWith("Door_")) && caught.includes(spawnRect.wall) && caught.length === 2, `[${caught}]`);
 
 // ---- 1i-undecies. Shift+H hides the selection, H brings it back ------------
 const hiding = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const made = [];
   for (let k = 0; k < 3; k++) {
-    made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-      new V(k * 6, 0, 0), { silent: true })).id);
+        made.push((await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(k * 6, 0, 0), { silent: true })).id);
   }
   ed.select([made[0], made[1]]);
   return { ids: made };
@@ -10732,9 +11536,7 @@ const bareH = await page.evaluate(async (ids) => {
     sel: ed.state.selection.length,
   };
 }, hiding.ids);
-check("plain H cannot hide anything",
-  bareH.enabled.every(Boolean) && bareH.count === 0 && bareH.sel === 2,
-  `${bareH.count} hidden, ${bareH.sel} still selected`);
+check("plain H cannot hide anything", bareH.enabled.every(Boolean) && bareH.count === 0 && bareH.sel === 2, `${bareH.count} hidden, ${bareH.sel} still selected`);
 
 await page.keyboard.press("Shift+H");
 await page.waitForTimeout(250);
@@ -10747,7 +11549,8 @@ const ghosted = await page.evaluate(async (ids) => {
       veil: kids.filter((m) => ed.isVeilClone(m)),
     };
   };
-  const a = parts(ids[0]), c = parts(ids[2]);
+    const a = parts(ids[0]),
+        c = parts(ids[2]);
   return {
     enabled: ids.map((id) => ed.state.placements.get(id).node.isEnabled()),
     veilCount: ids.map((id) => parts(id).veil.length),
@@ -10760,26 +11563,24 @@ const ghosted = await page.evaluate(async (ids) => {
     // to ALPHABLEND moved every mesh drawn with it into the transparent pass,
     // where nothing writes depth, and half the ship stopped occluding.
     sharedMat: a.real[0]?.sourceMesh?.material?.transparencyMode ?? null,
-    sharedBlends: a.real[0]?.sourceMesh?.material
-      ?.needAlphaBlendingForMesh(c.real[0]) ?? null,
+        sharedBlends: a.real[0]?.sourceMesh?.material?.needAlphaBlendingForMesh(c.real[0]) ?? null,
     otherVeiled: c.veil.length,
   };
 }, hiding.ids);
-check("the first Shift+H ghosts rather than hides",
-  ghosted.enabled.every(Boolean) && ghosted.veilCount.join() === "2,2,0"
-    && ghosted.realOn.join() === "false,false,true",
-  `enabled=${JSON.stringify(ghosted.enabled)}, veils=${ghosted.veilCount}, real=${ghosted.realOn}`);
-check("the stand-in carries the veil alpha",
-  Math.abs(ghosted.alpha - 0.5) < 1e-6, `alpha=${ghosted.alpha}`);
-check("a ghosted element is click-through, so you can reach what is behind it",
-  ghosted.veilPickable === false, `veil pickable=${ghosted.veilPickable}`);
-check("ghosting one instance leaves the shared material alone, so depth still writes",
+check(
+    "the first Shift+H ghosts rather than hides",
+    ghosted.enabled.every(Boolean) && ghosted.veilCount.join() === "2,2,0" && ghosted.realOn.join() === "false,false,true",
+    `enabled=${JSON.stringify(ghosted.enabled)}, veils=${ghosted.veilCount}, real=${ghosted.realOn}`
+);
+check("the stand-in carries the veil alpha", Math.abs(ghosted.alpha - 0.5) < 1e-6, `alpha=${ghosted.alpha}`);
+check("a ghosted element is click-through, so you can reach what is behind it", ghosted.veilPickable === false, `veil pickable=${ghosted.veilPickable}`);
+check(
+    "ghosting one instance leaves the shared material alone, so depth still writes",
   ghosted.sharedMat !== 2 && ghosted.sharedBlends === false && ghosted.otherVeiled === 0,
-  `transparencyMode=${ghosted.sharedMat}, blends=${ghosted.sharedBlends}, other veils=${ghosted.otherVeiled}`);
-check("the selection survives, or the cycle could not be driven",
-  ghosted.sel.length === 2, `[${ghosted.sel}]`);
-check("the status bar says what is at 50%",
-  /2 at 50%/.test(ghosted.counts), ghosted.counts);
+    `transparencyMode=${ghosted.sharedMat}, blends=${ghosted.sharedBlends}, other veils=${ghosted.otherVeiled}`
+);
+check("the selection survives, or the cycle could not be driven", ghosted.sel.length === 2, `[${ghosted.sel}]`);
+check("the status bar says what is at 50%", /2 at 50%/.test(ghosted.counts), ghosted.counts);
 
 await page.keyboard.press("Shift+H");
 await page.waitForTimeout(250);
@@ -10794,14 +11595,13 @@ const hid = await page.evaluate(async (ids) => {
     counts: document.getElementById("status-counts").textContent,
   };
 }, hiding.ids);
-check("the second Shift+H hides outright",
-  hid.enabled[0] === false && hid.enabled[1] === false && hid.enabled[2] === true
-    && hid.count === 2,
-  `enabled=${JSON.stringify(hid.enabled)}, ${hid.count} hidden`);
-check("a hidden element is out of reach of the rectangle",
-  hid.banded.length === 1 && hid.banded[0] === hiding.ids[2], `[${hid.banded}]`);
-check("the hidden count is on the status bar",
-  /2 hidden/.test(hid.counts), hid.counts);
+check(
+    "the second Shift+H hides outright",
+    hid.enabled[0] === false && hid.enabled[1] === false && hid.enabled[2] === true && hid.count === 2,
+    `enabled=${JSON.stringify(hid.enabled)}, ${hid.count} hidden`
+);
+check("a hidden element is out of reach of the rectangle", hid.banded.length === 1 && hid.banded[0] === hiding.ids[2], `[${hid.banded}]`);
+check("the hidden count is on the status bar", /2 hidden/.test(hid.counts), hid.counts);
 
 // the cycle is two-state: H is the only way back to fully opaque
 await page.keyboard.press("Shift+H");
@@ -10810,13 +11610,20 @@ const veilCycled = await page.evaluate(async (ids) => {
   const ed = await import("/js/editor.js");
   return {
     enabled: ids.map((id) => ed.state.placements.get(id).node.isEnabled()),
-    veils: ids.map((id) => ed.state.placements.get(id).node.getChildMeshes()
-      .filter((m) => ed.isVeilClone(m)).length),
+        veils: ids.map(
+            (id) =>
+                ed.state.placements
+                    .get(id)
+                    .node.getChildMeshes()
+                    .filter((m) => ed.isVeilClone(m)).length
+        ),
   };
 }, hiding.ids);
-check("a third Shift+H returns to 50% rather than to fully opaque",
+check(
+    "a third Shift+H returns to 50% rather than to fully opaque",
   veilCycled.enabled.every(Boolean) && veilCycled.veils.join() === "2,2,0",
-  `enabled=${JSON.stringify(veilCycled.enabled)}, veils=${veilCycled.veils}`);
+    `enabled=${JSON.stringify(veilCycled.enabled)}, veils=${veilCycled.veils}`
+);
 
 // back to hidden for the isolation and export checks below
 await page.keyboard.press("Shift+H");
@@ -10835,34 +11642,41 @@ const withIsolate = await page.evaluate(async (ids) => {
   ed.applyVisibility();
   return { isolated, after: ids.map((id) => ed.state.placements.get(id).node.isEnabled()) };
 }, hiding.ids);
-check("isolating a chunk hides the other chunks without revealing what H hid",
-  withIsolate.isolated.join() === "false,false,false"
-    && withIsolate.after.join() === "false,false,true",
-  `isolated=${JSON.stringify(withIsolate.isolated)}, after=${JSON.stringify(withIsolate.after)}`);
+check(
+    "isolating a chunk hides the other chunks without revealing what H hid",
+    withIsolate.isolated.join() === "false,false,false" && withIsolate.after.join() === "false,false,true",
+    `isolated=${JSON.stringify(withIsolate.isolated)}, after=${JSON.stringify(withIsolate.after)}`
+);
 
 // hiding is a viewport aid, not an edit: the ship on disk must be unchanged
 const hiddenExport = await page.evaluate(async (ids) => {
   const ed = await import("/js/editor.js");
   const mf = await import("/js/manifest.js");
   // two hidden and one ghosted, so the export meets both kinds of veil
-  ed.select([ids[2]]); ed.hideSelected(); ed.select([]);
-  const veilsBefore = ed.state.placements.get(ids[2]).node.getChildMeshes()
+    ed.select([ids[2]]);
+    ed.hideSelected();
+    ed.select([]);
+    const veilsBefore = ed.state.placements
+        .get(ids[2])
+        .node.getChildMeshes()
     .filter((m) => ed.isVeilClone(m)).length;
   const realFetch = window.fetch;
   let body = null;
   window.fetch = (url, opts) => {
     if (String(url).includes("/api/export")) {
       body = opts.body;
-      return Promise.resolve(new Response('{"ok":true,"bytes":0}',
-        { status: 200, headers: { "Content-Type": "application/json" } }));
+            return Promise.resolve(new Response('{"ok":true,"bytes":0}', { status: 200, headers: { "Content-Type": "application/json" } }));
     }
     return realFetch(url, opts);
   };
-  try { await mf.exportGlb(); } finally { window.fetch = realFetch; }
+    try {
+        await mf.exportGlb();
+    } finally {
+        window.fetch = realFetch;
+    }
   const buf = await body.arrayBuffer();
   const dv = new DataView(buf);
-  const json = JSON.parse(new TextDecoder()
-    .decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
+    const json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 20, dv.getUint32(12, true))));
   return {
     nodes: (json.nodes || []).map((n) => n.name),
     instances: mf.buildManifest().instances.length,
@@ -10873,20 +11687,23 @@ const hiddenExport = await page.evaluate(async (ids) => {
     meshCount: mf.buildManifest().chunks.reduce((a, c) => a + c.meshCount, 0),
     veilsBefore,
     // suspending the veil for the export must not leave it suspended
-    veilsAfter: ed.state.placements.get(ids[2]).node.getChildMeshes()
+        veilsAfter: ed.state.placements
+            .get(ids[2])
+            .node.getChildMeshes()
       .filter((m) => ed.isVeilClone(m)).length,
   };
 }, hiding.ids);
-check("a hidden element is still exported and still in the manifest",
-  hiddenExport.hidden.every((id) => hiddenExport.nodes.includes(id))
-    && hiddenExport.instances === 3,
-  `${hiddenExport.instances} instances, nodes ${JSON.stringify(hiddenExport.nodes)}`);
-check("the translucent stand-ins reach neither the .glb nor the manifest",
-  hiddenExport.veilsBefore === 2 && hiddenExport.veilNodes.length === 0
-    && hiddenExport.mats.length === 0 && hiddenExport.meshCount === 6,
-  `${hiddenExport.veilsBefore} stand-ins, veil nodes ${JSON.stringify(hiddenExport.veilNodes)}, mats ${JSON.stringify(hiddenExport.mats)}, meshCount ${hiddenExport.meshCount}`);
-check("the veil comes back after the export",
-  hiddenExport.veilsAfter === 2, `${hiddenExport.veilsAfter} stand-ins`);
+check(
+    "a hidden element is still exported and still in the manifest",
+    hiddenExport.hidden.every((id) => hiddenExport.nodes.includes(id)) && hiddenExport.instances === 3,
+    `${hiddenExport.instances} instances, nodes ${JSON.stringify(hiddenExport.nodes)}`
+);
+check(
+    "the translucent stand-ins reach neither the .glb nor the manifest",
+    hiddenExport.veilsBefore === 2 && hiddenExport.veilNodes.length === 0 && hiddenExport.mats.length === 0 && hiddenExport.meshCount === 6,
+    `${hiddenExport.veilsBefore} stand-ins, veil nodes ${JSON.stringify(hiddenExport.veilNodes)}, mats ${JSON.stringify(hiddenExport.mats)}, meshCount ${hiddenExport.meshCount}`
+);
+check("the veil comes back after the export", hiddenExport.veilsAfter === 2, `${hiddenExport.veilsAfter} stand-ins`);
 
 await page.keyboard.press("h");
 await page.waitForTimeout(250);
@@ -10898,9 +11715,11 @@ const unhid = await page.evaluate(async (ids) => {
     counts: document.getElementById("status-counts").textContent,
   };
 }, hiding.ids);
-check("H brings everything back",
+check(
+    "H brings everything back",
   unhid.enabled.every(Boolean) && unhid.count === 0 && !/hidden/.test(unhid.counts),
-  `enabled=${JSON.stringify(unhid.enabled)}, ${unhid.count} hidden`);
+    `enabled=${JSON.stringify(unhid.enabled)}, ${unhid.count} hidden`
+);
 
 // ---- a copy is its own node ------------------------------------------------
 // Behaviours hang off a node NAME, and names are shared on purpose - naming six
@@ -10915,9 +11734,10 @@ const dupBhv = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
-  ed.setBehaviorDef("playAnimation", { });
   const fan = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Fan_Small", new V(0, 2, 0), { silent: true });
   ed.renamePlacement(fan.id, "fanA");
   ed.addEntityBehavior("fanA", "playAnimation");
@@ -10959,31 +11779,29 @@ const dupBhv = await page.evaluate(async () => {
   ed.removePlacement(fan.id);
   const namedSurvives = ed.entityBehaviors("fanA").length;
 
-  ed.clearAll(); ed.select([]);
-  return { name: copy?.name, carried, sourceStill, written, exported, copyId,
-    bare, afterName, joined, backOnId, afterDelete, namedSurvives };
+    ed.clearAll();
+    ed.select([]);
+    return { name: copy?.name, carried, sourceStill, written, exported, copyId, bare, afterName, joined, backOnId, afterDelete, namedSurvives };
 });
-check("a copy is nameless, so the manifest sees two nodes rather than one",
-  dupBhv.name === "" && dupBhv.exported === dupBhv.copyId
-    && !!dupBhv.written.fanA && !!dupBhv.written[dupBhv.copyId],
-  `name=${JSON.stringify(dupBhv.name)}, exported as ${dupBhv.exported}, entities [${Object.keys(dupBhv.written)}]`);
-check("and it brings the source's behaviours, parameters and all",
-  dupBhv.carried.length === 1 && dupBhv.carried[0].name === "playAnimation"
-    && dupBhv.carried[0].animation === "Fan_Idle" && dupBhv.carried[0].loop === false,
-  JSON.stringify(dupBhv.carried));
-check("as a copy, not a second handle on the source's",
-  dupBhv.sourceStill === "Fan_Idle", `source now says ${JSON.stringify(dupBhv.sourceStill)}`);
-check("Ctrl+Shift+D copies the element without them",
-  dupBhv.bare === 0, `${dupBhv.bare} carried`);
-check("naming a copy carries its behaviours onto the name",
-  dupBhv.afterName.byId === 0 && dupBhv.afterName.byName === 1,
-  JSON.stringify(dupBhv.afterName));
-check("but joining a name that already governs others defers to that entry",
-  dupBhv.joined.onFanA === 1 && dupBhv.joined.strays === 0,
-  JSON.stringify(dupBhv.joined));
-check("an id entry dies with its element, where a named one outlives its last",
+check(
+    "a copy is nameless, so the manifest sees two nodes rather than one",
+    dupBhv.name === "" && dupBhv.exported === dupBhv.copyId && !!dupBhv.written.fanA && !!dupBhv.written[dupBhv.copyId],
+    `name=${JSON.stringify(dupBhv.name)}, exported as ${dupBhv.exported}, entities [${Object.keys(dupBhv.written)}]`
+);
+check(
+    "and it brings the source's behaviours, parameters and all",
+    dupBhv.carried.length === 1 && dupBhv.carried[0].name === "playAnimation" && dupBhv.carried[0].animation === "Fan_Idle" && dupBhv.carried[0].loop === false,
+    JSON.stringify(dupBhv.carried)
+);
+check("as a copy, not a second handle on the source's", dupBhv.sourceStill === "Fan_Idle", `source now says ${JSON.stringify(dupBhv.sourceStill)}`);
+check("Ctrl+Shift+D copies the element without them", dupBhv.bare === 0, `${dupBhv.bare} carried`);
+check("naming a copy carries its behaviours onto the name", dupBhv.afterName.byId === 0 && dupBhv.afterName.byName === 1, JSON.stringify(dupBhv.afterName));
+check("but joining a name that already governs others defers to that entry", dupBhv.joined.onFanA === 1 && dupBhv.joined.strays === 0, JSON.stringify(dupBhv.joined));
+check(
+    "an id entry dies with its element, where a named one outlives its last",
   dupBhv.backOnId === 1 && dupBhv.afterDelete === 0 && dupBhv.namedSurvives === 1,
-  `back on id ${dupBhv.backOnId}, after delete ${dupBhv.afterDelete}, named ${dupBhv.namedSurvives}`);
+    `back on id ${dupBhv.backOnId}, after delete ${dupBhv.afterDelete}, named ${dupBhv.namedSurvives}`
+);
 
 // A scale runs along the world's axes when the tools are in world space. It
 // used to be local whatever the setting said, so "grow this along world X" grew
@@ -10993,16 +11811,16 @@ const worldScale = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis,
-                  scale: ed.state.snap.scale, rot: ed.state.rotAxis, step: ed.state.snap.rot };
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis, scale: ed.state.snap.scale, rot: ed.state.rotAxis, step: ed.state.snap.rot };
   ed.state.snap.scale = 0.1;
   ed.state.scaleAxis = "x";
   ed.state.rotAxis = "y";
   ed.state.snap.rot = 90;
 
-  const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new V(0, 0, 0), { silent: true });
+    const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   // a quarter turn about Y puts the wall's own Z along world X
   ed.state.axisSpace = "world";
@@ -11031,25 +11849,31 @@ const worldScale = await page.evaluate(async () => {
   i.scaleCurrent(1);
   const uniform = a.node.scaling.asArray().map((v) => +v.toFixed(3));
 
-  ed.state.axisSpace = saved.space; ed.state.scaleAxis = saved.axis;
-  ed.state.snap.scale = saved.scale; ed.state.rotAxis = saved.rot;
+    ed.state.axisSpace = saved.space;
+    ed.state.scaleAxis = saved.axis;
+    ed.state.snap.scale = saved.scale;
+    ed.state.rotAxis = saved.rot;
   ed.state.snap.rot = saved.step;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return { world, local, offAxis, said, uniform };
 });
-check("a world-space scale grows the element along the world's axis",
+check(
+    "a world-space scale grows the element along the world's axis",
   worldScale.world[0] === 1 && worldScale.world[1] === 1 && worldScale.world[2] === 1.1,
-  `world X on a quarter-turned wall gave ${JSON.stringify(worldScale.world)}`);
-check("a local-space scale still grows it along its own",
+    `world X on a quarter-turned wall gave ${JSON.stringify(worldScale.world)}`
+);
+check(
+    "a local-space scale still grows it along its own",
   worldScale.local[0] === 1.1 && worldScale.local[1] === 1 && worldScale.local[2] === 1,
-  `local X gave ${JSON.stringify(worldScale.local)}`);
-check("an off-axis element declines a world-space scale",
-  JSON.stringify(worldScale.offAxis) === JSON.stringify([1, 1, 1])
-    && /shear/.test(worldScale.said) && /\bY\b/.test(worldScale.said),
-  `${JSON.stringify(worldScale.offAxis)}, said "${worldScale.said}"`);
-check("a uniform scale needs no axis and acts anyway",
-  JSON.stringify(worldScale.uniform) === JSON.stringify([1.1, 1.1, 1.1]),
-  `${JSON.stringify(worldScale.uniform)}`);
+    `local X gave ${JSON.stringify(worldScale.local)}`
+);
+check(
+    "an off-axis element declines a world-space scale",
+    JSON.stringify(worldScale.offAxis) === JSON.stringify([1, 1, 1]) && /shear/.test(worldScale.said) && /\bY\b/.test(worldScale.said),
+    `${JSON.stringify(worldScale.offAxis)}, said "${worldScale.said}"`
+);
+check("a uniform scale needs no axis and acts anyway", JSON.stringify(worldScale.uniform) === JSON.stringify([1.1, 1.1, 1.1]), `${JSON.stringify(worldScale.uniform)}`);
 
 // A flip is a scale by -1, so it asked the same question and gave the same wrong
 // answer: Alt+F mirrored about the element's *own* plane whatever Y said. Unlike
@@ -11059,9 +11883,10 @@ const worldFlip = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis,
-                  rot: ed.state.rotAxis, step: ed.state.snap.rot };
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const saved = { space: ed.state.axisSpace, axis: ed.state.scaleAxis, rot: ed.state.rotAxis, step: ed.state.snap.rot };
   const WALL = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   ed.state.scaleAxis = "x";
   ed.state.rotAxis = "y";
@@ -11071,7 +11896,10 @@ const worldFlip = await page.evaluate(async () => {
     const m = n.computeWorldMatrix(true);
     return [0, 1, 2].map((r) => {
       const v = m.getRow(r);
-      return new V(v.x, v.y, v.z).normalize().asArray().map((c) => +c.toFixed(4));
+            return new V(v.x, v.y, v.z)
+                .normalize()
+                .asArray()
+                .map((c) => +c.toFixed(4));
     });
   };
 
@@ -11086,10 +11914,7 @@ const worldFlip = await page.evaluate(async () => {
   i.flipCurrent();
   const after = rows(a.node);
   // mirrored about the world YZ plane: every direction's X negates, Y and Z hold
-  const mirrored = before.every((row, r) =>
-    Math.abs(after[r][0] + row[0]) < 1e-3
-    && Math.abs(after[r][1] - row[1]) < 1e-3
-    && Math.abs(after[r][2] - row[2]) < 1e-3);
+    const mirrored = before.every((row, r) => Math.abs(after[r][0] + row[0]) < 1e-3 && Math.abs(after[r][1] - row[1]) < 1e-3 && Math.abs(after[r][2] - row[2]) < 1e-3);
 
   // ---- on the grid: the wall's own Z is what lies along world X
   const b = await ed.placeAt(WALL, new V(8, 0, 0), { silent: true });
@@ -11110,24 +11935,27 @@ const worldFlip = await page.evaluate(async () => {
   i.flipCurrent();
   const localScale = c.node.scaling.asArray();
 
-  ed.state.axisSpace = saved.space; ed.state.scaleAxis = saved.axis;
-  ed.state.rotAxis = saved.rot; ed.state.snap.rot = saved.step;
-  ed.clearAll(); ed.select([]);
+    ed.state.axisSpace = saved.space;
+    ed.state.scaleAxis = saved.axis;
+    ed.state.rotAxis = saved.rot;
+    ed.state.snap.rot = saved.step;
+    ed.clearAll();
+    ed.select([]);
   return { parented, mirrored, before, after, gridScale, untouched, localScale };
 });
-check("a placement root is top-level, which the mirror rebuild relies on",
-  worldFlip.parented === false, `parent=${worldFlip.parented}`);
-check("a world-space flip mirrors an off-axis element about the world plane",
-  worldFlip.mirrored,
-  `${JSON.stringify(worldFlip.before)} -> ${JSON.stringify(worldFlip.after)}`);
-check("on the grid it flips the axis that lies along the world's",
+check("a placement root is top-level, which the mirror rebuild relies on", worldFlip.parented === false, `parent=${worldFlip.parented}`);
+check("a world-space flip mirrors an off-axis element about the world plane", worldFlip.mirrored, `${JSON.stringify(worldFlip.before)} -> ${JSON.stringify(worldFlip.after)}`);
+check(
+    "on the grid it flips the axis that lies along the world's",
   JSON.stringify(worldFlip.gridScale) === JSON.stringify([1, 1, -1]),
-  `world X on a quarter-turned wall gave ${JSON.stringify(worldFlip.gridScale)}`);
-check("and leaves an aligned element's rotation untouched to the bit",
-  worldFlip.untouched, `quaternion was rebuilt`);
-check("a local-space flip still mirrors about the element's own plane",
+    `world X on a quarter-turned wall gave ${JSON.stringify(worldFlip.gridScale)}`
+);
+check("and leaves an aligned element's rotation untouched to the bit", worldFlip.untouched, `quaternion was rebuilt`);
+check(
+    "a local-space flip still mirrors about the element's own plane",
   JSON.stringify(worldFlip.localScale) === JSON.stringify([-1, 1, 1]),
-  `local X gave ${JSON.stringify(worldFlip.localScale)}`);
+    `local X gave ${JSON.stringify(worldFlip.localScale)}`
+);
 
 // Doors were excluded from both scale paths: scaleCurrent() filtered markers
 // out, and applyInspector() guarded the scale write with `if (!e.type)`.
@@ -11137,7 +11965,9 @@ const doorScale = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mf = await import("/js/manifest.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const d = mk.addDoor(new V(8, 0, 0), { silent: true });
   ed.select([d.id]);
@@ -11158,25 +11988,23 @@ const doorScale = await page.evaluate(async () => {
   await ed.deserialize(JSON.parse(JSON.stringify(layout)));
   const reloaded = [...ed.state.markers.values()][0]?.node.scaling.asArray();
 
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   ed.state.scaleAxis = "all";
-  return { before, wheeled, authored: [d.width, d.height],
-           exported: [rec.width, rec.height],
-           span: +span.toFixed(3), tall: +tall.toFixed(3), reloaded };
+    return { before, wheeled, authored: [d.width, d.height], exported: [rec.width, rec.height], span: +span.toFixed(3), tall: +tall.toFixed(3), reloaded };
 });
-check("Shift+wheel scales a door",
-  doorScale.before === 1 && doorScale.wheeled === 1.1,
-  `${doorScale.before} -> ${doorScale.wheeled}`);
-check("a scaled door exports its effective width and height",
-  Math.abs(doorScale.exported[0] - doorScale.authored[0] * 2) < 1e-3
-  && Math.abs(doorScale.exported[1] - doorScale.authored[1] * 3) < 1e-3,
-  `authored ${doorScale.authored} x (2,3) -> exported ${doorScale.exported}`);
-check("the exported portal agrees with the exported door size",
-  Math.abs(doorScale.span - doorScale.exported[0]) < 1e-3
-  && Math.abs(doorScale.tall - doorScale.exported[1]) < 1e-3,
-  `portal ${doorScale.span} x ${doorScale.tall} vs door ${doorScale.exported}`);
-check("a door's scale survives a reload",
-  doorScale.reloaded?.join() === "2,3,1", `${doorScale.reloaded}`);
+check("Shift+wheel scales a door", doorScale.before === 1 && doorScale.wheeled === 1.1, `${doorScale.before} -> ${doorScale.wheeled}`);
+check(
+    "a scaled door exports its effective width and height",
+    Math.abs(doorScale.exported[0] - doorScale.authored[0] * 2) < 1e-3 && Math.abs(doorScale.exported[1] - doorScale.authored[1] * 3) < 1e-3,
+    `authored ${doorScale.authored} x (2,3) -> exported ${doorScale.exported}`
+);
+check(
+    "the exported portal agrees with the exported door size",
+    Math.abs(doorScale.span - doorScale.exported[0]) < 1e-3 && Math.abs(doorScale.tall - doorScale.exported[1]) < 1e-3,
+    `portal ${doorScale.span} x ${doorScale.tall} vs door ${doorScale.exported}`
+);
+check("a door's scale survives a reload", doorScale.reloaded?.join() === "2,3,1", `${doorScale.reloaded}`);
 
 // the inspector's scale fields, driven through the real DOM on a door
 const doorInsp = await page.evaluate(async () => {
@@ -11184,30 +12012,32 @@ const doorInsp = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const d = mk.addDoor(new V(8, 0, 0), { silent: true });
   ed.select([d.id]);
-  return { id: d.id, shown: document.getElementById("scl-x").parentElement
-    .getBoundingClientRect().height > 0 };
+    return { id: d.id, shown: document.getElementById("scl-x").parentElement.getBoundingClientRect().height > 0 };
 });
 await page.fill("#scl-x", "2.5");
 await page.waitForTimeout(250);
 const doorInspOut = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const out = [...ed.state.markers.values()][0].node.scaling.asArray();
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("the inspector scale fields work on a door",
-  doorInsp.shown && Math.abs(doorInspOut[0] - 2.5) < 1e-6,
-  `shown=${doorInsp.shown}, scale=${doorInspOut}`);
+check("the inspector scale fields work on a door", doorInsp.shown && Math.abs(doorInspOut[0] - 2.5) < 1e-6, `shown=${doorInsp.shown}, scale=${doorInspOut}`);
 
 // the Ghost slider drives the veil live, on stand-ins that already exist
 const veilSlider = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const a = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([a.id]);
   ed.hideSelected();                       // ghost, with the slider at its default
@@ -11226,85 +12056,102 @@ const veilSliderOut = await page.evaluate(async (id) => {
     counts: document.getElementById("status-counts").textContent,
     stored: localStorage.getItem("veilAlpha"),
   };
-  ed.unhideAll(); ed.clearAll(); ed.select([]);
+    ed.unhideAll();
+    ed.clearAll();
+    ed.select([]);
   ed.setVeilAlpha(0.5);
   document.getElementById("veil-alpha").value = "0.5";
   document.getElementById("veil-alpha-val").textContent = "50%";
   localStorage.setItem("veilAlpha", "0.5");
   return out;
 }, veilSlider.id);
-check("the Ghost slider repaints stand-ins that are already on screen",
+check(
+    "the Ghost slider repaints stand-ins that are already on screen",
   Math.abs(veilSlider.before - 0.5) < 1e-6 && Math.abs(veilSliderOut.after - 0.2) < 1e-6,
-  `${veilSlider.before} -> ${veilSliderOut.after}`);
-check("the slider readout, the status bar and localStorage all follow",
-  veilSliderOut.readout === "20%" && /1 at 20%/.test(veilSliderOut.counts)
-    && veilSliderOut.stored === "0.2",
-  `readout "${veilSliderOut.readout}", stored ${veilSliderOut.stored}, counts "${veilSliderOut.counts}"`);
+    `${veilSlider.before} -> ${veilSliderOut.after}`
+);
+check(
+    "the slider readout, the status bar and localStorage all follow",
+    veilSliderOut.readout === "20%" && /1 at 20%/.test(veilSliderOut.counts) && veilSliderOut.stored === "0.2",
+    `readout "${veilSliderOut.readout}", stored ${veilSliderOut.stored}, counts "${veilSliderOut.counts}"`
+);
 
 // ids restart at P0001 after a clear, so a leftover entry would hide a new one
 const afterClear = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const one = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
   ed.select([one]);
   ed.hideSelected();
   ed.clearAll();
   const fresh = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const out = { one, fresh: fresh.id, enabled: fresh.node.isEnabled(), count: ed.hiddenCount() };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("clearing forgets what was hidden, so recycled ids stay visible",
+check(
+    "clearing forgets what was hidden, so recycled ids stay visible",
   afterClear.fresh === afterClear.one && afterClear.enabled && afterClear.count === 0,
-  `${afterClear.one} reused as ${afterClear.fresh}, visible=${afterClear.enabled}`);
+    `${afterClear.one} reused as ${afterClear.fresh}, visible=${afterClear.enabled}`
+);
 
 // Undo used to unhide as a side effect (restoreFrom clears the set) with no way
 // back, because `hidden` was not in the snapshot. Both directions now work.
 const hideUndo = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const a = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
   const b = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true })).id;
   const on = () => [a, b].map((id) => ed.state.placements.get(id).node.isEnabled());
   ed.select([a]);
-  ed.hideSelected(); ed.hideSelected();       // ghost, then hidden
+    ed.hideSelected();
+    ed.hideSelected(); // ghost, then hidden
   const hidden = on();
   await ed.undo();
   const undone = on();
   await ed.redo();
   const redone = on();
   // the ghost level has to survive the round trip too, not just "hidden"
-  await ed.undo(); await ed.undo();
-  ed.select([a]); ed.hideSelected();          // ghost
+    await ed.undo();
+    await ed.undo();
+    ed.select([a]);
+    ed.hideSelected(); // ghost
   const ghostLevel = ed.state.hidden.get(a);
   await ed.undo();
   const afterGhostUndo = ed.state.hidden.get(a);
   await ed.redo();
   const afterGhostRedo = ed.state.hidden.get(a);
-  const out = { hidden, undone, redone, count: ed.hiddenCount(),
-                ghostLevel, afterGhostUndo, afterGhostRedo };
-  ed.clearAll(); ed.select([]);
+    const out = { hidden, undone, redone, count: ed.hiddenCount(), ghostLevel, afterGhostUndo, afterGhostRedo };
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("undo takes back a hide and redo puts it back",
-  hideUndo.hidden.join() === "false,true" && hideUndo.undone.join() === "true,true"
-  && hideUndo.redone.join() === "false,true",
-  `hidden=${hideUndo.hidden} undo=${hideUndo.undone} redo=${hideUndo.redone}`);
-check("the ghost level survives undo and redo, not just the hidden one",
-  hideUndo.ghostLevel === "ghost" && hideUndo.afterGhostUndo === undefined
-  && hideUndo.afterGhostRedo === "ghost",
-  `${hideUndo.ghostLevel} -> undo ${hideUndo.afterGhostUndo} -> redo ${hideUndo.afterGhostRedo}`);
+check(
+    "undo takes back a hide and redo puts it back",
+    hideUndo.hidden.join() === "false,true" && hideUndo.undone.join() === "true,true" && hideUndo.redone.join() === "false,true",
+    `hidden=${hideUndo.hidden} undo=${hideUndo.undone} redo=${hideUndo.redone}`
+);
+check(
+    "the ghost level survives undo and redo, not just the hidden one",
+    hideUndo.ghostLevel === "ghost" && hideUndo.afterGhostUndo === undefined && hideUndo.afterGhostRedo === "ghost",
+    `${hideUndo.ghostLevel} -> undo ${hideUndo.afterGhostUndo} -> redo ${hideUndo.afterGhostRedo}`
+);
 
 // The old bug the other way round: undoing anything at all revealed the lot.
 const hideKept = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const a = (await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true })).id;
   ed.select([a]);
-  ed.hideSelected(); ed.hideSelected();       // ghost, then hidden
+    ed.hideSelected();
+    ed.hideSelected(); // ghost, then hidden
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0));   // not silent: pushes undo
   await ed.undo();                             // takes back the placement, not the hide
   const out = {
@@ -11312,12 +12159,15 @@ const hideKept = await page.evaluate(async () => {
     count: ed.hiddenCount(),
     placements: ed.state.placements.size,
   };
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("an unrelated undo leaves hidden elements hidden",
+check(
+    "an unrelated undo leaves hidden elements hidden",
   hideKept.enabled === false && hideKept.count === 1 && hideKept.placements === 1,
-  `enabled=${hideKept.enabled}, ${hideKept.count} hidden, ${hideKept.placements} placements`);
+    `enabled=${hideKept.enabled}, ${hideKept.count} hidden, ${hideKept.placements} placements`
+);
 
 // The cap used to be 80 entries; it is now a memory budget with a count rail,
 // so both ends need checking - and a snapshot too big for the budget on its own
@@ -11325,7 +12175,8 @@ check("an unrelated undo leaves hidden elements hidden",
 const histCap = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   const limits = ed.historyLimits();
   await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const one = JSON.stringify(ed.serialize()).length;
@@ -11346,39 +12197,47 @@ const histCap = await page.evaluate(async () => {
   const huge = ["y".repeat(limits.chars * 3)];            // one, over budget
   ed.trimHistory(huge);
 
-  const out = { limits, one, before, past80, capped,
-                byBytes: byBytes.length, huge: huge.length };
-  ed.clearAll(); ed.select([]);
+    const out = { limits, one, before, past80, capped, byBytes: byBytes.length, huge: huge.length };
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("history goes far deeper than the old 80 entries",
-  histCap.past80 === Math.min(histCap.before + 200, histCap.limits.entries)
-  && histCap.past80 > 80 && histCap.capped === histCap.limits.entries,
-  `${histCap.before} + 200 -> ${histCap.past80} deep, then capped at ${histCap.capped}`);
-check("the budget is generous for a ship this size",
+check(
+    "history goes far deeper than the old 80 entries",
+    histCap.past80 === Math.min(histCap.before + 200, histCap.limits.entries) && histCap.past80 > 80 && histCap.capped === histCap.limits.entries,
+    `${histCap.before} + 200 -> ${histCap.past80} deep, then capped at ${histCap.capped}`
+);
+check(
+    "the budget is generous for a ship this size",
   histCap.one * histCap.limits.entries < histCap.limits.chars,
-  `${histCap.one} chars x ${histCap.limits.entries} < ${histCap.limits.chars} budget`);
-check("a fat stack is trimmed by memory, not by count",
-  histCap.byBytes === 4, `6 quarter-budget entries -> ${histCap.byBytes} kept`);
-check("a single snapshot over the whole budget is still kept",
-  histCap.huge === 1, `${histCap.huge} kept`);
+    `${histCap.one} chars x ${histCap.limits.entries} < ${histCap.limits.chars} budget`
+);
+check("a fat stack is trimmed by memory, not by count", histCap.byBytes === 4, `6 quarter-budget entries -> ${histCap.byBytes} kept`);
+check("a single snapshot over the whole budget is still kept", histCap.huge === 1, `${histCap.huge} kept`);
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.select([]); ed.clearAll();
+    ed.select([]);
+    ed.clearAll();
 });
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.select([]); ed.clearAll(); ed.state.dragAxis = "xz";
+    ed.select([]);
+    ed.clearAll();
+    ed.state.dragAxis = "xz";
 });
-check("the camera input claims the right button only", await page.evaluate(async () => {
+check(
+    "the camera input claims the right button only",
+    await page.evaluate(async () => {
   const b = (await import("/js/editor.js")).state.camera.inputs.attached.mouse?.buttons || [];
   return b.length === 1 && b[0] === 2;
-}));
+    })
+);
 
 // ---- a door marker drops through whatever is in the way ---------------------
 // A doorway is a wall module with a hole in it, so the ray hits that wall
@@ -11391,9 +12250,10 @@ const doorDropSetup = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new V(0, 0, 0), { silent: true });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const wall = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([]);
   // above and in front, so a ray through the wall carries on down to the grid
   ed.state.camera.position = new V(0, 6, -8);
@@ -11429,11 +12289,8 @@ const wallAim = await page.evaluate(async (ids) => {
 
 await page.mouse.move(wallAim.x, wallAim.y, { steps: 5 });
 await page.waitForTimeout(250);
-const overWall = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
-check("the spot a door is wanted at is squarely on a wall",
-  wallAim.found && overWall === doorDropSetup.wall,
-  `found=${wallAim.found}, hovered=${overWall}`);
+const overWall = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
+check("the spot a door is wanted at is squarely on a wall", wallAim.found && overWall === doorDropSetup.wall, `found=${wallAim.found}, hovered=${overWall}`);
 
 await page.click("#btn-door");
 await page.mouse.move(wallAim.x + 5, wallAim.y + 5, { steps: 3 });
@@ -11443,9 +12300,7 @@ const armedHover = await page.evaluate(async () => ({
   hovered: (await import("/js/interact.js")).hoveredId(),
   armed: (await import("/js/editor.js")).state.markerBrush,
 }));
-check("arming the marker stops the hover promising a selection it will not make",
-  armedHover.armed === "door" && armedHover.hovered === null,
-  JSON.stringify(armedHover));
+check("arming the marker stops the hover promising a selection it will not make", armedHover.armed === "door" && armedHover.hovered === null, JSON.stringify(armedHover));
 
 await page.mouse.click(wallAim.x, wallAim.y);
 await page.waitForTimeout(450);
@@ -11463,13 +12318,16 @@ const doorDropped = await page.evaluate(async (ids) => {
     wallStands: ed.state.placements.has(ids.wall),
   };
 }, doorDropSetup);
-check("clicking on the wall drops the marker instead of selecting the wall",
-  doorDropped.doors === doorDropSetup.doors + 1 && doorDropped.onDoor
-    && doorDropped.wallStands,
-  JSON.stringify(doorDropped));
-check("and it lands on the build plane, not on the wall it was clicked through",
+check(
+    "clicking on the wall drops the marker instead of selecting the wall",
+    doorDropped.doors === doorDropSetup.doors + 1 && doorDropped.onDoor && doorDropped.wallStands,
+    JSON.stringify(doorDropped)
+);
+check(
+    "and it lands on the build plane, not on the wall it was clicked through",
   Math.abs(doorDropped.y - doorDropped.gridY) < 1e-3 && doorDropped.armed === null,
-  `y=${doorDropped.y}, gridY=${doorDropped.gridY}, armed=${doorDropped.armed}`);
+    `y=${doorDropped.y}, gridY=${doorDropped.gridY}, armed=${doorDropped.armed}`
+);
 
 // ---- 1i-duodecies. reaching the panel behind a portal ----------------------
 // A portal is a flat quad sitting exactly where the door panels are, and it
@@ -11481,7 +12339,9 @@ const portalSetup = await page.evaluate(async () => {
   const i = await import("/js/interact.js");
   const mk = await import("/js/markers.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const pane = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([pane.id]);
   const door = mk.doorFromSelection();
@@ -11502,10 +12362,8 @@ const doorAim = await page.evaluate(async (ids) => {
 
 await page.mouse.move(doorAim.x, doorAim.y, { steps: 5 });
 await page.waitForTimeout(200);
-const plainHover = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
-check("the portal is what you point at", plainHover === portalSetup.door,
-  `hovered=${plainHover}`);
+const plainHover = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
+check("the portal is what you point at", plainHover === portalSetup.door, `hovered=${plainHover}`);
 
 // Shift is no longer special: it adds, like Ctrl. (mouse.click has no
 // `modifiers` option - that is page.click - so the key is held explicitly, and
@@ -11516,30 +12374,23 @@ await page.keyboard.down("Shift");
 await page.mouse.click(doorAim.x, doorAim.y);
 await page.keyboard.up("Shift");
 await page.waitForTimeout(450);
-const shiftClick = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("Shift+click adds rather than seeing through",
-  shiftClick.length === 2 && shiftClick.includes(portalSetup.door)
-    && shiftClick.includes(portalSetup.pane), `[${shiftClick}]`);
+const shiftClick = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("Shift+click adds rather than seeing through", shiftClick.length === 2 && shiftClick.includes(portalSetup.door) && shiftClick.includes(portalSetup.pane), `[${shiftClick}]`);
 
 await page.keyboard.down("Shift");
 await page.mouse.click(doorAim.x, doorAim.y);
 await page.keyboard.up("Shift");
 await page.waitForTimeout(450);
-const shiftAgain = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("Shift+click toggles back off, the same as Ctrl",
-  shiftAgain.length === 1 && shiftAgain[0] === portalSetup.pane, `[${shiftAgain}]`);
+const shiftAgain = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("Shift+click toggles back off, the same as Ctrl", shiftAgain.length === 1 && shiftAgain[0] === portalSetup.pane, `[${shiftAgain}]`);
 
 await page.evaluate(async (ids) => (await import("/js/editor.js")).select([ids.door]), portalSetup);
 await page.keyboard.down("Control");
 await page.mouse.click(doorAim.x, doorAim.y);
 await page.keyboard.up("Control");
 await page.waitForTimeout(450);
-const ctrlToggled = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("Ctrl+click still toggles the selection", ctrlToggled.length === 0,
-  `[${ctrlToggled}]`);
+const ctrlToggled = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("Ctrl+click still toggles the selection", ctrlToggled.length === 0, `[${ctrlToggled}]`);
 
 // the replacement: ghost the door and the pick falls through to the panel
 const ghostAim = await page.evaluate(async (ids) => {
@@ -11556,17 +12407,13 @@ const ghostAim = await page.evaluate(async (ids) => {
 await page.mouse.move(ghostAim.x + 4, ghostAim.y + 4, { steps: 3 });
 await page.mouse.move(ghostAim.x, ghostAim.y, { steps: 3 });
 await page.waitForTimeout(300);
-const throughGhost = await page.evaluate(async () =>
-  (await import("/js/interact.js")).hoveredId());
-check("Shift+H on the door lets the pick reach the panel behind it",
-  throughGhost === portalSetup.pane, `hovered=${throughGhost}`);
+const throughGhost = await page.evaluate(async () => (await import("/js/interact.js")).hoveredId());
+check("Shift+H on the door lets the pick reach the panel behind it", throughGhost === portalSetup.pane, `hovered=${throughGhost}`);
 
 await page.mouse.click(ghostAim.x, ghostAim.y);
 await page.waitForTimeout(300);
-const ghostClick = await page.evaluate(async () =>
-  [...(await import("/js/editor.js")).state.selection]);
-check("and a click lands on the panel, not the portal",
-  ghostClick.length === 1 && ghostClick[0] === portalSetup.pane, `[${ghostClick}]`);
+const ghostClick = await page.evaluate(async () => [...(await import("/js/editor.js")).state.selection]);
+check("and a click lands on the panel, not the portal", ghostClick.length === 1 && ghostClick[0] === portalSetup.pane, `[${ghostClick}]`);
 
 // a rectangle catches the door again - there is no portal exception left
 const band = await page.evaluate(async () => {
@@ -11576,11 +12423,8 @@ const band = await page.evaluate(async () => {
   const all = ed.elementsInRect(wide);
   return { all, arity: ed.elementsInRect.length };
 });
-check("a rectangle catches doors like anything else",
-  band.all.includes(portalSetup.door) && band.all.includes(portalSetup.pane),
-  `[${band.all}]`);
-check("elementsInRect no longer takes an options argument", band.arity === 1,
-  `arity=${band.arity}`);
+check("a rectangle catches doors like anything else", band.all.includes(portalSetup.door) && band.all.includes(portalSetup.pane), `[${band.all}]`);
+check("elementsInRect no longer takes an options argument", band.arity === 1, `arity=${band.arity}`);
 
 // A rectangle is tested against each element's *outline*, not the rectangle
 // its outline sits in. A screen box round a slab lying diagonally across the
@@ -11591,19 +12435,17 @@ const marquee = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const co = await import("/js/colliders.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   await new Promise((r) => setTimeout(r, 300));
 
   // three long boxes, turned, laid out like the boxes of a corner hull: this
   // is the shape the old test was worst on, because a turned slab's screen box
   // is mostly empty air
   const made = [
-    co.addCollider("box", new V(0, 1, 0),
-      { rotation: [0, 35, 0], scale: [4, 2, 0.4], silent: true }),
-    co.addCollider("box", new V(2.6, 1, 1.8),
-      { rotation: [0, -55, 0], scale: [4, 2, 0.4], silent: true }),
-    co.addCollider("box", new V(-2.2, 1, 2.2),
-      { rotation: [0, 20, 0], scale: [3, 2, 0.4], silent: true }),
+        co.addCollider("box", new V(0, 1, 0), { rotation: [0, 35, 0], scale: [4, 2, 0.4], silent: true }),
+        co.addCollider("box", new V(2.6, 1, 1.8), { rotation: [0, -55, 0], scale: [4, 2, 0.4], silent: true }),
+        co.addCollider("box", new V(-2.2, 1, 2.2), { rotation: [0, 20, 0], scale: [3, 2, 0.4], silent: true }),
   ];
   ed.state.camera.position = new V(5, 6, -7);
   ed.state.camera.setTarget(new V(0, 1, 0.7));
@@ -11615,10 +12457,11 @@ const marquee = await page.evaluate(async () => {
   // a patch of canvas with nothing drawn on it
   const eng = ed.state.engine;
   ed.state.scene.render();
-  const w = eng.getRenderWidth(), h = eng.getRenderHeight();
+    const w = eng.getRenderWidth(),
+        h = eng.getRenderHeight();
   const buf = await eng.readPixels(0, 0, w, h);
   const green = (x, yTop) => {
-    const i = (((h - 1 - yTop) * w) + x) * 4;
+        const i = ((h - 1 - yTop) * w + x) * 4;
     return buf[i + 1] > 70 && buf[i + 1] > buf[i] + 25;
   };
   let clear = null;
@@ -11636,43 +12479,48 @@ const marquee = await page.evaluate(async () => {
   const areaOf = (poly) => {
     let a = 0;
     for (let i = 0; i < poly.length; i++) {
-      const p = poly[i], q = poly[(i + 1) % poly.length];
+            const p = poly[i],
+                q = poly[(i + 1) % poly.length];
       a += p[0] * q[1] - q[0] * p[1];
     }
     return Math.abs(a) / 2;
   };
-  let hullArea = 0, boxArea = 0;
+    let hullArea = 0,
+        boxArea = 0;
   for (const s of made) {
-    const hull = ed.screenHullOf(s.node), b = ed.screenBoundsOf(s.node);
+        const hull = ed.screenHullOf(s.node),
+            b = ed.screenBoundsOf(s.node);
     if (!hull || !b || hull.length < 3) continue;
     hullArea += areaOf(hull);
     boxArea += (b.maxX - b.minX) * (b.maxY - b.minY);
   }
 
-  const out = { total, clear,
-    inAir: clear ? ed.elementsInRect(
-      { x0: clear.x, y0: clear.y, x1: clear.x + 80, y1: clear.y + 70 }).length : null,
+    const out = {
+        total,
+        clear,
+        inAir: clear ? ed.elementsInRect({ x0: clear.x, y0: clear.y, x1: clear.x + 80, y1: clear.y + 70 }).length : null,
     everything: ed.elementsInRect({ x0: -1e5, y0: -1e5, x1: 1e5, y1: 1e5 }).length,
-    tightness: boxArea ? +(hullArea / boxArea).toFixed(3) : null };
+        tightness: boxArea ? +(hullArea / boxArea).toFixed(3) : null,
+    };
   for (const s of made) co.removeCollider(s.id, true);
   return out;
 });
-check("a rectangle drawn in clear air selects nothing",
-  marquee.inAir === 0,
-  `caught ${marquee.inAir} of ${marquee.total}, rect at ${JSON.stringify(marquee.clear)}`);
-check("a rectangle over everything still catches everything",
-  marquee.everything === marquee.total,
-  `caught ${marquee.everything} of ${marquee.total}`);
-check("the outline is far tighter than the screen box it replaces",
+check("a rectangle drawn in clear air selects nothing", marquee.inAir === 0, `caught ${marquee.inAir} of ${marquee.total}, rect at ${JSON.stringify(marquee.clear)}`);
+check("a rectangle over everything still catches everything", marquee.everything === marquee.total, `caught ${marquee.everything} of ${marquee.total}`);
+check(
+    "the outline is far tighter than the screen box it replaces",
   marquee.tightness !== null && marquee.tightness < 0.75,
-  `${(100 * marquee.tightness).toFixed(0)}% of the old area`);
+    `${(100 * marquee.tightness).toFixed(0)}% of the old area`
+);
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 // ---- 1j. only a quick click selects -----------------------------------------
@@ -11682,7 +12530,9 @@ await page.evaluate(async () => {
 const quick = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const id = await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new BABYLON.Vector3(0, 0, 0));
   ed.state.camera.position = new BABYLON.Vector3(0, 6, -0.2);
   ed.state.camera.setTarget(new BABYLON.Vector3(0, 0, 0));
@@ -11696,23 +12546,18 @@ async function pressAndHold(holdMs) {
   await page.waitForTimeout(120);
   await page.mouse.down();
   await page.waitForTimeout(holdMs);
-  const during = await page.evaluate(async () =>
-    (await import("/js/editor.js")).state.selection.length);
+    const during = await page.evaluate(async () => (await import("/js/editor.js")).state.selection.length);
   await page.mouse.up();
   await page.waitForTimeout(200);
-  const after = await page.evaluate(async () =>
-    (await import("/js/editor.js")).state.selection.length);
+    const after = await page.evaluate(async () => (await import("/js/editor.js")).state.selection.length);
   return { during, after };
 }
 
 const tap = await pressAndHold(80);
-check("a quick click still selects", tap.after === 1,
-  `during press=${tap.during}, after release=${tap.after}`);
+check("a quick click still selects", tap.after === 1, `during press=${tap.during}, after release=${tap.after}`);
 
 const hold = await pressAndHold(quick.clickMs + 350);
-check("a long press selects nothing",
-  hold.during === 0 && hold.after === 0,
-  `during press=${hold.during}, after release=${hold.after} (CLICK_MS=${quick.clickMs})`);
+check("a long press selects nothing", hold.during === 0 && hold.after === 0, `during press=${hold.during}, after release=${hold.after} (CLICK_MS=${quick.clickMs})`);
 
 // a real drag must still select what it moves, however long it takes to start
 await page.evaluate(async () => (await import("/js/editor.js")).select([]));
@@ -11728,9 +12573,7 @@ const slowDrag = await page.evaluate(async () => {
 });
 await page.mouse.up();
 await page.waitForTimeout(200);
-check("a slow-starting drag still selects and moves what it drags",
-  slowDrag.dragging && slowDrag.sel === 1,
-  `dragging=${slowDrag.dragging}, selection=${slowDrag.sel}`);
+check("a slow-starting drag still selects and moves what it drags", slowDrag.dragging && slowDrag.sel === 1, `dragging=${slowDrag.dragging}, selection=${slowDrag.sel}`);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 // ---- 1k. the Chunk button isolates -------------------------------------------
@@ -11739,7 +12582,9 @@ await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 const isolate = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   ed.addChunk("CH_ISO_A");
   ed.addChunk("CH_ISO_B");
@@ -11750,8 +12595,11 @@ const isolate = await page.evaluate(async () => {
   ed.state.activeChunk = "CH_ISO_A";
   document.getElementById("chunk-select").value = "CH_ISO_A";
 
-  const shown = () => [...ed.state.placements.values()]
-    .filter((e) => e.node.isEnabled()).map((e) => e.chunk).sort();
+    const shown = () =>
+        [...ed.state.placements.values()]
+            .filter((e) => e.node.isEnabled())
+            .map((e) => e.chunk)
+            .sort();
   return { total: ed.state.placements.size, before: shown() };
 });
 const btnBefore = await page.getAttribute("#btn-isolate", "aria-pressed");
@@ -11765,43 +12613,49 @@ const isoOn = await page.evaluate(async () => {
   return {
     isolate: ed.state.isolate,
     pressed: btn.getAttribute("aria-pressed"),
-    shown: [...ed.state.placements.values()].filter((e) => e.node.isEnabled())
-      .map((e) => e.chunk).sort(),
-    bold: cs.fontWeight, bg: cs.backgroundColor,
+        shown: [...ed.state.placements.values()]
+            .filter((e) => e.node.isEnabled())
+            .map((e) => e.chunk)
+            .sort(),
+        bold: cs.fontWeight,
+        bg: cs.backgroundColor,
   };
 });
-check("the Chunk button starts unpressed and shows every chunk",
+check(
+    "the Chunk button starts unpressed and shows every chunk",
   btnBefore === "false" && isolate.before.length === isolate.total,
-  `pressed=${btnBefore}, ${isolate.before.length}/${isolate.total} shown`);
-check("pressing Chunk hides every chunk but the active one",
-  isoOn.isolate === true && isoOn.shown.length === 1 && isoOn.shown[0] === "CH_ISO_A",
-  `showing [${isoOn.shown}]`);
-check("a pressed Chunk button is visibly different",
+    `pressed=${btnBefore}, ${isolate.before.length}/${isolate.total} shown`
+);
+check("pressing Chunk hides every chunk but the active one", isoOn.isolate === true && isoOn.shown.length === 1 && isoOn.shown[0] === "CH_ISO_A", `showing [${isoOn.shown}]`);
+check(
+    "a pressed Chunk button is visibly different",
   isoOn.pressed === "true" && Number(isoOn.bold) >= 600 && isoOn.bg !== "rgba(0, 0, 0, 0)",
-  `aria-pressed=${isoOn.pressed}, weight=${isoOn.bold}, bg=${isoOn.bg}`);
-
+    `aria-pressed=${isoOn.pressed}, weight=${isoOn.bold}, bg=${isoOn.bg}`
+);
 
 await page.selectOption("#chunk-select", "CH_ISO_B");
 await page.waitForTimeout(250);
 const followed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return [...ed.state.placements.values()].filter((e) => e.node.isEnabled())
-    .map((e) => e.chunk);
+    return [...ed.state.placements.values()].filter((e) => e.node.isEnabled()).map((e) => e.chunk);
 });
-check("isolation follows the chunk dropdown",
-  followed.length === 1 && followed[0] === "CH_ISO_B", `showing [${followed}]`);
+check("isolation follows the chunk dropdown", followed.length === 1 && followed[0] === "CH_ISO_B", `showing [${followed}]`);
 
 await page.click("#btn-isolate");
 await page.waitForTimeout(250);
 const isoOff = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  return { isolate: ed.state.isolate,
+    return {
+        isolate: ed.state.isolate,
            pressed: document.getElementById("btn-isolate").getAttribute("aria-pressed"),
-           shown: [...ed.state.placements.values()].filter((e) => e.node.isEnabled()).length };
+        shown: [...ed.state.placements.values()].filter((e) => e.node.isEnabled()).length,
+    };
 });
-check("pressing Chunk again brings every chunk back",
+check(
+    "pressing Chunk again brings every chunk back",
   isoOff.isolate === false && isoOff.pressed === "false" && isoOff.shown === isolate.total,
-  `pressed=${isoOff.pressed}, ${isoOff.shown}/${isolate.total} shown`);
+    `pressed=${isoOff.pressed}, ${isoOff.shown}/${isolate.total} shown`
+);
 
 // A door is not *in* a chunk, but it joins two, so isolation does have
 // something to say about it. Markers used to be exempt outright, which left a
@@ -11811,9 +12665,13 @@ const doorIso = await page.evaluate(async () => {
   const mk = await import("/js/markers.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
-  ed.addChunk("CH_D_A"); ed.addChunk("CH_D_B"); ed.addChunk("CH_D_C");
+    ed.addChunk("CH_D_A");
+    ed.addChunk("CH_D_B");
+    ed.addChunk("CH_D_C");
   ed.state.activeChunk = "CH_D_A";
   await ed.placeAt(W, new V(0, 0, 0), { silent: true });
   ed.state.activeChunk = "CH_D_B";
@@ -11831,26 +12689,31 @@ const doorIso = await page.evaluate(async () => {
     return [...ed.state.markers.values()].filter((m) => m.node.isEnabled()).map((m) => m.id);
   };
   const out = {
-    inA: shownIn("CH_D_A"), inB: shownIn("CH_D_B"), inC: shownIn("CH_D_C"),
-    named: named.id, auto: auto.id,
+        inA: shownIn("CH_D_A"),
+        inB: shownIn("CH_D_B"),
+        inC: shownIn("CH_D_C"),
+        named: named.id,
+        auto: auto.id,
   };
   ed.state.isolate = false;
   ed.applyVisibility();
   out.off = [...ed.state.markers.values()].filter((m) => m.node.isEnabled()).map((m) => m.id);
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("an isolated chunk shows the doors that reach it",
+check(
+    "an isolated chunk shows the doors that reach it",
   doorIso.inA.includes(doorIso.named) && doorIso.inB.includes(doorIso.named),
-  `A ${JSON.stringify(doorIso.inA)}, B ${JSON.stringify(doorIso.inB)}`);
-check("and hides the ones that do not",
-  !doorIso.inC.includes(doorIso.named), `C ${JSON.stringify(doorIso.inC)}`);
-check("a door left on (auto) is placed by the same rule the manifest uses",
+    `A ${JSON.stringify(doorIso.inA)}, B ${JSON.stringify(doorIso.inB)}`
+);
+check("and hides the ones that do not", !doorIso.inC.includes(doorIso.named), `C ${JSON.stringify(doorIso.inC)}`);
+check(
+    "a door left on (auto) is placed by the same rule the manifest uses",
   doorIso.inC.includes(doorIso.auto) && !doorIso.inA.includes(doorIso.auto),
-  `auto door in C=${doorIso.inC.includes(doorIso.auto)}, in A=${doorIso.inA.includes(doorIso.auto)}`);
-check("every door is back once isolation is off",
-  doorIso.off.includes(doorIso.named) && doorIso.off.includes(doorIso.auto),
-  JSON.stringify(doorIso.off));
+    `auto door in C=${doorIso.inC.includes(doorIso.auto)}, in A=${doorIso.inA.includes(doorIso.auto)}`
+);
+check("every door is back once isolation is off", doorIso.off.includes(doorIso.named) && doorIso.off.includes(doorIso.auto), JSON.stringify(doorIso.off));
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 // ---- 1w. a door onto the skybox ------------------------------------------
@@ -11867,7 +12730,9 @@ const sky = await page.evaluate(async () => {
   const man = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   ed.addChunk("CH_SKY_A");
   ed.state.activeChunk = "CH_SKY_A";
@@ -11875,10 +12740,8 @@ const sky = await page.evaluate(async () => {
 
   const out = { id: ed.SKYBOX_CHUNK };
   // The reserved id cannot be taken by a room, whichever way it is reached.
-  out.addRefused = ed.addChunk(ed.SKYBOX_CHUNK) === false
-    && !ed.state.chunks.includes(ed.SKYBOX_CHUNK);
-  out.renameRefused = ed.renameChunk("CH_SKY_A", ed.SKYBOX_CHUNK) === false
-    && ed.state.chunks.includes("CH_SKY_A");
+    out.addRefused = ed.addChunk(ed.SKYBOX_CHUNK) === false && !ed.state.chunks.includes(ed.SKYBOX_CHUNK);
+    out.renameRefused = ed.renameChunk("CH_SKY_A", ed.SKYBOX_CHUNK) === false && ed.state.chunks.includes("CH_SKY_A");
 
   // Set through the inspector, the way a user would.
   const door = mk.addDoor(new V(4, 0, 0), { chunkA: "CH_SKY_A", silent: true });
@@ -11890,8 +12753,7 @@ const sky = await page.evaluate(async () => {
   sel.dispatchEvent(new Event("change", { bubbles: true }));
 
   const box = document.getElementById("door-sealed");
-  out.afterPick = { chunkB: door.chunkB, sealed: door.sealed,
-                    checked: box.checked, disabled: box.disabled };
+    out.afterPick = { chunkB: door.chunkB, sealed: door.sealed, checked: box.checked, disabled: box.disabled };
 
   // The manifest is the contract: the side is written through, and the portal
   // edge is one-way because space is not a room with an aabb to come back from.
@@ -11910,38 +12772,33 @@ const sky = await page.evaluate(async () => {
 
   // An unsealed window onto space is not a state the ship can be in, even if a
   // hand-edited file says so.
-  const forced = mk.addDoor(new V(9, 0, 0),
-    { chunkA: "CH_SKY_A", chunkB: ed.SKYBOX_CHUNK, sealed: false, silent: true });
+    const forced = mk.addDoor(new V(9, 0, 0), { chunkA: "CH_SKY_A", chunkB: ed.SKYBOX_CHUNK, sealed: false, silent: true });
   out.forcedOnLoad = forced.sealed;
 
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   return out;
 });
-check("the skybox id cannot be taken by a real chunk",
-  sky.addRefused && sky.renameRefused,
-  `add refused=${sky.addRefused}, rename refused=${sky.renameRefused}`);
-check("Chunk B offers Skybox and Chunk A does not",
+check("the skybox id cannot be taken by a real chunk", sky.addRefused && sky.renameRefused, `add refused=${sky.addRefused}, rename refused=${sky.renameRefused}`);
+check(
+    "Chunk B offers Skybox and Chunk A does not",
   sky.offered.includes(sky.id) && !sky.offeredOnA.includes(sky.id),
-  `B ${JSON.stringify(sky.offered)}, A ${JSON.stringify(sky.offeredOnA)}`);
-check("picking it seals the door and takes the choice away",
-  sky.afterPick.chunkB === sky.id && sky.afterPick.sealed === true
-    && sky.afterPick.checked === true && sky.afterPick.disabled === true,
-  JSON.stringify(sky.afterPick));
-check("the manifest writes the side through, sealed",
-  sky.written.chunkB === sky.id && sky.written.sealed === true
-    && sky.written.portalB === sky.id,
-  JSON.stringify(sky.written));
-check("space is not listed as a chunk of the ship",
-  !sky.chunkList.includes(sky.id), JSON.stringify(sky.chunkList));
-check("the portal leads out to space, and nothing leads back",
-  sky.adjacency["CH_SKY_A"]?.some((e) => e.to === sky.id)
-    && !(sky.id in sky.adjacency),
-  JSON.stringify(sky.adjacency));
-check("the side survives a save and a load",
-  sky.roundTrip.chunkB === sky.id && sky.roundTrip.sealed === true,
-  JSON.stringify(sky.roundTrip));
-check("and a door onto space is sealed even if the file says otherwise",
-  sky.forcedOnLoad === true, `sealed=${sky.forcedOnLoad}`);
+    `B ${JSON.stringify(sky.offered)}, A ${JSON.stringify(sky.offeredOnA)}`
+);
+check(
+    "picking it seals the door and takes the choice away",
+    sky.afterPick.chunkB === sky.id && sky.afterPick.sealed === true && sky.afterPick.checked === true && sky.afterPick.disabled === true,
+    JSON.stringify(sky.afterPick)
+);
+check("the manifest writes the side through, sealed", sky.written.chunkB === sky.id && sky.written.sealed === true && sky.written.portalB === sky.id, JSON.stringify(sky.written));
+check("space is not listed as a chunk of the ship", !sky.chunkList.includes(sky.id), JSON.stringify(sky.chunkList));
+check(
+    "the portal leads out to space, and nothing leads back",
+    sky.adjacency["CH_SKY_A"]?.some((e) => e.to === sky.id) && !(sky.id in sky.adjacency),
+    JSON.stringify(sky.adjacency)
+);
+check("the side survives a save and a load", sky.roundTrip.chunkB === sky.id && sky.roundTrip.sealed === true, JSON.stringify(sky.roundTrip));
+check("and a door onto space is sealed even if the file says otherwise", sky.forcedOnLoad === true, `sealed=${sky.forcedOnLoad}`);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 // ---- 1w-bis. B brings what is in hand to the camera ------------------------
@@ -11961,11 +12818,12 @@ const bringGhost = await page.evaluate(async (WALL) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   // One deck, scaled up, a long way from the origin - so "wherever the ghost
   // already was" is unmistakably the wrong answer.
-  await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(96, 0, 96),
-    { scale: [8, 1, 8], silent: true });
+    await ed.placeAt("Modular SciFi MegaKit/Platforms/Platform_Simple", new V(96, 0, 96), { scale: [8, 1, 8], silent: true });
   ed.state.scene.pointerX = ed.state.engine.getRenderWidth() / 2;
   ed.state.scene.pointerY = ed.state.engine.getRenderHeight() / 2;
 
@@ -11978,7 +12836,10 @@ const bringGhost = await page.evaluate(async (WALL) => {
 
   await i.armGhost(WALL);
   const g = ed.state.scene.getTransformNodeByName("GHOST");
-  const mid = () => { const b = ed.worldBounds(g); return b.min.add(b.max).scale(0.5); };
+    const mid = () => {
+        const b = ed.worldBounds(g);
+        return b.min.add(b.max).scale(0.5);
+    };
   const away = V.Distance(mid(), ed.state.camera.position);
   const reachedBefore = !!ed.cursorOnPlane(ed.state.gridY);
 
@@ -11988,7 +12849,9 @@ const bringGhost = await page.evaluate(async (WALL) => {
   const step = ed.state.snap.pos || 0;
   const onGrid = (v) => !step || Math.abs(v / step - Math.round(v / step)) < 1e-6;
   return {
-    r, step, reachedBefore,
+        r,
+        step,
+        reachedBefore,
     away: +away.toFixed(1),
     near: +V.Distance(mid(), ed.state.camera.position).toFixed(2),
     gridY: +ed.state.gridY.toFixed(3),
@@ -11998,22 +12861,24 @@ const bringGhost = await page.evaluate(async (WALL) => {
     reachable: after ? +V.Distance(after, ed.state.camera.position).toFixed(1) : null,
   };
 }, WALL);
-check("before B the ghost is nowhere near you, and the plane is out of reach",
+check(
+    "before B the ghost is nowhere near you, and the plane is out of reach",
   bringGhost.away > 50 && bringGhost.reachedBefore === false,
-  `${bringGhost.away} m away, plane reachable: ${bringGhost.reachedBefore}`);
-check("B brings it to arm's length",
-  bringGhost.r?.kind === "ghost" && bringGhost.near < 10,
-  `${bringGhost.near} m away, ${JSON.stringify(bringGhost.r)}`);
-check("it lands on the deck under your feet, not at eye height",
-  bringGhost.r?.floor === true && bringGhost.deck != null
-    && Math.abs(bringGhost.r.y - bringGhost.deck) < 0.01,
-  `dropped at y ${bringGhost.r?.y}, deck at ${bringGhost.deck}`);
-check("still aligned on the grid",
-  bringGhost.onGrid, `step ${bringGhost.step}, origin [${bringGhost.origin}]`);
+    `${bringGhost.away} m away, plane reachable: ${bringGhost.reachedBefore}`
+);
+check("B brings it to arm's length", bringGhost.r?.kind === "ghost" && bringGhost.near < 10, `${bringGhost.near} m away, ${JSON.stringify(bringGhost.r)}`);
+check(
+    "it lands on the deck under your feet, not at eye height",
+    bringGhost.r?.floor === true && bringGhost.deck != null && Math.abs(bringGhost.r.y - bringGhost.deck) < 0.01,
+    `dropped at y ${bringGhost.r?.y}, deck at ${bringGhost.deck}`
+);
+check("still aligned on the grid", bringGhost.onGrid, `step ${bringGhost.step}, origin [${bringGhost.origin}]`);
 // the crux: without this the next mouse move sends it straight back
-check("and the build plane comes with it, so it stays reachable",
+check(
+    "and the build plane comes with it, so it stays reachable",
   Math.abs(bringGhost.gridY - bringGhost.r.y) < 1e-6 && bringGhost.reachable < 15,
-  `plane 20 -> ${bringGhost.gridY}, cursor meets it ${bringGhost.reachable} m away`);
+    `plane 20 -> ${bringGhost.gridY}, cursor meets it ${bringGhost.reachable} m away`
+);
 
 // Facing something close, it stops short rather than landing through it: the
 // preferred distance would put the piece in the next room every time you built
@@ -12029,13 +12894,13 @@ const bringClose = await page.evaluate(async (WALL) => {
   await i.armGhost(WALL);
   const r = i.bringToCamera();
   const g = ed.state.scene.getTransformNodeByName("GHOST");
-  const b = ed.worldBounds(g), mid = b.min.add(b.max).scale(0.5);
+    const b = ed.worldBounds(g),
+        mid = b.min.add(b.max).scale(0.5);
   const cam = ed.state.camera.position;
   i.cancelGhost();
   return { r, flat: +Math.hypot(mid.x - cam.x, mid.z - cam.z).toFixed(2) };
 }, WALL);
-check("what you are looking at stops it, so it never lands through a wall",
-  bringClose.flat < 2.5, `${bringClose.flat} m out, the free-air distance is ~4 m`);
+check("what you are looking at stops it, so it never lands through a wall", bringClose.flat < 2.5, `${bringClose.flat} m out, the free-air distance is ~4 m`);
 
 // A placed selection moves too - same spot, one undo entry, shape intact.
 const bringSel = await page.evaluate(async (WALL) => {
@@ -12057,7 +12922,8 @@ const bringSel = await page.evaluate(async (WALL) => {
   const cam = ed.state.camera.position;
   const bb = ed.worldBounds(a.node);
   const out = {
-    r, added: ed.state.placements.size - was,
+        r,
+        added: ed.state.placements.size - was,
     dist: +Math.hypot(a.node.position.x - cam.x, a.node.position.z - cam.z).toFixed(2),
     dz: +(b.node.position.z - a.node.position.z).toFixed(3),
     bottom: +bb.min.y.toFixed(2),
@@ -12070,16 +12936,17 @@ const bringSel = await page.evaluate(async (WALL) => {
   out.undone = [+back.x.toFixed(2), +back.z.toFixed(2)];
   return out;
 }, WALL);
-check("a placed selection is fetched the same way, and moved rather than copied",
-  bringSel.r?.kind === "selection" && bringSel.r.count === 2 && bringSel.added === 2
-    && bringSel.dist < 10,
-  `${bringSel.dist} m away, ${bringSel.added} new placements, ${JSON.stringify(bringSel.r)}`);
-check("the set keeps its spacing and its grid, and rests on the deck",
-  bringSel.dz === 6 && bringSel.onGrid && Math.abs(bringSel.bottom - bringSel.r.y) < 0.05
-    && Math.abs(bringSel.gridY - bringSel.r.y) < 1e-6,
-  `dz ${bringSel.dz}, on grid ${bringSel.onGrid}, bottom ${bringSel.bottom} vs y ${bringSel.r.y}`);
-check("and it is one undo away",
-  bringSel.undone.join() === "0,0", `back at [${bringSel.undone}]`);
+check(
+    "a placed selection is fetched the same way, and moved rather than copied",
+    bringSel.r?.kind === "selection" && bringSel.r.count === 2 && bringSel.added === 2 && bringSel.dist < 10,
+    `${bringSel.dist} m away, ${bringSel.added} new placements, ${JSON.stringify(bringSel.r)}`
+);
+check(
+    "the set keeps its spacing and its grid, and rests on the deck",
+    bringSel.dz === 6 && bringSel.onGrid && Math.abs(bringSel.bottom - bringSel.r.y) < 0.05 && Math.abs(bringSel.gridY - bringSel.r.y) < 1e-6,
+    `dz ${bringSel.dz}, on grid ${bringSel.onGrid}, bottom ${bringSel.bottom} vs y ${bringSel.r.y}`
+);
+check("and it is one undo away", bringSel.undone.join() === "0,0", `back at [${bringSel.undone}]`);
 
 // Out in the open there is no deck to find, and it still has to land somewhere
 // you can see rather than refusing.
@@ -12087,30 +12954,34 @@ const bringSpace = await page.evaluate(async (WALL) => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   ed.state.camera.position.set(500, 30, 500);
   ed.state.camera.setTarget(new V(508, 30, 508));
   ed.state.scene.render();
   await i.armGhost(WALL);
   const r = i.bringToCamera();
   const g = ed.state.scene.getTransformNodeByName("GHOST");
-  const b = ed.worldBounds(g), mid = b.min.add(b.max).scale(0.5);
+    const b = ed.worldBounds(g),
+        mid = b.min.add(b.max).scale(0.5);
   i.cancelGhost();
   return { r, near: +V.Distance(mid, ed.state.camera.position).toFixed(2) };
 }, WALL);
-check("with no floor under it, it lands in front of you at your own height",
-  bringSpace.r?.floor === false && Math.abs(bringSpace.r.y - 30) < 0.01
-    && bringSpace.near < 10,
-  `y ${bringSpace.r?.y}, ${bringSpace.near} m out`);
+check(
+    "with no floor under it, it lands in front of you at your own height",
+    bringSpace.r?.floor === false && Math.abs(bringSpace.r.y - 30) < 0.01 && bringSpace.near < 10,
+    `y ${bringSpace.r?.y}, ${bringSpace.near} m out`
+);
 
 const bringNone = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
-  i.cancelGhost(); ed.select([]);
+    i.cancelGhost();
+    ed.select([]);
   return i.bringToCamera();
 });
-check("with nothing in hand it does nothing at all",
-  bringNone === null, `returned ${JSON.stringify(bringNone)}`);
+check("with nothing in hand it does nothing at all", bringNone === null, `returned ${JSON.stringify(bringNone)}`);
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
 // ---- 1x. an outline is the same thickness however close the camera is ------
@@ -12124,8 +12995,7 @@ await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 const edgeScale = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const kit = await import("/js/kit.js");
-  const id = [...kit.getCatalogue().byId.keys()].find((k) => k.includes("Crate1"))
-    || [...kit.getCatalogue().byId.keys()][0];
+    const id = [...kit.getCatalogue().byId.keys()].find((k) => k.includes("Crate1")) || [...kit.getCatalogue().byId.keys()][0];
   const e = await ed.placeAt(id, new BABYLON.Vector3(0, 0, 0), {});
   ed.select([e.id]);
   await new Promise((r) => setTimeout(r, 300));
@@ -12144,39 +13014,42 @@ const edgeScale = await page.evaluate(async () => {
     await new Promise((r) => setTimeout(r, 200));
     ed.state.scene.render();
     const eng = ed.state.engine;
-    const w = eng.getRenderWidth(), h = eng.getRenderHeight();
+        const w = eng.getRenderWidth(),
+            h = eng.getRenderHeight();
     const buf = await eng.readPixels(0, 0, w, h);
     const runs = [];
     for (let row = 0; row < h; row += 2) {
       let run = 0;
       for (let x = 0; x < w; x++) {
-        const i = ((row * w) + x) * 4;
+                const i = (row * w + x) * 4;
         // clearly blue: the select colour is (64, 191, 255)
-        const blue = buf[i + 2] > 150 && buf[i + 2] - buf[i] > 80
-          && buf[i + 1] > 90 && buf[i + 1] < buf[i + 2];
+                const blue = buf[i + 2] > 150 && buf[i + 2] - buf[i] > 80 && buf[i + 1] > 90 && buf[i + 1] < buf[i + 2];
         if (blue) run++;
-        else { if (run) runs.push(run); run = 0; }
+                else {
+                    if (run) runs.push(run);
+                    run = 0;
+                }
       }
       if (run) runs.push(run);
     }
     runs.sort((a, b) => a - b);
-    return { width: +e.node.getChildMeshes()[0].edgesWidth.toFixed(3),
-      px: runs.length ? runs[Math.floor(runs.length / 2)] : 0, runs: runs.length };
+        return { width: +e.node.getChildMeshes()[0].edgesWidth.toFixed(3), px: runs.length ? runs[Math.floor(runs.length / 2)] : 0, runs: runs.length };
   };
   const far = await at(12);
   const near = await at(2.5);
   ed.removePlacement(e.id);
   return { far, near };
 });
-check("the outline width tracks the distance, which is what keeps it constant",
+check(
+    "the outline width tracks the distance, which is what keeps it constant",
   Math.abs(edgeScale.far.width / edgeScale.near.width - 12 / 2.5) < 0.3,
-  `${edgeScale.far.width} at 12 m vs ${edgeScale.near.width} at 2.5 m`
-  + ` — ratio ${(edgeScale.far.width / edgeScale.near.width).toFixed(2)}, wanted 4.80`);
-check("so the drawn outline does not fatten as the camera closes in",
-  edgeScale.near.px > 0 && edgeScale.far.px > 0
-    && edgeScale.near.px <= edgeScale.far.px * 1.6 && edgeScale.near.px <= 8,
-  `${edgeScale.far.px} px at 12 m -> ${edgeScale.near.px} px at 2.5 m,`
-  + ` over a 4.8x change in distance`);
+    `${edgeScale.far.width} at 12 m vs ${edgeScale.near.width} at 2.5 m` + ` — ratio ${(edgeScale.far.width / edgeScale.near.width).toFixed(2)}, wanted 4.80`
+);
+check(
+    "so the drawn outline does not fatten as the camera closes in",
+    edgeScale.near.px > 0 && edgeScale.far.px > 0 && edgeScale.near.px <= edgeScale.far.px * 1.6 && edgeScale.near.px <= 8,
+    `${edgeScale.far.px} px at 12 m -> ${edgeScale.near.px} px at 2.5 m,` + ` over a 4.8x change in distance`
+);
 
 await page.evaluate(async () => (await import("/js/editor.js")).clearAll());
 
@@ -12196,14 +13069,18 @@ const benchShot = await (async () => {
   });
   await page.waitForTimeout(700);
 
-  const read = () => page.evaluate(async () => {
+    const read = () =>
+        page.evaluate(async () => {
     const ed = await import("/js/editor.js");
     const it = await import("/js/interact.js");
-    return { brush: ed.state.brush, armed: it.ghostActive(),
+            return {
+                brush: ed.state.brush,
+                armed: it.ghostActive(),
       staged: [...ed.state.placements.values()].filter((p) => p.stage).length,
       colliders: ed.state.colliders.size,
       hint: document.getElementById("hint").textContent,
-      lit: !!document.querySelector("#palette-list .item.active") };
+                lit: !!document.querySelector("#palette-list .item.active"),
+            };
   });
   const clickAt = async (dx, dy) => {
     const b = await page.locator("#viewport").boundingBox();
@@ -12215,8 +13092,7 @@ const benchShot = await (async () => {
   };
 
   await page.evaluate(async (id) => (await import("/js/palette.js")).setBrush(id), PROP_A);
-  await page.waitForFunction(async () => (await import("/js/interact.js")).ghostActive(),
-    null, { timeout: 20000 });
+    await page.waitForFunction(async () => (await import("/js/interact.js")).ghostActive(), null, { timeout: 20000 });
   await page.waitForTimeout(250);
   const armed = await read();
   await clickAt(0, 0);
@@ -12235,22 +13111,19 @@ const benchShot = await (async () => {
   await page.waitForTimeout(300);
   return { armed, one, two, cBefore, cAfter };
 })();
-check("the hint says a bench click puts the module on the bench",
-  /bench/.test(benchShot.armed.hint), JSON.stringify(benchShot.armed.hint));
-check("one click on the bench stages one module and puts the ghost down",
-  benchShot.one.staged === benchShot.armed.staged + 1
-    && !benchShot.one.armed && benchShot.one.brush === null,
-  `staged ${benchShot.armed.staged} -> ${benchShot.one.staged},`
-  + ` armed ${benchShot.one.armed}, brush ${JSON.stringify(benchShot.one.brush)}`);
-check("the tile goes out and the hint is cleared with it",
-  !benchShot.one.lit && benchShot.one.hint === "",
-  `lit ${benchShot.one.lit}, hint ${JSON.stringify(benchShot.one.hint)}`);
-check("so a second click stages nothing",
-  benchShot.two.staged === benchShot.one.staged,
-  `${benchShot.one.staged} -> ${benchShot.two.staged}`);
-check("a collision primitive still stays armed for a run of boxes",
+check("the hint says a bench click puts the module on the bench", /bench/.test(benchShot.armed.hint), JSON.stringify(benchShot.armed.hint));
+check(
+    "one click on the bench stages one module and puts the ghost down",
+    benchShot.one.staged === benchShot.armed.staged + 1 && !benchShot.one.armed && benchShot.one.brush === null,
+    `staged ${benchShot.armed.staged} -> ${benchShot.one.staged},` + ` armed ${benchShot.one.armed}, brush ${JSON.stringify(benchShot.one.brush)}`
+);
+check("the tile goes out and the hint is cleared with it", !benchShot.one.lit && benchShot.one.hint === "", `lit ${benchShot.one.lit}, hint ${JSON.stringify(benchShot.one.hint)}`);
+check("so a second click stages nothing", benchShot.two.staged === benchShot.one.staged, `${benchShot.one.staged} -> ${benchShot.two.staged}`);
+check(
+    "a collision primitive still stays armed for a run of boxes",
   benchShot.cAfter.colliders === benchShot.cBefore.colliders + 2,
-  `${benchShot.cBefore.colliders} -> ${benchShot.cAfter.colliders}`);
+    `${benchShot.cBefore.colliders} -> ${benchShot.cAfter.colliders}`
+);
 
 // Ctrl+D there copies shapes, never the module. The rule lives in
 // grabSelection rather than only at the key, which used to filter a list it
@@ -12282,15 +13155,10 @@ const benchCopy = await page.evaluate(async () => {
   ed.select([]);
   return { mixed, alone, move, shapes };
 });
-check("Ctrl+D on the bench leaves a module behind and takes only its shapes",
-  benchCopy.mixed.n === 2, `carried ${benchCopy.mixed.n} of 3 selected (2 shapes + 1 module)`);
-check("and a module on its own copies nothing at all",
-  !benchCopy.alone.got && benchCopy.alone.n === 0, JSON.stringify(benchCopy.alone));
-check("but M still picks a staged module up to move it",
-  benchCopy.move.got && benchCopy.move.n === 1 && benchCopy.move.mode === "move",
-  JSON.stringify(benchCopy.move));
-check("and copying shapes alone is untouched",
-  benchCopy.shapes.n === 2, JSON.stringify(benchCopy.shapes));
+check("Ctrl+D on the bench leaves a module behind and takes only its shapes", benchCopy.mixed.n === 2, `carried ${benchCopy.mixed.n} of 3 selected (2 shapes + 1 module)`);
+check("and a module on its own copies nothing at all", !benchCopy.alone.got && benchCopy.alone.n === 0, JSON.stringify(benchCopy.alone));
+check("but M still picks a staged module up to move it", benchCopy.move.got && benchCopy.move.n === 1 && benchCopy.move.mode === "move", JSON.stringify(benchCopy.move));
+check("and copying shapes alone is untouched", benchCopy.shapes.n === 2, JSON.stringify(benchCopy.shapes));
 
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -12318,14 +13186,16 @@ await page.evaluate(async () => {
   const co = await import("/js/colliders.js");
   i.cancelGhost();
   if (ed.state.mode === "collision") co.exitCollisionMode();
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   localStorage.removeItem("compoundBench");
 });
 await page.waitForTimeout(200);
 
 // A ship element first, so "the bench never reaches the ship" has something to
 // be true *about*: an empty serialize() would pass that check by accident.
-const benchOpen = await page.evaluate(async ([M, P]) => {
+const benchOpen = await page.evaluate(
+    async ([M, P]) => {
   const ed = await import("/js/editor.js");
   const cp = await import("/js/compounds.js");
   const lg = await import("/js/lights.js");
@@ -12346,20 +13216,25 @@ const benchOpen = await page.evaluate(async ([M, P]) => {
     inShip: ed.serialize().instances.length,
     shipLights: ed.serialize().lights?.length ?? 0,
   };
-}, [MODULE, PLATE]);
-check("the compound bench is a third mode of its own",
+    },
+    [MODULE, PLATE]
+);
+check(
+    "the compound bench is a third mode of its own",
   benchOpen.mode === "compound" && benchOpen.members === 2 && benchOpen.staged,
-  `mode ${benchOpen.mode}, ${benchOpen.members} member(s) staged ${benchOpen.staged}`);
-check("it hides the ship and shows only what is on it",
-  benchOpen.shipHidden && benchOpen.benchShown,
-  `ship hidden ${benchOpen.shipHidden}, bench shown ${benchOpen.benchShown}`);
-check("a bench piece and its lamp are absent from the ship file",
+    `mode ${benchOpen.mode}, ${benchOpen.members} member(s) staged ${benchOpen.staged}`
+);
+check("it hides the ship and shows only what is on it", benchOpen.shipHidden && benchOpen.benchShown, `ship hidden ${benchOpen.shipHidden}, bench shown ${benchOpen.benchShown}`);
+check(
+    "a bench piece and its lamp are absent from the ship file",
   benchOpen.lamp && benchOpen.inShip === 1 && benchOpen.shipLights === 0,
-  `${benchOpen.inShip} instance(s), ${benchOpen.shipLights} light(s) in serialize()`);
+    `${benchOpen.inShip} instance(s), ${benchOpen.shipLights} light(s) in serialize()`
+);
 
 // The bench keeps its own undo stack. A ship snapshot taken here would restore
 // as "no bench at all", which is exactly how Ctrl+Z used to wipe a staging area.
-const benchStack = await page.evaluate(async ([M]) => {
+const benchStack = await page.evaluate(
+    async ([M]) => {
   const ed = await import("/js/editor.js");
   const cp = await import("/js/compounds.js");
   const V = BABYLON.Vector3;
@@ -12368,10 +13243,14 @@ const benchStack = await page.evaluate(async ([M]) => {
   const after = cp.benchMembers().length;
   await ed.undo();
   return { before, after, undone: cp.benchMembers().length, ship: ed.state.placements.size };
-}, [MODULE]);
-check("the bench has its own undo stack",
+    },
+    [MODULE]
+);
+check(
+    "the bench has its own undo stack",
   benchStack.after === benchStack.before + 1 && benchStack.undone === benchStack.before,
-  `${benchStack.before} -> ${benchStack.after} -> ${benchStack.undone}`);
+    `${benchStack.before} -> ${benchStack.after} -> ${benchStack.undone}`
+);
 
 const cpSaved = await page.evaluate(async (name) => {
   const ed = await import("/js/editor.js");
@@ -12387,7 +13266,8 @@ const cpSaved = await page.evaluate(async (name) => {
   const tile = kit.getModule(`@compound/${name}`);
   const server = await (await fetch("/api/compounds")).json();
   return {
-    r, origin,
+        r,
+        origin,
     tile: tile ? { compound: !!tile.compound, url: tile.url ?? null, members: tile.members.length } : null,
     onDisk: (server.compounds || []).filter((c) => c.name === name).length,
     // Measured from the first member, so the recipe's coordinates say where the
@@ -12397,20 +13277,21 @@ const cpSaved = await page.evaluate(async (name) => {
     lamps: (tile?.members || []).map((m) => (m.lights || []).length),
   };
 }, CNAME);
-check("saving files a tile with no model file of its own",
-  cpSaved.r.ok && cpSaved.tile?.compound === true && cpSaved.tile.url === null
-    && cpSaved.tile.members === 2 && cpSaved.onDisk === 1,
-  `${JSON.stringify(cpSaved.r)}, tile ${JSON.stringify(cpSaved.tile)}`);
-check("its members are measured from the first one, which sits at the origin",
-  cpSaved.offsets.length === 2
-    && JSON.stringify(cpSaved.offsets) === JSON.stringify(cpSaved.want)
-    && JSON.stringify(cpSaved.offsets[0]) === JSON.stringify([0, 0, 0])
+check(
+    "saving files a tile with no model file of its own",
+    cpSaved.r.ok && cpSaved.tile?.compound === true && cpSaved.tile.url === null && cpSaved.tile.members === 2 && cpSaved.onDisk === 1,
+    `${JSON.stringify(cpSaved.r)}, tile ${JSON.stringify(cpSaved.tile)}`
+);
+check(
+    "its members are measured from the first one, which sits at the origin",
+    cpSaved.offsets.length === 2 &&
+        JSON.stringify(cpSaved.offsets) === JSON.stringify(cpSaved.want) &&
+        JSON.stringify(cpSaved.offsets[0]) === JSON.stringify([0, 0, 0]) &&
     // and that really is a rebase, not the world coordinates left alone
-    && cpSaved.origin.some((v) => v !== 0),
-  `offsets ${JSON.stringify(cpSaved.offsets)} about ${JSON.stringify(cpSaved.origin)},`
-  + ` expected ${JSON.stringify(cpSaved.want)}`);
-check("and a member's lamps travel in the recipe",
-  cpSaved.lamps.reduce((a, b) => a + b, 0) === 1, `lamps per member ${JSON.stringify(cpSaved.lamps)}`);
+        cpSaved.origin.some((v) => v !== 0),
+    `offsets ${JSON.stringify(cpSaved.offsets)} about ${JSON.stringify(cpSaved.origin)},` + ` expected ${JSON.stringify(cpSaved.want)}`
+);
+check("and a member's lamps travel in the recipe", cpSaved.lamps.reduce((a, b) => a + b, 0) === 1, `lamps per member ${JSON.stringify(cpSaved.lamps)}`);
 
 const benchClosed = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -12424,11 +13305,11 @@ const benchClosed = await page.evaluate(async () => {
     remembered: (kept.members || []).length,
   };
 });
-check("closing the bench puts the ship back and remembers what was on it",
-  benchClosed.mode === "ship" && benchClosed.left === 0 && benchClosed.ship === 1
-    && benchClosed.remembered === 2,
-  `mode ${benchClosed.mode}, ${benchClosed.left} left, ship ${benchClosed.ship},`
-  + ` ${benchClosed.remembered} remembered`);
+check(
+    "closing the bench puts the ship back and remembers what was on it",
+    benchClosed.mode === "ship" && benchClosed.left === 0 && benchClosed.ship === 1 && benchClosed.remembered === 2,
+    `mode ${benchClosed.mode}, ${benchClosed.left} left, ship ${benchClosed.ship},` + ` ${benchClosed.remembered} remembered`
+);
 
 const cpPlaced = await page.evaluate(async (id) => {
   const ed = await import("/js/editor.js");
@@ -12440,21 +13321,26 @@ const cpPlaced = await page.evaluate(async (id) => {
   const mine = [...ed.state.placements.values()].filter((p) => p.compound);
   const groups = new Set(mine.map((p) => p.group));
   return {
-    carried, n: mine.length, groups: groups.size,
+        carried,
+        n: mine.length,
+        groups: groups.size,
     group: mine[0]?.group || "",
     lamps: mine.reduce((a, p) => a + lg.lightsOf(p.id).length, 0),
     selected: ed.state.selection.length,
     inShip: ed.serialize().instances.filter((x) => x.compound).length,
   };
 }, CID);
-check("placing a compound expands it into ordinary elements sharing one group",
+check(
+    "placing a compound expands it into ordinary elements sharing one group",
   cpPlaced.carried && cpPlaced.n === 2 && cpPlaced.groups === 1 && /^G\d{4}$/.test(cpPlaced.group),
-  `${cpPlaced.n} element(s) in ${cpPlaced.groups} group(s), id ${cpPlaced.group}`);
-check("its lamps come with it, exactly once",
-  cpPlaced.lamps === 1, `${cpPlaced.lamps} lamp(s)`);
-check("the whole compound is selected on landing, and it is ship data",
+    `${cpPlaced.n} element(s) in ${cpPlaced.groups} group(s), id ${cpPlaced.group}`
+);
+check("its lamps come with it, exactly once", cpPlaced.lamps === 1, `${cpPlaced.lamps} lamp(s)`);
+check(
+    "the whole compound is selected on landing, and it is ship data",
   cpPlaced.selected === 2 && cpPlaced.inShip === 2,
-  `${cpPlaced.selected} selected, ${cpPlaced.inShip} written`);
+    `${cpPlaced.selected} selected, ${cpPlaced.inShip} written`
+);
 
 // Dropping keeps the brush armed, the same as any other tile, so that a run of
 // them can be laid down in one go. Put it away before the clicking checks, or
@@ -12465,9 +13351,7 @@ const cpStillArmed = await page.evaluate(async () => {
   i.cancelGhost();
   return { armed, after: i.ghostActive() };
 });
-check("a compound brush stays armed for a run, and Esc puts it away",
-  cpStillArmed.armed && !cpStillArmed.after,
-  `armed ${cpStillArmed.armed} -> ${cpStillArmed.after}`);
+check("a compound brush stays armed for a run, and Esc puts it away", cpStillArmed.armed && !cpStillArmed.after, `armed ${cpStillArmed.armed} -> ${cpStillArmed.after}`);
 
 // Clicking. Selection is the only place a compound is expanded - once every
 // member is selected, every transform path the editor already has moves it as
@@ -12508,11 +13392,12 @@ const drillClick = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { sel: [...ed.state.selection] };
 });
-check("clicking one member selects the whole compound",
-  wholeClick.sel.length === 2, `selected ${JSON.stringify(wholeClick.sel)}`);
-check("Ctrl+Alt+click drills in to the single member under the cursor",
+check("clicking one member selects the whole compound", wholeClick.sel.length === 2, `selected ${JSON.stringify(wholeClick.sel)}`);
+check(
+    "Ctrl+Alt+click drills in to the single member under the cursor",
   drillClick.sel.length === 1 && drillClick.sel[0] === memberAt[0].id,
-  `selected ${JSON.stringify(drillClick.sel)}, aimed at ${memberAt[0].id}`);
+    `selected ${JSON.stringify(drillClick.sel)}, aimed at ${memberAt[0].id}`
+);
 
 const cpCopied = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -12525,16 +13410,18 @@ const cpCopied = await page.evaluate(async () => {
   const all = [...ed.state.placements.values()].filter((p) => p.compound);
   const groups = [...new Set(all.map((p) => p.group))];
   return {
-    n: all.length, groups: groups.length,
+        n: all.length,
+        groups: groups.length,
     lamps: all.reduce((a, p) => a + lg.lightsOf(p.id).length, 0),
     named: all.every((p) => p.compound),
   };
 });
-check("copying a compound mints a new instance rather than a second handle",
+check(
+    "copying a compound mints a new instance rather than a second handle",
   cpCopied.n === 4 && cpCopied.groups === 2 && cpCopied.named,
-  `${cpCopied.n} element(s) in ${cpCopied.groups} group(s)`);
-check("and the copy brings the lamps with it",
-  cpCopied.lamps === 2, `${cpCopied.lamps} lamp(s) across both`);
+    `${cpCopied.n} element(s) in ${cpCopied.groups} group(s)`
+);
+check("and the copy brings the lamps with it", cpCopied.lamps === 2, `${cpCopied.lamps} lamp(s) across both`);
 
 const cpBroken = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -12546,15 +13433,18 @@ const cpBroken = await page.evaluate(async () => {
   const still = ed.state.placements.size;
   await ed.undo();
   return {
-    r, left, still,
+        r,
+        left,
+        still,
     back: [...ed.state.placements.values()].filter((p) => p.group).length,
   };
 });
-check("break apart dissolves the group and leaves the pieces where they are",
+check(
+    "break apart dissolves the group and leaves the pieces where they are",
   cpBroken.r.groups === 1 && cpBroken.r.members === 2 && cpBroken.left === 2 && cpBroken.still === 5,
-  `${JSON.stringify(cpBroken.r)}, ${cpBroken.left} still grouped of ${cpBroken.still} elements`);
-check("and it is undoable",
-  cpBroken.back === 4, `${cpBroken.back} grouped again`);
+    `${JSON.stringify(cpBroken.r)}, ${cpBroken.left} still grouped of ${cpBroken.still} elements`
+);
+check("and it is undoable", cpBroken.back === 4, `${cpBroken.back} grouped again`);
 
 const cpRound = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
@@ -12566,11 +13456,11 @@ const cpRound = await page.evaluate(async () => {
   const next = ed.state.nextGroup;
   return { groups, after: after.length, distinct, next };
 });
-check("group and compound survive a save and load",
-  cpRound.groups === 4 && cpRound.after === 4 && cpRound.distinct === 2
-    && cpRound.next > 2,
-  `${cpRound.groups} written, ${cpRound.after} read back in ${cpRound.distinct}`
-  + ` group(s), counter at ${cpRound.next}`);
+check(
+    "group and compound survive a save and load",
+    cpRound.groups === 4 && cpRound.after === 4 && cpRound.distinct === 2 && cpRound.next > 2,
+    `${cpRound.groups} written, ${cpRound.after} read back in ${cpRound.distinct}` + ` group(s), counter at ${cpRound.next}`
+);
 
 const cpDeleted = await page.evaluate(async (name) => {
   const cp = await import("/js/compounds.js");
@@ -12585,9 +13475,11 @@ const cpDeleted = await page.evaluate(async (name) => {
     survivors: [...ed.state.placements.values()].filter((p) => p.compound === name).length,
   };
 }, CNAME);
-check("deleting a compound forgets the recipe, not the copies already placed",
+check(
+    "deleting a compound forgets the recipe, not the copies already placed",
   cpDeleted.r.ok && !cpDeleted.tile && cpDeleted.onDisk === 0 && cpDeleted.survivors === 4,
-  `${JSON.stringify(cpDeleted.r)}, tile ${cpDeleted.tile}, ${cpDeleted.survivors} still in the ship`);
+    `${JSON.stringify(cpDeleted.r)}, tile ${cpDeleted.tile}, ${cpDeleted.survivors} still in the ship`
+);
 
 // ---- the follow-ups: rigid turns, whole-drop announcements, instance updates
 
@@ -12595,7 +13487,8 @@ await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   i.cancelGhost();
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   localStorage.removeItem("compoundBench");
 });
 await page.waitForTimeout(200);
@@ -12604,7 +13497,8 @@ await page.waitForTimeout(200);
 // what decides whether a copy of it lands on the grid or half a metre off it.
 // The bounding-box origin it used to record centred a 4 m wall against a 12 m
 // platform at 5, so every member came out half a metre off the grid.
-const cpBuilt = await page.evaluate(async ([M, P, name]) => {
+const cpBuilt = await page.evaluate(
+    async ([M, P, name]) => {
   const ed = await import("/js/editor.js");
   const cp = await import("/js/compounds.js");
   const i = await import("/js/interact.js");
@@ -12618,17 +13512,22 @@ const cpBuilt = await page.evaluate(async ([M, P, name]) => {
   await ed.placeAt(P, new V(-2, 0, 4), { silent: true, noLights: true });
   lg.addLight(wall.id, { silent: true });
   const saved = await cp.saveCompound({
-    name, kit: "Modular SciFi MegaKit", category: "Compounds",
+            name,
+            kit: "Modular SciFi MegaKit",
+            category: "Compounds",
   });
   const tile = (await import("/js/kit.js")).getModule(`@compound/${name}`);
   cp.exitCompoundMode();
   await i.armGhost(`@compound/${name}`);
   i.bringToCamera();                    // snapped exactly as a cursor drop is
   return {
-    saved, armed: i.ghostActive(),
+            saved,
+            armed: i.ghostActive(),
     offsets: (tile?.members || []).map((m) => m.position),
   };
-}, [MODULE, PLATE, `${CNAME} rigid`]);
+    },
+    [MODULE, PLATE, `${CNAME} rigid`]
+);
 
 const cpRigid = await page.evaluate(async (name) => {
   const ed = await import("/js/editor.js");
@@ -12653,8 +13552,7 @@ const cpRigid = await page.evaluate(async (name) => {
     // Move is at 1 m, so the grid coordinates a drop snaps - X and Z - come out
     // whole unless the recipe itself carried a fraction.
     onGrid: Number.isInteger(before[0][0]) && Number.isInteger(before[0][2]),
-    spaced: before.every((p, k) => [0, 1, 2].every((c) =>
-      Number.isInteger(+(p[c] - before[0][c]).toFixed(4)))),
+        spaced: before.every((p, k) => [0, 1, 2].every((c) => Number.isInteger(+(p[c] - before[0][c]).toFixed(4)))),
     anchorHeld: JSON.stringify(after[0]) === JSON.stringify(anchorBefore),
     moved: span(before[1], after[1]) > 0.5,
     keptRadius: Math.abs(span(before[0], before[1]) - span(after[0], after[1])) < 1e-3,
@@ -12662,18 +13560,17 @@ const cpRigid = await page.evaluate(async (name) => {
     where: before,
   };
 }, `${CNAME} rigid`);
-check("a compound records its members from the first one, at the origin",
-  cpBuilt.saved.ok && cpBuilt.armed
-    && JSON.stringify(cpBuilt.offsets[0]) === JSON.stringify([0, 0, 0])
-    && cpBuilt.offsets.every((o) => o.every((v) => Number.isInteger(v))),
-  `${JSON.stringify(cpBuilt.saved)}, offsets ${JSON.stringify(cpBuilt.offsets)}`);
-check("so dropping one with Move at 1 m lands it on whole numbers",
-  cpRigid.n === 2 && cpRigid.onGrid && cpRigid.spaced,
-  `at ${JSON.stringify(cpRigid.where)}`);
-check("turning a whole compound turns it rigidly about its first member",
+check(
+    "a compound records its members from the first one, at the origin",
+    cpBuilt.saved.ok && cpBuilt.armed && JSON.stringify(cpBuilt.offsets[0]) === JSON.stringify([0, 0, 0]) && cpBuilt.offsets.every((o) => o.every((v) => Number.isInteger(v))),
+    `${JSON.stringify(cpBuilt.saved)}, offsets ${JSON.stringify(cpBuilt.offsets)}`
+);
+check("so dropping one with Move at 1 m lands it on whole numbers", cpRigid.n === 2 && cpRigid.onGrid && cpRigid.spaced, `at ${JSON.stringify(cpRigid.where)}`);
+check(
+    "turning a whole compound turns it rigidly about its first member",
   cpRigid.anchorHeld && cpRigid.moved && cpRigid.keptRadius,
-  `anchor held ${cpRigid.anchorHeld}, other moved ${cpRigid.moved},`
-  + ` distance kept ${cpRigid.keptRadius}`);
+    `anchor held ${cpRigid.anchorHeld}, other moved ${cpRigid.moved},` + ` distance kept ${cpRigid.keptRadius}`
+);
 
 // The inspector used to write to state.selection[0] alone, which tore a
 // compound apart one keystroke at a time.
@@ -12698,11 +13595,11 @@ const cpInspector = await page.evaluate(async (name) => {
     stillSelected: ed.state.selection.length,
   };
 }, `${CNAME} rigid`);
-check("the inspector moves a whole compound, not just the element it shows",
-  cpInspector.anchorMoved === 3 && cpInspector.otherMoved === 3
-    && cpInspector.stillSelected === 2,
-  `anchor +${cpInspector.anchorMoved}, other +${cpInspector.otherMoved},`
-  + ` ${cpInspector.stillSelected} still selected`);
+check(
+    "the inspector moves a whole compound, not just the element it shows",
+    cpInspector.anchorMoved === 3 && cpInspector.otherMoved === 3 && cpInspector.stillSelected === 2,
+    `anchor +${cpInspector.anchorMoved}, other +${cpInspector.otherMoved},` + ` ${cpInspector.stillSelected} still selected`
+);
 
 // The Runtime view rebuilds its meshes on "placements" and its lamps on
 // "lights". A drop that announced itself after the first member left the rest
@@ -12723,59 +13620,70 @@ const cpAnnounced = await page.evaluate(async (name) => {
   const now = [...ed.state.placements.values()].filter((p) => p.compound === name).length;
   return { ...seen, was, now };
 }, `${CNAME} rigid`);
-check("a compound drop is announced once, with all of it in place",
-  cpAnnounced.placements === 1 && cpAnnounced.lights === 1
-    && cpAnnounced.atPlacements === cpAnnounced.now && cpAnnounced.now === cpAnnounced.was + 2,
-  `${cpAnnounced.placements} placement event(s), ${cpAnnounced.lights} light event(s),`
-  + ` ${cpAnnounced.atPlacements} of ${cpAnnounced.now} present when announced`);
+check(
+    "a compound drop is announced once, with all of it in place",
+    cpAnnounced.placements === 1 && cpAnnounced.lights === 1 && cpAnnounced.atPlacements === cpAnnounced.now && cpAnnounced.now === cpAnnounced.was + 2,
+    `${cpAnnounced.placements} placement event(s), ${cpAnnounced.lights} light event(s),` + ` ${cpAnnounced.atPlacements} of ${cpAnnounced.now} present when announced`
+);
 
 // Pushing a bench edit out to the copies. Asked for rather than assumed: a
 // compound is a macro, and this is the one action that treats it as a prefab.
-const cpSync = await page.evaluate(async ([name, P]) => {
+const cpSync = await page.evaluate(
+    async ([name, P]) => {
   const ed = await import("/js/editor.js");
   const cp = await import("/js/compounds.js");
   const lg = await import("/js/lights.js");
   const V = BABYLON.Vector3;
   const mine = () => [...ed.state.placements.values()].filter((p) => p.compound === name);
   const copies = new Set(mine().map((p) => p.group)).size;
-  const anchors = () => [...cp.compoundInstances(name).entries()]
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([g, list]) => [g, list[0].node.position.asArray().map((v) => +v.toFixed(3))]);
+        const anchors = () =>
+            [...cp.compoundInstances(name).entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([g, list]) => [g, list[0].node.position.asArray().map((v) => +v.toFixed(3))]);
   const anchorsBefore = anchors();
 
   // Edit the recipe: a third piece, and a brighter lamp.
   await cp.editCompound(name);
   const extra = await ed.placeAt(P, new V(-2, 0, -4), { silent: true, noLights: true });
   const lamp = lg.lightsOf(cp.benchMembers()[0]?.id || "")[0];
-  if (!lamp) { cp.exitCompoundMode(); return { copies, members: cp.benchMembers().length }; }
+        if (!lamp) {
+            cp.exitCompoundMode();
+            return { copies, members: cp.benchMembers().length };
+        }
   lg.setLightPart(lamp.id, "runtime", { intensity: 9 });
   const r = await cp.quickSaveCompound({ updateInstances: true });
   cp.exitCompoundMode();
 
   const after = mine();
-  const bright = after.reduce((a, p) => a
-    + lg.lightsOf(p.id).filter((l) => l.runtime.intensity === 9).length, 0);
+        const bright = after.reduce((a, p) => a + lg.lightsOf(p.id).filter((l) => l.runtime.intensity === 9).length, 0);
   const anchorsAfter = anchors();
   await ed.undo();
   return {
-    r, copies, extra: !!extra,
+            r,
+            copies,
+            extra: !!extra,
     n: after.length,
     groups: new Set(after.map((p) => p.group)).size,
     anchorsHeld: JSON.stringify(anchorsBefore) === JSON.stringify(anchorsAfter),
     bright,
     undone: [...ed.state.placements.values()].filter((p) => p.compound === name).length,
   };
-}, [`${CNAME} rigid`, PLATE]);
-check("updating copies rebuilds every instance from the bench",
-  cpSync.r.ok && cpSync.r.instances === cpSync.copies && cpSync.n === cpSync.copies * 3
-    && cpSync.groups === cpSync.copies,
-  `${JSON.stringify(cpSync.r)}, ${cpSync.n} element(s) in ${cpSync.groups} group(s)`);
-check("each copy keeps its place, and the edit reaches its lamps",
+    },
+    [`${CNAME} rigid`, PLATE]
+);
+check(
+    "updating copies rebuilds every instance from the bench",
+    cpSync.r.ok && cpSync.r.instances === cpSync.copies && cpSync.n === cpSync.copies * 3 && cpSync.groups === cpSync.copies,
+    `${JSON.stringify(cpSync.r)}, ${cpSync.n} element(s) in ${cpSync.groups} group(s)`
+);
+check(
+    "each copy keeps its place, and the edit reaches its lamps",
   cpSync.anchorsHeld && cpSync.bright === cpSync.copies,
-  `anchors held ${cpSync.anchorsHeld}, ${cpSync.bright} brightened lamp(s)`);
-check("and the push is one undo step, on the ship's stack",
+    `anchors held ${cpSync.anchorsHeld}, ${cpSync.bright} brightened lamp(s)`
+);
+check(
+    "and the push is one undo step, on the ship's stack",
   cpSync.undone === cpSync.copies * 2,
-  `${cpSync.undone} element(s) after undo, was ${cpSync.copies * 2} before the push`);
+    `${cpSync.undone} element(s) after undo, was ${cpSync.copies * 2} before the push`
+);
 
 // A bench member's chunk is a private fiction, and a lamp being fitted to one
 // has to be able to name it as its owner.
@@ -12786,7 +13694,10 @@ const cpBenchPanel = await page.evaluate(async (name) => {
   await cp.editCompound(name);
   const member = cp.benchMembers()[0];
   const lamp = member ? lg.lightsOf(member.id)[0] : null;
-  if (!lamp) { cp.exitCompoundMode(); return { members: cp.benchMembers().length }; }
+    if (!lamp) {
+        cp.exitCompoundMode();
+        return { members: cp.benchMembers().length };
+    }
   ed.select([member.id]);
   await new Promise((r) => setTimeout(r, 80));
   const chunkRow = document.getElementById("insp-chunk").parentElement.hidden;
@@ -12803,11 +13714,12 @@ const cpBenchPanel = await page.evaluate(async (name) => {
     owners: owners.length,
   };
 }, `${CNAME} rigid`);
-check("the Chunk row is hidden on a bench, where a chunk means nothing",
-  cpBenchPanel.chunkRow === true, `hidden ${cpBenchPanel.chunkRow}`);
-check("and a lamp on the bench is offered the bench's pieces as owners",
+check("the Chunk row is hidden on a bench, where a chunk means nothing", cpBenchPanel.chunkRow === true, `hidden ${cpBenchPanel.chunkRow}`);
+check(
+    "and a lamp on the bench is offered the bench's pieces as owners",
   cpBenchPanel.listsBench && !cpBenchPanel.listsShip,
-  `${cpBenchPanel.owners} owner(s) offered, ship pieces among them ${cpBenchPanel.listsShip}`);
+    `${cpBenchPanel.owners} owner(s) offered, ship pieces among them ${cpBenchPanel.listsShip}`
+);
 
 await page.evaluate(async (name) => {
   const cp = await import("/js/compounds.js");
@@ -12818,7 +13730,8 @@ await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   i.cancelGhost();
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   localStorage.removeItem("compoundBench");
 });
 await page.waitForTimeout(300);
@@ -12838,16 +13751,20 @@ const paneFold = await page.evaluate(() => {
   const label = document.getElementById("brush-label");
   const lb = label.getBoundingClientRect();
   const hit = document.elementFromPoint(lb.left + 4, lb.top + lb.height / 2);
-  return { palette: box("#palette"), foot: box(".palette-foot"), status: box("#status"),
+    return {
+        palette: box("#palette"),
+        foot: box(".palette-foot"),
+        status: box("#status"),
     list: box("#palette-list"),
     open: [...document.querySelectorAll("#palette-panes details")].map((d) => d.open),
-    onTop: hit === label || !!hit?.contains(label) };
+        onTop: hit === label || !!hit?.contains(label),
+    };
 });
-check("all palette panes start open, with the brush label under them",
-  paneFold.open.length === 3 && paneFold.open.every(Boolean)
-    && paneFold.foot.bottom <= paneFold.palette.bottom + 1 && paneFold.onTop,
-  `${JSON.stringify(paneFold.open)}, foot ends ${paneFold.foot.bottom},`
-  + ` palette ends ${paneFold.palette.bottom}, painted on top ${paneFold.onTop}`);
+check(
+    "all palette panes start open, with the brush label under them",
+    paneFold.open.length === 3 && paneFold.open.every(Boolean) && paneFold.foot.bottom <= paneFold.palette.bottom + 1 && paneFold.onTop,
+    `${JSON.stringify(paneFold.open)}, foot ends ${paneFold.foot.bottom},` + ` palette ends ${paneFold.palette.bottom}, painted on top ${paneFold.onTop}`
+);
 
 // A pane wider than the palette hangs a scrollbar along the bottom of the
 // menu, which is never anything but a mistake: every row down here is built to
@@ -12882,12 +13799,12 @@ const paneShut = await page.evaluate(() => ({
   shown: document.getElementById("cfg-hull-tol").checkVisibility(),
   stored: localStorage.getItem("pane.settings-pane"),
 }));
-check("folding a pane leaves its header and hands the room back to the list",
+check(
+    "folding a pane leaves its header and hands the room back to the list",
   paneShut.settings < 45 && paneShut.list > paneFold.list.h && paneShut.shown === false,
-  `settings ${paneShut.settings} px, list ${paneFold.list.h} -> ${paneShut.list},`
-  + ` controls shown ${paneShut.shown}`);
-check("and the fold is remembered outside the ship, in localStorage",
-  paneShut.stored === "0", `pane.settings-pane = ${paneShut.stored}`);
+    `settings ${paneShut.settings} px, list ${paneFold.list.h} -> ${paneShut.list},` + ` controls shown ${paneShut.shown}`
+);
+check("and the fold is remembered outside the ship, in localStorage", paneShut.stored === "0", `pane.settings-pane = ${paneShut.stored}`);
 
 await page.setViewportSize({ width: 1700, height: 560 });
 await page.waitForTimeout(400);
@@ -12899,19 +13816,24 @@ const paneTight = await page.evaluate(() => {
   const label = document.getElementById("brush-label");
   const lb = label.getBoundingClientRect();
   const hit = document.elementFromPoint(lb.left + 4, lb.top + lb.height / 2);
-  return { palette: box("#palette"), foot: box(".palette-foot"), status: box("#status"),
-    list: box("#palette-list"), panes: box("#palette-panes"),
-    onTop: hit === label || !!hit?.contains(label) };
+    return {
+        palette: box("#palette"),
+        foot: box(".palette-foot"),
+        status: box("#status"),
+        list: box("#palette-list"),
+        panes: box("#palette-panes"),
+        onTop: hit === label || !!hit?.contains(label),
+    };
 });
 await page.setViewportSize({ width: 1700, height: 950 });
 await page.waitForTimeout(400);
-check("on a short window the brush label keeps its place and the panes scroll",
-  paneTight.foot.bottom <= paneTight.palette.bottom + 1
-    && paneTight.foot.bottom <= paneTight.status.top + 1
-    && paneTight.onTop && paneTight.list.h >= 90,
-  `foot ${paneTight.foot.top}-${paneTight.foot.bottom},`
-  + ` palette ends ${paneTight.palette.bottom}, status starts ${paneTight.status.top},`
-  + ` list ${paneTight.list.h} px, panes ${paneTight.panes.h} px`);
+check(
+    "on a short window the brush label keeps its place and the panes scroll",
+    paneTight.foot.bottom <= paneTight.palette.bottom + 1 && paneTight.foot.bottom <= paneTight.status.top + 1 && paneTight.onTop && paneTight.list.h >= 90,
+    `foot ${paneTight.foot.top}-${paneTight.foot.bottom},` +
+        ` palette ends ${paneTight.palette.bottom}, status starts ${paneTight.status.top},` +
+        ` list ${paneTight.list.h} px, panes ${paneTight.panes.h} px`
+);
 
 await page.click("#settings-pane > summary");
 await page.waitForTimeout(250);
@@ -12920,9 +13842,11 @@ const paneBack = await page.evaluate(() => ({
   shown: document.getElementById("cfg-hull-tol").checkVisibility(),
   h: Math.round(document.querySelector("#viewport").getBoundingClientRect().height),
 }));
-check("unfolding brings the controls back, and the window is as it was",
+check(
+    "unfolding brings the controls back, and the window is as it was",
   paneBack.open && paneBack.shown && paneBack.h > 700,
-  `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`);
+    `open ${paneBack.open}, controls ${paneBack.shown}, viewport ${paneBack.h} px`
+);
 
 // ---- both side panels are draggable ----------------------------------------
 // The palette carries a fixed number of columns, so its width is the tile size,
@@ -12955,29 +13879,32 @@ const gripAfter = await page.evaluate(() => ({
   // the canvas has to be told, or it renders at the old size, stretched
   canvas: Math.round(document.getElementById("render-canvas").width / devicePixelRatio),
 }));
-check("both panels have a grip, and dragging it moves them",
-  gripBefore.grips === 2
-    && Math.abs(gripAfter.palette - gripBefore.palette - 140) <= 4
-    && Math.abs(gripAfter.inspector - gripBefore.inspector - 100) <= 4,
-  `palette ${gripBefore.palette}->${gripAfter.palette}, `
-  + `inspector ${gripBefore.inspector}->${gripAfter.inspector}`);
-check("the viewport gives up exactly what the panels took, and re-renders at it",
-  Math.abs(gripAfter.viewport - (gripBefore.viewport - 240)) <= 6
-    && Math.abs(gripAfter.canvas - gripAfter.viewport) <= 6,
-  `viewport ${gripBefore.viewport}->${gripAfter.viewport}, canvas ${gripAfter.canvas}`);
-check("the widths are remembered here, not in the ship",
-  Math.abs(parseFloat(gripAfter.storedPalette) - gripAfter.palette) <= 1
-    && Math.abs(parseFloat(gripAfter.storedInspector) - gripAfter.inspector) <= 1,
-  `stored ${gripAfter.storedPalette} / ${gripAfter.storedInspector}`);
+check(
+    "both panels have a grip, and dragging it moves them",
+    gripBefore.grips === 2 && Math.abs(gripAfter.palette - gripBefore.palette - 140) <= 4 && Math.abs(gripAfter.inspector - gripBefore.inspector - 100) <= 4,
+    `palette ${gripBefore.palette}->${gripAfter.palette}, ` + `inspector ${gripBefore.inspector}->${gripAfter.inspector}`
+);
+check(
+    "the viewport gives up exactly what the panels took, and re-renders at it",
+    Math.abs(gripAfter.viewport - (gripBefore.viewport - 240)) <= 6 && Math.abs(gripAfter.canvas - gripAfter.viewport) <= 6,
+    `viewport ${gripBefore.viewport}->${gripAfter.viewport}, canvas ${gripAfter.canvas}`
+);
+check(
+    "the widths are remembered here, not in the ship",
+    Math.abs(parseFloat(gripAfter.storedPalette) - gripAfter.palette) <= 1 && Math.abs(parseFloat(gripAfter.storedInspector) - gripAfter.inspector) <= 1,
+    `stored ${gripAfter.storedPalette} / ${gripAfter.storedInspector}`
+);
 
 // Big icons is the palette's other width. One remembered number for both
 // would mean one drag permanently defeated the toggle.
 const gripBig = await page.evaluate(async () => {
   const b = document.getElementById("big-palette");
-  b.checked = false; b.dispatchEvent(new Event("change", { bubbles: true }));
+    b.checked = false;
+    b.dispatchEvent(new Event("change", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 120));
   const small = Math.round(document.getElementById("palette").getBoundingClientRect().width);
-  b.checked = true; b.dispatchEvent(new Event("change", { bubbles: true }));
+    b.checked = true;
+    b.dispatchEvent(new Event("change", { bubbles: true }));
   await new Promise((r) => setTimeout(r, 120));
   const big = Math.round(document.getElementById("palette").getBoundingClientRect().width);
   // and double-click puts whichever one you are on back to its default
@@ -12989,11 +13916,11 @@ const gripBig = await page.evaluate(async () => {
   for (const k of ["paletteWidth", "paletteWidth.big", "inspectorWidth"]) localStorage.removeItem(k);
   return { small, big, reset, resetInspector };
 });
-check("the two icon sizes keep separate widths, and double-click restores",
-  gripBig.small === 260 && Math.abs(gripBig.big - gripAfter.palette) <= 1
-    && gripBig.reset === 520 && gripBig.resetInspector === 232,
-  `small ${gripBig.small}, big ${gripBig.big}, after double-click `
-  + `${gripBig.reset} / ${gripBig.resetInspector}`);
+check(
+    "the two icon sizes keep separate widths, and double-click restores",
+    gripBig.small === 260 && Math.abs(gripBig.big - gripAfter.palette) <= 1 && gripBig.reset === 520 && gripBig.resetInspector === 232,
+    `small ${gripBig.small}, big ${gripBig.big}, after double-click ` + `${gripBig.reset} / ${gripBig.resetInspector}`
+);
 
 const editorCleanup = await page.evaluate(() => {
   const settings = document.getElementById("settings-pane");
@@ -13013,22 +13940,21 @@ const editorCleanup = await page.evaluate(() => {
     neutralPatchBeforeCall: clamp >= 0 && neutral > clamp,
   };
 });
-check("Ghost and Big icons live in global Settings",
+check(
+    "Ghost and Big icons live in global Settings",
   editorCleanup.ghostInSettings && editorCleanup.bigIconsInSettings,
-  `ghost ${editorCleanup.ghostInSettings}, big icons ${editorCleanup.bigIconsInSettings}`);
+    `ghost ${editorCleanup.ghostInSettings}, big icons ${editorCleanup.bigIconsInSettings}`
+);
 // Both dials are saved in the manifest and read by the game, so the section
 // that told you they were preview-only is gone and they sit with the rest of
 // the ship's runtime settings.
-check("Specular AA and Reflection roughness sit under Runtime, with no preview section left",
-  editorCleanup.aaInRuntime && editorCleanup.roughnessInRuntime
-    && !editorCleanup.sections.includes("Runtime preview"),
-  `sections ${JSON.stringify(editorCleanup.sections)}, `
-  + `AA ${editorCleanup.aaInRuntime}, roughness ${editorCleanup.roughnessInRuntime}`);
-check("TAA is removed from the editor",
-  editorCleanup.taaRemoved, `TAA control present: ${!editorCleanup.taaRemoved}`);
-check("Khronos PBR Neutral shader patch is installed before the tone mapper",
-  editorCleanup.neutralPatchBeforeCall,
-  `clamp before call: ${editorCleanup.neutralPatchBeforeCall}`);
+check(
+    "Specular AA and Reflection roughness sit under Runtime, with no preview section left",
+    editorCleanup.aaInRuntime && editorCleanup.roughnessInRuntime && !editorCleanup.sections.includes("Runtime preview"),
+    `sections ${JSON.stringify(editorCleanup.sections)}, ` + `AA ${editorCleanup.aaInRuntime}, roughness ${editorCleanup.roughnessInRuntime}`
+);
+check("TAA is removed from the editor", editorCleanup.taaRemoved, `TAA control present: ${!editorCleanup.taaRemoved}`);
+check("Khronos PBR Neutral shader patch is installed before the tone mapper", editorCleanup.neutralPatchBeforeCall, `clamp before call: ${editorCleanup.neutralPatchBeforeCall}`);
 
 // ---- authored lights -------------------------------------------------------
 // A light rides a placement, so the module's transform carries it, and the
@@ -13038,7 +13964,9 @@ const lightModel = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const M = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
   const owner = await ed.placeAt(M, new V(10, 0, 0), { silent: true });
   const bench = await ed.placeAt(M, new V(0, 0, 0), { silent: true, stage: true });
@@ -13048,24 +13976,27 @@ const lightModel = await page.evaluate(async () => {
     id: l.id,
     parented: l.node.parent === owner.node,
     // the offset is the OWNER's local space, so it lands beside the owner
-    world: l.node.getAbsolutePosition().asArray().map((v) => +v.toFixed(3)),
+        world: l.node
+            .getAbsolutePosition()
+            .asArray()
+            .map((v) => +v.toFixed(3)),
     runtime: l.runtime,
     onBench: lt.addLight(bench.id, { silent: true }),
     unknown: lt.addLight("nope", { silent: true }),
     listed: lt.lightsOf(owner.id).length,
   };
 });
-check("a light attaches to a placement and hangs off its node",
-  lightModel.parented && lightModel.listed === 1
-    && lightModel.world.join() === "10,2.5,0",
-  `${lightModel.id} at [${lightModel.world}], parented ${lightModel.parented}`);
-check("it defaults to a ceiling lamp: a clustered point light",
-  lightModel.runtime.type === "point" && lightModel.runtime.clustered
-    && lightModel.runtime.intensity === 1,
-  JSON.stringify(lightModel.runtime));
-check("nothing that cannot reach the ship can own one",
-  lightModel.onBench === null && lightModel.unknown === null,
-  `bench ${lightModel.onBench}, unknown ${lightModel.unknown}`);
+check(
+    "a light attaches to a placement and hangs off its node",
+    lightModel.parented && lightModel.listed === 1 && lightModel.world.join() === "10,2.5,0",
+    `${lightModel.id} at [${lightModel.world}], parented ${lightModel.parented}`
+);
+check(
+    "it defaults to a ceiling lamp: a clustered point light",
+    lightModel.runtime.type === "point" && lightModel.runtime.clustered && lightModel.runtime.intensity === 1,
+    JSON.stringify(lightModel.runtime)
+);
+check("nothing that cannot reach the ship can own one", lightModel.onBench === null && lightModel.unknown === null, `bench ${lightModel.onBench}, unknown ${lightModel.unknown}`);
 
 // The combinations the engine has no meaning for are settled on the way in,
 // rather than trusted to the inspector, a loaded manifest and kit_lights.json
@@ -13089,22 +14020,19 @@ const lightRules = await page.evaluate(async () => {
     clamped: run({ range: -3, intensity: -1, angle: 500, color: [2, -1, 0.5] }),
   };
 });
-check("a point light cannot cast a shadow, and neither can a clustered one",
+check(
+    "a point light cannot cast a shadow, and neither can a clustered one",
   !lightRules.point.castsShadows && !lightRules.clusteredSpot.castsShadows,
-  `point ${lightRules.point.castsShadows}, clustered spot ${lightRules.clusteredSpot.castsShadows}`);
-check("an ordinary spot can, which is the whole reason for the flag",
-  lightRules.spot.castsShadows && lightRules.spot.type === "spot",
-  JSON.stringify(lightRules.spot));
-check("a directional light is never clustered",
-  !lightRules.dir.clustered && lightRules.dir.castsShadows,
-  JSON.stringify(lightRules.dir));
-check("an unknown kind falls back rather than reaching the scene",
-  lightRules.bogus.type === "point", JSON.stringify(lightRules.bogus));
-check("out-of-range values are clamped on the way in, not stored",
-  lightRules.clamped.range > 0 && lightRules.clamped.intensity === 0
-    && lightRules.clamped.angle === 179
-    && lightRules.clamped.color.join() === "1,0,0.5",
-  JSON.stringify(lightRules.clamped));
+    `point ${lightRules.point.castsShadows}, clustered spot ${lightRules.clusteredSpot.castsShadows}`
+);
+check("an ordinary spot can, which is the whole reason for the flag", lightRules.spot.castsShadows && lightRules.spot.type === "spot", JSON.stringify(lightRules.spot));
+check("a directional light is never clustered", !lightRules.dir.clustered && lightRules.dir.castsShadows, JSON.stringify(lightRules.dir));
+check("an unknown kind falls back rather than reaching the scene", lightRules.bogus.type === "point", JSON.stringify(lightRules.bogus));
+check(
+    "out-of-range values are clamped on the way in, not stored",
+    lightRules.clamped.range > 0 && lightRules.clamped.intensity === 0 && lightRules.clamped.angle === 179 && lightRules.clamped.color.join() === "1,0,0.5",
+    JSON.stringify(lightRules.clamped)
+);
 
 // A light is part of what the element IS - it goes with a copy and dies with
 // the original, the same way its collision shapes do.
@@ -13137,18 +14065,18 @@ const lightLife = await page.evaluate(async () => {
     orphans: ed.state.lights.size,
   };
 });
-check("a copied element brings its lights, as new entries of its own",
-  lightLife.copies === 1 && lightLife.distinct && lightLife.sameSpot === "0,2.5,0",
-  JSON.stringify(lightLife));
-check("deleting the element it rides takes the light with it",
-  lightLife.afterDelete === 1, `${lightLife.afterDelete} left`);
-check("lights ride the undo stack, field for field",
-  lightLife.saved === 2 && lightLife.restored === 2 && lightLife.identical
+check("a copied element brings its lights, as new entries of its own", lightLife.copies === 1 && lightLife.distinct && lightLife.sameSpot === "0,2.5,0", JSON.stringify(lightLife));
+check("deleting the element it rides takes the light with it", lightLife.afterDelete === 1, `${lightLife.afterDelete} left`);
+check(
+    "lights ride the undo stack, field for field",
+    lightLife.saved === 2 &&
+        lightLife.restored === 2 &&
+        lightLife.identical &&
     // the edits above, not the defaults a fresh light would come back with
-    && lightLife.edited === "point 0 179",
-  JSON.stringify(lightLife));
-check("and one whose element is gone is dropped, not stranded",
-  lightLife.orphans === 0, `${lightLife.orphans} orphan(s)`);
+        lightLife.edited === "point 0 179",
+    JSON.stringify(lightLife)
+);
+check("and one whose element is gone is dropped, not stranded", lightLife.orphans === 0, `${lightLife.orphans} orphan(s)`);
 
 // Ctrl+D has a direct duplicate path for a light: it has no module to put in a
 // ghost, so the copy is placed beside it in the owner's local space.
@@ -13156,10 +14084,10 @@ const lightDuplicate = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const lt = await import("/js/lights.js");
   const V = BABYLON.Vector3;
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
   ed.state.snap.pos = 1;
-  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0),
-    { silent: true });
+    const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const source = lt.addLight(owner.id, { offset: [0, 2, 0], silent: true });
   ed.select([source.id]);
   document.getElementById("btn-duplicate").click();
@@ -13172,12 +14100,15 @@ const lightDuplicate = await page.evaluate(async () => {
     status: document.getElementById("status-text").textContent,
   };
 });
-check("Ctrl+D duplicates a selected light beside its source",
-  lightDuplicate.count === 2 && lightDuplicate.selected === 1
-    && lightDuplicate.owner?.startsWith("P")
-    && lightDuplicate.offset === "1,2,0"
-    && /copy of light/.test(lightDuplicate.status),
-  JSON.stringify(lightDuplicate));
+check(
+    "Ctrl+D duplicates a selected light beside its source",
+    lightDuplicate.count === 2 &&
+        lightDuplicate.selected === 1 &&
+        lightDuplicate.owner?.startsWith("P") &&
+        lightDuplicate.offset === "1,2,0" &&
+        /copy of light/.test(lightDuplicate.status),
+    JSON.stringify(lightDuplicate)
+);
 
 // The undo stack is not what persists - the manifest is. A light that rode the
 // snapshot but never reached buildManifest() would survive every undo and be
@@ -13188,7 +14119,9 @@ const lightManifest = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   lt.addLight(owner.id, {
     offset: [0, 3, 0],
@@ -13204,11 +14137,8 @@ const lightManifest = await page.evaluate(async () => {
     identical: JSON.stringify(back) === JSON.stringify(man.lights),
   };
 });
-check("the manifest carries the lights, in the space it declares them in",
-  lightManifest.written?.length === 1 && lightManifest.declared,
-  JSON.stringify(lightManifest.written));
-check("and a saved ship reloads them unchanged",
-  lightManifest.identical, JSON.stringify(lightManifest));
+check("the manifest carries the lights, in the space it declares them in", lightManifest.written?.length === 1 && lightManifest.declared, JSON.stringify(lightManifest.written));
+check("and a saved ship reloads them unchanged", lightManifest.identical, JSON.stringify(lightManifest));
 
 // kit_lights.json: a light module arrives lit, so nobody has to find the spot
 // under its face by hand for every panel in the ship.
@@ -13218,7 +14148,9 @@ const kitLights = await page.evaluate(async () => {
   const mf = await import("/js/manifest.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   const wide = await ed.placeAt("Modular SciFi MegaKit/Props/Prop_Light_Wide", new V(0, 3, 0), { silent: true });
   const seeded = lt.lightsOf(wide.id);
@@ -13247,7 +14179,10 @@ const kitLights = await page.evaluate(async () => {
     range: seeded[0]?.runtime.range,
     clustered: seeded[0]?.runtime.clustered,
     cornerCount: lt.lightsOf(corner.id).length,
-    cornerTurned: lt.lightsOf(corner.id).map((l) => lt.lightRotation(l)[1]).join(),
+        cornerTurned: lt
+            .lightsOf(corner.id)
+            .map((l) => lt.lightRotation(l)[1])
+            .join(),
     wallCount: lt.lightsOf(wall.id).length,
     benchCount: lt.lightsOf(bench.id).length,
     copies: copied.length,
@@ -13257,22 +14192,31 @@ const kitLights = await page.evaluate(async () => {
     keptEdit: reloaded.filter((l) => l.runtime.intensity === 7).length,
   };
 });
-check("placing a light module brings its lamp, on the face of its strip",
-  kitLights.wideCount === 1 && kitLights.offset === "0.58,-0.1,0"
-    && kitLights.kind === "point" && kitLights.range === 8 && kitLights.clustered,
-  JSON.stringify(kitLights));
-check("a curved strip gets one lamp per segment, each turned to its tangent",
+check(
+    "placing a light module brings its lamp, on the face of its strip",
+    kitLights.wideCount === 1 && kitLights.offset === "0.58,-0.1,0" && kitLights.kind === "point" && kitLights.range === 8 && kitLights.clustered,
+    JSON.stringify(kitLights)
+);
+check(
+    "a curved strip gets one lamp per segment, each turned to its tangent",
   kitLights.cornerCount === 3 && kitLights.cornerTurned === "-17.3,-45.7,-74.1",
-  `${kitLights.cornerCount} at [${kitLights.cornerTurned}]`);
-check("a module with nothing to light gets nothing, and neither does the bench",
+    `${kitLights.cornerCount} at [${kitLights.cornerTurned}]`
+);
+check(
+    "a module with nothing to light gets nothing, and neither does the bench",
   kitLights.wallCount === 0 && kitLights.benchCount === 0,
-  `wall ${kitLights.wallCount}, bench ${kitLights.benchCount}`);
-check("a copy carries the edited light rather than a fresh default",
+    `wall ${kitLights.wallCount}, bench ${kitLights.benchCount}`
+);
+check(
+    "a copy carries the edited light rather than a fresh default",
   kitLights.copies === 1 && kitLights.copiedIntensity === 7,
-  `${kitLights.copies} copy(ies) at intensity ${kitLights.copiedIntensity}`);
-check("and a reload restores what was saved instead of seeding a second lamp",
+    `${kitLights.copies} copy(ies) at intensity ${kitLights.copiedIntensity}`
+);
+check(
+    "and a reload restores what was saved instead of seeding a second lamp",
   kitLights.after === kitLights.before && kitLights.keptEdit === 2,
-  `${kitLights.before} -> ${kitLights.after}, ${kitLights.keptEdit} edited`);
+    `${kitLights.before} -> ${kitLights.after}, ${kitLights.keptEdit} edited`
+);
 
 // The inspector, and the plate that stands in for the light in the viewport.
 // A light is the only thing in this editor parented to another element, so the
@@ -13283,7 +14227,9 @@ const lightUi = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
 
   const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   const bare = ed.worldBounds(owner.node);
@@ -13295,13 +14241,17 @@ const lightUi = await page.evaluate(async () => {
   const off = (id) => document.getElementById(id).disabled;
 
   const panel = {
-    light: shown("light-fields"), scale: shown("scale-fields"),
-    behavior: shown("behavior-fields"), door: shown("door-fields"),
+        light: shown("light-fields"),
+        scale: shown("scale-fields"),
+        behavior: shown("behavior-fields"),
+        door: shown("door-fields"),
     ownerId: document.getElementById("lgt-owner").value,
     ownerLabel: document.getElementById("lgt-owner").selectedOptions[0]?.textContent,
-    kind: val("lgt-type"), intensity: val("lgt-intensity"),
+        kind: val("lgt-type"),
+        intensity: val("lgt-intensity"),
     // a point light has no cone, and cannot cast whatever the checkbox says
-    angleOff: off("lgt-angle"), shadowsOff: off("lgt-shadows"),
+        angleOff: off("lgt-angle"),
+        shadowsOff: off("lgt-shadows"),
     // ...and every lamp with a position has a Range the engine reads
     rangeOff: off("lgt-range"),
     // the offset row is the light's own, in its owner's space
@@ -13319,8 +14269,7 @@ const lightUi = await page.evaluate(async () => {
   typeEl.value = "spot";
   typeEl.dispatchEvent(new Event("change", { bubbles: true }));
 
-  const newOwner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0),
-    { silent: true });
+    const newOwner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(4, 0, 0), { silent: true });
   const beforeRehome = light.node.getAbsolutePosition().clone();
   ed.select([light.id]);
   const ownerEl = document.getElementById("lgt-owner");
@@ -13342,10 +14291,8 @@ const lightUi = await page.evaluate(async () => {
   // box/centre/camera gizmos parked (disabled) in the scene, and they are none
   // of this check's business. Keeping every light's gizmo in scope still
   // catches one leaking from a lamp that was edited earlier.
-  const gizmo = ed.state.scene.meshes
-    .filter((m) => ed.isGizmoMesh(m) && m.metadata.lightRoot);
-  const shipMeshes = owner.node.getChildMeshes()
-    .filter((m) => !ed.isGizmoMesh(m)).length;
+    const gizmo = ed.state.scene.meshes.filter((m) => ed.isGizmoMesh(m) && m.metadata.lightRoot);
+    const shipMeshes = owner.node.getChildMeshes().filter((m) => !ed.isGizmoMesh(m)).length;
 
   // selecting a placement again must not leave the light panel on screen
   ed.select([owner.id]);
@@ -13369,51 +14316,62 @@ const lightUi = await page.evaluate(async () => {
     gizmos: gizmo.length,
     gizmoOwned: gizmo.every((m) => m.metadata.lightRoot === light.node),
     shipMeshes,
-    boundsUnchanged: bare && withLight
-      && bare.max.y.toFixed(3) === withLight.max.y.toFixed(3),
+        boundsUnchanged: bare && withLight && bare.max.y.toFixed(3) === withLight.max.y.toFixed(3),
     afterOwner,
   };
 });
-check("selecting a light shows its two forms and drops the ones it has none of",
-  lightUi.panel.light && !lightUi.panel.scale && !lightUi.panel.behavior
-    && !lightUi.panel.door && lightUi.panel.posY === "6",
-  JSON.stringify(lightUi.panel));
-check("the panel says what the light rides, and starts on the defaults",
-  lightUi.panel.ownerId === "P0001"
-    && lightUi.panel.ownerLabel === "P0001 — Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight"
-    && lightUi.panel.kind === "point" && lightUi.panel.intensity === "1",
-  JSON.stringify(lightUi.panel));
-check("the light owner is editable and reparenting keeps its world position",
+check(
+    "selecting a light shows its two forms and drops the ones it has none of",
+    lightUi.panel.light && !lightUi.panel.scale && !lightUi.panel.behavior && !lightUi.panel.door && lightUi.panel.posY === "6",
+    JSON.stringify(lightUi.panel)
+);
+check(
+    "the panel says what the light rides, and starts on the defaults",
+    lightUi.panel.ownerId === "P0001" &&
+        lightUi.panel.ownerLabel === "P0001 — Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight" &&
+        lightUi.panel.kind === "point" &&
+        lightUi.panel.intensity === "1",
+    JSON.stringify(lightUi.panel)
+);
+check(
+    "the light owner is editable and reparenting keeps its world position",
   lightUi.rehomed && lightUi.rehomeWorldGap < 1e-5,
-  JSON.stringify({ rehomed: lightUi.rehomed, worldGap: lightUi.rehomeWorldGap }));
-check("rows the engine has no meaning for are disabled, not silently ignored",
-  lightUi.panel.angleOff && lightUi.panel.shadowsOff,
-  JSON.stringify(lightUi.panel));
-check("editing a field lands on the record, and reopens the rows it unlocks",
-  lightUi.editedIntensity === 12 && lightUi.editedClustered === false
-    && lightUi.editedType === "spot" && lightUi.shadowsNow && lightUi.angleNow,
-  JSON.stringify(lightUi));
+    JSON.stringify({ rehomed: lightUi.rehomed, worldGap: lightUi.rehomeWorldGap })
+);
+check("rows the engine has no meaning for are disabled, not silently ignored", lightUi.panel.angleOff && lightUi.panel.shadowsOff, JSON.stringify(lightUi.panel));
+check(
+    "editing a field lands on the record, and reopens the rows it unlocks",
+    lightUi.editedIntensity === 12 && lightUi.editedClustered === false && lightUi.editedType === "spot" && lightUi.shadowsNow && lightUi.angleNow,
+    JSON.stringify(lightUi)
+);
 // Range reaches the shader on every lamp that has a position, and only because
 // the preview materials ask Babylon for the glTF falloff instead of the PBR
 // physical one. Physical is a plain 1/d² that never cuts off, so Range authored
 // a number nothing read - and on a clustered lamp it was worse still, because
 // the cluster sizes and culls the light proxy by Range and the light stopped
 // dead where the proxy ended.
-check("Range is live on a clustered lamp and on an unclustered one alike",
+check(
+    "Range is live on a clustered lamp and on an unclustered one alike",
   lightUi.panel.rangeOff === false && lightUi.rangeNow === false,
-  JSON.stringify({ clustered: lightUi.panel.rangeOff, unclustered: lightUi.rangeNow }));
-check("an unclustered lamp is told the game ramps it down to Range differently",
+    JSON.stringify({ clustered: lightUi.panel.rangeOff, unclustered: lightUi.rangeNow })
+);
+check(
+    "an unclustered lamp is told the game ramps it down to Range differently",
   /straight ramp rather than this preview/.test(lightUi.rangeHint),
-  JSON.stringify(lightUi.rangeHint));
+    JSON.stringify(lightUi.rangeHint)
+);
 // A directional light is the one lamp with no distance to fall off over.
-check("Range is dead on a directional light, with the reason under it",
+check(
+    "Range is dead on a directional light, with the reason under it",
   lightUi.rangeDirectional === true && /no distance falloff/.test(lightUi.hintDirectional),
-  JSON.stringify({ off: lightUi.rangeDirectional, hint: lightUi.hintDirectional }));
-check("the light has a plate and a stub in the viewport, both hung off its node",
-  lightUi.gizmos === 2 && lightUi.gizmoOwned, `${lightUi.gizmos} gizmo mesh(es)`);
-check("neither reaches the ship: not its meshes, not its size, not the export",
+    JSON.stringify({ off: lightUi.rangeDirectional, hint: lightUi.hintDirectional })
+);
+check("the light has a plate and a stub in the viewport, both hung off its node", lightUi.gizmos === 2 && lightUi.gizmoOwned, `${lightUi.gizmos} gizmo mesh(es)`);
+check(
+    "neither reaches the ship: not its meshes, not its size, not the export",
   lightUi.shipMeshes > 0 && lightUi.boundsUnchanged,
-  `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`);
+    `${lightUi.shipMeshes} art mesh(es), bounds unchanged ${lightUi.boundsUnchanged}`
+);
 check("and selecting the element it rides puts the light panel away", !lightUi.afterOwner, `still shown: ${lightUi.afterOwner}`);
 
 // ---- L steps between an element and the lamps riding it ---------------------
@@ -13472,6 +14430,72 @@ check(
     `"${lightKey.empty.status}"`
 );
 
+// ---- the World line under a lamp's offset -----------------------------------
+// A lamp's node rides the element it lights, so its three boxes are an offset
+// and say nothing about where in the ship it is. Every other entry's node is a
+// scene root, so the row must not appear for one - a line that repeats the
+// boxes teaches you to ignore it.
+const worldLine = await page.evaluate(async () => {
+    const ed = await import("/js/editor.js");
+    const lt = await import("/js/lights.js");
+    const i = await import("/js/interact.js");
+    const V = BABYLON.Vector3;
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(40, 0, 6), { silent: true, noLights: true });
+    const lamp = lt.addLight(owner.id, { offset: [1, 2.5, 0], silent: true });
+    const settle = () => new Promise((r) => setTimeout(r, 60));
+    const read = () => ({
+        hidden: document.getElementById("pos-world-row").hidden,
+        text: (document.getElementById("pos-world").textContent || "").trim(),
+        heading: (document.getElementById("insp-h-pos").textContent || "").trim(),
+        boxes: ["pos-x", "pos-y", "pos-z"].map((id) => document.getElementById(id).value),
+    });
+
+    ed.select([lamp.id]);
+    await settle();
+    const straight = read();
+
+    // the owner turns a quarter circle: the offset is untouched, the world
+    // line swings the arm onto the other axis
+    owner.node.rotationQuaternion = BABYLON.Quaternion.RotationAxis(V.Up(), Math.PI / 2);
+    ed.select([]);
+    ed.select([lamp.id]);
+    await settle();
+    const turned = read();
+
+    // the element itself sits in the world already
+    ed.select([owner.id]);
+    await settle();
+    const onOwner = read();
+
+    ed.clearAll();
+    ed.select([]);
+    return { straight, turned, onOwner };
+});
+check(
+    "a lamp shows where it really is, under the offset it is edited by",
+    worldLine.straight.hidden === false
+    && worldLine.straight.text === "41, 2.5, 6"
+    && worldLine.straight.heading === "Offset (local)",
+    `${JSON.stringify(worldLine.straight)}`
+);
+check(
+    "turning the owner moves the world line and leaves the offset alone",
+    (() => {
+        const n = worldLine.turned.text.split(",").map((v) => Number(v.trim()));
+        return worldLine.turned.boxes.join() === "1,2.5,0"
+            && n[0] === 40 && n[1] === 2.5 && Math.abs(Math.abs(n[2] - 6) - 1) < 1e-6;
+    })(),
+    `${worldLine.turned.text} — boxes ${worldLine.turned.boxes.join()}`
+);
+check(
+    "an element is already in world coordinates, so it gets no second line",
+    worldLine.onOwner.hidden === true && worldLine.onOwner.text === "" && worldLine.onOwner.boxes.join() === "40,0,6",
+    `${JSON.stringify(worldLine.onOwner)}`
+);
+
 // ---- a lamp starts at the numbers its own kind needs ------------------------
 // Intensity, range and cone mean different things per kind: 1 is bright for a
 // point light filling a small room and invisible for a spot throwing a cone at
@@ -13482,9 +14506,10 @@ const spotDefaults = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
-  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new V(0, 0, 0), { silent: true, noLights: true });
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
+    const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true, noLights: true });
   const take = (l) => [l.runtime.intensity, l.runtime.range, l.runtime.angle];
 
   // asked for outright, the way a kit seed asks
@@ -13504,8 +14529,7 @@ const spotDefaults = await page.evaluate(async () => {
   };
   await pick("spot");
   const spot = take(lamp);
-  const fields = ["lgt-intensity", "lgt-range", "lgt-angle"]
-    .map((id) => document.getElementById(id).value);
+    const fields = ["lgt-intensity", "lgt-range", "lgt-angle"].map((id) => document.getElementById(id).value);
 
   // a number typed by hand is an opinion, and survives the next change of kind
   const intensityEl = document.getElementById("lgt-intensity");
@@ -13520,19 +14544,19 @@ const spotDefaults = await page.evaluate(async () => {
   const back = take(lamp);
   return { asked, fresh, spot, fields, tuned, back };
 });
-check("a lamp asked for as a spot is born with a spot's numbers",
-  JSON.stringify(spotDefaults.asked) === JSON.stringify([80, 6, 120]),
-  JSON.stringify(spotDefaults.asked));
-check("choosing spot in the panel moves an untouched lamp onto them too",
-  JSON.stringify(spotDefaults.fresh) === JSON.stringify([1, 8, 90])
-    && JSON.stringify(spotDefaults.spot) === JSON.stringify([80, 6, 120])
-    && JSON.stringify(spotDefaults.fields) === JSON.stringify(["80", "6", "120"]),
-  `${JSON.stringify(spotDefaults.fresh)} -> ${JSON.stringify(spotDefaults.spot)},`
-  + ` fields ${JSON.stringify(spotDefaults.fields)}`);
-check("a number typed by hand outlives a change of kind, and the rest follow it",
-  JSON.stringify(spotDefaults.tuned) === JSON.stringify([50, 6, 120])
-    && JSON.stringify(spotDefaults.back) === JSON.stringify([50, 8, 90]),
-  `tuned ${JSON.stringify(spotDefaults.tuned)}, back on point ${JSON.stringify(spotDefaults.back)}`);
+check("a lamp asked for as a spot is born with a spot's numbers", JSON.stringify(spotDefaults.asked) === JSON.stringify([80, 6, 120]), JSON.stringify(spotDefaults.asked));
+check(
+    "choosing spot in the panel moves an untouched lamp onto them too",
+    JSON.stringify(spotDefaults.fresh) === JSON.stringify([1, 8, 90]) &&
+        JSON.stringify(spotDefaults.spot) === JSON.stringify([80, 6, 120]) &&
+        JSON.stringify(spotDefaults.fields) === JSON.stringify(["80", "6", "120"]),
+    `${JSON.stringify(spotDefaults.fresh)} -> ${JSON.stringify(spotDefaults.spot)},` + ` fields ${JSON.stringify(spotDefaults.fields)}`
+);
+check(
+    "a number typed by hand outlives a change of kind, and the rest follow it",
+    JSON.stringify(spotDefaults.tuned) === JSON.stringify([50, 6, 120]) && JSON.stringify(spotDefaults.back) === JSON.stringify([50, 8, 90]),
+    `tuned ${JSON.stringify(spotDefaults.tuned)}, back on point ${JSON.stringify(spotDefaults.back)}`
+);
 
 // ---- a field keeps only the keys it can use ---------------------------------
 // Standing aside for a focused control is what typing is - but a number field
@@ -13542,9 +14566,9 @@ await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll();
-  const el = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new V(0, 0, 0), { silent: true });
+    i.cancelGhost();
+    ed.clearAll();
+    const el = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   ed.select([el.id]);
   ed.state.rotAxis = "y";
 });
@@ -13556,20 +14580,20 @@ const blindField = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { axis: ed.state.rotAxis, focus: document.activeElement.id };
 });
-check("a number field hands back a letter it could only have dropped",
-  blindField.axis !== "y" && blindField.focus === "pos-x", JSON.stringify(blindField));
+check("a number field hands back a letter it could only have dropped", blindField.axis !== "y" && blindField.focus === "pos-x", JSON.stringify(blindField));
 
 await page.fill("#palette-search", "");
 await page.focus("#palette-search");
-await page.evaluate(async () => { (await import("/js/editor.js")).state.rotAxis = "y"; });
+await page.evaluate(async () => {
+    (await import("/js/editor.js")).state.rotAxis = "y";
+});
 await page.keyboard.press("r");
 await page.waitForTimeout(120);
 const textField = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return { axis: ed.state.rotAxis, value: document.getElementById("palette-search").value };
 });
-check("a text field keeps it, because there the letter is the point",
-  textField.axis === "y" && textField.value === "r", JSON.stringify(textField));
+check("a text field keeps it, because there the letter is the point", textField.axis === "y" && textField.value === "r", JSON.stringify(textField));
 
 // Enter is "done with this field": it hands the keyboard back, which is the way
 // out of a search box, where the letters really were the field's.
@@ -13578,11 +14602,12 @@ await page.waitForTimeout(120);
 const afterEnter = await page.evaluate(() => document.activeElement.id);
 await page.keyboard.press("r");
 await page.waitForTimeout(120);
-const afterEnterAxis = await page.evaluate(async () =>
-  (await import("/js/editor.js")).state.rotAxis);
-check("Enter releases a field, so the next shortcut lands on the ship",
+const afterEnterAxis = await page.evaluate(async () => (await import("/js/editor.js")).state.rotAxis);
+check(
+    "Enter releases a field, so the next shortcut lands on the ship",
   afterEnter !== "palette-search" && afterEnterAxis !== "y",
-  `${afterEnter || "(body)"}, axis ${afterEnterAxis}`);
+    `${afterEnter || "(body)"}, axis ${afterEnterAxis}`
+);
 await page.fill("#palette-search", "");
 await page.waitForTimeout(300);
 
@@ -13595,14 +14620,15 @@ const lamp = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const i = await import("/js/interact.js");
   const V = BABYLON.Vector3;
-  i.cancelGhost(); ed.clearAll(); ed.select([]);
+    i.cancelGhost();
+    ed.clearAll();
+    ed.select([]);
   // The settings the lamp turn must ignore: a world space and a 90° snap are
   // for laying walls out on a grid, and are not aiming.
   i.setAxisSpace("world");
   ed.state.rotAxis = "y";
   ed.state.snap.rot = 90;
-  const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
-    new V(0, 0, 0), { silent: true });
+    const owner = await ed.placeAt("Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight", new V(0, 0, 0), { silent: true });
   // Turned, so a step about a *world* axis would land on a different local one.
   ed.setEuler(owner.node, [0, 0, 90]);
   const light = lt.addLight(owner.id, {
@@ -13614,8 +14640,7 @@ const lamp = await page.evaluate(async () => {
   return { id: light.id, owner: owner.id };
 });
 {
-  const c = await page.evaluate(() =>
-    window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
+    const c = await page.evaluate(() => window.__scene.getEngine().getRenderingCanvas().getBoundingClientRect().toJSON());
   await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2, { steps: 3 });
 }
 const lampCamBefore = await page.evaluate(() => window.__scene.activeCamera.position.asArray());
@@ -13630,13 +14655,16 @@ const lampUp = await page.evaluate(async () => {
     cam: window.__scene.activeCamera.position.asArray(),
   };
 });
-check("the bare wheel steps a selected lamp's intensity, a whole unit on a spot",
-  Math.abs(lampUp.intensity - 2) < 1e-9 && lampUp.field === "2"
-    && /intensity 2\b/.test(lampUp.status),
-  JSON.stringify(lampUp));
-check("and it is an edit, so the camera stays where it was",
+check(
+    "the bare wheel steps a selected lamp's intensity, a whole unit on a spot",
+    Math.abs(lampUp.intensity - 2) < 1e-9 && lampUp.field === "2" && /intensity 2\b/.test(lampUp.status),
+    JSON.stringify(lampUp)
+);
+check(
+    "and it is an edit, so the camera stays where it was",
   JSON.stringify(lampCamBefore) === JSON.stringify(lampUp.cam),
-  `${lampCamBefore.map((v) => v.toFixed(1))} -> ${lampUp.cam.map((v) => v.toFixed(1))}`);
+    `${lampCamBefore.map((v) => v.toFixed(1))} -> ${lampUp.cam.map((v) => v.toFixed(1))}`
+);
 
 // A light of negative intensity is not a shadow, it is a broken manifest.
 for (let k = 0; k < 12; k++) await page.mouse.wheel(0, 120);
@@ -13645,8 +14673,7 @@ const lampFloor = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return ed.entryOf(ed.state.selection[0]).runtime.intensity;
 });
-check("winding it down stops at zero rather than going negative",
-  lampFloor === 0, `${lampFloor}`);
+check("winding it down stops at zero rather than going negative", lampFloor === 0, `${lampFloor}`);
 
 await page.keyboard.down("Control");
 await page.mouse.wheel(0, -120);
@@ -13663,23 +14690,28 @@ const lampTuned = await page.evaluate(async () => {
   const lt = await import("/js/lights.js");
   const e = ed.entryOf(ed.state.selection[0]);
   return {
-    range: e.runtime.range, angle: e.runtime.angle,
+        range: e.runtime.range,
+        angle: e.runtime.angle,
     rotation: lt.lightRotation(e).join(),
-    space: ed.state.axisSpace, snap: ed.state.snap.rot,
+        space: ed.state.axisSpace,
+        snap: ed.state.snap.rot,
     rangeField: document.getElementById("lgt-range").value,
     status: document.getElementById("status-text").textContent,
   };
 });
-check("Ctrl takes the range and Alt the cone, both by the panel's step",
-  Math.abs(lampTuned.range - 8.5) < 1e-9 && lampTuned.angle === 65
-    && lampTuned.rangeField === "8.5",
-  JSON.stringify(lampTuned));
+check(
+    "Ctrl takes the range and Alt the cone, both by the panel's step",
+    Math.abs(lampTuned.range - 8.5) < 1e-9 && lampTuned.angle === 65 && lampTuned.rangeField === "8.5",
+    JSON.stringify(lampTuned)
+);
 // The lamp rides an element turned 90° about Z, so a step about the *world* Y
 // spinNode would have taken lands on the node's local X instead - which aims
 // the beam somewhere nobody asked for.
-check("Shift turns it 0.5° about its own current axis, whatever the space says",
+check(
+    "Shift turns it 0.5° about its own current axis, whatever the space says",
   lampTuned.rotation === "0,0.5,0" && lampTuned.space === "world" && lampTuned.snap === 90,
-  `${lampTuned.rotation} with space ${lampTuned.space}, snap ${lampTuned.snap}`);
+    `${lampTuned.rotation} with space ${lampTuned.space}, snap ${lampTuned.snap}`
+);
 
 // A wheel notch is a CDP round trip, and the one-entry-per-gesture rule is a
 // 400 ms wall-clock window - so the runs of notches that have to collapse into
@@ -13715,12 +14747,14 @@ const lampUndo = await page.evaluate(async () => {
   ed.select([id]);
   return { start, first, second, back, backAgain };
 });
-check("a run of notches is one undo entry, and the next gesture is another",
-  Math.abs(lampUndo.first - (lampUndo.start + 5)) < 1e-9
-    && Math.abs(lampUndo.second - (lampUndo.start + 8)) < 1e-9
-    && Math.abs(lampUndo.back - lampUndo.first) < 1e-9
-    && Math.abs(lampUndo.backAgain - lampUndo.start) < 1e-9,
-  JSON.stringify(lampUndo));
+check(
+    "a run of notches is one undo entry, and the next gesture is another",
+    Math.abs(lampUndo.first - (lampUndo.start + 5)) < 1e-9 &&
+        Math.abs(lampUndo.second - (lampUndo.start + 8)) < 1e-9 &&
+        Math.abs(lampUndo.back - lampUndo.first) < 1e-9 &&
+        Math.abs(lampUndo.backAgain - lampUndo.start) < 1e-9,
+    JSON.stringify(lampUndo)
+);
 
 // A lamp that has no such setting says so, rather than silently doing nothing.
 await page.evaluate(async () => {
@@ -13755,10 +14789,11 @@ const lampNoCone = await page.evaluate(async () => {
     status: document.getElementById("status-text").textContent,
   };
 });
-check("a directional lamp has no range and a point light no cone, and both say so",
-  Math.abs(lampNoRange.range - 8.5) < 1e-9 && /no range/.test(lampNoRange.status)
-    && lampNoCone.angle === 65 && /only a spot light/.test(lampNoCone.status),
-  `${lampNoRange.status} | ${lampNoCone.status}`);
+check(
+    "a directional lamp has no range and a point light no cone, and both say so",
+    Math.abs(lampNoRange.range - 8.5) < 1e-9 && /no range/.test(lampNoRange.status) && lampNoCone.angle === 65 && /only a spot light/.test(lampNoCone.status),
+    `${lampNoRange.status} | ${lampNoCone.status}`
+);
 
 // One notch does not mean one number: the lamp above is now a point light,
 // which fills a small room from the inside, where the spot's whole unit would
@@ -13770,8 +14805,7 @@ const lampPointStep = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return ed.entryOf(ed.state.selection[0]).runtime.intensity;
 });
-check("the intensity step follows the kind of lamp: 0.05 on a point light",
-  Math.abs(lampPointStep - 0.05) < 1e-9, `${lampPointStep}`);
+check("the intensity step follows the kind of lamp: 0.05 on a point light", Math.abs(lampPointStep - 0.05) < 1e-9, `${lampPointStep}`);
 
 // The bindings arm on a selection that is lamps and *nothing else*: mixed with
 // the element it rides, the wheel is the camera dolly again.
@@ -13790,13 +14824,16 @@ const lampMixed = await page.evaluate(async () => {
 });
 {
   const d = Math.hypot(...lampMixed.cam.map((v, k) => v - lampMixedStart.cam[k]));
-  check("a mixed selection leaves the wheel to the camera",
+    check(
+        "a mixed selection leaves the wheel to the camera",
     d > 0.5 && lampMixed.intensity === lampMixedStart.intensity,
-    `camera moved ${d.toFixed(2)} m, intensity ${lampMixedStart.intensity} -> ${lampMixed.intensity}`);
+        `camera moved ${d.toFixed(2)} m, intensity ${lampMixedStart.intensity} -> ${lampMixed.intensity}`
+    );
 }
 await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
-  ed.clearAll(); ed.select([]);
+    ed.clearAll();
+    ed.select([]);
 });
 
 await page.fill("#palette-search", "");
@@ -13807,6 +14844,7 @@ await page.waitForTimeout(400);
 await page.screenshot({ path: path.join(HERE, "shot-ux.png") });
 
 console.log(results.join("\n"));
-console.log("\nfailures:", results.filter((r) => r.startsWith("FAIL")).length);console.log("errors  :", errors.length ? [...new Set(errors)].join("\n  ") : "(none)");
+console.log("\nfailures:", results.filter((r) => r.startsWith("FAIL")).length);
+console.log("errors  :", errors.length ? [...new Set(errors)].join("\n  ") : "(none)");
 await browser.close();
 process.exit(results.some((r) => r.startsWith("FAIL")) || errors.length ? 1 : 0);

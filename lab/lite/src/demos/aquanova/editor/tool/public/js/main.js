@@ -4,71 +4,208 @@ import { loadCatalogue, getCatalogue, defaultKit, moduleBounds, instantiate } fr
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
-  saveLayout, loadLayout, loadCollision, saveAutosave, exportGlb, syncShip, resolveDoorChunks, nodeNameOf,
-  eventEntityNames, liveEntitiesByChunk, pruneOrphanEntities,
+    saveLayout,
+    loadLayout,
+    loadCollision,
+    saveAutosave,
+    exportGlb,
+    syncShip,
+    resolveDoorChunks,
+    nodeNameOf,
+    eventEntityNames,
+    liveEntitiesByChunk,
+    pruneOrphanEntities,
+    namesOfPlacement,
 } from "./manifest.js";
 import { addDoor, doorFromSelection, resizeDoor, normalizeDoorSides } from "./markers.js";
 import {
-  removeCollider, COLLIDER_KINDS, COLLIDER_LABEL, SCALE_RULE, COLLIDER_DEFAULT_SCALE,
-  reconcileCollider, colliderDims,
-  enterCollisionMode, exitCollisionMode, fitBoxToSelection, fitHullToSelection,
-  stageModule, unstageModule, harvestStage, orphanCount,
+    removeCollider,
+    COLLIDER_KINDS,
+    COLLIDER_LABEL,
+    SCALE_RULE,
+    COLLIDER_DEFAULT_SCALE,
+    reconcileCollider,
+    colliderDims,
+    enterCollisionMode,
+    exitCollisionMode,
+    fitBoxToSelection,
+    fitHullToSelection,
+    stageModule,
+    unstageModule,
+    harvestStage,
+    orphanCount,
 } from "./colliders.js";
 // Side-effect import for the hooks; the named ones drive the inspector.
+import { LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart, lightsOf } from "./lights.js";
 import {
-  LIGHT_TYPES, addLight, duplicateLight, setLightOwner, setLightPart, lightsOf,
-} from "./lights.js";
-import {
-  initInteract, cancelGhost, cancelDrag, isDragging, currentElement,
-  ghostActive, ghostModule, ghostCollider, armColliderGhost, colliderHalf, hoveredId,
-  cycleRotAxis, cycleScaleAxis, rotateCurrent, flipCurrent,
-  toggleDragAxis, setDragAxis, toggleAxisSpace, setAxisSpace, cancelMarquee, grabSelection,
+    initInteract,
+    cancelGhost,
+    cancelDrag,
+    isDragging,
+    currentElement,
+    ghostActive,
+    ghostModule,
+    ghostCollider,
+    armColliderGhost,
+    colliderHalf,
+    hoveredId,
+    cycleRotAxis,
+    cycleScaleAxis,
+    rotateCurrent,
+    flipCurrent,
+    toggleDragAxis,
+    setDragAxis,
+    toggleAxisSpace,
+    setAxisSpace,
+    cancelMarquee,
+    grabSelection,
   bringToCamera,
 } from "./interact.js";
 import {
-  state, on, emit, initScene, setGridVisible, setGridElevation, freeSnap,
-  nudgeGridElevation, select, removeSelected, duplicateSelected, focusSelection, focusNodes,
-  shipPlacements, modePlacements, loadModuleCollision,
-  addChunk, assignSelectionToChunk, applyVisibility, undo, redo, pushUndo,
-  renameChunk, removeChunk, chunkUsers,
-  environmentProbeIds, environmentProbeOf, nextEnvironmentProbeId,
-  setEnvironmentProbe, setEnvironmentProbeView, removeEnvironmentProbe, syncEnvironmentProbeTransform,
-  syncEnvironmentProbeInfluence, syncEnvironmentProbeInnerSize,
-  environmentProbePartOf, environmentProbePartId,
-  validEnvironmentProbeId, environmentProbeIdAvailable,
-  renamePlacement, hideSelected, unhideAll, hiddenCount, veilCounts,
-  setVeilAlpha, SKYBOX_CHUNK,
-  getBehaviorDef, setBehaviorDef, deleteBehaviorDef, behaviorNames, setBehaviorCatalog,
-  entityBehaviors, addEntityBehavior, removeEntityBehavior,
-  setEntityParams, nodeNamesInChunk, nodesNamed, entityNameOf,
-  behaviorParams, behaviorHiddenPlacements,
-  isBusy, busyLabel, whileBusy, serialize, cursorOnGrid, hooks,
-  toggleAxes, nearestToCursor, hideAxes, GHOST_AXES,
-  eulerOf, setEuler, worldBounds, entryOf, nudgeSelection, strayChunkMembers,
-  noteKey, releaseAllKeys, setUnlit, EXPOSURE_DEFAULT,
-  setConfig, resetConfig, CONFIG_DEFAULTS, PROBE_RESOLUTIONS,
-  setWalk, EYE_HEIGHT, ENV_INTENSITY_DEFAULT, setSelectMode,
-  setLightSetting, viewMode, viewModeFlags, VIEW_MODES,
-  TONE_MAPPING_DEFAULT, RUNTIME_SPECULAR_AA_DEFAULT, RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
-  VEIL_ALPHA_DEFAULT, BIG_PALETTE_DEFAULT, STRAY_CHUNK_CHECK_DEFAULT, RUN_BEHAVIORS_DEFAULT,
+    state,
+    on,
+    emit,
+    initScene,
+    setGridVisible,
+    setGridElevation,
+    freeSnap,
+    nudgeGridElevation,
+    select,
+    removeSelected,
+    duplicateSelected,
+    focusSelection,
+    focusNodes,
+    shipPlacements,
+    modePlacements,
+    loadModuleCollision,
+    addChunk,
+    assignSelectionToChunk,
+    applyVisibility,
+    undo,
+    redo,
+    pushUndo,
+    renameChunk,
+    removeChunk,
+    chunkUsers,
+    environmentProbeIds,
+    environmentProbeOf,
+    nextEnvironmentProbeId,
+    setEnvironmentProbe,
+    setEnvironmentProbeView,
+    removeEnvironmentProbe,
+    syncEnvironmentProbeTransform,
+    syncEnvironmentProbeInfluence,
+    syncEnvironmentProbeInnerSize,
+    environmentProbePartOf,
+    environmentProbePartId,
+    validEnvironmentProbeId,
+    environmentProbeIdAvailable,
+    renamePlacement,
+    hideSelected,
+    unhideAll,
+    hiddenCount,
+    veilCounts,
+    setVeilAlpha,
+    SKYBOX_CHUNK,
+    getBehaviorDef,
+    getBehaviorPreset,
+    setBehaviorDef,
+    deleteBehaviorDef,
+    behaviorNames,
+    availableBehaviorNames,
+    behaviorBaseName,
+    setBehaviorCatalog,
+    entityBehaviors,
+    addEntityBehavior,
+    removeEntityBehavior,
+    setEntityParams,
+    nodeNamesInChunk,
+    nodesNamed,
+    entityNameOf,
+    behaviorParams,
+    behaviorHiddenPlacements,
+    isBusy,
+    busyLabel,
+    whileBusy,
+    serialize,
+    cursorOnGrid,
+    hooks,
+    toggleAxes,
+    nearestToCursor,
+    hideAxes,
+    GHOST_AXES,
+    eulerOf,
+    setEuler,
+    worldBounds,
+    entryOf,
+    nudgeSelection,
+    strayChunkMembers,
+    noteKey,
+    releaseAllKeys,
+    setUnlit,
+    EXPOSURE_DEFAULT,
+    setConfig,
+    resetConfig,
+    CONFIG_DEFAULTS,
+    PROBE_RESOLUTIONS,
+    setWalk,
+    EYE_HEIGHT,
+    ENV_INTENSITY_DEFAULT,
+    setSelectMode,
+    setLightSetting,
+    viewMode,
+    viewModeFlags,
+    VIEW_MODES,
+    TONE_MAPPING_DEFAULT,
+    RUNTIME_SPECULAR_AA_DEFAULT,
+    RUNTIME_ROUGHNESS_FACTOR_DEFAULT,
+    VEIL_ALPHA_DEFAULT,
+    BIG_PALETTE_DEFAULT,
+    STRAY_CHUNK_CHECK_DEFAULT,
+    RUN_BEHAVIORS_DEFAULT,
   SHIP_OPTIMIZE_DEFAULT,
-  setShowLayer, SHOW_LAYERS,
-  resolveToneMapping, setRuntimeSpecularAA, setRuntimeRoughnessFactor,
-  breakApart, groupAnchor, groupMembers,
+    setShowLayer,
+    SHOW_LAYERS,
+    resolveToneMapping,
+    setRuntimeSpecularAA,
+    setRuntimeRoughnessFactor,
+    breakApart,
+    groupAnchor,
+    groupMembers,
 } from "./editor.js";
 import {
-  enterCompoundMode, exitCompoundMode, newCompound, saveCompound, deleteCompound,
-  benchMembers, editingCompound, persistBench, quickSaveCompound, editCompound,
-  compoundTile, compoundInstances,
+    enterCompoundMode,
+    exitCompoundMode,
+    newCompound,
+    saveCompound,
+    deleteCompound,
+    benchMembers,
+    editingCompound,
+    persistBench,
+    quickSaveCompound,
+    editCompound,
+    compoundTile,
+    compoundInstances,
 } from "./compounds.js";
 import {
-  setRuntimePreview, runtimePreview, syncBehaviorAnimations,
-  localEnvironmentProbeOf, showEnvironmentProbes, hideEnvironmentProbes, refreshEnvironmentProbeAssets,
+    setRuntimePreview,
+    runtimePreview,
+    syncBehaviorAnimations,
+    localEnvironmentProbeOf,
+    showEnvironmentProbes,
+    hideEnvironmentProbes,
+    refreshEnvironmentProbeAssets,
 } from "./runtime.js";
 import { generateLocalEnvironments } from "./local-environments.js";
 import {
-  behaviorFileOptions, behaviorMetadata, behaviorMetadataNames, collectRaisedEventNames,
-  createBehaviorForm, defaultBehaviorDefinition, eventsRaisedByAll, loadBehaviorMetadata,
+    behaviorFileOptions,
+    behaviorMetadata,
+    behaviorMetadataNames,
+    collectRaisedEventNames,
+    createBehaviorForm,
+    defaultBehaviorDefinition,
+    eventsRaisedByAll,
+    loadBehaviorMetadata,
 } from "./behavior-metadata.js";
 
 const $ = (id) => document.getElementById(id);
@@ -83,28 +220,28 @@ setBehaviorCatalog(behaviorCatalog);
 // room, so "anywhere on the ship" is the only honest starting point.
 const libraryScope = {};
 
-function fillBehaviorNameOptions(selected = "") {
+function fillBehaviorBaseOptions(selected = "") {
   const names = behaviorMetadataNames(behaviorCatalog);
-  $("bhv-name").replaceChildren();
+    $("bhv-base").replaceChildren();
   const prompt = document.createElement("option");
   prompt.value = "";
-  prompt.textContent = "Choose a behaviour";
-  $("bhv-name").append(prompt);
+    prompt.textContent = "Choose a base behavior";
+    $("bhv-base").append(prompt);
   for (const name of names) {
     const option = document.createElement("option");
     option.value = name;
     const about = behaviorMetadata(behaviorCatalog, name);
     option.textContent = about?.label ?? name;
     if (about?.description) option.title = about.description;
-    $("bhv-name").append(option);
+        $("bhv-base").append(option);
   }
-  $("bhv-name").value = selected;
+    $("bhv-base").value = selected;
   describeBehaviorPick();
 }
 
-/** What the chosen behaviour is for, on the control that names it. */
+/** What the chosen base behavior is for, on the control that names it. */
 function describeBehaviorPick() {
-  const pick = $("bhv-name");
+    const pick = $("bhv-base");
   pick.title = behaviorMetadata(behaviorCatalog, pick.value)?.description ?? "";
 }
 
@@ -127,9 +264,27 @@ function describeBehaviorPick() {
  */
 document.addEventListener("contextmenu", (e) => e.preventDefault(), true);
 
-function setStatus(msg) { statusText.textContent = msg; }
+function setStatus(msg) {
+    statusText.textContent = msg;
+}
 
 // -------------------------------------------------------------- inspector
+
+/**
+ * Where a node's origin actually is, in world metres.
+ *
+ * The parent chain is recomputed from the root down rather than trusting
+ * `getAbsolutePosition()`: Babylon only refreshes that cache in the render
+ * pass, and the inspector runs between frames - right after an arrow-key nudge
+ * or a typed offset, the cached value is still a frame behind. Two nodes deep
+ * at most, so forcing it costs nothing.
+ */
+function worldOrigin(node) {
+    const chain = [];
+    for (let n = node; n; n = n.parent) chain.push(n);
+    for (let i = chain.length - 1; i >= 0; i--) chain[i].computeWorldMatrix(true);
+    return node.getAbsolutePosition();
+}
 
 const posIn = ["pos-x", "pos-y", "pos-z"].map($);
 const rotIn = ["rot-x", "rot-y", "rot-z"].map($);
@@ -163,12 +318,12 @@ function refreshInspector() {
   $("insp-id").title = e.id;
   // Markers have no module, and used to fall back to the id - which the Id row
   // above now shows anyway. Their type is the useful thing instead.
-  $("insp-module").textContent = n > 1 ? `${n} selected` : (e.module || e.type || e.id);
+    $("insp-module").textContent = n > 1 ? `${n} selected` : e.module || e.type || e.id;
   $("insp-name").parentElement.hidden = n > 1 || isMarker;
   // Written even when the row is hidden: a stale name sitting in there is one
   // CSS rule away from being on screen against the wrong element, and it is
   // what the behaviour panel would key off if it ever read the field.
-  setField($("insp-name"), n === 1 && !isMarker ? (e.name || "") : "");
+    setField($("insp-name"), n === 1 && !isMarker ? e.name || "" : "");
   // A module's primitive belongs to a kit prototype, not a room, so the chunk
   // row is meaningless for it - and letting it be set would silently re-home
   // the shape into a room where its local-space transform means nothing. The
@@ -188,10 +343,30 @@ function refreshInspector() {
   $("position-fields").hidden = e.canMove === false;
   $("scale-fields").hidden = isLight;
   $("rotation-fields").hidden = isProbe;
-  const p = e.node.position, r = eulerOf(e.node), s = e.node.scaling;
+    const p = e.node.position,
+        r = eulerOf(e.node),
+        s = e.node.scaling;
   posIn.forEach((el, i) => setField(el, round(p.asArray()[i])));
   rotIn.forEach((el, i) => setField(el, round(r[i])));
   sclIn.forEach((el, i) => setField(el, round(s.asArray()[i])));
+  // Every entry's node is a scene root - placements are only re-parented into
+  // chunk holders for the length of an export - so the boxes above already are
+  // world coordinates, and a World line under them would merely say the same
+  // thing twice until you stopped reading it. A light is the exception: its
+  // node hangs off the element it rides, so the row appears exactly when the
+  // two differ, and says where the lamp really is.
+  const parented = !!e.node.parent;
+  $("pos-world-row").hidden = !parented;
+  if (parented) {
+    const w = worldOrigin(e.node).asArray().map(round);
+    $("pos-world").textContent = w.join(", ");
+    $("pos-world").title = w.map((v, i) => `${"XYZ"[i]} ${v} m`).join("   ");
+  } else {
+    // Emptied rather than left behind: a hidden row holding the last lamp's
+    // metres is one CSS rule away from showing them against a wall.
+    $("pos-world").textContent = "";
+    $("pos-world").title = "";
+  }
 
   $("door-fields").hidden = !isDoor;
   if (isDoor) {
@@ -207,9 +382,7 @@ function refreshInspector() {
     const toSpace = e.chunkB === SKYBOX_CHUNK;
     $("door-sealed").checked = !!e.sealed;
     $("door-sealed").disabled = toSpace;
-    $("door-sealed").parentElement.title = toSpace
-      ? "Forced: a door onto the skybox opens onto space, which cannot be walked into."
-      : SEALED_TITLE;
+        $("door-sealed").parentElement.title = toSpace ? "Forced: a door onto the skybox opens onto space, which cannot be walked into." : SEALED_TITLE;
     $("door-leaves").textContent = e.leaves.length ? e.leaves.join(", ") : "none";
   }
 
@@ -283,8 +456,7 @@ function refreshLight(light) {
   $("lgt-range").disabled = !live || rt.type === "directional";
   $("lgt-clustered").disabled = !(rt.type === "point" || rt.type === "spot");
   $("lgt-angle").disabled = rt.type !== "spot";
-  $("lgt-shadows").disabled = rt.clustered
-    || !(rt.type === "spot" || rt.type === "directional");
+    $("lgt-shadows").disabled = rt.clustered || !(rt.type === "spot" || rt.type === "directional");
 
   const why = [];
   if (!live) why.push("Switched off: no light is created at runtime.");
@@ -304,7 +476,10 @@ function editLight(part, patch) {
   if (syncing) return;
   const light = entryOf(state.selection[0]);
   if (light?.type !== "light") return;
-  if (!inspectorPushed) { pushUndo(); inspectorPushed = true; }
+    if (!inspectorPushed) {
+        pushUndo();
+        inspectorPushed = true;
+    }
   // No refresh here: setLightPart emits "lights", which the panel follows - and
   // this streams on every keystroke and every tick of the colour picker, so
   // refreshing twice a stroke is a rebuilt owner list for nothing.
@@ -339,25 +514,21 @@ function refreshBehavior() {
   const named = !isDoor && !!String(single.name || "").trim();
   const count = nodesNamed(name);
   const applied = entityBehaviors(name);
-  const library = libraryNames();
+    const library = attachableBehaviorNames();
 
-  const doorLine = count
-    ? `${name} — a door, and ${count} element${count === 1 ? " is" : "s are"} named after it`
-    : `${name} — a door, so it stands alone under its id`;
-  $("bhv-count").textContent = isDoor
-    ? doorLine
-    : named
-      ? `"${name}" — ${count} element${count === 1 ? "" : "s"}`
-      : `${name} — unnamed, so it stands alone under its id`;
+    const doorLine = count ? `${name} — a door, and ${count} element${count === 1 ? " is" : "s are"} named after it` : `${name} — a door, so it stands alone under its id`;
+    $("bhv-count").textContent = isDoor ? doorLine : named ? `"${name}" — ${count} element${count === 1 ? "" : "s"}` : `${name} — unnamed, so it stands alone under its id`;
   renderApplied(name, applied);
 
   // The whole library, every time: a behaviour may be attached more than once,
   // so "already attached" is no longer a reason to leave it out of the list.
   $("bhv-add").innerHTML = library.length
-    ? library.map((b) => {
-      const about = behaviorMetadata(behaviorCatalog, b)?.description;
+        ? library
+              .map((b) => {
+                  const about = behaviorMetadata(behaviorCatalog, behaviorBaseName(b))?.description;
       return `<option value="${esc(b)}"${about ? ` title="${esc(about)}"` : ""}>${esc(b)}</option>`;
-    }).join("")
+              })
+              .join("")
     : `<option disabled>(none defined)</option>`;
   $("bhv-add").disabled = !library.length;
   $("btn-bhv-add").disabled = !library.length;
@@ -365,8 +536,7 @@ function refreshBehavior() {
   $("bhv-hint").textContent = library.length ? "" : "No behaviours defined yet.";
 }
 
-const esc = (s) => String(s).replace(/[&<>"]/g,
-  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 /**
  * How each applied behaviour is folded, kept across the panel's rebuilds.
@@ -417,9 +587,7 @@ function renderApplied(nodeName, applied) {
     return;
   }
   const entry = entryOf(state.selection[0]);
-  const rooms = entry?.type === "door"
-    ? [entry.chunkA, entry.chunkB]
-    : [entry?.chunk];
+    const rooms = entry?.type === "door" ? [entry.chunkA, entry.chunkB] : [entry?.chunk];
   const candidates = nodeNamesInChunk(rooms, nodeName);
   const total = new Map();
   for (const b of applied) total.set(b.name, (total.get(b.name) || 0) + 1);
@@ -429,19 +597,23 @@ function renderApplied(nodeName, applied) {
   // description rides on the name as a tooltip: it is the same sentence every
   // time you open this element, and printed under the name it pushed the
   // fields - the part you came for - off the bottom of the panel.
-  host.innerHTML = applied.map((b, at) => {
+    host.innerHTML = applied
+        .map((b, at) => {
     const ordinal = (seen.get(b.name) || 0) + 1;
     seen.set(b.name, ordinal);
-    const about = behaviorMetadata(behaviorCatalog, b.name)?.description ?? "";
+            const about = behaviorMetadata(behaviorCatalog, behaviorBaseName(b.name))?.description ?? "";
     const folded = behaviorFolds.get(foldKey(nodeName, at)) !== false;
-    return `<div class="bhv-entry${folded ? " folded" : ""}" data-entry="${at}">`
-      + `<div class="item"><button class="fold" data-fold="${at}" title="Fold or unfold this behaviour"`
-      + ` aria-expanded="${folded ? "false" : "true"}">${folded ? "▸" : "▾"}</button>`
-      + `<span class="n"${about ? ` title="${esc(about)}"` : ""}>${esc(b.name)}</span>`
-      + (total.get(b.name) > 1 ? `<span class="muted">#${ordinal}</span>` : "")
-      + `<button data-remove="${at}">Remove</button></div>`
-      + `<div data-behavior-form="${at}"></div></div>`;
-  }).join("");
+            return (
+                `<div class="bhv-entry${folded ? " folded" : ""}" data-entry="${at}">` +
+                `<div class="item"><button class="fold" data-fold="${at}" title="Fold or unfold this behaviour"` +
+                ` aria-expanded="${folded ? "false" : "true"}">${folded ? "▸" : "▾"}</button>` +
+                `<span class="n"${about ? ` title="${esc(about)}"` : ""}>${esc(b.name)}</span>` +
+                (total.get(b.name) > 1 ? `<span class="muted">#${ordinal}</span>` : "") +
+                `<button data-remove="${at}">Remove</button></div>` +
+                `<div data-behavior-form="${at}"></div></div>`
+            );
+        })
+        .join("");
 
   for (const btn of host.querySelectorAll("[data-remove]")) {
     btn.addEventListener("click", () => {
@@ -470,7 +642,7 @@ function renderApplied(nodeName, applied) {
     const at = Number(formHost.dataset.behaviorForm);
     const assignment = applied[at];
     createBehaviorForm(formHost, {
-      metadata: behaviorMetadata(behaviorCatalog, assignment.name),
+            metadata: behaviorMetadata(behaviorCatalog, behaviorBaseName(assignment.name)),
       value: behaviorParams(assignment),
       inherited: getBehaviorDef(assignment.name) ?? {},
       scope: "assignment",
@@ -504,8 +676,7 @@ function refreshFoldAll() {
   const boxes = [...$("bhv-applied").querySelectorAll(".bhv-entry")];
   const button = $("btn-bhv-fold");
   button.disabled = !boxes.length;
-  button.textContent = boxes.length && boxes.every((box) => box.classList.contains("folded"))
-    ? "Unfold all" : "Fold all";
+    button.textContent = boxes.length && boxes.every((box) => box.classList.contains("folded")) ? "Unfold all" : "Fold all";
 }
 
 $("btn-bhv-fold").addEventListener("click", () => {
@@ -534,27 +705,37 @@ const entityScopeFor = (key) => {
  * Everything a behaviour form may offer a list of.
  *
  * Vocabularies come from three places and are merged here so the form never has
- * to know which: the metadata file (the game's own MP3s), the ship (its rooms,
- * the elements events can reach, its sims), and the behaviours themselves (the
- * events they raise, the sound categories the weapon defines). `eventsOfSources`
- * is a function rather than a list because its answer depends on which sources
- * the entry being edited has picked - see eventsRaisedByAll.
+ * to know which: the server's catalogue (the game's own folders - its MP3s, its
+ * fluid sims), the ship (its rooms, the elements events can reach), and the
+ * behaviours themselves (the events they raise, the sound categories the weapon
+ * defines). `eventsOfSources` is a function rather than a list because its
+ * answer depends on which sources the entry being edited has picked - see
+ * eventsRaisedByAll.
  */
 function behaviorFormOptions(nearbyEntities = [], owner = "") {
   const entry = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
+  const chunkEvents = (source) => (state.chunks.includes(source) ? ["visible", "notVisible"] : []);
   return {
     ...behaviorFileOptions(behaviorCatalog),
     eventEntities: eventEntityNames(),
+    optionLabels: {
+      eventEntities: Object.fromEntries([...state.chunks].map((chunk) => [chunk, `${chunk} chunk`])),
+    },
     nearbyEntities: alphabetical(nearbyEntities),
     entitiesByChunk: liveEntitiesByChunk(),
     chunks: [...state.chunks],
     currentChunks: chunksOf(entry),
-    events: collectRaisedEventNames(behaviorCatalog, state.behaviors, state.entities),
-    eventsOfSources: (sources) =>
-      eventsRaisedByAll(behaviorCatalog, state.behaviors, state.entities, sources),
+    events: alphabetical(new Set([...collectRaisedEventNames(behaviorCatalog, state.behaviors, state.entities), "visible", "notVisible"])),
+        eventsOfSources: (sources) => eventsRaisedByAll(behaviorCatalog, state.behaviors, state.entities, sources, chunkEvents),
+    // The MP3s the game ships, listed off disk by the server rather than
+    // restated in the schema file: a hand-kept copy of a folder is a copy that
+    // goes stale, and this one had.
+    sounds: getCatalogue().sounds ?? [],
     soundCategories: soundCategoryNames(),
     animations: animationNamesOf(owner),
     fluidSim: alphabetical(state.fluidSim),
+    fluidEmitters: (fluidSim) => getCatalogue().fluidSimFlow?.[fluidSim]?.emitters ?? [],
+    fluidSinks: (fluidSim) => getCatalogue().fluidSimFlow?.[fluidSim]?.sinks ?? [],
   };
 }
 
@@ -614,7 +795,7 @@ $("btn-bhv-add").addEventListener("click", () => {
   refreshBehavior();
 });
 
-// ------------------------------------------------- behaviour library window
+// ------------------------------------------------ behavior preset window
 
 let libSelected = null;
 let libraryForm = null;
@@ -628,6 +809,7 @@ let libraryForm = null;
  * the undo stack see, and the file should keep saying what it has always said.
  */
 const libraryNames = () => alphabetical(behaviorNames());
+const attachableBehaviorNames = () => alphabetical(availableBehaviorNames());
 
 const keepLibraryWindowOnScreen = makeToolWindow("bhv-modal", "bhv-window-handle");
 
@@ -645,15 +827,16 @@ function closeLibrary() {
 function refreshLibrary(pick) {
   const names = libraryNames();
   libSelected = pick && names.includes(pick) ? pick : null;
-  $("bhv-list").innerHTML = names
-    .map((n) => `<option value="${esc(n)}"${n === libSelected ? " selected" : ""}>${esc(n)}</option>`)
-    .join("");
-  fillBehaviorNameOptions(libSelected || "");
+    $("bhv-list").innerHTML = names.map((n) => `<option value="${esc(n)}"${n === libSelected ? " selected" : ""}>${esc(n)}</option>`).join("");
+    const preset = libSelected ? getBehaviorPreset(libSelected) : null;
+    $("bhv-name").value = libSelected || "";
   $("bhv-name").disabled = !!libSelected;
-  const name = $("bhv-name").value.trim();
+    fillBehaviorBaseOptions(preset?.base || "");
+    $("bhv-base").disabled = !!libSelected;
+    const base = $("bhv-base").value;
   libraryForm = createBehaviorForm($("bhv-fields"), {
-    metadata: behaviorMetadata(behaviorCatalog, name),
-    value: libSelected ? getBehaviorDef(libSelected) : defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
+        metadata: behaviorMetadata(behaviorCatalog, base),
+        value: libSelected ? getBehaviorDef(libSelected) : defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, base)),
     scope: "definition",
     options: behaviorFormOptions(),
     entityScope: libraryScope,
@@ -668,23 +851,28 @@ $("bhv-list").addEventListener("change", (e) => refreshLibrary(e.target.value));
 $("btn-bhv-new").addEventListener("click", () => {
   libSelected = null;
   $("bhv-list").value = "";
-  fillBehaviorNameOptions();
+    $("bhv-name").value = "";
   $("bhv-name").disabled = false;
+    fillBehaviorBaseOptions();
+    $("bhv-base").disabled = false;
+    const base = $("bhv-base").value;
   libraryForm = createBehaviorForm($("bhv-fields"), {
-    metadata: null, value: {}, scope: "definition", options: behaviorFormOptions(),
+        metadata: behaviorMetadata(behaviorCatalog, base),
+        value: defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, base)),
+        scope: "definition",
+        options: behaviorFormOptions(),
     entityScope: libraryScope,
   });
   $("bhv-error").textContent = "";
   $("btn-bhv-delete").disabled = true;
   $("bhv-name").focus();
 });
-$("bhv-name").addEventListener("change", () => {
-  const name = $("bhv-name").value.trim();
+$("bhv-base").addEventListener("change", () => {
+    const base = $("bhv-base").value;
   describeBehaviorPick();
-  const existing = libSelected && name === libSelected ? getBehaviorDef(libSelected) : null;
   libraryForm = createBehaviorForm($("bhv-fields"), {
-    metadata: behaviorMetadata(behaviorCatalog, name),
-    value: existing ?? defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, name)),
+        metadata: behaviorMetadata(behaviorCatalog, base),
+        value: defaultBehaviorDefinition(behaviorMetadata(behaviorCatalog, base)),
     scope: "definition",
     options: behaviorFormOptions(),
     entityScope: libraryScope,
@@ -693,19 +881,29 @@ $("bhv-name").addEventListener("change", () => {
 
 $("btn-bhv-save").addEventListener("click", () => {
   const name = $("bhv-name").value.trim();
-  if (!name) { $("bhv-error").textContent = "A behaviour needs a name."; return; }
-  const metadata = behaviorMetadata(behaviorCatalog, name);
-  if (!metadata) { $("bhv-error").textContent = `No metadata describes "${name}".`; return; }
-  if (!libSelected && behaviorNames().includes(name)) {
-    $("bhv-error").textContent = `A behaviour named "${name}" already exists.`;
+    const base = $("bhv-base").value;
+    if (!name) {
+        $("bhv-error").textContent = "A behavior preset needs a name.";
+        return;
+    }
+    const metadata = behaviorMetadata(behaviorCatalog, base);
+    if (!metadata) {
+        $("bhv-error").textContent = `No metadata describes base behavior "${base}".`;
+        return;
+    }
+    if (!libSelected && availableBehaviorNames().includes(name)) {
+        $("bhv-error").textContent = `A base behavior or preset named "${name}" already exists.`;
     return;
   }
   const body = libraryForm?.read() ?? defaultBehaviorDefinition(metadata);
   const errors = libraryForm?.validate(body) ?? [];
-  if (errors.length) { $("bhv-error").textContent = errors.join(" "); return; }
-  setBehaviorDef(name, body);
+    if (errors.length) {
+        $("bhv-error").textContent = errors.join(" ");
+        return;
+    }
+    setBehaviorDef(name, { base, ...body });
   refreshLibrary(name);
-  setStatus(`saved behaviour "${name}"`);
+    setStatus(`saved behavior preset "${name}"`);
 });
 
 $("btn-bhv-delete").addEventListener("click", () => {
@@ -713,7 +911,7 @@ $("btn-bhv-delete").addEventListener("click", () => {
   const gone = libSelected;
   deleteBehaviorDef(gone);
   refreshLibrary(libraryNames()[0] || null);
-  setStatus(`deleted behaviour "${gone}" and every use of it`);
+    setStatus(`deleted behavior preset "${gone}" and every use of it`);
 });
 
 /**
@@ -759,15 +957,14 @@ function refreshDimensions() {
       $("dim-x").textContent = f(d.radius);
       $("dim-y").textContent = f(d.height);
       $("dim-z").textContent = "—";
-      $("dim-note").textContent = d.kind === "capsule"
-        ? "— radius / height, caps included"
-        : "— radius / height, in metres";
+            $("dim-note").textContent = d.kind === "capsule" ? "— radius / height, caps included" : "— radius / height, in metres";
     }
     for (const id of ["dim-x", "dim-y", "dim-z"]) $(id).title = "";
     return;
   }
 
-  let min = null, max = null;
+    let min = null,
+        max = null;
   let counted = 0;
   for (const id of state.selection) {
     const e = entryOf(id);
@@ -841,8 +1038,7 @@ let inspectorPushed = false;
  */
 function carryCompound(anchor, before) {
   const { Quaternion, Matrix, Vector3 } = BABYLON;
-  const quatOf = (node) => (node.rotationQuaternion
-    || Quaternion.FromEulerVector(node.rotation)).clone();
+    const quatOf = (node) => (node.rotationQuaternion || Quaternion.FromEulerVector(node.rotation)).clone();
   const now = anchor.node.position.clone();
   const spin = quatOf(anchor.node).multiply(Quaternion.Inverse(before.quat));
   const m = spin.toRotationMatrix(Matrix.Identity());
@@ -858,7 +1054,10 @@ function applyInspector(source) {
   if (syncing || !state.selection.length) return;
   const e = entryOf(state.selection[0]);
   if (!e) return;
-  if (!inspectorPushed) { pushUndo(); inspectorPushed = true; }
+    if (!inspectorPushed) {
+        pushUndo();
+        inspectorPushed = true;
+    }
 
   if (source === "scale" && $("scl-uniform").checked) {
     const changed = sclIn.find((el) => el === document.activeElement);
@@ -866,10 +1065,14 @@ function applyInspector(source) {
     // only mirror onto the *other* fields: rewriting the one being typed in
     // would fight the caret and make a leading "-" impossible to enter
     if (v !== null && v !== undefined) {
-      sclIn.forEach((el) => { if (el !== changed) el.value = v; });
+            sclIn.forEach((el) => {
+                if (el !== changed) el.value = v;
+            });
     }
   }
-  const p = e.node.position, s = e.node.scaling, r = eulerOf(e.node);
+    const p = e.node.position,
+        s = e.node.scaling,
+        r = eulerOf(e.node);
   // Whether this element speaks for a whole compound, and where it stood before
   // the edit - the rest of the group is carried by the difference.
   const anchor = groupAnchor(state.selection);
@@ -877,25 +1080,19 @@ function applyInspector(source) {
   const before = rigid
     ? {
       pos: p.clone(),
-      quat: (e.node.rotationQuaternion
-        || BABYLON.Quaternion.FromEulerVector(e.node.rotation)).clone(),
+              quat: (e.node.rotationQuaternion || BABYLON.Quaternion.FromEulerVector(e.node.rotation)).clone(),
     }
     : null;
   if (e.canMove !== false) {
-    e.node.position.set(
-      num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
+        e.node.position.set(num(posIn[0], p.x), num(posIn[1], p.y), num(posIn[2], p.z));
   }
   if (e.type !== "environment-probe") {
     setEuler(e.node, [num(rotIn[0], r[0]), num(rotIn[1], r[1]), num(rotIn[2], r[2])]);
   }
   // Doors scale too: their exported width/height fold the node scale in, and
   // portalOf() already reads the world matrix, so the portal follows.
-  const scale = [
-    num(sclIn[0], s.x), num(sclIn[1], s.y), num(sclIn[2], s.z),
-  ];
-  e.node.scaling.set(...(e.type === "environment-probe"
-    ? scale.map((value) => Math.max(0.01, Math.abs(value)))
-    : scale));
+    const scale = [num(sclIn[0], s.x), num(sclIn[1], s.y), num(sclIn[2], s.z)];
+    e.node.scaling.set(...(e.type === "environment-probe" ? scale.map((value) => Math.max(0.01, Math.abs(value))) : scale));
   // A collider's kind decides what scales are representable at all.
   if (e.type === "collider" && reconcileCollider(e)) syncScaleFields(e);
   if (rigid) carryCompound(rigid, before);
@@ -920,7 +1117,9 @@ function applyInspector(source) {
  */
 function syncScaleFields(e) {
   const s = e.node.scaling.asArray();
-  sclIn.forEach((el, i) => { if (el !== document.activeElement) el.value = round(s[i]); });
+    sclIn.forEach((el, i) => {
+        if (el !== document.activeElement) el.value = round(s[i]);
+    });
   refreshDimensions();
 }
 
@@ -932,15 +1131,16 @@ function num(el, fallback) {
 for (const el of [...posIn, ...rotIn]) el.addEventListener("input", () => applyInspector("t"));
 for (const el of sclIn) el.addEventListener("input", () => applyInspector("scale"));
 for (const el of [...posIn, ...rotIn, ...sclIn]) {
-  el.addEventListener("focus", () => { inspectorPushed = false; });
+    el.addEventListener("focus", () => {
+        inspectorPushed = false;
+    });
 }
 
 $("insp-chunk").addEventListener("change", (ev) => assignSelectionToChunk(ev.target.value));
 
 // ------------------------------------------------------------------ lights
 
-$("lgt-type").innerHTML = LIGHT_TYPES
-  .map((v) => `<option value="${v}">${v}</option>`).join("");
+$("lgt-type").innerHTML = LIGHT_TYPES.map((v) => `<option value="${v}">${v}</option>`).join("");
 
 $("lgt-owner").addEventListener("change", (ev) => {
   if (syncing) return;
@@ -962,27 +1162,29 @@ $("lgt-owner").addEventListener("change", (ev) => {
 // the arm-on-focus undo; a select or a checkbox is a single decision and pushes
 // on its own.
 const LIGHT_NUM = {
-  "lgt-intensity": ["runtime", "intensity"], "lgt-range": ["runtime", "range"],
+    "lgt-intensity": ["runtime", "intensity"],
+    "lgt-range": ["runtime", "range"],
   "lgt-angle": ["runtime", "angle"],
 };
 for (const [id, [part, key]] of Object.entries(LIGHT_NUM)) {
   const el = $(id);
-  el.addEventListener("focus", () => { inspectorPushed = false; });
+    el.addEventListener("focus", () => {
+        inspectorPushed = false;
+    });
   el.addEventListener("input", () => {
     const v = num(el, null);
     if (v !== null) editLight(part, { [key]: v });
   });
 }
-for (const [id, part, key] of [
-  ["lgt-type", "runtime", "type"],
-]) {
+for (const [id, part, key] of [["lgt-type", "runtime", "type"]]) {
   $(id).addEventListener("change", (ev) => {
     inspectorPushed = false;
     editLight(part, { [key]: ev.target.value });
   });
 }
 for (const [id, part, key] of [
-  ["lgt-clustered", "runtime", "clustered"], ["lgt-shadows", "runtime", "castsShadows"],
+    ["lgt-clustered", "runtime", "clustered"],
+    ["lgt-shadows", "runtime", "castsShadows"],
 ]) {
   $(id).addEventListener("change", (ev) => {
     inspectorPushed = false;
@@ -992,7 +1194,9 @@ for (const [id, part, key] of [
 for (const [id, part] of [["lgt-run-color", "runtime"]]) {
   // A colour picker streams while the user drags around the wheel, so it gets
   // the same one-undo-per-visit treatment as a number field.
-  $(id).addEventListener("focus", () => { inspectorPushed = false; });
+    $(id).addEventListener("focus", () => {
+        inspectorPushed = false;
+    });
   $(id).addEventListener("input", (ev) => editLight(part, { color: rgbOf(ev.target.value) }));
 }
 
@@ -1001,13 +1205,16 @@ $("btn-add-light").addEventListener("click", () => {
   // A light rides a placement. Adding one to the light already selected is the
   // obvious second click, so that resolves to its owner rather than doing
   // nothing - but nothing else can own one.
-  const owner = e && (e.type === "light" ? e.owner : (e.type ? null : e.id));
+    const owner = e && (e.type === "light" ? e.owner : e.type ? null : e.id);
   if (!owner) {
     setStatus("select one module or prop to attach a light to");
     return;
   }
   const light = addLight(owner);
-  if (!light) { setStatus("that element cannot hold a light"); return; }
+    if (!light) {
+        setStatus("that element cannot hold a light");
+        return;
+    }
   select([light.id]);
   setStatus(`added ${light.id} to ${owner}`);
 });
@@ -1017,9 +1224,11 @@ $("btn-add-light").addEventListener("click", () => {
 $("btn-duplicate").addEventListener("click", (e) => duplicateCurrent({ behaviors: !e.shiftKey }));
 $("btn-break-apart").addEventListener("click", () => {
   const r = breakApart();
-  if (!r.groups) { setStatus("nothing in the selection came from a compound"); return; }
-  setStatus(`broke ${r.groups} compound(s) into ${r.members} ordinary element(s)`
-    + " — Ctrl+Z puts them back together");
+    if (!r.groups) {
+        setStatus("nothing in the selection came from a compound");
+        return;
+    }
+    setStatus(`broke ${r.groups} compound(s) into ${r.members} ordinary element(s)` + " — Ctrl+Z puts them back together");
 });
 $("btn-delete").addEventListener("click", () => removeSelected());
 $("btn-focus").addEventListener("click", () => focusSelection());
@@ -1050,17 +1259,17 @@ function armMarker(kind, btn) {
   if (!already) btn.classList.add("active");
   // The hint carries transient "you are mid-gesture" guidance only - there is
   // no idle text, because a permanent instruction just goes stale.
-  $("hint").textContent = state.markerBrush
-    ? `Click to drop the ${kind.replace(":", " ")} marker — anywhere, including on top of the ship. Esc to stop.`
-    : "";
+    $("hint").textContent = state.markerBrush ? `Click to drop the ${kind.replace(":", " ")} marker — anywhere, including on top of the ship. Esc to stop.` : "";
 }
 
 $("btn-door").addEventListener("click", (e) => armMarker("door", e.currentTarget));
 
 $("btn-door-sel").addEventListener("click", () => {
   const d = doorFromSelection();
-  if (d) { select([d.id]); setStatus(`created ${d.id} from ${d.leaves.length} placement(s)`); }
-  else setStatus("select the door geometry first");
+    if (d) {
+        select([d.id]);
+        setStatus(`created ${d.id} from ${d.leaves.length} placement(s)`);
+    } else setStatus("select the door geometry first");
 });
 
 on("markerdrop", ({ position }) => {
@@ -1073,7 +1282,10 @@ function clearMarkerBrush() {
   for (const b of document.querySelectorAll("#marker-tools button")) b.classList.remove("active");
 }
 
-for (const [id, key] of [["door-trig", "triggerRadius"], ["door-slide", "slideDistance"]]) {
+for (const [id, key] of [
+    ["door-trig", "triggerRadius"],
+    ["door-slide", "slideDistance"],
+]) {
   $(id).addEventListener("input", () => {
     const e = entryOf(state.selection[0]);
     if (!e || e.type !== "door" || syncing) return;
@@ -1089,7 +1301,10 @@ for (const id of ["door-w", "door-h"]) {
     resizeDoor(e, parseFloat($("door-w").value) || 1, parseFloat($("door-h").value) || 1);
   });
 }
-for (const [id, key] of [["door-a", "chunkA"], ["door-b", "chunkB"]]) {
+for (const [id, key] of [
+    ["door-a", "chunkA"],
+    ["door-b", "chunkB"],
+]) {
   $(id).addEventListener("change", () => {
     const e = entryOf(state.selection[0]);
     if (!e || e.type !== "door" || syncing) return;
@@ -1099,9 +1314,7 @@ for (const [id, key] of [["door-a", "chunkA"], ["door-b", "chunkB"]]) {
     // so the checkbox shows it and greys out, rather than sitting there stale.
     normalizeDoorSides(e);
     if (key === "chunkB") {
-      setStatus(e.chunkB === SKYBOX_CHUNK
-        ? `${e.id} opens onto space — sealed, see through only`
-        : `${e.id}: chunk B is ${e.chunkB || "(auto)"}`);
+            setStatus(e.chunkB === SKYBOX_CHUNK ? `${e.id} opens onto space — sealed, see through only` : `${e.id}: chunk B is ${e.chunkB || "(auto)"}`);
     }
     refreshInspector();
     validate();
@@ -1120,9 +1333,7 @@ $("door-sealed").addEventListener("change", () => {
   if (!e || e.type !== "door" || syncing) return;
   pushUndo();
   e.sealed = $("door-sealed").checked;
-  setStatus(e.sealed
-    ? `${e.id} sealed — visible through, not walkable`
-    : `${e.id} is a doorway again`);
+    setStatus(e.sealed ? `${e.id} sealed — visible through, not walkable` : `${e.id} is a doorway again`);
   validate();
 });
 
@@ -1130,7 +1341,10 @@ $("btn-door-leaves").addEventListener("click", () => {
   const door = entryOf(state.selection[0]);
   if (!door || door.type !== "door") return;
   const leaves = state.selection.filter((id) => state.placements.has(id));
-  if (!leaves.length) { setStatus("select the leaf placements too, then click again"); return; }
+    if (!leaves.length) {
+        setStatus("select the leaf placements too, then click again");
+        return;
+    }
   pushUndo();
   door.leaves = leaves;
   refreshInspector();
@@ -1160,16 +1374,15 @@ function refreshStats() {
   for (const p of shipPlacements()) {
     counts.set(p.chunk, (counts.get(p.chunk) || 0) + 1);
   }
-  const rows = [...counts.entries()].map(([c, n]) =>
-    `<tr class="${c === state.activeChunk ? "active" : ""}"><td>${c}</td><td class="n">${n}</td></tr>`);
+    const rows = [...counts.entries()].map(([c, n]) => `<tr class="${c === state.activeChunk ? "active" : ""}"><td>${c}</td><td class="n">${n}</td></tr>`);
   $("chunk-stats").innerHTML = `<table>${rows.join("")}</table>`;
   const doors = [...state.markers.values()].filter((m) => m.type === "door").length;
   const veiled = veilCounts();
   const pct = Math.round(state.veilAlpha * 100);
   statusCounts.textContent =
-    `${shipPlacements().length} objects · ${state.chunks.length} chunks · ${state.environmentProbes.size} probes · ${doors} doors · ${state.selection.length} selected`
-    + (veiled.ghost ? ` · ${veiled.ghost} at ${pct}%` : "")
-    + (veiled.hidden ? ` · ${veiled.hidden} hidden` : "");
+        `${shipPlacements().length} objects · ${state.chunks.length} chunks · ${state.environmentProbes.size} probes · ${doors} doors · ${state.selection.length} selected` +
+        (veiled.ghost ? ` · ${veiled.ghost} at ${pct}%` : "") +
+        (veiled.hidden ? ` · ${veiled.hidden} hidden` : "");
 }
 
 $("chunk-select").addEventListener("change", (ev) => {
@@ -1272,18 +1485,19 @@ function closeChunks() {
 function refreshChunkPane(pick) {
   const chunks = alphabetical(state.chunks);
   chunkSelected = pick && state.chunks.includes(pick) ? pick : chunks[0];
-  $("chunk-list").innerHTML = chunks.map((c) => {
+    $("chunk-list").innerHTML = chunks
+        .map((c) => {
     const held = chunkUsers(c);
     // The count is the affordance: an empty room is either the one you are
     // about to fill or one you forgot to delete, and there is no other way to
     // tell them apart without clicking every entry.
     return `<option value="${esc(c)}"${c === chunkSelected ? " selected" : ""}>${esc(c)} (${held.placements.length})</option>`;
-  }).join("");
+        })
+        .join("");
   $("chunk-name").value = chunkSelected || "";
   const users = chunkSelected ? chunkUsers(chunkSelected) : { placements: [], doors: [] };
-  $("chunk-holds").textContent = chunkSelected
-    ? `holds ${users.placements.length} object(s), ${users.doors.length} door(s)`
-    : "";  $("chunk-error").textContent = "";
+    $("chunk-holds").textContent = chunkSelected ? `holds ${users.placements.length} object(s), ${users.doors.length} door(s)` : "";
+    $("chunk-error").textContent = "";
   $("btn-chunk-delete").disabled = state.chunks.length < 2;
 }
 
@@ -1310,8 +1524,7 @@ $("btn-chunk-apply").addEventListener("click", () => {
     return;
   }
   if (!renameChunk(was, wanted)) {
-    $("chunk-error").textContent =
-      `Cannot rename to "${wanted}" — it is empty or already used.`;
+        $("chunk-error").textContent = `Cannot rename to "${wanted}" — it is empty or already used.`;
     return;
   }
   refreshChunkPane(wanted);
@@ -1337,9 +1550,9 @@ $("btn-chunk-delete").addEventListener("click", () => {
     if (res.users.placements.length) bits.push(`${res.users.placements.length} object(s)`);
     if (res.users.doors.length) bits.push(`${res.users.doors.length} door(s)`);
     $("chunk-error").textContent =
-      `"${gone}" still holds ${bits.join(" and ")} — move them out with Assign first`
-      + ` (${[...res.users.placements, ...res.users.doors].slice(0, 6).join(", ")}`
-      + `${res.users.placements.length + res.users.doors.length > 6 ? ", …" : ""}).`;
+            `"${gone}" still holds ${bits.join(" and ")} — move them out with Assign first` +
+            ` (${[...res.users.placements, ...res.users.doors].slice(0, 6).join(", ")}` +
+            `${res.users.placements.length + res.users.doors.length > 6 ? ", …" : ""}).`;
   } else {
     $("chunk-error").textContent = `Cannot delete "${gone}".`;
   }
@@ -1356,8 +1569,12 @@ const PROBE_INFLUENCE_FIELDS = ["x", "y", "z"].map((axis) => `probe-influence-${
 const PROBE_INFLUENCE_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-influence-size-${axis}`);
 const PROBE_INNER_SIZE_FIELDS = ["x", "y", "z"].map((axis) => `probe-inner-size-${axis}`);
 const PROBE_VALUE_FIELDS = [
-  ...PROBE_BOX_FIELDS, ...PROBE_SIZE_FIELDS, ...PROBE_CAMERA_FIELDS,
-  ...PROBE_INFLUENCE_FIELDS, ...PROBE_INFLUENCE_SIZE_FIELDS, ...PROBE_INNER_SIZE_FIELDS,
+    ...PROBE_BOX_FIELDS,
+    ...PROBE_SIZE_FIELDS,
+    ...PROBE_CAMERA_FIELDS,
+    ...PROBE_INFLUENCE_FIELDS,
+    ...PROBE_INFLUENCE_SIZE_FIELDS,
+    ...PROBE_INNER_SIZE_FIELDS,
 ];
 // The three volumes a probe is made of, in pane order. Each owns a heading, the
 // eye that shows and hides it, and - for the two blend volumes - the part id its
@@ -1391,7 +1608,9 @@ function probeCentreDrift(probe) {
   if (!Array.isArray(centre) || !Array.isArray(onto)) return null;
   const delta = centre.map((value, axis) => value - onto[axis]);
   return {
-    sphere, onto, delta,
+        sphere,
+        onto,
+        delta,
     distance: Math.hypot(...delta),
     label: sphere ? "projection sphere" : "probe box",
   };
@@ -1417,10 +1636,7 @@ function defaultProbeVolume() {
     min = min ? BABYLON.Vector3.Minimize(min, bounds.min) : bounds.min.clone();
     max = max ? BABYLON.Vector3.Maximize(max, bounds.max) : bounds.max.clone();
   }
-  const centre = min && max
-    ? min.add(max).scale(0.5)
-    : (state.camera?.globalPosition || state.camera?.position
-      || new BABYLON.Vector3(0, 2.5, 0)).clone();
+    const centre = min && max ? min.add(max).scale(0.5) : (state.camera?.globalPosition || state.camera?.position || new BABYLON.Vector3(0, 2.5, 0)).clone();
   const size = min && max ? max.subtract(min) : new BABYLON.Vector3(8, 5, 8);
   // The influence volumes are left out on purpose: setEnvironmentProbe derives
   // them from the box, which is the one place that default is written down.
@@ -1452,8 +1668,7 @@ function probeDraft() {
     const sphereRadius = boxSize[0];
     const influenceSphereRadius = influenceBoxSize[0];
     const influenceInnerSphereRadius = influenceInnerBoxSize[0];
-    if (sphereRadius <= 0 || influenceSphereRadius <= 0
-      || influenceInnerSphereRadius < 0 || influenceInnerSphereRadius > influenceSphereRadius) return null;
+        if (sphereRadius <= 0 || influenceSphereRadius <= 0 || influenceInnerSphereRadius < 0 || influenceInnerSphereRadius > influenceSphereRadius) return null;
     return {
       ...common,
       shape: "sphere",
@@ -1464,8 +1679,7 @@ function probeDraft() {
       influenceInnerSphereRadius,
     };
   }
-  if (!boxSize.every((n) => n > 0) || !influenceBoxSize.every((n) => n > 0)
-    || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
+    if (!boxSize.every((n) => n > 0) || !influenceBoxSize.every((n) => n > 0) || influenceInnerBoxSize.some((n, axis) => n < 0 || n > influenceBoxSize[axis])) return null;
   return {
     ...common,
     shape: "box",
@@ -1539,7 +1753,9 @@ function refreshProbeShape(shape) {
   $("probe-influence-size-label").textContent = sphere ? "Radius" : "Size";
   $("probe-inner-size-label").textContent = sphere ? "Radius" : "Size";
   for (const fields of [PROBE_SIZE_FIELDS, PROBE_INFLUENCE_SIZE_FIELDS, PROBE_INNER_SIZE_FIELDS]) {
-    fields.slice(1).forEach((id) => { $(id).hidden = sphere; });
+        fields.slice(1).forEach((id) => {
+            $(id).hidden = sphere;
+        });
   }
 }
 
@@ -1552,23 +1768,32 @@ async function refreshProbeWindow(pick = probeSelected) {
   // first, so an empty map keeps the choice instead of replacing it.
   if (ids.length) probeSelected = pick && ids.includes(pick) ? pick : ids[0];
   else probeSelected = pick || probeSelected;
-  $("probe-list").innerHTML = ids.map((id) =>
-    `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>`
-      + `${esc(id)}</option>`).join("");
+    $("probe-list").innerHTML = ids.map((id) => `<option value="${esc(id)}"${id === probeSelected ? " selected" : ""}>` + `${esc(id)}</option>`).join("");
   const probe = probeSelected ? environmentProbeOf(probeSelected) : null;
   const shape = probe?.shape === "sphere" ? "sphere" : "box";
   refreshProbeShape(shape);
   setProbeField("probe-id", probe?.id || "");
   const values = probe
     ? shape === "sphere"
-      ? [...probe.spherePosition, probe.sphereRadius, probe.sphereRadius, probe.sphereRadius,
-        ...probe.capturePosition, ...probe.influenceSpherePosition,
-        probe.influenceSphereRadius, probe.influenceSphereRadius, probe.influenceSphereRadius,
-        probe.influenceInnerSphereRadius, probe.influenceInnerSphereRadius, probe.influenceInnerSphereRadius]
-      : [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition,
-        ...probe.influenceBoxPosition, ...probe.influenceBoxSize,
-        ...probe.influenceInnerBoxSize] : [];
-  PROBE_VALUE_FIELDS.forEach((id, index) => { setProbeField(id, values[index] ?? ""); });
+            ? [
+                  ...probe.spherePosition,
+                  probe.sphereRadius,
+                  probe.sphereRadius,
+                  probe.sphereRadius,
+                  ...probe.capturePosition,
+                  ...probe.influenceSpherePosition,
+                  probe.influenceSphereRadius,
+                  probe.influenceSphereRadius,
+                  probe.influenceSphereRadius,
+                  probe.influenceInnerSphereRadius,
+                  probe.influenceInnerSphereRadius,
+                  probe.influenceInnerSphereRadius,
+              ]
+            : [...probe.boxPosition, ...probe.boxSize, ...probe.capturePosition, ...probe.influenceBoxPosition, ...probe.influenceBoxSize, ...probe.influenceInnerBoxSize]
+        : [];
+    PROBE_VALUE_FIELDS.forEach((id, index) => {
+        setProbeField(id, values[index] ?? "");
+    });
   $("probe-show").checked = !!probe?.alwaysVisible;
   $("probe-env").checked = !!probe?.envFaces;
   $("probe-show").disabled = !probe;
@@ -1587,9 +1812,9 @@ async function refreshProbeWindow(pick = probeSelected) {
   centreOnBox.textContent = shape === "sphere" ? "Centre on sphere" : "Centre on box";
   centreOnBox.title = centreOnBox.disabled
     ? `The influence centre is already on the ${drift ? drift.label : "probe box"} centre.`
-    : `Move the influence centre ${drift.distance.toFixed(2)} m onto the ${drift.label}`
-      + ` centre (${probeDriftAxes(drift)}). The inner volume has no centre of its`
-      + " own and rides it, so both blend volumes move.";
+        : `Move the influence centre ${drift.distance.toFixed(2)} m onto the ${drift.label}` +
+          ` centre (${probeDriftAxes(drift)}). The inner volume has no centre of its` +
+          " own and rides it, so both blend volumes move.";
   refreshProbeSections();
   if (!probe) {
     $("probe-resolved").textContent = "No probe volumes. Press New to create one.";
@@ -1601,12 +1826,10 @@ async function refreshProbeWindow(pick = probeSelected) {
   const info = await localEnvironmentProbeOf(probe.id);
   if (request !== probeRefreshRequest || probe.id !== probeSelected) return;
   $("probe-resolved").textContent =
-    (shape === "sphere"
-      ? `sphere radius ${Number(probe.sphereRadius).toFixed(2)} m`
-      : `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`)
-    + ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}`
-    + ` · ${state.config.probeResolution}px cubemap`
-    + ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
+        (shape === "sphere" ? `sphere radius ${Number(probe.sphereRadius).toFixed(2)} m` : `box ${probe.boxSize.map((n) => Number(n).toFixed(2)).join(" × ")} m`) +
+        ` · camera ${probe.capturePosition.map((n) => Number(n).toFixed(2)).join(", ")}` +
+        ` · ${state.config.probeResolution}px cubemap` +
+        ` · ${info.generated?.env ? "generated asset available" : "not generated yet"}`;
   await showEnvironmentProbes(probe.id);
 }
 
@@ -1626,7 +1849,8 @@ function openProbes() {
   // With nothing to select there is still a pane to put in order: the empty
   // state is what says to press New, and the buttons that act on a selection
   // have to open inert rather than pointing at a probe that is not there.
-  if (id) void showAndSelectProbe(id); else void refreshProbeWindow(null);
+    if (id) void showAndSelectProbe(id);
+    else void refreshProbeWindow(null);
   requestAnimationFrame(keepProbeWindowOnScreen);
 }
 
@@ -1666,7 +1890,8 @@ $("probe-shape").addEventListener("change", (event) => {
   const shape = event.target.value === "sphere" ? "sphere" : "box";
   if (probe.shape === shape) return;
   pushUndo();
-  const next = shape === "sphere"
+    const next =
+        shape === "sphere"
     ? {
         shape,
         spherePosition: probe.boxPosition,
@@ -1695,7 +1920,9 @@ let probePushed = false;
 for (const id of PROBE_VALUE_FIELDS) {
   // One undo entry per visit to a field, the same rule the inspector follows:
   // armed on focus, spent on the first character.
-  $(id).addEventListener("focus", () => { probePushed = false; });
+    $(id).addEventListener("focus", () => {
+        probePushed = false;
+    });
   // Quiet while typing: "0.5" and "-3" are both unusable for a moment on their
   // way in, and a paragraph of complaint flashing under the caret at every
   // half-typed number would be worse than the half-typed number.
@@ -1712,7 +1939,9 @@ for (const id of PROBE_VALUE_FIELDS) {
 // An id is a name, and half a typed name is not one: renaming on every
 // character would leave a trail of probes called E, EN, ENV... So the id alone
 // commits when the field is left, not as it is typed.
-$("probe-id").addEventListener("focus", () => { probePushed = false; });
+$("probe-id").addEventListener("focus", () => {
+    probePushed = false;
+});
 $("probe-id").addEventListener("change", () => commitProbe({ rename: true }));
 $("probe-id").addEventListener("blur", () => {
   void refreshProbeWindow(probeSelected);
@@ -1742,12 +1971,14 @@ function commitProbe({ rename = false, quiet = false } = {}) {
   }
   const draft = probeDraft();
   if (!draft) {
-    return refuse("Enter numeric volume/camera positions, positive sizes or radii, and an inner size/radius"
-      + " from 0 up to the influence value.");
+        return refuse("Enter numeric volume/camera positions, positive sizes or radii, and an inner size/radius" + " from 0 up to the influence value.");
   }
   $("probe-error").textContent = "";
   const previousId = probeSelected;
-  if (!probePushed) { pushUndo(); probePushed = true; }
+    if (!probePushed) {
+        pushUndo();
+        probePushed = true;
+    }
   probeSelected = nextId;
   const changed = setEnvironmentProbe(nextId, draft, previousId, { history: false });
   if (rename && changed && previousId !== nextId) {
@@ -1821,12 +2052,9 @@ $("btn-probe-influence-centre").addEventListener("click", () => {
   // A whole record, because that is what setEnvironmentProbe validates: only
   // the influence centre changes, and the inner volume follows because it has
   // never had a centre of its own to change.
-  const moved = drift.sphere
-    ? { ...probe, influenceSpherePosition: [...probe.spherePosition] }
-    : { ...probe, influenceBoxPosition: [...probe.boxPosition] };
+    const moved = drift.sphere ? { ...probe, influenceSpherePosition: [...probe.spherePosition] } : { ...probe, influenceBoxPosition: [...probe.boxPosition] };
   if (!setEnvironmentProbe(probeSelected, moved)) return;
-  setStatus(`${probeSelected}: influence volumes moved ${drift.distance.toFixed(2)} m`
-    + ` onto the ${drift.label} centre`);
+    setStatus(`${probeSelected}: influence volumes moved ${drift.distance.toFixed(2)} m` + ` onto the ${drift.label} centre`);
 });
 
 on("environment-probes", () => {
@@ -1838,9 +2066,7 @@ on("selection", () => {
   if ($("probe-modal").hidden) return;
   // A blend volume is part of its probe: clicking one in the viewport should
   // bring that probe up in the window, exactly as clicking its capture box does.
-  const selectedProbe = state.selection
-    .map((id) => (state.environmentProbes.has(id) ? id : environmentProbePartOf(id)?.probe))
-    .find(Boolean);
+    const selectedProbe = state.selection.map((id) => (state.environmentProbes.has(id) ? id : environmentProbePartOf(id)?.probe)).find(Boolean);
   if (selectedProbe && selectedProbe !== probeSelected) {
     probeSelected = selectedProbe;
     void refreshProbeWindow(selectedProbe);
@@ -1860,14 +2086,21 @@ $("insp-name").addEventListener("blur", () => refreshBehavior());
 
 // ---------------------------------------------------------------- toolbar
 
-$("snap-pos").addEventListener("change", (e) => { state.snap.pos = +e.target.value; refreshHud(); });
+$("snap-pos").addEventListener("change", (e) => {
+    state.snap.pos = +e.target.value;
+    refreshHud();
+});
 
 // What each list calls `free`, taken off the markup for the gizmo's step chips.
 // The combo is where that is decided - `free` is `0` on Move but `0.5` and
 // `0.01` on Rot and Scale - and reading it here means the chip on an arrow and
 // the value in the combo can never drift apart. Same reason `cycleSnap` reads
 // its values off the select instead of repeating them.
-for (const [id, key] of [["snap-pos", "pos"], ["snap-rot", "rot"], ["snap-scale", "scale"]]) {
+for (const [id, key] of [
+    ["snap-pos", "pos"],
+    ["snap-rot", "rot"],
+    ["snap-scale", "scale"],
+]) {
   const opt = [...$(id).options].find((o) => o.text.trim().toLowerCase() === "free");
   if (opt) freeSnap[key] = +opt.value;
 }
@@ -1912,19 +2145,219 @@ function cycleRotSnap(dir) {
 function cycleScaleSnap(dir) {
   setStatus(`scale step ${cycleSnap("snap-scale", "scale", dir)}`);
 }
-$("snap-rot").addEventListener("change", (e) => { state.snap.rot = +e.target.value; refreshHud(); });
-$("snap-scale").addEventListener("change", (e) => { state.snap.scale = +e.target.value; refreshHud(); });
-$("rot-axis").addEventListener("change", (e) => { state.rotAxis = e.target.value; refreshHud(); });
-$("scale-axis").addEventListener("change", (e) => { state.scaleAxis = e.target.value; refreshHud(); });
+$("snap-rot").addEventListener("change", (e) => {
+    state.snap.rot = +e.target.value;
+    refreshHud();
+});
+$("snap-scale").addEventListener("change", (e) => {
+    state.snap.scale = +e.target.value;
+    refreshHud();
+});
+$("rot-axis").addEventListener("change", (e) => {
+    state.rotAxis = e.target.value;
+    refreshHud();
+});
+$("scale-axis").addEventListener("change", (e) => {
+    state.scaleAxis = e.target.value;
+    refreshHud();
+});
+
+// ------------------------------------------------------------------- find
+//
+// "Go to the thing that message is about." Ids and node names are printed all
+// over the tool and all over what it produces - the checks panel, an export's
+// warnings, the manifest, the runtime's console - and hunting for one of them
+// by eye in a ship of thousands of elements is not a thing a person can do.
+//
+// What is looked for, in the order those strings stop being ambiguous:
+//
+//   1. an **id**, which exactly one element carries, so a hit ends the search;
+//   2. a **node name**, which any number of elements share on purpose (see
+//      nodeNameOf) - so *every* element carrying it is selected and the lot is
+//      framed together. Picking one of six crates silently would be a lie, and
+//      "which one did you mean" has no answer;
+//   3. a name *inside* an element - `Fan_primitive0`, `Crate_Door_Open` - which
+//      is what a behaviour, an animation or a manifest error names. Those are
+//      not elements and cannot be selected, so the element that owns them is.
+//
+// Nothing matches on a substring. The list under the box does the completing,
+// and a find that answered "17 things contain 'wall'" would be a search result
+// to read rather than a place to go.
+//
+// It has **no keyboard shortcut** and is not meant to: the box is always on
+// the toolbar, Ctrl+F belongs to the browser's own find (and to the scale step
+// here) and Ctrl+Shift+F is spoken for outside it. You click in it.
+
+/**
+ * What the find box can go to: the elements on screen, and their ids.
+ *
+ * Only what is on screen. An id belonging to the ship while a bench is open
+ * would select something nobody can see - the reason modePlacements exists -
+ * so the same rule is applied to the other stores: a collider belongs to its
+ * own world, a light rides the element it lights, and markers are the ship's
+ * alone. A probe is reachable only while its window is drawing it, which is
+ * what entryOf reports, so probes are asked about one at a time below.
+ */
+function findableWorld() {
+    const placements = modePlacements();
+    const ids = new Set(placements.map((p) => p.id));
+    const bench = state.mode !== "ship";
+    for (const c of state.colliders.values()) if (!!c.stage === bench) ids.add(c.id);
+    for (const l of state.lights.values()) if (ids.has(l.owner)) ids.add(l.id);
+    if (!bench) for (const m of state.markers.values()) ids.add(m.id);
+    return { placements, ids };
+}
+
+/**
+ * Resolve what was typed to the elements to select, and to how they were found.
+ *
+ * Exact first and case-insensitively second, at every step: ids are typed by
+ * hand as often as they are pasted, and `p0488` is not a different question
+ * from `P0488`. Returns null when the ship has no answer.
+ */
+function findMatches(text) {
+    const q = String(text || "").trim();
+    if (!q) return null;
+    const lower = q.toLowerCase();
+    const { placements, ids } = findableWorld();
+
+    if (ids.has(q) || hooks.environmentProbeEntry(q)) return { ids: [q], how: `${q} — by id` };
+    const looseId = [...ids].find((id) => id.toLowerCase() === lower);
+    if (looseId) return { ids: [looseId], how: `${looseId} — by id` };
+
+    for (const fold of [false, true]) {
+        const named = placements.filter((p) => {
+            const name = nodeNameOf(p);
+            return fold ? name.toLowerCase() === lower : name === q;
+        });
+        if (named.length) {
+            const name = nodeNameOf(named[0]);
+            return {
+                ids: named.map((p) => p.id),
+                how: named.length === 1 ? `${named[0].id} — named ${name}` : `${named.length} elements named ${name}`,
+            };
+        }
+    }
+
+    // The names under an element, which is what everything downstream of the
+    // export talks in. Their owner is the answer; the part itself is not an
+    // element and there is nothing to select. Elements sharing a node name share
+    // their parts' names too, so this travels in a group for the same reason the
+    // step above does.
+    for (const fold of [false, true]) {
+        const owners = placements.filter((p) => namesOfPlacement(p).some((n) => (fold ? n.toLowerCase() === lower : n === q)));
+        if (owners.length) {
+            const name = nodeNameOf(owners[0]);
+            return {
+                ids: owners.map((p) => p.id),
+                how: owners.length === 1 ? `${q} is part of ${owners[0].id} (${name})` : `${q} is part of ${owners.length} elements named ${name}`,
+            };
+        }
+    }
+    return null;
+}
+
+/**
+ * Why the thing just framed may still not be on screen.
+ *
+ * Find deliberately goes to elements it cannot show - refusing to would make
+ * "where is P0488" unanswerable in exactly the case you most need it answered,
+ * and both reasons are one keystroke from being undone. Saying which one is in
+ * the way is the whole of the fix.
+ */
+function findUnseenNote(ids) {
+    if (ids.every((id) => state.hidden.get(id) === "hidden")) {
+        return " — it is hidden, H brings everything back";
+    }
+    const outside = ids.map((id) => entryOf(id)).filter((e) => e && state.isolate && e.chunk && e.chunk !== state.activeChunk);
+    if (outside.length === ids.length) {
+        return ` — it sits in ${outside[0].chunk}, which isolation is hiding`;
+    }
+    return "";
+}
+
+/**
+ * Go to whatever is typed in the box, and say how it was found.
+ *
+ * `quiet` is for the paths that were not a deliberate "go": a name picked from
+ * the list, or the box being left after typing. Those still travel when they
+ * resolve - that is all the box is for - but half a name abandoned mid-typing
+ * must not put a complaint in the status line.
+ */
+function runFind({ quiet = false } = {}) {
+    const box = $("find-box");
+    const q = box.value.trim();
+    if (!q) return false;
+    const hit = findMatches(q);
+    // A miss leaves the selection where it was: the box is a place to try a name
+    // out, and losing what you had selected because you mistyped one would make
+    // trying anything expensive.
+    if (!hit) {
+        if (!quiet) setStatus(`nothing here answers to "${q}"`);
+        return false;
+    }
+    select(hit.ids);
+    focusSelection();
+    setStatus(hit.how + findUnseenNote(hit.ids));
+    // Hand the keyboard back to the ship on the way out, or the WASD that
+    // naturally follows a jump would be typed into the box. A *miss* keeps the
+    // cursor, since a typo is fixed where it was made.
+    box.blur();
+    return true;
+}
+
+/**
+ * Fill the list under the box, on focus rather than on every edit.
+ *
+ * Names only, and only *given* ones: an id is something you paste out of a
+ * message, there is one per element, and listing thousands of them would bury
+ * the handful of names worth browsing. Doors are the exception - a door has no
+ * name and answers to its id - and generated part names are left out for the
+ * same reason every other list in the tool leaves children out. Both are still
+ * found when typed in full.
+ */
+function refreshFindNames() {
+    const { placements } = findableWorld();
+    const names = new Set();
+    for (const p of placements) if (String(p.name || "").trim()) names.add(nodeNameOf(p));
+    if (state.mode === "ship") {
+        for (const m of state.markers.values()) if (m.type === "door") names.add(m.id);
+    }
+    $("find-names").replaceChildren(
+        ...[...names]
+            .sort((a, b) => a.localeCompare(b))
+            .map((n) => {
+                const o = document.createElement("option");
+                o.value = n;
+                return o;
+            })
+    );
+}
+
+// Clicking the label focuses the box on its own - it carries `for` - and the
+// focus is what fills the list, so there is nothing else to wire up.
+$("find-box").addEventListener("focus", refreshFindNames);
+// Enter is the deliberate "go", and stops there: the window's own handler blurs
+// a field on Enter, and a find that let it through would come back with the
+// keyboard already handed on before it had decided anything.
+$("find-box").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        runFind();
+    }
+});
+// Picking a name out of the list is a click and sends no key at all, so change
+// is the only event that sees it. It also fires when the box is left after
+// typing, which travels too - quietly, because that one is not always a "go".
+$("find-box").addEventListener("change", () => runFind({ quiet: true }));
 
 $("big-palette").addEventListener("change", (e) => setBigPalette(e.target.checked));
 
 $("stray-chunk-check").addEventListener("change", (e) => {
   state.strayChunkCheck = e.target.checked;
   validate();
-  setStatus(e.target.checked
-    ? "stray-chunk check on"
-    : "stray-chunk check off — wrong chunk assignments will not be reported");
+    setStatus(e.target.checked ? "stray-chunk check on" : "stray-chunk check off — wrong chunk assignments will not be reported");
 });
 
 /**
@@ -1948,9 +2381,7 @@ $("run-behaviors").addEventListener("change", (e) => {
   const hidden = behaviorHiddenPlacements().length;
   // Only ever an addition to the line below: the setting's headline is the
   // animations, and a ship with nothing to hide should read exactly as before.
-  const hiddenNote = !hidden ? ""
-    : e.target.checked ? `, ${hidden} element(s) hidden by hideEntity`
-      : `, ${hidden} element(s) no longer hidden`;
+    const hiddenNote = !hidden ? "" : e.target.checked ? `, ${hidden} element(s) hidden by hideEntity` : `, ${hidden} element(s) no longer hidden`;
   if (!e.target.checked) setStatus(`behaviours off — the ship's animations are held at their first frame${hiddenNote}`);
   else if (missing.length) setStatus(`behaviours on — ${playing} animation(s) playing, ${missing.length} clip(s) not found: ${missing.join(", ")}${hiddenNote}`);
   else if (playing) setStatus(`behaviours on — ${playing} animation(s) playing${hiddenNote}`);
@@ -1968,9 +2399,11 @@ $("run-behaviors").addEventListener("change", (e) => {
  */
 $("ship-optimize").addEventListener("change", (e) => {
   state.shipOptimize = e.target.checked;
-  setStatus(e.target.checked
+    setStatus(
+        e.target.checked
     ? "ship optimization on — Start demo will compress textures and geometry, which takes a while"
-    : "ship optimization off — Start demo will publish the ship uncompressed");
+            : "ship optimization off — Start demo will publish the ship uncompressed"
+    );
 });
 
 // Keyboard shortcuts are ignored while a form control has focus, so a toolbar
@@ -2028,18 +2461,23 @@ on("prefs", refreshEditorPrefs);
 
 const PANELS = [
   {
-    id: "resize-palette", panel: "palette", prop: "--palette-w",
-    min: 180, edge: "right",
+        id: "resize-palette",
+        panel: "palette",
+        prop: "--palette-w",
+        min: 180,
+        edge: "right",
     // The palette grid keeps its column count, so its width *is* the tile size
     // and the two icon sizes want genuinely different widths. One remembered
     // number would mean dragging it once permanently defeated Big icons.
-    key: () => (document.body.classList.contains("big-palette")
-      ? "paletteWidth.big" : "paletteWidth"),
+        key: () => (document.body.classList.contains("big-palette") ? "paletteWidth.big" : "paletteWidth"),
     fallback: () => (document.body.classList.contains("big-palette") ? 520 : 260),
   },
   {
-    id: "resize-inspector", panel: "inspector", prop: "--inspector-w",
-    min: 180, edge: "left",
+        id: "resize-inspector",
+        panel: "inspector",
+        prop: "--inspector-w",
+        min: 180,
+        edge: "left",
     key: () => "inspectorWidth",
     fallback: () => 232,
   },
@@ -2104,8 +2542,7 @@ for (const p of PANELS) {
     const step = e.key === "ArrowLeft" ? -16 : e.key === "ArrowRight" ? 16 : 0;
     if (!step) return;
     e.preventDefault();
-    const w = clampPanel(p, $(p.panel).getBoundingClientRect().width
-      + (p.edge === "right" ? step : -step));
+        const w = clampPanel(p, $(p.panel).getBoundingClientRect().width + (p.edge === "right" ? step : -step));
     applyPanelWidth(p, w);
     localStorage.setItem(p.key(), String(w));
     state.engine?.resize();
@@ -2113,7 +2550,9 @@ for (const p of PANELS) {
 }
 
 // A narrower window can leave a stored width covering most of it.
-addEventListener("resize", () => { for (const p of PANELS) applyPanelWidth(p); });
+addEventListener("resize", () => {
+    for (const p of PANELS) applyPanelWidth(p);
+});
 
 /**
  * Remember which palette panes are folded.
@@ -2148,13 +2587,20 @@ for (const pane of document.querySelectorAll("#palette-panes details")) {
  */
 const TAP_MS = 260;
 const tapTimers = new WeakMap();
-document.addEventListener("click", (e) => {
+document.addEventListener(
+    "click",
+    (e) => {
   const b = e.target?.closest?.("button");
   if (!b || b.disabled || b.classList.contains("toggle")) return;
   clearTimeout(tapTimers.get(b));      // a second press restarts the flash
   b.classList.add("tapped");
-  tapTimers.set(b, setTimeout(() => b.classList.remove("tapped"), TAP_MS));
-}, true);
+        tapTimers.set(
+            b,
+            setTimeout(() => b.classList.remove("tapped"), TAP_MS)
+        );
+    },
+    true
+);
 
 /**
  * One undo entry per slider *gesture*, not per pixel of travel.
@@ -2174,10 +2620,20 @@ function pushLightUndoOnce() {
 
 /** Arm the once-per-gesture guard on a range input, however it is being moved. */
 function armSliderUndo(el) {
-  el.addEventListener("pointerdown", () => { lightPushed = false; });
-  el.addEventListener("keydown", () => { lightPushed = false; });
+    el.addEventListener("pointerdown", () => {
+        lightPushed = false;
+    });
+    el.addEventListener("keydown", () => {
+        lightPushed = false;
+    });
   // A wheel over a focused range also moves it, and fires neither of the above.
-  el.addEventListener("wheel", () => { lightPushed = false; }, { passive: true });
+    el.addEventListener(
+        "wheel",
+        () => {
+            lightPushed = false;
+        },
+        { passive: true }
+    );
 }
 
 /**
@@ -2281,8 +2737,7 @@ function showToneMapping(el, name) {
   // canonical spellings, so match on what they resolve to rather than
   // leaving the control blank and lying about the state.
   const want = resolveToneMapping(name);
-  el.value = [...el.options]
-    .find((o) => resolveToneMapping(o.value) === want)?.value ?? "Khronos PBR Neutral";
+    el.value = [...el.options].find((o) => resolveToneMapping(o.value) === want)?.value ?? "Khronos PBR Neutral";
 }
 
 $("show-grid").addEventListener("change", (e) => setGridVisible(e.target.checked));
@@ -2292,9 +2747,7 @@ $("show-grid").addEventListener("change", (e) => setGridVisible(e.target.checked
 // look pressed while the scene says otherwise.
 $("btn-isolate").addEventListener("click", () => {
   setIsolate(!state.isolate);
-  setStatus(state.isolate
-    ? `isolated — showing only ${state.activeChunk}`
-    : "showing every chunk");
+    setStatus(state.isolate ? `isolated — showing only ${state.activeChunk}` : "showing every chunk");
 });
 
 function setIsolate(on) {
@@ -2351,16 +2804,13 @@ function viewModeStatus(mode) {
   if (mode === "editor") return "editor — the ship you are building, under the editor's own rig";
   if (mode === "editor-unlit") return "editor unlit — raw albedo, no lighting";
   const p = runtimePreview();
-  return `runtime — ${p.meshes.length} mesh(es) lit by ${p.lights.length} lamp(s), `
-    + `${p.inProbe} in a probe box and ${p.outsideProbe} outside one`;
+    return `runtime — ${p.meshes.length} mesh(es) lit by ${p.lights.length} lamp(s), ` + `${p.inProbe} in a probe box and ${p.outsideProbe} outside one`;
 }
 
 $("view-mode").addEventListener("change", (e) => applyViewMode(e.target.value));
 $("walk").addEventListener("change", (e) => {
   setWalk(e.target.checked);
-  setStatus(e.target.checked
-    ? `walking at ${EYE_HEIGHT} m — WASD only, height follows the floor`
-    : "flying — Space/C change height");
+    setStatus(e.target.checked ? `walking at ${EYE_HEIGHT} m — WASD only, height follows the floor` : "flying — Space/C change height");
 });
 
 /** How each drag axis reads in the toolbar, the HUD and the status line. */
@@ -2401,9 +2851,11 @@ $("drag-axis").addEventListener("change", (e) => {
 function setAxisSpaceFromKey() {
   toggleAxisSpace();
   refreshAxisSpace();
-  setStatus(state.axisSpace === "local"
+    setStatus(
+        state.axisSpace === "local"
     ? "moving and turning about the element's own axes — press Y for the world's"
-    : "moving and turning about the world's axes — press Y for the element's own");
+            : "moving and turning about the world's axes — press Y for the element's own"
+    );
 }
 
 function refreshAxisSpace() {
@@ -2419,9 +2871,7 @@ $("axis-space").addEventListener("change", (e) => {
 $("btn-select-rect").addEventListener("click", () => {
   const on = setSelectMode(!state.selectMode);
   $("btn-select-rect").setAttribute("aria-pressed", on ? "true" : "false");
-  setStatus(on
-    ? "rectangle select — drag to select, Ctrl/Shift adds"
-    : "drag moves elements again");
+    setStatus(on ? "rectangle select — drag to select, Ctrl/Shift adds" : "drag moves elements again");
 });
 
 /**
@@ -2443,8 +2893,13 @@ function dirtyKey() {
   return JSON.stringify(s);
 }
 
-export function markSaved() { savedState = dirtyKey(); autoState = savedState; }
-function isDirty() { return savedState !== null && savedState !== dirtyKey(); }
+export function markSaved() {
+    savedState = dirtyKey();
+    autoState = savedState;
+}
+function isDirty() {
+    return savedState !== null && savedState !== dirtyKey();
+}
 
 // --------------------------------------------------------------- auto-save
 //
@@ -2478,7 +2933,10 @@ async function autoSaveTick() {
 
 /** Restart the timer from the current setting. 0 minutes turns it off. */
 function rearmAutoSave() {
-  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+    }
   const mins = Number(state.config.autoSaveMinutes) || 0;
   if (mins > 0) autoTimer = setInterval(autoSaveTick, mins * 60 * 1000);
 }
@@ -2547,16 +3005,13 @@ async function doSave() {
     pruned = pruneOrphanEntities();
     const r = await saveLayout();
     markSaved();
-    const coll = r.collisionError
-      ? ` — collision file NOT written: ${r.collisionError}`
-      : (r.collision ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "");
-    saved = r.previous
-      ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}`
-      : `saved ${r.bytes} bytes → ${r.path}${coll}`;
-  } catch (e) { setStatus("save failed: " + e.message); return; }
-  const warning = strays.length
-    ? ` — check chunks: ${strays.map(checkText).join("; ")}`
-    : "";
+        const coll = r.collisionError ? ` — collision file NOT written: ${r.collisionError}` : r.collision ? `, collision → ${r.collision.path.split(/[\\/]/).pop()}` : "";
+        saved = r.previous ? `saved ${r.bytes} bytes → ${r.path} (previous kept as ${r.previous})${coll}` : `saved ${r.bytes} bytes → ${r.path}${coll}`;
+    } catch (e) {
+        setStatus("save failed: " + e.message);
+        return;
+    }
+    const warning = strays.length ? ` — check chunks: ${strays.map(checkText).join("; ")}` : "";
   // Named, not counted: "dropped 4 entries" is only alarming, and the whole
   // point of saying anything is that you can tell at a glance whether one of
   // them was a name you were about to use again. The console has all of them
@@ -2564,10 +3019,7 @@ async function doSave() {
   if (pruned.length) console.info("dropped unused behaviour entries:", pruned.join(", "));
   const shown = pruned.slice(0, 4).join(", ");
   const rest = pruned.length > 4 ? `, +${pruned.length - 4} more` : "";
-  const tidied = pruned.length
-    ? ` — dropped ${pruned.length} unused behaviour `
-      + `${pruned.length === 1 ? "entry" : "entries"}: ${shown}${rest}`
-    : "";
+    const tidied = pruned.length ? ` — dropped ${pruned.length} unused behaviour ` + `${pruned.length === 1 ? "entry" : "entries"}: ${shown}${rest}` : "";
   try {
     setStatus(`${saved} — exporting glb…`);
     const r = await exportGlb();
@@ -2581,8 +3033,7 @@ async function doSave() {
 async function doLoad() {
   // A load throws away everything in the scene, and it is one button away from
   // Save. Nothing else in the tool destroys unsaved work in a single click.
-  if (isDirty()
-    && !confirm("Load will discard your unsaved changes.\n\nLoad the saved ship anyway?")) {
+    if (isDirty() && !confirm("Load will discard your unsaved changes.\n\nLoad the saved ship anyway?")) {
     setStatus("load cancelled — your changes are still here");
     return;
   }
@@ -2590,11 +3041,11 @@ async function doLoad() {
     setStatus("loading…");
     const data = await loadLayout();
     markSaved();
-    setStatus(data
-      ? `loaded ${data.instances.length} instances`
-      : "nothing to load (no tool-written manifest yet)");
+        setStatus(data ? `loaded ${data.instances.length} instances` : "nothing to load (no tool-written manifest yet)");
     refreshChunks();
-  } catch (e) { setStatus("load failed: " + e.message); }
+    } catch (e) {
+        setStatus("load failed: " + e.message);
+    }
 }
 
 /**
@@ -2621,7 +3072,9 @@ async function doStartDemo() {
     // best. So it says which ship is being published, not just that one is.
     const label = dirty
       ? "publishing the SAVED ship — your unsaved changes are not in it…"
-      : (state.shipOptimize ? "publishing the ship, optimized — this takes a while…" : "publishing the ship…");
+            : state.shipOptimize
+              ? "publishing the ship, optimized — this takes a while…"
+              : "publishing the ship…";
     // whileBusy is what the autosave and the capture check before touching the
     // export folder: the script is reading it, and a save landing halfway
     // through would publish half of each ship. It also makes the toolbar inert,
@@ -2637,9 +3090,10 @@ async function doStartDemo() {
     const tab = window.open(result.url, "aquanova-demo");
     const how = result.optimized ? "optimized" : "unoptimized";
     if (!tab) setStatus(`ship published (${how}) — the browser blocked the tab, open ${result.url} yourself`);
-    else setStatus(dirty
-      ? `ship published (${how}) and demo opened — showing the SAVED ship, not your unsaved changes`
-      : `ship published (${how}) — demo opened at ${result.url}`);
+        else
+            setStatus(
+                dirty ? `ship published (${how}) and demo opened — showing the SAVED ship, not your unsaved changes` : `ship published (${how}) — demo opened at ${result.url}`
+            );
   } catch (e) {
     console.error(e);
     setStatus("demo NOT started: " + e.message);
@@ -2667,15 +3121,20 @@ async function doProbes({ force = false, only = null } = {}) {
   try {
     for (const b of buttons) b.disabled = true;
     setStatus(only ? `capturing ${only}…` : "checking environment probes…");
-    const result = await generateLocalEnvironments((done, total, probe) => {
+        const result = await generateLocalEnvironments(
+            (done, total, probe) => {
       if (probe) setStatus(`capturing environment probe ${probe} (${done + 1}/${total})…`);
-    }, { force, only });
+            },
+            { force, only }
+        );
     const size = `${(result.bytes / 1048576).toFixed(1)} MB`;
-    setStatus(only
+        setStatus(
+            only
       ? `captured ${only}, ${size} → export/environments/`
-      : (result.converted
+                : result.converted
         ? `captured ${result.converted} probe(s), ${size} → export/environments/`
-        : "every environment probe is already up to date"));
+                  : "every environment probe is already up to date"
+        );
     // The preview is wearing the cubemaps from before the capture.
     if (result.converted && state.runtime) await reloadRuntimePreview();
   } catch (e) {
@@ -2788,15 +3247,12 @@ function axesFromKey(e, anchor) {
   e.preventDefault();
   const space = e.shiftKey ? "local" : "world";
   const ids = state.selection.filter((id) => entryOf(id));
-  const target = ghostActive() ? GHOST_AXES
-    : ids.length ? nearestToCursor(ids) : hoveredId();
+    const target = ghostActive() ? GHOST_AXES : ids.length ? nearestToCursor(ids) : hoveredId();
   if (!target) {
     // Nothing to point at means nothing to show. Leaving the previous
     // element's gizmo up would leave it hanging off something you are no
     // longer working on, with no key that clears it.
-    setStatus(hideAxes()
-      ? "axes hidden — nothing selected or hovered"
-      : "no element to show axes for — select or point at one");
+        setStatus(hideAxes() ? "axes hidden — nothing selected or hovered" : "no element to show axes for — select or point at one");
     return;
   }
   const shown = toggleAxes(target, space, anchor);
@@ -2809,14 +3265,9 @@ function axesFromKey(e, anchor) {
     setAxisSpace(space);
     refreshAxisSpace();
   }
-  const label = target === GHOST_AXES
-    ? (ghostModule() || "ghost")
-    : (entryOf(target)?.name || entryOf(target)?.module || target);
+    const label = target === GHOST_AXES ? ghostModule() || "ghost" : entryOf(target)?.name || entryOf(target)?.module || target;
   const key = `${anchor === "origin" ? "Ctrl+" : ""}${space === "local" ? "Shift+X" : "X"}`;
-  setStatus(shown
-    ? `${space} axes on ${label}, at its ${anchor} — moving and turning in`
-      + ` ${space} space too, Y switches · ${key} hides them`
-    : "axes hidden");
+    setStatus(shown ? `${space} axes on ${label}, at its ${anchor} — moving and turning in` + ` ${space} space too, Y switches · ${key} hides them` : "axes hidden");
 }
 
 /**
@@ -2843,13 +3294,19 @@ function selectLightFromKey() {
   const ids = state.selection.filter((id) => entryOf(id));
   const from = ids.length === 1 ? ids[0] : nearestToCursor(ids);
   const entry = from ? entryOf(from) : null;
-  if (!entry) { setStatus("select an element to step onto its light"); return; }
+    if (!entry) {
+        setStatus("select an element to step onto its light");
+        return;
+    }
 
   // Only a placement can carry a lamp, so a marker, a collision primitive or a
   // probe has nothing to step to. A light steps back to its own owner.
-  const ownerId = entry.type === "light" ? entry.owner : (entry.type ? null : entry.id);
+    const ownerId = entry.type === "light" ? entry.owner : entry.type ? null : entry.id;
   const owner = ownerId ? entryOf(ownerId) : null;
-  if (!owner) { setStatus("only a module or prop can carry a light"); return; }
+    if (!owner) {
+        setStatus("only a module or prop can carry a light");
+        return;
+    }
 
   const ring = lightsOf(ownerId).map((l) => l.id);
   const label = owner.name || owner.module || ownerId;
@@ -2860,10 +3317,11 @@ function selectLightFromKey() {
 
   const next = entry.type === "light" ? (ring[ring.indexOf(from) + 1] ?? ownerId) : ring[0];
   select([next]);
-  if (next === ownerId) { setStatus(`back on ${label} · L returns to its light`); return; }
-  setStatus(`${next} on ${label}`
-    + (ring.length > 1 ? ` (${ring.indexOf(next) + 1} of ${ring.length})` : "")
-    + " · L steps on");
+    if (next === ownerId) {
+        setStatus(`back on ${label} · L returns to its light`);
+        return;
+    }
+    setStatus(`${next} on ${label}` + (ring.length > 1 ? ` (${ring.indexOf(next) + 1} of ${ring.length})` : "") + " · L steps on");
 }
 
 window.addEventListener("keydown", async (e) => {
@@ -2892,11 +3350,17 @@ window.addEventListener("keydown", async (e) => {
   // inside one. Without that, a stray X or Del pressed while a button in the
   // window holds focus would act on the ship instead.
   if (t && !$("chunk-modal").hidden && $("chunk-modal").contains(t)) {
-    if (e.key === "Escape") { e.preventDefault(); closeChunks(); }
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeChunks();
+        }
     return;
   }
   if (t && !$("bhv-modal").hidden && $("bhv-modal").contains(t)) {
-    if (e.key === "Escape") { e.preventDefault(); closeLibrary(); }
+        if (e.key === "Escape") {
+            e.preventDefault();
+            closeLibrary();
+        }
     return;
   }
   const mod = e.ctrlKey || e.metaKey;
@@ -2904,15 +3368,28 @@ window.addEventListener("keydown", async (e) => {
   // Windows/Chromium hands Alt to the browser menu bar, which then swallows the
   // next keystrokes and silently kills WASD. Alt is ours (eyedropper, pivot
   // rotate), so claim it outright.
-  if (e.key === "Alt") { e.preventDefault(); noteKey(e.code, true, e); return; }
+    if (e.key === "Alt") {
+        e.preventDefault();
+        noteKey(e.code, true, e);
+        return;
+    }
 
-  if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); return doSave(); }
+    if (mod && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        return doSave();
+    }
   if (mod && e.key.toLowerCase() === "d") {
     e.preventDefault();
     return duplicateCurrent({ behaviors: !e.shiftKey });
   }
-  if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
-  if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); return redo(); }
+    if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        return e.shiftKey ? redo() : undo();
+    }
+    if (mod && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        return redo();
+    }
   // The bare letter picks the *axis*, Shift walks that setting's value and Ctrl
   // walks it back. V for translation, R for rotation, F for scale - one letter
   // each, the same three modifiers on every one. The edits themselves live on
@@ -2952,36 +3429,56 @@ window.addEventListener("keydown", async (e) => {
 
   // WASD drives the orbit camera; the fly camera binds them itself. Shift is
   // read from every key event so the 2x boost can be toggled mid-slide.
-  if (noteKey(e.code, true, e)) { e.preventDefault(); return; }
+    if (noteKey(e.code, true, e)) {
+        e.preventDefault();
+        return;
+    }
 
   // numpad drives the build plane, so the mouse never has to leave the model.
   // The main-row keys are accepted too, for keyboards without a numpad.
   switch (e.code) {
-    case "NumpadAdd": case "Equal":
-      e.preventDefault(); return nudgeGridElevation(1);
-    case "NumpadSubtract": case "Minus":
-      e.preventDefault(); return nudgeGridElevation(-1);
-    case "NumpadDecimal": e.preventDefault(); return elevationFromHover();
+        case "NumpadAdd":
+        case "Equal":
+            e.preventDefault();
+            return nudgeGridElevation(1);
+        case "NumpadSubtract":
+        case "Minus":
+            e.preventDefault();
+            return nudgeGridElevation(-1);
+        case "NumpadDecimal":
+            e.preventDefault();
+            return elevationFromHover();
   }
 
   const step = state.snap.pos || 1;
   switch (e.key) {
-    case "ArrowLeft": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(-step, 0, 0));
-    case "ArrowRight": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(step, 0, 0));
-    case "ArrowUp": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, 0, step));
-    case "ArrowDown": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, 0, -step));
-    case "PageUp": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, step, 0));
-    case "PageDown": e.preventDefault(); return nudgeSelection(new BABYLON.Vector3(0, -step, 0));
+        case "ArrowLeft":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(-step, 0, 0));
+        case "ArrowRight":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(step, 0, 0));
+        case "ArrowUp":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(0, 0, step));
+        case "ArrowDown":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(0, 0, -step));
+        case "PageUp":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(0, step, 0));
+        case "PageDown":
+            e.preventDefault();
+            return nudgeSelection(new BABYLON.Vector3(0, -step, 0));
     // F is the scale axis, Shift+F walks the scale step and Ctrl+F walks it
     // back - the same shape V has for translation and R for rotation. Mirroring
     // is the odd one out with no setting of its own, so it takes Alt+F.
-    case "f": case "F": {
+        case "f":
+        case "F": {
       e.preventDefault();
       if (e.altKey) {
         const r = flipCurrent();
-        setStatus(r
-          ? `mirrored ${r.count} object(s) on ${r.axis.toUpperCase()}`
-          : "nothing to mirror — select an element first");
+                setStatus(r ? `mirrored ${r.count} object(s) on ${r.axis.toUpperCase()}` : "nothing to mirror — select an element first");
       } else if (e.shiftKey) {
         cycleScaleSnap(1);
       } else {
@@ -2992,7 +3489,8 @@ window.addEventListener("keydown", async (e) => {
     // R is the rotation axis, Shift+R walks the angle and Ctrl+R walks it back.
     // The turn itself is Shift+wheel, and Alt+Shift+wheel swings the whole
     // selection about a shared pivot.
-    case "r": case "R":
+        case "r":
+        case "R":
       e.preventDefault();
       if (e.shiftKey) cycleRotSnap(1);
       else cycleRotOrScaleAxis("rot");
@@ -3005,7 +3503,8 @@ window.addEventListener("keydown", async (e) => {
     // Q sits where QWERTY has A, so it arrives as code "KeyA", gets claimed as
     // strafe-left, and never reaches this switch. V is in the same place and
     // carries the same label on both layouts, and reads as "vertical".
-    case "v": case "V": {
+        case "v":
+        case "V": {
       e.preventDefault();
       if (e.shiftKey) cycleMoveSnap(1);
       else setDragAxisFromKey();
@@ -3014,12 +3513,14 @@ window.addEventListener("keydown", async (e) => {
     // Y says whose axes V's choice means: the world's, or the element's own.
     // Next to V on both layouts, and the pair reads as "which axis, whose".
     // Ctrl+Y is already redo and is claimed above, before this switch.
-    case "y": case "Y": {
+        case "y":
+        case "Y": {
       e.preventDefault();
       setAxisSpaceFromKey();
       break;
     }
-    case "x": case "X":
+        case "x":
+        case "X":
       axesFromKey(e, "centre");
       break;
     // Shift+H parks the selection out of sight so you can reach what is behind
@@ -3027,15 +3528,18 @@ window.addEventListener("keydown", async (e) => {
     // large selection is expensive and an accidental unhide costs nothing.
     // Either way it reports the count - a hide you forgot about looks exactly
     // like an element you deleted by mistake.
-    case "h": case "H": {
+        case "h":
+        case "H": {
       e.preventDefault();
       if (e.shiftKey) {
         const r = hideSelected();
-        setStatus(r
-          ? (r.level === "ghost"
+                setStatus(
+                    r
+                        ? r.level === "ghost"
             ? `${r.count} element(s) at 50% and click-through — Shift+H again to hide outright`
-            : `hid ${r.count} element(s) — Shift+H returns them to 50%, H brings everything back`)
-          : "nothing to hide — select something first");
+                            : `hid ${r.count} element(s) — Shift+H returns them to 50%, H brings everything back`
+                        : "nothing to hide — select something first"
+                );
       } else {
         const n = unhideAll();
         setStatus(n ? `unhid ${n} element(s)` : "nothing was hidden");
@@ -3044,17 +3548,35 @@ window.addEventListener("keydown", async (e) => {
     }
     // M picks the selection up onto the cursor (see grabCurrent). G was the
     // Blender-idiomatic key for this, but it already toggles the grid here.
-    case "m": case "M": e.preventDefault(); grabCurrent(); break;
+        case "m":
+        case "M":
+            e.preventDefault();
+            grabCurrent();
+            break;
     // L steps between an element and the lights riding it. Next to K and J on
     // both layouts and nowhere near the movement keys, so it is safe to press
     // while the other hand is on the mouse.
-    case "l": case "L": e.preventDefault(); selectLightFromKey(); break;
+        case "l":
+        case "L":
+            e.preventDefault();
+            selectLightFromKey();
+            break;
     // B brings whatever is in hand to your feet. The physical key is KeyB on
     // both QWERTY and AZERTY, so matching the label costs nothing here.
-    case "b": case "B": e.preventDefault(); bringCurrentToCamera(); break;
-    case "Delete": case "Backspace": deleteCurrent(); break;
-    case "Escape": cancelEverything(); break;
-    case "g": case "G": {
+        case "b":
+        case "B":
+            e.preventDefault();
+            bringCurrentToCamera();
+            break;
+        case "Delete":
+        case "Backspace":
+            deleteCurrent();
+            break;
+        case "Escape":
+            cancelEverything();
+            break;
+        case "g":
+        case "G": {
       const c = $("show-grid");
       c.checked = !c.checked;
       setGridVisible(c.checked);
@@ -3087,12 +3609,27 @@ on("escape", () => cancelEverything({ closeModes: false }));
 function cancelEverything({ closeModes = true } = {}) {
   if (cancelMarquee()) return;     // an in-flight rectangle goes first
   if (cancelDrag()) return;        // then an in-flight drag
-  if (ghostActive() || state.brush) { cancelGhost(); setBrush(null); clearMarkerBrush(); select([]); return; }
+    if (ghostActive() || state.brush) {
+        cancelGhost();
+        setBrush(null);
+        clearMarkerBrush();
+        select([]);
+        return;
+    }
   // Only once there is nothing in hand does Escape close a bench - otherwise
   // cancelling an armed shape would throw you back to the ship.
-  if (closeModes && !$("compound-modal").hidden) { closeCompoundDialog(); return; }
-  if (closeModes && state.mode === "collision") { closeCollisionArea(); return; }
-  if (closeModes && state.mode === "compound") { closeCompoundBench(); return; }
+    if (closeModes && !$("compound-modal").hidden) {
+        closeCompoundDialog();
+        return;
+    }
+    if (closeModes && state.mode === "collision") {
+        closeCollisionArea();
+        return;
+    }
+    if (closeModes && state.mode === "compound") {
+        closeCompoundBench();
+        return;
+    }
   cancelGhost();
   setBrush(null);
   clearMarkerBrush();
@@ -3132,14 +3669,20 @@ function duplicateCurrent({ behaviors = true } = {}) {
 
   // Several selected: carry copies of the whole set. This used to fall back to
   // duplicating in place, because a ghost could only hold one module.
-  const many = cur.ids.map(entryOf)
+    const many = cur.ids
+        .map(entryOf)
     .filter((e) => e?.module || e?.type === "collider")
     // A *module* can only be on the bench once - the association rule needs one
     // answer to "which element is this shape on", and two instances give two.
     // Shapes are a different matter: a hull is often several boxes.
     .filter((e) => !(state.mode === "collision" && e.stage && e.type !== "collider"));
-  if (!many.length
-      && cur.ids.some((id) => { const e = entryOf(id); return e?.stage && e.type !== "collider"; })) {
+    if (
+        !many.length &&
+        cur.ids.some((id) => {
+            const e = entryOf(id);
+            return e?.stage && e.type !== "collider";
+        })
+    ) {
     setStatus("a module can only be on the bench once — copy its shapes instead");
     return;
   }
@@ -3150,9 +3693,7 @@ function duplicateCurrent({ behaviors = true } = {}) {
     if (!made.length) return;
     emit("lights");
     select(made.map((light) => light.id));
-    setStatus(made.length === 1
-      ? `copy of light ${lights[0].id} created beside the original`
-      : `copies of ${made.length} lights created beside the originals`);
+        setStatus(made.length === 1 ? `copy of light ${lights[0].id} created beside the original` : `copies of ${made.length} lights created beside the originals`);
     return;
   }
   if (many.length > 1) {
@@ -3201,8 +3742,7 @@ function duplicateCurrent({ behaviors = true } = {}) {
     originId: entry.id,
     behaviors,
   });
-  setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m`
-    + ` — click to place${behaviorNote([entry], behaviors)}${axisNote}`);
+    setStatus(`copy of ${entry.module} on the cursor at ${y.toFixed(2)} m` + ` — click to place${behaviorNote([entry], behaviors)}${axisNote}`);
 }
 
 /**
@@ -3215,8 +3755,7 @@ function duplicateCurrent({ behaviors = true } = {}) {
  * this one is another working fan or just the shape of one.
  */
 function behaviorNote(entries, copying) {
-  const n = entries.reduce(
-    (sum, e) => sum + (e?.module ? entityBehaviors(nodeNameOf(e)).length : 0), 0);
+    const n = entries.reduce((sum, e) => sum + (e?.module ? entityBehaviors(nodeNameOf(e)).length : 0), 0);
   if (!n) return "";
   const what = `${n} behaviour${n === 1 ? "" : "s"}`;
   return copying ? ` · bringing ${what}` : ` · leaving ${what} behind`;
@@ -3233,18 +3772,18 @@ function behaviorNote(entries, copying) {
 function grabCurrent() {
   if (ghostActive() || isDragging()) return;
   const cur = currentElement();
-  const ids = (cur?.ids || []).map(entryOf)
-    .filter((e) => e?.module || e?.type === "collider");
+    const ids = (cur?.ids || []).map(entryOf).filter((e) => e?.module || e?.type === "collider");
   if (!ids.length) {
     setStatus("nothing to pick up — select an element first");
     return;
   }
   grabSelection().then((g) => {
     if (g) {
-      setStatus(ids.length > 1
+            setStatus(
+                ids.length > 1
         ? `carrying ${ids.length} elements — click to drop, Esc to put them back`
-        : `carrying ${ids[0].module || COLLIDER_LABEL[ids[0].kind]}`
-          + " — click to drop, Esc to put it back");
+                    : `carrying ${ids[0].module || COLLIDER_LABEL[ids[0].kind]}` + " — click to drop, Esc to put it back"
+            );
     }
   });
 }
@@ -3266,11 +3805,8 @@ function bringCurrentToCamera() {
     setStatus("nothing in hand — arm a module or select an element first");
     return;
   }
-  const what = r.kind === "ghost"
-    ? (r.count > 1 ? `${r.count} ghosts` : "the ghost")
-    : (r.count > 1 ? `${r.count} elements` : "the selection");
-  setStatus(`brought ${what} here — build plane`
-    + `${r.floor ? " on the floor" : ""} at y ${r.y.toFixed(2)}`);
+    const what = r.kind === "ghost" ? (r.count > 1 ? `${r.count} ghosts` : "the ghost") : r.count > 1 ? `${r.count} elements` : "the selection";
+    setStatus(`brought ${what} here — build plane` + `${r.floor ? " on the floor" : ""} at y ${r.y.toFixed(2)}`);
 }
 
 /**
@@ -3299,7 +3835,10 @@ function elevationFromHover() {
   // It reads an element rather than changing one, so it has none of the "the
   // wrong thing moved" problem that took hover off the editing keys.
   const id = hoveredId();
-  if (!id) { setStatus("hover an element first"); return; }
+    if (!id) {
+        setStatus("hover an element first");
+        return;
+    }
   const entry = entryOf(id);
   const b = entry && worldBounds(entry.node);
   if (!b) return;
@@ -3329,9 +3868,7 @@ function refreshHud() {
   $("scale-axis").value = state.scaleAxis;
 
   const cur = currentElement();
-  $("hud-current").textContent = cur
-    ? `${cur.kind === "ghost" ? "◆" : "■"} ${short(cur.module)}`
-    : "—";
+    $("hud-current").textContent = cur ? `${cur.kind === "ghost" ? "◆" : "■"} ${short(cur.module)}` : "—";
   $("hud-current").title = cur?.module || "";
 }
 
@@ -3354,8 +3891,7 @@ function short(s) {
  * click, reads the same line back as text.
  */
 const ref = (label, ids) => ({ label, ids: [...ids] });
-const checkText = (line) =>
-  line.map((segment) => (typeof segment === "string" ? segment : segment.label)).join("");
+const checkText = (line) => line.map((segment) => (typeof segment === "string" ? segment : segment.label)).join("");
 
 /**
  * The stray-chunk check, phrased for a human, or nothing at all when it is off.
@@ -3378,9 +3914,7 @@ function strayChunkWarnings() {
     groups.get(key).members.push(stray);
   }
   return [...groups.values()].map(({ chunk, host, members }) => {
-    const line = [host
-      ? `${members.length} element(s) assigned to ${chunk} sit in ${host}: `
-      : `${members.length} element(s) assigned to ${chunk} touch nothing else in it: `];
+        const line = [host ? `${members.length} element(s) assigned to ${chunk} sit in ${host}: ` : `${members.length} element(s) assigned to ${chunk} touch nothing else in it: `];
     members.slice(0, 3).forEach((stray, at) => {
       if (at) line.push(", ");
       line.push(ref(stray.name, [stray.id]));
@@ -3388,7 +3922,14 @@ function strayChunkWarnings() {
     // The overflow names nothing, so it stands for what it hides: the ones not
     // listed, and only those.
     const rest = members.slice(3);
-    if (rest.length) line.push(", ", ref(`+${rest.length} more`, rest.map((stray) => stray.id)));
+        if (rest.length)
+            line.push(
+                ", ",
+                ref(
+                    `+${rest.length} more`,
+                    rest.map((stray) => stray.id)
+                )
+            );
     return line;
   });
 }
@@ -3402,7 +3943,8 @@ function validate() {
   for (const c of state.chunks) {
     const members = shipPlacements().filter((p) => p.chunk === c);
     if (!members.length) continue;
-    let min = null, max = null;
+        let min = null,
+            max = null;
     for (const m of members) {
       const b = worldBounds(m.node);
       if (!b) continue;
@@ -3425,15 +3967,15 @@ function validate() {
   const linked = new Set();
   for (const d of doors) {
     const [a, b] = resolveDoorChunks(d, boxes);
-    linked.add(a); linked.add(b);
+        linked.add(a);
+        linked.add(b);
     if (!a || !b) out.push(["err", [ref(d.id, [d.id]), `: only one side resolves (${a || b || "none"})`]]);
     else if (a === b) out.push(["err", [ref(d.id, [d.id]), `: both sides resolve to ${a}`]]);
     // A window onto space has nothing to slide: it is a hole in the hull, not a
     // doorway, so the missing-leaves warning would be permanent noise.
     if (!d.leaves.length && b !== SKYBOX_CHUNK) out.push(["warn", [ref(d.id, [d.id]), ": no leaves assigned"]]);
   }
-  const orphans = state.chunks.filter((c) =>
-    !linked.has(c) && shipPlacements().some((p) => p.chunk === c));
+    const orphans = state.chunks.filter((c) => !linked.has(c) && shipPlacements().some((p) => p.chunk === c));
   if (orphans.length && state.chunks.length > 1) {
     out.push(["warn", [`unreachable: ${orphans.join(", ")}`]]);
   }
@@ -3447,9 +3989,7 @@ function validate() {
     out.push(["warn", ["no environment probes — nothing in the ship will reflect anything"]]);
   }
   const el = $("validation");
-  el.replaceChildren(...(out.length
-    ? out.map(([kind, line]) => checkLine(kind, line))
-    : [checkLine("ok", ["All checks pass."])]));
+    el.replaceChildren(...(out.length ? out.map(([kind, line]) => checkLine(kind, line)) : [checkLine("ok", ["All checks pass."])]));
 }
 
 /** One check line, with every element it names a click away from being framed. */
@@ -3457,15 +3997,19 @@ function checkLine(kind, line) {
   const row = document.createElement("div");
   row.className = kind;
   for (const segment of line) {
-    if (typeof segment === "string") { row.append(segment); continue; }
+        if (typeof segment === "string") {
+            row.append(segment);
+            continue;
+        }
     const link = document.createElement("button");
     link.type = "button";
     link.className = "check-ref";
     link.textContent = segment.label;
-    link.title = segment.ids.length === 1
-      ? `Select ${segment.ids[0]} and frame it`
-      : `Select these ${segment.ids.length} elements and frame them`;
-    link.addEventListener("click", () => { select(segment.ids); focusSelection(); });
+        link.title = segment.ids.length === 1 ? `Select ${segment.ids[0]} and frame it` : `Select these ${segment.ids.length} elements and frame them`;
+        link.addEventListener("click", () => {
+            select(segment.ids);
+            focusSelection();
+        });
     row.append(link);
   }
   return row;
@@ -3473,18 +4017,31 @@ function checkLine(kind, line) {
 
 // ------------------------------------------------------------------- boot
 
-on("selection", () => { refreshInspector(); refreshStats(); });
+on("selection", () => {
+    refreshInspector();
+    refreshStats();
+});
 // The wheel tunes a lamp without going through the panel, so the panel has to
 // follow the record rather than only ever writing to it.
-on("lights", () => { refreshInspector(); refreshStats(); });
-on("placements", () => { refreshChunks(); refreshStats(); validate(); });
+on("lights", () => {
+    refreshInspector();
+    refreshStats();
+});
+on("placements", () => {
+    refreshChunks();
+    refreshStats();
+    validate();
+});
 on("chunks", () => {
   refreshChunks();
   refreshSettings();
   // An undo can add, remove, rename or retune a chunk while the pane is open.
   if (!$("chunk-modal").hidden) refreshChunkPane(chunkSelected);
 });
-on("markers", () => { refreshStats(); validate(); });
+on("markers", () => {
+    refreshStats();
+    validate();
+});
 on("transform", () => {
   for (const id of state.selection) {
     const isProbe = state.environmentProbes.has(id);
@@ -3513,7 +4070,10 @@ on("transform", () => {
   validate();
 });
 on("grid", refreshHud);
-on("modes", () => { refreshHud(); refreshLighting(); });
+on("modes", () => {
+    refreshHud();
+    refreshLighting();
+});
 on("current", refreshHud);
 on("environment", refreshLighting);
 on("behaviors", () => {
@@ -3541,8 +4101,7 @@ function refreshBusy() {
   const busy = isBusy();
   $("busy").hidden = !busy;
   $("busy-msg").textContent = busyLabel() || "working…";
-  for (const id of ["toolbar", "palette", "viewport", "inspector",
-    "probe-modal", "chunk-modal", "bhv-modal", "compound-modal"]) {
+    for (const id of ["toolbar", "palette", "viewport", "inspector", "probe-modal", "chunk-modal", "bhv-modal", "compound-modal"]) {
     const el = $(id);
     if (el) el.inert = busy;
   }
@@ -3554,13 +4113,21 @@ on("pickmodule", (moduleId) => {
   const axisNote = axisNoteForGhost();
   // On the collision area the palette *stages* modules: arming a brush there
   // would drop real kit geometry into the ship you cannot see.
-  if (state.mode === "collision") { stageFromPalette(moduleId, axisNote); return; }
-  setBrush(moduleId); setStatus(`armed ${moduleId}${axisNote}`);
+    if (state.mode === "collision") {
+        stageFromPalette(moduleId, axisNote);
+        return;
+    }
+    setBrush(moduleId);
+    setStatus(`armed ${moduleId}${axisNote}`);
 });
 on("stagemodule", (moduleId) => stageFromPalette(moduleId, axisNoteForGhost()));
 on("status", (msg) => setStatus(msg));
 on("deletecurrent", () => deleteCurrent());
-on("colliders", () => { refreshStats(); validate(); refreshCollisionMarks(); });
+on("colliders", () => {
+    refreshStats();
+    validate();
+    refreshCollisionMarks();
+});
 
 // ------------------------------------------------------------- collision
 
@@ -3573,7 +4140,8 @@ for (const kind of COLLIDER_KINDS) {
   const b = document.createElement("button");
   b.textContent = COLLIDER_LABEL[kind];
   b.dataset.kind = kind;
-  b.title = SCALE_RULE[kind] === "free"
+    b.title =
+        SCALE_RULE[kind] === "free"
     ? "Any scale — Havok takes a box with a quaternion"
     : SCALE_RULE[kind] === "uniform"
       ? "Scales uniformly: Havok's sphere is a single radius"
@@ -3599,7 +4167,6 @@ function refreshColliderButtons() {
 }
 on("current", refreshColliderButtons);
 
-
 // ----------------------------------------------- the collision staging area
 //
 // A mode, not a property of the selection: open it, stage whatever modules you
@@ -3618,9 +4185,7 @@ async function openCollisionArea() {
     if (back.length && !restored?.viewRestored) focusNodes(back.map((p) => p.node));
   });
   const n = [...state.placements.values()].filter((p) => p.stage).length;
-  setStatus(n
-    ? `collision area — ${n} module(s) back on the bench`
-    : "collision area — pick modules from the left to stage them");
+    setStatus(n ? `collision area — ${n} module(s) back on the bench` : "collision area — pick modules from the left to stage them");
 }
 
 function closeCollisionArea() {
@@ -3628,12 +4193,12 @@ function closeCollisionArea() {
   setBrush(null);
   const r = harvestStage();
   exitCollisionMode();
-  setStatus(`back to the ship — ${state.moduleCollision.size} module(s) carry collision`
-    + (r.orphans ? `, ${r.orphans} shape(s) belonged to nothing and were dropped` : ""));
+    setStatus(`back to the ship — ${state.moduleCollision.size} module(s) carry collision` + (r.orphans ? `, ${r.orphans} shape(s) belonged to nothing and were dropped` : ""));
 }
 
 $("btn-edit-module").addEventListener("click", async () => {
-  if (state.mode === "collision") closeCollisionArea(); else await openCollisionArea();
+    if (state.mode === "collision") closeCollisionArea();
+    else await openCollisionArea();
 });
 $("btn-module-done").addEventListener("click", closeCollisionArea);
 
@@ -3646,8 +4211,7 @@ $("btn-module-done").addEventListener("click", closeCollisionArea);
  * goes instead of being handed a spot.
  */
 async function stageFromPalette(moduleId, axisNote = "") {
-  const already = [...state.placements.values()]
-    .find((p) => p.stage && p.module === moduleId);
+    const already = [...state.placements.values()].find((p) => p.stage && p.module === moduleId);
   if (already) {
     cancelGhost();
     select([already.id]);
@@ -3661,22 +4225,29 @@ async function stageFromPalette(moduleId, axisNote = "") {
 
 $("btn-module-fit").addEventListener("click", async () => {
   const r = await fitBoxToSelection(moduleBounds);
-  if (!r.ok) { setStatus(r.error); return; }
+    if (!r.ok) {
+        setStatus(r.error);
+        return;
+    }
   refreshModuleBanner();
-  setStatus(`${r.module}: fitted one box at the collision shell`
-    + ` (${state.config.shellThickness} m minimum) — scale and split it as you like`);
+    setStatus(`${r.module}: fitted one box at the collision shell` + ` (${state.config.shellThickness} m minimum) — scale and split it as you like`);
 });
 
 $("btn-module-fit-hull").addEventListener("click", async () => {
   setStatus("fitting a hull…");
   const r = await fitHullToSelection();
-  if (!r.ok) { setStatus(r.error); return; }
+    if (!r.ok) {
+        setStatus(r.error);
+        return;
+    }
   refreshModuleBanner();
   const how = { box: "one box", slabs: "a slab per face", split: "a split" }[r.how] || r.how;
-  setStatus(`${r.module}: ${r.colliders.length} box(es) by ${how}`
-    + ` at ${state.config.hullTolerance} m tolerance`
-    + ` — covers ${(100 * r.coverage).toFixed(0)}%, ${(100 * r.solid).toFixed(0)}% of it on surface`
-    + (r.confident ? "" : " — worth checking by eye, this is a shape better drawn by hand"));
+    setStatus(
+        `${r.module}: ${r.colliders.length} box(es) by ${how}` +
+            ` at ${state.config.hullTolerance} m tolerance` +
+            ` — covers ${(100 * r.coverage).toFixed(0)}%, ${(100 * r.solid).toFixed(0)}% of it on surface` +
+            (r.confident ? "" : " — worth checking by eye, this is a shape better drawn by hand")
+    );
 });
 
 function refreshModuleBanner() {
@@ -3685,8 +4256,7 @@ function refreshModuleBanner() {
   if (on) {
     const staged = [...state.placements.values()].filter((p) => p.stage).length;
     const orphans = orphanCount();
-    $("module-banner-text").textContent = `Collision area — ${staged} staged`
-      + (orphans ? `, ${orphans} shape(s) belong to nothing` : "");
+        $("module-banner-text").textContent = `Collision area — ${staged} staged` + (orphans ? `, ${orphans} shape(s) belong to nothing` : "");
     $("module-banner-text").classList.toggle("warn", orphans > 0);
   }
   $("btn-edit-module").textContent = on ? "Back to the ship" : "Edit collision";
@@ -3720,9 +4290,11 @@ async function openCompoundBench() {
   });
   const n = benchMembers().length;
   const name = editingCompound();
-  setStatus(n
+    setStatus(
+        n
     ? `compound bench — ${n} piece(s) back on the bench${name ? ` · editing "${name}"` : ""}`
-    : "compound bench — place modules from the left, then Save as… to make one object of them");
+            : "compound bench — place modules from the left, then Save as… to make one object of them"
+    );
 }
 
 function closeCompoundBench() {
@@ -3731,17 +4303,19 @@ function closeCompoundBench() {
   setBrush(null);
   const n = benchMembers().length;
   exitCompoundMode();
-  setStatus(n
-    ? `back to the ship — ${n} piece(s) left on the bench for next time`
-    : "back to the ship");
+    setStatus(n ? `back to the ship — ${n} piece(s) left on the bench for next time` : "back to the ship");
 }
 
 $("btn-edit-compound").addEventListener("click", async () => {
-  if (state.mode === "compound") closeCompoundBench(); else await openCompoundBench();
+    if (state.mode === "compound") closeCompoundBench();
+    else await openCompoundBench();
 });
 $("btn-compound-done").addEventListener("click", closeCompoundBench);
 $("btn-compound-new").addEventListener("click", async () => {
-  if (!benchMembers().length) { setStatus("the bench is already empty"); return; }
+    if (!benchMembers().length) {
+        setStatus("the bench is already empty");
+        return;
+    }
   await newCompound();
   setStatus("bench cleared — Ctrl+Z brings it back");
 });
@@ -3755,14 +4329,10 @@ function refreshCompoundBanner() {
     // The name is on the banner rather than only in a status line, because it
     // is the answer to "what am I about to overwrite" and that question is
     // asked at the moment of saving, long after any message has scrolled away.
-    $("compound-banner-text").textContent = name
-      ? `Compound bench — "${name}" — ${n} piece(s)`
-      : `Compound bench — unnamed — ${n} piece(s)`;
+        $("compound-banner-text").textContent = name ? `Compound bench — "${name}" — ${n} piece(s)` : `Compound bench — unnamed — ${n} piece(s)`;
     const quick = $("btn-compound-quicksave");
     quick.disabled = !name || !n;
-    quick.title = name
-      ? `Re-save "${name}" with what is on the bench, no questions asked`
-      : "Nothing to re-save: this bench has no name yet — use Save as… to give it one";
+        quick.title = name ? `Re-save "${name}" with what is on the bench, no questions asked` : "Nothing to re-save: this bench has no name yet — use Save as… to give it one";
   }
   $("btn-edit-compound").textContent = open ? "Back to the ship" : "Edit compounds";
   $("btn-edit-compound").classList.toggle("active", open);
@@ -3784,7 +4354,10 @@ on("compound", refreshCompoundBanner);
 const compoundFiling = { kit: "", category: "Compounds", sync: false };
 
 function openCompoundDialog() {
-  if (!benchMembers().length) { setStatus("nothing on the bench to save"); return; }
+    if (!benchMembers().length) {
+        setStatus("nothing on the bench to save");
+        return;
+    }
   const kits = (getCatalogue().kits || []).map((k) => k.name);
   const kitEl = $("compound-kit");
   kitEl.innerHTML = "";
@@ -3798,16 +4371,13 @@ function openCompoundDialog() {
   // they nearly always belong in the same drawer as the one before.
   const editingName = editingCompound();
   const tile = editingName ? compoundTile(editingName) : null;
-  kitEl.value = kits.includes(tile?.kit || compoundFiling.kit)
-    ? (tile?.kit || compoundFiling.kit) : (defaultKit() || "");
+    kitEl.value = kits.includes(tile?.kit || compoundFiling.kit) ? tile?.kit || compoundFiling.kit : defaultKit() || "";
   $("compound-name").value = editingName || "";
   $("compound-category").value = tile?.category || compoundFiling.category;
   $("compound-error").textContent = "";
   $("compound-sync").checked = compoundFiling.sync;
   refreshCompoundCategories();
-  $("compound-summary").textContent =
-    `${benchMembers().length} piece(s) on the bench, `
-    + `${benchMembers().reduce((a, e) => a + lightsOf(e.id).length, 0)} lamp(s) among them`;
+    $("compound-summary").textContent = `${benchMembers().length} piece(s) on the bench, ` + `${benchMembers().reduce((a, e) => a + lightsOf(e.id).length, 0)} lamp(s) among them`;
   refreshCompoundWarning();
   $("compound-modal").hidden = false;
   $("compound-name").focus();
@@ -3826,20 +4396,21 @@ function refreshCompoundWarning() {
   const name = $("compound-name").value.trim();
   const tile = name ? compoundTile(name) : null;
   const el = $("compound-warn");
-  if (!tile) { el.textContent = ""; return; }
+    if (!tile) {
+        el.textContent = "";
+        return;
+    }
   const copies = [...compoundInstances(name).keys()].length;
   const one = copies === 1;
-  el.textContent = `"${name}" already exists (${(tile.members || []).length} piece(s))`
-    + " — saving replaces it"
-    + (copies
-      ? `. ${copies} cop${one ? "y" : "ies"} in the ship`
-      + `${$("compound-sync").checked
-        ? " will be rebuilt"
-        : ` ${one ? "is" : "are"} left alone`}`
-      : "");
+    el.textContent =
+        `"${name}" already exists (${(tile.members || []).length} piece(s))` +
+        " — saving replaces it" +
+        (copies ? `. ${copies} cop${one ? "y" : "ies"} in the ship` + `${$("compound-sync").checked ? " will be rebuilt" : ` ${one ? "is" : "are"} left alone`}` : "");
 }
 
-function closeCompoundDialog() { $("compound-modal").hidden = true; }
+function closeCompoundDialog() {
+    $("compound-modal").hidden = true;
+}
 
 /** The categories the chosen kit already has, as suggestions rather than a list. */
 function refreshCompoundCategories() {
@@ -3859,16 +4430,19 @@ $("compound-kit").addEventListener("change", refreshCompoundCategories);
 $("compound-name").addEventListener("input", refreshCompoundWarning);
 $("compound-sync").addEventListener("change", refreshCompoundWarning);
 $("compound-name").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") { ev.preventDefault(); $("btn-compound-store").click(); }
+    if (ev.key === "Enter") {
+        ev.preventDefault();
+        $("btn-compound-store").click();
+    }
 });
 
 /** What a save reports, whichever button started it. */
 function reportSave(r, kit, category) {
-  setStatus(`${r.replaced ? "replaced" : "saved"} "${r.name}" — ${r.members} piece(s)`
-    + (kit ? `, filed under ${kit} › ${category}` : "")
-    + (r.instances
-      ? `. ${r.instances} cop${r.instances === 1 ? "y" : "ies"} in the ship rebuilt`
-      : (r.replaced ? ". Copies already in the ship are untouched" : "")));
+    setStatus(
+        `${r.replaced ? "replaced" : "saved"} "${r.name}" — ${r.members} piece(s)` +
+            (kit ? `, filed under ${kit} › ${category}` : "") +
+            (r.instances ? `. ${r.instances} cop${r.instances === 1 ? "y" : "ies"} in the ship rebuilt` : r.replaced ? ". Copies already in the ship are untouched" : "")
+    );
 }
 
 $("btn-compound-store").addEventListener("click", async () => {
@@ -3877,9 +4451,11 @@ $("btn-compound-store").addEventListener("click", async () => {
   const category = $("compound-category").value.trim() || "Compounds";
   const updateInstances = $("compound-sync").checked;
   $("compound-error").textContent = "";
-  const r = await whileBusy(`saving "${name}"…`,
-    () => saveCompound({ name, kit, category, updateInstances }));
-  if (!r.ok) { $("compound-error").textContent = r.error; return; }
+    const r = await whileBusy(`saving "${name}"…`, () => saveCompound({ name, kit, category, updateInstances }));
+    if (!r.ok) {
+        $("compound-error").textContent = r.error;
+        return;
+    }
   compoundFiling.kit = kit;
   compoundFiling.category = category;
   compoundFiling.sync = updateInstances;
@@ -3888,9 +4464,11 @@ $("btn-compound-store").addEventListener("click", async () => {
 });
 
 $("btn-compound-quicksave").addEventListener("click", async () => {
-  const r = await whileBusy(`saving "${editingCompound()}"…`,
-    () => quickSaveCompound({ updateInstances: compoundFiling.sync }));
-  if (!r.ok) { setStatus(r.error); return; }
+    const r = await whileBusy(`saving "${editingCompound()}"…`, () => quickSaveCompound({ updateInstances: compoundFiling.sync }));
+    if (!r.ok) {
+        setStatus(r.error);
+        return;
+    }
   reportSave(r, "", "");
 });
 
@@ -3899,28 +4477,24 @@ $("btn-compound-quicksave").addEventListener("click", async () => {
 // for, and it is the only way back to a saved recipe.
 on("editcompound", async (name) => {
   const n = benchMembers().length;
-  if (n && !confirm(`Put "${name}" on the bench?\n\n`
-    + `The ${n} piece(s) on it now are cleared - Ctrl+Z brings them back.`)) return;
+    if (n && !confirm(`Put "${name}" on the bench?\n\n` + `The ${n} piece(s) on it now are cleared - Ctrl+Z brings them back.`)) return;
   const r = await whileBusy(`loading "${name}"…`, () => editCompound(name));
-  setStatus(r.ok
-    ? `"${r.name}" on the bench — ${r.members} piece(s). Save re-saves it under that name`
-    : r.error);
+    setStatus(r.ok ? `"${r.name}" on the bench — ${r.members} piece(s). Save re-saves it under that name` : r.error);
 });
 
 on("deletecompound", async (name) => {
-  if (!confirm(`Delete the compound "${name}"?\n\n`
-    + "Copies already placed in the ship are ordinary elements and are left alone.")) return;
+    if (!confirm(`Delete the compound "${name}"?\n\n` + "Copies already placed in the ship are ordinary elements and are left alone.")) return;
   const r = await whileBusy(`deleting "${name}"…`, () => deleteCompound(name));
   setStatus(r.ok ? `deleted the "${name}" compound` : r.error);
 });
 
 $("show-layer").addEventListener("change", (ev) => {
   setShowLayer(ev.target.value);
-  setStatus(ev.target.value === "both" ? "showing the ship and its collision"
-    : ev.target.value === "geometry" ? "showing the ship only"
-      : "showing collision only");
+    setStatus(ev.target.value === "both" ? "showing the ship and its collision" : ev.target.value === "geometry" ? "showing the ship only" : "showing collision only");
 });
-on("modes", () => { $("show-layer").value = state.showLayer; });
+on("modes", () => {
+    $("show-layer").value = state.showLayer;
+});
 
 on("focus", () => focusSelection());
 
@@ -3948,16 +4522,14 @@ function refreshSettings() {
 
 $("cfg-hull-tol").addEventListener("change", () => {
   if (setConfig("hullTolerance", $("cfg-hull-tol").value)) {
-    setStatus(`hull tolerance ${state.config.hullTolerance} m`
-      + " — refit a module to apply it");
+        setStatus(`hull tolerance ${state.config.hullTolerance} m` + " — refit a module to apply it");
   }
   refreshSettings();
 });
 
 $("cfg-hull-thick").addEventListener("change", () => {
   if (setConfig("hullThickness", $("cfg-hull-thick").value)) {
-    setStatus(`hull thickness ${state.config.hullThickness} m`
-      + " — refit a module to apply it");
+        setStatus(`hull thickness ${state.config.hullThickness} m` + " — refit a module to apply it");
   }
   refreshSettings();
 });
@@ -3965,11 +4537,15 @@ $("cfg-hull-thick").addEventListener("change", () => {
 $("cfg-hull-offset").addEventListener("change", () => {
   if (setConfig("hullOffset", $("cfg-hull-offset").value)) {
     const o = state.config.hullOffset;
-    setStatus(`hull offset ${o}`
-      + (o === "centered" ? " — thickness split either side of the art"
-        : o === "negative" ? " — hull tucked behind the art, clear of the play space"
-          : " — hull stood in front of the art")
-      + " — refit a module to apply it");
+        setStatus(
+            `hull offset ${o}` +
+                (o === "centered"
+                    ? " — thickness split either side of the art"
+                    : o === "negative"
+                      ? " — hull tucked behind the art, clear of the play space"
+                      : " — hull stood in front of the art") +
+                " — refit a module to apply it"
+        );
   }
   refreshSettings();
 });
@@ -3999,8 +4575,7 @@ on("reflection", refreshSettings);
 
 $("cfg-shell").addEventListener("change", () => {
   if (setConfig("shellThickness", $("cfg-shell").value)) {
-    setStatus(`collision shell ${state.config.shellThickness} m`
-      + " — refit a module to apply it");
+        setStatus(`collision shell ${state.config.shellThickness} m` + " — refit a module to apply it");
   }
   refreshSettings();
 });
@@ -4020,13 +4595,11 @@ $("cfg-autosave").addEventListener("change", () => {
 // The sizes on offer are built from the constant setConfig checks a chosen one
 // against, rather than written out again in the markup, where the two copies
 // could disagree and a row on the pane would silently refuse to move.
-$("cfg-probe-res").innerHTML = PROBE_RESOLUTIONS
-  .map((n) => `<option value="${n}">${n}</option>`).join("");
+$("cfg-probe-res").innerHTML = PROBE_RESOLUTIONS.map((n) => `<option value="${n}">${n}</option>`).join("");
 
 $("cfg-probe-res").addEventListener("change", () => {
   if (setConfig("probeResolution", $("cfg-probe-res").value)) {
-    setStatus(`cubemaps ${state.config.probeResolution}px per face`
-      + " — capture the probes to apply it");
+        setStatus(`cubemaps ${state.config.probeResolution}px per face` + " — capture the probes to apply it");
   }
   refreshSettings();
 });
@@ -4051,10 +4624,8 @@ const RIG_DEFAULTS = {
 
 $("btn-cfg-reset").addEventListener("click", () => {
   let changed = false;
-  const rigsStale = ["editor", "runtime"].some((which) =>
-    Object.entries(RIG_DEFAULTS).some(([key, v]) => state.lightSets[which][key] !== v));
-  const dialsStale = state.runtimeSpecularAA !== RUNTIME_SPECULAR_AA_DEFAULT
-    || state.runtimeRoughnessFactor !== RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
+    const rigsStale = ["editor", "runtime"].some((which) => Object.entries(RIG_DEFAULTS).some(([key, v]) => state.lightSets[which][key] !== v));
+    const dialsStale = state.runtimeSpecularAA !== RUNTIME_SPECULAR_AA_DEFAULT || state.runtimeRoughnessFactor !== RUNTIME_ROUGHNESS_FACTOR_DEFAULT;
   if (rigsStale || dialsStale) {
     pushUndo();
     for (const which of ["editor", "runtime"]) {
@@ -4066,10 +4637,13 @@ $("btn-cfg-reset").addEventListener("click", () => {
   }
   // The editor's own view preferences stay off the stack, the same rule their
   // rows follow when you move them by hand.
-  if (state.veilAlpha !== VEIL_ALPHA_DEFAULT || state.bigPalette !== BIG_PALETTE_DEFAULT
-    || state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT
-    || state.runBehaviors !== RUN_BEHAVIORS_DEFAULT
-    || state.shipOptimize !== SHIP_OPTIMIZE_DEFAULT) {
+    if (
+        state.veilAlpha !== VEIL_ALPHA_DEFAULT ||
+        state.bigPalette !== BIG_PALETTE_DEFAULT ||
+        state.strayChunkCheck !== STRAY_CHUNK_CHECK_DEFAULT ||
+        state.runBehaviors !== RUN_BEHAVIORS_DEFAULT ||
+        state.shipOptimize !== SHIP_OPTIMIZE_DEFAULT
+    ) {
     setVeilAlpha(VEIL_ALPHA_DEFAULT);
     state.bigPalette = BIG_PALETTE_DEFAULT;
     state.strayChunkCheck = STRAY_CHUNK_CHECK_DEFAULT;
@@ -4197,8 +4771,7 @@ async function bootstrap() {
     // No ship yet, but the kit's collision file may still be there - that is
     // the whole point of it living apart from any one ship.
     const coll = await loadCollision().catch(() => null);
-    setStatus(`ready — ${getCatalogue().byId.size} modules`
-      + (coll ? `, collision for ${Object.keys(coll).length} of them` : ""));
+        setStatus(`ready — ${getCatalogue().byId.size} modules` + (coll ? `, collision for ${Object.keys(coll).length} of them` : ""));
   }
   // Whatever we booted with - a restored ship or an empty grid - is the
   // baseline "unsaved changes" is measured against.
@@ -4207,4 +4780,6 @@ async function bootstrap() {
   validate();
 }
 
-function round(v) { return Math.round(v * 1000) / 1000; }
+function round(v) {
+    return Math.round(v * 1000) / 1000;
+}

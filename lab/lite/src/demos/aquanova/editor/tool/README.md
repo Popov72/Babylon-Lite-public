@@ -62,7 +62,7 @@ as a module id plus a transform, so a layout reloads exactly:
   "editorEnvironment": { "strength", "toneMapping", "exposure" },
   "editorPrefs": { "veilAlpha", "bigPalette", "strayChunkCheck", "probes" },
   "fluidSim": [ "viscosity-inplace", "liquid-slow" ],
-  "behaviors": { "stdLiquefaction": { "liquefiable": true } },
+  "behaviorPresets": { "stdLiquefaction": { "base": "liquefaction" } },
   "entities":  { "storageDoorL": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorR"] } ] } }
 }
 ```
@@ -121,17 +121,24 @@ pull the feature module in, and it assigns to the node _and_ the mesh.
 
 ### Behaviours
 
-Two halves, matching the manifest:
+Base behaviors and their parameter schemas come from
+`public/data/behavior-definitions.json`. The manifest only stores optional
+named presets plus the entity assignments:
 
 ```jsonc
 "fluidSim": [ "viscosity-inplace", "liquid-slow" ],   // extensionless setting names
-"behaviors": {                       // a LIBRARY of named definitions
-  "stdLiquefaction": { "liquefiable": true, "fluidSim": ["viscosity-inplace"] },
-  "dynamic":          { "dynamic": true }
+"behaviorPresets": {                 // named profiles of catalog behaviors
+  "stdLiquefaction": {
+    "base": "liquefaction",
+    "fluidSim": ["viscosity-inplace"]
+  }
 },
 "entities": {                        // which node names carry which
   "storageDoorL": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorR"] } ] },
-  "storageDoorR": { "behaviors": [ { "name": "stdLiquefaction", "linked": ["storageDoorL"] } ] }
+  "storageDoorR": { "behaviors": [
+    { "name": "stdLiquefaction", "linked": ["storageDoorL"] },
+    { "name": "dynamic" }            // direct catalog behavior
+  ] }
 }
 ```
 
@@ -142,18 +149,17 @@ _new_ ship starts from, but a saved one carries the list it was authored
 against, and letting the two drift apart would silently repoint its behaviours.
 An undo snapshot carries no list, so undoing never disturbs the one in force.
 
-Behavior names and parameters come from
-`public/data/behavior-definitions.json`. Definitions and assignments are
-validated against that metadata; unsupported names, fields, and values are
-rejected rather than preserved.
+Catalog behaviors and assignments are validated against the metadata;
+unsupported names, fields, and values are rejected rather than preserved.
+Preset names cannot collide with catalog names, and a preset derives directly
+from one catalog behavior rather than another preset.
 
-**Edit behaviours…** in Settings ▸ Runtime opens the library: pick from the
-list, edit, `New`, `Save`, `Delete`. It used to sit in the inspector's Behaviour
-panel, which is hidden unless exactly one element is selected — so the one
-window that edits the ship's _shared_ definitions could only be reached through
-an element that happened to be selected. The list is **alphabetical**, sorted
-for display only. **Deleting** one strips it from every entity that carried it,
-rather than leaving invalid references behind.
+**Edit preset behaviors…** in Settings ▸ Runtime opens the preset editor: pick
+from the list, edit, `New`, `Save`, `Delete`. The list is **alphabetical**,
+sorted for display only. **Deleting** a preset strips it from every entity that
+carried it rather than leaving invalid references behind. Catalog behaviors do
+not appear in this list because they require no manifest definition; they are
+always available in the inspector's **Add** menu alongside presets.
 
 **Attaching** happens on the selected element, keyed by its **node name** — so
 the panel shows how many elements that name governs (`"crate" — 4 elements`).
@@ -251,7 +257,7 @@ replaced: the second row's `Remove` took the first one away, and both parameter
 boxes wrote to the same assignment. Repeated names are numbered on screen
 (`#1`, `#2`), since otherwise nothing would tell the rows apart.
 
-**`linked`** appears only for definitions with `liquefiable: true`, because
+**`linked`** appears only for the `liquefaction` behavior and its presets, because
 linking is for pieces that melt as one — a pair of door halves. The candidates
 are the other named nodes **in the same room**: linked pieces are neighbours in
 practice, and a ship-wide list would be hundreds of entries long. For a door,
@@ -288,6 +294,19 @@ as `X — not in this list` and kept until you change it. A narrowed room filter
 a source that stopped raising an event, a name some other tool wrote: all of
 them survive being looked at.
 
+**An empty list is still a list.** A field that declares where its values come
+from stays a picker even when that source has nothing to offer — disabled, and
+carrying a sentence saying why. The temptation is to fall back to a text box on
+the grounds that something is better than nothing, but an empty list is exactly
+the moment a typed name is a guess: the word does not exist yet, so anything
+typed is wrong until whatever defines it is authored. The hint says which thing
+that is — give the Liquefactor its sound categories, choose a fluid sim before
+its emitters. The one field that may legitimately be named by hand is
+`playAnimation`'s clip, because the clips are read off the element the behaviour
+rides and a behaviour sitting in the library has no element yet; it carries the
+same `＋ name a new one…` entry as a new event, so it stays usable while still
+being a list everywhere it can be one.
+
 **Event subscriptions ask for the sources first, then the event.** Several
 sources on one subscription mean "any of these, they are equivalent" — the two
 halves of a fan, the five panels of a door — so the behaviour reacts whichever
@@ -296,6 +315,31 @@ group behave differently depending on which member fired, and the event list is
 the **intersection** of what all the chosen sources raise, not the union. Change
 the sources and the event list is rebuilt; the dependency is read from the
 schema (`optionsFrom`), so the two cannot drift apart.
+
+`fluidSimulation` uses the same subscription UI for its `eventActions`. The
+chosen action controls the rest of the row: emitter actions show an **Emitter**
+picker, sink actions show a **Sink** picker, and simulation actions show neither.
+Those lists come from the named objects in the selected
+`public/aquanova/fluidSim/<fluidSim>.json`; changing **Fluid simulation**
+immediately rebuilds them. The editor server publishes this flow-object
+catalogue alongside the configured fluid-simulation names, so these references
+are selected rather than typed.
+
+**The sound list is the sound folder.** The server lists
+`lab/public/aquanova/sounds/*.mp3` into the same catalogue and drops the
+extension, because that is precisely the runtime's contract — `sound.ts`,
+`pick-entity.ts` and `weapon-liquefactor.ts` each throw on a name carrying an
+extension or a slash. It is rebuilt per request, so a new clip needs a page
+refresh and nothing else. It was a hand-written array in
+`behavior-definitions.json` until it drifted: two clips on disk were missing
+from it, which is the failure mode a picker exists to prevent, arrived at from
+the other side. A name the folder no longer has is not lost — the picker keeps
+it as `X — not in this list` until you change it, which is how a deleted or
+renamed MP3 announces itself.
+
+Sound **categories** are a different list and stay live: the Liquefactor weapon
+_defines_ them, so what a crate may ask for is whatever that behaviour currently
+maps, read back out of the ship rather than declared anywhere.
 
 **Entity pickers carry one room filter per form**, above the fields it narrows:
 _this room_ / _chosen rooms…_ / _anywhere on the ship_. The ship is hundreds of
@@ -354,7 +398,7 @@ a fold that sprang open each time you changed a field would be worse than none
 folds under it up with it, so the box that stays open is the one that was open.
 
 **What a behaviour is for is a tooltip on its name** — in the applied list, in
-the **Add** menu and in the library window. It was a paragraph above the fields,
+the **Add** menu and in the preset window. It was a paragraph above the fields,
 which repeated itself for every element carrying that behaviour and pushed the
 fields, the part you came for, down the panel. The description answers "which
 one is this?", and that is a question about the name.
@@ -400,13 +444,38 @@ enables looping. Animation names are exact and case-sensitive; identically
 named clips targeting different placed modules remain independent.
 
 The runtime `dynamic` behavior accepts an optional positive `mass` in kilograms
-and defaults to `10`. `weaponAntiGravityGun` accepts optional positive
-`maxGrabDistance` and `maxMass` values, defaulting to `6` metres and `100`
-kilograms.
+and defaults to `10`. `weaponAntiGravityGun` accepts an optional positive
+`maxMass`, defaulting to `100` kilograms. Its first left click grabs, the next
+left click immediately throws at `15 m/s`, and the right button drops the held
+object without throwing it. Holding the left button does not increase throw
+strength. The `player` behavior's optional positive `maxGrabDistance` and
+`maxHeldObjectDistance` both default to `8` metres. The first limits initial
+acquisition; the second automatically drops a held object when the distance
+between their centres exceeds the limit.
 
 The runtime `setCollisionShape` behavior replaces the entity's authored Havok
 primitive with its world-space mesh AABB by default. Explicit
 `{ "type": "mesh" }` uses a static triangle-mesh collider instead.
+An optional `fluidSimShape` replaces only the primitive injected into fluid
+simulations. The initial supported shape is a mesh-local +Y hollow cylinder:
+
+```json
+{
+    "fluidSimShape": {
+        "type": "hollowCylinder",
+        "start": [0, 0, 0],
+        "height": 2,
+        "innerRadius": 0.8,
+        "outerRadius": 1
+    }
+}
+```
+
+`start` is the base-center. Height and both radii must be positive, and the
+outer radius must exceed the inner radius. The regular Havok collision shape
+is unchanged by this field. The mesh may rotate, mirror, and scale the cylinder
+along Y, but its transformed X/Z scale must remain equal and unsheared so the
+circular radii stay exactly representable.
 The runtime `trigger` behavior accepts
 `{ "onIntersection": { "enterEvent": "activated",
 "exitEvent": "deactivated", "playerOnly": true } }`. The event names are
@@ -429,7 +498,7 @@ Three keys are not opaque:
 
 The editor plays the `playAnimation` clips itself, so a fan you have just placed
 spins in the viewport instead of only in the game. **Run behaviours** is on by
-default and lives beside **Edit behaviours…** in Settings ▸ Runtime; it is an
+default and lives beside **Edit preset behaviors…** in Settings ▸ Runtime; it is an
 editor preference, saved in `editorPrefs` and off the undo stack like the rows
 in Settings ▸ Editor.
 
@@ -651,6 +720,17 @@ obvious next click. Selecting it swaps the inspector into the light form.
 Position is relabelled **Offset** — a light's node hangs off its owner, so those
 three numbers are read in that element's own space — and Scale and Size go away,
 because a lamp has neither.
+
+A read-only **World** line appears under the offset with the metres the lamp
+actually sits at, because `0, 1.5, 0` says nothing about where in the ship it
+is. It shows up **only when the boxes above are not already world coordinates**,
+which today means a lamp and nothing else: every other entry's node is a scene
+root — placements are re-parented into chunk holders for the length of an export
+and put straight back — so a World line under a wall would repeat the boxes
+until you stopped reading it. It is a readout, not a second way to author the
+same number: typing a world position would be a third opinion about a value the
+offset and the owner already settle between them. It is editor space, like every
+number in the panel; the manifest negates X on the way out.
 
 Rows the engine has no meaning for are **disabled rather than hidden**, with a
 line underneath saying why: a greyed-out Cone row still tells you a spot light is
@@ -1096,6 +1176,7 @@ the same thing.
 | Place            | click a palette tile to arm it, then click in the viewport. The module stays armed for repeat placement — except on the collision bench, where it is a one-shot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Move             | **drag** an element (elements stay solid, button held), or **`M`** to pick the selection up and carry it hands-free as a translucent ghost — click to drop, `Esc` to put it back. Dragging one that is already selected moves the **whole selection**; dragging an unselected one selects just it first. **`V`, or the `Drag` combo,** cycles the drag axis: `X/Z (floor)` → `Y (up/down)` → `X only` → `Z only` — safe to change mid-drag. **`Y`, or the combo beside it,** says whose axis that is: `World` or `Local` (the element's own — so a wall turned 90° still slides along its length, and `R` turns it about its own axis). `Esc` or right-click mid-drag puts everything back.                                                                                                                                                                                                                        |
 | Frame            | **double-click** an element                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Find             | the box in the toolbar — go to an **id**, a **node name** (every element carrying it travels together), or a name **inside** an element, which goes to its owner. `Enter` goes; no shortcut, see [The find box](#the-find-box--go-to-a-name)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Bring            | **`B`** — moves whatever is in hand to a grid spot just in front of the camera, resting on the deck under your feet, and **takes the build plane with it**. Works on the armed ghost and on a placed selection alike                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Axes             | **`X`** — show one element's **world** X/Y/Z arrows · **`Shift+X`** — its own **local** axes, which is what scaling acts on. Both hang the gizmo on the **middle of the visible mesh**, since a kit's node origin is often metres from the piece; **`Ctrl+X`** / **`Ctrl+Shift+X`** are the same pair hung on the **node origin** instead, which is the number the inspector writes. Showing them **also puts moving and turning in that space**, since asking to see an axis is nearly always asking to work along it; `Y` overrides afterwards. With several selected, the one **nearest the cursor** gets them; an armed ghost counts too. They follow a single click to the next element, **keeping their flavour and their anchor**. The same key again hides them (without touching the space), any other of the four re-aims or re-hangs them, and pressing any with nothing selected or hovered hides them |
 | Axis modes       | see the table above — one letter per transform, the same three modifiers on each. All three `Ctrl` pairs are claimed from the browser: reload, the find bar and paste                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -1113,7 +1194,7 @@ the same thing.
 | Hide             | `Shift+H` cycles the selection **50% → hidden → 50%** — half alpha (and click-through) to see past something, then gone · `H` returns everything to fully opaque · the **Ghost** slider sets how see-through that first state is. Undoable, but not saved — a reload starts with everything visible                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Id               | inspector `Id` row — read-only. The tool's handle for the element and its node name in `ship.glb` when no `Name` is set; doors, portals and behaviours all reference it, so it is not editable. In a multi-selection it names the element whose transform the fields below show                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Name             | inspector `Name` field — the element's **node** name in `ship.glb` (primitives are numbered off it), shared on purpose: elements with the same name share one behaviour entry. Shown in the corner overlay instead of the module id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Behaviour        | inspector panel — attach metadata-defined behaviours to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each parameter with its typed control, and pick the `linked` nodes a liquefiable one melts with · the typed library opens from **Edit behaviours…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Behaviour        | inspector panel — attach metadata-defined behaviours or presets to the element's node name (its `Name`, or its `Id` when it has none; the same one may be attached more than once, and repeats are numbered), edit each parameter with its typed control, and pick the `linked` nodes a liquefiable one melts with · the preset editor opens from **Edit preset behaviors…** in Settings ▸ Runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Eyedropper       | `Alt`-click a placed element to arm its module                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Compound         | a placed [compound](#compound-objects) selects as one: click any member and the whole group comes · **`Ctrl+Alt+click`** drills in to the single member under the cursor · `Ctrl+D` mints a new instance · inspector **Break apart** dissolves the group and leaves the pieces where they are                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | Nudge            | arrow keys move the selection on X/Z, `PageUp`/`PageDown` on Y — in whichever space `Y` has chosen                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -2172,6 +2253,69 @@ It is deliberately not a _frame_ — the camera does not move. Framing answers
 which is what you want when the answer to "where is it" is 300 m away in a
 direction you were never going to fly.
 
+### The find box — go to a name
+
+Double-click frames the thing under the cursor, which is no help at all when
+what you have is a **string**: `P0488` out of a check message, `crate` out of a
+behaviour entry, `Fan_primitive0` out of an export warning, a node name off the
+runtime's console. The find box in the toolbar takes any of them and goes
+there — it selects what it found and frames it, exactly as double-clicking it
+would have. Click in the box, type or pick a name, and `Enter` goes.
+
+**It has no keyboard shortcut, on purpose.** `Ctrl+F` is the browser's own find
+bar and the scale step's walk-back, `Ctrl+Shift+F` is spoken for outside the
+browser, and the box is on the toolbar at all times — a find is a thing you
+reach for once you have already stopped to read a message, not mid-gesture.
+
+What it looks for runs in the order those strings stop being ambiguous:
+
+| it is                        | what happens                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------- |
+| an **id** — `P0488`, `D0012` | exactly one element carries it, so the search ends there                        |
+| a **node name** — `crate`    | **every** element carrying it is selected, and the lot is framed                |
+| a name **inside** an element | the element that owns it is selected — every one of them, if the name is shared |
+
+The middle row is the point of names rather than a compromise: names are shared
+on purpose — six crates called `crate` is one behaviour entry governing all six
+— so "which crate did you mean" has no answer, and picking one silently would
+be a lie. The bottom row is the same rule one level down: `Fan_primitive0` and
+`Crate_Door_Open` are names the _export_ writes for the meshes and animations
+under an element (see `namesOfPlacement`), which is why they turn up in warnings
+at all. They are not elements, there is nothing to select, so the find goes to
+what owns them.
+
+Nothing matches on a **substring**, and that is on purpose: the list under the
+box does the completing, and a find that answered "17 things contain `wall`"
+would be a search result to read rather than a place to go. Case is forgiven —
+`p0488` is not a different question from `P0488` — and always as a second pass,
+so an exact match can never lose to a sloppier one.
+
+**The list offers names, not ids.** An id is something you paste out of a
+message and there is one per element; listing them would bury the handful of
+names worth browsing under thousands of codes. Doors are the exception, since a
+door has no name and answers to its id, and generated part names are left out
+for the same reason every other list in the tool leaves children out. Both are
+still found when typed in full.
+
+Two more rules the box follows, both about not being in the way:
+
+- **A miss keeps the cursor and leaves the selection alone.** The box is a place
+  to try a name out; losing what you had selected because you mistyped one would
+  make trying anything expensive. A **hit** does the opposite and hands the
+  keyboard back to the ship, or the `WASD` that naturally follows a jump would
+  be typed into the box.
+- **It goes to elements it cannot show**, and says which of the two reasons is
+  in the way — the element is hidden (`H` brings everything back), or isolation
+  is holding another chunk. Refusing to travel would make "where is `P0488`"
+  unanswerable in exactly the case you most need it answered, and both reasons
+  are one keystroke from being undone.
+
+It only ever offers what is **on screen**. An id belonging to the ship while a
+bench is open would select something nobody can see — the reason
+`modePlacements` exists — so the same rule covers the other stores: a collider
+belongs to its own world, a light rides the element it lights, and doors are the
+ship's alone.
+
 ## Chunks, doors and portals
 
 Chunks are what the portal renderer streams and culls. Pick the active chunk in
@@ -3130,7 +3274,7 @@ The **Runtime** rows are edits to the ship, so they push undo entries — the
 sliders once per gesture, the checkbox once per click. **Run behaviours** is the
 one exception in that section: it is an editor preference like the rows above
 it, so it is saved in `editorPrefs` and takes no undo entry. It sits under
-Runtime because that is the view it governs, next to the **Edit behaviours…**
+Runtime because that is the view it governs, next to the **Edit preset behaviors…**
 button it belongs with. **Optimize ship** is an editor preference too, and has a
 section of its own because it governs neither view — it is read only at the
 moment **Start demo** publishes; see [Publishing](#publishing). The **Editor**
@@ -3186,7 +3330,7 @@ monitor cannot come back on a laptop with no viewport left in the middle.
 
 ### The floating tool windows
 
-**Chunks…**, **Probes…** and **Edit behaviours…** open windows rather than
+**Chunks…**, **Probes…** and **Edit preset behaviors…** open windows rather than
 modal dialogs. Each one is a place you edit the ship _while looking at it_ — a
 probe box you are dragging, a room you are renaming, the JSON of a behaviour
 you are watching take effect — so a scrim over the viewport would hide the only
@@ -3964,7 +4108,7 @@ standing exactly there is left out of the render list, by behaviour:
 | ---------------------------- | ------------------------------------------------------------------------------------- |
 | `reflectionProbe: "exclude"` | the authored opt-out, for something fixed that still must not be photographed         |
 | `dynamic: true`              | a rigid body — its authored pose is a starting position, not a fact about the room    |
-| `liquefiable: true`          | it is going to melt; what the probe would record is its shape before the game starts  |
+| `liquefaction` behavior      | it is going to melt; what the probe would record is its shape before the game starts  |
 | `playAnimation`              | its exported transform changes at runtime                                             |
 | the weapon behaviour         | a first-person viewmodel rides the camera, so it is never in the room at all          |
 | a parameterless `hideEntity` | the game hides it before the player arrives — but only while **Run behaviours** is on |

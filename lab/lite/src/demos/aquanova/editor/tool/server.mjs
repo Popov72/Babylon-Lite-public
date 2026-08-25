@@ -64,6 +64,11 @@ const ENV_DIR = path.resolve(HERE, CONFIG.envDir
   || path.join(path.resolve(HERE, CONFIG.exportDir), "..", "env"));
 const PORT = Number(process.env.SHIP_PORT || CONFIG.port);
 const PUBLIC_DIR = path.join(HERE, "public");
+const FLUID_SIM_DIR = path.resolve(HERE, "../../../../../../public/aquanova/fluidSim");
+// The game's sound folder. Listed rather than configured for the same reason
+// the fluid-sim folder is: it is the game's own data, and the editor's job is
+// to report what is in it, not to keep a second copy of the answer.
+const SOUNDS_DIR = path.resolve(HERE, "../../../../../../public/aquanova/sounds");
 const THUMB_DIR = path.join(HERE, "cache", "thumbs");
 const TURN_DIR = path.join(HERE, "cache", "turntable");
 const LAYOUT_DIR = path.join(HERE, "layouts");
@@ -555,6 +560,8 @@ async function buildCatalogue() {
     defaultKit: defaultKit(kits.map((k) => k.name)),
     categories,
     fluidSim: readFluidSim(),
+    fluidSimFlow: readFluidSimFlow(),
+    sounds: readSounds(),
   };
 }
 
@@ -565,7 +572,66 @@ function readFluidSim() {
   } catch (e) {
     console.warn("could not re-read config.json for fluidSim:", e.message);
   }
+
   return Array.isArray(CONFIG.fluidSim) ? CONFIG.fluidSim : [];
+}
+
+function readFluidSimFlow() {
+  const flow = {};
+  let names = [];
+  try {
+    names = fs.readdirSync(FLUID_SIM_DIR)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.slice(0, -5))
+      .sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    console.warn("could not list fluidSim settings:", e.message);
+  }
+  for (const name of names) {
+    const file = safeJoin(FLUID_SIM_DIR, `${name}.json`);
+    if (!file) continue;
+    try {
+      const setting = JSON.parse(fs.readFileSync(file, "utf8"));
+      flow[name] = {
+        emitters: flowObjectNames(setting.emitters),
+        sinks: flowObjectNames(setting.sinks),
+      };
+    } catch (e) {
+      console.warn(`could not read fluidSim "${name}":`, e.message);
+    }
+  }
+  return flow;
+}
+
+/**
+ * The clips a behaviour may name, taken from the game's own sound folder.
+ *
+ * The runtime's contract is an **MP3 base name** under `/aquanova/sounds/` -
+ * `sound.ts`, `pick-entity.ts` and `weapon-liquefactor.ts` all reject a name
+ * carrying an extension or a slash - so the folder is the only honest source
+ * for this list, and other audio formats are deliberately not offered.
+ *
+ * It used to be typed into behavior-definitions.json beside the schema that
+ * refers to it, and had already drifted: two clips on disk were missing from
+ * it, and nothing anywhere could have noticed. Rebuilt per request like the
+ * rest of the catalogue, so dropping an MP3 into the folder only needs a page
+ * refresh.
+ */
+function readSounds() {
+  try {
+    return fs.readdirSync(SOUNDS_DIR)
+      .filter((name) => name.toLowerCase().endsWith(".mp3"))
+      .map((name) => name.slice(0, -4))
+      .sort((a, b) => a.localeCompare(b));
+  } catch (e) {
+    console.warn("could not list sounds:", e.message);
+    return [];
+  }
+}
+
+function flowObjectNames(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => (typeof item?.name === "string" ? item.name.trim() : "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
 /**

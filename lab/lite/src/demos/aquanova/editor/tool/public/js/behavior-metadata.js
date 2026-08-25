@@ -1,6 +1,6 @@
 let catalogPromise = null;
 
-const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+const clone = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object ?? {}, key);
 
 export async function loadBehaviorMetadata(url = "/data/behavior-definitions.json") {
@@ -18,9 +18,7 @@ export async function loadBehaviorMetadata(url = "/data/behavior-definitions.jso
       if (!source) throw new Error(`behavior metadata references unknown behavior "${name}"`);
       if (resolving.has(name)) throw new Error(`behavior metadata inheritance cycle at "${name}"`);
       resolving.add(name);
-      const parent = source.extends
-        ? (raw.behaviors[source.extends] ? resolve(source.extends) : raw.templates?.[source.extends])
-        : null;
+            const parent = source.extends ? (raw.behaviors[source.extends] ? resolve(source.extends) : raw.templates?.[source.extends]) : null;
       if (source.extends && !parent) {
         throw new Error(`behavior metadata references unknown template "${source.extends}"`);
       }
@@ -51,6 +49,14 @@ export function behaviorMetadataNames(catalog) {
   return Object.keys(catalog?.behaviors ?? {}).sort((a, b) => a.localeCompare(b));
 }
 
+export function behaviorBaseName(definitions, name) {
+    return definitions?.get?.(name)?.base ?? name;
+}
+
+export function behaviorMetadataForName(catalog, definitions, name) {
+    return behaviorMetadata(catalog, behaviorBaseName(definitions, name));
+}
+
 export function validateBehaviorConfig(catalog, name, value, { partial = false } = {}) {
   const metadata = behaviorMetadata(catalog, name);
   if (!metadata) return [`No metadata describes behavior "${name}".`];
@@ -61,10 +67,15 @@ export function validateBehaviorConfig(catalog, name, value, { partial = false }
 /**
  * The option lists the metadata file ships with, keyed by `optionsSource`.
  *
- * Vocabularies that belong to the game rather than to the ship - the MP3s under
- * `/aquanova/sounds/`, say - have no home in the editor's state, and typing one
- * of them out is exactly the kind of guesswork a picker exists to remove. They
- * live beside the schema that refers to them so the two are edited together.
+ * A vocabulary belongs here when it is the *schema's* own - a fixed set of
+ * words that only means something to the fields referring to it, and that is
+ * therefore edited alongside them.
+ *
+ * The game's MP3s were the first entry and are no longer: they are a folder,
+ * `lab/public/aquanova/sounds/`, and a hand-kept list of a folder drifts - that
+ * one already had. The editor server lists it into the catalogue instead, and
+ * `sounds` reaches a form from there. Anything else with a home of its own -
+ * on disk, in the ship, in the behaviours - belongs in that half too.
  */
 export function behaviorFileOptions(catalog) {
   return catalog?.options ?? {};
@@ -81,10 +92,10 @@ export function defaultBehaviorDefinition(metadata) {
 
 export function collectRaisedEventNames(catalog, definitions, entities) {
   const names = new Set();
-  for (const [name, definition] of definitions) addRaisedEvents(catalog, name, definition, names);
+    for (const [name, definition] of definitions) addRaisedEvents(catalog, definitions, name, definition, names);
   for (const list of entities.values()) {
     for (const assignment of list) {
-      addRaisedEvents(catalog, assignment.name, effectiveConfig(definitions, assignment), names);
+            addRaisedEvents(catalog, definitions, assignment.name, effectiveConfig(definitions, assignment), names);
     }
   }
   return sorted(names);
@@ -99,10 +110,11 @@ export function collectRaisedEventNames(catalog, definitions, entities) {
  * said so. Asking the source first and offering only what it raises makes that
  * impossible to author rather than merely discouraged.
  */
-export function eventsRaisedBy(catalog, definitions, entities, entityName) {
-  const names = new Set();
-  for (const assignment of entities.get(String(entityName || "").trim()) ?? []) {
-    addRaisedEvents(catalog, assignment.name, effectiveConfig(definitions, assignment), names);
+export function eventsRaisedBy(catalog, definitions, entities, entityName, externalEvents) {
+  const source = String(entityName || "").trim();
+  const names = new Set(externalEvents?.(source) ?? []);
+  for (const assignment of entities.get(source) ?? []) {
+        addRaisedEvents(catalog, definitions, assignment.name, effectiveConfig(definitions, assignment), names);
   }
   return sorted(names);
 }
@@ -116,21 +128,20 @@ export function eventsRaisedBy(catalog, definitions, entities, entityName) {
  * the group behave differently depending on which member fired. The offer is
  * therefore the intersection, not the union.
  */
-export function eventsRaisedByAll(catalog, definitions, entities, sources) {
-  const list = (Array.isArray(sources) ? sources : sources ? [sources] : [])
-    .map((item) => String(item ?? "").trim()).filter(Boolean);
+export function eventsRaisedByAll(catalog, definitions, entities, sources, externalEvents) {
+    const list = (Array.isArray(sources) ? sources : sources ? [sources] : []).map((item) => String(item ?? "").trim()).filter(Boolean);
   if (!list.length) return [];
   let common = null;
   for (const source of list) {
-    const raised = new Set(eventsRaisedBy(catalog, definitions, entities, source));
+    const raised = new Set(eventsRaisedBy(catalog, definitions, entities, source, externalEvents));
     common = common === null ? raised : new Set([...common].filter((name) => raised.has(name)));
     if (!common.size) break;
   }
   return sorted(common ?? new Set());
 }
 
-function addRaisedEvents(catalog, behaviorName, config, into) {
-  const metadata = behaviorMetadata(catalog, behaviorName);
+function addRaisedEvents(catalog, definitions, behaviorName, config, into) {
+    const metadata = behaviorMetadataForName(catalog, definitions, behaviorName);
   for (const event of metadata?.eventsRaised ?? []) {
     if (event.name) into.add(event.name);
     const value = event.property ? valueAt(config, event.property.split(".")) : undefined;
@@ -138,8 +149,11 @@ function addRaisedEvents(catalog, behaviorName, config, into) {
   }
 }
 
-const effectiveConfig = (definitions, assignment) =>
-  ({ ...(definitions.get(assignment.name) ?? {}), ...assignment });
+const effectiveConfig = (definitions, assignment) => {
+    const definition = { ...(definitions.get(assignment.name) ?? {}) };
+    delete definition.base;
+    return { ...definition, ...assignment };
+};
 
 const sorted = (names) => [...names].sort((a, b) => a.localeCompare(b));
 
@@ -218,25 +232,21 @@ export function renameEntityReferences(catalog, behaviorName, config, from, to) 
   }
 }
 
-export function createBehaviorForm(host, {
-  metadata,
-  value = {},
-  inherited = {},
-  scope = "definition",
-  options = {},
-  entityScope = null,
-  onChange = null,
-}) {
+export function createBehaviorForm(host, { metadata, value = {}, inherited = {}, scope = "definition", options = {}, entityScope = null, onChange = null }) {
   let draft = clone(value) ?? {};
   let validationHost = null;
+  const rootControls = new Set();
+  anySchema(metadata?.properties ?? {}, (schema) => {
+    if (schema.optionsFromRoot) rootControls.add(schema.optionsFromRoot);
+    return false;
+  });
   // Owned by the caller so it survives the panel rebuilding this form after
   // every edit; a fresh object per form is fine for one-off uses.
   const rooms = entityScope ?? {};
 
   const api = {
     read: () => clone(draft),
-    validate: (effective = scope === "assignment" ? { ...inherited, ...draft } : draft) =>
-      validateObject(metadata?.properties ?? {}, effective, "", scope === "definition"),
+        validate: (effective = scope === "assignment" ? { ...inherited, ...draft } : draft) => validateObject(metadata?.properties ?? {}, effective, "", scope === "definition"),
     render,
   };
 
@@ -276,7 +286,7 @@ export function createBehaviorForm(host, {
   }
 
   function choicesFor(schema, siblings) {
-    const all = optionValues(schema, options, siblings);
+    const all = optionValues(schema, options, siblings, { ...inherited, ...draft });
     return schema?.optionsSource === SCOPED_ENTITIES ? scopedEntities(all) : all;
   }
 
@@ -296,8 +306,7 @@ export function createBehaviorForm(host, {
     if (!options.entitiesByChunk || !(options.currentChunks ?? []).length) return;
     rooms.mode = "chunk";
     const here = roomNames();
-    const missing = entityValues(metadata?.properties ?? {}, draft)
-      .some((name) => !here.has(name));
+        const missing = entityValues(metadata?.properties ?? {}, draft).some((name) => !here.has(name));
     if (missing) rooms.mode = "all";
   }
 
@@ -345,8 +354,7 @@ export function createBehaviorForm(host, {
     // list's row, the library's picker - rather than above its fields: it is
     // the same sentence every time, and the fields are what the panel is for.
     pickInitialScope();
-    if (options.entitiesByChunk && anySchema(metadata.properties ?? {},
-      (schema) => schema.optionsSource === SCOPED_ENTITIES)) {
+        if (options.entitiesByChunk && anySchema(metadata.properties ?? {}, (schema) => schema.optionsSource === SCOPED_ENTITIES)) {
       host.append(renderScopeRow());
     }
     for (const [key, schema] of Object.entries(metadata.properties ?? {})) {
@@ -387,14 +395,13 @@ export function createBehaviorForm(host, {
     // What may be left unset: anything on an assignment, and a definition's
     // optional sections - the rest of a definition is the behaviour itself.
     const optional = schema.type !== "constant" && (scope === "assignment" || schema.type === "object");
-    const label = element("div", "behavior-label",
-      `${schema.label ?? key}${schema.required ? " *" : ""}`);
+        const label = element("div", "behavior-label", `${schema.label ?? key}${schema.required ? " *" : ""}`);
     if (schema.description) label.title = schema.description;
     wrapper.append(label);
 
     if (assigned || !optional) {
       if (assigned && optional) label.append(revertControl(key, inheritedValue));
-      wrapper.append(renderValue(schema, draft, key, [key]));
+      wrapper.append(renderValue(schema, draft, key, [key], rootControls.has(key) ? () => changed(true) : changed));
       if (schema.description) wrapper.append(element("div", "behavior-help", schema.description));
       return wrapper;
     }
@@ -402,9 +409,11 @@ export function createBehaviorForm(host, {
     wrapper.classList.add("behavior-inheriting");
     const shadow = {};
     if (inheritedValue !== undefined) shadow[key] = clone(inheritedValue);
-    const hint = element("div", "behavior-inherited", inheritedValue !== undefined
-      ? "From the behaviour."
-      : scope === "assignment" ? "Not set, here or on the behaviour." : "Not set.");
+        const hint = element(
+            "div",
+            "behavior-inherited",
+            inheritedValue !== undefined ? "From the behaviour." : scope === "assignment" ? "Not set, here or on the behaviour." : "Not set."
+        );
     const settle = () => {
       wrapper.classList.remove("behavior-inheriting");
       hint.remove();
@@ -424,14 +433,13 @@ export function createBehaviorForm(host, {
       if (first && !structural) settle();
       changed(structural);
     };
-    wrapper.append(renderValue(schema, shadow, key, [key], promote), hint);
+    wrapper.append(renderValue(schema, shadow, key, [key], rootControls.has(key) ? () => promote(true) : promote), hint);
     if (schema.description) wrapper.append(element("div", "behavior-help", schema.description));
     return wrapper;
   }
 
   function revertControl(key, inheritedValue) {
-    const button = smallButton("↺", inheritedValue !== undefined
-      ? "Use the behaviour's value" : "Leave this unset", () => {
+        const button = smallButton("↺", inheritedValue !== undefined ? "Use the behaviour's value" : "Leave this unset", () => {
       delete draft[key];
       changed(true);
     });
@@ -459,11 +467,20 @@ export function createBehaviorForm(host, {
     // A field another field's list is drawn from has to redraw that list when it
     // changes, or the event picker would keep offering whatever the *previous*
     // source raised. Derived from the schema so the two cannot drift apart.
-    const controls = new Set(Object.values(schema.properties ?? {})
-      .map((child) => child.optionsFrom).filter(Boolean));
+        const controls = new Set(
+            Object.values(schema.properties ?? {})
+                    .flatMap((child) => [child.optionsFrom, child.when?.property])
+                .filter(Boolean)
+        );
     for (const [childKey, childSchema] of Object.entries(schema.properties ?? {})) {
-      const row = element("div", "behavior-nested");
-      const childChanged = controls.has(childKey) ? () => localChanged(true) : localChanged;
+          if (!schemaApplies(childSchema, parent[key])) continue;
+          const row = element("div", "behavior-nested");
+          const childChanged = controls.has(childKey)
+            ? () => {
+                pruneConditionalFields(schema.properties ?? {}, parent[key]);
+                localChanged(true);
+              }
+            : localChanged;
       row.append(
         element("div", "behavior-label", `${childSchema.label ?? childKey}${childSchema.required ? " *" : ""}`),
         renderValue(childSchema, parent[key], childKey, [...path, childKey], childChanged)
@@ -482,6 +499,14 @@ export function createBehaviorForm(host, {
    * does nothing at runtime. Where the vocabulary is empty the control stays a
    * disabled picker saying why, rather than quietly turning back into a field
    * that invites the guess this exists to prevent.
+   *
+   * Which is why the test is whether the schema *declares* a vocabulary, not
+   * whether that vocabulary currently has anything in it. Those two are not
+   * the same question, and reading the second one turned a picker into a text
+   * box exactly when it mattered most: a weapon that has not been given its
+   * sound categories yet, an editor server too old to list the game's MP3s.
+   * The field would take anything typed into it and the `emptyHint` that
+   * explains the emptiness was never reached.
    */
   function renderScalar(schema, parent, key, localChanged) {
     if (schema.type === "boolean") {
@@ -498,7 +523,8 @@ export function createBehaviorForm(host, {
       return select;
     }
     const listed = choicesFor(schema, parent);
-    if (PICKED_TYPES.has(schema.type) || (schema.type === "string" && listed.length)) {
+    const picked = PICKED_TYPES.has(schema.type) || !!schema.optionsSource || Array.isArray(schema.values);
+    if (picked) {
       return renderPicker(schema, parent, key, localChanged, listed);
     }
     const input = document.createElement("input");
@@ -524,28 +550,37 @@ export function createBehaviorForm(host, {
     const current = own(parent, key) ? String(parent[key]) : "";
     const select = document.createElement("select");
     if (!schema.required || !current) {
-      addOption(select, "", schema.type === "enum" ? (schema.defaultLabel ?? "(not set)")
-        : schema.default !== undefined ? `(default: ${describe(schema, schema.default)})`
-          : "(not set)");
+            addOption(
+                select,
+                "",
+                schema.type === "enum" ? (schema.defaultLabel ?? "(not set)") : schema.default !== undefined ? `(default: ${describe(schema, schema.default)})` : "(not set)"
+            );
     }
-    for (const value of listed) addOption(select, String(value), String(value));
+    const optionLabel = (value) => options.optionLabels?.[schema.optionsSource]?.[String(value)] ?? String(value);
+    for (const value of listed) addOption(select, String(value), optionLabel(value));
     // Never drop a value just because the current list cannot account for it -
     // a narrowed room filter, a source that stopped raising it, a name the game
     // knows and the ship does not. Shown, flagged, and kept until it is changed.
     if (current && !listed.some((value) => String(value) === current)) {
-      addOption(select, current, `${current} — not in this list`);
+      addOption(select, current, `${optionLabel(current)} — not in this list`);
     }
     if (schema.allowNew) addOption(select, NEW_VALUE, "＋ name a new one…");
     select.value = current;
     select.disabled = !listed.length && !current && !schema.allowNew;
     select.addEventListener("change", () => {
-      if (select.value === NEW_VALUE) { askForNewName(); return; }
+            if (select.value === NEW_VALUE) {
+                askForNewName();
+                return;
+            }
       if (!select.value) delete parent[key];
       else parent[key] = select.value;
       localChanged();
     });
     box.append(select);
-    if (select.disabled && schema.emptyHint) box.append(element("div", "behavior-help", schema.emptyHint));
+    // Keyed off the list being empty rather than the select being disabled: a
+    // picker that offers "name a new one" is never disabled, and the sentence
+    // explaining why it has nothing to offer is exactly what that case needs.
+    if (!listed.length && schema.emptyHint) box.append(element("div", "behavior-help", schema.emptyHint));
     return box;
 
     function askForNewName() {
@@ -559,7 +594,10 @@ export function createBehaviorForm(host, {
       };
       input.addEventListener("change", commit);
       const row = element("div", "behavior-picker-new");
-      row.append(input, smallButton("×", "Keep what was there", () => localChanged(true)));
+            row.append(
+                input,
+                smallButton("×", "Keep what was there", () => localChanged(true))
+            );
       box.replaceChildren(row);
       input.focus();
     }
@@ -594,21 +632,16 @@ export function createBehaviorForm(host, {
 
   function renderArray(schema, parent, key, path, localChanged) {
     const box = element("div", "behavior-array");
-    const source = schema.type === "entitySource"
-      ? (Array.isArray(parent[key]) ? parent[key] : parent[key] ? [parent[key]] : [])
-      : (Array.isArray(parent[key]) ? parent[key] : []);
+        const source =
+            schema.type === "entitySource" ? (Array.isArray(parent[key]) ? parent[key] : parent[key] ? [parent[key]] : []) : Array.isArray(parent[key]) ? parent[key] : [];
     const values = clone(source);
-    const itemSchema = schema.type === "entitySource"
-      ? { type: "entity", optionsSource: schema.optionsSource }
-      : schema.items;
+        const itemSchema = schema.type === "entitySource" ? { type: "entity", optionsSource: schema.optionsSource } : schema.items;
     values.forEach((item, index) => {
       const row = element("div", "behavior-array-row");
       const holder = { value: item };
       const sync = () => {
         values[index] = holder.value;
-        parent[key] = schema.type === "entitySource"
-          ? (values.length === 1 ? values[0] : values)
-          : values;
+                parent[key] = schema.type === "entitySource" ? (values.length === 1 ? values[0] : values) : values;
       };
       const itemChanged = (structural = false) => {
         sync();
@@ -667,12 +700,14 @@ export function createBehaviorForm(host, {
         parent[key] = record;
         localChanged(true);
       });
-      row.append(smallButton("×", "Remove category", () => {
+            row.append(
+                smallButton("×", "Remove category", () => {
         delete record[recordKey];
         if (Object.keys(record).length) parent[key] = record;
         else delete parent[key];
         localChanged(true);
-      }));
+                })
+            );
       box.append(row);
     }
     const add = smallButton("+ Add category", "Add category", () => {
@@ -703,7 +738,8 @@ function initialValue(schema, inherited) {
   if (schema?.type === "object") {
     const out = {};
     for (const [key, child] of Object.entries(schema.properties ?? {})) {
-      if (child.type === "constant" || child.required && child.default !== undefined) {
+            if (!schemaApplies(child, out)) continue;
+            if (child.type === "constant" || (child.required && child.default !== undefined)) {
         out[key] = initialValue(child);
       }
     }
@@ -731,11 +767,18 @@ function validateObject(properties, value, prefix, partial) {
   for (const [key, schema] of Object.entries(properties)) {
     const path = prefix ? `${prefix}.${key}` : key;
     const present = own(value, key);
+    if (!schemaApplies(schema, value)) {
+      if (present) errors.push(`${path} is not valid for the selected ${schema.when.property}.`);
+      continue;
+    }
     if (!present) {
       if (schema.required && !partial) errors.push(`${path} is required.`);
       continue;
     }
     errors.push(...validateValue(schema, value[key], path, partial));
+        if (schema.greaterThan && Number.isFinite(value[key]) && Number.isFinite(value[schema.greaterThan]) && value[key] <= value[schema.greaterThan]) {
+            errors.push(`${path} must be greater than ${prefix ? `${prefix}.` : ""}${schema.greaterThan}.`);
+        }
   }
   return errors;
 }
@@ -767,14 +810,11 @@ function validateValue(schema, value, path, partial) {
     return [];
   }
   if (schema.type === "object") {
-    return isPlainObject(value)
-      ? validateObject(schema.properties ?? {}, value, path, false)
-      : [`${path} must be an object.`];
+        return isPlainObject(value) ? validateObject(schema.properties ?? {}, value, path, false) : [`${path} must be an object.`];
   }
   if (schema.type === "record") {
     if (!isPlainObject(value)) return [`${path} must be a map.`];
-    return Object.entries(value).flatMap(([key, item]) =>
-      key.trim() ? validateValue(schema.values, item, `${path}.${key}`, partial) : [`${path} contains an empty key.`]);
+        return Object.entries(value).flatMap(([key, item]) => (key.trim() ? validateValue(schema.values, item, `${path}.${key}`, partial) : [`${path} contains an empty key.`]));
   }
   if (schema.type === "entitySource") {
     const values = Array.isArray(value) ? value : [value];
@@ -800,22 +840,30 @@ function validateValue(schema, value, path, partial) {
  * rest of the entry - `optionsFrom` names the sibling property it is computed
  * from, which is how an event list narrows to what its chosen sources raise.
  */
-function optionValues(schema, options, siblings) {
+function optionValues(schema, options, siblings, root) {
   const source = schema?.optionsSource ? options?.[schema.optionsSource] : undefined;
-  const resolved = typeof source === "function"
-    ? source(schema.optionsFrom ? siblings?.[schema.optionsFrom] : undefined)
-    : source;
+    const dependency = schema.optionsFromRoot ? root?.[schema.optionsFromRoot] : schema.optionsFrom ? siblings?.[schema.optionsFrom] : undefined;
+    const resolved = typeof source === "function" ? source(dependency) : source;
   const list = resolved ?? schema?.values ?? [];
   return Array.isArray(list) ? list : [];
+}
+
+function schemaApplies(schema, siblings) {
+  const condition = schema?.when;
+  return !condition || condition.values?.includes(siblings?.[condition.property]);
+}
+
+function pruneConditionalFields(properties, value) {
+  for (const [key, schema] of Object.entries(properties ?? {})) {
+    if (schema.when && !schemaApplies(schema, value)) delete value[key];
+  }
 }
 
 /** Walk a schema tree - object properties, array items, record values alike. */
 function anySchema(properties, predicate) {
   for (const schema of Object.values(properties ?? {})) {
     if (predicate(schema)) return true;
-    const children = schema.type === "object" ? schema.properties
-      : schema.type === "record" ? { value: schema.values }
-        : schema.items ? { item: schema.items } : null;
+        const children = schema.type === "object" ? schema.properties : schema.type === "record" ? { value: schema.values } : schema.items ? { item: schema.items } : null;
     if (children && anySchema(children, predicate)) return true;
   }
   return false;
@@ -867,9 +915,9 @@ function describe(schema, value) {
     const entries = Object.entries(value);
     if (!entries.length) return "empty";
     return entries
-      .map(([key, item]) => schema?.type === "record"
-        ? `${key}: ${describe(schema.values, item)}`
-        : `${schema?.properties?.[key]?.label ?? key}: ${describe(schema?.properties?.[key], item)}`)
+            .map(([key, item]) =>
+                schema?.type === "record" ? `${key}: ${describe(schema.values, item)}` : `${schema?.properties?.[key]?.label ?? key}: ${describe(schema?.properties?.[key], item)}`
+            )
       .join(" · ");
   }
   return String(value);

@@ -104,6 +104,14 @@
     <label title="Show the build-plane grid — G"><input type="checkbox" id="show-grid" checked> Grid</label>
     <label title="Walk at the player's eye height (1.8 m), following whatever floor is underfoot, instead of flying. No shortcut"><input type="checkbox" id="walk"> Walk</label>
   </div>
+
+  <div class="group">
+    <label for="find-box" title="Go to an element by the name something else printed. Ids are unique; a node name is shared on purpose, so every element carrying it is selected at once; a part inside an element — Fan_primitive0 — selects the element it belongs to. Type the whole name or pick one from the list, then Enter. No shortcut">Find</label>
+    <input type="search" id="find-box" list="find-names" autocomplete="off" spellcheck="false"
+           placeholder="id or name…"
+           title="Go to an element by the name something else printed. Ids are unique; a node name is shared on purpose, so every element carrying it is selected at once; a part inside an element — Fan_primitive0 — selects the element it belongs to. Type the whole name or pick one from the list, then Enter. No shortcut">
+    <datalist id="find-names"></datalist>
+  </div>
 </header>
 
 <main>
@@ -233,7 +241,7 @@
                title="Play playAnimation clips in the Runtime view. No shortcut">
         <span class="unit"></span>
       </label>
-      <button id="btn-bhv-library" title="Open the behaviour library: the definitions every element's Behaviour panel picks from. Ship-wide, so it opens from anywhere. No shortcut">Edit behaviours…</button>
+      <button id="btn-bhv-library" title="Create and edit named behavior presets derived from the built-in behavior catalog. Ship-wide, so it opens from anywhere. No shortcut">Edit preset behaviors…</button>
       </section>
       <section class="settings-section">
       <h3>Demo</h3>
@@ -341,6 +349,10 @@
         <h3 id="insp-h-pos">Position</h3>
         <div class="vec">
           <input type="number" id="pos-x" step="0.25"><input type="number" id="pos-y" step="0.25"><input type="number" id="pos-z" step="0.25">
+        </div>
+        <div class="row" id="pos-world-row" hidden>
+          <label title="Where this sits in the ship, in metres — shown only when the boxes above are not already world coordinates, which today means a light: its node rides the element it lights, so what you can edit is an offset within that element. The manifest negates X on the way out; this is editor space, like every other number in the panel.">World</label>
+          <span id="pos-world" class="readout"></span>
         </div>
       </div>
       <div id="rotation-fields">
@@ -578,15 +590,16 @@
 <div id="bhv-modal" role="dialog" aria-modal="false" aria-labelledby="bhv-window-title" hidden>
   <div class="panel">
     <div id="bhv-window-handle" class="tool-window-titlebar">
-      <h2 id="bhv-window-title">Behaviours</h2>
-      <button id="btn-bhv-close" type="button" title="Close behaviours window" aria-label="Close behaviours window">×</button>
+      <h2 id="bhv-window-title">Behavior presets</h2>
+      <button id="btn-bhv-close" type="button" title="Close behavior presets window" aria-label="Close behavior presets window">×</button>
     </div>
-    <p class="muted">A library of typed behaviour definitions, listed alphabetically.
-      Applied behaviours can override these values in the Inspector.</p>
+    <p class="muted">Named parameter presets derived from built-in behaviors, listed alphabetically.
+      Entities may use either a built-in behavior or one of these presets.</p>
     <div class="tool-window-scroll"><div class="split">
       <select id="bhv-list" size="10"></select>
       <div class="editor">
-        <div class="row"><label>Behaviour</label><select id="bhv-name"></select></div>
+        <div class="row"><label>Preset name</label><input id="bhv-name" type="text" autocomplete="off"></div>
+        <div class="row"><label>Base behavior</label><select id="bhv-base"></select></div>
         <div id="bhv-fields"></div>
       </div>
     </div></div>
