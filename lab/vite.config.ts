@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync } fro
 import { spawn } from "child_process";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import { mapBabylonImport, type CompatTarget } from "../packages/babylon-lite-compat/src/bundler-resolve.js";
+import { aquanovaFluidSimPlugin } from "./aquanova-fluid-sim-plugin.js";
 
 /**
  * On-device WebXR testing (e.g. Quest 3) requires a secure context, which for any
@@ -853,7 +854,7 @@ function compatScenesPlugin(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [pagesDemoPlugin(), compatScenesPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin(), ...(LAB_HTTPS ? [basicSsl()] : [])],
+    plugins: [pagesDemoPlugin(), aquanovaFluidSimPlugin(), compatScenesPlugin(), serveReferenceImages(), apiDocsPlugin(), tabContentPlugin(), ...(LAB_HTTPS ? [basicSsl()] : [])],
     optimizeDeps: {
         // BJS uses prototype-patching side-effect imports (e.g. abstractEngine.dom.js).
         // babylon-lite uses ?raw WGSL imports that esbuild can't handle.

@@ -3439,7 +3439,7 @@ export function isDynamicNode(nodeName) {
  * the thing that decides, and a definition body invented here to mirror it
  * would be a second source of truth that nothing enforces.
  */
-const WEAPON_BEHAVIORS = ["weaponLiquefactor", "weaponAntiGravityGun"];
+const WEAPON_BEHAVIORS = ["weaponLiquefactor", "weaponAntiGravityGun", "weaponPistol"];
 export const PLAY_ANIMATION_BEHAVIOR = "playAnimation";
 export const HIDE_ENTITY_BEHAVIOR = "hideEntity";
 

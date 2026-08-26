@@ -13,6 +13,13 @@ export interface AquanovaEventMap {
         point: readonly [number, number, number] | null;
         distance: number;
     };
+    hitWithPistol: {
+        mesh: Mesh;
+        point: readonly [number, number, number];
+        distance: number;
+        direction: readonly [number, number, number];
+        impulse: number;
+    };
     weaponAimUpdated: {
         mesh: Mesh | null;
         point: readonly [number, number, number] | null;

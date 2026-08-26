@@ -115,6 +115,7 @@ try {
             scope: "assignment",
             options: shipOptions,
         });
+        change(fluidHost.querySelector('[data-behavior-key="electrifiable"] input'), true);
         const fluidField = () => fluidHost.querySelector('[data-behavior-key="eventActions"]');
         const fluidNested = (label) =>
             [...fluidField().querySelectorAll(".behavior-nested")].find((row) => row.querySelector(":scope > .behavior-label")?.textContent.replace(" *", "") === label);
@@ -139,6 +140,22 @@ try {
             offers: offered(fluidNested("Sink").querySelector("select")),
         };
         change(fluidNested("Sink").querySelector("select"), "New sink");
+
+        // ---- one item of a list is a card, not a stripe -----------------------
+        // Several event actions carry the same three rows each, so where one ends
+        // and the next begins has to be seen rather than counted. Measured rather
+        // than eyeballed: a stripe has one edge, a card has four and sits raised
+        // off what it lies on, with air between it and the next.
+        const actionCard = (() => {
+            const card = fluidField().querySelector(".behavior-array-row > .behavior-object");
+            const style = getComputedStyle(card);
+            return {
+                edges: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth].map((width) => parseFloat(width)),
+                painted: style.backgroundColor !== "rgba(0, 0, 0, 0)",
+                raised: style.boxShadow !== "none",
+                gap: parseFloat(getComputedStyle(fluidField().querySelector(".behavior-array")).rowGap),
+            };
+        })();
         const fluidPropertyOrder = [...fluidHost.querySelectorAll(":scope > .behavior-property")].map((field) => field.dataset.behaviorKey);
         change(fluidHost.querySelector('[data-behavior-key="shutdownDuration"] input'), "6");
         change(fluidHost.querySelector('[data-behavior-key="shutdownAlphaDecay"] input'), "1.5");
@@ -468,6 +485,7 @@ try {
             flipEmitters,
             emitterOnly,
             sinkOnly,
+            actionCard,
             sound: soundForm.read(),
             behaviorSoundOffers,
             soundScopeCount,
@@ -521,7 +539,7 @@ try {
         throw new Error(message);
     };
 
-    if (result.metadataCount !== 19) fail(`expected 19 behavior descriptions, got ${result.metadataCount}`);
+    if (result.metadataCount !== 21) fail(`expected 21 behavior descriptions, got ${result.metadataCount}`);
 
     // Lists, not typing.
     if (result.linkedTyped !== 0) fail("linked entities are still typed into a text box");
@@ -609,9 +627,13 @@ try {
     if (result.emptyClips.typed || result.emptyClips.disabled || !result.emptyClips.offersNew || !result.emptyClips.hint) {
         fail(`an empty animation list was not a nameable picker with a hint: ${JSON.stringify(result.emptyClips)}`);
     }
+    if (result.actionCard.edges.some((width) => !(width >= 1)) || !result.actionCard.painted || !result.actionCard.raised || !(result.actionCard.gap >= 8)) {
+        fail(`an event action did not read as its own card: ${JSON.stringify(result.actionCard)}`);
+    }
     const fluidAction = result.fluid.eventActions?.[0];
     if (
         result.fluid.fluidSim !== "flip-test" ||
+        result.fluid.electrifiable !== true ||
         fluidAction?.source !== "S2" ||
         fluidAction?.event !== "opened" ||
         fluidAction?.action !== "enableSink" ||

@@ -10,6 +10,7 @@ export interface FluidSimulationRegistration {
     readonly anchor: IWorldMatrixProvider;
     readonly settingName: string;
     readonly setting: unknown;
+    readonly electrifiable: boolean;
     readonly shutdownDuration: number;
     readonly shutdownAlphaDecay: number;
     readonly onEmissionComplete?: () => void;

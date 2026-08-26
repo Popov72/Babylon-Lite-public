@@ -397,6 +397,16 @@ a fold that sprang open each time you changed a field would be worse than none
 — and because they are kept by _position_, removing a behaviour slides the
 folds under it up with it, so the box that stays open is the one that was open.
 
+**One item of a list is one card**, which is the same argument a level in. A
+`fluidSimulation` carries several event actions, a subscription several sources,
+and each item is drawn with the same fields under the same labels; the faint left
+stripe that used to separate them left the last field of one touching the first
+label of the next, so a form of three actions read as nine rows rather than three
+things. Each item is a card now — a full edge, a surface lifted off what it lies
+on, and air below it. The lift is a translucent white rather than a fixed colour,
+because the same form is built into the preset window and into the darker boxes
+of the applied list, and it has to read as raised in both.
+
 **What a behaviour is for is a tooltip on its name** — in the applied list, in
 the **Add** menu and in the preset window. It was a paragraph above the fields,
 which repeated itself for every element carrying that behaviour and pushed the

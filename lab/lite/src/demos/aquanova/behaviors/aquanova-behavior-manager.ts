@@ -60,7 +60,7 @@ export class AquanovaBehaviorManager {
             meshlessOwners: Object.fromEntries((options.doors ?? []).map((door) => [door.id, { behaviors: door.behaviors }])),
             meshesByEntityName: options.meshesByEntityName,
             constructors: behaviorConstructors,
-            shouldInstantiate: (assignment) => assignment.reflectionProbe === undefined,
+            shouldInstantiate: (assignment) => assignment.name !== "probeExcluded" && assignment.reflectionProbe === undefined,
         });
     }
 
@@ -73,7 +73,7 @@ export class AquanovaBehaviorManager {
     }
 
     public acquireAllWeapons(): void {
-        for (const behaviorName of ["weaponLiquefactor", "weaponAntiGravityGun"]) {
+        for (const behaviorName of ["weaponLiquefactor", "weaponAntiGravityGun", "weaponPistol"]) {
             const weapon = this.findEntityWithBehavior(behaviorName);
             if (weapon?.meshes.length) {
                 this.events.emit("entityEvent", { name: weapon.entityName, event: "enable" });
@@ -293,6 +293,7 @@ function liquefactionProfileKey(config: LiquefiableBehaviorConfig): string {
     return JSON.stringify({
         name: (config as LiquefiableBehaviorConfig & { name?: string }).name,
         fluidSim: config.fluidSim ?? [],
+        electrifiable: config.electrifiable ?? false,
         sound: config.sound,
     });
 }

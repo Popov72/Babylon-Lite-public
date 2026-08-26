@@ -3,6 +3,7 @@ import type { AquanovaEventManager } from "./aquanova-event-manager.js";
 import type { AquanovaFluidRuntime } from "../fluid-runtime.js";
 import type { SoundManager } from "./sound-manager.js";
 import type { FluidSimShape, LiquefiableBehaviorConfig } from "./types.js";
+import type { PistolImpact } from "../pistol-projectiles.js";
 
 export interface WeaponLiquefactorRuntime {
     setEnabled(enabled: boolean, animated?: boolean): void;
@@ -19,6 +20,14 @@ export interface WeaponAntiGravityGunRuntime {
     grab(mesh: Mesh): boolean;
     updateGrab(deltaMs: number): boolean;
     releaseGrab(throwSpeed: number): void;
+}
+
+export interface WeaponPistolRuntime {
+    setEnabled(enabled: boolean, animated?: boolean): void;
+    isReady(): boolean;
+    fire(mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null, range: number, speed: number): void;
+    update(deltaMs: number): readonly PistolImpact[];
+    clear(): void;
 }
 
 export interface WeaponInventoryRuntime {
@@ -68,6 +77,7 @@ export interface AquanovaGameContext {
     readonly weaponInventory: WeaponInventoryRuntime;
     readonly weaponLiquefactor: WeaponLiquefactorRuntime;
     readonly weaponAntiGravityGun: WeaponAntiGravityGunRuntime;
+    readonly weaponPistol: WeaponPistolRuntime;
     readonly playerMaxGrabDistance: () => number;
     readonly dynamicMassOf: (mesh: Mesh) => number | null;
     readonly setCollisionShape: (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration) => void;

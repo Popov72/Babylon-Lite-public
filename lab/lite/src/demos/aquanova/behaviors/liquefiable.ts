@@ -15,6 +15,9 @@ export class LiquefiableBehavior implements Behavior {
         if (!mesh) {
             throw new Error("[aquanova] liquefiable behavior requires at least one mesh");
         }
+        if (config.electrifiable !== undefined && typeof config.electrifiable !== "boolean") {
+            throw new Error("[aquanova] liquefaction.electrifiable must be true or false");
+        }
         this.name = config.name;
         this.mesh = mesh;
         this.config = config;

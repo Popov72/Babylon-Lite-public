@@ -1,5 +1,8 @@
+import { readFileSync } from "fs";
+import { resolve } from "path";
 import { describe, expect, it } from "vitest";
 import { aquanovaFluidSimNames, renameAquanovaFluidSimReferences } from "../../../../lab/aquanova-fluid-sim-authoring";
+import { aquanovaFluidSimPlugin } from "../../../../lab/aquanova-fluid-sim-plugin";
 
 describe("Aquanova fluid simulation authoring", () => {
     it("renames catalogue, preset, and entity fluidSim references without changing unrelated values", () => {
@@ -56,5 +59,12 @@ describe("Aquanova fluid simulation authoring", () => {
 
     it("normalizes and deduplicates catalogue names", () => {
         expect(aquanovaFluidSimNames({ fluidSim: ["Water.JSON", "water", "liquid-slow"] })).toEqual(["water", "liquid-slow"]);
+    });
+
+    it("registers the authoring API with the lab development server", () => {
+        expect(aquanovaFluidSimPlugin().name).toBe("aquanova-fluid-sim-authoring");
+        const config = readFileSync(resolve(process.cwd(), "lab/vite.config.ts"), "utf8");
+        expect(config).toContain('import { aquanovaFluidSimPlugin } from "./aquanova-fluid-sim-plugin.js";');
+        expect(config).toContain("aquanovaFluidSimPlugin()");
     });
 });

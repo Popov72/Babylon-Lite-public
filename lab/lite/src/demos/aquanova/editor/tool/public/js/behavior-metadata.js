@@ -530,7 +530,7 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
     const input = document.createElement("input");
     input.type = schema.type === "number" ? "number" : "text";
     if (schema.type === "number") {
-      input.step = "any";
+      input.step = schema.integer ? "1" : "any";
       if (schema.minimum !== undefined) input.min = String(schema.minimum);
       if (schema.maximum !== undefined) input.max = String(schema.maximum);
     }
@@ -789,6 +789,7 @@ function validateValue(schema, value, path, partial) {
   }
   if (schema.type === "number") {
     if (!Number.isFinite(value)) return [`${path} must be a number.`];
+    if (schema.integer && !Number.isInteger(value)) return [`${path} must be a whole number.`];
     if (schema.minimum !== undefined && (schema.exclusiveMinimum ? value <= schema.minimum : value < schema.minimum)) {
       return [`${path} must be ${schema.exclusiveMinimum ? "greater than" : "at least"} ${schema.minimum}.`];
     }

@@ -40,6 +40,27 @@ export interface AquanovaControlPanelOptions {
         readonly specularAA: ToggleOption;
         readonly ssaa: ToggleOption;
     };
+    readonly effects: {
+        readonly improvedElectricity: ToggleOption;
+        readonly animateElectricity: ToggleOption;
+        readonly electricityArcDensity: {
+            readonly get: () => number;
+            readonly set: (value: number) => void;
+        };
+        readonly electricityBloomDebug?: ToggleOption;
+        readonly electricityBloomThreshold: {
+            readonly get: () => number;
+            readonly set: (value: number) => void;
+        };
+        readonly electricityBloomStrength: {
+            readonly get: () => number;
+            readonly set: (value: number) => void;
+        };
+        readonly electricityBloomRadius: {
+            readonly get: () => number;
+            readonly set: (value: number) => void;
+        };
+    };
     readonly weapon: {
         readonly model: {
             readonly get: () => number;
@@ -250,6 +271,17 @@ export function createAquanovaControlPanel(options: AquanovaControlPanelOptions)
     addToggle(aa, options.antiAliasing.taa);
     addToggle(aa, options.antiAliasing.specularAA);
     addToggle(aa, options.antiAliasing.ssaa);
+
+    const effects = addSection("Effects");
+    addToggle(effects, options.effects.improvedElectricity);
+    addToggle(effects, options.effects.animateElectricity);
+    addSlider(effects, "Electrical arc density", 0.25, 3, 0.05, options.effects.electricityArcDensity.get, options.effects.electricityArcDensity.set);
+    addSlider(effects, "Bloom threshold", 0, 2, 0.01, options.effects.electricityBloomThreshold.get, options.effects.electricityBloomThreshold.set);
+    addSlider(effects, "Bloom strength", 0, 10, 0.05, options.effects.electricityBloomStrength.get, options.effects.electricityBloomStrength.set);
+    addSlider(effects, "Bloom blur radius", 1, 32, 1, options.effects.electricityBloomRadius.get, options.effects.electricityBloomRadius.set);
+    if (LAB_DEBUG && options.effects.electricityBloomDebug) {
+        addToggle(effects, options.effects.electricityBloomDebug);
+    }
 
     const weapon = addSection("Weapon");
     addSelect(weapon, "Model detail", options.weapon.model.options, options.weapon.model.get, options.weapon.model.set);

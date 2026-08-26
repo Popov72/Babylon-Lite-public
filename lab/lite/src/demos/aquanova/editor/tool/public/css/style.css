@@ -649,7 +649,23 @@ body.big-palette .item .cap { font-size: 11px; padding: 4px 3px; }
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: start; gap: 3px;
 }
-.behavior-array-row > .behavior-object { grid-column: 1; }
+/* An object that is one item of a list is a card, not a stripe. Several of them
+   sit one under another carrying the same fields - three event actions, each
+   with a Sources and an Event row - and the stripe left too little between the
+   last field of one and the first label of the next to tell them apart. The
+   raised surface, the full edge and the inset top line are the same trick the
+   behaviour boxes use, one level in. */
+.behavior-array-row > .behavior-object {
+  grid-column: 1;
+  border: 1px solid var(--line); border-left-width: 2px; border-radius: 4px;
+  /* Lifted off whatever it sits on rather than painted a fixed colour: the same
+     form is built into the preset window and into the darker behaviour boxes of
+     the inspector, and a card has to read as raised in both. */
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+/* ...and cards need air between them, where plain rows do not. */
+.behavior-array:has(> .behavior-array-row > .behavior-object) { gap: 8px; }
 .behavior-record-row {
   display: grid; grid-template-columns: minmax(76px, .45fr) minmax(0, 1fr) auto;
   align-items: start; gap: 4px; padding: 5px; border: 1px solid var(--line); border-radius: 3px;

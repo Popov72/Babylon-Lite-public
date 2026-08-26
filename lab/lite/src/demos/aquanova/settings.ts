@@ -29,6 +29,18 @@ export interface GraphicsSettings {
     liquefactorModel: LiquefactorModel;
     /** Cosmetic low-frequency balancing motion on the held weapon. */
     weaponSway: boolean;
+    /** Full-resolution electrical mask plus bright-pass bloom. */
+    improvedElectricity: boolean;
+    /** Animate electrical bolt topology, flicker, and flashes. */
+    animateElectricity: boolean;
+    /** Multiplier controlling the number of procedural electrical arc tracks. */
+    electricityArcDensity: number;
+    /** Lower bound of the electrical bright-pass bloom. */
+    electricityBloomThreshold: number;
+    /** Additive multiplier applied to the electrical bloom. */
+    electricityBloomStrength: number;
+    /** Screen-space radius of the electrical Gaussian bloom, in pixels. */
+    electricityBloomRadius: number;
     /** Gameplay sound effects for pickups and the Liquefactor. */
     soundsEnabled: boolean;
     /** Master gain for all Aquanova gameplay sound effects, from silent (`0`) to full volume (`1`). */
@@ -71,6 +83,12 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
     // The middle tier is visually smooth in first person while keeping startup and GPU cost modest.
     liquefactorModel: "80k",
     weaponSway: true,
+    improvedElectricity: false,
+    animateElectricity: true,
+    electricityArcDensity: 1,
+    electricityBloomThreshold: 0.62,
+    electricityBloomStrength: 0.9,
+    electricityBloomRadius: 16,
     soundsEnabled: true,
     soundVolume: 1,
     // On by default for smooth room transitions. Disabled mode retains box projection with one
@@ -122,6 +140,46 @@ export const GRAPHICS_SETTING_DEFS: readonly GraphicsSettingDef[] = [
         options: LIQUEFACTOR_MODELS,
     },
     { key: "weaponSway", kind: "toggle", label: "Weapon sway", help: "Adds subtle idle balancing motion to the held weapon without moving the crosshair." },
+    {
+        key: "improvedElectricity",
+        kind: "toggle",
+        label: "Improved electrical effect",
+        help: "Renders electricity at full resolution and adds bright-pass bloom around intense cores and flashes. Costs additional fill rate and one full-resolution HDR target.",
+    },
+    {
+        key: "animateElectricity",
+        kind: "toggle",
+        label: "Animate electrical effect",
+        help: "Animates bolt topology, flicker, and flashes. Disable to compare quality modes at the same visual instant without stopping propagation or contact gameplay.",
+    },
+    {
+        key: "electricityArcDensity",
+        kind: "scale",
+        label: "Electrical arc density",
+        help: "Controls the number of procedural electrical arc tracks without changing conductivity gameplay.",
+        options: [0.25, 3],
+    },
+    {
+        key: "electricityBloomThreshold",
+        kind: "scale",
+        label: "Electrical bloom threshold",
+        help: "Minimum electrical brightness that contributes to bloom.",
+        options: [0, 2],
+    },
+    {
+        key: "electricityBloomStrength",
+        kind: "scale",
+        label: "Electrical bloom strength",
+        help: "Intensity of the electrical bloom added around bright cores and flashes.",
+        options: [0, 10],
+    },
+    {
+        key: "electricityBloomRadius",
+        kind: "scale",
+        label: "Electrical bloom blur radius",
+        help: "Screen-space radius of the smooth Gaussian bloom around bright electrical areas.",
+        options: [1, 32],
+    },
     { key: "soundsEnabled", kind: "toggle", label: "Sounds", help: "Enables pickup and Liquefactor sound effects." },
     { key: "soundVolume", kind: "scale", label: "Sound volume", help: "Controls the volume of all Aquanova gameplay sound effects.", options: [0, 1] },
     {
@@ -226,6 +284,10 @@ export function loadGraphicsSettings(authored?: Partial<GraphicsSettings>): Grap
     }
     settings.ssaa = settings.ssaa > 1 ? 2 : 1;
     settings.soundVolume = Math.max(0, Math.min(1, settings.soundVolume));
+    settings.electricityArcDensity = Math.max(0.25, Math.min(3, settings.electricityArcDensity));
+    settings.electricityBloomThreshold = Math.max(0, Math.min(2, settings.electricityBloomThreshold));
+    settings.electricityBloomStrength = Math.max(0, Math.min(10, settings.electricityBloomStrength));
+    settings.electricityBloomRadius = Math.max(1, Math.min(32, settings.electricityBloomRadius));
     if (!LIQUEFACTOR_MODELS.includes(settings.liquefactorModel)) settings.liquefactorModel = DEFAULT_GRAPHICS.liquefactorModel;
     return applyExclusivity(settings);
 }

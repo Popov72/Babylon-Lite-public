@@ -24,7 +24,16 @@ export interface PerfOverlayOptions {
         target: { x: number; y: number; z: number };
     };
     /** Current fluid workload displayed independently of GPU timestamp availability. */
-    fluidWorkload?: () => { simulations: number; pausedSimulations: number; particles: number };
+    fluidWorkload?: () => {
+        simulations: number;
+        pausedSimulations: number;
+        particles: number;
+        electrifiedDomains?: number;
+        electrifiers?: number;
+        electricityReceivers?: number;
+        electricityQueryPairs?: number;
+        playerElectrifiedParticles?: number;
+    };
     /**
      * Latest fluid stage times in ms, or null when unavailable.
      *
@@ -155,7 +164,11 @@ export function createPerfOverlay(opts: PerfOverlayOptions): PerfOverlay {
         const viewpointHead = view ? `Position ${fmtVec(view.position)}\nTarget   ${fmtVec(view.target)}` : "";
         const sceneHead = [chunkHead, portalHead, exteriorHead, exteriorIdHead, viewpointHead].filter(Boolean).join("\n");
         const workload = fluidWorkload?.() ?? { simulations: 0, pausedSimulations: 0, particles: 0 };
-        const fluidHead = `Fluid ${workload.simulations} sim(s)   ${workload.pausedSimulations} paused   ${workload.particles.toLocaleString("en-US")} particles`;
+        const fluidHead =
+            `Fluid ${workload.simulations} sim(s)   ${workload.pausedSimulations} paused   ${workload.particles.toLocaleString("en-US")} particles` +
+            `   ${workload.electrifiedDomains ?? 0} electrified   ${workload.electrifiers ?? 0} source(s)   ${workload.electricityReceivers ?? 0} receiver(s)   ${
+                workload.electricityQueryPairs ?? 0
+            } query pair(s)\nPlayer intersects ${(workload.playerElectrifiedParticles ?? 0).toLocaleString("en-US")} electrified particle(s)`;
         if (lastStatus === "unsupported") {
             panel.textContent = `PERF (P)\n${head}\n${sceneHead}\n${fluidHead}\nGPU: timestamp-query unsupported on this device`;
             return;

@@ -24,6 +24,7 @@ import {
     addTaskAfter,
     addTaskBefore,
     addToScene,
+    applyPhysicsImpulse,
     attachPositionGizmoToNode,
     attachRotationGizmoToNode,
     attachScaleGizmoToNode,
@@ -54,6 +55,7 @@ import {
     getFrameGraph,
     getPhysicsCharacterControllerBody,
     getPhysicsBodyLinearVelocity,
+    getPhysicsTimestepMs,
     getProjectionMatrix,
     getViewMatrix,
     getViewProjectionMatrix,
@@ -148,6 +150,8 @@ import { createPortalOverlay } from "./debug/portal-overlay.js";
 import { LAB_DEBUG } from "./debug-flag.js";
 import { LIQUEFACTOR_MODELS, loadGraphicsSettings, saveGraphicsSettings, type LiquefactorModel } from "./settings.js";
 import { meshGroupBounds, type MeshGroupBounds } from "./mesh-bounds.js";
+import type { FluidElectricityDomain, FluidElectricityFrameDomain } from "./fluid-runtime.js";
+import { createFluidElectricityRenderer } from "./fluid-electricity-renderer.js";
 import { createPortalVisibility } from "./portal-visibility.js";
 import { registerDoorEntityEventHandlers } from "./door-events.js";
 import { registerEntityCollisionEventHandlers } from "./entity-collision-events.js";
@@ -174,8 +178,9 @@ import {
 import { playerCapsuleSpawnPosition, selectClosestClearApertureOffset } from "./behaviors/player.js";
 import { pauseAnimationsTargetingEntities, resumeAnimations } from "./behaviors/play-animation.js";
 import { createAquanovaControlPanel, type AquanovaControlPanel, type WeaponTransformValues } from "./control-panel.js";
-import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
+import { createAntiGravityGunViewmodel, createLiquefactorViewmodel, createPistolViewmodel, type LiquefactorViewmodel } from "./liquefactor-viewmodel.js";
 import { createWeaponParticleLaser, type WeaponLaserAim } from "./weapon-laser.js";
+import { createPistolProjectileRuntime } from "./pistol-projectiles.js";
 import { createCheatCodeMatcher } from "./cheat-code.js";
 import { getMeshPoseGeometry } from "../mesh-pose-geometry.js";
 
@@ -271,20 +276,25 @@ export async function main(): Promise<void> {
     Object.assign(weaponLayer.scene.imageProcessing, scene.imageProcessing);
     const weaponViewmodel = await createLiquefactorViewmodel(engine, cam);
     const antiGravityGunViewmodel = await createAntiGravityGunViewmodel(engine, cam);
-    const weaponViewmodels: readonly LiquefactorViewmodel[] = [weaponViewmodel, antiGravityGunViewmodel];
+    const pistolViewmodel = await createPistolViewmodel(engine, cam);
+    const weaponViewmodels: readonly LiquefactorViewmodel[] = [weaponViewmodel, antiGravityGunViewmodel, pistolViewmodel];
     const weaponMeshes = weaponViewmodels.flatMap((viewmodel) => viewmodel.meshes);
     weaponViewmodel.select(graphics.liquefactorModel);
     antiGravityGunViewmodel.select(graphics.liquefactorModel);
+    pistolViewmodel.select(graphics.liquefactorModel);
     for (const viewmodel of weaponViewmodels) {
         viewmodel.setSwayEnabled(graphics.weaponSway);
     }
     canvas.dataset.liquefactorModel = graphics.liquefactorModel;
     addToScene(weaponLayer.scene, weaponViewmodel.root);
     addToScene(weaponLayer.scene, antiGravityGunViewmodel.root);
+    addToScene(weaponLayer.scene, pistolViewmodel.root);
     const weaponGizmoLayer = createUtilityLayer(engine, scene);
     addToScene(weaponGizmoLayer.scene, weaponViewmodel.localGuideRoot);
     addToScene(weaponGizmoLayer.scene, antiGravityGunViewmodel.localGuideRoot);
+    addToScene(weaponGizmoLayer.scene, pistolViewmodel.localGuideRoot);
     const weaponLaser = createWeaponParticleLaser(engine, weaponGizmoLayer.scene);
+    const pistolProjectiles = createPistolProjectileRuntime(engine, scene, pistolViewmodel);
     let weaponAimRay: WeaponLaserAim | null = null;
     let weaponCrosshair: HTMLElement | null = null;
     const updateWeaponCrosshair = (viewmodel: LiquefactorViewmodel): void => {
@@ -325,10 +335,10 @@ export async function main(): Promise<void> {
         weaponCrosshair.style.left = `${rect.left + (ndcX * 0.5 + 0.5) * rect.width}px`;
         weaponCrosshair.style.top = `${rect.top + (0.5 - ndcY * 0.5) * rect.height}px`;
     };
-    let activeWeapon: "liquefactor" | "antiGravityGun" | null = null;
+    let activeWeapon: "liquefactor" | "antiGravityGun" | "pistol" | null = null;
     let refreshWeaponDebugTools = (): void => {};
     let playerBehavior: PlayerBehavior | null = null;
-    const setWeaponEnabled = (id: "liquefactor" | "antiGravityGun", viewmodel: LiquefactorViewmodel, enabled: boolean, animated = true): void => {
+    const setWeaponEnabled = (id: "liquefactor" | "antiGravityGun" | "pistol", viewmodel: LiquefactorViewmodel, enabled: boolean, animated = true): void => {
         if (enabled) {
             activeWeapon = id;
         } else if (activeWeapon === id) {
@@ -401,6 +411,27 @@ export async function main(): Promise<void> {
         updateGrab: (deltaMs: number): boolean => updateAntiGravityGrab(deltaMs),
         releaseGrab: (throwSpeed: number): void => releaseAntiGravityGrab(throwSpeed),
     };
+    const weaponPistol = {
+        setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("pistol", pistolViewmodel, enabled, animated),
+        isReady: (): boolean => activeWeapon === "pistol" && pistolViewmodel.ready,
+        fire: (mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null, range: number, speed: number): void => {
+            pistolProjectiles.fire(mesh, point, distance, range, speed);
+        },
+        update: (deltaMs: number) => {
+            pistolViewmodel.update(
+                cam,
+                engine.canvas.width / Math.max(1, engine.canvas.height),
+                deltaMs,
+                playerBehavior?.weaponSwayMultiplier ?? 1,
+                playerBehavior?.isWeaponTriggerHeld ?? false
+            );
+            if (activeWeapon === "pistol" && pistolViewmodel.ready) {
+                updateWeaponCrosshair(pistolViewmodel);
+            }
+            return pistolProjectiles.update(deltaMs);
+        },
+        clear: (): void => pistolProjectiles.clear(),
+    };
     const weaponDebugTools = !LAB_DEBUG
         ? null
         : (() => {
@@ -418,7 +449,29 @@ export async function main(): Promise<void> {
               let localGuideGizmoOn = false;
               let toolsVisible = false;
               const activeViewmodel = (): LiquefactorViewmodel | null =>
-                  activeWeapon === "antiGravityGun" ? antiGravityGunViewmodel : activeWeapon === "liquefactor" ? weaponViewmodel : null;
+                  activeWeapon === "antiGravityGun"
+                      ? antiGravityGunViewmodel
+                      : activeWeapon === "pistol"
+                        ? pistolViewmodel
+                        : activeWeapon === "liquefactor"
+                          ? weaponViewmodel
+                          : null;
+              const positionSubGizmos = [
+                  positionGizmo.xGizmo,
+                  positionGizmo.yGizmo,
+                  positionGizmo.zGizmo,
+                  ...(positionGizmo.xPlaneGizmo ? [positionGizmo.xPlaneGizmo] : []),
+                  ...(positionGizmo.yPlaneGizmo ? [positionGizmo.yPlaneGizmo] : []),
+                  ...(positionGizmo.zPlaneGizmo ? [positionGizmo.zPlaneGizmo] : []),
+              ];
+              const rotationSubGizmos = [rotationGizmo.xGizmo, rotationGizmo.yGizmo, rotationGizmo.zGizmo];
+              const scaleSubGizmos = [scaleGizmo.xGizmo, scaleGizmo.yGizmo, scaleGizmo.zGizmo, scaleGizmo.uniformScaleGizmo];
+              const applyTransformGizmo = (): void => {
+                  activeViewmodel()?.applyTransformGizmoTarget();
+              };
+              for (const gizmo of positionSubGizmos) gizmo.onPositionChanged.add(applyTransformGizmo);
+              for (const gizmo of rotationSubGizmos) gizmo.onRotationChanged.add(applyTransformGizmo);
+              for (const gizmo of scaleSubGizmos) gizmo.onScaleChanged.add(applyTransformGizmo);
               const setGizmoMeshesVisible = (visible: boolean, gizmos: ReadonlyArray<{ _visibleMeshes: Mesh[] }>): void => {
                   for (const gizmo of gizmos) {
                       for (const mesh of gizmo._visibleMeshes) setMeshVisible(mesh, visible);
@@ -426,24 +479,18 @@ export async function main(): Promise<void> {
               };
               const sync = (): void => {
                   const viewmodel = activeViewmodel();
+                  viewmodel?.syncTransformGizmoTarget();
                   const positionVisible = toolsVisible && positionGizmoOn;
                   const rotationVisible = toolsVisible && rotationGizmoOn;
                   const scaleVisible = toolsVisible && scaleGizmoOn;
                   const localGuideVisible = toolsVisible && localGuideGizmoOn;
-                  attachPositionGizmoToNode(positionGizmo, positionVisible ? (viewmodel?.adjustment ?? null) : null);
-                  attachRotationGizmoToNode(rotationGizmo, rotationVisible ? (viewmodel?.adjustment ?? null) : null);
-                  attachScaleGizmoToNode(scaleGizmo, scaleVisible ? (viewmodel?.adjustment ?? null) : null);
+                  attachPositionGizmoToNode(positionGizmo, positionVisible ? (viewmodel?.transformGizmoTarget ?? null) : null);
+                  attachRotationGizmoToNode(rotationGizmo, rotationVisible ? (viewmodel?.transformGizmoTarget ?? null) : null);
+                  attachScaleGizmoToNode(scaleGizmo, scaleVisible ? (viewmodel?.transformGizmoTarget ?? null) : null);
                   attachPositionGizmoToNode(localGuidePositionGizmo, localGuideVisible ? (viewmodel?.localGuideOrigin ?? null) : null);
-                  setGizmoMeshesVisible(positionVisible, [
-                      positionGizmo.xGizmo,
-                      positionGizmo.yGizmo,
-                      positionGizmo.zGizmo,
-                      ...(positionGizmo.xPlaneGizmo ? [positionGizmo.xPlaneGizmo] : []),
-                      ...(positionGizmo.yPlaneGizmo ? [positionGizmo.yPlaneGizmo] : []),
-                      ...(positionGizmo.zPlaneGizmo ? [positionGizmo.zPlaneGizmo] : []),
-                  ]);
-                  setGizmoMeshesVisible(rotationVisible, [rotationGizmo.xGizmo, rotationGizmo.yGizmo, rotationGizmo.zGizmo]);
-                  setGizmoMeshesVisible(scaleVisible, [scaleGizmo.xGizmo, scaleGizmo.yGizmo, scaleGizmo.zGizmo, scaleGizmo.uniformScaleGizmo]);
+                  setGizmoMeshesVisible(positionVisible, positionSubGizmos);
+                  setGizmoMeshesVisible(rotationVisible, rotationSubGizmos);
+                  setGizmoMeshesVisible(scaleVisible, scaleSubGizmos);
                   setGizmoMeshesVisible(localGuideVisible, [
                       localGuidePositionGizmo.xGizmo,
                       localGuidePositionGizmo.yGizmo,
@@ -1010,7 +1057,7 @@ export async function main(): Promise<void> {
         const position = character.getPosition();
         const startDistance = CAP_R + 0.02;
         const endDistance = startDistance + 0.75;
-        const pathClear = (height: number, radius: number, lateralOffset: number): boolean => {
+        const pathClear = (height: number, radius: number, lateralOffset: number, minimumVertical = Number.NEGATIVE_INFINITY): boolean => {
             const axisHalf = Math.max(0, height * 0.5 - radius);
             const sampleRadius = Math.max(0, radius - 0.03);
             const diagonal = sampleRadius / Math.SQRT2;
@@ -1032,6 +1079,7 @@ export async function main(): Promise<void> {
                 [0, axisHalf + sampleRadius],
             ];
             for (const [side, vertical] of profile) {
+                if (vertical < minimumVertical) continue;
                 const correctedSide = side + lateralOffset;
                 const offsetX = rightX * correctedSide;
                 const offsetZ = rightZ * correctedSide;
@@ -1048,8 +1096,9 @@ export async function main(): Promise<void> {
             }
             return true;
         };
+        const crouchedTop = CROUCH_CAPSULE_HEIGHT * 0.5;
         const lateralOffset = selectClosestClearApertureOffset(
-            (candidate) => !pathClear(CAP_H, CAP_R, candidate) && pathClear(CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS, candidate)
+            (candidate) => !pathClear(CAP_H, CAP_R, candidate, crouchedTop + 1e-3) && pathClear(CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS, candidate)
         );
         return lateralOffset === null ? null : { lateralOffset };
     };
@@ -1419,6 +1468,19 @@ export async function main(): Promise<void> {
         });
         setPhysicsBodyAngularVelocity(world, d.body, { x: 0, y: 0, z: 0 });
     };
+    behaviorManager.events.on("hitWithPistol", ({ mesh, point, direction, impulse }) => {
+        canvas.dataset.lastPistolHit = nodeNameOfMesh.get(mesh) ?? mesh.name;
+        const dynamicBody = dynBodyByMesh.get(mesh);
+        if (!dynamicBody?.movable || !dynamicBody.body || dynamicBody.wriggling || !dynBodies.includes(dynamicBody) || impulse === 0) {
+            return;
+        }
+        applyPhysicsImpulse(
+            world,
+            dynamicBody.body,
+            { x: direction[0] * impulse, y: direction[1] * impulse, z: direction[2] * impulse },
+            { x: point[0], y: point[1], z: point[2] }
+        );
+    });
     /** A dissolvable prop's primitive at its CURRENT pose, with the velocity the solver needs. */
     const livePrim = (d: DynBody): FluidPrimitive | null => {
         const e = dynPrims.get(d);
@@ -1583,6 +1645,7 @@ export async function main(): Promise<void> {
         fluidProfiler = null; // never worth failing the demo over a profiler
     }
     let fluidProfilerOn = false;
+    let gamePaused = false;
     const perfOverlay = createPerfOverlay({
         engine,
         portalWorkload: () => portalVisibility.stats(),
@@ -1590,10 +1653,16 @@ export async function main(): Promise<void> {
         viewpoint: () => ({ position: cam.position, target: cam.target }),
         fluidWorkload: () => {
             const behaviorSims = [...behaviorFluidSims.values()].flatMap(({ activated, sim }) => (activated && sim ? [sim] : []));
+            const electricity = behaviorManager.fluidSimulations.electricityStats();
             return {
                 simulations: activeSims.length + behaviorSims.length,
                 pausedSimulations: [...behaviorFluidSims.values()].filter(({ activated, sim, state }) => activated && sim !== null && state === "paused").length,
                 particles: activeSims.reduce((total, active) => total + active.sim.count, 0) + behaviorSims.reduce((total, sim) => total + sim.count, 0),
+                electrifiedDomains: electricity.electrified,
+                electrifiers: electricity.electrifiers,
+                electricityReceivers: electricity.receivers,
+                electricityQueryPairs: electricity.queryPairs,
+                playerElectrifiedParticles: playerBehavior?.currentElectrifiedParticleCount ?? 0,
             };
         },
         fluidStages: () => (fluidProfilerOn ? (fluidProfiler?.results() ?? null) : null),
@@ -1853,6 +1922,7 @@ export async function main(): Promise<void> {
             inspectAt: (x, y) => inspectOverlay?.pickAt(x, y),
             weaponAntiGravityGun,
             weaponLiquefactor,
+            weaponPistol,
             playerMaxGrabDistance: () => playerBehavior?.maxGrabDistance ?? 8,
             dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
             setCollisionShape: setEntityCollisionShape,
@@ -2393,6 +2463,72 @@ export async function main(): Promise<void> {
     };
     if (fluidEnvironment) applyFluidEnvironment(fluidEnvironment);
     addTask(scene, surfaceTask);
+    const fluidElectricityRenderer = createFluidElectricityRenderer(engine, scene, {
+        target: presentRT,
+        sceneDepth: sceneColorRT,
+        camera: cam,
+        positionBuffer: combinedPos,
+        alphaBuffer: combinedAlpha,
+        surfaceDepthView: () => surfaceTask.surfaceDepthView(),
+    });
+    const setImprovedElectricity = (on: boolean): void => {
+        graphics.improvedElectricity = on;
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setImproved(on);
+        canvas.dataset.improvedElectricity = String(on);
+    };
+    const setAnimateElectricity = (on: boolean): void => {
+        graphics.animateElectricity = on;
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setAnimationEnabled(on);
+        canvas.dataset.animateElectricity = String(on);
+    };
+    const setElectricityArcDensity = (value: number): void => {
+        graphics.electricityArcDensity = Math.max(0.25, Math.min(3, value));
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setArcDensity(graphics.electricityArcDensity);
+        canvas.dataset.electricityArcDensity = String(graphics.electricityArcDensity);
+    };
+    let electricityBloomDebug = false;
+    const setElectricityBloomDebug = (on: boolean): void => {
+        electricityBloomDebug = on;
+        if (on && !graphics.improvedElectricity) {
+            setImprovedElectricity(true);
+        }
+        fluidElectricityRenderer.setBloomDebug(on);
+        canvas.dataset.electricityBloomDebug = String(on);
+    };
+    const setElectricityBloomThreshold = (value: number): void => {
+        graphics.electricityBloomThreshold = Math.max(0, Math.min(2, value));
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setBloom(graphics.electricityBloomThreshold, graphics.electricityBloomStrength, graphics.electricityBloomRadius);
+        canvas.dataset.electricityBloomThreshold = String(graphics.electricityBloomThreshold);
+    };
+    const setElectricityBloomStrength = (value: number): void => {
+        graphics.electricityBloomStrength = Math.max(0, Math.min(10, value));
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setBloom(graphics.electricityBloomThreshold, graphics.electricityBloomStrength, graphics.electricityBloomRadius);
+        canvas.dataset.electricityBloomStrength = String(graphics.electricityBloomStrength);
+    };
+    const setElectricityBloomRadius = (value: number): void => {
+        graphics.electricityBloomRadius = Math.max(1, Math.min(32, value));
+        saveGraphicsSettings(graphics);
+        fluidElectricityRenderer.setBloom(graphics.electricityBloomThreshold, graphics.electricityBloomStrength, graphics.electricityBloomRadius);
+        canvas.dataset.electricityBloomRadius = String(graphics.electricityBloomRadius);
+    };
+    fluidElectricityRenderer.setImproved(graphics.improvedElectricity);
+    fluidElectricityRenderer.setAnimationEnabled(graphics.animateElectricity);
+    fluidElectricityRenderer.setArcDensity(graphics.electricityArcDensity);
+    fluidElectricityRenderer.setBloom(graphics.electricityBloomThreshold, graphics.electricityBloomStrength, graphics.electricityBloomRadius);
+    fluidElectricityRenderer.setBloomDebug(false);
+    canvas.dataset.improvedElectricity = String(graphics.improvedElectricity);
+    canvas.dataset.animateElectricity = String(graphics.animateElectricity);
+    canvas.dataset.electricityArcDensity = String(graphics.electricityArcDensity);
+    canvas.dataset.electricityBloomThreshold = String(graphics.electricityBloomThreshold);
+    canvas.dataset.electricityBloomStrength = String(graphics.electricityBloomStrength);
+    canvas.dataset.electricityBloomRadius = String(graphics.electricityBloomRadius);
+    canvas.dataset.electricityBloomDebug = "false";
+    addTask(scene, fluidElectricityRenderer);
 
     // ── Presenting: exactly one pass, chosen by which AA mode is active ─────────────────────────
     // MSAA above only supersamples POLYGON coverage, so it cannot touch the aliasing that dominates
@@ -3089,6 +3225,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         members: DissolveMember[];
         phase: "dissolving" | "fluid" | "fading";
         fluidElapsed: number;
+        electricityElapsed: number;
         fadeElapsed: number;
         impulseRemaining: number;
         impulseBuffer: GPUBuffer;
@@ -3104,6 +3241,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         /** This sim's collision primitives and the exact solver-grid AABB they were picked for. */
         collision: CollisionSet;
         gridAabb: SimulationGridAabb;
+        electricityDomain: FluidElectricityDomain | null;
     }
     const activeSims: ActiveSim[] = [];
 
@@ -3124,6 +3262,8 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         pendingDispose: boolean;
         emissionTargetCount: number | null;
         emissionCompleteRaised: boolean;
+        electricityDomain: FluidElectricityDomain | null;
+        electricityElapsed: number;
     }
 
     interface BehaviorFluidPreparation {
@@ -3327,8 +3467,12 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             entry.flow = flow;
             entry.collision = collision;
             entry.gridAabb = aabb;
+            entry.electricityDomain ??= entry.registration.electrifiable
+                ? behaviorManager.fluidSimulations.createElectricityDomain(`fluidSimulation:${entry.registration.entityName}`)
+                : null;
             entry.timeScale = preparation.timeScale;
             entry.shutdownElapsed = 0;
+            entry.electricityElapsed = 0;
             entry.opacity = 1;
         } catch (error) {
             sim.dispose();
@@ -3356,12 +3500,16 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
     };
 
     const disposeBehaviorFluidSim = (entry: BehaviorFluidSim): void => {
+        if (entry.electricityDomain) {
+            behaviorManager.fluidSimulations.disposeElectricityDomain(entry.electricityDomain);
+        }
         entry.sim?.dispose();
         entry.collision?.buffer.destroy();
         entry.sim = null;
         entry.flow = null;
         entry.collision = null;
         entry.gridAabb = null;
+        entry.electricityDomain = null;
         behaviorFluidSims.delete(entry.registration);
     };
 
@@ -3384,6 +3532,8 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 pendingDispose: false,
                 emissionTargetCount: null,
                 emissionCompleteRaised: false,
+                electricityDomain: null,
+                electricityElapsed: 0,
             };
             behaviorFluidSims.set(registration, entry);
             try {
@@ -3488,6 +3638,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         setting: FluidSimSetting | undefined;
         settingName: string | undefined;
         soundCategory: string;
+        electrifiable: boolean;
         /** Animations that were playing when sampling began. Kept paused unless the shot is cancelled. */
         pausedAnimations: AnimationGroup[];
         /** Instance ids this shot's water must NOT collide against (its own props). */
@@ -3948,6 +4099,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             members,
             phase: "dissolving",
             fluidElapsed: 0,
+            electricityElapsed: 0,
             fadeElapsed: 0,
             impulseRemaining: 0,
             impulseBuffer,
@@ -3960,6 +4112,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             group,
             collision,
             gridAabb,
+            electricityDomain: group.electrifiable
+                ? behaviorManager.fluidSimulations.createElectricityDomain(`liquefaction:${nodeNameOfMesh.get(group.primaryMesh) ?? group.primaryMesh.name}`)
+                : null,
         };
         group.sim = active;
         activeSims.push(active);
@@ -4024,6 +4179,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             setting,
             settingName,
             soundCategory: sourceConfig?.sound ?? behaviorManager.getLiquefiableConfig(mesh)?.sound ?? "quickSplash",
+            electrifiable: sourceConfig?.electrifiable ?? behaviorManager.getLiquefiableConfig(mesh)?.electrifiable ?? false,
             pausedAnimations: pauseAnimationsTargetingEntities(ship.animationGroups ?? [], new Set(group.map((member) => nodeNameOfMesh.get(member) ?? member.name))),
             excluded: new Set(),
             shotDir: shotDirection(origin),
@@ -4077,6 +4233,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             behaviorManager.restoreMesh(member.mesh, member.behaviorAvailability);
         }
         a.sim.setForceField(null);
+        if (a.electricityDomain) {
+            behaviorManager.fluidSimulations.disposeElectricityDomain(a.electricityDomain);
+        }
         a.sim.dispose();
         a.impulseBuffer.destroy();
         a.collision.buffer.destroy();
@@ -4165,6 +4324,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 target: [cam.target.x, cam.target.y, cam.target.z],
             });
         }
+        if (gamePaused) {
+            return;
+        }
         syncPoiEnvironment();
         syncFullyMetallicRoughnessOverride();
         // Open the fluid profiler's frame BEFORE anything is encoded: beginFrame resets the query
@@ -4252,6 +4414,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         // crossing a chunk boundary changes them. Only the dynamic bodies actually move.
         for (let k = activeSims.length - 1; k >= 0; k--) {
             const a = activeSims[k]!;
+            a.electricityElapsed += dt;
             if (a.phase === "dissolving") {
                 // Pain-shake each source node and its segment of the combined particle buffer in
                 // lock-step. Several render primitives can share one display root, so they must also
@@ -4296,6 +4459,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 if (a.fadeElapsed >= FADE_DUR) {
                     // Dispose BEFORE stepping so we never free a sim's buffers after encoding its step.
                     a.sim.setForceField(null);
+                    if (a.electricityDomain) {
+                        behaviorManager.fluidSimulations.disposeElectricityDomain(a.electricityDomain);
+                    }
                     a.sim.dispose();
                     a.impulseBuffer.destroy();
                     a.collision.buffer.destroy();
@@ -4349,6 +4515,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 if (stepDt > 0) {
                     sim.step(engine._currentEncoder, stepDt);
                     entry.shutdownElapsed += stepDt;
+                    entry.electricityElapsed += stepDt;
                 }
                 const lifecycle = fluidSimulationShutdownLifecycle(entry.shutdownElapsed, entry.registration.shutdownDuration, entry.registration.shutdownAlphaDecay);
                 entry.opacity = lifecycle.opacity;
@@ -4359,16 +4526,20 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 }
                 continue;
             }
-            sim.step(engine._currentEncoder, dt * entry.timeScale);
+            const stepDt = dt * entry.timeScale;
+            sim.step(engine._currentEncoder, stepDt);
+            entry.electricityElapsed += stepDt;
         }
         // Aggregate live particles into the shared surface buffer + per-particle alpha. During the
         // dissolve, reveal only particles inside the same noisy front that clips the solid; afterwards
         // the whole fluid is visible, and fading ramps it from 1→0.
         let off = 0;
         let anyColor = false;
+        const electricityFrameDomains: FluidElectricityFrameDomain[] = [];
         for (const a of activeSims) {
             const n = a.sim.count;
             if (off + n <= MAX_TOTAL) {
+                const domainOffset = off;
                 engine._currentEncoder.copyBufferToBuffer(a.sim.positionBuffer, 0, combinedPos, off * 16, n * 16);
                 if (a.useMeshColors) {
                     for (const member of a.members) {
@@ -4397,6 +4568,16 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                     const alpha = a.phase === "fading" ? Math.max(0, 1 - a.fadeElapsed / FADE_DUR) : 1;
                     alphaScratch.fill(alpha, off, off + n);
                 }
+                if (a.electricityDomain) {
+                    electricityFrameDomains.push({
+                        domain: a.electricityDomain,
+                        offset: domainOffset,
+                        count: n,
+                        particleRadius: a.sim.particleRadius,
+                        gridAabb: a.gridAabb,
+                        elapsedSeconds: a.electricityElapsed,
+                    });
+                }
                 off += n;
             }
         }
@@ -4415,9 +4596,20 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 }
                 continue;
             }
+            const domainOffset = off;
             engine._currentEncoder.copyBufferToBuffer(sim.positionBuffer, 0, combinedPos, off * 16, n * 16);
             device.queue.writeBuffer(combinedColor, off * 16, colorScratch, 0, n * 4);
             alphaScratch.fill(entry.opacity, off, off + n);
+            if (entry.electricityDomain && entry.gridAabb) {
+                electricityFrameDomains.push({
+                    domain: entry.electricityDomain,
+                    offset: domainOffset,
+                    count: n,
+                    particleRadius: sim.particleRadius,
+                    gridAabb: entry.gridAabb,
+                    elapsedSeconds: entry.electricityElapsed,
+                });
+            }
             off += n;
         }
         surfaceTask.setUseParticleColor(anyColor); // shared toggle: on when any active blob carries mesh colours
@@ -4427,7 +4619,9 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         } else {
             virtualSim.count = 0;
         }
+        fluidElectricityRenderer.setDomains(electricityFrameDomains);
         behaviorManager.fluidSimulations.recordParticleCount(engine._currentEncoder, off);
+        behaviorManager.fluidSimulations.recordElectricity(engine._currentEncoder, electricityFrameDomains);
         canvas.dataset.particleCount = String(off);
         canvas.dataset.activeSims = String(activeSims.length + [...behaviorFluidSims.values()].filter(({ activated, sim }) => activated && sim !== null).length);
     });
@@ -4591,6 +4785,41 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
                 set: (on) => setSsaa(on ? 2 : 1),
             },
         },
+        effects: {
+            improvedElectricity: {
+                label: "Improved electrical effect",
+                get: () => graphics.improvedElectricity,
+                set: setImprovedElectricity,
+            },
+            animateElectricity: {
+                label: "Animate electrical effect",
+                get: () => graphics.animateElectricity,
+                set: setAnimateElectricity,
+            },
+            electricityArcDensity: {
+                get: () => graphics.electricityArcDensity,
+                set: setElectricityArcDensity,
+            },
+            electricityBloomDebug: !LAB_DEBUG
+                ? undefined
+                : {
+                      label: "Compare electrical source / bloom",
+                      get: () => electricityBloomDebug,
+                      set: setElectricityBloomDebug,
+                  },
+            electricityBloomThreshold: {
+                get: () => graphics.electricityBloomThreshold,
+                set: setElectricityBloomThreshold,
+            },
+            electricityBloomStrength: {
+                get: () => graphics.electricityBloomStrength,
+                set: setElectricityBloomStrength,
+            },
+            electricityBloomRadius: {
+                get: () => graphics.electricityBloomRadius,
+                set: setElectricityBloomRadius,
+            },
+        },
         weapon: {
             model: {
                 get: () => Math.max(0, LIQUEFACTOR_MODELS.indexOf(weaponViewmodel.model)),
@@ -4701,12 +4930,51 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
               canvas.dataset.cheatCode = "idkfa";
               controlPanel?.refresh();
           });
+    const pauseIndicator = document.createElement("div");
+    pauseIndicator.textContent = "PAUSED";
+    pauseIndicator.style.cssText =
+        "position:fixed;left:50%;top:10%;transform:translateX(-50%);z-index:30;display:none;padding:8px 18px;border:1px solid rgba(150,225,255,.8);border-radius:5px;background:rgba(0,12,20,.78);color:#dff8ff;font:600 18px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.16em;pointer-events:none;";
+    document.body.appendChild(pauseIndicator);
+    const pausedCallbacks = new Map<(deltaMs: number) => void, (deltaMs: number) => void>();
+    let pausedPhysicsTimestepMs = 0;
+    const setGamePaused = (paused: boolean): void => {
+        if (paused === gamePaused) {
+            return;
+        }
+        gamePaused = paused;
+        canvas.dataset.gamePaused = String(paused);
+        pauseIndicator.style.display = paused ? "block" : "none";
+        if (paused) {
+            pausedPhysicsTimestepMs = getPhysicsTimestepMs(world);
+            setPhysicsTimestepMs(world, 0);
+            soundManager.setVolume(0);
+            for (let index = 0; index < scene._beforeRender.length; index++) {
+                const original = scene._beforeRender[index]!;
+                const wrapper = (): void => original(0);
+                pausedCallbacks.set(wrapper, original);
+                scene._beforeRender[index] = wrapper;
+            }
+        } else {
+            setPhysicsTimestepMs(world, pausedPhysicsTimestepMs);
+            soundManager.setVolume(graphics.soundVolume);
+            for (let index = 0; index < scene._beforeRender.length; index++) {
+                const original = pausedCallbacks.get(scene._beforeRender[index]!);
+                if (original) {
+                    scene._beforeRender[index] = original;
+                }
+            }
+            pausedCallbacks.clear();
+        }
+    };
+    canvas.dataset.gamePaused = "false";
     window.addEventListener("keydown", (event) => {
         if (event.repeat) return;
         if (!event.altKey && !event.ctrlKey && !event.metaKey) enterCheatCode?.(event.key);
         if (event.code === "Digit1") behaviorManager.events.emit("weaponSlotSelected", { slot: 1 });
         else if (event.code === "Digit2") behaviorManager.events.emit("weaponSlotSelected", { slot: 2 });
+        else if (event.code === "Digit3") behaviorManager.events.emit("weaponSlotSelected", { slot: 3 });
         else if (event.code === "KeyH") toggleNearestLight();
+        else if (event.code === "KeyP" && event.shiftKey) setGamePaused(!gamePaused);
         else if (event.code === "KeyP") perfOverlay.toggle();
         else if (event.code === "KeyG") fluidSimulationOverlay?.toggle();
         else if (event.code === "KeyB") toggleLocalCubemapBlending();

@@ -75,6 +75,7 @@ describe("Aquanova fluidSimulation behavior", () => {
             [primitive],
             {
                 fluidSim: "flip-test",
+                electrifiable: true,
                 shutdownDuration: 7,
                 shutdownAlphaDecay: 3,
                 eventActions: [
@@ -121,6 +122,7 @@ describe("Aquanova fluidSimulation behavior", () => {
             entityName: "waterfall",
             settingName: "flip-test",
             setting: loadedSetting,
+            electrifiable: true,
             shutdownDuration: 7,
             shutdownAlphaDecay: 3,
         });
@@ -196,7 +198,7 @@ describe("Aquanova fluidSimulation behavior", () => {
         await behavior.init();
         behavior.start();
 
-        expect(registration).toMatchObject({ shutdownDuration: 10, shutdownAlphaDecay: 2 });
+        expect(registration).toMatchObject({ electrifiable: false, shutdownDuration: 10, shutdownAlphaDecay: 2 });
         behavior.dispose();
         events.dispose();
         fluidSimulations.dispose();
@@ -234,6 +236,19 @@ describe("Aquanova fluidSimulation behavior", () => {
                     }
                 )
         ).toThrow("shutdownDuration must be finite and non-negative");
+        expect(
+            () =>
+                new FluidSimulationBehavior(
+                    "waterfall",
+                    [mesh()],
+                    {
+                        fluidSim: "bad",
+                        electrifiable: "false" as unknown as boolean,
+                        eventActions: [{ source: "panel", event: "activated", action: "enableSimulation" }],
+                    },
+                    { events, fluidSimulations }
+                )
+        ).toThrow("electrifiable must be true or false");
 
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
         const behavior = new FluidSimulationBehavior(

@@ -65,11 +65,14 @@ the resolved base behavior is instantiated. The current base behaviors are:
 | `player`               | Owns first-person controls and disables its marker      |
 | `weaponLiquefactor`    | Gates and drives the Liquefactor weapon                 |
 | `weaponAntiGravityGun` | Grabs and throws dynamic rigid bodies                   |
+| `weaponPistol`         | Fires projectiles and delivers point impacts            |
 | `pickEntity`           | Collects an intersected entity and emits an event       |
 | `enableEntity`         | Enables its owner after a configured source event       |
 | `disableEntity`        | Disables its owner after a configured source event      |
 | `sound`                | Plays or stops an authored sound                        |
 | `fluidSimulation`      | Runs an event-controlled authored fluid simulation      |
+| `fluidElectrifier`     | Permanently charges contacted electrifiable liquid      |
+| `electricalDetonator`  | Raises `explode` on electrified-liquid contact          |
 | `setCollisionShape`    | Replaces an entity collider from its visible geometry   |
 | `trigger`              | Raises owner events when its collider is entered/exited |
 | `playAnimation`        | Starts one animation clip from the ship glTF            |
@@ -127,7 +130,8 @@ shapes are rejected on physically dynamic entities.
 `public/aquanova/fluidSim/`. Its axis-aligned grid keeps the authored size but
 uses the behavior owner's world position instead of the position stored in the
 JSON; emitter and sink positions remain grid-local and are translated with that
-new center. The simulation is absent and does not render until the owner
+new center. `electrifiable` defaults to `false`; only an explicitly
+electrifiable simulation can retain electrical charge. The simulation is absent and does not render until the owner
 receives an event mapped to `enableSimulation`. `eventActions` maps an external
 entity or door's event to one of:
 
@@ -211,6 +215,81 @@ between samples. Invisible dissolve-front particles,
 fully faded water, inactive capacity, and particles omitted by aggregate
 capacity are therefore not counted. Temporal interpretation of delayed counts
 belongs to the caller.
+
+Every liquefaction blob and behavior-owned simulation is a distinct fluid
+domain. Both `liquefaction.electrifiable` and
+`fluidSimulation.electrifiable` default to `false`. An electrifiable domain
+may be charged once and remains charged until that domain's simulation is
+disposed; disabling or removing the source does not discharge it.
+
+`fluidElectrifier` uses the union world AABB of its owner's meshes. Its positive
+integer `particleThreshold` defaults to `24`, and its finite positive
+`propagationSpeed` defaults to `8 m/s`. The delayed GPU query counts visible
+particle centres inside the AABB separately for every electrifiable domain.
+Reaching the threshold permanently charges that domain at the AABB centre and
+raises `fluidElectrified` from the behavior owner.
+
+Charge has an expanding spherical propagation front centred on the first
+electrifier that charges the domain. Its radius is elapsed time multiplied by
+the authored propagation speed. Rendering and gameplay receivers use the same
+front, so remote contacts cannot occur before the visible charge reaches them.
+This simulation-domain model intentionally treats every particle owned by one
+simulation as one conductive liquid, avoiding solver-specific per-particle
+neighbour propagation and persistent conductivity buffers.
+
+`electricalDetonator` uses the union world AABB of its owner's meshes and
+counts centres of propagated electrified particles inside it. Its positive
+integer `particleThreshold` defaults to `4`. On reaching the threshold it
+raises the owner event `explode` exactly once and stops querying.
+
+All electrifier and receiver AABBs are batched into one shared compute query.
+CPU broad-phase rejects pairs whose AABB cannot overlap the fluid domain's
+solver-grid AABB. One workgroup-local reduction contributes to each compact
+counter, and only the counter table is copied through a three-buffer delayed
+readback ring. No behavior owns a GPU buffer. Sampling is limited to once every
+six rendered frames.
+
+The Aquanova-local electricity renderer consumes only charged particle ranges.
+It creates its pipelines and half-resolution world-position mask lazily on the
+first charged frame. A sphere-impostor pass writes visible charged liquid, and
+an additive full-screen pass draws sparse white/cyan jagged bolts over the fluid
+before antialiasing. Square particle coverage keeps the piecewise-linear paths
+connected instead of stamping round particle silhouettes. Short secondary layers
+form ramifications, while independent world-space cells briefly flash bolt
+sections white. The default low setting uses a half-resolution mask. Improved
+electricity uses a full-resolution mask and renders to a full-resolution HDR
+intermediate. Before procedural bolt evaluation, improved mode reconstructs each
+electrical pixel's world position from the fluid renderer's already-filtered
+surface eye-depth texture. The charged-particle mask remains only a conductivity
+and opacity stencil; procedural coordinates no longer come from independent
+billboard planes, removing the square per-particle discontinuities at their
+source. Bloom preserves the sharp bolt image, extracts only bright cores and
+white flashes through Babylon Lite's shared `createBloomPostProcessTask`. Its
+highlight extraction, optimized separable Gaussian blur, half-resolution bloom
+targets, and weighted merge operate on the isolated electrical HDR target, so
+unrelated bright scene pixels do not bloom. A small presentation pass then adds
+the bloomed electrical result over the scene. Debug builds expose
+an unpersisted comparison view that clears the scene and displays the complete
+sharp electrical texture on the left and the same texture plus bloom on the
+right. The persisted
+`electricityBloomThreshold`, `electricityBloomStrength`, and
+`electricityBloomRadius` settings are exposed as live sliders in the Effects
+panel. Bloom strength ranges from `0` to `10`; its Gaussian radius ranges from
+`1` to `32` screen pixels.
+The persisted `animateElectricity` toggle can freeze each domain's current
+visual elapsed time so low- and improved-quality rendering can be compared
+against the same bolt topology. This visual-only freeze does not stop
+conductivity propagation or gameplay contact queries. The persisted
+`electricityArcDensity` setting scales the number of
+procedural arc tracks from `0.25` to `3` times the default without changing
+conductivity propagation or gameplay contact queries. When animation is
+enabled, bolt paths flicker, shift, and reconnect several times per second.
+Every conductive domain uses its owning simulation's elapsed time, so pausing a
+fluid simulation also freezes its bolt animation and propagation front without
+affecting other domains.
+Particle alpha removes the effect during normal fluid fade and shutdown, while
+domain disposal removes it completely. Generic Babylon Lite fluid rendering
+contains no Aquanova electricity semantics.
 
 `shutdownSimulation` is irreversible. It resumes a paused or not-yet-enabled
 simulation, runs it at full opacity for `shutdownDuration` simulated seconds
@@ -306,8 +385,28 @@ the current eye height to `y = 1,000,000`. The eye-height calculation scales
 with the live capsule height, so crouching lowers the query's Y minimum. The
 player enters the submerged state only above the authored threshold and exits
 below half that threshold, keeping hysteresis in the player behavior rather
-than the delayed measurement service. While submerged, a translucent red
-full-screen layer is visible.
+than the delayed measurement service. While submerged, the same inset
+border-and-glow treatment used for electrical contact is rendered in red.
+
+`electrifiedParticleCount` is a positive integer threshold, defaulting to `8`.
+The player registers its complete live capsule AABB as an electrified-fluid
+receiver; crouching lowers the top while preserving the capsule foot position.
+The electrical query shifts that AABB down by half the live capsule radius so
+floor-level liquid remains inside the volume instead of sitting exactly below
+its lower face.
+Electrical contact renders that border-and-glow treatment in blue. When the
+player is both submerged and electrically contacted, one shared overlay uses
+red and blue side glows with a violet blended border instead of stacking two
+independent full-screen layers.
+For this receiver only, the GPU expands that AABB by the electrical particle
+mask radius before testing particle centres. This counts a visible electrical
+particle whose rendered square overlaps the capsule AABB even when its centre is
+just outside; generators and detonators retain their exact authored AABBs. The
+player owns half-threshold exit hysteresis over the delayed count. Entering
+contact raises `electricalContact`, leaving raises `electricalContactEnded`, and
+a blue-white shock overlay remains visible while contact persists. These events
+are the damage-system seam; the fluid runtime does not own health or damage
+policy.
 
 The entity carrying `player` is a placement marker rather than scenery. Its
 mesh is hidden and non-pickable during scene setup, and the behavior disables
@@ -329,9 +428,12 @@ interpolate with the same progress. The transition is reversible and works on
 the ground or during a jump. A jump request or held run key requests standing
 first; expansion is accepted only while the taller capsule has overhead
 clearance. Jump input is buffered through the standing transition. While a
-forward jump is active, clearance rays across the standing and crouched capsule
-profiles detect low apertures: if the standing profile is blocked and the
-crouched profile is clear, crouch engages automatically. Once fully crouched,
+forward jump is active, clearance rays across the standing-only head region and
+the complete crouched capsule profile detect low apertures: if the head region
+is blocked and the crouched profile is clear, crouch engages automatically.
+Lower standing-capsule rays are deliberately excluded from this decision so a
+crate edge or sill being jumped over cannot be mistaken for restricted
+headroom. Once fully crouched,
 the controller adds up to `0.2 m` of collision-resolved forward movement to carry
 the player past the aperture edge. The airborne automatic transition preserves
 the capsule centre rather than its foot position, tucking the feet upward instead
@@ -425,6 +527,22 @@ the button does not increase the force. The right button drops it with zero
 velocity. Holstering, disposal, target removal, or liquefaction also drops the
 held body without throwing it.
 
+`weaponPistol` uses slot 3 and the same presentation, detail, sway, and
+crosshair lifecycle. A trigger press launches one pooled visible projectile
+from the viewmodel muzzle toward the completed centre-screen pick, or out to
+the configured `range` when nothing is hit. `bulletSpeed` controls projectile
+travel speed. Every mesh impact displays a short pooled emissive marker and
+raises the typed `hitWithPistol` event at arrival. If the hit mesh belongs to a
+movable `dynamic` entity, `impactImpulse` is applied in the shot direction at
+the exact world-space impact point, so off-centre hits also produce torque.
+Static meshes still show the impact marker but receive no physics impulse.
+Glass has no special handling yet; a later glass behavior can consume the same
+pistol-specific event without coupling it to the weapon.
+
+The pistol pickup grants ownership by sending `enable` to its `weaponPistol`
+behavior, exactly like the other pickup-backed weapons. The debug `idkfa`
+all-weapons acquisition follows that same event path.
+
 The `dynamic` behavior may define `mass` in kilograms. It must be finite and
 positive and defaults to `10 kg`. That value is applied to the Havok rigid body
 after its authored collision shape is attached, so shape-derived inertia is
@@ -515,8 +633,13 @@ validation apply while particle sampling is still running: a paused sample
 keeps its original shot pose and can resume, while a completed reversal restores
 target availability without creating a solver.
 
-The `P` performance panel reports the current number of fluid simulations and
-their total particle count alongside CPU and GPU timing.
+The `P` performance panel reports the current number of fluid simulations,
+their total particle count, and the player's raw intersecting electrified
+particle count alongside CPU and GPU timing. `Shift+P` pauses the complete game
+simulation while rendering and controls remain responsive: scene callbacks
+receive zero elapsed time, fixed-step Havok is temporarily switched to the
+zero-delta path, fluid/electrical clocks stop, and gameplay audio is muted.
+Unpausing restores the previous physics timestep and audio volume.
 
 The `L` runtime-light overlay shows the lights authored for the player's current
 chunk using the exact records consumed by the renderer. A small light-coloured

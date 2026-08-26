@@ -108,7 +108,7 @@
   "gridResolution": 129,
   "markersPerCell": 8,
   "showGridBounds": true,
-  "particleCount": 0,
+  "particleCount": 40000,
   "freeCamera": {
     "position": [
       2.207663781366565,

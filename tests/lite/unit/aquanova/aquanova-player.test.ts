@@ -3,6 +3,8 @@ import { CharacterSupportedState } from "../../../../packages/babylon-lite/src";
 import type { Mesh, PhysicsCharacterController } from "../../../../packages/babylon-lite/src";
 import {
     PlayerBehavior,
+    playerCapsuleAabb,
+    playerElectricalContactState,
     playerCapsuleSpawnPosition,
     playerSubmergedState,
     playerSubmersionAabb,
@@ -31,13 +33,16 @@ describe("Aquanova player", () => {
         expect(player.maxGrabDistance).toBe(8);
         expect(player.maxHeldObjectDistance).toBe(8);
         expect(player.submergedParticleCount).toBe(100);
+        expect(player.electrifiedParticleCount).toBe(8);
         expect(new PlayerBehavior("player", [{} as Mesh], { maxGrabDistance: 12 }, {} as AquanovaGameContext).maxGrabDistance).toBe(12);
         expect(new PlayerBehavior("player", [{} as Mesh], { maxHeldObjectDistance: 12 }, {} as AquanovaGameContext).maxHeldObjectDistance).toBe(12);
         expect(new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 250 }, {} as AquanovaGameContext).submergedParticleCount).toBe(250);
+        expect(new PlayerBehavior("player", [{} as Mesh], { electrifiedParticleCount: 12 }, {} as AquanovaGameContext).electrifiedParticleCount).toBe(12);
         expect(() => new PlayerBehavior("player", [{} as Mesh], { maxGrabDistance: 0 }, {} as AquanovaGameContext)).toThrow("maxGrabDistance");
         expect(() => new PlayerBehavior("player", [{} as Mesh], { maxHeldObjectDistance: 0 }, {} as AquanovaGameContext)).toThrow("maxHeldObjectDistance");
         expect(() => new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 0 }, {} as AquanovaGameContext)).toThrow("submergedParticleCount");
         expect(() => new PlayerBehavior("player", [{} as Mesh], { submergedParticleCount: 1.5 }, {} as AquanovaGameContext)).toThrow("submergedParticleCount");
+        expect(() => new PlayerBehavior("player", [{} as Mesh], { electrifiedParticleCount: 0 }, {} as AquanovaGameContext)).toThrow("electrifiedParticleCount");
     });
 
     it("disables collision for its owning marker when started", () => {
@@ -52,6 +57,9 @@ describe("Aquanova player", () => {
                 emit,
                 on: vi.fn(() => () => {}),
             },
+            fluidSimulations: {
+                registerElectricityReceiver: vi.fn(() => ({ dispose: vi.fn() })),
+            },
             capsuleHeight: PLAYER_CAPSULE_HEIGHT,
             capsuleRadius: PLAYER_CAPSULE_RADIUS,
         } as unknown as AquanovaGameContext;
@@ -59,10 +67,12 @@ describe("Aquanova player", () => {
         const internals = player as unknown as {
             createCrosshair(): void;
             createSubmergedOverlay(): void;
+            createElectricalOverlay(): void;
             listen(): void;
         };
         internals.createCrosshair = vi.fn();
         internals.createSubmergedOverlay = vi.fn();
+        internals.createElectricalOverlay = vi.fn();
         internals.listen = vi.fn();
         vi.stubGlobal("window", {});
         vi.stubGlobal("document", {});
@@ -146,6 +156,17 @@ describe("Aquanova player", () => {
         expect(playerSubmergedState(true, 75, 100)).toBe(true);
         expect(playerSubmergedState(true, 50, 100)).toBe(true);
         expect(playerSubmergedState(true, 49, 100)).toBe(false);
+    });
+
+    it("uses the live capsule AABB and player-owned electrical hysteresis", () => {
+        expect(playerCapsuleAabb({ x: 2, y: 0.9, z: -3 }, PLAYER_CAPSULE_HEIGHT, PLAYER_CAPSULE_RADIUS)).toEqual({
+            min: [1.7, -0.15, -3.3],
+            max: [2.3, 1.65, -2.7],
+        });
+        expect(playerElectricalContactState(false, 7, 8)).toBe(false);
+        expect(playerElectricalContactState(false, 8, 8)).toBe(true);
+        expect(playerElectricalContactState(true, 4, 8)).toBe(true);
+        expect(playerElectricalContactState(true, 3, 8)).toBe(false);
     });
 
     it("auto-crouches only during a forward jump when the aperture requires it", () => {

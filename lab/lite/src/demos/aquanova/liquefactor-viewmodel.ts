@@ -23,6 +23,11 @@ const ANTI_GRAVITY_GUN_MODEL_URLS: Readonly<Record<LiquefactorModel, string>> = 
     "80k": "/aquanova/weapons/antiGravityGun-80k.glb",
     "350k": "/aquanova/weapons/antiGravityGun-350k.glb",
 };
+const PISTOL_MODEL_URLS: Readonly<Record<LiquefactorModel, string>> = {
+    "20k": "/aquanova/weapons/pistol-20k.glb",
+    "80k": "/aquanova/weapons/pistol-80k.glb",
+    "350k": "/aquanova/weapons/pistol-350k.glb",
+};
 
 // The root is anchored in normalized screen space, then converted through the live projection.
 // This keeps the held weapon in the same place when the canvas aspect ratio changes.
@@ -42,6 +47,13 @@ export const ANTI_GRAVITY_GUN_TRANSFORM = {
     scale: [2.74, 2.74, 2.74],
     localGuidePosition: [0, 0.1707, 0.2889],
     localGuideRotationDegrees: [0, 4.3, 0],
+} as const;
+export const PISTOL_TRANSFORM = {
+    position: [-0.5368, -0.8267, 0.0001],
+    rotationDegrees: [-6.18, 20.9, 1.21],
+    scale: [1.5883, 1.678, 1.678],
+    localGuidePosition: [0.2738, 0.1349, 1.1555],
+    localGuideRotationDegrees: [0, -2.6, 0],
 } as const;
 
 function rotationDegreesToRadians(rotation: readonly [number, number, number]): [number, number, number] {
@@ -75,6 +87,7 @@ export interface LiquefactorSwayPose {
 export interface LiquefactorViewmodel {
     readonly root: TransformNode;
     readonly adjustment: TransformNode;
+    readonly transformGizmoTarget: TransformNode;
     readonly localGuideRoot: TransformNode;
     readonly localGuideOrigin: TransformNode;
     readonly localGuideYaw: TransformNode;
@@ -84,6 +97,8 @@ export interface LiquefactorViewmodel {
     select(model: LiquefactorModel): void;
     setPresented(presented: boolean, animated?: boolean): void;
     setSwayEnabled(enabled: boolean): void;
+    syncTransformGizmoTarget(): void;
+    applyTransformGizmoTarget(): void;
     update(camera: FreeCamera, aspectRatio: number, deltaMs: number, swayMultiplier?: number, swaySuppressed?: boolean): void;
 }
 
@@ -96,6 +111,7 @@ interface WeaponViewmodelSpec {
     readonly name: string;
     readonly modelUrls: Readonly<Record<LiquefactorModel, string>>;
     readonly contentRotationY?: number;
+    readonly transformGizmoOffset?: readonly [number, number, number];
     readonly transform?: {
         readonly position: readonly [number, number, number];
         readonly rotationDegrees: readonly [number, number, number];
@@ -115,6 +131,14 @@ const ANTI_GRAVITY_GUN_SPEC: WeaponViewmodelSpec = {
     modelUrls: ANTI_GRAVITY_GUN_MODEL_URLS,
     contentRotationY: (3 * Math.PI) / 2,
     transform: ANTI_GRAVITY_GUN_TRANSFORM,
+};
+
+const PISTOL_SPEC: WeaponViewmodelSpec = {
+    name: "pistol",
+    modelUrls: PISTOL_MODEL_URLS,
+    contentRotationY: (3 * Math.PI) / 2,
+    transformGizmoOffset: [0, 0.65, 0],
+    transform: PISTOL_TRANSFORM,
 };
 
 function setLocalParent(child: SceneNode, parent: SceneNode | FreeCamera): void {
@@ -271,6 +295,38 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
     adjustment.rotation.set(...rotationDegreesToRadians(adjustmentRotationDegrees));
     adjustment.scaling.set(...adjustmentScale);
     setLocalParent(adjustment, sway);
+    const transformGizmoTarget = createTransformNode(`${spec.name}-transform-gizmo-target`);
+    setLocalParent(transformGizmoTarget, sway);
+    const transformGizmoOffset = spec.transformGizmoOffset ?? ([0, 0, 0] as const);
+    const syncTransformGizmoTarget = (): void => {
+        transformGizmoTarget.position.set(
+            adjustment.position.x + transformGizmoOffset[0],
+            adjustment.position.y + transformGizmoOffset[1],
+            adjustment.position.z + transformGizmoOffset[2]
+        );
+        transformGizmoTarget.rotationQuaternion.set(
+            adjustment.rotationQuaternion.x,
+            adjustment.rotationQuaternion.y,
+            adjustment.rotationQuaternion.z,
+            adjustment.rotationQuaternion.w
+        );
+        transformGizmoTarget.scaling.set(adjustment.scaling.x, adjustment.scaling.y, adjustment.scaling.z);
+    };
+    const applyTransformGizmoTarget = (): void => {
+        adjustment.position.set(
+            transformGizmoTarget.position.x - transformGizmoOffset[0],
+            transformGizmoTarget.position.y - transformGizmoOffset[1],
+            transformGizmoTarget.position.z - transformGizmoOffset[2]
+        );
+        adjustment.rotationQuaternion.set(
+            transformGizmoTarget.rotationQuaternion.x,
+            transformGizmoTarget.rotationQuaternion.y,
+            transformGizmoTarget.rotationQuaternion.z,
+            transformGizmoTarget.rotationQuaternion.w
+        );
+        adjustment.scaling.set(transformGizmoTarget.scaling.x, transformGizmoTarget.scaling.y, transformGizmoTarget.scaling.z);
+    };
+    syncTransformGizmoTarget();
     const content = createTransformNode(`${spec.name}-content`);
     content.position.set(-GIZMO_PIVOT.x, -GIZMO_PIVOT.y, -GIZMO_PIVOT.z);
     content.rotation.y = spec.contentRotationY ?? 0;
@@ -348,6 +404,7 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
     return {
         root,
         adjustment,
+        transformGizmoTarget,
         localGuideRoot,
         localGuideOrigin,
         localGuideYaw,
@@ -361,6 +418,8 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
         select,
         setPresented,
         setSwayEnabled,
+        syncTransformGizmoTarget,
+        applyTransformGizmoTarget,
         update(camera, aspectRatio, deltaMs, swayMultiplier = 1, swaySuppressed = false) {
             // The root is a camera child, so its transform is camera-local and only the
             // projection changes when the viewport aspect ratio changes.
@@ -383,6 +442,7 @@ async function createWeaponViewmodel(engine: EngineContext, camera: FreeCamera, 
             const swayPose = liquefactorSwayPose(swayElapsedSeconds, swayBlend * swayScale);
             sway.position.set(...swayPose.position);
             sway.rotation.set(...swayPose.rotation);
+            syncTransformGizmoTarget();
             localGuideRoot.position.set(root.position.x, root.position.y, root.position.z);
             localGuideRoot.rotationQuaternion.set(root.rotationQuaternion.x, root.rotationQuaternion.y, root.rotationQuaternion.z, root.rotationQuaternion.w);
             localGuideRoot.scaling.set(root.scaling.x, root.scaling.y, root.scaling.z);
@@ -404,4 +464,8 @@ export function createLiquefactorViewmodel(engine: EngineContext, camera: FreeCa
 
 export function createAntiGravityGunViewmodel(engine: EngineContext, camera: FreeCamera): Promise<LiquefactorViewmodel> {
     return createWeaponViewmodel(engine, camera, ANTI_GRAVITY_GUN_SPEC);
+}
+
+export function createPistolViewmodel(engine: EngineContext, camera: FreeCamera): Promise<LiquefactorViewmodel> {
+    return createWeaponViewmodel(engine, camera, PISTOL_SPEC);
 }

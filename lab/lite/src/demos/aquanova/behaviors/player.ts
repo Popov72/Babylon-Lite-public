@@ -1,7 +1,7 @@
 import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
 import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS } from "../constants.js";
-import type { FluidParticleAabb } from "../fluid-runtime.js";
+import type { FluidElectricityRegistration, FluidParticleAabb } from "../fluid-runtime.js";
 import type { AquanovaGameContext, JumpApertureAssist } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, PlayerBehaviorConfig } from "./types.js";
@@ -25,6 +25,7 @@ const DEFAULT_CHARACTER_STRENGTH = 10_000;
 const DEFAULT_MAX_GRAB_DISTANCE = 8;
 const DEFAULT_MAX_HELD_OBJECT_DISTANCE = 8;
 const DEFAULT_SUBMERGED_PARTICLE_COUNT = 100;
+const DEFAULT_ELECTRIFIED_PARTICLE_COUNT = 8;
 const SUBMERGED_EXIT_THRESHOLD_FACTOR = 0.5;
 const SUBMERGED_QUERY_MAX_Y = 1_000_000;
 const WALK_STEP_DISTANCE = 1.8;
@@ -120,6 +121,18 @@ export function playerSubmergedState(submerged: boolean, particleCount: number, 
     return submerged ? particleCount >= enterThreshold * SUBMERGED_EXIT_THRESHOLD_FACTOR : particleCount > enterThreshold;
 }
 
+export function playerCapsuleAabb(position: Readonly<{ x: number; y: number; z: number }>, capsuleHeight: number, capsuleRadius: number): FluidParticleAabb {
+    const centerY = position.y - capsuleRadius * 0.5;
+    return {
+        min: [position.x - capsuleRadius, centerY - capsuleHeight * 0.5, position.z - capsuleRadius],
+        max: [position.x + capsuleRadius, centerY + capsuleHeight * 0.5, position.z + capsuleRadius],
+    };
+}
+
+export function playerElectricalContactState(contact: boolean, particleCount: number, enterThreshold: number): boolean {
+    return contact ? particleCount >= enterThreshold * SUBMERGED_EXIT_THRESHOLD_FACTOR : particleCount >= enterThreshold;
+}
+
 export class PlayerBehavior implements Behavior<"player"> {
     public readonly name = "player";
     public readonly mesh: Mesh;
@@ -158,12 +171,16 @@ export class PlayerBehavior implements Behavior<"player"> {
     private footstepDistance = 0;
     private footstepActive = false;
     private crosshair: HTMLDivElement | null = null;
-    private submergedOverlay: HTMLDivElement | null = null;
+    private contactOverlay: HTMLDivElement | null = null;
+    private electricityRegistration: FluidElectricityRegistration | null = null;
     private submerged = false;
+    private electricalContact = false;
+    private electricalParticleCount = 0;
     private readonly characterStrength: number;
     public readonly maxGrabDistance: number;
     public readonly maxHeldObjectDistance: number;
     public readonly submergedParticleCount: number;
+    public readonly electrifiedParticleCount: number;
 
     public constructor(entityName: string, meshes: readonly Mesh[], config: PlayerBehaviorConfig, context: AquanovaGameContext) {
         const mesh = meshes[0];
@@ -193,6 +210,11 @@ export class PlayerBehavior implements Behavior<"player"> {
             throw new Error(`[aquanova] player.submergedParticleCount must be a positive integer, received ${String(submergedParticleCount)}`);
         }
         this.submergedParticleCount = submergedParticleCount;
+        const electrifiedParticleCount = config.electrifiedParticleCount ?? DEFAULT_ELECTRIFIED_PARTICLE_COUNT;
+        if (!Number.isInteger(electrifiedParticleCount) || electrifiedParticleCount <= 0) {
+            throw new Error(`[aquanova] player.electrifiedParticleCount must be a positive integer, received ${String(electrifiedParticleCount)}`);
+        }
+        this.electrifiedParticleCount = electrifiedParticleCount;
         const direction = config.direction;
         this.yaw = direction && (direction[0] || direction[2]) ? Math.atan2(-direction[0]!, direction[2]!) : -Math.PI / 2;
         this.yawTarget = this.yaw;
@@ -213,9 +235,19 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.context.canvas.dataset.maxGrabDistance = String(this.maxGrabDistance);
         this.context.canvas.dataset.maxHeldObjectDistance = String(this.maxHeldObjectDistance);
         this.context.canvas.dataset.submergedParticleThreshold = String(this.submergedParticleCount);
+        this.context.canvas.dataset.electrifiedParticleThreshold = String(this.electrifiedParticleCount);
         this.updateCrouchDataset();
         this.createCrosshair();
-        this.createSubmergedOverlay();
+        this.createContactOverlay();
+        this.electricityRegistration = this.context.fluidSimulations.registerElectricityReceiver({
+            entityName: this.entityName,
+            particleThreshold: this.electrifiedParticleCount,
+            aabb: () => (this.noclip ? null : playerCapsuleAabb(this.context.character.getPosition(), this.capsuleHeight(), this.capsuleRadius())),
+            includeParticleRadius: true,
+            onCount: (particleCount) => {
+                this.updateElectricalContact(particleCount);
+            },
+        });
         this.disposers.push(
             this.context.events.on("physicsStep", ({ deltaSeconds }) => {
                 this.update(deltaSeconds);
@@ -239,8 +271,10 @@ export class PlayerBehavior implements Behavior<"player"> {
         for (const dispose of this.disposers.splice(0)) dispose();
         this.crosshair?.remove();
         this.crosshair = null;
-        this.submergedOverlay?.remove();
-        this.submergedOverlay = null;
+        this.contactOverlay?.remove();
+        this.contactOverlay = null;
+        this.electricityRegistration?.dispose();
+        this.electricityRegistration = null;
     }
 
     public get isNoclip(): boolean {
@@ -249,6 +283,10 @@ export class PlayerBehavior implements Behavior<"player"> {
 
     public get isCrouched(): boolean {
         return this.crouchTarget || !this.isFullyStanding();
+    }
+
+    public get currentElectrifiedParticleCount(): number {
+        return this.electricalParticleCount;
     }
 
     public get weaponSwayMultiplier(): 1 | 2 | 4 {
@@ -626,14 +664,17 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.crosshair = crosshair;
     }
 
-    private createSubmergedOverlay(): void {
+    private createContactOverlay(): void {
         const overlay = document.createElement("div");
-        overlay.id = "aq-submerged";
-        overlay.style.cssText = "position:fixed;inset:0;z-index:14;pointer-events:none;background:rgba(255,0,0,.32);opacity:0;transition:opacity .15s linear;";
+        overlay.id = "aq-player-contact";
+        overlay.style.cssText =
+            "position:fixed;inset:0;z-index:15;pointer-events:none;border:3px solid transparent;opacity:0;transition:opacity .08s linear,border-color .08s linear,box-shadow .08s linear,background .08s linear;";
         document.body.appendChild(overlay);
-        this.submergedOverlay = overlay;
+        this.contactOverlay = overlay;
         this.context.canvas.dataset.submerged = "false";
         this.context.canvas.dataset.submergedParticleCount = "0";
+        this.context.canvas.dataset.electricalContact = "false";
+        this.context.canvas.dataset.electrifiedParticleCount = "0";
     }
 
     private updateSubmersion(aabb: FluidParticleAabb): void {
@@ -645,9 +686,42 @@ export class PlayerBehavior implements Behavior<"player"> {
         }
         this.submerged = submerged;
         this.context.canvas.dataset.submerged = String(submerged);
-        if (this.submergedOverlay) {
-            this.submergedOverlay.style.opacity = submerged ? "1" : "0";
+        this.syncContactOverlay();
+    }
+
+    private updateElectricalContact(particleCount: number): void {
+        this.electricalParticleCount = particleCount;
+        this.context.canvas.dataset.electrifiedParticleCount = String(particleCount);
+        const contact = playerElectricalContactState(this.electricalContact, particleCount, this.electrifiedParticleCount);
+        if (contact === this.electricalContact) {
+            return;
         }
+        this.electricalContact = contact;
+        this.context.canvas.dataset.electricalContact = String(contact);
+        this.syncContactOverlay();
+        this.context.events.emit("entityEvent", {
+            name: this.entityName,
+            event: contact ? "electricalContact" : "electricalContactEnded",
+        });
+    }
+
+    private syncContactOverlay(): void {
+        const overlay = this.contactOverlay;
+        if (!overlay) return;
+        if (this.submerged && this.electricalContact) {
+            overlay.style.borderColor = "rgba(220,160,255,.98)";
+            overlay.style.boxShadow = "inset 32px 0 70px 12px rgba(255,55,70,.9),inset -32px 0 70px 12px rgba(45,155,255,.9),inset 0 0 150px 46px rgba(170,55,255,.58)";
+            overlay.style.background = "rgba(175,75,210,.16)";
+        } else if (this.submerged) {
+            overlay.style.borderColor = "rgba(255,145,145,.95)";
+            overlay.style.boxShadow = "inset 0 0 48px 18px rgba(255,70,70,.95),inset 0 0 150px 46px rgba(255,25,25,.55)";
+            overlay.style.background = "rgba(255,110,110,.14)";
+        } else if (this.electricalContact) {
+            overlay.style.borderColor = "rgba(145,235,255,.95)";
+            overlay.style.boxShadow = "inset 0 0 48px 18px rgba(70,205,255,.95),inset 0 0 150px 46px rgba(25,105,255,.55)";
+            overlay.style.background = "rgba(110,215,255,.14)";
+        }
+        overlay.style.opacity = this.submerged || this.electricalContact ? "1" : "0";
     }
 
     private readonly onClick = (): void => {

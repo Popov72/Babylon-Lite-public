@@ -36,6 +36,12 @@
                     "items": { "type": "string", "optionsSource": "fluidSim" },
                     "label": "Fluid simulations"
                 },
+                "electrifiable": {
+                    "type": "boolean",
+                    "default": false,
+                    "label": "Electrifiable",
+                    "description": "Allows the resulting liquid domain to retain electrical charge."
+                },
                 "linked": {
                     "type": "array",
                     "items": { "type": "entity", "optionsSource": "nearbyEntities" },
@@ -67,7 +73,7 @@
         "player": {
             "label": "Player",
             "description": "Configures the first-person player start and controller.",
-            "eventsRaised": [],
+            "eventsRaised": [{ "name": "electricalContact" }, { "name": "electricalContactEnded" }],
             "properties": {
                 "direction": {
                     "type": "vector3",
@@ -97,6 +103,14 @@
                     "default": 100,
                     "label": "Submerged particle count",
                     "description": "Visible particles above the player's head required to consider the player submerged."
+                },
+                "electrifiedParticleCount": {
+                    "type": "number",
+                    "integer": true,
+                    "minimum": 1,
+                    "default": 8,
+                    "label": "Electrified particle count",
+                    "description": "Electrified particle centres inside the live player capsule required to enter electrical contact."
                 }
             }
         },
@@ -306,6 +320,12 @@
                     "required": true,
                     "label": "Fluid simulation"
                 },
+                "electrifiable": {
+                    "type": "boolean",
+                    "default": false,
+                    "label": "Electrifiable",
+                    "description": "Allows this simulation's liquid domain to retain electrical charge."
+                },
                 "shutdownDuration": {
                     "type": "number",
                     "minimum": 0,
@@ -390,6 +410,41 @@
                 }
             }
         },
+        "fluidElectrifier": {
+            "label": "Fluid electrifier",
+            "description": "Permanently electrifies an eligible liquid domain when enough particle centres enter the owner's world AABB.",
+            "eventsRaised": [{ "name": "fluidElectrified" }],
+            "properties": {
+                "particleThreshold": {
+                    "type": "number",
+                    "integer": true,
+                    "minimum": 1,
+                    "default": 24,
+                    "label": "Particle threshold"
+                },
+                "propagationSpeed": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 8,
+                    "label": "Propagation speed (m/s)"
+                }
+            }
+        },
+        "electricalDetonator": {
+            "label": "Electrical detonator",
+            "description": "Raises explode once enough propagated electrified particle centres enter the owner's world AABB.",
+            "eventsRaised": [{ "name": "explode" }],
+            "properties": {
+                "particleThreshold": {
+                    "type": "number",
+                    "integer": true,
+                    "minimum": 1,
+                    "default": 4,
+                    "label": "Particle threshold"
+                }
+            }
+        },
         "weaponAntiGravityGun": {
             "label": "Anti-gravity gun",
             "description": "Configures the anti-gravity weapon.",
@@ -401,6 +456,33 @@
                     "exclusiveMinimum": true,
                     "default": 100,
                     "label": "Maximum mass (kg)"
+                }
+            }
+        },
+        "weaponPistol": {
+            "label": "Pistol",
+            "description": "Fires visible bullets, marks every mesh impact, and pushes dynamic entities at the hit point.",
+            "eventsRaised": [],
+            "properties": {
+                "range": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 100,
+                    "label": "Range (m)"
+                },
+                "bulletSpeed": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 80,
+                    "label": "Bullet speed (m/s)"
+                },
+                "impactImpulse": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 10,
+                    "label": "Impact impulse (kg m/s)"
                 }
             }
         },

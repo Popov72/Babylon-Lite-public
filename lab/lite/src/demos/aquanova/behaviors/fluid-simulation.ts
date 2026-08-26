@@ -38,9 +38,12 @@ export class FluidSimulationBehavior implements Behavior<"fluidSimulation"> {
     public constructor(entityName: string, meshes: readonly Mesh[], config: FluidSimulationBehaviorConfig, context: FluidSimulationContext) {
         const mesh = meshes[0];
         if (!mesh) throw new Error("[aquanova] fluidSimulation requires at least one mesh");
-        assertBehaviorConfigKeys(config, "fluidSimulation", ["fluidSim", "eventActions", "shutdownDuration", "shutdownAlphaDecay"]);
+        assertBehaviorConfigKeys(config, "fluidSimulation", ["fluidSim", "electrifiable", "eventActions", "shutdownDuration", "shutdownAlphaDecay"]);
         if (typeof config.fluidSim !== "string" || !config.fluidSim || /\.json$/i.test(config.fluidSim)) {
             throw new Error("[aquanova] fluidSimulation.fluidSim must be a non-empty file name without the .json extension");
+        }
+        if (config.electrifiable !== undefined && typeof config.electrifiable !== "boolean") {
+            throw new Error("[aquanova] fluidSimulation.electrifiable must be true or false");
         }
         validateEventActions(config.eventActions);
         validateDuration("shutdownDuration", config.shutdownDuration);
@@ -67,6 +70,7 @@ export class FluidSimulationBehavior implements Behavior<"fluidSimulation"> {
             anchor: ownerAnchor(this.mesh, this.entityName),
             settingName: this.config.fluidSim,
             setting,
+            electrifiable: this.config.electrifiable ?? false,
             shutdownDuration: this.config.shutdownDuration ?? DEFAULT_SHUTDOWN_DURATION,
             shutdownAlphaDecay: this.config.shutdownAlphaDecay ?? DEFAULT_SHUTDOWN_ALPHA_DECAY,
             onEmissionComplete: (): void => {

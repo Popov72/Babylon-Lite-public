@@ -6,6 +6,8 @@ export interface DynamicBehaviorConfig {
 
 export interface LiquefiableBehaviorConfig {
     liquefiable?: true;
+    /** Whether this liquefaction domain may retain electrical charge. Defaults to false. */
+    electrifiable?: boolean;
     fluidSim?: string[];
     linked?: string[];
     /** Splash sound category played when this mesh enters the fluid phase. */
@@ -22,6 +24,8 @@ export interface PlayerBehaviorConfig {
     maxHeldObjectDistance?: number;
     /** Visible particles above the player's head required to enter the submerged state. */
     submergedParticleCount?: number;
+    /** Electrified particle centres inside the live capsule required to enter electrical contact. */
+    electrifiedParticleCount?: number;
 }
 
 export interface PickEntityRaiseEventConfig {
@@ -98,12 +102,26 @@ export interface SetCollisionShapeBehaviorConfig {
 export interface FluidSimulationBehaviorConfig {
     /** Fluid setting file name without `.json`, resolved under `/aquanova/fluidSim/`. */
     fluidSim: string;
+    /** Whether this authored simulation may retain electrical charge. Defaults to false. */
+    electrifiable?: boolean;
     /** External entity events and the simulation or flow-object actions they trigger. */
     eventActions: FluidSimulationEventAction[];
     /** Fully visible simulated seconds after a shutdown action. Defaults to 10. */
     shutdownDuration?: number;
     /** Simulated seconds spent fading after shutdownDuration. Defaults to 2. */
     shutdownAlphaDecay?: number;
+}
+
+export interface FluidElectrifierBehaviorConfig {
+    /** Visible particle centres required inside the owner AABB. Defaults to 24. */
+    particleThreshold?: number;
+    /** Metres per second travelled by the charge propagation front. Defaults to 8. */
+    propagationSpeed?: number;
+}
+
+export interface ElectricalDetonatorBehaviorConfig {
+    /** Propagated electrified particle centres required inside the owner AABB. Defaults to 4. */
+    particleThreshold?: number;
 }
 
 export interface TriggerBehaviorConfig {
@@ -145,6 +163,15 @@ export interface WeaponAntiGravityGunBehaviorConfig {
     maxMass?: number;
 }
 
+export interface WeaponPistolBehaviorConfig {
+    /** Maximum bullet travel distance in metres. Defaults to 100. */
+    range?: number;
+    /** Visible projectile speed in metres per second. Defaults to 80. */
+    bulletSpeed?: number;
+    /** Point impulse applied to dynamic entities in kg m/s. Defaults to 10. */
+    impactImpulse?: number;
+}
+
 /** All parameters that a manifest behavior definition or entity override may provide. */
 export interface BehaviorConfig {
     readonly [key: string]: unknown;
@@ -152,6 +179,7 @@ export interface BehaviorConfig {
     mass?: number;
     liquefiable?: boolean;
     fluidSim?: string | string[];
+    electrifiable?: boolean;
     linked?: string[];
     direction?: number[];
     characterStrength?: number;
@@ -168,7 +196,10 @@ export interface BehaviorConfig {
     animation?: string;
     loop?: boolean;
     maxGrabDistance?: number;
+    propagationSpeed?: number;
     maxMass?: number;
+    bulletSpeed?: number;
+    impactImpulse?: number;
     type?: "mesh";
     fluidSimShape?: FluidSimShape;
     shutdownDuration?: number;

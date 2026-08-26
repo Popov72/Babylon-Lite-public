@@ -16,6 +16,17 @@ export interface MeshGroupBounds {
     half: [number, number, number];
 }
 
+export interface MeshGroupAabb {
+    min: [number, number, number];
+    max: [number, number, number];
+}
+
+interface CachedMeshBounds {
+    readonly mesh: Mesh;
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+}
+
 /** World AABB of `meshes`, or null when none of them has readable CPU geometry. */
 export function meshGroupBounds(meshes: readonly Mesh[]): MeshGroupBounds | null {
     let mnx = Infinity,
@@ -52,5 +63,63 @@ export function meshGroupBounds(meshes: readonly Mesh[]): MeshGroupBounds | null
     return {
         centre: [(mnx + mxx) / 2, (mny + mxy) / 2, (mnz + mxz) / 2],
         half: [(mxx - mnx) / 2, (mxy - mny) / 2, (mxz - mnz) / 2],
+    };
+}
+
+/** Cache mesh-local bounds once and transform only their corners when the owner moves. */
+export function meshGroupAabbProvider(meshes: readonly Mesh[]): () => MeshGroupAabb | null {
+    const cached: CachedMeshBounds[] = [];
+    for (const mesh of meshes) {
+        const geometry = getMeshTriangles(mesh);
+        if (!geometry?.positions.length) continue;
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        for (let index = 0; index < geometry.positions.length; index += 3) {
+            const x = geometry.positions[index]!;
+            const y = geometry.positions[index + 1]!;
+            const z = geometry.positions[index + 2]!;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            minZ = Math.min(minZ, z);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+            maxZ = Math.max(maxZ, z);
+        }
+        cached.push({
+            mesh,
+            min: [minX, minY, minZ],
+            max: [maxX, maxY, maxZ],
+        });
+    }
+    return () => {
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        for (const { mesh, min, max } of cached) {
+            const world = mesh.worldMatrix;
+            for (const x of [min[0], max[0]]) {
+                for (const y of [min[1], max[1]]) {
+                    for (const z of [min[2], max[2]]) {
+                        const wx = world[0]! * x + world[4]! * y + world[8]! * z + world[12]!;
+                        const wy = world[1]! * x + world[5]! * y + world[9]! * z + world[13]!;
+                        const wz = world[2]! * x + world[6]! * y + world[10]! * z + world[14]!;
+                        minX = Math.min(minX, wx);
+                        minY = Math.min(minY, wy);
+                        minZ = Math.min(minZ, wz);
+                        maxX = Math.max(maxX, wx);
+                        maxY = Math.max(maxY, wy);
+                        maxZ = Math.max(maxZ, wz);
+                    }
+                }
+            }
+        }
+        return cached.length === 0 ? null : { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
     };
 }
