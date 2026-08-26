@@ -26,6 +26,11 @@
 import { onPhysicsAfterStep } from "./havok.js";
 import type { PhysicsBody, PhysicsShape, PhysicsWorld } from "./havok.js";
 
+type PhysicsTriggerType = PhysicsTriggerInfo["type"];
+
+const TRIGGER_ENTERED = 8;
+const TRIGGER_EXITED = 16;
+
 /** A single trigger-volume event reported by Havok after a physics step. */
 export interface PhysicsTriggerInfo {
     /** `ENTERED` when a body enters the trigger volume, `EXITED` when it leaves. */
@@ -34,9 +39,9 @@ export interface PhysicsTriggerInfo {
 
 /** Trigger event including the two participating bodies. */
 export interface PhysicsTriggerBodyInfo extends PhysicsTriggerInfo {
-    /** First body reported by Havok for the overlap, or `null` if it is no longer tracked. */
+    /** First body reported by Havok, or `null` if it is no longer tracked. */
     bodyA: PhysicsBody | null;
-    /** Second body reported by Havok for the overlap, or `null` if it is no longer tracked. */
+    /** Second body reported by Havok, or `null` if it is no longer tracked. */
     bodyB: PhysicsBody | null;
 }
 
@@ -65,70 +70,54 @@ export function setPhysicsShapeIsTrigger(world: PhysicsWorld, shape: PhysicsShap
  * @returns A disposer that removes the callback.
  */
 export function onPhysicsTrigger(world: PhysicsWorld, cb: (info: PhysicsTriggerInfo) => void): () => void {
-    const hknp = world._hknp;
-    // Native Havok trigger event types: 8 = ENTERED, 16 = EXITED. The Havok `EventType` enum
-    // only enumerates the collision types, so the trigger values are matched literally (mirroring
-    // Babylon.js' `_nativeTriggerCollisionValueToCollisionType`). Unknown values are skipped.
-    const TRIGGER_ENTERED = 8;
-    const TRIGGER_EXITED = 16;
-
-    const drain = (): void => {
-        let addr = hknp.HP_World_GetTriggerEvents(world._hkWorld)[1];
-        while (addr) {
-            const intBuf = new Int32Array(hknp.HEAPU8.buffer, addr);
-            const type = intBuf[0];
-            if (type === TRIGGER_ENTERED) {
-                cb({ type: "ENTERED" });
-            } else if (type === TRIGGER_EXITED) {
-                cb({ type: "EXITED" });
-            }
-            addr = hknp.HP_World_GetNextTriggerEvent(world._hkWorld, addr);
-        }
-    };
-    return registerTriggerDrain(world, drain);
+    return registerTriggerDrain(world, () => drainTriggerEvents(world, (type) => cb({ type })));
 }
 
-/** Register a trigger callback that also resolves both participating Havok bodies. */
+/**
+ * Register a trigger callback that also resolves both participating Havok bodies.
+ *
+ * A body is `null` when the native event references a body that has already been removed from
+ * the world's tracked body list.
+ * @param world - The physics world to listen on.
+ * @param cb - Callback invoked with each body-aware trigger event.
+ * @returns A disposer that removes the callback.
+ */
 export function onPhysicsTriggerBodies(world: PhysicsWorld, cb: (info: PhysicsTriggerBodyInfo) => void): () => void {
+    return registerTriggerDrain(world, () =>
+        drainTriggerEvents(world, (type, bodyAId, bodyBId) => {
+            cb({ type, bodyA: findBodyById(world, bodyAId), bodyB: findBodyById(world, bodyBId) });
+        })
+    );
+}
+
+function drainTriggerEvents(world: PhysicsWorld, cb: (type: PhysicsTriggerType, bodyAId: number, bodyBId: number) => void): void {
     const hknp = world._hknp;
-    const drain = (): void => {
-        let addr = hknp.HP_World_GetTriggerEvents(world._hkWorld)[1];
-        while (addr) {
-            const intBuf = new Int32Array(hknp.HEAPU8.buffer, addr);
-            const type = intBuf[0];
-            const info =
-                type === 8
-                    ? { type: "ENTERED" as const, bodyA: findBodyById(world, intBuf[2]), bodyB: findBodyById(world, intBuf[6]) }
-                    : type === 16
-                      ? { type: "EXITED" as const, bodyA: findBodyById(world, intBuf[2]), bodyB: findBodyById(world, intBuf[6]) }
-                      : null;
-            if (info) {
-                cb(info);
-            }
-            addr = hknp.HP_World_GetNextTriggerEvent(world._hkWorld, addr);
+    let address = hknp.HP_World_GetTriggerEvents(world._hkWorld)[1];
+    while (address) {
+        const event = new Int32Array(hknp.HEAPU8.buffer, address);
+        const type = event[0] === TRIGGER_ENTERED ? "ENTERED" : event[0] === TRIGGER_EXITED ? "EXITED" : null;
+        if (type) {
+            cb(type, event[2]!, event[6]!);
         }
-    };
-    return registerTriggerDrain(world, drain);
+        address = hknp.HP_World_GetNextTriggerEvent(world._hkWorld, address);
+    }
 }
 
 function registerTriggerDrain(world: PhysicsWorld, drain: () => void): () => void {
     onPhysicsAfterStep(world, drain);
     return () => {
         const callbacks = world._afterStep;
-        if (!callbacks) {
-            return;
-        }
-        const index = callbacks.indexOf(drain);
+        const index = callbacks?.indexOf(drain) ?? -1;
         if (index >= 0) {
-            callbacks.splice(index, 1);
+            callbacks!.splice(index, 1);
         }
     };
 }
 
-function findBodyById(world: PhysicsWorld, bodyId: unknown): PhysicsBody | null {
+function findBodyById(world: PhysicsWorld, bodyId: number): PhysicsBody | null {
     for (const body of world._bodies) {
         const nativeId = body._hkBody[0];
-        if (nativeId === bodyId || (typeof nativeId === "bigint" && nativeId === BigInt(bodyId as number))) {
+        if (nativeId === bodyId || (typeof nativeId === "bigint" && nativeId === BigInt(bodyId))) {
             return body;
         }
     }

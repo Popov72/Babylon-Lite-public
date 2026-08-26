@@ -74,10 +74,8 @@ export interface MaterialPlugin {
     /** Default true when attached. A disabled plugin contributes no shader code
      *  but still changes the pipeline cache key (so toggling forces a rebuild). */
     isEnabled?: boolean;
-    /** When true, this plugin's UBO values change every frame, so on Standard materials the
-     *  self-managed plugin uniform buffer is re-uploaded each frame (via `enableMaterialPlugins`'s
-     *  refresh) instead of being baked once at registration. No-op for static plugins (default) and
-     *  for PBR (whose plugin uniforms ride the version-gated material UBO). */
+    /** Re-upload this plugin's Standard-material UBO values before every rendered frame.
+     *  PBR plugin values already follow the material UBO's versioned update path. */
     dynamic?: boolean;
     /** Static defines folded into the pipeline cache key (and available to the
      *  plugin when it builds its custom code). */

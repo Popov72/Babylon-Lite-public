@@ -1428,7 +1428,7 @@ export async function main(): Promise<void> {
                       rotation: d.proxy.rotationQuaternion,
                       startPosition: p,
                       endPosition: { x: p.x + displacement[0], y: p.y + displacement[1], z: p.z + displacement[2] },
-                      ignoreBodies: [d.body],
+                      ignoreBody: d.body,
                   })
                 : null;
         const moveFraction = hit ? antiGravityCollisionMoveFraction(displacement, hit) : 1;

@@ -1,13 +1,9 @@
 import type { Mesh } from "./mesh.js";
 
 /**
- * Return caller-owned copies of a mesh's triangle soup — positions and indices only.
+ * Return caller-owned copies of a mesh's indexed triangle positions.
  *
- * Unlike {@link getMeshGeometry} this does NOT require normals, which glTF makes optional and which a
- * geometric consumer has no use for: SDF baking, volume sampling and collision proxies all want the
- * triangles and nothing else. Requiring normals silently drops those meshes from the result, which
- * shows up much later as a hole in whatever was built from it.
- *
+ * Unlike {@link getMeshGeometry}, this does not require normals or other shading attributes.
  * Returns `null` when positions or indices are not retained on the CPU.
  */
 export function getMeshTriangles(mesh: Mesh): { positions: Float32Array; indices: Uint32Array } | null {

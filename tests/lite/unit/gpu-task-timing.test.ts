@@ -123,9 +123,10 @@ describe("GPU task timing installer", () => {
                     }) as unknown as GPUCommandEncoder,
                 queue: { submit: () => undefined },
             } as unknown as GPUDevice,
-            querySet: {} as GPUQuerySet,
-            resolveBuffer: {} as GPUBuffer,
+            querySet: { destroy: () => undefined } as unknown as GPUQuerySet,
+            resolveBuffer: { destroy: () => undefined } as unknown as GPUBuffer,
             readbackPool: [readback],
+            pendingReadbacks: new Set(),
             records: [],
             wrappedGraphs: [],
             patchedContextLists: [],
@@ -136,6 +137,7 @@ describe("GPU task timing installer", () => {
             droppedTaskCount: 0,
             inFlight: 0,
             skipFrame: false,
+            disposed: false,
         };
         const snapshots: unknown[] = [];
         let previousResolveCalls = 0;
@@ -182,9 +184,10 @@ describe("GPU task timing installer", () => {
         Object.assign(engine, { surfaces, _surfaces: surfaces });
         const timer: GpuTaskTimer = {
             device: {} as GPUDevice,
-            querySet: {} as GPUQuerySet,
-            resolveBuffer: {} as GPUBuffer,
+            querySet: { destroy: () => undefined } as unknown as GPUQuerySet,
+            resolveBuffer: { destroy: () => undefined } as unknown as GPUBuffer,
             readbackPool: [],
+            pendingReadbacks: new Set(),
             records: [],
             wrappedGraphs: [],
             patchedContextLists: [],
@@ -195,6 +198,7 @@ describe("GPU task timing installer", () => {
             droppedTaskCount: 0,
             inFlight: 0,
             skipFrame: false,
+            disposed: false,
         };
         const restore = installGpuTaskTimer(timer, engine, () => undefined);
 

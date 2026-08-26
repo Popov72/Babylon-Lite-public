@@ -1407,7 +1407,7 @@ export function createPhysicsCharacterController(world: PhysicsWorld, position: 
     return new PhysicsCharacterController(world, position, options);
 }
 
-/** Returns the Havok body used by a character controller. */
+/** Return the Havok body backing a character controller. */
 export function getPhysicsCharacterControllerBody(controller: PhysicsCharacterController): PhysicsBody {
     return controller.getBody();
 }

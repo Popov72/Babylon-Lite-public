@@ -11,15 +11,18 @@
  *     rebuild on any plugin change, and
  *   - delivers plugin uniforms through a SELF-MANAGED uniform buffer declared as
  *     a fragment binding and bound via the pre-existing `StdExt._bind` loop. This
- *     keeps every shared standard-material module byte-identical to a plugin-free
- *     build (no `_writeUbo` hook, no extra UBO loop in the renderable).
+ *     avoids an `_writeUbo` hook or extra plugin UBO loop in the renderable; the
+ *     generic bind hook only carries the owning scene for lifetime-safe lookup.
  */
 
 import type { EngineContext } from "../../engine/engine.js";
+import { retireGpuResources } from "../../engine/gpu-resource-retirement.js";
 import type { StdExt } from "../standard/standard-flags.js";
 import type { StandardMaterialProps } from "../standard/standard-material.js";
 import { _computeStandardMaterialFeatures, getStandardGroupBuilder } from "../standard/standard-material.js";
-import type { Mesh } from "../../mesh/mesh.js";
+import { getMaterialSource } from "../material-view.js";
+import type { SceneContext } from "../../scene/scene.js";
+import { enqueueMaterialSwap } from "../../scene/mesh-scene-registry.js";
 import type { ShaderFragment, UboSpec } from "../../shader/fragment-types.js";
 import { createUniformBuffer } from "../../resource/gpu-buffers.js";
 import type { MaterialPlugin } from "./material-plugin.js";
@@ -29,27 +32,29 @@ const PLUGIN_INDEX_SHIFT = 24;
 const PLUGIN_INDEX_MASK = 0x7f;
 
 interface PluginEntry {
-    readonly _plugins: readonly MaterialPlugin[];
     readonly _fragment: ShaderFragment;
-    /** Self-managed plugin uniform buffer, or null when the plugins declare no uniforms. */
-    readonly _uboBuffer: GPUBuffer | null;
-    /** UBO layout for the self-managed buffer (for per-frame re-uploads of dynamic plugins). */
     readonly _uboSpec: UboSpec | null;
-    /** True when at least one enabled plugin is `dynamic` — its UBO is re-uploaded every frame. */
+}
+
+interface MaterialPluginState {
+    readonly _plugins: readonly MaterialPlugin[];
+    readonly _uboBuffer: GPUBuffer | null;
+    readonly _uboSpec: UboSpec | null;
     readonly _dynamic: boolean;
+    readonly _engine: EngineContext;
+}
+
+interface ScenePluginState {
+    readonly _materials: Map<StandardMaterialProps, MaterialPluginState>;
+    readonly _refresh: (deltaMs: number) => void;
 }
 
 let _sigToIndex: Map<string, number> | null = null;
 let _indexToEntry: Map<number, PluginEntry> | null = null;
+let _sceneStates: WeakMap<SceneContext, ScenePluginState> | null = null;
 let _counter = 0;
 
-function _resetState(): void {
-    _sigToIndex = new Map();
-    _indexToEntry = new Map();
-    _counter = 0;
-}
-
-function _indexFor(plugins: readonly MaterialPlugin[], engine: EngineContext): number {
+function _indexFor(plugins: readonly MaterialPlugin[]): number {
     const sig = pluginSignature(plugins);
     const map = (_sigToIndex ??= new Map());
     let idx = map.get(sig);
@@ -57,48 +62,90 @@ function _indexFor(plugins: readonly MaterialPlugin[], engine: EngineContext): n
         idx = ++_counter;
         map.set(sig, idx);
         const built = buildPluginFragment(plugins, idx, true);
-        // Build the self-managed plugin UBO once per signature. For STATIC plugins the values are
-        // constant, so the buffer is filled once at registration and shared by every material with
-        // that signature. DYNAMIC plugins (values change every frame) are re-uploaded each frame by
-        // `refreshStdPluginUbos` (registered from `enableMaterialPlugins`).
-        let uboBuffer: GPUBuffer | null = null;
-        if (built._stdUboSpec && built._stdUboSpec._totalBytes > 0) {
-            const data = new Float32Array(built._stdUboSpec._totalBytes / 4);
-            writePluginUbo(plugins, data, built._stdUboSpec._offsets);
-            uboBuffer = createUniformBuffer(engine, data, "plugin-ubo");
-        }
-        const dynamic = enabledPlugins(plugins).some((p) => p.dynamic === true);
-        (_indexToEntry ??= new Map()).set(idx, { _plugins: plugins, _fragment: built._fragment, _uboBuffer: uboBuffer, _uboSpec: built._stdUboSpec, _dynamic: dynamic });
+        (_indexToEntry ??= new Map()).set(idx, { _fragment: built._fragment, _uboSpec: built._stdUboSpec });
     }
     return idx;
 }
 
-/** Re-upload every DYNAMIC Standard plugin's self-managed UBO from its plugins' current state.
- *  Registered as a per-frame before-render step by `enableMaterialPlugins`; a no-op when no dynamic
- *  Standard plugin exists (so static-plugin scenes stay byte-identical). */
-let _uboScratch: Float32Array | null = null;
-export function refreshStdPluginUbos(engine: EngineContext): void {
-    if (!_indexToEntry) {
+function _releaseMaterialState(scene: SceneContext, state: MaterialPluginState): void {
+    if (!state._uboBuffer) {
         return;
     }
-    for (const entry of _indexToEntry.values()) {
-        if (!entry._dynamic || !entry._uboBuffer || !entry._uboSpec) {
-            continue;
-        }
-        const floats = entry._uboSpec._totalBytes / 4;
-        if (!_uboScratch || _uboScratch.length < floats) {
-            _uboScratch = new Float32Array(floats);
-        } else {
-            _uboScratch.fill(0, 0, floats);
-        }
-        writePluginUbo(entry._plugins, _uboScratch, entry._uboSpec._offsets);
-        engine._device.queue.writeBuffer(entry._uboBuffer, 0, _uboScratch.buffer, 0, entry._uboSpec._totalBytes);
+    if (scene._z || !scene._built) {
+        state._uboBuffer.destroy();
+    } else {
+        const buffer = state._uboBuffer;
+        retireGpuResources(state._engine, () => buffer.destroy());
     }
 }
 
-function _entryFor(plugins: readonly MaterialPlugin[]): PluginEntry | undefined {
-    const idx = _sigToIndex?.get(pluginSignature(plugins));
-    return idx ? _indexToEntry?.get(idx) : undefined;
+function _releaseMaterialStateAfterBindings(scene: SceneContext, mat: StandardMaterialProps, state: MaterialPluginState): void {
+    if (!state._uboBuffer || !scene._built) {
+        _releaseMaterialState(scene, state);
+        return;
+    }
+    const activeDisposers: (() => void)[][] = [];
+    for (const mesh of scene.meshes) {
+        if (mesh.material && getMaterialSource(mesh.material) === mat) {
+            const disposers = scene._runtimeBuilds?.pendingDisposers(mesh) ?? scene._meshDisposables.get(mesh);
+            if (disposers) {
+                activeDisposers.push(disposers);
+            }
+        }
+    }
+    if (activeDisposers.length === 0) {
+        _releaseMaterialState(scene, state);
+        return;
+    }
+    let remaining = activeDisposers.length;
+    for (const disposers of activeDisposers) {
+        let completed = false;
+        disposers.push(() => {
+            if (completed) {
+                return;
+            }
+            completed = true;
+            if (--remaining === 0) {
+                _releaseMaterialState(scene, state);
+            }
+        });
+    }
+}
+
+function _clearSceneMaterials(scene: SceneContext, state: ScenePluginState): void {
+    for (const materialState of state._materials.values()) {
+        _releaseMaterialState(scene, materialState);
+    }
+    state._materials.clear();
+}
+
+function _queueBindingRebuild(scene: SceneContext, mat: StandardMaterialProps): void {
+    if (!scene._built) {
+        return;
+    }
+    for (const mesh of scene.meshes) {
+        if (mesh.material && getMaterialSource(mesh.material) === mat) {
+            enqueueMaterialSwap(scene, mesh);
+        }
+    }
+}
+
+function _sceneState(scene: SceneContext): ScenePluginState {
+    const states = (_sceneStates ??= new WeakMap());
+    let state = states.get(scene);
+    if (!state) {
+        const created: ScenePluginState = {
+            _materials: new Map(),
+            _refresh: () => refreshStdPluginUbos(scene),
+        };
+        states.set(scene, created);
+        scene._disposables.push(() => {
+            _clearSceneMaterials(scene, created);
+            states.delete(scene);
+        });
+        state = created;
+    }
+    return state;
 }
 
 const stdPluginExt: StdExt = {
@@ -109,16 +156,17 @@ const stdPluginExt: StdExt = {
         const idx = (features >>> PLUGIN_INDEX_SHIFT) & PLUGIN_INDEX_MASK;
         return _indexToEntry?.get(idx)?._fragment ?? { _id: "plugin-0" };
     },
-    _bind(mat: StandardMaterialProps, entries: GPUBindGroupEntry[], b: number): number {
-        const plugins = (mat as StandardMaterialProps & { plugins?: MaterialPlugin[] }).plugins;
+    _bind(mat: StandardMaterialProps, entries: GPUBindGroupEntry[], b: number, _mesh, scene): number {
+        const source = getMaterialSource(mat) as StandardMaterialProps;
+        const plugins = source.plugins;
         if (!plugins?.length) {
             return b;
         }
         // The self-managed UBO is declared first in the plugin fragment's
         // bindings (before any textures), so it must be bound first here too.
-        const entry = _entryFor(plugins);
-        if (entry?._uboBuffer) {
-            entries.push({ binding: b++, resource: { buffer: entry._uboBuffer } });
+        const state = scene ? _sceneStates?.get(scene)?._materials.get(source) : undefined;
+        if (state?._uboBuffer) {
+            entries.push({ binding: b++, resource: { buffer: state._uboBuffer } });
         }
         return bindPluginTextures(plugins, entries, b);
     },
@@ -137,26 +185,99 @@ const stdPluginExt: StdExt = {
  *  into each Standard plugin material's cached feature set. Called from
  *  `enableMaterialPlugins` only.
  *
- *  `meshes` may contain non-Standard (e.g. PBR) materials — those are skipped via
+ *  `scene.meshes` may contain non-Standard (e.g. PBR) materials — those are skipped via
  *  the `_buildGroup` discriminator so their `_renderFeatures` is left untouched
  *  for the PBR build's own `detect`-based feature computation. */
-export function registerStdPlugins(meshes: readonly Mesh[], engine: EngineContext, register: (ext: StdExt) => void): void {
-    _resetState();
+export function registerStdPlugins(scene: SceneContext, register: (ext: StdExt) => void): (deltaMs: number) => void {
     register(stdPluginExt);
-    for (const m of meshes) {
-        bakeStdPluginMaterial(m.material as StandardMaterialProps | null, engine);
+    const state = _sceneState(scene);
+    const materials = new Set<StandardMaterialProps>();
+    for (const m of scene.meshes) {
+        const mat = m.material as StandardMaterialProps | null;
+        if (mat?._buildGroup === getStandardGroupBuilder()) {
+            materials.add(mat);
+        }
     }
+    for (const [mat, materialState] of state._materials) {
+        if (!materials.has(mat)) {
+            state._materials.delete(mat);
+            _releaseMaterialState(scene, materialState);
+        }
+    }
+    for (const mat of materials) {
+        if (mat.plugins?.length || state._materials.has(mat)) {
+            bakeStdPluginMaterial(mat, scene);
+        }
+    }
+    return state._refresh;
 }
 
-/** Bake the Standard material-plugin signature bits into a material loaded after
- *  `enableMaterialPlugins(scene)` walked the scene. Call after assigning
- *  `mat.plugins` and before the material's mesh first renders. PBR materials do
- *  not need this helper because their plugin bridge detects signatures during
- *  renderable construction. */
-export function bakeStdPluginMaterial(mat: StandardMaterialProps | null | undefined, engine: EngineContext): void {
-    if (!mat?.plugins?.length || mat._buildGroup !== getStandardGroupBuilder()) {
+/**
+ * Bake a Standard material's plugin signature and per-material uniform buffer.
+ *
+ * Call this after assigning plugins to a Standard material created after
+ * {@link registerStdPlugins} has walked the scene, and before its mesh first renders.
+ */
+export function bakeStdPluginMaterial(mat: StandardMaterialProps | null | undefined, scene: SceneContext): void {
+    if (!mat || mat._buildGroup !== getStandardGroupBuilder()) {
         return;
     }
-    const idx = _indexFor(mat.plugins, engine);
+    const existingSceneState = _sceneStates?.get(scene);
+    const old = existingSceneState?._materials.get(mat);
+    if (!mat.plugins?.length) {
+        if (old) {
+            existingSceneState!._materials.delete(mat);
+            _releaseMaterialStateAfterBindings(scene, mat, old);
+            mat._renderFeatures = undefined;
+            _queueBindingRebuild(scene, mat);
+        }
+        return;
+    }
+    const sceneState = existingSceneState ?? _sceneState(scene);
+    const plugins = mat.plugins;
+    const idx = _indexFor(plugins);
+    const uboSpec = _indexToEntry?.get(idx)?._uboSpec ?? null;
+    let uboBuffer: GPUBuffer | null = null;
+    if (uboSpec && uboSpec._totalBytes > 0) {
+        const data = new Float32Array(uboSpec._totalBytes / 4);
+        writePluginUbo(plugins, data, uboSpec._offsets);
+        uboBuffer = createUniformBuffer(scene.surface.engine, data, "plugin-ubo");
+    }
+    const state: MaterialPluginState = {
+        _plugins: plugins,
+        _uboBuffer: uboBuffer,
+        _uboSpec: uboSpec,
+        _dynamic: enabledPlugins(plugins).some((plugin) => plugin.dynamic === true),
+        _engine: scene.surface.engine,
+    };
+    if (old) {
+        mat._renderFeatures = undefined;
+        _releaseMaterialStateAfterBindings(scene, mat, old);
+    }
+    sceneState._materials.set(mat, state);
     mat._renderFeatures = { features: _computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT) };
+    _queueBindingRebuild(scene, mat);
+}
+
+let _uboScratch: Float32Array | null = null;
+
+/** Re-upload dynamic Standard plugin UBO values for one scene. */
+export function refreshStdPluginUbos(scene: SceneContext): void {
+    const sceneState = _sceneStates?.get(scene);
+    if (!sceneState) {
+        return;
+    }
+    for (const state of sceneState._materials.values()) {
+        if (!state._dynamic || !state._uboBuffer || !state._uboSpec) {
+            continue;
+        }
+        const floats = state._uboSpec._totalBytes / 4;
+        if (!_uboScratch || _uboScratch.length < floats) {
+            _uboScratch = new Float32Array(floats);
+        } else {
+            _uboScratch.fill(0, 0, floats);
+        }
+        writePluginUbo(state._plugins, _uboScratch, state._uboSpec._offsets);
+        state._engine._device.queue.writeBuffer(state._uboBuffer, 0, _uboScratch.buffer, 0, state._uboSpec._totalBytes);
+    }
 }

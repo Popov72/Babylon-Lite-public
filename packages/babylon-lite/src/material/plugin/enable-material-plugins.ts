@@ -6,12 +6,9 @@
  * always-fetched engine graph references the plugin bridges. A scene only pulls
  * in plugin code when the application imports and calls `enableMaterialPlugins`.
  *
- * This is what keeps plugin-free scenes BYTE-IDENTICAL to a build without the
- * plugin system at all: the shared PBR/Standard renderable and group-builder
- * modules carry zero plugin-specific code; they merely walk their generic
- * extension registries. `enableMaterialPlugins` registers the plugin bridges
- * into those global registries, and the pre-existing hook loops invoke them with
- * no shared-code changes.
+ * Shared PBR/Standard renderables carry no plugin implementation; they merely
+ * walk generic extension registries and pass their owning scene to binding hooks.
+ * `enableMaterialPlugins` registers the plugin bridges into those registries.
  *
  * Contract: call AFTER creating materials/meshes and adding them to the scene,
  * and BEFORE `registerScene(scene)`. Attach plugins via
@@ -28,11 +25,10 @@
  */
 
 import type { SceneContext } from "../../scene/scene.js";
-import { onBeforeRender } from "../../scene/scene-core.js";
 import { _registerPbrExt } from "../pbr/pbr-flags.js";
 import { _registerStdExt } from "../standard/standard-flags.js";
 import { registerPbrPlugins } from "./pbr-plugin-bridge.js";
-import { refreshStdPluginUbos, registerStdPlugins } from "./std-plugin-bridge.js";
+import { registerStdPlugins } from "./std-plugin-bridge.js";
 
 /**
  * Enable material-plugin support for `scene`.
@@ -49,9 +45,12 @@ import { refreshStdPluginUbos, registerStdPlugins } from "./std-plugin-bridge.js
  */
 export function enableMaterialPlugins(scene: SceneContext): void {
     registerPbrPlugins(_registerPbrExt);
-    const engine = scene.surface.engine;
-    registerStdPlugins(scene.meshes, engine, _registerStdExt);
-    // Per-frame re-upload of DYNAMIC Standard plugin UBOs (e.g. an animating liquefy front). No-op
-    // when no dynamic Standard plugin exists, so static-plugin scenes stay byte-identical.
-    onBeforeRender(scene, () => refreshStdPluginUbos(engine));
+    const refresh = registerStdPlugins(scene, _registerStdExt);
+    // Public onBeforeRender() callbacks use unshift(), so appending keeps the upload
+    // after plugin-value mutations regardless of whether they register before or after us.
+    const previous = scene._beforeRender.indexOf(refresh);
+    if (previous >= 0) {
+        scene._beforeRender.splice(previous, 1);
+    }
+    scene._beforeRender.push(refresh);
 }
