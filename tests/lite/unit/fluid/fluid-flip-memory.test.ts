@@ -328,7 +328,7 @@ describe("FLIP particle dispatch", () => {
         expect(renderer).toContain("u.colorAbsorption.rgb * scatterAmount * 0.28");
         expect(renderer).toContain("let reflectionHit = traceOpaqueScene(");
         expect(renderer).toContain("depthPyramid = createDepthPyramid");
-        expect(renderer).toContain('depthPyramid!.build(depthSource, engine._currentEncoder, () => profiler?.pass("Surface"))');
+        expect(renderer).toContain("depthPyramid!.build(depthSource, engine._currentEncoder)");
         expect(renderer).toContain("{ binding: 7, resource: { buffer: surface.liquidSdfBuffer } }");
         const depthPyramid = readFileSync(resolve(process.cwd(), "packages/babylon-lite/src/frame-graph/depth-pyramid.ts"), "utf8");
         expect(depthPyramid).toContain("let extraX=(sd.x&1)==1");
