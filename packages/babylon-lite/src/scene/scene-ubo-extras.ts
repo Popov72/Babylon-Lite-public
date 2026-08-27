@@ -35,7 +35,7 @@ function writeClipPlaneUbo(data: Float32Array, scene: SceneContext): void {
  *  (offset 36) and spherical harmonics (offsets 40–75). */
 function writeEnvUbo(data: Float32Array, scene: SceneContext): void {
     data[36] = scene._environmentRotation ?? 0;
-    const sh = scene._envTextures?._sphericalHarmonics;
+    const sh = scene._envTextures?.sphericalHarmonics;
     if (sh) {
         data.set(sh, 40);
     }

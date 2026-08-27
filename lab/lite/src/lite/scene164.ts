@@ -110,7 +110,7 @@ async function main(): Promise<void> {
             canvas.dataset.deviceRecovered = "true";
             canvas.dataset.deviceReplaced = String(engine._device !== oldDevice);
             canvas.dataset.environmentIdentityPreserved = String(scene._envTextures === environmentIdentity);
-            canvas.dataset.environmentRebuilt = String(scene._envTextures?._specularCube !== oldEnvironment);
+            canvas.dataset.environmentRebuilt = String(scene._envTextures?.specularCube !== oldEnvironment);
             canvas.dataset.fallbackRebuilt = String(engine._pbrFallbackTex?.texture !== oldFallback);
             canvas.dataset.shadowRebuilt = String(light.shadowGenerator?._depthTexture !== oldShadow);
             // The loader-owned HDR skybox is not reachable from any material, so a recovery that
@@ -205,7 +205,7 @@ async function main(): Promise<void> {
     await registerSceneWithShadowSupport(scene);
     await startEngine(engine);
     environmentIdentity = scene._envTextures;
-    oldEnvironment = scene._envTextures!._specularCube;
+    oldEnvironment = scene._envTextures!.specularCube;
     oldFallback = engine._pbrFallbackTex!.texture;
     oldShadow = light.shadowGenerator._depthTexture;
     oldRenderableCount = scene._renderables.length;

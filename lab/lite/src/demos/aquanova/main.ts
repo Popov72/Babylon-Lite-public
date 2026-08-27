@@ -2459,7 +2459,7 @@ export async function main(): Promise<void> {
     // file's `render` block instead; see applyRenderSetting.
     surfaceTask.setDirLight([-0.4, -0.82, -0.45]);
     applyFluidEnvironment = (environment) => {
-        surfaceTask.setEnvMap({ view: environment._specularCubeView, sampler: environment._cubeSampler });
+        surfaceTask.setEnvMap({ view: environment.specularCubeView, sampler: environment.cubeSampler });
     };
     if (fluidEnvironment) applyFluidEnvironment(fluidEnvironment);
     addTask(scene, surfaceTask);

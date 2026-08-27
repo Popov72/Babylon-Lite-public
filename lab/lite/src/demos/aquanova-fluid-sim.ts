@@ -965,8 +965,8 @@ async function main(): Promise<void> {
                 localEnvironmentController.updatePoi([cam.position.x, cam.position.y, cam.position.z]);
                 const fluidEnvironment = localEnvironmentController.dominantEnvironment();
                 if (fluidEnvironment) {
-                    surfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
-                    polygonSurfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
+                    surfaceTask.setEnvMap({ view: fluidEnvironment.specularCubeView, sampler: fluidEnvironment.cubeSampler });
+                    polygonSurfaceTask.setEnvMap({ view: fluidEnvironment.specularCubeView, sampler: fluidEnvironment.cubeSampler });
                 }
             }
 
@@ -1638,8 +1638,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
-        polygonSurfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
+        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+        polygonSurfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
     };
     const applyEnv = async (key: string): Promise<void> => {
         await shipManifestReady; // ship grading comes from the manifest — read it before building a slot
@@ -4861,8 +4861,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             if (blend.dominantProbeId !== previousProbe) {
                 const fluidEnvironment = localEnvironmentController.dominantEnvironment();
                 if (fluidEnvironment) {
-                    surfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
-                    polygonSurfaceTask.setEnvMap({ view: fluidEnvironment._specularCubeView, sampler: fluidEnvironment._cubeSampler });
+                    surfaceTask.setEnvMap({ view: fluidEnvironment.specularCubeView, sampler: fluidEnvironment.cubeSampler });
+                    polygonSurfaceTask.setEnvMap({ view: fluidEnvironment.specularCubeView, sampler: fluidEnvironment.cubeSampler });
                 }
             }
         }

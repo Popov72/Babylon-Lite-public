@@ -15,32 +15,14 @@ export interface EnvironmentTextures {
     cubeSampler: GPUSampler;
     brdfSampler: GPUSampler;
     irradianceSH: Float32Array;
-    /** Pre-scaled SH coefficients for shader, 36 floats in stride-4 layout. */
+    /** Pre-scaled SH coefficients for shader, 36 floats in stride-4 layout:
+     *  [L00.rgb, 0, L1_1.rgb, 0, L10.rgb, 0, L11.rgb, 0, L2_2.rgb, 0,
+     *   L2_1.rgb, 0, L20.rgb, 0, L21.rgb, 0, L22.rgb, 0] */
     sphericalHarmonics: Float32Array;
-    /** LOD generation scale for specular IBL sampling. */
+    /** LOD generation scale for specular IBL sampling. Default 0.8 (matches BJS BaseTexture). */
     lodGenerationScale: number;
     /** LOD generation offset for prefiltered cubemap sampling. Default 0. */
     lodGenerationOffset?: number;
-    /** @internal */
-    _specularCube: GPUTexture;
-    /** @internal */
-    _specularCubeView: GPUTextureView;
-    /** @internal */
-    _brdfLut: GPUTexture;
-    /** @internal */
-    _brdfLutView: GPUTextureView;
-    /** @internal */
-    _cubeSampler: GPUSampler;
-    /** @internal */
-    _brdfSampler: GPUSampler;
-    /** @internal */
-    _irradianceSH: Float32Array;
-    /** @internal */
-    _sphericalHarmonics: Float32Array;
-    /** @internal */
-    _lodGenerationScale: number;
-    /** @internal */
-    _lodGenerationOffset?: number;
 }
 
 /**

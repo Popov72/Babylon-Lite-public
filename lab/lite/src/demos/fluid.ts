@@ -1341,8 +1341,8 @@ return vec4f(color.rgb+b*bloomMergeParams.weight,color.a);}`,
             scene._renderableVersion++;
             activeSky = slot.sky;
         }
-        surfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
-        polygonSurfaceTask.setEnvMap({ view: slot.env._specularCubeView, sampler: slot.env._cubeSampler });
+        surfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
+        polygonSurfaceTask.setEnvMap({ view: slot.env.specularCubeView, sampler: slot.env.cubeSampler });
     }
 
     function setHostSkyVisible(visible: boolean): void {

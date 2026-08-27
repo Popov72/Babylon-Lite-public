@@ -85,30 +85,16 @@ export function assembleEnvironmentTextures(
     lodGenerationScale: number,
     engine: EngineContext
 ): EnvironmentTextures {
-    const specularCubeView = specularCube.createView({ dimension: "cube" });
-    const cubeSampler = engine._device.createSampler(_trilinearDesc);
-    const brdfLutView = brdfLut.createView();
-    const brdfSampler = engine._device.createSampler(_bilinearDesc);
-    const sphericalHarmonics = polynomialToPreScaledHarmonics(irradianceSH);
     return {
         specularCube,
-        specularCubeView,
+        specularCubeView: specularCube.createView({ dimension: "cube" }),
         brdfLut,
-        brdfLutView,
-        cubeSampler,
-        brdfSampler,
+        brdfLutView: brdfLut.createView(),
+        cubeSampler: engine._device.createSampler(_trilinearDesc),
+        brdfSampler: engine._device.createSampler(_bilinearDesc),
         irradianceSH,
-        sphericalHarmonics,
+        sphericalHarmonics: polynomialToPreScaledHarmonics(irradianceSH),
         lodGenerationScale,
-        _specularCube: specularCube,
-        _specularCubeView: specularCubeView,
-        _brdfLut: brdfLut,
-        _brdfLutView: brdfLutView,
-        _cubeSampler: cubeSampler,
-        _brdfSampler: brdfSampler,
-        _irradianceSH: irradianceSH,
-        _sphericalHarmonics: sphericalHarmonics,
-        _lodGenerationScale: lodGenerationScale,
     };
 }
 
@@ -176,7 +162,7 @@ export async function resolveImage(json: any, binChunk: DataView, imageIdx: numb
  *  (offset 36) and spherical-harmonics slice (offsets 40–75). */
 function writeEnvUbo(data: Float32Array, scene: SceneContext): void {
     data[36] = scene._environmentRotation ?? 0;
-    const sh = scene._envTextures?._sphericalHarmonics;
+    const sh = scene._envTextures?.sphericalHarmonics;
     if (sh) {
         data.set(sh, 40);
     }

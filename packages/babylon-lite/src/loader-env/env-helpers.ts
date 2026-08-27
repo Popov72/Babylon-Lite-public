@@ -35,29 +35,15 @@ export function assembleEnvironmentTextures(
     engine: EngineContext,
     sphericalHarmonics?: Float32Array
 ): EnvironmentTextures {
-    const specularCubeView = specularCube.createView({ dimension: "cube" });
-    const cubeSampler = getTrilinearSampler(engine);
-    const brdfLutView = brdfLut.createView();
-    const brdfSampler = getBilinearSampler(engine);
-    const harmonics = sphericalHarmonics ?? polynomialToPreScaledHarmonics(irradianceSH);
     return {
         specularCube,
-        specularCubeView,
+        specularCubeView: specularCube.createView({ dimension: "cube" }),
         brdfLut,
-        brdfLutView,
-        cubeSampler,
-        brdfSampler,
+        brdfLutView: brdfLut.createView(),
+        cubeSampler: getTrilinearSampler(engine),
+        brdfSampler: getBilinearSampler(engine),
         irradianceSH,
-        sphericalHarmonics: harmonics,
+        sphericalHarmonics: sphericalHarmonics ?? polynomialToPreScaledHarmonics(irradianceSH),
         lodGenerationScale,
-        _specularCube: specularCube,
-        _specularCubeView: specularCubeView,
-        _brdfLut: brdfLut,
-        _brdfLutView: brdfLutView,
-        _cubeSampler: cubeSampler,
-        _brdfSampler: brdfSampler,
-        _irradianceSH: irradianceSH,
-        _sphericalHarmonics: harmonics,
-        _lodGenerationScale: lodGenerationScale,
     };
 }
