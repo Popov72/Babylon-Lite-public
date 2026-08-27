@@ -188,10 +188,21 @@ steps matches the animation and sprite managers.
 
 ---
 
+## Rigid-body angular locks
+
+`lockPhysicsBodyRotationAxes(world, body, axes)` locks selected body-local
+axes after the collision shape and mass properties have been configured. Havok
+represents a locked angular degree of freedom with a zero inertia component, so
+the helper reads the body's current mass properties, zeros only the requested
+`"x"`, `"y"`, or `"z"` components, aligns the inertia frame with the body, and
+preserves its mass, centre of mass, and unlocked inertia magnitudes.
+
+---
+
 ## Feature modules (opt-in)
 
 - **Collision events** (`havok-collision.ts`): `setPhysicsBodyCollisionEventsEnabled`
-  + `onPhysicsCollision` register an after-step drain on `world._afterStep`.
+  and `onPhysicsCollision` register an after-step drain on `world._afterStep`.
 - **Triggers** (`havok-trigger.ts`): `setPhysicsShapeIsTrigger`, `onPhysicsTrigger`,
   and body-aware `onPhysicsTriggerBodies`; both subscriptions return a disposer.
   `onPhysicsTrigger` previously returned `void`; callers that ignore its return value

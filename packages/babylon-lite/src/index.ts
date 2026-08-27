@@ -930,6 +930,7 @@ export {
     getPhysicsBodyLinearVelocity,
     getPhysicsBodyAngularVelocity,
     setPhysicsBodyAngularVelocity,
+    lockPhysicsBodyRotationAxes,
     setPhysicsBodyMotionType,
     setPhysicsBodyTransform,
     removePhysicsBody,
@@ -951,6 +952,7 @@ export type {
     PhysicsShapeParameters,
     PhysicsAggregateOptions,
     PhysicsMassProperties,
+    PhysicsRotationAxis,
     PhysicsConstraintOptions,
     PhysicsConstraintLimit,
 } from "./physics/havok.js";
