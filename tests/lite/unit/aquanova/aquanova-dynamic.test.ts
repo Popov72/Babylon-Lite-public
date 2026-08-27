@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DYNAMIC_MASS, resolveDynamicMass } from "../../../../lab/lite/src/demos/aquanova/behaviors/dynamic";
+import { DEFAULT_DYNAMIC_MASS, resolveDynamicMass, resolveLockedRotationAxes } from "../../../../lab/lite/src/demos/aquanova/behaviors/dynamic";
 
 describe("Aquanova dynamic behavior", () => {
     it("defaults mass to 10 kilograms and accepts a positive override", () => {
@@ -10,5 +10,12 @@ describe("Aquanova dynamic behavior", () => {
     it("rejects non-positive and non-finite masses", () => {
         expect(() => resolveDynamicMass({ mass: 0 })).toThrow("dynamic.mass");
         expect(() => resolveDynamicMass({ mass: Number.POSITIVE_INFINITY })).toThrow("dynamic.mass");
+    });
+
+    it("validates locked rotation axes", () => {
+        expect(resolveLockedRotationAxes({})).toEqual([]);
+        expect(resolveLockedRotationAxes({ lockedRotationAxes: ["x", "z"] })).toEqual(["x", "z"]);
+        expect(() => resolveLockedRotationAxes({ lockedRotationAxes: ["x", "x"] })).toThrow("dynamic.lockedRotationAxes");
+        expect(() => resolveLockedRotationAxes({ lockedRotationAxes: ["invalid"] as never })).toThrow("dynamic.lockedRotationAxes");
     });
 });

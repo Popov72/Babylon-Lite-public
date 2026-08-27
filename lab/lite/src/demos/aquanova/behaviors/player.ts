@@ -1,5 +1,5 @@
 import { CharacterSupportedState, isGizmoInteracting, pickAsync } from "babylon-lite";
-import type { Mesh } from "babylon-lite";
+import type { Mesh, PickOptions } from "babylon-lite";
 import { CROUCH_CAPSULE_HEIGHT, CROUCH_CAPSULE_RADIUS } from "../constants.js";
 import type { FluidElectricityRegistration, FluidParticleAabb } from "../fluid-runtime.js";
 import type { AquanovaGameContext, JumpApertureAssist } from "./game-context.js";
@@ -138,6 +138,7 @@ export class PlayerBehavior implements Behavior<"player"> {
     public readonly mesh: Mesh;
     private readonly entityName: string;
     private readonly context: AquanovaGameContext;
+    private readonly weaponPickOptions: PickOptions;
     private readonly keys = new Set<string>();
     private readonly freePosition = { x: 0, y: 0, z: 0 };
     private readonly walkVelocity = { x: 0, z: 0 };
@@ -190,6 +191,7 @@ export class PlayerBehavior implements Behavior<"player"> {
         this.mesh = mesh;
         this.entityName = entityName;
         this.context = context;
+        this.weaponPickOptions = { filter: context.isCollisionActive };
         const characterStrength = config.characterStrength ?? DEFAULT_CHARACTER_STRENGTH;
         if (!Number.isFinite(characterStrength) || characterStrength < 0) {
             throw new Error(`[aquanova] player.characterStrength must be a finite non-negative number, received ${String(characterStrength)}`);
@@ -385,7 +387,7 @@ export class PlayerBehavior implements Behavior<"player"> {
     public async fire(requireHeldTrigger = false, triggerSequence = ++this.weaponTriggerSequence): Promise<void> {
         if (!requireHeldTrigger) this.context.events.emit("weaponTriggerPressed", { held: false });
         const [pickX, pickY] = this.crosshairPickCoordinates();
-        const info = await pickAsync(this.context.getPicker(), pickX, pickY);
+        const info = await pickAsync(this.context.getPicker(), pickX, pickY, this.weaponPickOptions);
         const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;
         const activeTrigger = triggerSequence === this.weaponTriggerSequence && (!requireHeldTrigger || this.weaponTriggerHeld);
         const justReleasedTrigger = requireHeldTrigger && !this.weaponTriggerHeld && this.weaponTriggerSequence === triggerSequence + 1;
@@ -418,7 +420,7 @@ export class PlayerBehavior implements Behavior<"player"> {
         const triggerSequence = this.weaponTriggerSequence;
         const [pickX, pickY] = this.crosshairPickCoordinates();
         this.weaponAimPickPending = true;
-        void pickAsync(this.context.getPicker(), pickX, pickY)
+        void pickAsync(this.context.getPicker(), pickX, pickY, this.weaponPickOptions)
             .then((info) => {
                 if (!this.weaponTriggerHeld || triggerSequence !== this.weaponTriggerSequence) return;
                 const mesh = info.hit ? (info.pickedMesh as Mesh | null) : null;

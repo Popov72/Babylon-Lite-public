@@ -14,6 +14,8 @@ export interface FluidSimulationRegistration {
     readonly shutdownDuration: number;
     readonly shutdownAlphaDecay: number;
     readonly onEmissionComplete?: () => void;
+    readonly onStarted?: () => void;
+    readonly onShutdownComplete?: () => void;
 }
 
 export interface FluidSimulationBackend {

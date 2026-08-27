@@ -1,12 +1,12 @@
 import type { Mesh, PhysicsWorld, SceneContext } from "babylon-lite";
 import { BehaviorManager as GenericBehaviorManager } from "../behavior-system/behavior-manager.js";
 import * as behaviorConstructors from "./behavior-constructors.js";
-import { resolveDynamicMass } from "./dynamic.js";
+import { resolveDynamicMass, resolveLockedRotationAxes } from "./dynamic.js";
 import { AquanovaEventManager } from "./aquanova-event-manager.js";
 import type { AquanovaGameContext } from "./game-context.js";
 import { AquanovaFluidRuntime } from "../fluid-runtime.js";
 import { PlayerBehavior } from "./player.js";
-import type { Behavior, BehaviorAssignment, BehaviorPresets, Entities, LiquefiableBehaviorConfig } from "./types.js";
+import type { Behavior, BehaviorAssignment, BehaviorPresets, DynamicRotationAxis, Entities, LiquefiableBehaviorConfig } from "./types.js";
 import { WeaponInventory } from "./weapon-inventory.js";
 
 export interface AquanovaBehaviorManagerOptions {
@@ -40,7 +40,7 @@ export class AquanovaBehaviorManager {
     public readonly movableMeshes = new Set<Mesh>();
     public readonly liquefiableMeshes = new Set<Mesh>();
     public readonly dissolvableMeshes = new Set<Mesh>();
-    public readonly dissolvableInstanceIds = new Set<string>();
+    public readonly dynamicInstanceIds = new Set<string>();
     public readonly fluidSimulations = new AquanovaFluidRuntime();
     private readonly core: GenericBehaviorManager<AquanovaGameContext>;
     private readonly entityNameOf: (mesh: Mesh) => string;
@@ -48,6 +48,7 @@ export class AquanovaBehaviorManager {
     private readonly liquefiableConfigByMesh = new Map<Mesh, LiquefiableBehaviorConfig>();
     private readonly linkedEntityNamesByEntityName = new Map<string, readonly string[]>();
     private readonly dynamicMassByMesh = new Map<Mesh, number>();
+    private readonly lockedRotationAxesByMesh = new Map<Mesh, readonly DynamicRotationAxis[]>();
     private readonly weaponInventory = new WeaponInventory();
     private started = false;
 
@@ -102,17 +103,18 @@ export class AquanovaBehaviorManager {
             const dissolvable = liquefactionGraph.linkedNamesByEntityName.has(entityName);
             if (dissolvable) {
                 this.dissolvableMeshes.add(mesh);
-                const instanceId = classification.instanceIdOf(mesh);
-                if (instanceId) {
-                    this.dissolvableInstanceIds.add(instanceId);
-                }
             }
             if (dissolvable || explicitlyDynamic) {
                 this.dynamicMeshes.add(mesh);
+                const instanceId = classification.instanceIdOf(mesh);
+                if (instanceId) {
+                    this.dynamicInstanceIds.add(instanceId);
+                }
             }
             if (dynamicConfig) {
                 this.movableMeshes.add(mesh);
                 this.dynamicMassByMesh.set(mesh, resolveDynamicMass(dynamicConfig));
+                this.lockedRotationAxesByMesh.set(mesh, resolveLockedRotationAxes(dynamicConfig));
             }
             if (liquefiableConfig) {
                 this.liquefiableMeshes.add(mesh);
@@ -157,6 +159,23 @@ export class AquanovaBehaviorManager {
 
     public getDynamicMass(mesh: Mesh): number | null {
         return this.dynamicMassByMesh.get(mesh) ?? null;
+    }
+
+    public getLockedRotationAxes(mesh: Mesh): readonly DynamicRotationAxis[] {
+        return this.lockedRotationAxesByMesh.get(mesh) ?? [];
+    }
+
+    public retireEntity(entityName: string, meshes: readonly Mesh[]): void {
+        for (const mesh of meshes) {
+            this.dynamicMeshes.delete(mesh);
+            this.movableMeshes.delete(mesh);
+            this.liquefiableMeshes.delete(mesh);
+            this.dissolvableMeshes.delete(mesh);
+            this.liquefiableConfigByMesh.delete(mesh);
+            this.dynamicMassByMesh.delete(mesh);
+            this.lockedRotationAxesByMesh.delete(mesh);
+        }
+        this.core.retireEntityInstances(entityName, (behavior) => behavior.retainOnEntityRetire === true);
     }
 
     public getLinkedEntityNames(mesh: Mesh): readonly string[] {
@@ -268,10 +287,11 @@ export class AquanovaBehaviorManager {
         this.movableMeshes.clear();
         this.liquefiableMeshes.clear();
         this.dissolvableMeshes.clear();
-        this.dissolvableInstanceIds.clear();
+        this.dynamicInstanceIds.clear();
         this.liquefiableConfigByMesh.clear();
         this.linkedEntityNamesByEntityName.clear();
         this.dynamicMassByMesh.clear();
+        this.lockedRotationAxesByMesh.clear();
     }
 }
 

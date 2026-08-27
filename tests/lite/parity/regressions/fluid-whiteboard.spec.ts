@@ -93,6 +93,62 @@ test("screen-space surface switches to Ocean PBR", async ({ page }) => {
     expect(changedPixels).toBeGreaterThan(1_000);
 });
 
+test("grid bounds can render as transparent solid faces", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/demo-fluid.html");
+    await waitForCanvasReady(page, { timeout: 60_000, label: "Fluid demo" });
+
+    const canvas = page.locator("canvas");
+    await page.keyboard.press("p");
+    await expect(canvas).toHaveAttribute("data-paused", "true");
+    const solidFaces = page.getByLabel("Solid faces");
+    await expect(solidFaces).toBeVisible();
+    await expect(solidFaces).toBeDisabled();
+    await setCheckboxByInfo(page, "Displays the active solver's simulation-domain bounding box.", true);
+    await expect(solidFaces).toBeEnabled();
+    await setCheckboxByInfo(page, "Displays the active solver's simulation-domain bounding box.", false);
+    await expect(solidFaces).toBeDisabled();
+    await page.keyboard.press("F8");
+    await page.waitForTimeout(250);
+    const hidden = PNG.sync.read(await canvas.screenshot());
+
+    await setCheckboxByInfo(page, "Displays the active solver's simulation-domain bounding box.", true);
+    await page.waitForTimeout(250);
+    const wireframe = PNG.sync.read(await canvas.screenshot());
+
+    await setCheckboxByInfo(page, "Shows transparent, depth-tested faces instead of only the simulation-domain wireframe.", true);
+    await expect(canvas).toHaveAttribute("data-show-grid-bounds-solid", "true");
+    await page.waitForTimeout(250);
+    const solid = PNG.sync.read(await canvas.screenshot());
+
+    let filledPixels = 0;
+    for (let offset = 0; offset < hidden.data.length; offset += 4) {
+        const wireDifference =
+            Math.abs(hidden.data[offset]! - wireframe.data[offset]!) +
+            Math.abs(hidden.data[offset + 1]! - wireframe.data[offset + 1]!) +
+            Math.abs(hidden.data[offset + 2]! - wireframe.data[offset + 2]!);
+        const solidDifference =
+            Math.abs(hidden.data[offset]! - solid.data[offset]!) +
+            Math.abs(hidden.data[offset + 1]! - solid.data[offset + 1]!) +
+            Math.abs(hidden.data[offset + 2]! - solid.data[offset + 2]!);
+        if (wireDifference <= 6 && solidDifference > 24) {
+            filledPixels++;
+        }
+    }
+    expect(filledPixels).toBeGreaterThan(50_000);
+
+    const colorAt = (x: number, y: number): [number, number, number] => {
+        const offset = (Math.floor(y * solid.height) * solid.width + Math.floor(x * solid.width)) * 4;
+        return [solid.data[offset]!, solid.data[offset + 1]!, solid.data[offset + 2]!];
+    };
+    const leftFace = colorAt(0.1, 0.45);
+    const backFace = colorAt(0.5, 0.2);
+    const floorFace = colorAt(0.5, 0.85);
+    expect(leftFace[0] - leftFace[1]).toBeGreaterThan(30);
+    expect(backFace[2] - backFace[0]).toBeGreaterThan(30);
+    expect(floorFace[1] - floorFace[0]).toBeGreaterThan(30);
+});
+
 test("FLIP stage timing survives three substeps", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/demo-fluid.html");
@@ -214,7 +270,12 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await setGridVector(page, "Exact world-space X/Y/Z extents", [10, 8, 12]);
     await setRangeByInfo(page, "Scales the SIMULATION particle radius", 0.73);
     await setRangeByInfo(page, "Downward acceleration applied to every particle", 3.2);
+    const solidGridBounds = page.getByLabel("Solid faces");
+    await expect(solidGridBounds).toBeVisible();
+    await expect(solidGridBounds).toBeDisabled();
     await setCheckboxByInfo(page, "Displays the active solver's simulation-domain bounding box.", true);
+    await expect(solidGridBounds).toBeEnabled();
+    await solidGridBounds.check();
     await setCheckboxByInfo(page, "Shows position and scale gizmos together.", true);
 
     await expect(canvas).toHaveAttribute("data-emitter-count", "1");
@@ -224,6 +285,7 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-physics-particle-size", "0.73");
     await expect(canvas).toHaveAttribute("data-gravity", "3.2");
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
+    await expect(canvas).toHaveAttribute("data-show-grid-bounds-solid", "true");
     await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
 
     await methodSelect.selectOption("MLS-MPM");
@@ -236,6 +298,7 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-physics-particle-size", "0.73");
     await expect(canvas).toHaveAttribute("data-gravity", "3.2");
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
+    await expect(canvas).toHaveAttribute("data-show-grid-bounds-solid", "true");
     await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
     await expect(page.getByText(/^Stiffness \(EOS\)/)).toBeVisible();
     await expect(page.getByText(/^Relaxation ε/)).toHaveCount(0);
@@ -255,6 +318,7 @@ test("Whiteboard preserves authored state across fluid methods", async ({ page }
     await expect(canvas).toHaveAttribute("data-physics-particle-size", "0.48");
     await expect(canvas).toHaveAttribute("data-gravity", "3.2");
     await expect(canvas).toHaveAttribute("data-show-grid-bounds", "true");
+    await expect(canvas).toHaveAttribute("data-show-grid-bounds-solid", "true");
     await expect(canvas).toHaveAttribute("data-grid-gizmo", "true");
     await expect(page.getByText(/^FLIP ratio/)).toBeVisible();
     const advancedNumerical = page.locator('[data-fluid-physics-group="advanced"]');

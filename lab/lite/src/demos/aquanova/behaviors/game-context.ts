@@ -70,6 +70,7 @@ export interface AquanovaGameContext {
     readonly jumpApertureAssist: (forwardX: number, forwardZ: number) => JumpApertureAssist | null;
     readonly getPicker: () => GpuPicker;
     readonly nodeNameOf: (mesh: Mesh) => string;
+    readonly isCollisionActive: (mesh: Mesh) => boolean;
     readonly isLiquefiable: (mesh: Mesh) => boolean;
     readonly getLiquefiableConfig: (mesh: Mesh) => LiquefiableBehaviorConfig | undefined;
     readonly isInspecting: () => boolean;
@@ -80,6 +81,7 @@ export interface AquanovaGameContext {
     readonly weaponPistol: WeaponPistolRuntime;
     readonly playerMaxGrabDistance: () => number;
     readonly dynamicMassOf: (mesh: Mesh) => number | null;
+    readonly retireEntity: (entityName: string, meshes: readonly Mesh[]) => void;
     readonly setCollisionShape: (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration) => void;
     readonly registerIntersectionTrigger: (entityName: string, playerOnly: boolean, callbacks: IntersectionTriggerCallbacks) => IntersectionTriggerRegistration;
     readonly requestFusionResume: () => number | null;

@@ -15,6 +15,7 @@ type WeaponLiquefactorContext = Pick<
     | "events"
     | "sounds"
     | "nodeNameOf"
+    | "isCollisionActive"
     | "weaponInventory"
     | "weaponLiquefactor"
     | "requestFusionResume"
@@ -33,6 +34,7 @@ interface PendingHit {
 
 export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> {
     public readonly name = "weaponLiquefactor";
+    public readonly retainOnEntityRetire = true;
     public readonly mesh: Mesh;
     public readonly config: WeaponLiquefactorBehaviorConfig;
     private readonly context: WeaponLiquefactorContext;
@@ -214,7 +216,8 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         if (!this.equipped || !this.triggerActive) {
             return;
         }
-        const targetMesh = this.context.resolveFusionTarget(mesh, point);
+        const activeMesh = mesh && this.context.isCollisionActive(mesh) ? mesh : null;
+        const targetMesh = this.context.resolveFusionTarget(activeMesh, activeMesh ? point : null);
         if (this.context.fusionTargetLost(targetMesh)) {
             this.context.reverseFusion();
             this.resumeToken = this.context.requestFusionResume();
@@ -294,6 +297,12 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
         if (!this.equipped || !reachedTarget || !this.triggerActive || this.hitDelivered || !this.pendingHit) return;
         const hit = this.pendingHit;
         this.pendingHit = null;
+        if (!this.context.isCollisionActive(hit.mesh)) {
+            this.hitDelivered = false;
+            this.currentAimMesh = null;
+            if (!this.triggerHeld) this.releaseTrigger();
+            return;
+        }
         this.hitDelivered = true;
         let shouldEmitHit = true;
         if (this.resumeToken !== null) {

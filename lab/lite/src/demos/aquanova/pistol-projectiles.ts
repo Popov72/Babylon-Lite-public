@@ -30,7 +30,7 @@ interface ImpactCue {
 
 export interface PistolProjectileRuntime {
     fire(mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null, range: number, speed: number): void;
-    update(deltaMs: number): readonly PistolImpact[];
+    update(deltaMs: number, isCollisionActive?: (mesh: Mesh) => boolean): readonly PistolImpact[];
     clear(): void;
 }
 
@@ -127,7 +127,7 @@ export function createPistolProjectileRuntime(engine: EngineContext, scene: Scen
             projectile.mesh.position.set(...start);
             setMeshVisible(projectile.mesh, true);
         },
-        update(deltaMs) {
+        update(deltaMs, isCollisionActive) {
             const stepMs = Math.max(0, deltaMs);
             for (const cue of impactCues) {
                 if (!cue.active) continue;
@@ -154,10 +154,11 @@ export function createPistolProjectileRuntime(engine: EngineContext, scene: Scen
                 if (progress < 1) continue;
                 projectile.active = false;
                 hide(projectile.mesh);
-                if (projectile.impact) {
-                    showImpactCue(projectile.impact.point);
-                    impacts.push(projectile.impact);
-                    projectile.impact = null;
+                const impact = projectile.impact;
+                projectile.impact = null;
+                if (impact && (!isCollisionActive || isCollisionActive(impact.mesh))) {
+                    showImpactCue(impact.point);
+                    impacts.push(impact);
                 }
             }
             return impacts;

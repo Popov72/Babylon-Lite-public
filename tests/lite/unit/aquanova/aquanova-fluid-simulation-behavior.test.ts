@@ -134,8 +134,14 @@ describe("Aquanova fluidSimulation behavior", () => {
         expect(flowUpdates).toEqual([]);
         const completionEvent = vi.fn();
         events.on("entityEvent", completionEvent);
+        registered[0]?.onStarted?.();
         registered[0]?.onEmissionComplete?.();
-        expect(completionEvent).toHaveBeenCalledWith({ name: "waterfall", event: "emissionComplete" });
+        registered[0]?.onShutdownComplete?.();
+        expect(completionEvent.mock.calls).toEqual([
+            [{ name: "waterfall", event: "startSimulation" }],
+            [{ name: "waterfall", event: "emissionComplete" }],
+            [{ name: "waterfall", event: "endSimulation" }],
+        ]);
 
         events.emit("entityEvent", { name: "waterfall", event: "disable" });
         events.emit("entityEvent", { name: "control-panel", event: "deactivated" });

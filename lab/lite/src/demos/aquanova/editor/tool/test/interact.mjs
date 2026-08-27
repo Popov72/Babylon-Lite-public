@@ -6931,9 +6931,9 @@ const strays = await page.evaluate(async () => {
   const misplaced = await wall(0, 52, "CH_SA");
   const caught = ed.strayChunkMembers();
 
-  // Something out on its own belongs to no chunk at all and has to say so
-  // rather than naming one at random. Two strays in the same chunk also have
-  // to be reported separately rather than vouching for each other.
+  // Something out on its own is legal authored content. Connectivity cannot
+  // distinguish a misplaced wall from a trigger, pickup or simulation trap,
+  // so only the piece that overlaps another chunk remains actionable.
   const lost = await wall(300, 300, "CH_SA");
   const both = ed.strayChunkMembers();
   const stillMine = both.every((s) => s.chunk === "CH_SA");
@@ -6988,8 +6988,8 @@ check(
     JSON.stringify(strays.caught)
 );
 check(
-    "two strays in one chunk are both reported, and one clear of every chunk names none",
-    strays.both.length === 2 && strays.stillMine && strays.both.filter((s) => s.host === "CH_SB").length === 1 && strays.both.filter((s) => s.host === null).length === 1,
+    "an isolated entity is legal, while the one sitting in another chunk remains reported",
+    strays.both.length === 1 && strays.stillMine && strays.both[0].host === "CH_SB",
     JSON.stringify(strays.both)
 );
 check("a mounting offset is not a stray", strays.proud === 1, `${strays.proud} stray(s), expected only the misplaced one`);
@@ -7000,7 +7000,7 @@ check(
 );
 check(
     "the stray-chunk setting silences the check and the Live checks panel",
-    strays.stateOff === false && strays.stateOn === true && !/wrong chunk|touch nothing|sit in/i.test(strays.panelOff) && /sit in CH_SB/.test(strays.panelOn),
+    strays.stateOff === false && strays.stateOn === true && !/wrong chunk|sit in/i.test(strays.panelOff) && /sit in CH_SB/.test(strays.panelOn),
     `off="${strays.panelOff}" on="${strays.panelOn}"`
 );
 
@@ -7061,6 +7061,55 @@ const doorLink = await page.evaluate(async () => {
   return { named: !!link, selected, door: door.id };
 });
 check("a door named in the checks panel is a way to that door", doorLink.named && doorLink.selected.join() === doorLink.door, JSON.stringify(doorLink));
+
+// A behaviour can survive longer than an event source it names. That is a
+// broken subscription, not harmless stale data: name the exact behaviour and
+// make its live owner the way back to the field that needs repairing.
+const missingBehaviorSource = await page.evaluate(async () => {
+  const ed = await import("/js/editor.js");
+  const V = BABYLON.Vector3;
+  const W = "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight";
+  ed.clearAll();
+  ed.select([]);
+  ed.addChunk("CH_SOURCE_CHECK");
+  const carrier = await ed.placeAt(W, new V(0, 0, 0), { silent: true, chunk: "CH_SOURCE_CHECK" });
+  ed.renamePlacement(carrier.id, "CheckCarrier");
+  ed.setBehaviorDef("watchedHide", {
+    base: "hideEntity",
+    events: [{ source: "MissingPanel", name: "activated" }],
+  });
+  ed.addEntityBehavior("CheckCarrier", "watchedHide");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const row = [...document.querySelectorAll("#validation > div")].find((entry) => entry.textContent.includes('Behavior "watchedHide"'));
+  const link = row?.querySelector(".check-ref");
+  const camera = ed.state.camera.position.clone();
+  link?.click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const broken = {
+    text: row?.textContent ?? "",
+    linked: link?.textContent === "CheckCarrier",
+    selected: [...ed.state.selection],
+    framed: BABYLON.Vector3.Distance(camera, ed.state.camera.position) > 1,
+  };
+
+  const source = await ed.placeAt(W, new V(8, 0, 0), { silent: true, chunk: "CH_SOURCE_CHECK" });
+  ed.renamePlacement(source.id, "MissingPanel");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const repaired = ![...document.querySelectorAll("#validation > div")].some((entry) => entry.textContent.includes('Behavior "watchedHide"'));
+  ed.clearAll();
+  ed.select([]);
+  return { ...broken, carrier: carrier.id, repaired };
+});
+check(
+  "a missing behaviour source names the behaviour and links its entity",
+  missingBehaviorSource.text.includes("MissingPanel") &&
+    missingBehaviorSource.linked &&
+    missingBehaviorSource.selected.join() === missingBehaviorSource.carrier &&
+    missingBehaviorSource.framed &&
+    missingBehaviorSource.repaired,
+  JSON.stringify(missingBehaviorSource)
+);
 
 // a negative exposure can only be the old stops format - the slider has never
 // gone below 0.15 - so it is converted rather than clamped up to the floor
@@ -7976,6 +8025,7 @@ const speedStart = await page.evaluate(async () => {
   ed.select([...ed.state.placements.keys()].slice(0, 1));
     return { speed: ed.state.moveSpeed, selection: ed.state.selection.length, cam: ed.state.camera.position.asArray() };
 });
+check("the starting fly speed is 5 m/s", speedStart.speed === 5, `${speedStart.speed} m/s`);
 await page.mouse.down({ button: "right" });
 for (let k = 0; k < 5; k++) {
     await page.mouse.wheel(0, -120);
@@ -8012,7 +8062,7 @@ await page.waitForTimeout(300);
 const speedFloor = await page.evaluate(async () => (await import("/js/editor.js")).state.moveSpeed);
 check("the fly speed is clamped above zero", speedFloor >= 1.5 && speedFloor < 5, `bottomed out at ${speedFloor} m/s`);
 await page.evaluate(async () => {
-    (await import("/js/editor.js")).state.moveSpeed = 42;
+    (await import("/js/editor.js")).state.moveSpeed = 5;
 });
 
 // a plain right-click, with no wheel, must still cancel
@@ -8355,7 +8405,7 @@ const nav = await page.evaluate(async () => {
   };
 });
 check("W flies along the view direction", nav.forward > 1 && nav.wDotFwd > 0.99, `moved ${nav.forward.toFixed(2)} m, W·forward=${nav.wDotFwd.toFixed(3)}`);
-check("translation speed is ~42 m/s", nav.forward > 12 && nav.forward < 25, `${nav.forward.toFixed(1)} m in 0.4 s`);
+check("translation speed is ~5 m/s", nav.forward > 1.5 && nav.forward < 3.5, `${nav.forward.toFixed(1)} m in 0.4 s`);
 check("D goes right, A goes left", nav.dDotRight > 0.99 && nav.aDotRight < -0.99, `D·right=${nav.dDotRight.toFixed(3)}, A·right=${nav.aDotRight.toFixed(3)}`);
 check(
     "Space rises, C descends",
@@ -8401,7 +8451,7 @@ const altMoved = await page.evaluate(async () => {
   const ed = await import("/js/editor.js");
   return BABYLON.Vector3.Distance(window.__altFrom, ed.state.camera.position);
 });
-check("WASD still works after tapping Alt", altMoved > 5, `moved ${altMoved.toFixed(2)} m`);
+check("WASD still works after tapping Alt", altMoved > 1.5, `moved ${altMoved.toFixed(2)} m`);
 
 // ---- 14b. the right button is a modifier for nothing ------------------------
 // WASD translates whether or not the right button is down: the two bindings do
@@ -9894,7 +9944,8 @@ check(
 // walking covers ground at the same rate as flying - it is a viewpoint, not a
 // speed limit
 const walkPace = Math.abs(afterWalk[0] - beforeWalk[0]) / 0.5;
-check("walking is as quick as flying", walkPace > 15, `about ${walkPace.toFixed(0)} m/s`);
+const flyPace = await page.evaluate(async () => (await import("/js/editor.js")).state.moveSpeed);
+check("walking is as quick as flying", walkPace / flyPace > 0.8 && walkPace / flyPace < 1.2, `about ${walkPace.toFixed(1)} m/s vs ${flyPace} m/s`);
 
 // Space/C must not fight the grounding
 await page.keyboard.down(" ");

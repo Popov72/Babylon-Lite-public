@@ -15,6 +15,7 @@ export { fluidEmissionCompletionTarget, fluidSimulationShutdownLifecycle, fluidS
 export { PickEntityBehavior } from "./pick-entity.js";
 export { PlayAnimationBehavior } from "./play-animation.js";
 export { SetCollisionShapeBehavior } from "./set-collision-shape.js";
+export { PlaySoundBehavior, StopSoundBehavior } from "./sound-control.js";
 export { SoundManager } from "./sound-manager.js";
 export { TriggerBehavior } from "./trigger.js";
 export { PlayerBehavior } from "./player.js";
@@ -36,8 +37,10 @@ export type {
     FluidSimulationEventAction,
     LiquefiableBehaviorConfig,
     PickEntityBehaviorConfig,
+    PlaySoundBehaviorConfig,
     PlayAnimationBehaviorConfig,
     SetCollisionShapeBehaviorConfig,
+    StopSoundBehaviorConfig,
     TriggerBehaviorConfig,
     WeaponLiquefactorBehaviorConfig,
     WeaponAntiGravityGunBehaviorConfig,

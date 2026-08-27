@@ -26,6 +26,7 @@ type WeaponContext = Pick<
     | "events"
     | "sounds"
     | "nodeNameOf"
+    | "isCollisionActive"
     | "weaponInventory"
     | "weaponLiquefactor"
     | "requestFusionResume"
@@ -67,6 +68,7 @@ function createHarness(
         events,
         sounds,
         nodeNameOf: vi.fn((mesh) => mesh.name),
+        isCollisionActive: vi.fn(() => true),
         weaponInventory,
         weaponLiquefactor: runtime,
         requestFusionResume: vi.fn(() => options.resumeToken ?? null),
@@ -377,6 +379,28 @@ describe("Aquanova Liquefactor weapon behavior", () => {
         harness.events.emit("frameEnd", { deltaMs: 16 });
         harness.events.emit("frameEnd", { deltaMs: 16 });
         expect(hits).toEqual([target]);
+    });
+
+    it("ignores collision-disabled targets before aiming and before a delayed hit arrives", () => {
+        const harness = createHarness();
+        const disabledAtAim = mesh("disabled-at-aim");
+        const disabledInFlight = mesh("disabled-in-flight");
+        const disabled = new Set<Mesh>([disabledAtAim]);
+        vi.mocked(harness.context.isCollisionActive).mockImplementation((target) => !disabled.has(target));
+        const hits: Mesh[] = [];
+        harness.events.on("hitWithWeapon", ({ mesh: hitMesh }) => hits.push(hitMesh));
+
+        harness.events.emit("weaponTriggerPressed", { held: true });
+        harness.events.emit("weaponAimUpdated", { mesh: disabledAtAim, point: [1, 2, 3], distance: 5 });
+        harness.setReachedTarget(true);
+        harness.events.emit("frameEnd", { deltaMs: 16 });
+
+        harness.events.emit("weaponAimUpdated", { mesh: disabledInFlight, point: [4, 5, 6], distance: 7 });
+        disabled.add(disabledInFlight);
+        harness.events.emit("frameEnd", { deltaMs: 16 });
+
+        expect(hits).toEqual([]);
+        expect(harness.context.resolveFusionTarget).toHaveBeenCalledWith(null, null);
     });
 
     it("uses the logical active-fusion target when clipping exposes geometry behind it", () => {

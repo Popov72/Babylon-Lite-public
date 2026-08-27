@@ -3,6 +3,8 @@ import type { Mesh } from "babylon-lite";
 export interface Behavior<Name extends string = string> {
     readonly name: Name;
     readonly mesh: Mesh | null;
+    /** Keep this logical behavior active after its physical owner is permanently removed. */
+    readonly retainOnEntityRetire?: boolean;
     init(): void | Promise<void>;
     start(): void;
     dispose(): void;

@@ -60,6 +60,8 @@ describe("fluid preset grid migration", () => {
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
         state.polygonShader = "ocean";
+        state.showGridBounds = true;
+        state.showGridBoundsSolid = true;
         state.camera = { alpha: 0.25, beta: 1.1, radius: 18, target: [2, 3, 4] };
         state.freeCamera = { position: [5, 6, 7], target: [8, 9, 10] };
         const exported = exportJsonFromPairState("box", "MLS-MPM", state);
@@ -73,6 +75,10 @@ describe("fluid preset grid migration", () => {
         expect(imported.grid).toEqual(state.grid);
         expect(imported.simulationDuration).toBe(12);
         expect(imported.alphaDecay).toBe(2.5);
+        expect(exported.showGridBounds).toBe(true);
+        expect(exported.showGridBoundsSolid).toBe(true);
+        expect(imported.showGridBounds).toBe(true);
+        expect(imported.showGridBoundsSolid).toBe(true);
         expect(exported.render.polygonShader).toBe("ocean");
         expect(imported.polygonShader).toBe("ocean");
         expect(exported.camera).toEqual(state.camera);

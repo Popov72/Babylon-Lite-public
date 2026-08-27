@@ -23,10 +23,17 @@ export interface ManagedSoundPlayOptions extends StreamingSoundPlayOptions {
     fade?: number;
 }
 
+interface RegisteredPlayback {
+    readonly source: string;
+    readonly options: StreamingSoundOptions;
+    load: Promise<ManagedSound> | null;
+}
+
 export class SoundManager {
     private engineInitialization: Promise<AudioEngine> | null = null;
     private engine: AudioEngine | null = null;
     private readonly loads = new Map<string, Promise<ManagedSound>>();
+    private readonly registeredPlaybacks = new Map<string, RegisteredPlayback>();
     private readonly activeLoops = new Set<ManagedSound>();
     private readonly pendingStops = new Map<ManagedSound, ReturnType<typeof setTimeout>>();
     private enabled = true;
@@ -42,6 +49,28 @@ export class SoundManager {
             this.loads.set(source, load);
         }
         return load;
+    }
+
+    public registerPlayback(id: string, source: string, options: StreamingSoundOptions = {}): void {
+        if (typeof id !== "string" || !id.trim()) {
+            throw new Error("[aquanova] sound playback ID must be non-empty");
+        }
+        if (this.registeredPlaybacks.has(id)) {
+            throw new Error(`[aquanova] sound playback ID "${id}" is defined more than once`);
+        }
+        this.registeredPlaybacks.set(id, { source, options: { ...options }, load: null });
+    }
+
+    public resolvePlayback(id: string): Promise<ManagedSound> {
+        const playback = this.registeredPlaybacks.get(id);
+        if (!playback) {
+            throw new Error(`[aquanova] sound playback ID "${id}" is not defined by a playSound behavior`);
+        }
+        playback.load ??= this.createSound(`sound:${id}`, playback.source, playback.options).catch((error: unknown) => {
+            playback.load = null;
+            throw error;
+        });
+        return playback.load;
     }
 
     public play(sound: ManagedSound, options: ManagedSoundPlayOptions = {}): void {
@@ -117,6 +146,7 @@ export class SoundManager {
         this.engine = null;
         this.engineInitialization = null;
         this.loads.clear();
+        this.registeredPlaybacks.clear();
     }
 
     private async createSound(label: string, source: string, options: StreamingSoundOptions): Promise<ManagedSound> {

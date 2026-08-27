@@ -76,6 +76,12 @@ export class FluidSimulationBehavior implements Behavior<"fluidSimulation"> {
             onEmissionComplete: (): void => {
                 this.context.events.emit("entityEvent", { name: this.entityName, event: "emissionComplete" });
             },
+            onStarted: (): void => {
+                this.context.events.emit("entityEvent", { name: this.entityName, event: "startSimulation" });
+            },
+            onShutdownComplete: (): void => {
+                this.context.events.emit("entityEvent", { name: this.entityName, event: "endSimulation" });
+            },
         };
     }
 

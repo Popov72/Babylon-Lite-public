@@ -25,6 +25,7 @@ export function antiGravityCollisionMoveFraction(
 
 export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravityGun"> {
     public readonly name = "weaponAntiGravityGun";
+    public readonly retainOnEntityRetire = true;
     public readonly mesh: Mesh;
     public readonly config: WeaponAntiGravityGunBehaviorConfig;
     private readonly entityName: string;

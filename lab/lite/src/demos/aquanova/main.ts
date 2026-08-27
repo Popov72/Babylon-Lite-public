@@ -62,6 +62,7 @@ import {
     isPbrMaterial,
     loadGltf,
     loadSkybox,
+    lockPhysicsBodyRotationAxes,
     markMaterialUboDirty,
     mat4Decompose,
     PhysicsMotionType,
@@ -90,7 +91,19 @@ import {
     startEngine,
     stopAnimation,
 } from "babylon-lite";
-import type { AnimationGroup, EnvironmentTextures, Material, Mesh, PbrMaterialProps, PhysicsBody, RenderTask, SceneNode, Task, ToneMapping } from "babylon-lite";
+import type {
+    AnimationGroup,
+    EnvironmentTextures,
+    Material,
+    Mesh,
+    PbrMaterialProps,
+    PhysicsBody,
+    PhysicsRotationAxis,
+    RenderTask,
+    SceneNode,
+    Task,
+    ToneMapping,
+} from "babylon-lite";
 import { fillMeshParticles } from "../particle-fill.js";
 import { createFlipSim } from "babylon-lite/fluid/flip-sim.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
@@ -365,6 +378,7 @@ export async function main(): Promise<void> {
     let grabDynamicWithAntiGravity = (_mesh: Mesh): boolean => false;
     let updateAntiGravityGrab = (_deltaMs: number): boolean => false;
     let releaseAntiGravityGrab = (_throwSpeed: number): void => {};
+    let isEntityCollisionActive = (_mesh: Mesh): boolean => true;
     canvas.dataset.antiGravityGrabbed = "none";
     canvas.dataset.antiGravityThrowSpeed = "0";
     canvas.dataset.antiGravityBlocked = "false";
@@ -415,7 +429,8 @@ export async function main(): Promise<void> {
         setEnabled: (enabled: boolean, animated = true): void => setWeaponEnabled("pistol", pistolViewmodel, enabled, animated),
         isReady: (): boolean => activeWeapon === "pistol" && pistolViewmodel.ready,
         fire: (mesh: Mesh | null, point: readonly [number, number, number] | null, distance: number | null, range: number, speed: number): void => {
-            pistolProjectiles.fire(mesh, point, distance, range, speed);
+            const activeMesh = mesh && isEntityCollisionActive(mesh) ? mesh : null;
+            pistolProjectiles.fire(activeMesh, activeMesh ? point : null, activeMesh ? distance : null, range, speed);
         },
         update: (deltaMs: number) => {
             pistolViewmodel.update(
@@ -428,7 +443,7 @@ export async function main(): Promise<void> {
             if (activeWeapon === "pistol" && pistolViewmodel.ready) {
                 updateWeaponCrosshair(pistolViewmodel);
             }
-            return pistolProjectiles.update(deltaMs);
+            return pistolProjectiles.update(deltaMs, isEntityCollisionActive);
         },
         clear: (): void => pistolProjectiles.clear(),
     };
@@ -992,7 +1007,7 @@ export async function main(): Promise<void> {
         const manifestColliders = buildManifestColliders(
             world,
             [...placementById]
-                .filter(([id]) => !behaviorManager.dissolvableInstanceIds.has(id))
+                .filter(([id]) => !behaviorManager.dynamicInstanceIds.has(id))
                 .flatMap(([instanceId, placement]) => placement.shapes.map((shape) => ({ instanceId, shape })))
         );
         manifestShapes = manifestColliders.map(({ shape }) => shape);
@@ -1142,7 +1157,7 @@ export async function main(): Promise<void> {
         body: PhysicsBody | null;
         /** Representative primitive (the group's first) — what call sites that want "the" mesh use. */
         mesh: Mesh;
-        /** EVERY primitive of the node, all reparented under `disp` so they move as one rigid body. */
+        /** Every primitive below the entity root reparented under `disp`, moving as one rigid body. */
         meshes: Mesh[];
         /** World bounds of meshes at rest. */
         bounds: MeshGroupBounds;
@@ -1152,6 +1167,8 @@ export async function main(): Promise<void> {
         movable: boolean;
         /** Authoritative manifest mass in kilograms. Zero for immovable bodies. */
         mass: number;
+        /** Principal body axes that cannot rotate. */
+        lockedRotationAxes: readonly PhysicsRotationAxis[];
         /** The manifest placement this prop came from, so its debug shape can be dropped on melt. */
         instanceId: string | undefined;
         disp: SceneNode;
@@ -1195,15 +1212,18 @@ export async function main(): Promise<void> {
         }
         const { centre } = bounds;
         // Display root at the prop's rest pose (the glTF root mirror preserved via `scaling`);
-        // reparent EVERY primitive of the node under it (world-preserving) so the whole node is posed
-        // through one root and the parts keep their relative placement.
+        // Reparent the authored entity root under it (world-preserving) so the hierarchy remains
+        // intact. Behaviors such as pickEntity rotate this root once, which rotates every primitive
+        // together while preserving their relative transforms.
         const r = createTransformNode(`dyn_disp_${dynBodies.length}`);
         r.scaling.set(MIRROR[0], MIRROR[1], MIRROR[2]);
         r.position.set(centre[0] - MIRROR[0] * centre[0], centre[1] - MIRROR[1] * centre[1], centre[2] - MIRROR[2] * centre[2]);
         addToScene(scene, r);
-        for (const m of group) {
-            setParent(m, r);
+        const entityRoot = ownerOfMesh.get(group[0]!);
+        if (!entityRoot || group.some((mesh) => ownerOfMesh.get(mesh) !== entityRoot)) {
+            throw new Error(`[aquanova] dynamic entity "${nodeNameOfMesh.get(group[0]!) ?? group[0]!.name}" has no single authored root`);
         }
+        setParent(entityRoot, r);
         // Havok proxy. Its shape comes from the manifest — that is the ONLY thing that decides
         // whether a prop is solid. A prop with no authored collision (the "Caution" sticker on the
         // door) simply gets no rigid body: the surface it is applied to already collides. Nothing
@@ -1212,9 +1232,14 @@ export async function main(): Promise<void> {
         // how hard the player runs into it, while a genuinely loose prop still falls and can be shoved.
         const movable = group.some((m) => behaviorManager.movableMeshes.has(m));
         const mass = movable ? (behaviorManager.getDynamicMass(group[0]!) ?? 10) : 0;
+        const lockedRotationAxes = behaviorManager.getLockedRotationAxes(group[0]!);
         const proxy = createTransformNode(`dyn_proxy_${dynBodies.length}`, centre[0], centre[1], centre[2]);
         const instanceId = instanceIdOfMesh(group[0]!);
-        const authored = instanceId ? placementById.get(instanceId)?.shapes[0] : undefined;
+        const authoredShapes = instanceId ? (placementById.get(instanceId)?.shapes ?? []) : [];
+        if (authoredShapes.length > 1) {
+            throw new Error(`[aquanova] dynamic entity "${nodeNameOfMesh.get(group[0]!) ?? group[0]!.name}" requires exactly one authored collision shape`);
+        }
+        const authored = authoredShapes[0];
         // The proxy sits at the prop's bounds centre and the authored shape is offset WITHIN the body,
         // so the display root (posed from the same pose) and the collider stay in agreement.
         let body: PhysicsBody | null = null;
@@ -1223,6 +1248,7 @@ export async function main(): Promise<void> {
             setPhysicsBodyShape(world, body, createWorldCollisionShape(world, authored, centre));
             if (movable) {
                 setPhysicsBodyMass(world, body, mass);
+                lockPhysicsBodyRotationAxes(world, body, lockedRotationAxes);
             }
         }
         // The display root's offset in its OWN frame, so a moved body poses it as
@@ -1237,6 +1263,7 @@ export async function main(): Promise<void> {
             bounds,
             movable,
             mass,
+            lockedRotationAxes,
             instanceId,
             disp: r,
             dispOffset,
@@ -1285,7 +1312,7 @@ export async function main(): Promise<void> {
         max: [number, number, number];
     }> = [];
     for (const [id, pl] of placementById) {
-        if (behaviorManager.dissolvableInstanceIds.has(id)) continue;
+        if (behaviorManager.dynamicInstanceIds.has(id)) continue;
         for (const s of pl.shapes) {
             const prim = shapeToPrimitive(s);
             staticPrims.push({ id, prim, ...primAabb(prim) });
@@ -1378,7 +1405,7 @@ export async function main(): Promise<void> {
     let antiGravityGrabbedBody: DynBody | null = null;
     grabDynamicWithAntiGravity = (mesh): boolean => {
         const d = dynBodyByMesh.get(mesh);
-        if (!d?.movable || !d.body || d.wriggling || !dynBodies.includes(d)) {
+        if (!isEntityCollisionActive(mesh) || !d?.movable || !d.body || d.wriggling || !dynBodies.includes(d)) {
             return false;
         }
         if (antiGravityGrabbedBody && antiGravityGrabbedBody !== d) {
@@ -1401,7 +1428,7 @@ export async function main(): Promise<void> {
             canvas.dataset.antiGravityBlocked = "false";
             return false;
         }
-        if (d.wriggling) {
+        if (d.wriggling || !isEntityCollisionActive(d.mesh)) {
             releaseAntiGravityGrab(0);
             return false;
         }
@@ -1604,7 +1631,9 @@ export async function main(): Promise<void> {
         portalVisibility.setDoorEnabled(door, enabled);
     });
     const entityCollisionStates = new Map<string, boolean>();
+    isEntityCollisionActive = (mesh) => entityCollisionStates.get(nodeNameOfMesh.get(mesh) ?? mesh.name) !== false;
     let applyEntityCollisionState: ((entityName: string, active: boolean) => void) | null = null;
+    let retirePickedEntity: ((entityName: string, meshes: readonly Mesh[]) => void) | null = null;
     registerEntityCollisionEventHandlers(behaviorManager.events, (entityName, active) => {
         entityCollisionStates.set(entityName, active);
         applyEntityCollisionState?.(entityName, active);
@@ -1798,7 +1827,10 @@ export async function main(): Promise<void> {
     const removeBodyAndShape = (body: PhysicsBody): void => {
         const shape = body._shape;
         removePhysicsBody(world, body);
-        if (shape) releasePhysicsShape(world, shape);
+        if (shape) {
+            releasePhysicsShape(world, shape);
+            body._shape = null;
+        }
     };
     const collisionBodiesOfEntity = (entityName: string): PhysicsBody[] => {
         const bodies = new Set(behaviorCollisionBodiesByEntityName.get(entityName) ?? []);
@@ -1849,7 +1881,10 @@ export async function main(): Promise<void> {
                     if (dynamicBody.body) removeBodyAndShape(dynamicBody.body);
                     dynamicBody.body = body;
                 }
-                if (dynamicBody.movable && dynamicBody.body) setPhysicsBodyMass(world, dynamicBody.body, dynamicBody.mass);
+                if (dynamicBody.movable && dynamicBody.body) {
+                    setPhysicsBodyMass(world, dynamicBody.body, dynamicBody.mass);
+                    lockPhysicsBodyRotationAxes(world, dynamicBody.body, dynamicBody.lockedRotationAxes);
+                }
                 made.push(dynamicBody.body!);
                 continue;
             }
@@ -1916,6 +1951,7 @@ export async function main(): Promise<void> {
             jumpApertureAssist,
             getPicker,
             nodeNameOf: (mesh) => nodeNameOfMesh.get(mesh) ?? mesh.name,
+            isCollisionActive: isEntityCollisionActive,
             isLiquefiable: (mesh) => behaviorManager.isLiquefiable(mesh),
             getLiquefiableConfig: (mesh) => behaviorManager.getLiquefiableConfig(mesh),
             isInspecting: inspectOn,
@@ -1925,6 +1961,12 @@ export async function main(): Promise<void> {
             weaponPistol,
             playerMaxGrabDistance: () => playerBehavior?.maxGrabDistance ?? 8,
             dynamicMassOf: (mesh) => behaviorManager.getDynamicMass(mesh),
+            retireEntity: (entityName, meshes) => {
+                if (!retirePickedEntity) {
+                    throw new Error("[aquanova] entity retirement service is not ready");
+                }
+                retirePickedEntity(entityName, meshes);
+            },
             setCollisionShape: setEntityCollisionShape,
             registerIntersectionTrigger: intersectionTriggers.register,
             requestFusionResume: () => requestFusionResume(),
@@ -2990,6 +3032,66 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 { return min(primitivesSdf(pt, dt), p
         });
         for (const body of bodies) setPhysicsBodyCollisionActive(body, active);
     };
+    retirePickedEntity = (entityName, meshes) => {
+        behaviorManager.retireEntity(entityName, meshes);
+        entityCollisionStates.set(entityName, false);
+        applyEntityCollisionState!(entityName, false);
+
+        const instanceIds = placementIdsByEntityName.get(entityName) ?? [];
+        const dynamicBodies = new Set<DynBody>();
+        const physicsBodies = new Set<PhysicsBody>(behaviorCollisionBodiesByEntityName.get(entityName) ?? []);
+        for (const instanceId of instanceIds) {
+            removedPlacements.add(instanceId);
+            for (const body of manifestColliderBodiesByInstanceId.get(instanceId) ?? []) {
+                physicsBodies.add(body);
+            }
+            manifestColliderBodiesByInstanceId.delete(instanceId);
+        }
+        behaviorCollisionBodiesByEntityName.delete(entityName);
+        for (const mesh of meshes) {
+            const dynamicBody = dynBodyByMesh.get(mesh);
+            if (dynamicBody) {
+                dynamicBodies.add(dynamicBody);
+            }
+        }
+        for (const dynamicBody of dynamicBodies) {
+            if (antiGravityGrabbedBody === dynamicBody) {
+                releaseAntiGravityGrab(0);
+            }
+            retireDynBodyCollision(dynamicBody);
+            if (dynamicBody.body) {
+                physicsBodies.add(dynamicBody.body);
+                dynamicBody.body = null;
+            }
+        }
+        for (const body of physicsBodies) {
+            removeBodyAndShape(body);
+        }
+
+        const retiredMeshes = new Set(meshes);
+        const dynamicallyRemovedMeshes = new Set<Mesh>();
+        for (const dynamicBody of dynamicBodies) {
+            dynPrims.delete(dynamicBody);
+            const index = dynBodies.indexOf(dynamicBody);
+            if (index >= 0) {
+                dynBodies.splice(index, 1);
+            }
+            for (const mesh of dynamicBody.meshes) {
+                retiredMeshes.add(mesh);
+                dynamicallyRemovedMeshes.add(mesh);
+                dynBodyByMesh.delete(mesh);
+            }
+            removeFromScene(scene, dynamicBody.disp);
+        }
+        for (const mesh of retiredMeshes) {
+            behaviorHiddenMeshes.add(mesh);
+            movableMeshes.delete(mesh);
+            if (!dynamicallyRemovedMeshes.has(mesh)) {
+                removeFromScene(scene, mesh);
+            }
+        }
+        canvas.dataset.dynBodies = String(dynBodies.length);
+    };
     let groundOnly = false;
     toggleGroundOnly = (): void => {
         groundOnly = !groundOnly;
@@ -3513,6 +3615,11 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         behaviorFluidSims.delete(entry.registration);
     };
 
+    const completeBehaviorFluidShutdown = (entry: BehaviorFluidSim): void => {
+        disposeBehaviorFluidSim(entry);
+        entry.registration.onShutdownComplete?.();
+    };
+
     behaviorManager.fluidSimulations.installBackend({
         register(registration) {
             const entry: BehaviorFluidSim = {
@@ -3553,8 +3660,12 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
             }
             if (state === "running" || state === "shutdown") {
                 try {
+                    const wasActivated = entry.activated;
                     buildBehaviorFluidSim(entry);
                     activateBehaviorFluidSim(entry);
+                    if (!wasActivated) {
+                        registration.onStarted?.();
+                    }
                 } catch (error) {
                     entry.state = "paused";
                     console.error(`[aquanova] fluidSimulation "${registration.entityName}" could not start:`, error);
@@ -4365,7 +4476,7 @@ fn externalForce(pos: vec3<f32>, vel: vec3<f32>, dt: f32) -> vec3<f32> {
         const dt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 60);
         const growDt = Math.min(Math.max(deltaMs, 0) / 1000, 1 / 30);
         for (const entry of [...behaviorFluidSims.values()]) {
-            if (entry.pendingDispose) disposeBehaviorFluidSim(entry);
+            if (entry.pendingDispose) completeBehaviorFluidShutdown(entry);
         }
         // The player can enter a simulation domain long after it was built, so every set reserves a
         // capsule slot and refreshes it from the character controller immediately before fluid steps.

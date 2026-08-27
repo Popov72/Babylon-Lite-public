@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import { SoundBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound";
+import { PlaySoundBehavior, StopSoundBehavior } from "../../../../lab/lite/src/demos/aquanova/behaviors/sound-control";
 
 function harness(config: ConstructorParameters<typeof SoundBehavior>[2]) {
     const events = new AquanovaEventManager();
@@ -20,6 +21,69 @@ function harness(config: ConstructorParameters<typeof SoundBehavior>[2]) {
 describe("Aquanova sound behavior", () => {
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    function controlHarness() {
+        const events = new AquanovaEventManager();
+        const sound = { label: "electric", source: "/aquanova/sounds/electricField.mp3", sound: "runtime-electric" };
+        const sounds = {
+            registerPlayback: vi.fn(),
+            resolvePlayback: vi.fn(async () => sound),
+            play: vi.fn(),
+            stop: vi.fn(),
+        };
+        return { events, sound, sounds };
+    }
+
+    describe("Aquanova sound control behaviors", () => {
+        it("defines and plays an independent sound ID", async () => {
+            const { events, sound, sounds } = controlHarness();
+            const behavior = new PlaySoundBehavior("electrifier", [], { id: "electricLoop", sound: "electricField", fadeInDelay: 1.5, volume: 0.4, loop: true }, {
+                events,
+                sounds,
+            } as never);
+
+            await behavior.init();
+            behavior.start();
+
+            expect(sounds.registerPlayback).toHaveBeenCalledWith("electricLoop", "/aquanova/sounds/electricField.mp3?v=20260813-1", { preloadCount: 1 });
+            expect(sounds.resolvePlayback).toHaveBeenCalledWith("electricLoop");
+            expect(sounds.play).toHaveBeenCalledWith(sound, { fade: 1.5, loop: true, volume: 0.4 });
+            behavior.dispose();
+            expect(sounds.stop).toHaveBeenCalledWith(sound);
+        });
+
+        it("stops an existing sound ID after a matching event", async () => {
+            const { events, sound, sounds } = controlHarness();
+            const behavior = new StopSoundBehavior("fluid", [], { soundId: "electricLoop", source: "fluid", event: "endSimulation", fadeOutDelay: 2 }, { events, sounds } as never);
+
+            await behavior.init();
+            behavior.start();
+            events.emit("entityEvent", { name: "other", event: "endSimulation" });
+            expect(sounds.stop).not.toHaveBeenCalled();
+            events.emit("entityEvent", { name: "fluid", event: "endSimulation" });
+            expect(sounds.stop).toHaveBeenCalledWith(sound, 2);
+        });
+
+        it("rejects missing IDs and invalid playback options", () => {
+            const { events, sounds } = controlHarness();
+            expect(() => new PlaySoundBehavior("fluid", [], { id: "", sound: "electricField" }, { events, sounds } as never)).toThrow(
+                "playSound.id must be a non-empty sound playback ID"
+            );
+            expect(() => new StopSoundBehavior("fluid", [], { soundId: "" }, { events, sounds } as never)).toThrow("stopSound.soundId must be a non-empty sound playback ID");
+            expect(() => new PlaySoundBehavior("fluid", [], { id: "electric", sound: "electricField", volume: 1.1 }, { events, sounds } as never)).toThrow(
+                "playSound.volume must be finite and between 0 and 1"
+            );
+            expect(() => new PlaySoundBehavior("fluid", [], { id: "electric", sound: "electricField", source: "electrifier" }, { events, sounds } as never)).toThrow(
+                "playSound.source and playSound.event must be provided together"
+            );
+            expect(() => new StopSoundBehavior("fluid", [], { soundId: "electricLoop", event: "endSimulation" }, { events, sounds } as never)).toThrow(
+                "stopSound.source and stopSound.event must be provided together"
+            );
+            expect(() => new StopSoundBehavior("fluid", [], { soundId: "electricLoop", fadeOutDelay: -1 }, { events, sounds } as never)).toThrow(
+                "stopSound.fadeOutDelay must be finite and non-negative"
+            );
+        });
     });
 
     it("preloads each distinct sound once and runs cues without subscriptions at startup", async () => {

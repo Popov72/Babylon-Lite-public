@@ -46,6 +46,7 @@ describe("method-independent fluid authoring state", () => {
             physScale: 0.73,
             grid: { position: [2, 4, -3], size: [10, 8, 12] },
             showGridBounds: true,
+            showGridBoundsSolid: true,
             count: 7_500,
         };
 
@@ -57,6 +58,7 @@ describe("method-independent fluid authoring state", () => {
         expect(merged.physScale).toBe(0.73);
         expect(merged.grid).toEqual(shared.grid);
         expect(merged.showGridBounds).toBe(true);
+        expect(merged.showGridBoundsSolid).toBe(true);
         expect(merged.count).toBe(7_500);
         expect(merged.material).toBe(2);
         expect(merged.activeBlocks).toBe(true);

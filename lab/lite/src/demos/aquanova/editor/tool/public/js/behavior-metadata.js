@@ -140,6 +140,51 @@ export function eventsRaisedByAll(catalog, definitions, entities, sources, exter
   return sorted(common ?? new Set());
 }
 
+/**
+ * Every event source one applied behaviour names.
+ *
+ * `entitySource` is the schema's deliberate distinction between something a
+ * behaviour listens to and the other entity references it may carry (a target,
+ * or the pieces linked to a liquefiable). Following the schema recursively
+ * covers ordinary subscriptions, sound cues and fluid event actions without a
+ * hand-kept list of property names. Preset values participate too: the applied
+ * assignment only holds its overrides, while the effective behaviour is both.
+ */
+export function behaviorEntitySources(catalog, definitions, assignment) {
+  if (!assignment || typeof assignment !== "object") return [];
+  const metadata = behaviorMetadataForName(catalog, definitions, assignment.name);
+  if (!metadata) return [];
+  const found = new Set();
+  collect(metadata.properties ?? {}, effectiveConfig(definitions, assignment));
+  return sorted(found);
+
+  function collect(properties, value) {
+    if (!isPlainObject(value)) return;
+    for (const [key, schema] of Object.entries(properties)) {
+      if (!own(value, key) || !schemaApplies(schema, value)) continue;
+      collectValue(schema, value[key]);
+    }
+  }
+
+  function collectValue(schema, item) {
+    if (item === undefined || item === null) return;
+    if (schema.type === "entitySource") {
+      for (const source of Array.isArray(item) ? item : [item]) {
+        const name = String(source ?? "").trim();
+        if (name) found.add(name);
+      }
+      return;
+    }
+    if (schema.type === "object") {
+      collect(schema.properties ?? {}, item);
+    } else if (schema.type === "record" && isPlainObject(item)) {
+      for (const child of Object.values(item)) collectValue(schema.values ?? {}, child);
+    } else if (schema.type === "array" && Array.isArray(item)) {
+      for (const child of item) collectValue(schema.items ?? {}, child);
+    }
+  }
+}
+
 function addRaisedEvents(catalog, definitions, behaviorName, config, into) {
     const metadata = behaviorMetadataForName(catalog, definitions, behaviorName);
   for (const event of metadata?.eventsRaised ?? []) {
@@ -261,7 +306,7 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
   }
 
   /**
-   * Which rooms the entity pickers offer, and what they therefore contain.
+   * Which rooms the room-scoped pickers offer, and what they therefore contain.
    *
    * A name typed from memory is a name that can be wrong, so every entity is
    * chosen from a list - but "every entity on the ship" is hundreds of names to
@@ -270,24 +315,29 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
    * the cases that genuinely reach across the ship, like a door watching the
    * panels of the room next door.
    */
-  function scopedEntities(all) {
+  function scopedOptions(all, byChunk) {
     if (rooms.mode === "all") return all;
-    const here = roomNames();
+    const here = roomValues(byChunk);
     return all.filter((name) => here.has(name));
   }
 
-  /** The names the chosen rooms hold, whether or not anything offers them. */
-  function roomNames() {
+  /** The values the chosen rooms hold for one option source. */
+  function roomValues(byChunk) {
     const chosen = rooms.mode === "chosen" ? (rooms.chunks ?? []) : (options.currentChunks ?? []);
-    const byChunk = options.entitiesByChunk ?? {};
     const keep = new Set();
-    for (const room of chosen) for (const name of byChunk[room] ?? []) keep.add(name);
+    for (const room of chosen) for (const value of byChunk?.[room] ?? []) keep.add(value);
     return keep;
+  }
+
+  function optionChunks(schema) {
+    if (schema?.optionsSource === SCOPED_ENTITIES) return options.entitiesByChunk;
+    return schema?.optionsByChunk ? options[schema.optionsByChunk] : null;
   }
 
   function choicesFor(schema, siblings) {
     const all = optionValues(schema, options, siblings, { ...inherited, ...draft });
-    return schema?.optionsSource === SCOPED_ENTITIES ? scopedEntities(all) : all;
+    const byChunk = optionChunks(schema);
+    return byChunk ? scopedOptions(all, byChunk) : all;
   }
 
   /**
@@ -303,10 +353,11 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
   function pickInitialScope() {
     if (rooms.mode) return;
     rooms.mode = "all";
-    if (!options.entitiesByChunk || !(options.currentChunks ?? []).length) return;
+    if (!(options.currentChunks ?? []).length) return;
     rooms.mode = "chunk";
-    const here = roomNames();
-        const missing = entityValues(metadata?.properties ?? {}, draft).some((name) => !here.has(name));
+    const effective = { ...inherited, ...draft };
+    const missing = scopedOptionValues(metadata?.properties ?? {}, effective)
+      .some(({ schema, value }) => !roomValues(optionChunks(schema)).has(value));
     if (missing) rooms.mode = "all";
   }
 
@@ -325,7 +376,7 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
       }
       render();
     });
-    box.append(element("span", "behavior-scope-label", "Entities from"), mode);
+    box.append(element("span", "behavior-scope-label", "Look in"), mode);
     if (rooms.mode === "chosen") {
       const picked = document.createElement("select");
       picked.multiple = true;
@@ -354,7 +405,7 @@ export function createBehaviorForm(host, { metadata, value = {}, inherited = {},
     // list's row, the library's picker - rather than above its fields: it is
     // the same sentence every time, and the fields are what the panel is for.
     pickInitialScope();
-        if (options.entitiesByChunk && anySchema(metadata.properties ?? {}, (schema) => schema.optionsSource === SCOPED_ENTITIES)) {
+    if (anySchema(metadata.properties ?? {}, (schema) => optionChunks(schema))) {
       host.append(renderScopeRow());
     }
     for (const [key, schema] of Object.entries(metadata.properties ?? {})) {
@@ -870,8 +921,8 @@ function anySchema(properties, predicate) {
   return false;
 }
 
-/** Every entity name the value currently holds, wherever the schema puts one. */
-function entityValues(properties, value, out = []) {
+/** Every value held by a picker whose choices are grouped by room. */
+function scopedOptionValues(properties, value, out = []) {
   for (const [key, schema] of Object.entries(properties ?? {})) {
     if (!own(value, key)) continue;
     collect(schema, value[key]);
@@ -880,13 +931,13 @@ function entityValues(properties, value, out = []) {
 
   function collect(schema, item) {
     if (item === undefined || item === null) return;
-    if (schema.type === "entity" || schema.type === "entitySource") {
-      for (const name of Array.isArray(item) ? item : [item]) {
-        if (typeof name === "string" && name.trim()) out.push(name.trim());
+    if (schema.optionsByChunk || schema.optionsSource === SCOPED_ENTITIES) {
+      for (const value of Array.isArray(item) ? item : [item]) {
+        if (typeof value === "string" && value.trim()) out.push({ schema, value: value.trim() });
       }
       return;
     }
-    if (schema.type === "object") entityValues(schema.properties ?? {}, item, out);
+    if (schema.type === "object") scopedOptionValues(schema.properties ?? {}, item, out);
     else if (schema.type === "record" && isPlainObject(item)) {
       for (const child of Object.values(item)) collect(schema.values, child);
     } else if (schema.type === "array" && Array.isArray(item)) {

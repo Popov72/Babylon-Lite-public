@@ -68,10 +68,12 @@ export async function loadCatalogue() {
 }
 
 /**
- * Re-read the catalogue in place, after the compound list has changed.
+ * Re-read the catalogue in place after external authored data has changed.
  *
  * The server rebuilds it per request and folds the saved compounds in, so
  * saving or deleting one is only visible once the catalogue is fetched again.
+ * Fluid simulations and sounds are authored in other tools too, and their
+ * behavior-picker options must follow those files without restarting this page.
  * The object is *mutated* rather than replaced because `getCatalogue()` hands
  * it out and the palette holds on to what it was given; swapping the reference
  * would leave the palette rendering the old list forever.
@@ -90,6 +92,9 @@ export async function reloadCatalogue() {
   catalogue.categories = fresh.categories;
   catalogue.kits = fresh.kits;
   catalogue.defaultKit = fresh.defaultKit;
+  catalogue.fluidSim = fresh.fluidSim;
+  catalogue.fluidSimFlow = fresh.fluidSimFlow;
+  catalogue.sounds = fresh.sounds;
   catalogue.byId = new Map();
   for (const c of catalogue.categories) {
     for (const m of c.modules) catalogue.byId.set(m.id, m);
@@ -125,6 +130,9 @@ export function assertCatalogueShape(cat) {
   );
   if (!Array.isArray(cat?.categories)) throw stale("categories");
   if (!Array.isArray(cat.kits)) throw stale("kits");
+  if (!Array.isArray(cat.fluidSim)) throw stale("fluidSim");
+  if (!cat.fluidSimFlow || typeof cat.fluidSimFlow !== "object" || Array.isArray(cat.fluidSimFlow)) throw stale("fluidSimFlow");
+  if (!Array.isArray(cat.sounds)) throw stale("sounds");
   for (const kit of cat.kits) {
     // Empty is a fine answer for both - a kit whose models sit at its root has
     // no model folders and needs no redirect - so it is the field being absent

@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-26T19:01:54.341Z",
+  "savedAt": "2026-08-27T21:27:11.929Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -100,8 +100,8 @@
           4.4267
         ]
       },
-      "instanceCount": 38,
-      "meshCount": 75
+      "instanceCount": 41,
+      "meshCount": 80
     },
     {
       "id": "CH01_StorageC",
@@ -118,8 +118,8 @@
           4.774
         ]
       },
-      "instanceCount": 22,
-      "meshCount": 53
+      "instanceCount": 21,
+      "meshCount": 52
     },
     {
       "id": "CH02_StorageCTL",
@@ -136,8 +136,8 @@
           4.774
         ]
       },
-      "instanceCount": 27,
-      "meshCount": 63
+      "instanceCount": 28,
+      "meshCount": 64
     },
     {
       "id": "CH03_StorageC2",
@@ -154,8 +154,8 @@
           -3.3814
         ]
       },
-      "instanceCount": 46,
-      "meshCount": 133
+      "instanceCount": 48,
+      "meshCount": 136
     },
     {
       "id": "Test",
@@ -3820,9 +3820,9 @@
       "chunk": "CH02_StorageCTL",
       "name": "testElectrifier",
       "position": [
-        -7.5,
+        -7.576,
         0,
-        3
+        3.348
       ],
       "rotation": [
         0,
@@ -3830,33 +3830,11 @@
         0
       ],
       "scale": [
-        1,
-        1,
-        1
+        0.5,
+        0.5,
+        0.5
       ],
       "node": "testElectrifier"
-    },
-    {
-      "id": "P0492",
-      "module": "Aquanova/Props/AreaBox",
-      "chunk": "CH01_StorageC",
-      "name": "manualTrigger",
-      "position": [
-        -0.25,
-        0,
-        2.75
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "scale": [
-        1,
-        1,
-        1
-      ],
-      "node": "manualTrigger"
     },
     {
       "id": "P0494",
@@ -3900,6 +3878,136 @@
         1
       ],
       "node": "itemPistol"
+    },
+    {
+      "id": "P0496",
+      "module": "Ultimate RPG Items Pack/Items/Coin_Star",
+      "chunk": "CH00_Storage",
+      "name": "coin1",
+      "position": [
+        9,
+        4.936,
+        -3
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.17,
+        0.17,
+        0.17
+      ],
+      "node": "coin1"
+    },
+    {
+      "id": "P0497",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped",
+      "chunk": "CH00_Storage",
+      "position": [
+        6,
+        4.75,
+        -2.3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0497"
+    },
+    {
+      "id": "P0498",
+      "module": "Modular SciFi MegaKit/Props/Prop_Pipe_Capped",
+      "chunk": "CH00_Storage",
+      "position": [
+        10,
+        4.75,
+        -2.3
+      ],
+      "rotation": [
+        0,
+        90,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "node": "P0498"
+    },
+    {
+      "id": "P0499",
+      "module": "Modular SciFi MegaKit/Platforms/Platform_Round1",
+      "chunk": "CH03_StorageC2",
+      "name": "capsuleFloor",
+      "position": [
+        -10,
+        1.139,
+        -16
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.24,
+        0.22,
+        0.23
+      ],
+      "node": "capsuleFloor"
+    },
+    {
+      "id": "P0500",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH02_StorageCTL",
+      "name": "endCorridorTrigger",
+      "position": [
+        -7.004,
+        0,
+        1.985
+      ],
+      "rotation": [
+        0,
+        180,
+        0
+      ],
+      "scale": [
+        1,
+        4,
+        4
+      ],
+      "node": "endCorridorTrigger"
+    },
+    {
+      "id": "P0501",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH03_StorageC2",
+      "name": "capsuleFluidSim",
+      "position": [
+        -10,
+        2,
+        -12.9
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.4,
+        0.4,
+        0.4
+      ],
+      "node": "capsuleFluidSim"
     }
   ],
   "markers": [
@@ -9570,6 +9678,50 @@
           -1
         ]
       }
+    ],
+    "Ultimate RPG Items Pack/Items/Coin": [
+      {
+        "id": "Ultimate RPG Items Pack/Items/Coin:0",
+        "kind": "box",
+        "centre": [
+          0,
+          0,
+          0
+        ],
+        "halfExtents": [
+          0.3683,
+          0.3688,
+          0.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
+    ],
+    "Ultimate RPG Items Pack/Items/Coin_Star": [
+      {
+        "id": "Ultimate RPG Items Pack/Items/Coin_Star:0",
+        "kind": "box",
+        "centre": [
+          0.0053,
+          0,
+          0.0001
+        ],
+        "halfExtents": [
+          0.3683,
+          0.3688,
+          0.125
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          -1
+        ]
+      }
     ]
   },
   "moduleShapes": {
@@ -13824,287 +13976,63 @@
           1
         ]
       }
+    ],
+    "Ultimate RPG Items Pack/Items/Coin": [
+      {
+        "kind": "box",
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.7367,
+          0.7377,
+          0.2
+        ]
+      }
+    ],
+    "Ultimate RPG Items Pack/Items/Coin_Star": [
+      {
+        "kind": "box",
+        "position": [
+          -0.0053,
+          0,
+          0.0001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.7367,
+          0.7377,
+          0.25
+        ]
+      }
     ]
   },
   "stageLayout": [
     {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Outer",
+      "module": "Ultimate RPG Items Pack/Items/Coin",
       "position": [
-        19,
+        0.1107,
         0,
-        17
+        33.8137
       ]
     },
     {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Straight",
+      "module": "Ultimate RPG Items Pack/Items/Coin_Star",
       "position": [
-        14,
+        -1.214,
         0,
-        16
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Band2_Corner_Inner",
-      "position": [
-        25,
-        0,
-        18
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Inner",
-      "position": [
-        25,
-        0,
-        27
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Corner_Outer",
-      "position": [
-        20,
-        0,
-        28
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_DarkMetal2_Straight",
-      "position": [
-        14,
-        0,
-        24
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Inner",
-      "position": [
-        24,
-        0,
-        37
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Corner_Outer",
-      "position": [
-        19,
-        0,
-        37
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_Metal2_Straight",
-      "position": [
-        15,
-        0,
-        35
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Straight",
-      "position": [
-        13,
-        0,
-        42
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopAstra_Curve_Round_Outer",
-      "position": [
-        17,
-        0,
-        65
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopAstra_Straight",
-      "position": [
-        12,
-        0,
-        65
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Inner",
-      "position": [
-        30,
-        0,
-        81
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Round_Outer",
-      "position": [
-        23,
-        0,
-        82
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Inner",
-      "position": [
-        14,
-        0,
-        85
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_WhitePlate2_Corner_Inner",
-      "position": [
-        28,
-        1.997,
-        52
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopAstra_Corner_Round_Inner",
-      "position": [
-        28,
-        1.997,
-        52
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Straight",
-      "position": [
-        14,
-        1.997,
-        90
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Straight_Hanging",
-      "position": [
-        19,
-        0,
-        89
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/TopCables_Corner_Square_Outer",
-      "position": [
-        8,
-        -1.004,
-        86
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Corner_Square_Outer",
-      "position": [
-        6,
-        2.428,
-        94
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_TallBand",
-      "position": [
-        0,
-        2.428,
-        87
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition",
-      "position": [
-        -1,
-        2.428,
-        93
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/WallWideBand_Straight_Transition2",
-      "position": [
-        2,
-        2.428,
-        98
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_A_Middle",
-      "position": [
-        9,
-        -0.0032,
-        70
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Middle",
-      "position": [
-        5,
-        0,
-        70
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall",
-      "position": [
-        -10,
-        0,
-        60
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_SquareTall_Middle",
-      "position": [
-        1,
-        0,
-        71
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square",
-      "position": [
-        2,
-        -0.164,
-        60
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Platforms/Door_Frame_Square_Symmetric",
-      "position": [
-        -4,
-        -0.164,
-        60
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/ShortWall_AccentStrip_Straight",
-      "position": [
-        -10,
-        0,
-        66
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Props/Prop_Fan_Small",
-      "position": [
-        -5,
-        0,
-        68
-      ]
-    },
-    {
-      "module": "Modular SciFi MegaKit/Walls/WallAstra_Straight",
-      "position": [
-        18,
-        0,
-        50
-      ]
-    },
-    {
-      "module": "Aquanova/Walls/WallAstra_Straight-right-riveted",
-      "position": [
-        10,
-        0.536,
-        50
-      ]
-    },
-    {
-      "module": "Aquanova/Props/AreaBox",
-      "position": [
-        7,
-        0,
-        43
+        34.1581
       ]
     }
   ],
@@ -14116,7 +14044,8 @@
     "flip-test",
     "flip-test-high",
     "flip-test-ultra-high",
-    "capsule-filling"
+    "capsule-filling",
+    "capsule-tank"
   ],
   "behaviorPresets": {
     "stdLiquefaction": {
@@ -14161,30 +14090,24 @@
       "behaviors": [
         {
           "name": "stdLiquefaction",
+          "linked": [
+            "capsuleFloor"
+          ],
           "sound": "longSplash"
         },
         {
-          "name": "dynamic",
-          "dynamic": true,
-          "mass": 1000
-        },
-        {
-          "name": "hideEntity",
-          "events": [
-            {
-              "name": "startLiquefaction",
-              "source": "CH01_CorridorFan2"
-            }
-          ]
-        },
-        {
-          "name": "showEntity",
-          "events": [
-            {
-              "name": "cancelLiquefaction",
-              "source": "CH01_CorridorFan2"
-            }
-          ]
+          "name": "setCollisionShape",
+          "fluidSimShape": {
+            "type": "hollowCylinder",
+            "start": [
+              0,
+              0,
+              0
+            ],
+            "height": 4,
+            "innerRadius": 0.7,
+            "outerRadius": 1.2
+          }
         }
       ]
     },
@@ -14450,7 +14373,7 @@
           "name": "showEntity",
           "events": [
             {
-              "name": "activated",
+              "name": "triggerActivated",
               "source": "trapTrigger"
             }
           ]
@@ -14459,7 +14382,7 @@
           "name": "enableCollision",
           "events": [
             {
-              "name": "activated",
+              "name": "triggerActivated",
               "source": "trapTrigger"
             }
           ]
@@ -14471,14 +14394,14 @@
         {
           "name": "trigger",
           "onIntersection": {
-            "enterEvent": "activated"
+            "enterEvent": "triggerActivated"
           }
         },
         {
           "name": "disableEntity",
           "events": [
             {
-              "name": "activated",
+              "name": "triggerActivated",
               "source": "trapTrigger"
             }
           ]
@@ -14636,11 +14559,11 @@
             {
               "action": "disablePlayerCollision",
               "source": "trapTrigger",
-              "event": "activated"
+              "event": "triggerActivated"
             },
             {
               "action": "enableSimulation",
-              "event": "activated",
+              "event": "triggerActivated",
               "source": "trapTrigger"
             },
             {
@@ -14657,16 +14580,6 @@
               "action": "unpauseSimulation",
               "source": "CH01_StorageC",
               "event": "visible"
-            },
-            {
-              "action": "enableSimulation",
-              "source": "manualTrigger",
-              "event": "activated"
-            },
-            {
-              "action": "disablePlayerCollision",
-              "source": "manualTrigger",
-              "event": "activated"
             }
           ],
           "shutdownDuration": 5
@@ -14684,7 +14597,7 @@
               "events": [
                 {
                   "source": "trapTrigger",
-                  "name": "activated"
+                  "name": "triggerActivated"
                 }
               ],
               "sound": "cisternFilling",
@@ -14727,25 +14640,34 @@
         }
       ]
     },
-    "manualTrigger": {
-      "behaviors": [
-        {
-          "name": "trigger",
-          "onIntersection": {
-            "enterEvent": "activated"
-          }
-        }
-      ]
-    },
     "testElectrifier": {
       "behaviors": [
         {
           "name": "fluidElectrifier",
-          "particleThreshold": 4,
-          "propagationSpeed": 2
+          "particleThreshold": 10,
+          "propagationSpeed": 4
         },
         {
           "name": "disableCollision"
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "playSound",
+          "id": "electricField",
+          "sound": "electricField",
+          "source": "testElectrifier",
+          "event": "fluidElectrified",
+          "loop": true,
+          "fadeInDelay": 0.5
+        },
+        {
+          "name": "stopSound",
+          "soundId": "electricField",
+          "source": "trapFluidSim",
+          "event": "endSimulation",
+          "fadeOutDelay": 0.5
         }
       ]
     },
@@ -14771,23 +14693,135 @@
           "impactImpulse": 30
         }
       ]
+    },
+    "coin1": {
+      "behaviors": [
+        {
+          "name": "dynamic",
+          "mass": 0.5,
+          "lockedRotationAxes": [
+            "x",
+            "z"
+          ]
+        },
+        {
+          "name": "probeExcluded"
+        },
+        {
+          "name": "pickEntity",
+          "boundingBoxScale": [
+            4,
+            4,
+            10
+          ],
+          "sound": "trSecret"
+        }
+      ]
+    },
+    "P0498": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "P0178": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "P0497": {
+      "behaviors": [
+        {
+          "name": "stdLiquefaction"
+        }
+      ]
+    },
+    "endCorridorTrigger": {
+      "behaviors": [
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "disableEntity"
+        },
+        {
+          "name": "trigger",
+          "onIntersection": {
+            "enterEvent": "triggerActivated",
+            "playerOnly": true
+          }
+        }
+      ]
+    },
+    "capsuleFloor": {
+      "behaviors": [
+        {
+          "name": "hideEntity"
+        }
+      ]
+    },
+    "capsuleFluidSim": {
+      "behaviors": [
+        {
+          "name": "fluidSimulation",
+          "fluidSim": "capsule-tank",
+          "eventActions": [
+            {
+              "action": "enableSimulation",
+              "event": "triggerActivated",
+              "source": "endCorridorTrigger"
+            },
+            {
+              "action": "pauseSimulation",
+              "source": "CH03_StorageC2",
+              "event": "notVisible"
+            },
+            {
+              "action": "unpauseSimulation",
+              "source": "CH03_StorageC2",
+              "event": "visible"
+            },
+            {
+              "action": "disableSink",
+              "source": "capsule",
+              "event": "endLiquefaction",
+              "sink": "BubbleEffect"
+            },
+            {
+              "action": "shutdownSimulation",
+              "source": "capsule",
+              "event": "endLiquefaction"
+            }
+          ],
+          "shutdownDuration": 5
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "disableCollision"
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      -9.718,
-      1.326,
-      -2.789
+      -8.759,
+      2.771,
+      1.72
     ],
     "rotation": [
-      0.079,
-      -3.108,
+      0.188,
+      1.538,
       0
     ],
     "target": [
-      -10.053,
-      0.537,
-      -12.752
+      1.059,
+      0.902,
+      2.038
     ]
   },
   "environment": {

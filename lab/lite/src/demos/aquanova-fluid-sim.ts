@@ -99,7 +99,7 @@ import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
-import { fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
+import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
 import type { FluidSim, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
@@ -108,6 +108,7 @@ import { createFoamRenderTask } from "babylon-lite/fluid/foam-render.js";
 import type { FoamDebugTexture } from "babylon-lite/fluid/foam-render.js";
 import { fillMeshParticles } from "./particle-fill.js";
 import type { MeshFillStrategy, MeshParticleFill } from "./particle-fill.js";
+import { createSolidGridBounds } from "./fluid/grid-bounds-visual.js";
 import type { VolumeSamplingMode } from "babylon-lite/fluid/volume-sampling/index.js";
 import { createFluidControlsPanel, DEFAULT_FLUID_SCHEMAS } from "babylon-lite/fluid/controls-panel.js";
 import type { PhysSchemaEntry } from "babylon-lite/fluid/controls-panel.js";
@@ -118,7 +119,7 @@ import type { FluidExportJson } from "./fluid/preset-io.js";
 import type { PairState, PendingForce } from "./fluid/demo.js";
 import { createFluidFlowEditor } from "./fluid/flow-editor.js";
 import type { FluidFlowEditor, FluidFlowObjectKind } from "./fluid/flow-editor.js";
-import { flipParticleCountForVolume } from "./fluid/grid-settings.js";
+import { PHYS_MAX_SCALE, PHYS_MIN_SCALE } from "./fluid/grid-settings.js";
 import { screenRay } from "./fluid/pick.js";
 import { demoAssetUrl } from "./demo-asset-url.js";
 import { collisionShapesForModule, worldShapesForMatrix } from "./aquanova/collision-shapes.js";
@@ -509,18 +510,23 @@ async function main(): Promise<void> {
     const editableShipMeshes = new Set<Mesh>();
     const editableTargetByMesh = new Map<Mesh, SceneNode>();
     const instancesByEditableTarget = new Map<SceneNode, Instance[]>();
+    const positionTargetByEditableTarget = new Map<SceneNode, SceneNode>();
     const instanceOf = (m: unknown): Instance | undefined => meshToInstance.get(m as Mesh);
-    const assignEditableTarget = (mesh: Mesh, instance: Instance, target: SceneNode): void => {
+    const assignEditableTarget = (mesh: Mesh, instance: Instance, target: SceneNode, positionTarget: SceneNode = target): void => {
         const previous = editableTargetByMesh.get(mesh);
         if (previous && previous !== target) {
             const previousInstances = instancesByEditableTarget.get(previous);
             if (previousInstances) {
                 const index = previousInstances.indexOf(instance);
                 if (index >= 0) previousInstances.splice(index, 1);
-                if (previousInstances.length === 0) instancesByEditableTarget.delete(previous);
+                if (previousInstances.length === 0) {
+                    instancesByEditableTarget.delete(previous);
+                    positionTargetByEditableTarget.delete(previous);
+                }
             }
         }
         editableTargetByMesh.set(mesh, target);
+        positionTargetByEditableTarget.set(target, positionTarget);
         const targetInstances = instancesByEditableTarget.get(target);
         if (targetInstances) {
             if (!targetInstances.includes(instance)) targetInstances.push(instance);
@@ -1081,8 +1087,9 @@ async function main(): Promise<void> {
                 for (const target of ownedTargets) {
                     if (target !== disp) setParent(target, disp);
                 }
+                const positionTarget = ownedTargets.size === 1 ? ownedTargets.values().next().value : undefined;
                 for (const inst of group) {
-                    for (const mesh of inst.meshes) assignEditableTarget(mesh, inst, disp);
+                    for (const mesh of inst.meshes) assignEditableTarget(mesh, inst, disp, positionTarget ?? disp);
                 }
                 const box = addBox(-centre[0], centre[1], centre[2], half[0] * 2, half[1] * 2, half[2] * 2, PhysicsMotionType.ANIMATED);
                 if (box) {
@@ -1459,6 +1466,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         foeRecord();
     };
     addTask(scene, foeTask);
+    let gridBoundsOverlayVisible = false;
 
     const gateTaskMeshes = (task: typeof sceneTask, shouldDraw: (instance: Instance) => boolean): void => {
         const executeTask = task.execute;
@@ -1509,7 +1517,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (const task of [sceneTask, foeTask]) {
             task._ob.length = 0;
         }
-        foeTask.enabled = instances.some((instance) => instance.phase === "dissolving");
+        foeTask.enabled = gridBoundsOverlayVisible || instances.some((instance) => instance.phase === "dissolving");
     };
 
     surfaceTask.setDirLight(SUN_DIR);
@@ -1662,7 +1670,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     })();
 
     // ── Global tuning state (applied to newly built sims) ────────────────────
-    let radiusValue = 0.08;
+    const BASE_FLUID_PARTICLE_RADIUS = 0.08;
+    let radiusValue = BASE_FLUID_PARTICLE_RADIUS;
+    let fluidPhysicsScale = 1;
     let modeValue: VolumeSamplingMode = "dense";
     // Volume lattice vs surface shell. `auto` is the shipped behaviour (openness + thickness gates,
     // plus the per-prop hollow hint in MODEL_FOES); the other two force the choice so the difference
@@ -1684,6 +1694,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     /** Shared world-space simulation domain used by both mesh and manual starts. */
     const gridSize: [number, number, number] = [40, 20, 40];
     let showGridBounds = false;
+    let showGridBoundsSolid = false;
     let showGridGizmo = false;
     let currentMethod = "MLS-MPM";
     let currentMaterial = 0;
@@ -1724,7 +1735,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let refreshFlowControls = (): void => {};
     let refreshFlipParticleCapacity = (): void => {};
     let refreshParticleCountControl = (): void => {};
-    const simulationCellSize = (particleRadius = radiusValue): number =>
+    const fluidParticleRadius = (): number => BASE_FLUID_PARTICLE_RADIUS * fluidPhysicsScale;
+    const simulationCellSize = (particleRadius = simulationType === "fluid" ? fluidParticleRadius() : radiusValue): number =>
         currentMethod === "FLIP" ? Math.max(...gridSize) / flipGridResolution : Math.max(particleRadius * 2.4, 0.18);
     const simulationBounds = (center: readonly [number, number, number] = gridPosition): { min: [number, number, number]; max: [number, number, number] } => ({
         min: [center[0] - gridSize[0] * 0.5, center[1] - gridSize[1] * 0.5, center[2] - gridSize[2] * 0.5],
@@ -1748,6 +1760,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const manualConfigurationSignature = (): string =>
         JSON.stringify({
             method: currentMethod,
+            fluidPhysicsScale,
             gridPosition,
             gridSize,
             flipGridResolution,
@@ -2448,7 +2461,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
 
     function manualParticleCapacity(worldFlow = flowInWorldSpace(activeFlow)): number {
         const enabled = worldFlow.emitters.filter((emitter) => emitter.enabled);
-        const particleVolume = Math.max((radiusValue * 2) ** 3, 1e-6);
+        const particleVolume = Math.max((fluidParticleRadius() * 2) ** 3, 1e-6);
         const initialDemand = enabled
             .filter((emitter) => emitter.behavior === "initial")
             .reduce((sum, emitter) => sum + Math.ceil(fluidShapeVolume(emitter.shape, emitter.transform) / particleVolume), 0);
@@ -2462,19 +2475,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function projectedFlipParticleUsage(): { active: number; capacity: number; gpuBytes: number } {
         const worldFlow = flowInWorldSpace(activeFlow);
         const capacity = manualParticleCapacity(worldFlow);
-        const initial = worldFlow.emitters.filter((emitter) => emitter.enabled && emitter.behavior === "initial");
-        const active =
-            worldFlow.initialEmittersFillCapacity || initial.some((emitter) => emitter.sampling !== "volume")
-                ? capacity
-                : Math.min(
-                      capacity,
-                      flipParticleCountForVolume(
-                          initial.reduce((sum, emitter) => sum + fluidShapeVolume(emitter.shape, emitter.transform), 0),
-                          simulationCellSize(),
-                          flipMarkersPerCell
-                      )
-                  );
         const dx = simulationCellSize();
+        const initialPlan = countFluidInitialParticles(capacity, worldFlow, dx ** 3 / flipMarkersPerCell, simulationBounds(), true);
+        const active = initialPlan?.activeCount ?? 0;
         const gridDim = gridSize.map((size) => Math.max(1, Math.ceil(size / dx))) as [number, number, number];
         const flipPhysics = physValues["FLIP"]!;
         const gpuBytes = estimateFlipGpuBytes(capacity, gridDim, (flipPhysics.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
@@ -2487,6 +2490,27 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             polygonReconstructionMultiplier: flipPhysics.polygonReconstructionMultiplier ?? 1,
         });
         return { active, capacity, gpuBytes };
+    }
+
+    function flipInitialEmitterParticleCounts(): ReadonlyMap<string, number> {
+        const counts = new Map(activeFlow.emitters.map((emitter) => [emitter.id, 0]));
+        if (currentMethod !== "FLIP") {
+            return counts;
+        }
+        const worldFlow = flowInWorldSpace(activeFlow);
+        const capacity = manualParticleCapacity(worldFlow);
+        const resetCounts =
+            manualRun?.method === "FLIP" && manualRun.configurationSignature === manualConfigurationSignature() && manualRun.sim.count === capacity
+                ? manualRun.sim.initialEmitterParticleCounts
+                : undefined;
+        const projectedCounts =
+            resetCounts ?? countFluidInitialParticles(capacity, worldFlow, simulationCellSize() ** 3 / flipMarkersPerCell, simulationBounds(), true)?.emitterCounts;
+        if (projectedCounts) {
+            for (const emitter of activeFlow.emitters) {
+                counts.set(emitter.id, projectedCounts.get(emitter.id) ?? 0);
+            }
+        }
+        return counts;
     }
 
     function refreshManualParticleUsage(): void {
@@ -2544,6 +2568,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             delete canvas.dataset.restartParticleCapacity;
             delete canvas.dataset.restartSimulationGpuBytes;
         }
+        flowEditor?.refreshComputedValues();
     }
 
     function startManualSimulation(): void {
@@ -2561,7 +2586,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const center: [number, number, number] = [...gridPosition];
         const { min: boundsMin, max: boundsMax } = simulationBounds();
         const capacity = manualParticleCapacity(worldFlow);
-        const sim = createConfiguredSim(capacity, radiusValue, boundsMin, boundsMax);
+        const particleRadius = fluidParticleRadius();
+        const sim = createConfiguredSim(capacity, particleRadius, boundsMin, boundsMax);
         sim.setFlow(worldFlow);
         const collision = createNeighborhoodSdf(center, null);
         sim.setSceneSdf(collision.spec);
@@ -2583,7 +2609,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             configurationSignature: manualConfigurationSignature(),
         };
         fillManualColor(manualRun);
-        virtualSim.particleRadius = radiusValue;
+        virtualSim.particleRadius = particleRadius;
         virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
         canvas.dataset.lastCollisionPrimitiveCount = String(collision.count);
         setStatus();
@@ -2907,6 +2933,21 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     function styleSelect(sel: HTMLSelectElement): void {
         sel.style.cssText = "width:100%;padding:3px;background:#1a2230;color:#dfe6ee;border:1px solid #33415a;border-radius:4px;";
     }
+    const installClickFeedback = (buttons: readonly HTMLButtonElement[]): void => {
+        for (const button of buttons) {
+            button.dataset.clickFeedback = "true";
+            button.addEventListener("click", () => {
+                button.animate(
+                    [
+                        { boxShadow: "0 0 0 2px rgba(76, 220, 255, 0.95), 0 0 14px rgba(76, 220, 255, 0.8)", filter: "brightness(1.55)" },
+                        { boxShadow: "0 0 0 1px rgba(76, 220, 255, 0.4), 0 0 5px rgba(76, 220, 255, 0.3)", filter: "brightness(1.15)", offset: 0.65 },
+                        { boxShadow: "none", filter: "brightness(1)" },
+                    ],
+                    { duration: 360, easing: "ease-out" }
+                );
+            });
+        }
+    };
     const simulationTypeSelect = document.createElement("select");
     styleSelect(simulationTypeSelect);
     for (const [value, label] of [
@@ -3284,6 +3325,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
         refreshFlipParticleCapacity();
         refreshParticleCountControl();
+        refreshFlowControls();
         refreshPhysicsParamVisibility();
         syncPolygonSurfaceRendering();
     }
@@ -3333,6 +3375,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     gridBoundsWireframe.pickable = false;
     gridBoundsWireframe.renderOrder = 9_999;
     addToScene(scene, gridBoundsWireframe);
+    const gridBoundsSolid = createSolidGridBounds(engine, "aquanova-fluid-sim-grid-bounds-solid");
+    for (const face of gridBoundsSolid) {
+        foeTask.addMesh(face);
+        setMeshVisible(face, false);
+    }
 
     const appendPolyline = (segments: FlowWireframeSegment[], points: readonly FlowPoint[], closed = true): void => {
         for (let i = 1; i < points.length; i++) {
@@ -3572,13 +3619,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         return bounds ? [(bounds.min[0] + bounds.max[0]) * 0.5, (bounds.min[1] + bounds.max[1]) * 0.5, (bounds.min[2] + bounds.max[2]) * 0.5] : null;
     };
     const formatMeshGizmoVector = (values: readonly number[]): string => values.map((value) => value.toFixed(2)).join(", ");
+    const meshGizmoWorldPosition = (target: SceneNode | null): [number, number, number] | null =>
+        target ? transformPoint((positionTargetByEditableTarget.get(target) ?? target).worldMatrix, [0, 0, 0]) : null;
     const updateMeshGizmoInfo = (): void => {
         const target = meshGizmoTarget;
         if (!target) {
             meshGizmoInfo.hidden = true;
             return;
         }
-        const position = transformPoint(target.worldMatrix, [0, 0, 0]);
+        const position = meshGizmoWorldPosition(target)!;
         const bounds = editableTargetBounds(target);
         meshGizmoNameLine.textContent = `Object ${meshGizmoId(target) ?? target.name}`;
         meshGizmoPositionLine.textContent = `World position (m): ${formatMeshGizmoVector(position)}`;
@@ -3737,13 +3786,24 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         updateLineSystem(engine, gridBoundsWireframe, { lines: gridBoundsSegments(gridSize) });
         gridBoundsWireframe.position.set(gridPosition[0], gridPosition[1], gridPosition[2]);
         gridBoundsWireframe.scaling.set(1, 1, 1);
-        setMeshVisible(gridBoundsWireframe, showGridBounds || showGridGizmo);
+        const showSolidFaces = showGridBounds && showGridBoundsSolid;
+        for (const face of gridBoundsSolid) {
+            face.position.set(gridPosition[0], gridPosition[1], gridPosition[2]);
+            face.scaling.set(gridSize[0], gridSize[1], gridSize[2]);
+            setMeshVisible(face, showSolidFaces);
+        }
+        if (gridBoundsOverlayVisible !== showSolidFaces) {
+            gridBoundsOverlayVisible = showSolidFaces;
+            invalidatePhaseTaskBundles();
+        }
+        setMeshVisible(gridBoundsWireframe, showGridGizmo || (showGridBounds && !showGridBoundsSolid));
         syncFlowWireframe("emitter");
         syncFlowWireframe("sink");
         syncFlowGizmo();
         canvas.dataset.gridPosition = gridPosition.join(",");
         canvas.dataset.gridSize = gridSize.join(",");
         canvas.dataset.showGridBounds = String(showGridBounds);
+        canvas.dataset.showGridBoundsSolid = String(showGridBoundsSolid);
     };
     const syncGridGizmo = (): void => {
         attachPositionGizmoToNode(gridPositionGizmo, showGridGizmo ? gridBoundsWireframe : null);
@@ -3805,22 +3865,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         hideContainerToggle: true,
         hideFoam: false,
         hidePhysics: false,
-        hidePhysScale: true,
         hideDebug: false,
         hideGpuTiming: false,
-        showGridControls: true,
+        hideSimulationTiming: true,
         panelStyle: PANEL_STYLE,
         schemas: LIQ_SCHEMAS,
         methods: Object.keys(LIQ_SCHEMAS),
         particleCounts: [],
         particleCountInput: true,
+        physScaleMin: PHYS_MIN_SCALE,
+        physScaleMax: PHYS_MAX_SCALE,
         flipParticleCapacityMax: MAX_TOTAL,
-        showActiveBlocks: true,
         initial: {
             method: currentMethod,
             material: currentMaterial,
             count: manualParticleCapacity(),
-            physScale: 1,
+            physScale: fluidPhysicsScale,
             color: DEF_COLOR,
             absorption: DEF_ABSORPTION,
             size: DEF_SIZE,
@@ -3849,6 +3909,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             gridSize: [...gridSize],
             cellSize: simulationCellSize(),
             showGridBounds,
+            showGridBoundsSolid,
             renderMode: "surface",
             polygonShader: "physical",
             debug: "none",
@@ -3899,6 +3960,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                     refreshManualParticleUsage();
                 }
                 refreshParticleCountControl();
+            },
+            onPhysScale: (scale) => {
+                fluidPhysicsScale = Math.max(PHYS_MIN_SCALE, Math.min(PHYS_MAX_SCALE, scale));
+                controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
+                refreshParticleCountControl();
+                if (simulationType === "fluid" && manualRun && currentMethod !== "FLIP") {
+                    startManualSimulation();
+                } else {
+                    refreshManualParticleUsage();
+                }
             },
             onMaterial: (material) => {
                 currentMaterial = material;
@@ -3987,6 +4058,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
                 canvas.dataset.showGridBounds = String(visible);
                 syncGridBoundsWireframe();
             },
+            onShowGridBoundsSolid: (visible) => {
+                showGridBoundsSolid = visible;
+                canvas.dataset.showGridBoundsSolid = String(visible);
+                syncGridBoundsWireframe();
+            },
             // Physics sliders apply LIVE to every running sim AND seed the next shot.
             onPhysicsParam: (key, value) => {
                 physValues[currentMethod]![key] = value;
@@ -4050,7 +4126,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             thicknessDownscale: v.thicknessDownscale,
             absorption: v.absorption,
             size: v.size,
-            physScale: 1,
+            physScale: fluidPhysicsScale,
             count: currentMethod === "FLIP" ? (flipParticleCapacityRequest ?? 0) : (particleCapacityRequestByMethod.get(currentMethod) ?? 0),
             gridResolution: currentMethod === "FLIP" ? flipGridResolution : undefined,
             markersPerCell: currentMethod === "FLIP" ? flipMarkersPerCell : undefined,
@@ -4080,6 +4156,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             fusedBlockDiscovery: currentMethod === "MLS-MPM" ? v.fusedBlockDiscovery : undefined,
             grid: { position: [...gridPosition], size: [...gridSize] },
             showGridBounds: v.showGridBounds,
+            showGridBoundsSolid: v.showGridBoundsSolid,
             foam: v.foam,
             emitters: structuredClone(activeFlow.emitters),
             sinks: structuredClone(activeFlow.sinks),
@@ -4093,6 +4170,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const method = j.meta?.method;
         if (method && LIQ_SCHEMAS[method]) switchMethod(method);
         const p = presetFromExportJson(j);
+        fluidPhysicsScale = Math.max(PHYS_MIN_SCALE, Math.min(PHYS_MAX_SCALE, p.physScale ?? 1));
+        controls.setPhysScale(fluidPhysicsScale);
         // Physics: update the seed values, the sliders AND every running sim.
         if (p.schema) {
             const merged = { ...SCHEMA_DEFAULTS[currentMethod], ...p.schema };
@@ -4255,8 +4334,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (p.showGridBounds !== undefined) {
             showGridBounds = p.showGridBounds;
             controls.setShowGridBounds(showGridBounds);
-            syncGridBoundsWireframe();
         }
+        showGridBoundsSolid = p.showGridBoundsSolid ?? false;
+        controls.setShowGridBoundsSolid(showGridBoundsSolid);
+        syncGridBoundsWireframe();
         if (p.freeCamera && p.freeCamera.position.every(isFinite) && p.freeCamera.target.every(isFinite)) {
             applyFreeCameraPose(p.freeCamera.position, p.freeCamera.target);
         }
@@ -4312,6 +4393,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     const ioRow = document.createElement("div");
     ioRow.style.cssText = "display:flex;gap:6px;margin-top:6px;";
     ioRow.append(exportBtn, importBtn, importInput);
+    installClickFeedback([fluidSimCreateButton, fluidSimUpdateButton, fluidSimDeleteButton, restartBtn, exportBtn, importBtn]);
 
     const normalizeFluidSimName = (name: string): string => name.replace(/\.json$/i, "").toLowerCase();
     const isValidFluidSimName = (name: string): boolean => /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name);
@@ -4468,6 +4550,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         setHostSectionVisible(sinkSection, value === "fluid");
         controls.setSectionVisible("Foam", value === "fluid");
         controls.setParticleCountVisible(value === "fluid");
+        controls.setPhysScaleVisible(value === "fluid");
+        controls.setGridSettings(gridPosition, gridSize, simulationCellSize());
         refreshParticleCountControl();
         updateHelperText();
         canvas.dataset.simulationType = value;
@@ -4504,6 +4588,16 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             setGizmoVisible: (kind, visible) => {
                 flowGizmoOwner = visible ? kind : flowGizmoOwner === kind ? null : flowGizmoOwner;
             },
+        },
+        getEmitterRateMode: () => (currentMethod === "FLIP" ? "occupancy-refill" : "unlimited-toggle"),
+        getInitialEmitterParticleCount: (emitter) =>
+            currentMethod === "FLIP" && emitter.behavior === "initial" ? (flipInitialEmitterParticleCounts().get(emitter.id) ?? 0) : undefined,
+        onInitialEmitterParticleCountDisplayed: (count) => {
+            if (count === undefined) {
+                delete canvas.dataset.selectedInitialEmitterParticleCount;
+            } else {
+                canvas.dataset.selectedInitialEmitterParticleCount = String(count);
+            }
         },
     });
     refreshFlowControls = () => flowEditor?.setFlow(activeFlow);
@@ -4586,6 +4680,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         setFlow: (flow: FluidFlowConfig) => {
             activeFlow = structuredClone(flow);
             refreshFlowControls();
+            refreshFlipParticleCapacity();
+            refreshManualParticleUsage();
         },
         collisionNeighborhoodRadius: () => collisionNeighborhoodRadius,
         setCollisionNeighborhoodRadius: (radius: number) => {
@@ -4678,6 +4774,15 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             return hit ? meshGizmoId(editableTargetByMesh.get(hit.mesh) ?? hit.mesh) : null;
         },
         meshGizmo: (): string | null => meshGizmoId(meshGizmoTarget),
+        meshGizmoPosition: (): [number, number, number] | null => meshGizmoWorldPosition(meshGizmoTarget),
+        meshGizmoPositionText: (): string | null => meshGizmoPositionLine.textContent,
+        selectMeshGizmo: (entityName: string): boolean => {
+            const instance = instances.find((candidate) => candidate.key.startsWith(`${entityName}#`));
+            const mesh = instance?.meshes[0];
+            if (!mesh) return false;
+            setMeshGizmoTarget(editableTargetByMesh.get(mesh) ?? mesh);
+            return true;
+        },
         toggleMeshGizmoAt,
         setImpulseRadius: (r: number) => {
             impulseRadius = r;

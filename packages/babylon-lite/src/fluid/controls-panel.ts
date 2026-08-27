@@ -697,6 +697,7 @@ export interface FluidControlValues {
     gridResolution: number;
     markersPerCell: number;
     showGridBounds: boolean;
+    showGridBoundsSolid: boolean;
     count: number;
     renderMode: "surface" | "spheres";
     polygonShader: "physical" | "ocean";
@@ -745,6 +746,8 @@ export interface FluidControlsInitial {
     markersPerCell?: number;
     /** Initial visibility of the simulation-domain wireframe. */
     showGridBounds?: boolean;
+    /** Render the visible simulation-domain bounds as transparent faces instead of only wireframe edges. */
+    showGridBoundsSolid?: boolean;
     color: string;
     absorption: number;
     size: number;
@@ -822,6 +825,7 @@ export interface FluidControlsCallbacks {
     onGridSettings?(position: [number, number, number], size: [number, number, number]): string | void;
     onGridGizmo?(visible: boolean): void;
     onShowGridBounds?(visible: boolean): void;
+    onShowGridBoundsSolid?(visible: boolean): void;
     onActiveBlocks?(enabled: boolean): void;
     onPagedGrid?(enabled: boolean): void;
     onPagedGridMaxPages?(pages: number): void;
@@ -871,11 +875,17 @@ export interface FluidControlsOptions {
     hideDebug?: boolean;
     hideGpuTiming?: boolean;
     hidePhysics?: boolean;
-    /** Show the MLS-MPM active-block execution checkbox. */
+    /** Hide sparse active-block and paged-grid controls. */
+    hideActiveBlocks?: boolean;
+    /** Hide grid position, world-space XYZ size, derived cell size, bounds, and gizmo controls. */
+    hideGridControls?: boolean;
+    /** Hide duration and alpha-decay lifecycle controls from the General section. */
+    hideSimulationTiming?: boolean;
+    /** @deprecated Shared controls are shown by default. Use hideActiveBlocks to hide them. */
     showActiveBlocks?: boolean;
-    /** Show grid position, world-space XYZ size and derived cell-size controls. */
+    /** @deprecated Shared controls are shown by default. Use hideGridControls to hide them. */
     showGridControls?: boolean;
-    /** Show duration and alpha-decay lifecycle controls in the General section. */
+    /** @deprecated Shared controls are shown by default. Use hideSimulationTiming to hide them. */
     showSimulationTiming?: boolean;
     /** When true, the "Physics simulation" section OMITS the "Physics particle size"
      *  row but KEEPS the per-method sliders + reset button. Use
@@ -965,6 +975,7 @@ export interface FluidControlsHandle {
     setDebug(mode: string): void;
     setPhysics(schema: Record<string, number>): void;
     setPhysScale(scale: number): void;
+    setPhysScaleVisible(visible: boolean): void;
     setGridResolution(resolution: number): void;
     setMarkersPerCell(markersPerCell: number): void;
     setFlipParticleCapacity(capacity: number): void;
@@ -972,6 +983,7 @@ export interface FluidControlsHandle {
     setGridSettings(position: [number, number, number], size: [number, number, number], cellSize: number): void;
     setGridStatus(message: string): void;
     setShowGridBounds(visible: boolean): void;
+    setShowGridBoundsSolid(visible: boolean): void;
     setActiveBlocks(enabled: boolean): void;
     setPagedGrid(enabled: boolean): void;
     setPagedGridMaxPages(pages: number): void;
@@ -1012,6 +1024,9 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const init = opts.initial;
     const physMin = opts.physScaleMin ?? 0.5;
     const physMax = opts.physScaleMax ?? 3;
+    const showActiveBlocks = !opts.hideActiveBlocks && opts.showActiveBlocks !== false;
+    const showGridControls = !opts.hideGridControls && opts.showGridControls !== false;
+    const showSimulationTiming = !opts.hideSimulationTiming && opts.showSimulationTiming !== false;
 
     // Deep-copy the schemas so the component owns each ParamDef's mutable `value`.
     const schemas: Record<string, PhysSchemaEntry[]> = {};
@@ -1743,6 +1758,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     // than every neighbouring row and made it read as a section heading.
     const physRow = document.createElement("div");
     physRow.style.cssText = "margin:2px 0 8px;";
+    physRow.dataset.fluidPhysicsParticleSize = "true";
     const physHead = document.createElement("div");
     physHead.style.cssText = "display:flex;justify-content:space-between;";
     const physLab = labelWithInfo(
@@ -1765,6 +1781,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     };
     physInput.onchange = () => on.onPhysScale?.(parseFloat(physInput.value));
     physRow.append(physHead, physInput);
+    let physScaleVisible = !opts.hidePhysScale;
     let gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(init.gridResolution ?? 160)));
     const flipResolutionRow = document.createElement("div");
     flipResolutionRow.style.cssText = "display:none;margin:2px 0 8px;";
@@ -1923,7 +1940,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const applyFlipControlVisibility = (): void => {
         const flip = currentMethod === "FLIP";
         particlesRow.style.display = particleCountVisible && !flip ? "" : "none";
-        physRow.style.display = flip ? "none" : "";
+        physRow.style.display = physScaleVisible && !flip ? "" : "none";
         flipResolutionRow.hidden = !flip;
         flipMarkersRow.hidden = !flip;
         flipParticleCapacityRow.hidden = !flip;
@@ -1945,7 +1962,22 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         gridBoundsChk,
         labelWithInfo("Show grid bounds", "Displays the active solver's simulation-domain bounding box. This visualization does not draw every cell or affect the simulation.")
     );
-    gridBoundsChk.onchange = () => on.onShowGridBounds?.(gridBoundsChk.checked);
+    const gridBoundsSolidRow = document.createElement("label");
+    gridBoundsSolidRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0 8px 18px;cursor:pointer;";
+    const gridBoundsSolidChk = document.createElement("input");
+    gridBoundsSolidChk.type = "checkbox";
+    gridBoundsSolidChk.checked = init.showGridBoundsSolid ?? false;
+    gridBoundsSolidRow.append(gridBoundsSolidChk, labelWithInfo("Solid faces", "Shows transparent, depth-tested faces instead of only the simulation-domain wireframe."));
+    const applyGridBoundsDependencies = (): void => {
+        gridBoundsSolidChk.disabled = !gridBoundsChk.checked;
+        gridBoundsSolidRow.style.opacity = gridBoundsChk.checked ? "1" : "0.5";
+    };
+    gridBoundsChk.onchange = () => {
+        applyGridBoundsDependencies();
+        on.onShowGridBounds?.(gridBoundsChk.checked);
+    };
+    gridBoundsSolidChk.onchange = () => on.onShowGridBoundsSolid?.(gridBoundsSolidChk.checked);
+    applyGridBoundsDependencies();
 
     const gridGizmoRow = document.createElement("label");
     gridGizmoRow.style.cssText = "display:flex;align-items:center;gap:6px;margin:8px 0;cursor:pointer;";
@@ -2032,8 +2064,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         on.onActiveBlocks?.(activeBlocksChk.checked);
     };
     const applyActiveBlocksVisibility = (): void => {
-        const mpmDisplay = opts.showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
-        const pagedDisplay = opts.showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "flex" : "none";
+        const mpmDisplay = showActiveBlocks && currentMethod === "MLS-MPM" ? "flex" : "none";
+        const pagedDisplay = showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "flex" : "none";
         activeBlocksRow.style.display = mpmDisplay;
         fusedBlockDiscoveryRow.style.display = mpmDisplay;
         pagedGridRow.style.display = pagedDisplay;
@@ -2752,7 +2784,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     if (!opts.hideParticles) {
         generalItems.push(particlesRow);
     }
-    if (opts.showSimulationTiming) {
+    if (showSimulationTiming) {
         generalItems.push(simulationDurationRow, alphaDecayRow);
     }
     if (generalItems.length > 0) {
@@ -2940,8 +2972,8 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         // The "Physics particle size" row is dropped when the host owns its own particle-size
         // slider; the per-method sliders + reset stay.
         const activeBlockRows = [activeBlocksRow, pagedGridRow, pagedGridCapacityRow, pagedGridStatus, fusedBlockDiscoveryRow];
-        const gridRows = opts.showGridControls
-            ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, particleUsageRow, pressureDiagnosticsRow, gridBoundsRow, gridGizmoRow]
+        const gridRows = showGridControls
+            ? [gridPositionControl.row, gridSizeControl.row, gridStatus, cellSizeRow, particleUsageRow, pressureDiagnosticsRow, gridBoundsRow, gridBoundsSolidRow, gridGizmoRow]
             : [particleUsageRow, pressureDiagnosticsRow];
         const physItems = opts.hidePhysScale
             ? [flipResolutionRow, flipMarkersRow, flipParticleCapacityRow, markerDensityStatus, ...gridRows, ...activeBlockRows, sliderHost, resetBtn]
@@ -3221,6 +3253,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             physInput.value = String(scale);
             physVal.textContent = `${scale.toFixed(2)}\u00d7`;
         },
+        setPhysScaleVisible(visible: boolean): void {
+            physScaleVisible = visible;
+            applyFlipControlVisibility();
+        },
         setGridResolution(resolution: number): void {
             gridResolution = Math.max(FLIP_GRID_RESOLUTION_MIN, Math.min(FLIP_GRID_RESOLUTION_MAX, Math.round(resolution)));
             flipResolutionInput.value = String(gridResolution);
@@ -3250,6 +3286,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setGridStatus,
         setShowGridBounds(visible: boolean): void {
             gridBoundsChk.checked = visible;
+            applyGridBoundsDependencies();
+        },
+        setShowGridBoundsSolid(visible: boolean): void {
+            gridBoundsSolidChk.checked = visible;
         },
         setActiveBlocks(enabled: boolean): void {
             activeBlocksChk.checked = enabled;
@@ -3266,7 +3306,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         setPagedGridStatus(message: string, error = false): void {
             pagedGridStatus.textContent = message;
             pagedGridStatus.style.color = error ? "#ff8a80" : "#9fb3c8";
-            pagedGridStatus.style.display = message && opts.showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "block" : "none";
+            pagedGridStatus.style.display = message && showActiveBlocks && (currentMethod === "MLS-MPM" || currentMethod === "FLIP") ? "block" : "none";
         },
         setFusedBlockDiscovery(enabled: boolean): void {
             fusedBlockDiscoveryChk.checked = enabled;
@@ -3343,6 +3383,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 gridResolution,
                 markersPerCell,
                 showGridBounds: gridBoundsChk.checked,
+                showGridBoundsSolid: gridBoundsSolidChk.checked,
                 count: currentMethod === "FLIP" ? flipParticleCapacity : committedParticleCount,
                 renderMode: renderChk.checked ? "spheres" : "surface",
                 polygonShader: polygonShaderSelect.value as "physical" | "ocean",

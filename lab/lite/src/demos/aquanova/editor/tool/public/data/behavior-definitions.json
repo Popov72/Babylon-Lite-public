@@ -17,6 +17,12 @@
                     "exclusiveMinimum": true,
                     "default": 10,
                     "label": "Mass (kg)"
+                },
+                "lockedRotationAxes": {
+                    "type": "array",
+                    "items": { "type": "enum", "values": ["x", "y", "z"] },
+                    "label": "Locked rotation axes",
+                    "description": "Prevents the rigid body from rotating around the selected local axes."
                 }
             }
         },
@@ -175,6 +181,13 @@
                     "default": "pickItem",
                     "label": "Sound"
                 },
+                "rotationAxis": {
+                    "type": "enum",
+                    "values": ["x", "y", "z"],
+                    "default": "y",
+                    "label": "Rotation axis",
+                    "description": "Local owner axis used for the pickup's idle rotation."
+                },
                 "speed": {
                     "type": "number",
                     "minimum": 0,
@@ -309,10 +322,71 @@
                 }
             }
         },
+        "playSound": {
+            "extends": "soundControl",
+            "label": "Play sound",
+            "description": "Starts a sound immediately or after a source event.",
+            "eventsRaised": [],
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "required": true,
+                    "definition": false,
+                    "label": "Sound ID",
+                    "description": "Unique playback channel ID referenced by stopSound."
+                },
+                "sound": {
+                    "type": "string",
+                    "optionsSource": "sounds",
+                    "required": true,
+                    "label": "Sound"
+                },
+                "fadeInDelay": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "label": "Fade-in delay (s)"
+                },
+                "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 1,
+                    "label": "Volume"
+                },
+                "loop": {
+                    "type": "boolean",
+                    "default": false,
+                    "label": "Loop"
+                }
+            }
+        },
+        "stopSound": {
+            "extends": "soundControl",
+            "label": "Stop sound",
+            "description": "Stops every active instance of a sound immediately or after a source event.",
+            "eventsRaised": [],
+            "properties": {
+                "soundId": {
+                    "type": "string",
+                    "optionsSource": "soundIds",
+                    "optionsByChunk": "soundIdsByChunk",
+                    "required": true,
+                    "label": "Sound ID",
+                    "description": "Playback channel defined by a playSound behavior."
+                },
+                "fadeOutDelay": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "label": "Fade-out delay (s)"
+                }
+            }
+        },
         "fluidSimulation": {
             "label": "Fluid simulation",
             "description": "Runs an authored fluid simulation at the owner's world position and maps external events to simulation, player-collision, emitter, and sink actions.",
-            "eventsRaised": [{ "name": "emissionComplete" }],
+            "eventsRaised": [{ "name": "startSimulation" }, { "name": "emissionComplete" }, { "name": "endSimulation" }],
             "properties": {
                 "fluidSim": {
                     "type": "string",
@@ -572,6 +646,24 @@
         }
     },
     "templates": {
+        "soundControl": {
+            "properties": {
+                "source": {
+                    "type": "entitySource",
+                    "optionsSource": "eventEntities",
+                    "label": "Sources",
+                    "description": "Optional event sources. One source is written as a string; several are written as an array."
+                },
+                "event": {
+                    "type": "event",
+                    "optionsSource": "eventsOfSources",
+                    "optionsFromRoot": "source",
+                    "label": "Event",
+                    "description": "Optional source event that triggers the action. Without a source and event, the action runs at startup.",
+                    "emptyHint": "Choose the sources first - this offers what they all raise."
+                }
+            }
+        },
         "entityAction": {
             "description": "Acts on its owner immediately, or when one of the subscribed source events is raised.",
             "properties": {

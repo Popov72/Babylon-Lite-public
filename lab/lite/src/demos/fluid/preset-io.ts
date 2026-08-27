@@ -76,6 +76,8 @@ export interface FluidExportJson {
     markersPerCell?: number;
     /** Display the active solver domain wireframe. */
     showGridBounds?: boolean;
+    /** Display transparent depth-tested faces instead of only domain wireframe edges. */
+    showGridBoundsSolid?: boolean;
     particleCount: number;
     /** PB-MPM material enum: 0 liquid, 1 elastic, 2 sand, 3 viscoelastic. */
     material?: number;
@@ -208,6 +210,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
               }
             : {}),
         showGridBounds: ps.showGridBounds ?? false,
+        showGridBoundsSolid: ps.showGridBoundsSolid ?? false,
         particleCount: ps.count,
         ...(ps.material !== undefined ? { material: ps.material } : {}),
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
@@ -343,6 +346,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
             : {}),
         ...(hasGridDefinition ? { grid: { position: gridPosition, size: gridSize } } : {}),
         showGridBounds: j.showGridBounds ?? false,
+        showGridBoundsSolid: j.showGridBoundsSolid ?? false,
         count: j.particleCount,
         material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),

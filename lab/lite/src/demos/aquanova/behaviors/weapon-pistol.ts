@@ -12,6 +12,7 @@ type WeaponPistolContext = Pick<AquanovaGameContext, "events" | "weaponInventory
 
 export class WeaponPistolBehavior implements Behavior<"weaponPistol"> {
     public readonly name = "weaponPistol";
+    public readonly retainOnEntityRetire = true;
     public readonly mesh: Mesh | null;
     public readonly config: WeaponPistolBehaviorConfig;
     private readonly context: WeaponPistolContext;

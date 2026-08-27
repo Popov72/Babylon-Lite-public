@@ -104,6 +104,7 @@ import type { DemoParam, FluidCtx, FluidDemo, FluidDomainBounds, FluidGridSettin
 import { carryMethodIndependentState } from "./fluid/method-independent-state.js";
 import { exportJsonFromPairState, presetFromExportJson, type FluidExportJson } from "./fluid/preset-io.js";
 import { parseBlenderFluidJson, scenePayloadFromBlenderFluidJson, type BlenderFluidScene } from "./fluid/blender-fluid-json.js";
+import { createSolidGridBounds } from "./fluid/grid-bounds-visual.js";
 import { getQualityPreset, QUALITIES, DEFAULT_QUALITY, loadQualityPresets, type Quality } from "./fluid/quality-presets.js";
 import { fluidCaptureCompletionTime, fluidSimulationLifecycle, fluidSimulationStepDelta } from "./fluid/simulation-lifecycle.js";
 import { createFluidFlowEditor, type FluidFlowEditor, type FluidFlowObjectKind } from "./fluid/flow-editor.js";
@@ -452,6 +453,7 @@ async function main(): Promise<void> {
     let importedCollisionActive = false;
     let builtWithGridFloor = false;
     let showGridBounds = false;
+    let showGridBoundsSolid = false;
     let showGridGizmo = false;
     let flipMarkersPerCell = FLIP_DEFAULT_MARKERS_PER_CELL;
     let builtFlipMarkersPerCell = flipMarkersPerCell;
@@ -2404,9 +2406,6 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         schemas: DEFAULT_FLUID_SCHEMAS,
         methods: Object.keys(DEFAULT_FLUID_SCHEMAS),
         particleCounts: PARTICLE_COUNTS,
-        showActiveBlocks: true,
-        showGridControls: true,
-        showSimulationTiming: true,
         physScaleMin: PHYS_MIN_SCALE,
         physScaleMax: PHYS_MAX_SCALE,
         flipParticleCapacityMax: deviceParticleCapacityForMethod("FLIP"),
@@ -2423,6 +2422,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             gridResolution: gridResolutionForScale(methodName, physicsScale, Math.max(...initialGridSettings.size)),
             markersPerCell: flipMarkersPerCell,
             showGridBounds,
+            showGridBoundsSolid,
             color: "#16a3c3", // matches the default FLUID_COLOR
             absorption: 1,
             size: 1,
@@ -2571,6 +2571,11 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             onShowGridBounds: (visible) => {
                 showGridBounds = visible;
                 canvas.dataset.showGridBounds = String(visible);
+                syncGridBoundsWireframe();
+            },
+            onShowGridBoundsSolid: (visible) => {
+                showGridBoundsSolid = visible;
+                canvas.dataset.showGridBoundsSolid = String(visible);
                 syncGridBoundsWireframe();
             },
             onActiveBlocks: (enabled) => {
@@ -3164,12 +3169,22 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     gridBoundsWireframe.renderOrder = 9_999;
     addToScene(scene, gridBoundsWireframe);
     setMeshVisible(gridBoundsWireframe, false);
+    const gridBoundsSolid = createSolidGridBounds(engine, "fluid-grid-bounds-solid");
+    for (const face of gridBoundsSolid) {
+        overlayTask.addMesh(face);
+        setMeshVisible(face, false);
+    }
     const syncGridBoundsWireframe = (): void => {
         const grid = effectiveGridSettings();
         updateLineSystem(engine, gridBoundsWireframe, { lines: gridBoundsSegments(grid.size) });
         gridBoundsWireframe.position.set(grid.position[0], grid.position[1], grid.position[2]);
         gridBoundsWireframe.scaling.set(1, 1, 1);
-        setMeshVisible(gridBoundsWireframe, showGridBounds || showGridGizmo);
+        for (const face of gridBoundsSolid) {
+            face.position.set(grid.position[0], grid.position[1], grid.position[2]);
+            face.scaling.set(grid.size[0], grid.size[1], grid.size[2]);
+            setMeshVisible(face, showGridBounds && showGridBoundsSolid);
+        }
+        setMeshVisible(gridBoundsWireframe, showGridGizmo || (showGridBounds && !showGridBoundsSolid));
     };
     const appendPolyline = (segments: FlowWireframeSegment[], points: readonly Vec3[], closed = true): void => {
         for (let i = 1; i < points.length; i++) {
@@ -3617,6 +3632,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         controls.setGridResolution(gridResolution);
         controls.setMarkersPerCell(flipMarkersPerCell);
         controls.setShowGridBounds(showGridBounds);
+        controls.setShowGridBoundsSolid(showGridBoundsSolid);
         canvas.dataset.gridPosition = effectiveGrid.position.join(",");
         canvas.dataset.gridSize = effectiveGrid.size.join(",");
         canvas.dataset.gridCells = cells.join(",");
@@ -3626,6 +3642,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         canvas.dataset.gridExplicit = String(gridSettings !== undefined);
         canvas.dataset.physicsParticleSize = String(physicsScale);
         canvas.dataset.showGridBounds = String(showGridBounds);
+        canvas.dataset.showGridBoundsSolid = String(showGridBoundsSolid);
     }
 
     function setPhysicsScale(s: number): void {
@@ -3835,6 +3852,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             gridResolution: method === "FLIP" ? RENDER_DEFAULTS.gridResolution : undefined,
             markersPerCell: method === "FLIP" ? RENDER_DEFAULTS.markersPerCell : undefined,
             showGridBounds: false,
+            showGridBoundsSolid: false,
             count: RENDER_DEFAULTS.count,
             material: method === "PB-MPM" ? material : undefined,
             renderMode: sand ? "spheres" : RENDER_DEFAULTS.renderMode,
@@ -3896,6 +3914,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             markersPerCell: p.markersPerCell ?? base.markersPerCell,
             grid: presetGrid,
             showGridBounds: p.showGridBounds ?? base.showGridBounds,
+            showGridBoundsSolid: p.showGridBoundsSolid ?? base.showGridBoundsSolid,
             count: p.count ?? base.count,
             material: p.material ?? base.material,
             camera: p.camera ?? base.camera,
@@ -3958,6 +3977,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             markersPerCell: method === "FLIP" ? flipMarkersPerCell : undefined,
             grid: gridSettings ? cloneGridSettings(gridSettings) : undefined,
             showGridBounds,
+            showGridBoundsSolid,
             count: method === "FLIP" ? flipParticleCapacityRequest : particleCount,
             material: method === "PB-MPM" ? pbmpmMaterial : undefined,
             camera: { alpha: cam.alpha, beta: cam.beta, radius: cam.radius, target: [cam.target.x, cam.target.y, cam.target.z] },
@@ -4175,7 +4195,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             controls.setShowContainer(st.showContainer);
         }
         showGridBounds = st.showGridBounds ?? false;
+        showGridBoundsSolid = st.showGridBoundsSolid ?? false;
         controls.setShowGridBounds(showGridBounds);
+        controls.setShowGridBoundsSolid(showGridBoundsSolid);
         // Core-owned viewing options the pair pins. Both are optional so files written before
         // they existed restore the defaults rather than turning themselves off/on at random.
         if (st.envIntensity !== undefined && st.envIntensity !== envIntensity) {

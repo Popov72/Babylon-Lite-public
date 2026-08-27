@@ -1,6 +1,5 @@
-import { setMeshVisible } from "babylon-lite";
 import type { Mesh, SceneNode } from "babylon-lite";
-import { meshGroupBounds, type MeshGroupBounds } from "../mesh-bounds.js";
+import { meshGroupAabbProvider, type MeshGroupAabb, type MeshGroupBounds } from "../mesh-bounds.js";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, PickEntityBehaviorConfig } from "./types.js";
@@ -12,8 +11,9 @@ const DEFAULT_SOUND = "pickItem";
 const DEFAULT_BOUNDING_BOX_SCALE = [1, 1, 1] as const;
 const DEFAULT_ROTATION_SPEED = (Math.PI * 2) / 3;
 
-type PickEntityContext = Pick<AquanovaGameContext, "character" | "events" | "sounds">;
+type PickEntityContext = Pick<AquanovaGameContext, "character" | "events" | "retireEntity" | "sounds">;
 type BoundingBoxScale = readonly [number, number, number];
+type RotationAxis = NonNullable<PickEntityBehaviorConfig["rotationAxis"]>;
 
 export class PickEntityBehavior implements Behavior<"pickEntity"> {
     public readonly name = "pickEntity";
@@ -24,8 +24,9 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     private readonly context: PickEntityContext;
     private readonly entityName: string;
     private readonly boundingBoxScale: BoundingBoxScale;
+    private readonly rotationAxis: RotationAxis;
     private readonly rotationSpeed: number;
-    private bounds: MeshGroupBounds | null = null;
+    private boundsProvider: (() => MeshGroupAabb | null) | null = null;
     private sound: ManagedSound | null = null;
     private stopPhysicsStep: (() => void) | null = null;
     private picked = false;
@@ -34,7 +35,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         if (!meshes.length) {
             throw new Error("[aquanova] pickEntity requires at least one mesh");
         }
-        assertBehaviorConfigKeys(config, "pickEntity", ["boundingBoxScale", "raiseEvent", "sound", "speed"]);
+        assertBehaviorConfigKeys(config, "pickEntity", ["boundingBoxScale", "raiseEvent", "rotationAxis", "sound", "speed"]);
         validateEvent(config.raiseEvent);
         validateSoundName(config.sound ?? DEFAULT_SOUND);
         this.mesh = meshes[0]!;
@@ -44,6 +45,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         this.context = context;
         this.entityName = entityName;
         this.boundingBoxScale = resolveBoundingBoxScale(config.boundingBoxScale);
+        this.rotationAxis = resolveRotationAxis(config.rotationAxis);
         this.rotationSpeed = DEFAULT_ROTATION_SPEED * resolveSpeed(config.speed);
     }
 
@@ -58,11 +60,11 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     }
 
     public start(): void {
-        const bounds = meshGroupBounds(this.meshes);
-        if (!bounds) {
+        const boundsProvider = meshGroupAabbProvider(this.meshes);
+        if (!boundsProvider()) {
             throw new Error("[aquanova] pickEntity target has no readable mesh geometry");
         }
-        this.bounds = scaleBounds(bounds, this.boundingBoxScale);
+        this.boundsProvider = boundsProvider;
         this.stopPhysicsStep = this.context.events.on("physicsStep", ({ deltaSeconds }) => this.update(deltaSeconds));
     }
 
@@ -72,21 +74,22 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
     }
 
     private update(deltaSeconds: number): void {
-        if (this.picked || !this.bounds) {
+        if (this.picked) {
             return;
         }
-        if (!playerIntersectsBounds(this.context, this.bounds)) {
+        const aabb = this.boundsProvider?.();
+        if (!aabb) {
+            return;
+        }
+        if (!playerIntersectsBounds(this.context, scaleBounds(aabb, this.boundingBoxScale))) {
             for (const node of this.rotationNodes) {
-                node.rotation.y += this.rotationSpeed * deltaSeconds;
+                node.rotation[this.rotationAxis] += this.rotationSpeed * deltaSeconds;
             }
             return;
         }
         this.picked = true;
         this.stopPhysicsStep?.();
         this.stopPhysicsStep = null;
-        for (const mesh of this.meshes) {
-            setMeshVisible(mesh, false);
-        }
         if (!this.sound) {
             throw new Error("[aquanova] pickEntity sound was not initialized");
         }
@@ -97,6 +100,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
                 event: this.config.raiseEvent.event,
             });
         }
+        this.context.retireEntity(this.entityName, this.meshes);
     }
 }
 
@@ -121,6 +125,16 @@ function resolveBoundingBoxScale(scale: PickEntityBehaviorConfig["boundingBoxSca
         throw new Error(`[aquanova] pickEntity.boundingBoxScale must contain three finite non-negative values, received ${JSON.stringify(scale)}`);
     }
     return [scale[0]!, scale[1]!, scale[2]!];
+}
+
+function resolveRotationAxis(axis: PickEntityBehaviorConfig["rotationAxis"]): RotationAxis {
+    if (axis === undefined) {
+        return "y";
+    }
+    if (axis !== "x" && axis !== "y" && axis !== "z") {
+        throw new Error(`[aquanova] pickEntity.rotationAxis must be "x", "y", or "z", received ${String(axis)}`);
+    }
+    return axis;
 }
 
 function resolveSpeed(speed: PickEntityBehaviorConfig["speed"]): number {
@@ -154,10 +168,11 @@ function isSceneNode(value: Mesh["parent"]): value is SceneNode {
     return value !== null && "name" in value && "rotation" in value;
 }
 
-function scaleBounds(bounds: MeshGroupBounds, scale: BoundingBoxScale): MeshGroupBounds {
+function scaleBounds(bounds: MeshGroupAabb, scale: BoundingBoxScale): MeshGroupBounds {
+    const centre: [number, number, number] = [(bounds.min[0] + bounds.max[0]) * 0.5, (bounds.min[1] + bounds.max[1]) * 0.5, (bounds.min[2] + bounds.max[2]) * 0.5];
     return {
-        centre: bounds.centre,
-        half: [bounds.half[0] * scale[0], bounds.half[1] * scale[1], bounds.half[2] * scale[2]],
+        centre,
+        half: [(bounds.max[0] - centre[0]) * scale[0], (bounds.max[1] - centre[1]) * scale[1], (bounds.max[2] - centre[2]) * scale[2]],
     };
 }
 

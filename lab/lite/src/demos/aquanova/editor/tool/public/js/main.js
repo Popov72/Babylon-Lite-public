@@ -1,6 +1,6 @@
 // Wiring: toolbar, inspector, keyboard, autoload.
 
-import { loadCatalogue, getCatalogue, defaultKit, moduleBounds, instantiate } from "./kit.js";
+import { loadCatalogue, reloadCatalogue, getCatalogue, defaultKit, moduleBounds, instantiate } from "./kit.js";
 import { initThumbs } from "./thumbs.js";
 import { initPalette, setBrush, refreshCollisionMarks } from "./palette.js";
 import {
@@ -199,6 +199,7 @@ import {
 import { generateLocalEnvironments } from "./local-environments.js";
 import {
     behaviorFileOptions,
+    behaviorEntitySources,
     behaviorMetadata,
     behaviorMetadataNames,
     collectRaisedEventNames,
@@ -715,6 +716,8 @@ const entityScopeFor = (key) => {
 function behaviorFormOptions(nearbyEntities = [], owner = "") {
   const entry = state.selection.length === 1 ? entryOf(state.selection[0]) : null;
   const chunkEvents = (source) => (state.chunks.includes(source) ? ["visible", "notVisible"] : []);
+  const entitiesByChunk = liveEntitiesByChunk();
+  const soundPlayback = soundPlaybackOptions(entitiesByChunk);
   return {
     ...behaviorFileOptions(behaviorCatalog),
     eventEntities: eventEntityNames(),
@@ -722,7 +725,9 @@ function behaviorFormOptions(nearbyEntities = [], owner = "") {
       eventEntities: Object.fromEntries([...state.chunks].map((chunk) => [chunk, `${chunk} chunk`])),
     },
     nearbyEntities: alphabetical(nearbyEntities),
-    entitiesByChunk: liveEntitiesByChunk(),
+    entitiesByChunk,
+    soundIds: soundPlayback.ids,
+    soundIdsByChunk: soundPlayback.byChunk,
     chunks: [...state.chunks],
     currentChunks: chunksOf(entry),
     events: alphabetical(new Set([...collectRaisedEventNames(behaviorCatalog, state.behaviors, state.entities), "visible", "notVisible"])),
@@ -737,6 +742,31 @@ function behaviorFormOptions(nearbyEntities = [], owner = "") {
     fluidEmitters: (fluidSim) => getCatalogue().fluidSimFlow?.[fluidSim]?.emitters ?? [],
     fluidSinks: (fluidSim) => getCatalogue().fluidSimFlow?.[fluidSim]?.sinks ?? [],
   };
+}
+
+function soundPlaybackOptions(entitiesByChunk) {
+  const ids = new Set();
+  const idsByEntity = new Map();
+  for (const [entityName, assignments] of state.entities) {
+    for (const assignment of assignments ?? []) {
+      if (behaviorBaseName(assignment.name) !== "playSound") continue;
+      const definition = state.behaviors.get(assignment.name) ?? {};
+      const id = String(assignment.id ?? definition.id ?? "").trim();
+      if (!id) continue;
+      ids.add(id);
+      if (!idsByEntity.has(entityName)) idsByEntity.set(entityName, new Set());
+      idsByEntity.get(entityName).add(id);
+    }
+  }
+  const byChunk = {};
+  for (const [chunk, entityNames] of Object.entries(entitiesByChunk)) {
+    const roomIds = new Set();
+    for (const entityName of entityNames) {
+      for (const id of idsByEntity.get(entityName) ?? []) roomIds.add(id);
+    }
+    byChunk[chunk] = alphabetical(roomIds);
+  }
+  return { ids: alphabetical(ids), byChunk };
 }
 
 /** Which rooms an element counts as being in - a door spans the two it joins. */
@@ -3592,6 +3622,11 @@ window.addEventListener("keyup", (e) => {
 });
 // a lost focus never delivers keyup, which would leave the camera drifting
 window.addEventListener("blur", () => releaseAllKeys());
+window.addEventListener("focus", () => {
+  void reloadCatalogue().catch((error) => {
+    console.warn("could not refresh externally authored editor options", error);
+  });
+});
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) releaseAllKeys();
 });
@@ -3914,7 +3949,7 @@ function strayChunkWarnings() {
     groups.get(key).members.push(stray);
   }
   return [...groups.values()].map(({ chunk, host, members }) => {
-        const line = [host ? `${members.length} element(s) assigned to ${chunk} sit in ${host}: ` : `${members.length} element(s) assigned to ${chunk} touch nothing else in it: `];
+    const line = [`${members.length} element(s) assigned to ${chunk} sit in ${host}: `];
     members.slice(0, 3).forEach((stray, at) => {
       if (at) line.push(", ");
       line.push(ref(stray.name, [stray.id]));
@@ -3932,6 +3967,66 @@ function strayChunkWarnings() {
             );
     return line;
   });
+}
+
+/**
+ * Selectable elements carrying one runtime entity name.
+ *
+ * An assignment may sit on an art child (`Fan_primitive0`) even though only its
+ * parent placement is selectable, and several placements may intentionally
+ * share one node name. A check link therefore resolves through every exported
+ * name and selects all owners, just like the find box.
+ */
+function entityOwnerIds(entityName) {
+  const ids = shipPlacements()
+    .filter((placement) => namesOfPlacement(placement).includes(entityName))
+    .map((placement) => placement.id);
+  if (ids.length) return ids;
+  const marker = state.markers.get(entityName);
+  if (marker?.type === "door") return [marker.id];
+  const light = [...state.lights.values()].find((entry) => `LIGHT_${entry.id}` === entityName);
+  return light ? [light.id] : [];
+}
+
+/**
+ * Broken event subscriptions on live level entities.
+ *
+ * Orphan behaviour records are preserved deliberately and have no element to
+ * link to, so they are not a level defect yet. For an assignment that does
+ * have a live owner, however, a missing source means the behaviour can never
+ * hear the event it was authored for and is therefore an error.
+ */
+function missingBehaviorSourceChecks() {
+  const live = new Set(state.chunks);
+  for (const placement of shipPlacements()) {
+    for (const name of namesOfPlacement(placement)) live.add(name);
+  }
+  for (const marker of state.markers.values()) {
+    if (marker.type === "door") live.add(marker.id);
+  }
+  const shipOwners = new Set(shipPlacements().map((placement) => placement.id));
+  for (const light of state.lights.values()) {
+    if (shipOwners.has(light.owner)) live.add(`LIGHT_${light.id}`);
+  }
+
+  const checks = [];
+  for (const [entityName, assignments] of state.entities) {
+    const ids = entityOwnerIds(entityName);
+    if (!ids.length) continue;
+    for (const assignment of assignments ?? []) {
+      const missing = behaviorEntitySources(behaviorCatalog, state.behaviors, assignment).filter((source) => !live.has(source));
+      if (!missing.length) continue;
+      checks.push([
+        "err",
+        [
+          `Behavior "${assignment.name}" on `,
+          ref(entityName, ids),
+          ` uses missing source${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+        ],
+      ]);
+    }
+  }
+  return checks;
 }
 
 function validate() {
@@ -3959,6 +4054,8 @@ function validate() {
   // with the wrong room. Naming the first few is what makes the warning
   // actionable, so it lists them rather than only counting them.
   for (const stray of strayChunkWarnings()) out.push(["warn", stray]);
+
+  for (const check of missingBehaviorSourceChecks()) out.push(check);
 
   // A portal is only usable if both of its sides are known, so an unresolved
   // door is an error rather than a warning. Check the *resolved* sides: most
@@ -4026,6 +4123,7 @@ on("selection", () => {
 on("lights", () => {
     refreshInspector();
     refreshStats();
+    validate();
 });
 on("placements", () => {
     refreshChunks();
@@ -4035,6 +4133,7 @@ on("placements", () => {
 on("chunks", () => {
   refreshChunks();
   refreshSettings();
+  validate();
   // An undo can add, remove, rename or retune a chunk while the pane is open.
   if (!$("chunk-modal").hidden) refreshChunkPane(chunkSelected);
 });
@@ -4079,6 +4178,7 @@ on("environment", refreshLighting);
 on("behaviors", () => {
   refreshBehavior();
   if (!$("bhv-modal").hidden) refreshLibrary(libSelected);
+  validate();
 });
 on("busy", refreshBusy);
 

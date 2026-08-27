@@ -1,7 +1,11 @@
+export type DynamicRotationAxis = "x" | "y" | "z";
+
 export interface DynamicBehaviorConfig {
     dynamic?: boolean;
     /** Rigid-body mass in kilograms. Defaults to 10. */
     mass?: number;
+    /** Principal body axes around which angular motion is locked. */
+    lockedRotationAxes?: DynamicRotationAxis[];
 }
 
 export interface LiquefiableBehaviorConfig {
@@ -61,6 +65,33 @@ export interface SoundCueConfig {
 export interface SoundBehaviorConfig {
     /** Independently triggered sound actions, evaluated in declaration order. */
     cues: SoundCueConfig[];
+}
+
+export interface SoundEventTriggerConfig {
+    /** Entity or door whose event is observed, or several equivalent sources. Requires `event`. */
+    source?: string | string[];
+    /** Event emitted by `source`. Requires `source`. */
+    event?: string;
+}
+
+export interface PlaySoundBehaviorConfig extends SoundEventTriggerConfig {
+    /** Unique playback channel ID referenced by stopSound. */
+    id: string;
+    /** MP3 file name without extension under `/aquanova/sounds/`. */
+    sound: string;
+    /** Fade-in duration in seconds. Defaults to 0. */
+    fadeInDelay?: number;
+    /** Per-play volume from 0 to 1. Defaults to 1. */
+    volume?: number;
+    /** Whether playback loops. Defaults to false. */
+    loop?: boolean;
+}
+
+export interface StopSoundBehaviorConfig extends SoundEventTriggerConfig {
+    /** Playback channel defined by a playSound behavior. */
+    soundId: string;
+    /** Fade-out duration in seconds. Defaults to 0. */
+    fadeOutDelay?: number;
 }
 
 export interface FluidSimHollowCylinderShape {
@@ -136,6 +167,8 @@ export interface PickEntityBehaviorConfig {
     /** Per-axis scale applied to the pickup's world-space bounding box. Defaults to `[1, 1, 1]`. */
     boundingBoxScale?: number[];
     raiseEvent?: PickEntityRaiseEventConfig;
+    /** Local axis around which the pickup rotates. Defaults to `y`. */
+    rotationAxis?: "x" | "y" | "z";
     /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `pickItem`. */
     sound?: string;
     /** Multiplier for the default one-revolution-per-3-seconds Y rotation. Defaults to `1`. */
@@ -188,6 +221,13 @@ export interface BehaviorConfig {
     sound?: string;
     sounds?: Record<string, string[]>;
     cues?: SoundCueConfig[];
+    source?: string | string[];
+    event?: string;
+    fadeInDelay?: number;
+    fadeOutDelay?: number;
+    id?: string;
+    soundId?: string;
+    volume?: number;
     speed?: number;
     boundingBoxScale?: number[];
     events?: BehaviorEventSubscription[];

@@ -83,4 +83,18 @@ describe("Aquanova sound manager", () => {
             vi.useRealTimers();
         }
     });
+
+    it("keeps playback IDs independent even when they use the same source", async () => {
+        const manager = new SoundManager();
+        manager.registerPlayback("first-loop", "/sounds/shared.mp3", { preloadCount: 1 });
+        manager.registerPlayback("second-loop", "/sounds/shared.mp3", { preloadCount: 1 });
+
+        const [first, second] = await Promise.all([manager.resolvePlayback("first-loop"), manager.resolvePlayback("second-loop")]);
+
+        expect(first).not.toBe(second);
+        expect(audio.createStreamingSoundAsync).toHaveBeenCalledTimes(2);
+        expect(() => manager.registerPlayback("first-loop", "/sounds/other.mp3")).toThrow('sound playback ID "first-loop" is defined more than once');
+        expect(() => manager.resolvePlayback("missing")).toThrow('sound playback ID "missing" is not defined');
+        manager.dispose();
+    });
 });

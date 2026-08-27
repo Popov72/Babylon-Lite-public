@@ -115,6 +115,7 @@ function validPreset(): FluidExportJson {
         gridPosition: [0, 10, 0],
         gridSize: [40, 20, 40],
         showGridBounds: false,
+        showGridBoundsSolid: false,
         particleCount: 80_000,
         material: 0,
         render: {

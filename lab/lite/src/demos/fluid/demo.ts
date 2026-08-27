@@ -101,6 +101,8 @@ export interface PairState {
     grid?: FluidGridSettings;
     /** Whether the active simulation-domain wireframe is visible. */
     showGridBounds?: boolean;
+    /** Whether visible simulation-domain bounds use transparent depth-tested faces. */
+    showGridBoundsSolid?: boolean;
     /** Legacy format <=3 simulation-domain AABB. */
     domain?: FluidDomainBounds;
     /** Legacy format <=3 divisions along the longest domain axis. */

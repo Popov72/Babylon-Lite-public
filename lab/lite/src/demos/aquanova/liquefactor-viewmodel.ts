@@ -51,7 +51,7 @@ export const ANTI_GRAVITY_GUN_TRANSFORM = {
 export const PISTOL_TRANSFORM = {
     position: [-0.5368, -0.8267, 0.0001],
     rotationDegrees: [-6.18, 20.9, 1.21],
-    scale: [1.5883, 1.678, 1.678],
+    scale: [2.3024, 1.678, 1.678],
     localGuidePosition: [0.2738, 0.1349, 1.1555],
     localGuideRotationDegrees: [0, -2.6, 0],
 } as const;

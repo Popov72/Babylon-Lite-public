@@ -69,7 +69,9 @@ the resolved base behavior is instantiated. The current base behaviors are:
 | `pickEntity`           | Collects an intersected entity and emits an event       |
 | `enableEntity`         | Enables its owner after a configured source event       |
 | `disableEntity`        | Disables its owner after a configured source event      |
-| `sound`                | Plays or stops an authored sound                        |
+| `sound`                | Runs legacy grouped play/stop sound cues                |
+| `playSound`            | Starts an authored sound                                |
+| `stopSound`            | Stops an authored sound                                 |
 | `fluidSimulation`      | Runs an event-controlled authored fluid simulation      |
 | `fluidElectrifier`     | Permanently charges contacted electrifiable liquid      |
 | `electricalDetonator`  | Raises `explode` on electrified-liquid contact          |
@@ -156,7 +158,7 @@ For example:
         },
         {
             "source": "controlPanel",
-            "event": "activated",
+            "event": "triggerActivated",
             "action": "enableSimulation"
         }
     ]
@@ -215,6 +217,12 @@ between samples. Invisible dissolve-front particles,
 fully faded water, inactive capacity, and particles omitted by aggregate
 capacity are therefore not counted. Temporal interpretation of delayed counts
 belongs to the caller.
+
+The behavior also raises `startSimulation` from its owner once the runtime
+solver has been allocated and activated. It raises `endSimulation` only after
+`shutdownSimulation` has completed its full-duration and opacity-decay phases
+and the simulation's GPU, collision, and electricity resources have been
+disposed. Pausing, disabling, and unpausing do not raise either lifecycle event.
 
 Every liquefaction blob and behavior-owned simulation is a distinct fluid
 domain. Both `liquefaction.electrifiable` and
@@ -307,6 +315,24 @@ preloaded once per behavior, matching cues run in declaration order, and all
 subscriptions and delayed actions are cancelled together when the behavior is
 disposed.
 
+`playSound` and `stopSound` are the focused authoring forms. `playSound`
+requires an assignment-local, globally unique `id` and one extensionless MP3
+`sound` name. Each ID owns an independent streaming-sound channel, so two IDs
+using the same MP3 may be faded and stopped separately. `stopSound.soundId`
+references one of those channels and never loads another sound. Missing and
+duplicate IDs are startup errors.
+
+Both behaviors accept optional `source` (`string` or `string[]`) and `event`
+fields, which must be provided together; when omitted, the action runs during
+behavior startup. `playSound.fadeInDelay` and `stopSound.fadeOutDelay` are
+finite non-negative durations in seconds and default to zero. `playSound`
+additionally accepts `volume` in `[0, 1]` (default `1`) and `loop` (default
+`false`). Repeated assignments are supported, allowing one entity to own
+independent sound actions without a nested cue array. Disposing `playSound`
+stops its channel; disposing `stopSound` only removes its subscription. The
+editor derives the `stopSound.soundId` list from effective `playSound`
+assignments and filters it through the form's current/chosen/all-room selector.
+
 Behavior-owned simulations and liquefaction blobs share Aquanova's single
 particle-surface renderer. The most recently enabled fluid setting therefore
 controls the shared water look when several simulations overlap; particle
@@ -314,7 +340,7 @@ positions, stepping, pause state, collision fields, opacity, and disposal remain
 independent per simulation.
 
 `trigger` accepts
-`{ "onIntersection": { "enterEvent": "activated",
+`{ "onIntersection": { "enterEvent": "triggerActivated",
 "exitEvent": "deactivated", "playerOnly": true } }`. `enterEvent` and
 `exitEvent` are independently optional, and `playerOnly` defaults to `false`.
 The collider becomes a Havok trigger volume, so overlaps produce no physical
@@ -331,7 +357,7 @@ act on their owner. Their optional `events` array identifies event sources:
 {
     "name": "showEntity",
     "events": [
-        { "name": "activated", "source": ["trapTrigger", "backupTrigger"] },
+        { "name": "triggerActivated", "source": ["trapTrigger", "backupTrigger"] },
         { "name": "opened", "source": "Door_D06" }
     ]
 }
@@ -340,6 +366,10 @@ act on their owner. Their optional `events` array identifies event sources:
 The behavior runs when any entry matches. `source` is an entity or door id, or
 an array of ids with equivalent OR semantics; sources do not need to own
 meshes. With no `events`, the action runs immediately during behavior startup.
+`disableCollision` removes the owner's shapes from physics and fluid collision
+and excludes all of its mesh primitives from weapon targeting. Re-enabling
+collision restores all three. Delayed weapon impacts recheck this state, so
+disabling collision after firing still prevents the impact.
 Unsupported behavior keys are rejected at load time so stale manifest syntax
 cannot silently change behavior.
 
@@ -470,15 +500,21 @@ handle the relevant primitive internally.
 
 `pickEntity` is also one instance per manifest entity, but it owns every mesh
 primitive under that entity. At each physics step it intersects the live player
-capsule's world AABB with the entity's initial world AABB. Optional
+capsule's world AABB with a freshly transformed entity world AABB, so a dynamic
+pickup's interaction volume follows its rigid body. Optional
 `boundingBoxScale: [x, y, z]` scales that box's half-extents around its centre
 before intersection testing and defaults to `[1, 1, 1]`. Until pickup, every
-authored node represented by the manifest entity rotates around its local Y axis.
-The default angular speed is one full revolution every 3 seconds. Optional
-`speed` must be finite and positive and multiplies that angular speed, so the
-revolution duration is `3 / speed` seconds. The first intersection hides all
-owned primitives, optionally plays its preloaded MP3, optionally emits
-`entityEvent`, and unregisters both the intersection check and rotation.
+authored node represented by the manifest entity rotates around the local axis
+selected by optional `rotationAxis` (`x`, `y`, or `z`, default `y`). The default
+angular speed is one full revolution every 3 seconds. Optional `speed` must be
+finite and positive and multiplies that angular speed, so the revolution
+duration is `3 / speed` seconds. The first intersection permanently
+removes all owned primitives from the scene, removes every associated Havok
+body, deactivates current and future fluid-collision slots, retires the meshes
+from gameplay targeting, and disposes the owner's other physical behaviors.
+Logical inventory behaviors declare that they survive owner retirement. Pickup
+optionally plays its preloaded MP3, optionally emits `entityEvent`, and
+unregisters both the intersection check and rotation.
 `sound` is an MP3 file name without extension under `/aquanova/sounds/` and
 defaults to `pickItem`. Each instance's `init()` lazily creates the shared audio
 engine through `SoundManager` and preloads that pickup's sound before any
@@ -547,7 +583,10 @@ The `dynamic` behavior may define `mass` in kilograms. It must be finite and
 positive and defaults to `10 kg`. That value is applied to the Havok rigid body
 after its authored collision shape is attached, so shape-derived inertia is
 preserved while anti-gravity mass filtering and physical response use the same
-authoritative mass.
+authoritative mass. `lockedRotationAxes` accepts unique `x`, `y`, and `z`
+principal-axis names and zeros Havok inertia on those axes. Explicitly dynamic
+placements are excluded from the static Havok and fluid-collision sets; their
+single moving body is authoritative.
 
 The held weapon can apply a subtle procedural balancing motion made from
 layered low-frequency translation and rotation. This motion is cosmetic: the

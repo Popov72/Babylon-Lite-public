@@ -623,7 +623,7 @@ function validatePreset(value: unknown): FluidExportJson {
         fail("manifest preset polygon shapes exceed the shared flow-buffer capacity");
     }
 
-    for (const key of ["showContainer", "msaa", "activeBlocks", "pagedGrid", "fusedBlockDiscovery", "showGridBounds", "initialEmittersFillCapacity"]) {
+    for (const key of ["showContainer", "msaa", "activeBlocks", "pagedGrid", "fusedBlockDiscovery", "showGridBounds", "showGridBoundsSolid", "initialEmittersFillCapacity"]) {
         if (preset[key] !== undefined) {
             bool(preset[key], `manifest.preset.${key}`);
         }

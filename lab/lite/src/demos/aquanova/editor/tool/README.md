@@ -1469,7 +1469,8 @@ way `V` always has. And **holding the right
 button turns the wheel into a fly-speed control** — the right button already
 means "I am driving the camera", so adjusting how fast reads naturally and
 cannot collide with editing. Steps are multiplicative, so the control feels the
-same at 3 m/s and 100 m/s, and the speed shows in the status line.
+same at 3 m/s and 100 m/s. It starts at **5 m/s**, and the speed shows in the
+status line.
 
 **A lamp selection is the one exception**, and a deliberate one. A lamp is
 _aimed_ rather than built: the loop is nudge, look at what the room does, nudge
@@ -3371,6 +3372,7 @@ batch validators):
 
 - doors whose two sides resolve to the same chunk, or that have no leaves
 - chunks no door reaches
+- behaviours whose event source no longer exists in the level
 - elements that look like they were left in the wrong chunk (below)
 
 > Three checks were dropped: **overlapping chunk volumes**, **objects below
@@ -3391,8 +3393,11 @@ exactly which element it is — so each name is a button: click it and that
 element is selected and framed, wherever the camera happens to be. Door
 warnings name their door the same way, and the stray-chunk report names every
 element it found, with `+3 more` selecting the ones it had no room to list so
-the whole group is still one click away. Chunk ids stay plain text — a chunk is
-an assignment, not something to point a camera at.
+the whole group is still one click away. A broken event subscription names the
+behaviour, names the missing source, and links the entity carrying that
+behaviour — the missing thing cannot be selected, but the place where the
+reference must be repaired can. Chunk ids stay plain text — a chunk is an
+assignment, not something to point a camera at.
 
 > Which is why a check line is a **list of pieces** — prose, then a group of ids
 > — instead of a sentence that would have to be parsed back apart to find the
@@ -3412,17 +3417,17 @@ the union of whatever is assigned to it, computed after the fact by
 always yes, because the element is one of the things that decided where the
 chunk is.
 
-What a chunk does have is a shape. The pieces that make up a room are stuck to
-one another — tile against tile, trim against wall — so the question worth
-asking is which of a chunk's members hang together and which hang off on their
-own. `strayChunkMembers()` groups each chunk's members by what touches what and
-keeps the largest group; anything outside it is reported. When some _other_
-chunk's group does reach the piece, that chunk is named, because that is the one
-it was meant for:
+What a chunk does have is a shape. The pieces that make up a room are usually
+stuck to one another — tile against tile, trim against wall — so
+`strayChunkMembers()` groups each chunk's members by what touches what and keeps
+the largest group. But being disconnected is not itself abnormal: triggers,
+pickups and simulation traps may legitimately stand alone. A disconnected
+element is therefore reported **only** when some _other_ chunk's settled group
+reaches it, because that supplies the missing evidence and names the chunk it
+was probably meant for:
 
 ```
 2 element(s) assigned to CH00_Storage sit in CH03_StorageC2: P0040, P0041
-1 element(s) assigned to CH02_StorageCTL touch nothing else in it: P0210
 ```
 
 > **Grouping, not measuring each piece against the rest of its chunk in turn.**

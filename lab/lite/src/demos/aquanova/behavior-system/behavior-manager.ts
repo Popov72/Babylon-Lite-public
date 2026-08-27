@@ -132,6 +132,18 @@ export class BehaviorManager<Context> {
         }));
     }
 
+    public retireEntityInstances(entityName: string, preserve: (behavior: Behavior) => boolean = () => false): void {
+        for (let index = this.instances.length - 1; index >= 0; index--) {
+            const behavior = this.instances[index]!;
+            if (this.entityNameByInstance.get(behavior) !== entityName || preserve(behavior)) {
+                continue;
+            }
+            behavior.dispose();
+            this.instances.splice(index, 1);
+            this.entityNameByInstance.delete(behavior);
+        }
+    }
+
     public dispose(): void {
         this.disposeInstances();
         this.started = false;

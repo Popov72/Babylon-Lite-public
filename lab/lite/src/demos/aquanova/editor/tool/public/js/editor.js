@@ -167,6 +167,8 @@ const CONFIG_RANGE = {
     probeResolution: { values: PROBE_RESOLUTIONS },
 };
 
+const MOVE_SPEED = 5;       // metres per second, the starting fly speed
+
 export const state = {
   scene: null,
   engine: null,
@@ -228,7 +230,7 @@ export const state = {
   envIntensity: 1.5,       // see ENV_INTENSITY_DEFAULT
   walk: false,             // see setWalk
   selectMode: false,       // LMB draws a selection rectangle, see setSelectMode
-  moveSpeed: 42,           // m/s; right button + wheel adjusts it
+  moveSpeed: MOVE_SPEED,   // m/s; right button + wheel adjusts it
   dragAxis: "xz",          // "xz" | "y" | "x" | "z" - which axis a move runs on (V)
   axisSpace: "world",      // "world" | "local" - whose axes a move or turn uses (Y)
   // Which world the editor is currently editing - see EDITOR_MODES. One string
@@ -2089,7 +2091,6 @@ let rmbDown = false;
 let rmbGesture = false;
 
 const MOVE_KEYS = new Set(["KeyW", "KeyS", "KeyA", "KeyD", "Space", "KeyC"]);
-const MOVE_SPEED = 42;       // metres per second, the starting fly speed
 const LOOK_SPEED = 1.6;      // radians per second
 const PITCH_LIMIT = 1.5;
 
@@ -5120,20 +5121,21 @@ function touchingGroups(list) {
  * up a room are stuck to one another, tile against tile. So the question worth
  * asking is which of a chunk's members hang together and which hang off on
  * their own, and the answer is the largest group of them that touch. Anything
- * outside it was almost certainly placed while the wrong chunk was active. When
- * some *other* chunk's volume does reach the piece, that chunk is named,
- * because that is the one it was meant for.
+ * outside it is only actionable when some *other* chunk's volume reaches the
+ * piece: that names both the mistake and the chunk it was meant for. An entity
+ * standing alone is legal authored content - a trigger, a simulation trap, a
+ * pickup - and connectivity alone cannot call it misplaced.
  *
  * Grouping rather than measuring each piece against the rest of its chunk in
  * turn, which is the obvious way and is wrong: two pieces left behind in the
  * same chunk hide each other, since the "rest" that each is measured against
  * contains the other and stretches over the ground between them.
  *
- * Deliberately not an error. Ships are built outwards, and a chunk being filled
- * in right now legitimately holds a piece or two that reach nothing yet.
+ * Deliberately not an error. The geometry makes the intended chunk very likely,
+ * but the assignment remains an authoring decision.
  *
- * @returns [{ id, name, chunk, host }] - `host` is the chunk whose volume the
- *   element does fall in, or null when it stands clear of every chunk.
+ * @returns [{ id, name, chunk, host }] - `host` is the other chunk whose
+ *   settled volume reaches the element.
  */
 export function strayChunkMembers() {
   const members = new Map();
@@ -5170,13 +5172,14 @@ export function strayChunkMembers() {
     for (const entry of list) box = growBounds(box, entry.bounds);
     if (box) volumes.set(chunk, box);
   }
-  return strays.map(({ chunk, entry }) => {
+  return strays.flatMap(({ chunk, entry }) => {
     const host = [...volumes].find(([id, box]) => id !== chunk && boxesTouch(entry.bounds, box));
-    return {
+    if (!host) return [];
+    return [{
       id: entry.placement.id,
       name: entry.placement.name || entry.placement.id,
       chunk,
-      host: host ? host[0] : null,
-    };
+      host: host[0],
+    }];
   });
 }
