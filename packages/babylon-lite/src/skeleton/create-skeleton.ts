@@ -34,7 +34,6 @@ export function createSkeleton(
     // Bone texture: rgba32float, 4 texels per bone (one mat4 column each)
     const texWidth = boneCount * 4;
     const boneTexture = device.createTexture({
-        label: "skeleton-bone-matrices",
         size: [texWidth, 1],
         format: "rgba32float",
         usage: TU.TEXTURE_BINDING | TU.COPY_DST,
@@ -75,6 +74,5 @@ export function createSkeleton(
         joints1: joints1 ?? null,
         weights1: weights1 ?? null,
         _skinBuffers: skinBuffers,
-        _disposed: false,
     };
 }
