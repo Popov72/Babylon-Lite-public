@@ -29,9 +29,7 @@ export function terserPropertyManglePlugin(): Plugin {
         async generateBundle(_options, bundle) {
             const nameCache: Record<string, unknown> = {};
             // ESM export names are fixed, so namespace reads in another chunk must not be mangled.
-            const exportedProperties = [
-                ...new Set(Object.values(bundle).flatMap((entry) => (entry.type === "chunk" ? entry.exports.filter((name) => /^_[a-z]/.test(name)) : []))),
-            ];
+            const exportedProperties = [...new Set(Object.values(bundle).flatMap((entry) => (entry.type === "chunk" ? entry.exports.filter((name) => /^_[a-z]/.test(name)) : [])))];
 
             for (const [, chunk] of Object.entries(bundle)) {
                 if (chunk.type !== "chunk") continue;

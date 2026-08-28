@@ -38,6 +38,7 @@ import {
 } from "./bundle-scenes-core";
 import { wgslMinifyPlugin } from "./wgsl-minify-plugin";
 import { fetchDemoAssets } from "./demo-fetchers";
+import { demoOwnsBundleFile } from "./demo-bundle-name";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGES_SRC = resolve(ROOT, "pages");
@@ -335,10 +336,6 @@ function demoDebugEnabled(): boolean {
     return process.argv.includes("--debug") || process.env.LAB_DEMO_DEBUG === "1";
 }
 
-function demoSlugForBundleFile(fileName: string, slugs: readonly string[]): string | undefined {
-    return slugs.filter((slug) => fileName === `${slug}.js` || fileName.startsWith(`${slug}-`)).sort((first, second) => second.length - first.length)[0];
-}
-
 export async function buildDemo(slug: string): Promise<void> {
     const demoOutDir = resolve(demosDir, slug);
     rmSync(demoOutDir, { recursive: true, force: true });
@@ -420,9 +417,9 @@ export async function buildDemo(slug: string): Promise<void> {
         newNames.add(f);
         writeFileSync(resolve(demosDir, f), readFileSync(resolve(demoOutDir, f)));
     }
-    const demoSlugs = loadDemosConfig().map((demo) => demo.slug);
+    const demoSlugs = [...loadDemosConfig().map((demo) => demo.slug), ...DEMO_SUPPORT_BUNDLES];
     for (const existing of readdirSync(demosDir)) {
-        if (demoSlugForBundleFile(existing, demoSlugs) === slug && !newNames.has(existing)) {
+        if (demoOwnsBundleFile(existing, slug, demoSlugs) && !newNames.has(existing)) {
             rmSync(resolve(demosDir, existing));
         }
     }
