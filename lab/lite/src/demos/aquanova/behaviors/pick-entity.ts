@@ -4,9 +4,8 @@ import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, PickEntityBehaviorConfig } from "./types.js";
 import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
+import { aquanovaSoundUrl, validateAquanovaSoundName } from "./sound-asset.js";
 
-const SOUND_ROOT = "/aquanova/sounds";
-const SOUND_ASSET_VERSION = "20260813-1";
 const DEFAULT_SOUND = "pickItem";
 const DEFAULT_BOUNDING_BOX_SCALE = [1, 1, 1] as const;
 const DEFAULT_ROTATION_SPEED = (Math.PI * 2) / 3;
@@ -37,7 +36,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
         }
         assertBehaviorConfigKeys(config, "pickEntity", ["boundingBoxScale", "raiseEvent", "rotationAxis", "sound", "speed"]);
         validateEvent(config.raiseEvent);
-        validateSoundName(config.sound ?? DEFAULT_SOUND);
+        validateAquanovaSoundName("pickEntity sound", config.sound ?? DEFAULT_SOUND);
         this.mesh = meshes[0]!;
         this.meshes = meshes;
         this.rotationNodes = resolveRotationNodes(meshes, entityName);
@@ -51,7 +50,7 @@ export class PickEntityBehavior implements Behavior<"pickEntity"> {
 
     public async init(): Promise<void> {
         const soundName = this.config.sound ?? DEFAULT_SOUND;
-        const url = soundUrl(soundName);
+        const url = aquanovaSoundUrl(soundName);
         try {
             this.sound = await this.context.sounds.load(`pickEntity:${soundName}`, url, { preloadCount: 1 });
         } catch (error) {
@@ -174,16 +173,6 @@ function scaleBounds(bounds: MeshGroupAabb, scale: BoundingBoxScale): MeshGroupB
         centre,
         half: [(bounds.max[0] - centre[0]) * scale[0], (bounds.max[1] - centre[1]) * scale[1], (bounds.max[2] - centre[2]) * scale[2]],
     };
-}
-
-function validateSoundName(soundName: string): void {
-    if (!soundName || soundName.endsWith(".mp3") || soundName.includes("/") || soundName.includes("\\")) {
-        throw new Error(`[aquanova] pickEntity sound "${soundName}" must be an MP3 file name without its extension`);
-    }
-}
-
-function soundUrl(soundName: string): string {
-    return `${SOUND_ROOT}/${encodeURIComponent(soundName)}.mp3?v=${SOUND_ASSET_VERSION}`;
 }
 
 function playerIntersectsBounds(context: PickEntityContext, bounds: MeshGroupBounds): boolean {

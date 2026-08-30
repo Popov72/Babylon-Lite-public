@@ -51,6 +51,9 @@ export interface BreakMeshOptions {
     capUvScale?: number;
     /** Whether generated pieces should receive shadows. Default true. */
     receiveShadows?: boolean;
+    /** Bake the source world transform into generated geometry. Defaults to true.
+     *  Set false to build reusable source-local fragment templates. */
+    bakeWorldTransform?: boolean;
 }
 
 function planeDist(p: Plane, x: number, y: number, z: number): number {
@@ -435,9 +438,11 @@ function buildMesh(engine: EngineContext, name: string, geom: RawGeom, material:
  *
  * @param engine - Engine used to allocate the generated meshes' GPU geometry.
  * @param sourceMesh - Mesh to break; must retain CPU geometry (any Lite factory
- *   or loader mesh does). Its world transform is baked into the pieces.
- * @param points - Seed sites in world space; one Voronoi cell is produced per
- *   seed. Provide 2+ points for a meaningful fracture.
+ *   or loader mesh does). Its world transform is baked into the pieces unless
+ *   `bakeWorldTransform` is false.
+ * @param points - Seed sites in world space, or source-local space when
+ *   `bakeWorldTransform` is false. One Voronoi cell is produced per seed.
+ *   Provide 2+ points for a meaningful fracture.
  * @param capMaterial - Material applied to the generated interior cut faces.
  * @param options - Layout tuning (separation, cap UV scale, receiveShadows).
  * @returns A flat array of generated meshes. Each cell contributes a "shell"
@@ -448,6 +453,7 @@ function buildMesh(engine: EngineContext, name: string, geom: RawGeom, material:
 export function breakMesh(engine: EngineContext, sourceMesh: Mesh, points: number[][], capMaterial: Material, options: BreakMeshOptions = {}): Mesh[] {
     const separation = options.separation ?? 0.12;
     const receiveShadows = options.receiveShadows ?? true;
+    const bakeWorldTransform = options.bakeWorldTransform ?? true;
 
     const g = sourceMesh as unknown as {
         _cpuPositions?: Float32Array;
@@ -466,9 +472,8 @@ export function breakMesh(engine: EngineContext, sourceMesh: Mesh, points: numbe
     }
     const w = g.worldMatrix;
 
-    // Bake the world transform into world-space triangles (positions + normals).
-    // Normals use the rotation/uniform-scale part of `w` and are renormalised —
-    // correct for the rigid/uniform transforms glTF nodes use here.
+    // Optionally bake the world transform into the triangles. Source-local output
+    // is used for reusable fracture templates that receive their live transform later.
     const tris: FVertex[] = new Array<FVertex>(idx.length);
     let minX = Infinity;
     let minY = Infinity;
@@ -483,12 +488,12 @@ export function breakMesh(engine: EngineContext, sourceMesh: Mesh, points: numbe
         const lx = pos[p]!;
         const ly = pos[p + 1]!;
         const lz = pos[p + 2]!;
-        const x = w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]!;
-        const y = w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]!;
-        const z = w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]!;
-        let nx = w[0]! * nor[p]! + w[4]! * nor[p + 1]! + w[8]! * nor[p + 2]!;
-        let ny = w[1]! * nor[p]! + w[5]! * nor[p + 1]! + w[9]! * nor[p + 2]!;
-        let nz = w[2]! * nor[p]! + w[6]! * nor[p + 1]! + w[10]! * nor[p + 2]!;
+        const x = bakeWorldTransform ? w[0]! * lx + w[4]! * ly + w[8]! * lz + w[12]! : lx;
+        const y = bakeWorldTransform ? w[1]! * lx + w[5]! * ly + w[9]! * lz + w[13]! : ly;
+        const z = bakeWorldTransform ? w[2]! * lx + w[6]! * ly + w[10]! * lz + w[14]! : lz;
+        let nx = bakeWorldTransform ? w[0]! * nor[p]! + w[4]! * nor[p + 1]! + w[8]! * nor[p + 2]! : nor[p]!;
+        let ny = bakeWorldTransform ? w[1]! * nor[p]! + w[5]! * nor[p + 1]! + w[9]! * nor[p + 2]! : nor[p + 1]!;
+        let nz = bakeWorldTransform ? w[2]! * nor[p]! + w[6]! * nor[p + 1]! + w[10]! * nor[p + 2]! : nor[p + 2]!;
         const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
         nx /= nl;
         ny /= nl;

@@ -6,14 +6,17 @@
 // read in one demo and ignored in the other is exactly how the two drift apart.
 // A parsed fluid-simulation setting (a liquefactor/fluid export JSON): the solver method plus the raw,
 // method-specific physics record and, for PB-MPM, the material enum. Consumed by buildFluidSim below.
+import { fluidRenderHexColor } from "babylon-lite/fluid/fluid-render-profile.js";
+import type { FluidRenderProfileSettings } from "babylon-lite/fluid/fluid-render-profile.js";
+
 export interface FluidSimSetting {
     method: string; // "MLS-MPM" | "PB-MPM"
     physics: Record<string, number>;
     material?: number;
     useMeshColors?: boolean; // demoParams.useMeshColors — tint the water by the liquefied mesh's texture
     particleRadius?: number; // demoParams.particleRadius — volume-sampling spacing (drives the particle count)
-    /** The file's `render` block (water colour, absorption, blur, surface filter…). The surface pass is
-     *  shared by every active blob, so this is applied globally by the shot that installs it. */
+    /** The file's `render` block (water colour, absorption, blur, surface filter…). Water colour is
+     *  retained per simulation. Other controls share the fast path unless independent rendering is enabled. */
     render?: FluidRenderSetting;
     /** The file's `foam` block. Parsed and kept for a future foam pass; nothing consumes it yet. */
     foam?: FluidFoamSetting;
@@ -41,21 +44,7 @@ export interface FluidImpulseSetting {
 }
 /** The subset of a setting file's `render` block the surface pass understands, matching the controls
  *  Liquefactor exposes. Anything absent leaves the current value alone. */
-export interface FluidRenderSetting {
-    waterColor?: string;
-    absorption?: number;
-    particleSize?: number;
-    refractionStrength?: number;
-    specularPower?: number;
-    surfaceDepthBlur?: number;
-    depthBlurEdgeThreshold?: number;
-    surfaceThicknessBlur?: number;
-    halfRendering?: boolean;
-    thicknessDownscale?: number;
-    surfaceFilter?: string;
-    narrowRangeDelta?: number;
-    narrowRangeMu?: number;
-}
+export type FluidRenderSetting = FluidRenderProfileSettings;
 /** A setting file's `foam` block, parsed and carried on the setting so it is available the moment a
  *  foam pass is wired up. Nothing renders foam in this demo yet, so these values are currently only
  *  reported through the `fluidSetting()` QA hook — they are NOT silently dropped at load. */
@@ -82,10 +71,7 @@ export interface FluidFoamSetting {
 }
 /** "#16a3c3" → [r, g, b] in 0..1. Returns null for anything that is not a 6-digit hex colour. */
 export function hexToRgb(hex: string | undefined): [number, number, number] | null {
-    const m = /^#?([0-9a-f]{6})$/i.exec(hex ?? "");
-    if (!m) return null;
-    const n = parseInt(m[1]!, 16);
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    return fluidRenderHexColor(hex);
 }
 export async function fetchFluidSetting(name: string): Promise<FluidSimSetting | undefined> {
     if (!name || /\.json$/i.test(name)) {

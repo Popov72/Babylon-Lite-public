@@ -18,6 +18,23 @@ Sink deletion and emitter creation are separate observable operations. Reusing t
 ## Public API Surface
 
 ```ts
+type FluidSimulationSamplingType = "fluid" | "mesh";
+
+interface FluidSimulationDiscretization {
+    /** Non-FLIP particle-size multiplier authored by the shared fluid controls. */
+    physicsParticleSize: number;
+    /** Fluid graphs derive radius from physicsParticleSize; mesh sampling uses particleRadius. */
+    samplingType: FluidSimulationSamplingType;
+    /** Mesh-sampling particle radius in world units. */
+    particleRadius?: number;
+}
+
+function fluidParticleRadiusForPhysicsScale(physicsScale: number): number;
+function fluidCellSizeForParticleRadius(method: string, particleRadius: number): number;
+function fluidSimulationParticleRadius(config: FluidSimulationDiscretization): number;
+function fluidSimulationCellSize(method: string, config: FluidSimulationDiscretization): number;
+function fluidSimulationParticleCapacity(method: string, requestedCount: number, flow: FluidFlowConfig, particleVolume: number): number;
+
 interface FluidEmitter {
     id: string;
     name: string;
@@ -52,6 +69,17 @@ interface FluidSink {
     perParticleRecycleRate?: number;
 }
 ```
+
+All hosts use these package-level functions rather than owning solver discretization rules. Fluid
+sampling maps `physicsParticleSize` to radius as `0.08 * physicsParticleSize`; mesh sampling uses
+the positive finite authored `particleRadius`, falling back to that same mapping. PBF cell size is
+`max(radius * 4, 0.3)`. MLS-MPM and PB-MPM cell size is `max(radius * 2.4, 0.18)`. FLIP owns its
+separate `gridResolution` discretization and does not use `fluidSimulationCellSize`.
+
+`fluidSimulationParticleCapacity` honors a positive authored capacity. A missing/non-positive
+capacity derives a default from enabled initial/inflow emitters. FLIP additionally guarantees that
+capacity can contain all initial-emitter particles. This is the single capacity rule for every
+host.
 
 `mode` defaults to `delete` for newly-authored runtime graphs. Format-6 and older JSON imports infer `recycle` to preserve their historical targeted-relaunch behavior. Format-7 and newer exports write the mode explicitly. `targets` is used only by recycle sinks.
 

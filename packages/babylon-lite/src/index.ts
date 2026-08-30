@@ -892,10 +892,24 @@ export type {
     ForceFieldSpec,
     SceneSdfSpec,
 } from "./fluid/sim-common.js";
+export {
+    fluidCellSizeForParticleRadius,
+    fluidParticleRadiusForPhysicsScale,
+    fluidSimulationCellSize,
+    fluidSimulationParticleCapacity,
+    fluidSimulationParticleRadius,
+} from "./fluid/simulation-config.js";
+export type { FluidSimulationDiscretization, FluidSimulationSamplingType } from "./fluid/simulation-config.js";
 export { createParticleRenderTask } from "./fluid/particle-render.js";
 export type { ParticleRenderOptions, ParticleRenderShaderOptions, ParticleRenderTask } from "./fluid/particle-render.js";
 export { createFluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
 export type { FluidPolygonSurfaceOptions, FluidPolygonSurfaceTask } from "./fluid/polygon-surface-render.js";
+export { createFluidSurfaceTask } from "./fluid/fluid-surface-render.js";
+export type { FluidDebug, FluidParticleColorMode, FluidSurfaceOptions, FluidSurfaceShading, FluidSurfaceTask } from "./fluid/fluid-surface-render.js";
+export { applyFluidRenderProfile, fluidRenderHexColor, fluidRenderProfileKey } from "./fluid/fluid-render-profile.js";
+export type { FluidRenderProfileSettings } from "./fluid/fluid-render-profile.js";
+export { createFluidRenderCompositor } from "./fluid/fluid-render-compositor.js";
+export type { FluidRenderCompositor, FluidRenderLayer } from "./fluid/fluid-render-compositor.js";
 
 // ─── Physics ─────────────────────────────────────────────────────────
 export {

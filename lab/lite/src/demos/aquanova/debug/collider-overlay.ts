@@ -46,7 +46,7 @@ export interface ColliderOverlayOptions {
     isRemoved: (id: string) => boolean;
     /** The primitives actually packed into the RUNNING fluid simulations' buffers, live. Each entry
      *  is one simulation's set — the same subset its shader loops over this frame. */
-    injectedPrims: () => ReadonlyArray<{ sim: string; prims: readonly FluidPrimitive[] }>;
+    injectedPrims: () => ReadonlyArray<{ sim: string; prims: readonly FluidPrimitive[]; holes: readonly FluidPrimitive[] }>;
     /** Live dynamic proxies, in a stable order (the meshes are allocated once, up front). */
     dynBodies: () => readonly ColliderOverlayDynBody[];
     /** Current room id — the static shell is drawn for this chunk only. */
@@ -247,6 +247,12 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
         useVertexAlpha: false,
         depthWrite: false,
     });
+    const holeMat = createLineMaterial({
+        name: "overlay-fluid-hole-wireframe-mat",
+        color: { r: 0.15, g: 1, b: 1, a: 1 },
+        useVertexAlpha: false,
+        depthWrite: false,
+    });
     let injMeshes: Mesh[] = [];
     let injSignature = "";
     const vecKey = (v: readonly number[] | undefined): string => v?.map((n) => n.toFixed(3)).join(",") ?? "";
@@ -261,11 +267,11 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             b = p.b ?? p.a;
         return `${p.kind}:${p.radius?.toFixed(3)}:${p.innerRadius?.toFixed(3) ?? ""}:${Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]).toFixed(3)}`;
     };
-    const buildInjMesh = (p: FluidPrimitive): Mesh => {
+    const buildInjMesh = (p: FluidPrimitive, subtraction: boolean): Mesh => {
         const m = createLineSystem(engine, {
-            name: `inj-${p.kind}-wireframe`,
+            name: `${subtraction ? "hole" : "inj"}-${p.kind}-wireframe`,
             lines: fluidPrimitiveWireframeLines(p),
-            material: injMat,
+            material: subtraction ? holeMat : injMat,
         });
         m.pickable = false;
         m.renderOrder = 9_998;
@@ -274,21 +280,24 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
     };
     const refreshInjected = (): void => {
         const sets = colliderMode === 3 ? injectedPrims() : [];
-        const unique = new Map<string, FluidPrimitive>();
-        for (const { prims } of sets) {
+        const unique = new Map<string, { primitive: FluidPrimitive; subtraction: boolean }>();
+        for (const { prims, holes } of sets) {
             for (const primitive of prims) {
-                if (primitive.active !== false) unique.set(injVisualKey(primitive), primitive);
+                if (primitive.active !== false) unique.set(`solid:${injVisualKey(primitive)}`, { primitive, subtraction: false });
+            }
+            for (const primitive of holes) {
+                if (primitive.active !== false) unique.set(`hole:${injVisualKey(primitive)}`, { primitive, subtraction: true });
             }
         }
         const flat = [...unique.values()];
-        const sig = flat.map(injKey).join("|");
+        const sig = flat.map(({ primitive, subtraction }) => `${subtraction ? "h" : "s"}:${injKey(primitive)}`).join("|");
         if (sig !== injSignature) {
             for (const m of injMeshes) removeFromScene(scene, m);
-            injMeshes = flat.map(buildInjMesh);
+            injMeshes = flat.map(({ primitive, subtraction }) => buildInjMesh(primitive, subtraction));
             injSignature = sig;
         }
         for (let i = 0; i < flat.length; i++) {
-            const p = flat[i]!;
+            const p = flat[i]!.primitive;
             const m = injMeshes[i]!;
             if (p.kind === "box") {
                 m.position.set(p.a[0], p.a[1], p.a[2]);
@@ -365,9 +374,12 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
             if (colliderMode === 3) {
                 const sets = injectedPrims();
                 const unique = new Set<string>();
-                for (const { prims } of sets) {
+                for (const { prims, holes } of sets) {
                     for (const primitive of prims) {
-                        if (primitive.active !== false) unique.add(injVisualKey(primitive));
+                        if (primitive.active !== false) unique.add(`solid:${injVisualKey(primitive)}`);
+                    }
+                    for (const primitive of holes) {
+                        if (primitive.active !== false) unique.add(`hole:${injVisualKey(primitive)}`);
                     }
                 }
                 // eslint-disable-next-line no-console
@@ -377,12 +389,13 @@ export function createColliderOverlay(opts: ColliderOverlayOptions): ColliderOve
                               sets
                                   .map((s) => {
                                       const activePrims = s.prims.filter((p) => p.active !== false);
+                                      const activeHoles = s.holes.filter((p) => p.active !== false);
                                       const k: Record<string, number> = {};
                                       for (const p of activePrims) k[p.kind] = (k[p.kind] ?? 0) + 1;
                                       const moving = activePrims.filter((p) => p.velocity && (p.velocity[0] || p.velocity[1] || p.velocity[2])).length;
                                       return `\n    ${s.sim}: ${activePrims.length} primitive(s) (${Object.entries(k)
                                           .map(([kk, n]) => `${n} ${kk}`)
-                                          .join(", ")})${moving ? `, ${moving} moving` : ""}`;
+                                          .join(", ")})${moving ? `, ${moving} moving` : ""}, ${activeHoles.length} pistol hole(s)`;
                                   })
                                   .join("")
                         : "[aquanova] fluid-injected collision: no simulation running — liquefy something to see its set"

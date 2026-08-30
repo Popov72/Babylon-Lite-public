@@ -50,10 +50,12 @@ export interface EntityToggleBehaviorConfig {
     events?: BehaviorEventSubscription[];
 }
 
-export interface SoundCueConfig {
-    /** MP3 file name without extension under `/aquanova/sounds/`. */
-    sound: string;
-    action: "play" | "stop";
+export interface DisableCollisionBehaviorConfig extends EntityToggleBehaviorConfig {
+    /** Disable only collision injection into fluid simulations. Defaults to false. */
+    fluidSimulationOnly?: boolean;
+}
+
+interface SoundCueBaseConfig {
     /** Events that trigger the action. The action runs at startup when omitted. */
     events?: BehaviorEventSubscription[];
     /** Seconds between the trigger and the action. Defaults to 0. */
@@ -62,36 +64,29 @@ export interface SoundCueConfig {
     fade?: number;
 }
 
-export interface SoundBehaviorConfig {
-    /** Independently triggered sound actions, evaluated in declaration order. */
-    cues: SoundCueConfig[];
-}
-
-export interface SoundEventTriggerConfig {
-    /** Entity or door whose event is observed, or several equivalent sources. Requires `event`. */
-    source?: string | string[];
-    /** Event emitted by `source`. Requires `source`. */
-    event?: string;
-}
-
-export interface PlaySoundBehaviorConfig extends SoundEventTriggerConfig {
-    /** Unique playback channel ID referenced by stopSound. */
+export interface SoundPlayCueConfig extends SoundCueBaseConfig {
+    action: "play";
+    /** Globally unique playback channel ID referenced by stop cues. */
     id: string;
     /** MP3 file name without extension under `/aquanova/sounds/`. */
     sound: string;
-    /** Fade-in duration in seconds. Defaults to 0. */
-    fadeInDelay?: number;
     /** Per-play volume from 0 to 1. Defaults to 1. */
     volume?: number;
     /** Whether playback loops. Defaults to false. */
     loop?: boolean;
 }
 
-export interface StopSoundBehaviorConfig extends SoundEventTriggerConfig {
-    /** Playback channel defined by a playSound behavior. */
+export interface SoundStopCueConfig extends SoundCueBaseConfig {
+    action: "stop";
+    /** Playback channel defined by a sound play cue. */
     soundId: string;
-    /** Fade-out duration in seconds. Defaults to 0. */
-    fadeOutDelay?: number;
+}
+
+export type SoundCueConfig = SoundPlayCueConfig | SoundStopCueConfig;
+
+export interface SoundBehaviorConfig {
+    /** Independently triggered sound actions, evaluated in declaration order. */
+    cues: SoundCueConfig[];
 }
 
 export interface FluidSimHollowCylinderShape {
@@ -155,6 +150,23 @@ export interface ElectricalDetonatorBehaviorConfig {
     particleThreshold?: number;
 }
 
+export interface ExplodeBehaviorConfig {
+    /** Events that trigger the explosion. Defaults to the owner's `explode` event. */
+    events?: BehaviorEventSubscription[];
+    /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `bigExplosion`. */
+    sound?: string;
+    /** World-space blast radius in metres. Defaults to 10. */
+    radius?: number;
+    /** Voronoi cells generated for each affected mesh primitive, from 2 through 32. Defaults to 8. */
+    fragmentCount?: number;
+    /** Maximum radial debris speed in metres per second. Defaults to 12. */
+    strength?: number;
+    /** Fully visible debris lifetime in seconds. Defaults to 15. */
+    debrisLifetime?: number;
+    /** Debris fade duration in seconds. Defaults to 2. */
+    fadeDuration?: number;
+}
+
 export interface TriggerBehaviorConfig {
     onIntersection: {
         enterEvent?: string;
@@ -197,12 +209,16 @@ export interface WeaponAntiGravityGunBehaviorConfig {
 }
 
 export interface WeaponPistolBehaviorConfig {
+    /** MP3 file name without extension under `/aquanova/sounds/`. Defaults to `pistolShot`. */
+    sound?: string;
     /** Maximum bullet travel distance in metres. Defaults to 100. */
     range?: number;
     /** Visible projectile speed in metres per second. Defaults to 80. */
     bulletSpeed?: number;
     /** Point impulse applied to dynamic entities in kg m/s. Defaults to 10. */
     impactImpulse?: number;
+    /** Multiplier applied to the radius of fluid-collision bullet holes. Defaults to 1. */
+    bulletHoleSize?: number;
 }
 
 /** All parameters that a manifest behavior definition or entity override may provide. */
@@ -218,15 +234,10 @@ export interface BehaviorConfig {
     characterStrength?: number;
     maxHeldObjectDistance?: number;
     range?: number;
+    radius?: number;
     sound?: string;
     sounds?: Record<string, string[]>;
     cues?: SoundCueConfig[];
-    source?: string | string[];
-    event?: string;
-    fadeInDelay?: number;
-    fadeOutDelay?: number;
-    id?: string;
-    soundId?: string;
     volume?: number;
     speed?: number;
     boundingBoxScale?: number[];
@@ -240,6 +251,11 @@ export interface BehaviorConfig {
     maxMass?: number;
     bulletSpeed?: number;
     impactImpulse?: number;
+    fragmentCount?: number;
+    strength?: number;
+    debrisLifetime?: number;
+    fadeDuration?: number;
+    fluidSimulationOnly?: boolean;
     type?: "mesh";
     fluidSimShape?: FluidSimShape;
     shutdownDuration?: number;

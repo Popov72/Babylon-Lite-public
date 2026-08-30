@@ -686,6 +686,7 @@ export interface FluidControlValues {
     simulationDuration: number;
     alphaDecay: number;
     color: string;
+    independentRendering: boolean;
     half: boolean;
     thicknessDownscale: number;
     absorption: number;
@@ -749,6 +750,8 @@ export interface FluidControlsInitial {
     /** Render the visible simulation-domain bounds as transparent faces instead of only wireframe edges. */
     showGridBoundsSolid?: boolean;
     color: string;
+    /** Keep this preset's surface-wide settings independent when several simulations are combined. */
+    independentRendering?: boolean;
     absorption: number;
     size: number;
     refraction: number;
@@ -796,6 +799,7 @@ export interface FluidControlsCallbacks {
     onRenderMode?(spheres: boolean): void;
     onPolygonShader?(mode: "physical" | "ocean"): void;
     onColor?(rgb: [number, number, number]): void;
+    onIndependentRendering?(enabled: boolean): void;
     onAbsorption?(v: number): void;
     onParticleSize?(v: number): void;
     onRefraction?(v: number): void;
@@ -957,6 +961,7 @@ export interface FluidControlsHandle {
     setRenderMode(spheres: boolean): void;
     setPolygonShader(mode: "physical" | "ocean"): void;
     setColor(hex: string): void;
+    setIndependentRendering(enabled: boolean): void;
     setAbsorption(v: number): void;
     setParticleSize(v: number): void;
     setRefraction(v: number): void;
@@ -986,7 +991,7 @@ export interface FluidControlsHandle {
     setShowGridBoundsSolid(visible: boolean): void;
     setActiveBlocks(enabled: boolean): void;
     setPagedGrid(enabled: boolean): void;
-    setPagedGridMaxPages(pages: number): void;
+    setPagedGridMaxPages(pages: number, limit?: number): void;
     setPagedGridStatus(message: string, error?: boolean): void;
     setFusedBlockDiscovery(enabled: boolean): void;
     setFoam(foam: FluidFoamValues): void;
@@ -1634,6 +1639,16 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     halfRow.append(halfChk, halfText);
     halfChk.onchange = () => on.onHalf?.(halfChk.checked);
 
+    const independentRenderingRow = document.createElement("label");
+    independentRenderingRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
+    const independentRenderingChk = document.createElement("input");
+    independentRenderingChk.type = "checkbox";
+    independentRenderingChk.checked = init.independentRendering ?? false;
+    const independentRenderingText = document.createElement("span");
+    independentRenderingText.textContent = "Independent rendering";
+    independentRenderingRow.append(independentRenderingChk, independentRenderingText);
+    independentRenderingChk.onchange = () => on.onIndependentRendering?.(independentRenderingChk.checked);
+
     // Anisotropic surface toggle (Yu & Turk ellipsoidal splatting; default OFF).
     const anisoRow = document.createElement("label");
     anisoRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;";
@@ -2026,27 +2041,47 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
     const pagedGridCapacityRow = document.createElement("label");
     pagedGridCapacityRow.style.cssText = "display:block;margin:8px 0 8px 36px;";
     const pagedGridCapacityHead = document.createElement("div");
-    pagedGridCapacityHead.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
     const pagedGridCapacityLabel = labelWithInfo(
         "Page capacity",
         "Maximum number of live grid pages (8×8×8 cells for FLIP, 4×4×4 for MLS-MPM). Higher values use more memory; exceeding the cap freezes the solver instead of integrating against a partial grid."
     );
     const pagedGridCapacityValue = document.createElement("span");
-    pagedGridCapacityHead.append(pagedGridCapacityLabel, pagedGridCapacityValue);
+    pagedGridCapacityValue.style.cssText = "display:block;text-align:center;font-variant-numeric:tabular-nums;margin-top:2px;";
+    pagedGridCapacityHead.append(pagedGridCapacityLabel);
     const pagedGridCapacityInput = document.createElement("input");
+    pagedGridCapacityRow.dataset.fluidPagedGridCapacity = "true";
     pagedGridCapacityInput.type = "range";
     pagedGridCapacityInput.min = "1";
-    pagedGridCapacityInput.max = "2000";
     pagedGridCapacityInput.step = "1";
-    pagedGridCapacityInput.value = String(Math.max(1, Math.round((init.pagedGridMaxPages ?? 40000) / 1000)));
     pagedGridCapacityInput.style.cssText = "width:100%;";
-    const updatePagedGridCapacityValue = (): void => {
-        pagedGridCapacityValue.textContent = `${pagedGridCapacityInput.value}k`;
+    const pagedGridCapacityStep = 1000;
+    let pagedGridCapacityLimit = 2_000_000;
+    let pagedGridCapacityPages = Math.max(1, Math.min(pagedGridCapacityLimit, Math.round(init.pagedGridMaxPages ?? 40000)));
+    const pagedGridCapacityUnits = (): number => Math.max(1, Math.ceil(pagedGridCapacityLimit / pagedGridCapacityStep));
+    const pagesFromPagedGridCapacityInput = (): number => {
+        const units = parseInt(pagedGridCapacityInput.value, 10);
+        return units >= pagedGridCapacityUnits() ? pagedGridCapacityLimit : units * pagedGridCapacityStep;
     };
+    const syncPagedGridCapacityInput = (): void => {
+        const units = pagedGridCapacityUnits();
+        pagedGridCapacityInput.max = String(units);
+        pagedGridCapacityInput.value = String(
+            pagedGridCapacityPages >= pagedGridCapacityLimit
+                ? units
+                : Math.max(1, Math.min(units, Math.round(pagedGridCapacityPages / pagedGridCapacityStep)))
+        );
+    };
+    const updatePagedGridCapacityValue = (): void => {
+        pagedGridCapacityValue.textContent = `${pagedGridCapacityPages.toLocaleString()}\u00a0pages`;
+    };
+    syncPagedGridCapacityInput();
     updatePagedGridCapacityValue();
-    pagedGridCapacityInput.oninput = updatePagedGridCapacityValue;
-    pagedGridCapacityInput.onchange = () => on.onPagedGridMaxPages?.(parseInt(pagedGridCapacityInput.value, 10) * 1000);
-    pagedGridCapacityRow.append(pagedGridCapacityHead, pagedGridCapacityInput);
+    pagedGridCapacityInput.oninput = () => {
+        pagedGridCapacityPages = pagesFromPagedGridCapacityInput();
+        updatePagedGridCapacityValue();
+    };
+    pagedGridCapacityInput.onchange = () => on.onPagedGridMaxPages?.(pagedGridCapacityPages);
+    pagedGridCapacityRow.append(pagedGridCapacityHead, pagedGridCapacityValue, pagedGridCapacityInput);
     const pagedGridStatus = document.createElement("div");
     pagedGridStatus.style.cssText = "display:none;margin:4px 0 8px 36px;font-size:11px;color:#9fb3c8;";
     const applyActiveBlockDependencies = (): void => {
@@ -2069,7 +2104,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         activeBlocksRow.style.display = mpmDisplay;
         fusedBlockDiscoveryRow.style.display = mpmDisplay;
         pagedGridRow.style.display = pagedDisplay;
-        pagedGridCapacityRow.style.display = pagedDisplay;
+        pagedGridCapacityRow.style.display = pagedDisplay === "none" ? "none" : "block";
         pagedGridStatus.style.display = pagedDisplay !== "none" && pagedGridStatus.textContent ? "block" : "none";
         applyActiveBlockDependencies();
     };
@@ -2841,6 +2876,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         ],
         [surfThickBlurRow, "Radius of the blur applied to the thickness buffer, which drives absorption and refraction. 0 skips the pass entirely."],
         [halfRow, "Render the depth/thickness buffers at half resolution. Much cheaper, at the cost of a slightly softer surface and coarser silhouettes."],
+        [
+            independentRenderingRow,
+            "When several simulations are combined, keep this preset's surface-wide settings in a separate reconstruction pass. Presets with identical settings still share one pass.",
+        ],
         [anisoRow, "Stretch each particle's impostor along the local flow (Yu & Turk). Thin sheets and jets read as sheets instead of strings of beads, at extra GPU cost."],
         [anisoDampRow, "How strongly the anisotropic stretch is reined in. Lower allows longer, flatter ellipsoids; higher keeps them closer to spheres."],
         [renderRow, "Draw the raw particles as shaded spheres instead of building a fluid surface. Useful for seeing what the simulation is actually doing."],
@@ -2914,6 +2953,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         nrDeltaRow,
         nrMuRow,
         halfRow,
+        independentRenderingRow,
         anisoRow,
         anisoDampRow
     );
@@ -2957,6 +2997,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
         nrDeltaRow,
         nrMuRow,
         halfRow,
+        independentRenderingRow,
         anisoRow,
         anisoDampRow,
         thickDownRow
@@ -3175,6 +3216,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             colorInput.value = hex;
             on.onColor?.(hexToRgb(hex));
         },
+        setIndependentRendering(enabled: boolean): void {
+            independentRenderingChk.checked = enabled;
+            on.onIndependentRendering?.(enabled);
+        },
         setAbsorption(v: number): void {
             absorbInput.value = String(v);
             absorbVal.textContent = v.toFixed(1);
@@ -3299,8 +3344,10 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
             pagedGridChk.checked = enabled;
             applyActiveBlockDependencies();
         },
-        setPagedGridMaxPages(pages: number): void {
-            pagedGridCapacityInput.value = String(Math.max(1, Math.min(2000, Math.round(pages / 1000))));
+        setPagedGridMaxPages(pages: number, limit = pagedGridCapacityLimit): void {
+            pagedGridCapacityLimit = Math.max(1, Math.round(limit));
+            pagedGridCapacityPages = Math.max(1, Math.min(pagedGridCapacityLimit, Math.round(pages)));
+            syncPagedGridCapacityInput();
             updatePagedGridCapacityValue();
         },
         setPagedGridStatus(message: string, error = false): void {
@@ -3372,6 +3419,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 simulationDuration: simulationDurationRow.get(),
                 alphaDecay: alphaDecayRow.get(),
                 color: colorInput.value,
+                independentRendering: independentRenderingChk.checked,
                 half: halfChk.checked,
                 thicknessDownscale: parseInt(thickDownInput.value, 10),
                 absorption: parseFloat(absorbInput.value),
@@ -3402,7 +3450,7 @@ export function createFluidControlsPanel(opts: FluidControlsOptions): FluidContr
                 anisoSurfScale: parseFloat(anisoDampInput.value),
                 activeBlocks: activeBlocksChk.checked,
                 pagedGrid: pagedGridChk.checked,
-                pagedGridMaxPages: parseInt(pagedGridCapacityInput.value, 10) * 1000,
+                pagedGridMaxPages: pagedGridCapacityPages,
                 fusedBlockDiscovery: fusedBlockDiscoveryChk.checked,
                 debug: debugSel.value,
                 showContainer: containerChk.checked,

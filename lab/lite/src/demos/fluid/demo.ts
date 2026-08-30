@@ -118,6 +118,8 @@ export interface PairState {
     freeCamera?: { position: [number, number, number]; target: [number, number, number] };
     // ── Surface-render settings (per-pair, restored on switch). All optional so old
     //    presets/states without them fall back to the core render defaults. ──
+    /** Opt into profile-specific rendering when this simulation is combined with others. */
+    independentRendering?: boolean;
     renderMode?: "surface" | "spheres";
     polygonShader?: "physical" | "ocean";
     refraction?: number;

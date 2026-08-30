@@ -5,14 +5,18 @@ import type { Behavior, WeaponAntiGravityGunBehaviorConfig } from "./types.js";
 const WEAPON_SLOT = 2;
 const DEFAULT_MAX_MASS = 100;
 const MAX_THROW_SPEED = 15;
+const COLLISION_SLIDE_ITERATIONS = 3;
+
+type CollisionHit = {
+    readonly hasHit: boolean;
+    readonly fraction: number;
+    readonly hitNormal: { readonly x: number; readonly y: number; readonly z: number };
+};
+type Displacement = readonly [number, number, number];
 
 type WeaponAntiGravityGunContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "playerMaxGrabDistance" | "dynamicMassOf">;
 
-export function antiGravityCollisionMoveFraction(
-    displacement: readonly [number, number, number],
-    hit: { readonly hasHit: boolean; readonly fraction: number; readonly hitNormal: { readonly x: number; readonly y: number; readonly z: number } },
-    skin = 0.01
-): number {
+export function antiGravityCollisionMoveFraction(displacement: Displacement, hit: CollisionHit, skin = 0.01): number {
     if (!hit.hasHit) {
         return 1;
     }
@@ -21,6 +25,52 @@ export function antiGravityCollisionMoveFraction(
         return 1;
     }
     return Math.max(0, Math.min(1, hit.fraction - Math.max(0, skin) / -approach));
+}
+
+export function antiGravityCollisionSlideDisplacement(
+    displacement: Displacement,
+    cast: (offset: Displacement, displacement: Displacement) => CollisionHit,
+    skin = 0.01
+): { readonly movement: Displacement; readonly blocked: boolean } {
+    const movement: [number, number, number] = [0, 0, 0];
+    let remaining: [number, number, number] = [...displacement];
+    let blocked = false;
+
+    for (let iteration = 0; iteration < COLLISION_SLIDE_ITERATIONS; iteration++) {
+        if (Math.hypot(...remaining) <= 1e-8) {
+            break;
+        }
+        const hit = cast(movement, remaining);
+        const fraction = antiGravityCollisionMoveFraction(remaining, hit, skin);
+        movement[0] += remaining[0] * fraction;
+        movement[1] += remaining[1] * fraction;
+        movement[2] += remaining[2] * fraction;
+        if (fraction >= 1) {
+            break;
+        }
+        blocked = true;
+        const normalLength = Math.hypot(hit.hitNormal.x, hit.hitNormal.y, hit.hitNormal.z);
+        if (normalLength <= 1e-8) {
+            break;
+        }
+        const nx = hit.hitNormal.x / normalLength;
+        const ny = hit.hitNormal.y / normalLength;
+        const nz = hit.hitNormal.z / normalLength;
+        const residualScale = 1 - fraction;
+        remaining = [remaining[0] * residualScale, remaining[1] * residualScale, remaining[2] * residualScale];
+        const inward = remaining[0] * nx + remaining[1] * ny + remaining[2] * nz;
+        if (inward >= -1e-8) {
+            movement[0] += remaining[0];
+            movement[1] += remaining[1];
+            movement[2] += remaining[2];
+            break;
+        }
+        remaining[0] -= nx * inward;
+        remaining[1] -= ny * inward;
+        remaining[2] -= nz * inward;
+    }
+
+    return { movement, blocked };
 }
 
 export class WeaponAntiGravityGunBehavior implements Behavior<"weaponAntiGravityGun"> {

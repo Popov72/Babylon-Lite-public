@@ -19,6 +19,7 @@ export interface AquanovaEventMap {
         distance: number;
         direction: readonly [number, number, number];
         impulse: number;
+        bulletHoleSize: number;
     };
     weaponAimUpdated: {
         mesh: Mesh | null;

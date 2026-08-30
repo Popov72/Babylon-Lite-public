@@ -64,7 +64,7 @@ export class SoundManager {
     public resolvePlayback(id: string): Promise<ManagedSound> {
         const playback = this.registeredPlaybacks.get(id);
         if (!playback) {
-            throw new Error(`[aquanova] sound playback ID "${id}" is not defined by a playSound behavior`);
+            throw new Error(`[aquanova] sound playback ID "${id}" is not defined by a sound play cue`);
         }
         playback.load ??= this.createSound(`sound:${id}`, playback.source, playback.options).catch((error: unknown) => {
             playback.load = null;

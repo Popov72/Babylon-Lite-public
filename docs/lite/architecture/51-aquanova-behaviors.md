@@ -69,12 +69,11 @@ the resolved base behavior is instantiated. The current base behaviors are:
 | `pickEntity`           | Collects an intersected entity and emits an event       |
 | `enableEntity`         | Enables its owner after a configured source event       |
 | `disableEntity`        | Disables its owner after a configured source event      |
-| `sound`                | Runs legacy grouped play/stop sound cues                |
-| `playSound`            | Starts an authored sound                                |
-| `stopSound`            | Stops an authored sound                                 |
+| `sound`                | Runs channel-addressable play/stop sound cues           |
 | `fluidSimulation`      | Runs an event-controlled authored fluid simulation      |
 | `fluidElectrifier`     | Permanently charges contacted electrifiable liquid      |
 | `electricalDetonator`  | Raises `explode` on electrified-liquid contact          |
+| `explode`              | Fractures and ejects nearby eligible entities           |
 | `setCollisionShape`    | Replaces an entity collider from its visible geometry   |
 | `trigger`              | Raises owner events when its collider is entered/exited |
 | `playAnimation`        | Starts one animation clip from the ship glTF            |
@@ -132,7 +131,13 @@ shapes are rejected on physically dynamic entities.
 `public/aquanova/fluidSim/`. Its axis-aligned grid keeps the authored size but
 uses the behavior owner's world position instead of the position stored in the
 JSON; emitter and sink positions remain grid-local and are translated with that
-new center. `electrifiable` defaults to `false`; only an explicitly
+new center. FLIP presets store `gridResolution`; non-FLIP presets derive their
+cell size from the solver method, `physicsParticleSize`, simulation type, and
+authored particle radius. Both demos use the package-level functions in
+`packages/babylon-lite/src/fluid/simulation-config.ts`, so the same JSON produces
+the same solver discretization and particle capacity.
+`particleCount` sizes particle buffers but does not size the cubic solver grid.
+`electrifiable` defaults to `false`; only an explicitly
 electrifiable simulation can retain electrical charge. The simulation is absent and does not render until the owner
 receives an event mapped to `enableSimulation`. `eventActions` maps an external
 entity or door's event to one of:
@@ -250,6 +255,43 @@ counts centres of propagated electrified particles inside it. Its positive
 integer `particleThreshold` defaults to `4`. On reaching the threshold it
 raises the owner event `explode` exactly once and stops querying.
 
+`explode` listens for its owner's `explode` event by default, or for explicit
+`events` subscriptions when provided, and can activate only once. Its origin is
+the live world-space centre of the owner mesh group. It intersects a spherical
+blast with current world AABBs and targets each nearby entity once when that
+entity carries either `liquefaction` or `dynamic`. The behavior preloads and
+plays its configured extensionless MP3 `sound` when the blast activates;
+`sound` defaults to `bigExplosion`.
+
+During initialization, every liquefiable or dynamic mesh primitive is clipped
+into deterministic source-local Voronoi cells for every `fragmentCount` used by
+an authored `explode` behavior (default `8`, maximum `32`). The templates remain
+outside the scene. On activation, the selected template receives the source
+mesh's current decomposed world transform, so a dynamic object may move after
+startup without invalidating its fracture. Unused count variants are disposed
+when that entity explodes.
+
+The original entity is then retired through the normal gameplay path, removing
+its behaviors, Havok bodies, collision shapes, fluid-collision slots, and
+render meshes. Each debris cell temporarily uses a cheap box-shaped Havok body.
+This preserves collision with the ship while fragments are ejected without
+Voronoi clipping or convex-hull construction on the explosion frame. Debris
+collision filters exclude other debris while retaining collision with the ship
+and ordinary bodies, preventing the approximating boxes from pushing one
+another apart. Existing linear velocity is preserved and combined with an
+outward/upward velocity whose maximum `strength` defaults to `12 m/s` and falls
+off with distance inside `radius` (default `10 m`).
+
+When a fragment's linear speed remains below `0.15 m/s` and its angular speed
+below `0.2 rad/s` for `0.75 s`, its body and shape are released at its final
+resting transform. The settled render mesh remains visible but non-pickable, so
+it no longer participates in physics collision or blocks weapons.
+
+Debris uses independent alpha-blended copies of source materials so fading
+cannot mutate materials still used by the ship. It remains fully visible for
+`debrisLifetime` seconds (default `15`), fades to zero over `fadeDuration`
+seconds (default `2`), then removes its render meshes.
+
 All electrifier and receiver AABBs are batched into one shared compute query.
 CPU broad-phase rejects pairs whose AABB cannot overlap the fluid domain's
 solver-grid AABB. One workgroup-local reduction contributes to each compact
@@ -305,39 +347,50 @@ simulation, runs it at full opacity for `shutdownDuration` simulated seconds
 (default `2`), then disposes its GPU and collision resources. Every later event
 action is ignored once shutdown begins.
 
-`sound` requires a non-empty `cues` array. Each cue contains an extensionless
-MP3 `sound` name, a `play` or `stop` `action`, optional `events`
-subscriptions, and optional `delay` and `fade` durations. A cue without
-subscriptions runs once at behavior startup. `delay` postpones that cue's
-action, while `fade` is a fade-in for `play` and a fade-out before `stop`; both
-are finite non-negative seconds and default to zero. Distinct MP3s are
-preloaded once per behavior, matching cues run in declaration order, and all
-subscriptions and delayed actions are cancelled together when the behavior is
-disposed.
+`sound` requires a non-empty `cues` array. Every `play` cue defines a globally
+unique playback-channel `id` and an extensionless MP3 `sound` name. It may also
+set `volume` in `[0, 1]` (default `1`) and `loop` (default `false`). Every
+`stop` cue refers to a play cue through `soundId` and never loads a second sound.
+Two play IDs using the same MP3 therefore remain independent and can be faded
+or stopped separately. Missing and duplicate IDs are startup errors.
 
-`playSound` and `stopSound` are the focused authoring forms. `playSound`
-requires an assignment-local, globally unique `id` and one extensionless MP3
-`sound` name. Each ID owns an independent streaming-sound channel, so two IDs
-using the same MP3 may be faded and stopped separately. `stopSound.soundId`
-references one of those channels and never loads another sound. Missing and
-duplicate IDs are startup errors.
-
-Both behaviors accept optional `source` (`string` or `string[]`) and `event`
-fields, which must be provided together; when omitted, the action runs during
-behavior startup. `playSound.fadeInDelay` and `stopSound.fadeOutDelay` are
-finite non-negative durations in seconds and default to zero. `playSound`
-additionally accepts `volume` in `[0, 1]` (default `1`) and `loop` (default
-`false`). Repeated assignments are supported, allowing one entity to own
-independent sound actions without a nested cue array. Disposing `playSound`
-stops its channel; disposing `stopSound` only removes its subscription. The
-editor derives the `stopSound.soundId` list from effective `playSound`
-assignments and filters it through the form's current/chosen/all-room selector.
+All cues accept optional `events` subscriptions plus optional `delay` and
+`fade` durations. A cue without subscriptions runs once at behavior startup.
+`delay` postpones that cue's action, while `fade` is a fade-in for `play` and a
+fade-out before `stop`; both are finite non-negative seconds and default to
+zero. Matching cues run in declaration order, and disposal cancels all
+subscriptions and delayed actions. Disposal also stops channels defined by that
+behavior's play cues, but channels merely referenced by its stop cues remain
+owned by their defining behavior. The editor derives the stop-cue `soundId`
+list from effective sound play cues and filters it through the form's
+current/chosen/all-room selector.
 
 Behavior-owned simulations and liquefaction blobs share Aquanova's single
-particle-surface renderer. The most recently enabled fluid setting therefore
-controls the shared water look when several simulations overlap; particle
-positions, stepping, pause state, collision fields, opacity, and disposal remain
-independent per simulation.
+particle-surface renderer by default. Every simulation captures its authored
+water colour in a flat GPU buffer when it is allocated, and Aquanova copies
+that colour beside the simulation's particles into the shared render buffers
+each frame. Concurrent simulations therefore retain distinct colours on this
+fast path. Other surface-pass controls, including absorption, refraction, blur,
+filtering, and particle size, remain global and are controlled by the most
+recently enabled fast-path setting.
+
+`render.independentRendering: true` opts a fluid setting into profile-specific
+surface reconstruction. Core's `fluid-render-profile.ts` keys render groups by
+the complete supported render block, particle radius, surface-size scale, and
+particle-colour mode and applies those settings to each surface task.
+Simulations with the same key share one particle aggregation buffer and one
+surface task; different keys receive independent depth, thickness, filtering,
+and composite passes. Empty groups execute no surface work. The original
+single-task path and its memory footprint remain unchanged until an opted-in
+simulation is first activated.
+
+Each profile renders against the same opaque-scene colour and depth. A final
+depth-aware compositor provided by core's `fluid-render-compositor.ts` compares
+the reconstructed eye-space surface depths and keeps the nearest profile at
+every pixel before electricity and anti-aliasing passes run. The compositor is
+application-independent; Aquanova supplies the active color targets and depth
+views. Particle positions, stepping, pause state, collision fields, opacity,
+and disposal remain independent per simulation.
 
 `trigger` accepts
 `{ "onIntersection": { "enterEvent": "triggerActivated",
@@ -367,9 +420,13 @@ The behavior runs when any entry matches. `source` is an entity or door id, or
 an array of ids with equivalent OR semantics; sources do not need to own
 meshes. With no `events`, the action runs immediately during behavior startup.
 `disableCollision` removes the owner's shapes from physics and fluid collision
-and excludes all of its mesh primitives from weapon targeting. Re-enabling
-collision restores all three. Delayed weapon impacts recheck this state, so
-disabling collision after firing still prevents the impact.
+and excludes all of its mesh primitives from weapon targeting. With
+`fluidSimulationOnly: true`, it instead leaves Havok and weapon collision
+unchanged while deactivating the owner's stable primitive slots in every
+running fluid simulation; simulations created later omit those primitives.
+`enableCollision` restores every collision surface, including a prior
+fluid-only disable. Delayed weapon impacts recheck the full collision state, so
+fully disabling collision after firing still prevents the impact.
 Unsupported behavior keys are rejected at load time so stale manifest syntax
 cannot silently change behavior.
 
@@ -556,8 +613,12 @@ manifests.
 A grabbed body switches from dynamic to kinematic motion, has its velocities
 cleared, and is attracted toward a point `2.5 m` along the camera aim ray while
 retaining its orientation. Each movement step sweeps the body's actual Havok
-shape and stops just before the first non-trigger collider, excluding the held
-body itself. It remains held after the first left button is released. The next
+shape, excluding the held body itself. On contact with a non-trigger collider,
+the solver stops just before the surface, projects the unconsumed displacement
+onto the contact plane, and repeats for up to three contacts. The held object
+therefore slides along walls and around corners as player movement or camera
+rotation changes the target instead of remaining pinned by the inward component
+of the pull. It remains held after the first left button is released. The next
 left-button press immediately throws it at a mass-independent `15 m/s`; holding
 the button does not increase the force. The right button drops it with zero
 velocity. Holstering, disposal, target removal, or liquefaction also drops the
@@ -567,13 +628,31 @@ held body without throwing it.
 crosshair lifecycle. A trigger press launches one pooled visible projectile
 from the viewmodel muzzle toward the completed centre-screen pick, or out to
 the configured `range` when nothing is hit. `bulletSpeed` controls projectile
-travel speed. Every mesh impact displays a short pooled emissive marker and
+travel speed. Each launched shot plays the behavior's configured extensionless
+MP3 `sound`, which defaults to `pistolShot`. Every mesh impact displays a short
+pooled emissive marker and
 raises the typed `hitWithPistol` event at arrival. If the hit mesh belongs to a
 movable `dynamic` entity, `impactImpulse` is applied in the shot direction at
 the exact world-space impact point, so off-centre hits also produce torque.
 Static meshes still show the impact marker but receive no physics impulse.
-Glass has no special handling yet; a later glass behavior can consume the same
-pistol-specific event without coupling it to the weapon.
+When a pistol impact reaches a mesh whose material name contains `glass`, every
+started behavior-owned fluid simulation that contains that mesh's entity
+collision shape activates a cylindrical subtraction in its collision field.
+The `weaponPistol` behavior's positive `bulletHoleSize` factor defaults to `1`
+and multiplies the bore radius after the simulation selects its default
+particle-passable radius. Values below `1` make smaller holes and values above
+`1` make larger holes without changing bore depth.
+Each simulation preallocates eight inactive cylinder slots when its solver is
+built. Impacts fill inactive slots in index order. Once all eight are active,
+the next impact replaces the cylinder whose world-space centre has the greatest
+Y coordinate; equal heights resolve to the lowest slot index. Drilling never
+allocates GPU resources or changes the shader after startup. The bore is
+aligned with the shot direction, sized to remain passable at the simulation's
+particle radius, and subtracts only from the collision primitive nearest the
+impact. Nearby ship collision intersecting the same cylinder remains solid.
+Liquefaction simulations do not allocate these slots.
+Debug `fluid-injected` collider view draws active bores as cyan wireframe
+cylinders, distinct from the magenta solid collision primitives.
 
 The pistol pickup grants ownership by sending `enable` to its `weaponPistol`
 behavior, exactly like the other pickup-backed weapons. The debug `idkfa`
@@ -638,6 +717,12 @@ skips inactive slots. A prop's collision is deactivated at the same point its
 Havok body is removed: immediately before the fluid simulation's first step.
 The retired state also excludes it from behavior-owned simulations enabled
 later.
+
+The collision storage header separately counts solid and subtractive primitives.
+Each subtraction slot records its target solid slot. The shader carves that
+solid before unioning it with the untouched collision primitives and applying
+the independent ground plane, so pistol holes cannot drill through nearby ship
+geometry or the simulation's ground backstop.
 
 Primitive inclusion is tested against the exact world-space AABB passed to the
 fluid solver as its simulation grid. The liquefied mesh's sampled AABB is used

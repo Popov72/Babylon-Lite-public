@@ -7,12 +7,18 @@
 
 import { describe, expect, it } from "vitest";
 import {
+    addFluidHole,
+    createFluidHoleRing,
     localizePrimitive,
     hollowCylinderPrimitiveForMatrix,
     packPrimitives,
+    packSubtractionPrimitive,
+    packSubtractionPrimitives,
     primBufferBytes,
     primitiveSdf,
     primitivesSdf,
+    shotHolePrimitive,
+    subtractedPrimitivesSdf,
     setPackedPrimitiveActive,
     PRIM_ACTIVE_OFFSET,
     PRIM_HEADER,
@@ -192,6 +198,50 @@ describe("collision-field: union", () => {
     });
 });
 
+describe("collision-field: pistol holes", () => {
+    it("builds a finite cylinder centred on and aligned with the shot", () => {
+        expect(shotHolePrimitive([2, 3, 4], [0, 0, 2], 0.75, 0.1)).toEqual({
+            kind: "cylinder",
+            a: [2, 3, 3.25],
+            b: [2, 3, 4.75],
+            radius: 0.1,
+        });
+    });
+
+    it("subtracts a cylindrical bore from a solid", () => {
+        const wall: FluidPrimitive = { kind: "box", a: [0, 0, 0], b: [1, 1, 0.25] };
+        const hole = shotHolePrimitive([0, 0, 0.25], [0, 0, 1], 0.5, 0.1);
+        const targetedHole = { primitive: hole, targetSolidSlot: 0 };
+        expect(subtractedPrimitivesSdf([wall], [targetedHole], [0, 0, 0])).toBeGreaterThan(0);
+        expect(subtractedPrimitivesSdf([wall], [targetedHole], [0.5, 0, 0])).toBeLessThan(0);
+    });
+
+    it("does not carve a different solid intersected by the cylinder", () => {
+        const tankWall: FluidPrimitive = { kind: "box", a: [0, 0, 0], b: [1, 1, 0.1] };
+        const shipWall: FluidPrimitive = { kind: "box", a: [0, 0, 0.5], b: [1, 1, 0.1] };
+        const hole = shotHolePrimitive([0, 0, 0.1], [0, 0, 1], 0.6, 0.1);
+        expect(subtractedPrimitivesSdf([tankWall, shipWall], [{ primitive: hole, targetSolidSlot: 0 }], [0, 0, 0])).toBeGreaterThan(0);
+        expect(subtractedPrimitivesSdf([tankWall, shipWall], [{ primitive: hole, targetSolidSlot: 0 }], [0, 0, 0.5])).toBeLessThan(0);
+    });
+
+    it("fills inactive slots, then replaces the highest hole with stable tie-breaking", () => {
+        const ring = createFluidHoleRing(3);
+        const first = shotHolePrimitive([1, 1, 0], [0, 0, 1], 0.5, 0.1);
+        const second = shotHolePrimitive([2, 4, 0], [0, 0, 1], 0.5, 0.1);
+        const third = shotHolePrimitive([3, 4, 0], [0, 0, 1], 0.5, 0.1);
+        const fourth = shotHolePrimitive([4, 2, 0], [0, 0, 1], 0.5, 0.1);
+        expect(addFluidHole(ring, first, 3)).toBe(0);
+        expect(addFluidHole(ring, second, 4)).toBe(1);
+        expect(addFluidHole(ring, third, 5)).toBe(2);
+        expect(addFluidHole(ring, fourth, 6)).toBe(1);
+        expect(ring.holes).toEqual([
+            { primitive: first, targetSolidSlot: 3 },
+            { primitive: fourth, targetSolidSlot: 6 },
+            { primitive: third, targetSolidSlot: 5 },
+        ]);
+    });
+});
+
 describe("collision-field: velocity", () => {
     it("advances the primitive along its velocity, so -d(sdf)/dt is the boundary speed", () => {
         const moving: FluidPrimitive = { kind: "sphere", a: [0, 0, 0], radius: 1, velocity: [2, 0, 0] };
@@ -220,6 +270,7 @@ describe("collision-field: packing", () => {
         const buf = new Float32Array(PRIM_HEADER + prims.length * PRIM_STRIDE);
         packPrimitives(buf, prims);
         expect(buf[0]).toBe(5); // header count — the WGSL loop bound
+        expect(buf[1]).toBe(0); // no subtraction primitives
 
         const at = (i: number, k: number): number => buf[PRIM_HEADER + i * PRIM_STRIDE + k]!;
         expect(at(0, 0)).toBe(PRIM_BOX);
@@ -251,6 +302,24 @@ describe("collision-field: packing", () => {
         expect(buf[0]).toBe(1);
         expect(buf[PRIM_HEADER + PRIM_ACTIVE_OFFSET]).toBe(0);
         expect(Array.from(buf.slice(PRIM_HEADER + 1, PRIM_HEADER + 4))).toEqual([1, 2, 3]);
+    });
+    it("packs preallocated subtraction primitives after the solid slots", () => {
+        const buf = new Float32Array(PRIM_HEADER + 3 * PRIM_STRIDE);
+        packPrimitives(buf, [{ kind: "box", a: [0, 0, 0], b: [1, 1, 1] }]);
+        packSubtractionPrimitives(buf, 1, createFluidHoleRing(2).holes);
+        expect(buf[0]).toBe(1);
+        expect(buf[1]).toBe(2);
+        expect(buf[PRIM_HEADER + PRIM_STRIDE + PRIM_ACTIVE_OFFSET]).toBe(0);
+        expect(buf[PRIM_HEADER + 2 * PRIM_STRIDE + PRIM_ACTIVE_OFFSET]).toBe(0);
+    });
+    it("packs the targeted solid slot with an active subtraction", () => {
+        const buf = new Float32Array(PRIM_HEADER + 2 * PRIM_STRIDE);
+        packPrimitives(buf, [{ kind: "box", a: [0, 0, 0], b: [1, 1, 1] }]);
+        const hole = { primitive: shotHolePrimitive([0, 0, 1], [0, 0, 1], 0.2, 0.1), targetSolidSlot: 7 };
+        packSubtractionPrimitive(buf, 1, 0, hole);
+        const offset = PRIM_HEADER + PRIM_STRIDE;
+        expect(buf[offset + 8]).toBe(7);
+        expect(buf[offset + PRIM_ACTIVE_OFFSET]).toBe(1);
     });
     it("sizes the buffer for the header plus the primitives", () => {
         expect(primBufferBytes(0)).toBe(PRIM_HEADER * 4);

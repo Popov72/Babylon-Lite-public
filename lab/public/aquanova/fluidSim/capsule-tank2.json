@@ -1,0 +1,320 @@
+{
+  "formatVersion": 13,
+  "meta": {
+    "demo": "aquanova-fluid-sim",
+    "method": "PB-MPM"
+  },
+  "physics": {
+    "gravity": 10.9,
+    "iterations": 1,
+    "liquidRelaxation": 0.1,
+    "liquidViscosity": 0.005,
+    "elasticityRatio": 0.3,
+    "elasticRelaxation": 0.3,
+    "frictionAngle": 35,
+    "plasticity": 0.8,
+    "restitution": 1,
+    "substeps": 4,
+    "maxSubDtMs": 8.4
+  },
+  "demoParams": {
+    "particleRadius": 0.035,
+    "useMeshColors": 0,
+    "collisionNeighborhoodRadius": 12,
+    "forceStrength": 0.5,
+    "forceInfluenceRadius": 3.5
+  },
+  "demoState": {
+    "simulationType": "fluid",
+    "samplingMode": "dense",
+    "fillStrategy": "auto"
+  },
+  "simulationDuration": 0,
+  "alphaDecay": 2,
+  "simulationTimeScale": 1,
+  "emitters": [
+    {
+      "id": "manual-source-1",
+      "name": "Manual source",
+      "enabled": true,
+      "behavior": "initial",
+      "transform": {
+        "position": [
+          0,
+          0.2,
+          -2.445578982837487
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.2,
+          3.4,
+          1.2
+        ]
+      },
+      "shape": {
+        "type": "cylinder",
+        "radius": 0.4,
+        "height": 0.5
+      },
+      "sampling": "volume",
+      "velocity": [
+        0,
+        0,
+        0
+      ],
+      "velocitySpace": "world",
+      "spread": 0,
+      "volumeRate": 1
+    },
+    {
+      "id": "emitter-1",
+      "name": "Inflow recycle",
+      "enabled": true,
+      "behavior": "inflow",
+      "transform": {
+        "position": [
+          0,
+          1.1877869027335866,
+          -2.445578982837487
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.42,
+          1,
+          1.42
+        ]
+      },
+      "shape": {
+        "type": "cylinder",
+        "radius": 0.4,
+        "height": 0.25
+      },
+      "sampling": "volume",
+      "velocity": [
+        0,
+        1,
+        0
+      ],
+      "velocitySpace": "local",
+      "spread": 0
+    }
+  ],
+  "sinks": [
+    {
+      "id": "sink-1",
+      "name": "Recycle",
+      "enabled": false,
+      "mode": "recycle",
+      "transform": {
+        "position": [
+          0,
+          -2.046068693541898,
+          -3.2848414697489066
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          6,
+          0.4,
+          8
+        ]
+      },
+      "shape": {
+        "type": "box",
+        "size": [
+          1,
+          1,
+          1
+        ]
+      },
+      "targets": [
+        "emitter-1"
+      ]
+    },
+    {
+      "id": "sink-2",
+      "name": "Recycle2",
+      "enabled": false,
+      "mode": "delete",
+      "transform": {
+        "position": [
+          0,
+          -2.046068693541898,
+          4.494519319380972
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          6,
+          0.4,
+          5
+        ]
+      },
+      "shape": {
+        "type": "box",
+        "size": [
+          1,
+          1,
+          1
+        ]
+      },
+      "targets": [],
+      "volumeRate": 1
+    },
+    {
+      "id": "sink-3",
+      "name": "BubbleEffect",
+      "enabled": true,
+      "mode": "recycle",
+      "transform": {
+        "position": [
+          0,
+          -1.4000306377637972,
+          -2.434389739532957
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1.42,
+          0.5,
+          1.42
+        ]
+      },
+      "shape": {
+        "type": "cylinder",
+        "radius": 0.5,
+        "height": 1,
+        "innerRadius": 0
+      },
+      "targets": [
+        "emitter-1"
+      ]
+    }
+  ],
+  "showContainer": true,
+  "physicsParticleSize": 0.1,
+  "gridPosition": [
+    -10,
+    2,
+    -12.9
+  ],
+  "gridSize": [
+    6,
+    4,
+    14
+  ],
+  "showGridBounds": true,
+  "showGridBoundsSolid": false,
+  "particleCount": 10000,
+  "material": 0,
+  "freeCamera": {
+    "position": [
+      -9.948231179029024,
+      2.3024530409861113,
+      -11.376713378847088
+    ],
+    "target": [
+      -9.96980369862664,
+      2.2467675744137763,
+      -12.37492866384869
+    ]
+  },
+  "render": {
+    "renderAsSpheres": false,
+    "polygonShader": "physical",
+    "waterColor": "#71ec3c",
+    "absorption": 14.8,
+    "particleSize": 3,
+    "refractionStrength": 0.06,
+    "specularPower": 41,
+    "reflectionExposure": 1,
+    "reflectionContrast": 1.1,
+    "waterReflectivity": 0.02,
+    "surfaceDepthBlur": 57,
+    "depthBlurEdgeThreshold": 41,
+    "surfaceThicknessBlur": 13,
+    "halfRendering": true,
+    "thicknessDownscale": 10,
+    "surfaceFilter": "narrowRange",
+    "narrowRangeDelta": 13,
+    "narrowRangeMu": 0.9,
+    "anisotropicSurface": false,
+    "anisoRadiusDamping": 0.5
+  },
+  "foam": {
+    "enableFoam": false,
+    "activeParticles": true,
+    "generateSpray": true,
+    "generateFoam": true,
+    "generateBubbles": true,
+    "surfaceFiltering": false,
+    "trappedAirRate": 40,
+    "waveCrestRate": 40,
+    "turbulenceRate": 0,
+    "energySpeedMin": 0.7071067811865476,
+    "energySpeedMax": 6.324555320336759,
+    "curvatureMin": 0.05,
+    "curvatureMax": 1.5,
+    "turbulenceMin": 0.1,
+    "turbulenceMax": 2.5,
+    "foamLayerDepth": 0,
+    "sprayDrag": 0,
+    "foamLifetime": 2,
+    "foamLifetimeMin": 0.3,
+    "bubbleBuoyancy": 0.8,
+    "bubbleDrag": 0.5,
+    "poolSize": 3,
+    "foamSoftness": 0.25,
+    "foamDensity": 1.6,
+    "subsurfaceBubbleStrength": 0.4,
+    "subsurfaceBubbleColor": "#b8d1f2",
+    "foamBlurRadius": 4,
+    "foamLightIntensity": 0.9,
+    "foamAmbient": 0.5,
+    "foamAO": 0.5,
+    "foamNormalStrength": 6,
+    "foamDebug": "off",
+    "foamSize": 1
+  },
+  "impulse": {
+    "intensity": 1,
+    "direction": [
+      0,
+      1,
+      0
+    ],
+    "radius": 1.5
+  },
+  "grid": {
+    "x": 6,
+    "y": 4,
+    "z": 14,
+    "position": [
+      -10,
+      2,
+      -12.9
+    ]
+  }
+}

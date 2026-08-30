@@ -188,12 +188,12 @@ try {
                 cues: [
                     {
                         events: [{ source: "S1", name: "hummed" }],
-                        sound: "stepMetallic",
+                        soundId: "stepChannel",
                         action: "stop",
                         delay: 1.5,
                         fade: 2,
                     },
-                    { sound: "pickItem", action: "play" },
+                    { id: "startupChannel", sound: "pickItem", action: "play" },
                 ],
             },
             inherited: {},
@@ -539,7 +539,7 @@ try {
         throw new Error(message);
     };
 
-    if (result.metadataCount !== 21) fail(`expected 21 behavior descriptions, got ${result.metadataCount}`);
+    if (result.metadataCount !== 23) fail(`expected 23 behavior descriptions, got ${result.metadataCount}`);
 
     // Lists, not typing.
     if (result.linkedTyped !== 0) fail("linked entities are still typed into a text box");
@@ -600,10 +600,11 @@ try {
     if (
         stopCue?.events?.[0]?.source !== "S1" ||
         stopCue?.events?.[0]?.name !== "hummed" ||
-        stopCue?.sound !== "stepMetallic" ||
+        stopCue?.soundId !== "stepChannel" ||
         stopCue?.action !== "stop" ||
         stopCue?.delay !== 1.5 ||
         stopCue?.fade !== 2 ||
+        startupCue?.id !== "startupChannel" ||
         startupCue?.sound !== "pickItem" ||
         startupCue?.action !== "play" ||
         result.soundScopeCount !== 1 ||

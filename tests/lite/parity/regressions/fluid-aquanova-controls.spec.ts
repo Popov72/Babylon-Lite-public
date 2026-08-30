@@ -79,6 +79,29 @@ test("Aquanova highlights authoring action buttons when clicked", async ({ page 
     expect(animationCount).toBeGreaterThan(0);
 });
 
+test("Aquanova halves movement speed while Ctrl is held", async ({ page }) => {
+    await page.goto("/lite/demo-aquanova-fluid-sim.html");
+
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __aquanovaFluidSim?: unknown }).__aquanovaFluidSim))).toBe(true);
+    const movementSpeedMultiplier = () =>
+        page.evaluate(() =>
+            (
+                window as unknown as {
+                    __aquanovaFluidSim: { cameraMovementSpeedMultiplier(): number };
+                }
+            ).__aquanovaFluidSim.cameraMovementSpeedMultiplier()
+        );
+
+    await expect.poll(movementSpeedMultiplier).toBe(1);
+    await page.keyboard.down("Control");
+    await expect.poll(movementSpeedMultiplier).toBe(0.5);
+    await page.keyboard.down("Shift");
+    await expect.poll(movementSpeedMultiplier).toBe(2);
+    await page.keyboard.up("Shift");
+    await page.keyboard.up("Control");
+    await expect.poll(movementSpeedMultiplier).toBe(1);
+});
+
 test("Aquanova shows shared grid controls and their dependencies by default", async ({ page }) => {
     test.setTimeout(120_000);
     await page.goto("/lite/demo-aquanova-fluid-sim.html");
@@ -204,6 +227,76 @@ test("Aquanova shows FLIP Initial-emitter counts and Fluid physics particle size
     );
     await method.selectOption("PBF");
     await expect(physicsParticleSize).toBeHidden();
+});
+
+test("Aquanova rendering hides unconditional AreaBox entities", async ({ page }) => {
+    await page.goto("/lite/demo-aquanova-fluid-sim.html?aquanovaRendering=1");
+
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __aquanovaFluidSim?: unknown }).__aquanovaFluidSim))).toBe(true);
+    const canvas = page.locator("#renderCanvas");
+    await expect(canvas).toHaveAttribute("data-aquanova-rendering", "true");
+    await expect(canvas).toHaveAttribute("data-hidden-area-box-entity-count", "7");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-hidden-area-box-mesh-count"))).toBeGreaterThanOrEqual(7);
+});
+
+test("Aquanova runtimes share core FLIP discretization", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.goto("/lite/demo-aquanova-fluid-sim.html");
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __aquanovaFluidSim?: unknown }).__aquanovaFluidSim))).toBe(true);
+
+    const authored = await page.evaluate(async () => {
+        const qa = (
+            window as unknown as {
+                __aquanovaFluidSim: {
+                    importPreset(preset: unknown): void;
+                    startManual(): void;
+                    flipDiscretization(): { dx: number; markerVolume: number; particleRadius: number };
+                    manualParticleRadius(): number | null;
+                };
+            }
+        ).__aquanovaFluidSim;
+        const response = await fetch("/aquanova/fluidSim/capsule-tank.json");
+        if (!response.ok) {
+            throw new Error(`capsule-tank.json: HTTP ${response.status}`);
+        }
+        qa.importPreset(await response.json());
+        qa.startManual();
+        return { discretization: qa.flipDiscretization(), runtimeRadius: qa.manualParticleRadius() };
+    });
+    expect(authored.discretization.dx).toBeCloseTo(14 / 178, 10);
+    expect(authored.runtimeRadius).toBeCloseTo(authored.discretization.particleRadius, 10);
+
+    await page.goto("/lite/demo-aquanova.html");
+    await expect.poll(() => page.evaluate(() => Boolean((window as unknown as { __aquanova?: unknown }).__aquanova)), { timeout: 120_000 }).toBe(true);
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    (
+                        window as unknown as {
+                            __aquanova: {
+                                fluidSimulationPreparations(): Array<{ setting: string; dx: number; particleRadius: number }>;
+                            };
+                        }
+                    ).__aquanova
+                        .fluidSimulationPreparations()
+                        .find((entry) => entry.setting === "capsule-tank") ?? null
+            )
+        )
+        .not.toBeNull();
+    const capsule = await page.evaluate(() =>
+        (
+            window as unknown as {
+                __aquanova: {
+                    fluidSimulationPreparations(): Array<{ setting: string; dx: number; particleRadius: number }>;
+                };
+            }
+        ).__aquanova
+            .fluidSimulationPreparations()
+            .find((entry) => entry.setting === "capsule-tank")!
+    );
+    expect(capsule.dx).toBeCloseTo(authored.discretization.dx, 10);
+    expect(capsule.particleRadius).toBeCloseTo(authored.discretization.particleRadius, 10);
 });
 
 test("Aquanova applies the shared FLIP polygon-surface control", async ({ page }) => {

@@ -1,7 +1,7 @@
 {
   "generator": "SciFiShip layout tool",
   "schema": 3,
-  "savedAt": "2026-08-27T21:27:11.929Z",
+  "savedAt": "2026-08-30T13:28:19.375Z",
   "units": "metres",
   "up": "Y (glTF)",
   "space": {
@@ -154,8 +154,8 @@
           -3.3814
         ]
       },
-      "instanceCount": 48,
-      "meshCount": 136
+      "instanceCount": 50,
+      "meshCount": 138
     },
     {
       "id": "Test",
@@ -2309,7 +2309,7 @@
       "position": [
         -10,
         0,
-        -16.008
+        -15.345
       ],
       "rotation": [
         0,
@@ -3951,7 +3951,7 @@
       "position": [
         -10,
         1.139,
-        -16
+        -15.337
       ],
       "rotation": [
         0,
@@ -4008,6 +4008,50 @@
         0.4
       ],
       "node": "capsuleFluidSim"
+    },
+    {
+      "id": "P0502",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH03_StorageC2",
+      "name": "sparkCorridorC2",
+      "position": [
+        -11.318,
+        0,
+        -11.619
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "node": "sparkCorridorC2"
+    },
+    {
+      "id": "P0503",
+      "module": "Aquanova/Props/AreaBox",
+      "chunk": "CH03_StorageC2",
+      "name": "capsuleExplodeArea",
+      "position": [
+        -9.948,
+        1.414,
+        -14.884
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1.5,
+        1.54,
+        1.02
+      ],
+      "node": "capsuleExplodeArea"
     }
   ],
   "markers": [
@@ -4585,21 +4629,21 @@
         -0.07
       ],
       "rotation": [
-        18.4,
+        -3.6,
         180,
-        180
+        161.5
       ],
       "runtime": {
-        "type": "point",
+        "type": "spot",
         "clustered": true,
         "color": [
           1,
           1,
           1
         ],
-        "intensity": 0.6,
+        "intensity": 250,
         "range": 5,
-        "angle": 90,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -4693,7 +4737,7 @@
         -0.07
       ],
       "rotation": [
-        18.4,
+        -12.1,
         180,
         180
       ],
@@ -4705,9 +4749,9 @@
           1,
           1
         ],
-        "intensity": 90,
+        "intensity": 160,
         "range": 5,
-        "angle": 120,
+        "angle": 160,
         "castsShadows": false
       }
     },
@@ -14045,7 +14089,9 @@
     "flip-test-high",
     "flip-test-ultra-high",
     "capsule-filling",
-    "capsule-tank"
+    "capsule-tank",
+    "capsule-tank2",
+    "capsule-filling-mpm"
   ],
   "behaviorPresets": {
     "stdLiquefaction": {
@@ -14105,8 +14151,8 @@
               0
             ],
             "height": 4,
-            "innerRadius": 0.7,
-            "outerRadius": 1.2
+            "innerRadius": 0.65,
+            "outerRadius": 0.8
           }
         }
       ]
@@ -14490,6 +14536,10 @@
                 "CH01_CorridorGridFan1",
                 "CH01_CorridorFan1"
               ]
+            },
+            {
+              "source": "capsuleExplodeArea",
+              "name": "explode"
             }
           ]
         },
@@ -14518,6 +14568,10 @@
                 "CH01_CorridorGridFan2",
                 "CH01_CorridorFan2"
               ]
+            },
+            {
+              "source": "capsuleExplodeArea",
+              "name": "explode"
             }
           ]
         },
@@ -14600,6 +14654,7 @@
                   "name": "triggerActivated"
                 }
               ],
+              "id": "trapCisternFilling",
               "sound": "cisternFilling",
               "action": "play",
               "fade": 1
@@ -14611,7 +14666,7 @@
                   "name": "endLiquefaction"
                 }
               ],
-              "sound": "cisternFilling",
+              "soundId": "trapCisternFilling",
               "action": "stop",
               "fade": 0.5
             },
@@ -14622,6 +14677,7 @@
                   "name": "endLiquefaction"
                 }
               ],
+              "id": "trapSplashCisternWater",
               "sound": "splashCisternWater",
               "action": "play"
             },
@@ -14632,7 +14688,7 @@
                   "name": "emissionComplete"
                 }
               ],
-              "sound": "cisternFilling",
+              "soundId": "trapCisternFilling",
               "action": "stop",
               "fade": 1
             }
@@ -14654,20 +14710,33 @@
           "name": "hideEntity"
         },
         {
-          "name": "playSound",
-          "id": "electricField",
-          "sound": "electricField",
-          "source": "testElectrifier",
-          "event": "fluidElectrified",
-          "loop": true,
-          "fadeInDelay": 0.5
-        },
-        {
-          "name": "stopSound",
-          "soundId": "electricField",
-          "source": "trapFluidSim",
-          "event": "endSimulation",
-          "fadeOutDelay": 0.5
+          "name": "sound",
+          "cues": [
+            {
+              "action": "play",
+              "id": "electricField",
+              "sound": "electricField",
+              "events": [
+                {
+                  "source": "testElectrifier",
+                  "name": "fluidElectrified"
+                }
+              ],
+              "loop": true,
+              "fade": 0.5
+            },
+            {
+              "action": "stop",
+              "soundId": "electricField",
+              "events": [
+                {
+                  "source": "trapFluidSim",
+                  "name": "endSimulation"
+                }
+              ],
+              "fade": 0.5
+            }
+          ]
         }
       ]
     },
@@ -14685,12 +14754,13 @@
           "boundingBoxScale": [
             1,
             1,
-            8
+            5
           ]
         },
         {
           "name": "weaponPistol",
-          "impactImpulse": 30
+          "impactImpulse": 30,
+          "bulletHoleSize": 3
         }
       ]
     },
@@ -14753,6 +14823,10 @@
             "enterEvent": "triggerActivated",
             "playerOnly": true
           }
+        },
+        {
+          "name": "disableCollision",
+          "fluidSimulationOnly": true
         }
       ]
     },
@@ -14794,9 +14868,26 @@
               "action": "shutdownSimulation",
               "source": "capsule",
               "event": "endLiquefaction"
+            },
+            {
+              "action": "disablePlayerCollision",
+              "source": "endCorridorTrigger",
+              "event": "triggerActivated"
+            },
+            {
+              "action": "shutdownSimulation",
+              "source": "capsuleExplodeArea",
+              "event": "explode"
+            },
+            {
+              "action": "disableSink",
+              "source": "capsuleExplodeArea",
+              "event": "explode",
+              "sink": "BubbleEffect"
             }
           ],
-          "shutdownDuration": 5
+          "shutdownDuration": 5,
+          "electrifiable": true
         },
         {
           "name": "hideEntity"
@@ -14805,23 +14896,90 @@
           "name": "disableCollision"
         }
       ]
+    },
+    "sparkCorridorC2": {
+      "behaviors": [
+        {
+          "name": "fluidElectrifier",
+          "particleThreshold": 10,
+          "propagationSpeed": 1
+        },
+        {
+          "name": "disableCollision"
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "sound",
+          "cues": [
+            {
+              "action": "play",
+              "id": "electricField2",
+              "sound": "electricField",
+              "events": [
+                {
+                  "source": "sparkCorridorC2",
+                  "name": "fluidElectrified"
+                }
+              ],
+              "loop": true,
+              "fade": 0.5
+            },
+            {
+              "action": "stop",
+              "soundId": "electricField2",
+              "events": [
+                {
+                  "source": "capsuleFluidSim",
+                  "name": "endSimulation"
+                }
+              ],
+              "fade": 0.5
+            }
+          ]
+        }
+      ]
+    },
+    "capsuleExplodeArea": {
+      "behaviors": [
+        {
+          "name": "electricalDetonator"
+        },
+        {
+          "name": "hideEntity"
+        },
+        {
+          "name": "disableCollision"
+        },
+        {
+          "name": "explode",
+          "events": [
+            {
+              "source": "capsuleExplodeArea",
+              "name": "explode"
+            }
+          ],
+          "debrisLifetime": 10
+        }
+      ]
     }
   },
   "view": {
     "position": [
-      -8.759,
-      2.771,
-      1.72
+      -10.035,
+      2.522,
+      -8.793
     ],
     "rotation": [
-      0.188,
-      1.538,
+      0.072,
+      3.079,
       0
     ],
     "target": [
-      1.059,
-      0.902,
-      2.038
+      -9.406,
+      1.804,
+      -18.747
     ]
   },
   "environment": {

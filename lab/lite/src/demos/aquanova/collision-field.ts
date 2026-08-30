@@ -16,7 +16,7 @@
 
 /** Floats per packed primitive. 16 keeps each one 64-byte aligned and leaves room for velocity. */
 export const PRIM_STRIDE = 16;
-/** Floats before the first primitive: [count, _, _, _]. */
+/** Floats before the first primitive: [solid count, subtraction count, _, _]. */
 export const PRIM_HEADER = 4;
 
 export const PRIM_BOX = 0;
@@ -44,6 +44,17 @@ export interface FluidPrimitive {
     velocity?: readonly [number, number, number];
     /** False makes the shader skip this slot without rebuilding or compacting the collision set. */
     active?: boolean;
+}
+
+/** Fixed-capacity set of primitives subtracted from the solid collision field. */
+export interface FluidHoleRing {
+    readonly holes: FluidHole[];
+}
+
+/** One subtraction primitive and the solid primitive slot it is allowed to carve. */
+export interface FluidHole {
+    readonly primitive: FluidPrimitive;
+    readonly targetSolidSlot: number;
 }
 
 const KIND_CODE: Record<FluidPrimitive["kind"], number> = {
@@ -93,11 +104,90 @@ export function setPackedPrimitiveActive(out: Float32Array, i: number, active: b
 /** Pack a whole set, writing the count into the header. `out` must hold `PRIM_HEADER + n*PRIM_STRIDE`. */
 export function packPrimitives(out: Float32Array, prims: readonly FluidPrimitive[]): void {
     out[0] = prims.length;
+    out[1] = 0;
     for (let i = 0; i < prims.length; i++) packPrimitive(out, i, prims[i]!);
+}
+
+/** Pack one subtraction primitive immediately after the regular primitive slots. */
+export function packSubtractionPrimitive(out: Float32Array, solidCount: number, index: number, hole: FluidHole): void {
+    const packedSlot = solidCount + index;
+    packPrimitive(out, packedSlot, hole.primitive);
+    out[PRIM_HEADER + packedSlot * PRIM_STRIDE + 8] = hole.targetSolidSlot;
+}
+
+/** Pack subtraction primitives immediately after `solidCount` regular primitives. */
+export function packSubtractionPrimitives(out: Float32Array, solidCount: number, holes: readonly FluidHole[]): void {
+    out[1] = holes.length;
+    for (let i = 0; i < holes.length; i++) packSubtractionPrimitive(out, solidCount, i, holes[i]!);
 }
 
 /** Byte size of a buffer holding `capacity` primitives. */
 export const primBufferBytes = (capacity: number): number => (PRIM_HEADER + capacity * PRIM_STRIDE) * 4;
+
+/** Build a finite cylinder centred on a pistol impact and aligned with the shot. */
+export function shotHolePrimitive(center: readonly [number, number, number], direction: readonly [number, number, number], halfLength: number, radius: number): FluidPrimitive {
+    const length = Math.hypot(direction[0], direction[1], direction[2]);
+    if (
+        !center.every(Number.isFinite) ||
+        !Number.isFinite(length) ||
+        length <= 1e-8 ||
+        !Number.isFinite(halfLength) ||
+        halfLength <= 0 ||
+        !Number.isFinite(radius) ||
+        radius <= 0
+    ) {
+        throw new Error("[aquanova] pistol fluid hole requires a finite centre, direction, half-length, and radius");
+    }
+    const scale = halfLength / length;
+    const axis: [number, number, number] = [direction[0] * scale, direction[1] * scale, direction[2] * scale];
+    return {
+        kind: "cylinder",
+        a: [center[0] - axis[0], center[1] - axis[1], center[2] - axis[2]],
+        b: [center[0] + axis[0], center[1] + axis[1], center[2] + axis[2]],
+        radius,
+    };
+}
+
+/** Preallocate inactive hole slots; subsequent writes replace the highest active hole. */
+export function createFluidHoleRing(capacity: number): FluidHoleRing {
+    if (!Number.isInteger(capacity) || capacity <= 0) {
+        throw new Error(`[aquanova] fluid hole capacity must be a positive integer, received ${String(capacity)}`);
+    }
+    return {
+        holes: Array.from({ length: capacity }, () => ({
+            primitive: {
+                kind: "cylinder" as const,
+                a: [0, 0, 0] as const,
+                b: [0, 0, 0] as const,
+                radius: 0,
+                active: false,
+            },
+            targetSolidSlot: 0,
+        })),
+    };
+}
+
+/** Fill an inactive slot, or replace the active hole whose cylinder centre is highest. */
+export function addFluidHole(ring: FluidHoleRing, primitive: FluidPrimitive, targetSolidSlot: number): number {
+    if (!Number.isInteger(targetSolidSlot) || targetSolidSlot < 0) {
+        throw new Error(`[aquanova] fluid hole target must be a non-negative solid slot, received ${String(targetSolidSlot)}`);
+    }
+    let slot = ring.holes.findIndex((hole) => hole.primitive.active === false);
+    if (slot < 0) {
+        slot = 0;
+        let highestY = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < ring.holes.length; i++) {
+            const hole = ring.holes[i]!.primitive;
+            const centerY = hole.b ? (hole.a[1] + hole.b[1]) * 0.5 : hole.a[1];
+            if (centerY > highestY) {
+                highestY = centerY;
+                slot = i;
+            }
+        }
+    }
+    ring.holes[slot] = { primitive, targetSolidSlot };
+    return slot;
+}
 
 /** Transform a local +Y hollow cylinder into the world-space axial primitive used by the solver. */
 export function hollowCylinderPrimitiveForMatrix(
@@ -250,6 +340,21 @@ export function primitivesSdf(prims: readonly FluidPrimitive[], pt: readonly [nu
     return d;
 }
 
+/** Subtract each hole from only its target solid before unioning the solids. */
+export function subtractedPrimitivesSdf(solids: readonly FluidPrimitive[], holes: readonly FluidHole[], pt: readonly [number, number, number], dt = 0): number {
+    let result = 1e9;
+    for (let solidSlot = 0; solidSlot < solids.length; solidSlot++) {
+        let solidDistance = primitiveSdf(solids[solidSlot]!, pt, dt);
+        for (const hole of holes) {
+            if (hole.targetSolidSlot === solidSlot) {
+                solidDistance = Math.max(solidDistance, -primitiveSdf(hole.primitive, pt, dt));
+            }
+        }
+        result = Math.min(result, solidDistance);
+    }
+    return result;
+}
+
 // ── WGSL ────────────────────────────────────────────────────────────────────────────────────────
 // Reads the primitive list out of `sceneSdfGrid` — the storage buffer the solvers already bind for
 // `SceneSdfSpec.sdfGrid`. Reusing that binding is why this needs no engine change at all.
@@ -316,6 +421,27 @@ fn primitivesSdf(pt: vec3<f32>, dt: f32) -> f32 {
         let o = ${PRIM_HEADER}u + i * ${PRIM_STRIDE}u;
         if (sceneSdfGrid[o + ${PRIM_ACTIVE_OFFSET}u] > 0.5) {
             d = min(d, primSdf(o, pt, dt));
+        }
+    }
+    return d;
+}
+
+/** Union the solids after applying each subtraction only to its target solid slot. */
+fn carvedPrimitivesSdf(pt: vec3<f32>, dt: f32) -> f32 {
+    var d = 1e9;
+    let solidCount = u32(sceneSdfGrid[0]);
+    let holeCount = u32(sceneSdfGrid[1]);
+    for (var solidSlot = 0u; solidSlot < solidCount; solidSlot = solidSlot + 1u) {
+        let solidOffset = ${PRIM_HEADER}u + solidSlot * ${PRIM_STRIDE}u;
+        if (sceneSdfGrid[solidOffset + ${PRIM_ACTIVE_OFFSET}u] > 0.5) {
+            var solidDistance = primSdf(solidOffset, pt, dt);
+            for (var holeSlot = 0u; holeSlot < holeCount; holeSlot = holeSlot + 1u) {
+                let holeOffset = ${PRIM_HEADER}u + (solidCount + holeSlot) * ${PRIM_STRIDE}u;
+                if (sceneSdfGrid[holeOffset + ${PRIM_ACTIVE_OFFSET}u] > 0.5 && u32(sceneSdfGrid[holeOffset + 8u]) == solidSlot) {
+                    solidDistance = max(solidDistance, -primSdf(holeOffset, pt, dt));
+                }
+            }
+            d = min(d, solidDistance);
         }
     }
     return d;

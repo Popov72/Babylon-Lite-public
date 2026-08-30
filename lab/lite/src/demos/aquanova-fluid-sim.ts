@@ -55,6 +55,9 @@ import {
     getProjectionMatrix,
     getViewMatrix,
     getViewProjectionMatrix,
+    fluidSimulationCellSize,
+    fluidSimulationParticleCapacity,
+    fluidSimulationParticleRadius,
     isPbrMaterial,
     isGizmoInteracting,
     isGizmoPickPending,
@@ -95,11 +98,11 @@ import type { LitColorScene } from "./particle-lit-colors.js";
 import { DEFAULT_SHIP_IBL_STRENGTH, PLAYER_START_BEHAVIOR, resolveExposure, resolveToneMapping, WEAPON_START_BEHAVIOR } from "./ship-manifest.js";
 import type { ShipEnvironment } from "./ship-manifest.js";
 import type { LiquefyState } from "./liquefy-plugin.js";
-import { createFlipSim, estimateFlipGpuBytes } from "babylon-lite/fluid/flip-sim.js";
+import { createFlipSim, estimateFlipGpuBytes, resolveFlipDiscretization } from "babylon-lite/fluid/flip-sim.js";
 import { createMlsMpmSim } from "babylon-lite/fluid/mls-mpm-sim.js";
 import { createPbfSim } from "babylon-lite/fluid/pbf-sim.js";
 import { createPbMpmSim, pbmpmParamKeysForMaterial } from "babylon-lite/fluid/pbmpm-sim.js";
-import { countFluidInitialParticles, fluidShapeVolume, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
+import { countFluidInitialParticles, MAX_FLUID_POLYGON_POINTS } from "babylon-lite/fluid/sim-common.js";
 import type { FluidSim, FoamConfig, ForceFieldSpec, SceneSdfSpec } from "babylon-lite/fluid/sim-common.js";
 import { createRayForce } from "babylon-lite/fluid/ray-force.js";
 import { createFluidSurfaceTask } from "babylon-lite/fluid/fluid-surface-render.js";
@@ -299,7 +302,7 @@ async function main(): Promise<void> {
     // Free-fly camera: WASD strafes in the view plane, Space/C rise and fall, and RIGHT-drag looks
     // around — LMB stays free for shooting. An arc-rotate camera made the ship interior a chore to
     // navigate (orbiting around a target you cannot see past). Shift is deliberately NOT the descend
-    // key: ship mode uses Shift+LMB to liquefy.
+    // key: ship mode uses Shift+LMB to liquefy. Ctrl provides precise, half-speed movement.
     const cam = createFreeCamera({ x: -3, y: 31.6, z: -40.7 }, { x: -3, y: 2.5, z: 0 }); // the old arc-rotate vantage (alpha -PI/2, beta 0.95, radius 50)
     cam.nearPlane = 0.1;
     // Ship mode matches Aquanova's clip range so depth precision (and therefore any depth-derived
@@ -366,6 +369,8 @@ async function main(): Promise<void> {
     const LOOK_SENS = 1 / 350;
     const LOOK_ACCELERATION = 28;
     const MOVE_ACCELERATION = 11;
+    const cameraMovementSpeedMultiplier = (): number =>
+        (camKeys.has("ShiftLeft") || camKeys.has("ShiftRight") ? 4 : 1) * (camKeys.has("ControlLeft") || camKeys.has("ControlRight") ? 0.5 : 1);
     const releaseLook = (): void => {
         looking = false;
         if (document.pointerLockElement === canvas) document.exitPointerLock();
@@ -438,7 +443,7 @@ async function main(): Promise<void> {
         const fwdZ = (camKeys.has("KeyW") ? 1 : 0) - (camKeys.has("KeyS") ? 1 : 0);
         const strafe = (camKeys.has("KeyD") ? 1 : 0) - (camKeys.has("KeyA") ? 1 : 0);
         const rise = (camKeys.has("Space") ? 1 : 0) - (camKeys.has("KeyC") ? 1 : 0);
-        const speed = cam.speed * (camKeys.has("ShiftLeft") || camKeys.has("ShiftRight") ? 4 : 1);
+        const speed = cam.speed * cameraMovementSpeedMultiplier();
         const moveFactor = 1 - Math.exp(-dt * MOVE_ACCELERATION);
         camVelocity.x += ((sy * cp * fwdZ + cy * strafe) * speed - camVelocity.x) * moveFactor;
         camVelocity.y += ((sp * fwdZ + rise) * speed - camVelocity.y) * moveFactor;
@@ -817,6 +822,18 @@ async function main(): Promise<void> {
             return;
         }
 
+        const placementNodeForNode = (node: SceneNode): SceneNode | null => {
+            let current: SceneNode | null = node;
+            while (current) {
+                const id = (current.metadata?.gltf?.extras as { id?: string } | undefined)?.id;
+                if (id) {
+                    return current;
+                }
+                current = current.parent as SceneNode | null;
+            }
+            return null;
+        };
+        const placementIdForNode = (node: SceneNode): string | null => (placementNodeForNode(node)?.metadata?.gltf?.extras as { id?: string } | undefined)?.id ?? null;
         const meshesByEntityName = new Map<string, Mesh[]>();
         const entityNameByMesh = new Map<Mesh, string>();
         for (const { mesh, owner } of shipMeshes) {
@@ -840,8 +857,17 @@ async function main(): Promise<void> {
                 .filter((value): value is string => !!value)
         );
         const disabledShipMeshes = new Set<Mesh>();
+        const hiddenAreaBoxEntities = new Set<string>();
         for (const { mesh, owner } of shipMeshes) {
-            if (markerNames.has(owner.name) || mesh.name.startsWith("Portal_")) {
+            const placementModule = (placementNodeForNode(owner)?.metadata?.gltf?.extras as { module?: string } | undefined)?.module;
+            const unconditionalHide =
+                renderLikeAquanova &&
+                placementModule === "Aquanova/Props/AreaBox" &&
+                behaviorManager.assignmentsOf(owner.name).some((assignment) => assignment.name === "hideEntity" && (!assignment.events || assignment.events.length === 0));
+            if (unconditionalHide) {
+                hiddenAreaBoxEntities.add(owner.name);
+            }
+            if (markerNames.has(owner.name) || mesh.name.startsWith("Portal_") || unconditionalHide) {
                 setMeshVisible(mesh, false);
                 (mesh as { pickable?: boolean }).pickable = false;
                 disabledShipMeshes.add(mesh);
@@ -849,6 +875,8 @@ async function main(): Promise<void> {
                 editableShipMeshes.add(mesh);
             }
         }
+        canvas.dataset.hiddenAreaBoxEntityCount = String(hiddenAreaBoxEntities.size);
+        canvas.dataset.hiddenAreaBoxMeshCount = String(shipMeshes.reduce((count, { owner }) => count + (hiddenAreaBoxEntities.has(owner.name) ? 1 : 0), 0));
         behaviorManager.classifyMeshes(
             shipMeshes.map(({ mesh }) => mesh),
             {
@@ -871,18 +899,6 @@ async function main(): Promise<void> {
         }
 
         let n = 0;
-        const placementNodeForNode = (node: SceneNode): SceneNode | null => {
-            let current: SceneNode | null = node;
-            while (current) {
-                const id = (current.metadata?.gltf?.extras as { id?: string } | undefined)?.id;
-                if (id) {
-                    return current;
-                }
-                current = current.parent as SceneNode | null;
-            }
-            return null;
-        };
-        const placementIdForNode = (node: SceneNode): string | null => (placementNodeForNode(node)?.metadata?.gltf?.extras as { id?: string } | undefined)?.id ?? null;
         const shipInstanceStart = instances.length;
         for (const { mesh, parent, owner } of found) {
             if (disabledShipMeshes.has(mesh)) {
@@ -1670,8 +1686,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     })();
 
     // ── Global tuning state (applied to newly built sims) ────────────────────
-    const BASE_FLUID_PARTICLE_RADIUS = 0.08;
-    let radiusValue = BASE_FLUID_PARTICLE_RADIUS;
+    let radiusValue = fluidSimulationParticleRadius({ physicsParticleSize: 1, samplingType: "fluid" });
     let fluidPhysicsScale = 1;
     let modeValue: VolumeSamplingMode = "dense";
     // Volume lattice vs surface shell. `auto` is the shipped behaviour (openness + thickness gates,
@@ -1735,13 +1750,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let refreshFlowControls = (): void => {};
     let refreshFlipParticleCapacity = (): void => {};
     let refreshParticleCountControl = (): void => {};
-    const fluidParticleRadius = (): number => BASE_FLUID_PARTICLE_RADIUS * fluidPhysicsScale;
-    const simulationCellSize = (particleRadius = simulationType === "fluid" ? fluidParticleRadius() : radiusValue): number =>
-        currentMethod === "FLIP" ? Math.max(...gridSize) / flipGridResolution : Math.max(particleRadius * 2.4, 0.18);
     const simulationBounds = (center: readonly [number, number, number] = gridPosition): { min: [number, number, number]; max: [number, number, number] } => ({
         min: [center[0] - gridSize[0] * 0.5, center[1] - gridSize[1] * 0.5, center[2] - gridSize[2] * 0.5],
         max: [center[0] + gridSize[0] * 0.5, center[1] + gridSize[1] * 0.5, center[2] + gridSize[2] * 0.5],
     });
+    const flipDiscretization = (center: readonly [number, number, number] = gridPosition) => {
+        const bounds = simulationBounds(center);
+        return resolveFlipDiscretization({
+            boundsMin: bounds.min,
+            boundsMax: bounds.max,
+            gridResolution: flipGridResolution,
+            markersPerCell: flipMarkersPerCell,
+        });
+    };
+    const fluidDiscretization = () => ({ physicsParticleSize: fluidPhysicsScale, samplingType: simulationType, particleRadius: radiusValue });
+    const fluidParticleRadius = (): number => fluidSimulationParticleRadius(fluidDiscretization());
+    const simulationCellSize = (): number => (currentMethod === "FLIP" ? flipDiscretization().dx : fluidSimulationCellSize(currentMethod, fluidDiscretization()));
     const flowInWorldSpace = (flow: FluidFlowConfig): FluidFlowConfig => {
         const result = structuredClone(flow);
         for (const emitter of result.emitters) {
@@ -2114,7 +2138,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     };
 
     function createConfiguredSim(count: number, radius: number, boundsMin: [number, number, number], boundsMax: [number, number, number], positions?: Float32Array): FluidSim {
-        const dx = simulationCellSize(radius);
+        const dx = currentMethod === "FLIP" ? simulationCellSize() : fluidSimulationCellSize(currentMethod, { ...fluidDiscretization(), particleRadius: radius });
         const phys = physValues[currentMethod]!;
         if (currentMethod === "PBF") {
             return createPbfSim(engine, {
@@ -2138,11 +2162,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         if (currentMethod === "FLIP") {
             return createFlipSim(engine, {
                 count,
-                particleRadius: radius,
                 ...(positions ? { initialPositions: positions } : {}),
                 boundsMin,
                 boundsMax,
-                dx,
+                gridResolution: flipGridResolution,
                 markersPerCell: flipMarkersPerCell,
                 groundY: GROUND_Y,
                 gravity: phys.gravity,
@@ -2241,7 +2264,10 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         wMin: readonly [number, number, number],
         wMax: readonly [number, number, number]
     ): void {
-        const dx = simulationCellSize(radius);
+        const dx =
+            currentMethod === "FLIP"
+                ? simulationCellSize()
+                : fluidSimulationCellSize(currentMethod, { physicsParticleSize: fluidPhysicsScale, samplingType: "mesh", particleRadius: radius });
         const meshCenter: [number, number, number] = [(wMin[0] + wMax[0]) * 0.5, (wMin[1] + wMax[1]) * 0.5, (wMin[2] + wMax[2]) * 0.5];
         const gridCenter: [number, number, number] = [meshCenter[0] + gridPosition[0], meshCenter[1] + gridPosition[1], meshCenter[2] + gridPosition[2]];
         const { min: boundsMin, max: boundsMax } = simulationBounds(gridCenter);
@@ -2260,8 +2286,8 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         applyFoamToSim(sim);
         inst.sim = sim;
         inst.count = count;
-        inst.radius = radius;
-        virtualSim.particleRadius = radius;
+        inst.radius = sim.particleRadius;
+        virtualSim.particleRadius = sim.particleRadius;
         virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
         canvas.dataset.lastLiquefiedMeshCenter = meshCenter.join(",");
         canvas.dataset.lastSimulationGridPosition = gridCenter.join(",");
@@ -2460,27 +2486,19 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
     }
 
     function manualParticleCapacity(worldFlow = flowInWorldSpace(activeFlow)): number {
-        const enabled = worldFlow.emitters.filter((emitter) => emitter.enabled);
-        const particleVolume = Math.max((fluidParticleRadius() * 2) ** 3, 1e-6);
-        const initialDemand = enabled
-            .filter((emitter) => emitter.behavior === "initial")
-            .reduce((sum, emitter) => sum + Math.ceil(fluidShapeVolume(emitter.shape, emitter.transform) / particleVolume), 0);
-        const inflowDemand = enabled.some((emitter) => emitter.behavior === "inflow") ? Math.max(initialDemand * 2, 20000) : 0;
-        const automatic = Math.max(initialDemand + inflowDemand, initialDemand || 20000);
-        const requested = currentMethod === "FLIP" ? (flipParticleCapacityRequest ?? automatic) : (particleCapacityRequestByMethod.get(currentMethod) ?? automatic);
-        const capacity = currentMethod === "FLIP" ? Math.max(initialDemand, requested) : requested;
-        return Math.max(1, Math.min(MAX_TOTAL, Math.round(capacity)));
+        const particleVolume = currentMethod === "FLIP" ? flipDiscretization().markerVolume : Math.max((fluidParticleRadius() * 2) ** 3, 1e-6);
+        const requested = currentMethod === "FLIP" ? (flipParticleCapacityRequest ?? 0) : (particleCapacityRequestByMethod.get(currentMethod) ?? 0);
+        return Math.min(MAX_TOTAL, fluidSimulationParticleCapacity(currentMethod, requested, worldFlow, particleVolume));
     }
 
     function projectedFlipParticleUsage(): { active: number; capacity: number; gpuBytes: number } {
         const worldFlow = flowInWorldSpace(activeFlow);
         const capacity = manualParticleCapacity(worldFlow);
-        const dx = simulationCellSize();
-        const initialPlan = countFluidInitialParticles(capacity, worldFlow, dx ** 3 / flipMarkersPerCell, simulationBounds(), true);
+        const discretization = flipDiscretization();
+        const initialPlan = countFluidInitialParticles(capacity, worldFlow, discretization.markerVolume, simulationBounds(), true);
         const active = initialPlan?.activeCount ?? 0;
-        const gridDim = gridSize.map((size) => Math.max(1, Math.ceil(size / dx))) as [number, number, number];
         const flipPhysics = physValues["FLIP"]!;
-        const gpuBytes = estimateFlipGpuBytes(capacity, gridDim, (flipPhysics.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
+        const gpuBytes = estimateFlipGpuBytes(capacity, discretization.gridDim, (flipPhysics.pressureSolver ?? 0) >= 0.5 ? "multigrid" : "jacobi", {
             pressureDiagnostics: (flipPhysics.pressureDiagnostics ?? 0) >= 0.5 || (flipPhysics.pressureTolerance ?? 0) > 0,
             liquidSdf: (flipPhysics.liquidSdf ?? 0) >= 0.5,
             fractionalSolids: (flipPhysics.fractionalSolids ?? 0) >= 0.5,
@@ -2503,8 +2521,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             manualRun?.method === "FLIP" && manualRun.configurationSignature === manualConfigurationSignature() && manualRun.sim.count === capacity
                 ? manualRun.sim.initialEmitterParticleCounts
                 : undefined;
-        const projectedCounts =
-            resetCounts ?? countFluidInitialParticles(capacity, worldFlow, simulationCellSize() ** 3 / flipMarkersPerCell, simulationBounds(), true)?.emitterCounts;
+        const projectedCounts = resetCounts ?? countFluidInitialParticles(capacity, worldFlow, flipDiscretization().markerVolume, simulationBounds(), true)?.emitterCounts;
         if (projectedCounts) {
             for (const emitter of activeFlow.emitters) {
                 counts.set(emitter.id, projectedCounts.get(emitter.id) ?? 0);
@@ -2586,8 +2603,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         const center: [number, number, number] = [...gridPosition];
         const { min: boundsMin, max: boundsMax } = simulationBounds();
         const capacity = manualParticleCapacity(worldFlow);
-        const particleRadius = fluidParticleRadius();
-        const sim = createConfiguredSim(capacity, particleRadius, boundsMin, boundsMax);
+        const sim = createConfiguredSim(capacity, fluidParticleRadius(), boundsMin, boundsMax);
         sim.setFlow(worldFlow);
         const collision = createNeighborhoodSdf(center, null);
         sim.setSceneSdf(collision.spec);
@@ -2609,7 +2625,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             configurationSignature: manualConfigurationSignature(),
         };
         fillManualColor(manualRun);
-        virtualSim.particleRadius = particleRadius;
+        virtualSim.particleRadius = sim.particleRadius;
         virtualSim.surfaceSizeScale = sim.surfaceSizeScale ?? 1;
         canvas.dataset.lastCollisionPrimitiveCount = String(collision.count);
         setStatus();
@@ -4032,7 +4048,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             },
             onPagedGridMaxPages: (pages) => {
                 mpmPagedGridMaxPages = Math.min(maxPagedGridPages, pages);
-                controls.setPagedGridMaxPages(mpmPagedGridMaxPages);
+                controls.setPagedGridMaxPages(mpmPagedGridMaxPages, maxPagedGridPages);
                 controls.setPagedGridStatus("");
             },
             onFusedBlockDiscovery: (enabled) => {
@@ -4209,7 +4225,7 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
             mpmFusedBlockDiscovery = p.fusedBlockDiscovery ?? mpmFusedBlockDiscovery;
             controls.setActiveBlocks(mpmActiveBlocks);
             controls.setPagedGrid(mpmPagedGrid);
-            controls.setPagedGridMaxPages(mpmPagedGridMaxPages);
+            controls.setPagedGridMaxPages(mpmPagedGridMaxPages, maxPagedGridPages);
             controls.setFusedBlockDiscovery(mpmFusedBlockDiscovery);
             controls.setPagedGridStatus("");
         }
@@ -4705,6 +4721,9 @@ fn sceneSdf(pt: vec3<f32>, dt: f32) -> f32 {
         },
         foamEnabled: () => controls.getValues().foam.enabled,
         camState: () => ({ px: cam.position.x, py: cam.position.y, pz: cam.position.z, tx: cam.target.x, ty: cam.target.y, tz: cam.target.z, yaw: camYaw, pitch: camPitch }),
+        cameraMovementSpeedMultiplier,
+        flipDiscretization: () => flipDiscretization(),
+        manualParticleRadius: () => manualRun?.sim.particleRadius ?? null,
         dynBodies: () =>
             dynDisplays.map((d) => ({
                 name: d.disp.name,

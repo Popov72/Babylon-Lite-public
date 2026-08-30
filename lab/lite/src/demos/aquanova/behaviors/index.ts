@@ -1,4 +1,6 @@
 export { AquanovaBehaviorManager } from "./aquanova-behavior-manager.js";
+export { AquanovaExplosionRuntime } from "./explosion-runtime.js";
+export { ExplodeBehavior } from "./explode.js";
 export {
     DisableCollisionBehavior,
     DisableEntityBehavior,
@@ -15,12 +17,12 @@ export { fluidEmissionCompletionTarget, fluidSimulationShutdownLifecycle, fluidS
 export { PickEntityBehavior } from "./pick-entity.js";
 export { PlayAnimationBehavior } from "./play-animation.js";
 export { SetCollisionShapeBehavior } from "./set-collision-shape.js";
-export { PlaySoundBehavior, StopSoundBehavior } from "./sound-control.js";
+export { SoundBehavior } from "./sound.js";
 export { SoundManager } from "./sound-manager.js";
 export { TriggerBehavior } from "./trigger.js";
 export { PlayerBehavior } from "./player.js";
 export { WeaponLiquefactorBehavior } from "./weapon-liquefactor.js";
-export { WeaponAntiGravityGunBehavior, antiGravityCollisionMoveFraction } from "./weapon-anti-gravity-gun.js";
+export { WeaponAntiGravityGunBehavior, antiGravityCollisionMoveFraction, antiGravityCollisionSlideDisplacement } from "./weapon-anti-gravity-gun.js";
 export { WeaponInventory } from "./weapon-inventory.js";
 export type {
     Behavior,
@@ -29,24 +31,30 @@ export type {
     BehaviorEventSubscription,
     BehaviorPresets,
     BehaviorReference,
+    DisableCollisionBehaviorConfig,
     EntityToggleBehaviorConfig,
     Entities,
+    ExplodeBehaviorConfig,
     FluidSimHollowCylinderShape,
     FluidSimShape,
     FluidSimulationBehaviorConfig,
     FluidSimulationEventAction,
     LiquefiableBehaviorConfig,
     PickEntityBehaviorConfig,
-    PlaySoundBehaviorConfig,
     PlayAnimationBehaviorConfig,
     SetCollisionShapeBehaviorConfig,
-    StopSoundBehaviorConfig,
+    SoundBehaviorConfig,
+    SoundCueConfig,
+    SoundPlayCueConfig,
+    SoundStopCueConfig,
     TriggerBehaviorConfig,
     WeaponLiquefactorBehaviorConfig,
     WeaponAntiGravityGunBehaviorConfig,
 } from "./types.js";
 export type {
     AquanovaGameContext,
+    ExplosionOptions,
+    ExplosionRuntime,
     FluidSimShapeRegistration,
     IntersectionTriggerCallbacks,
     IntersectionTriggerRegistration,
@@ -57,3 +65,4 @@ export type {
 } from "./game-context.js";
 export type { FluidSimulationBackend, FluidSimulationFlowObjectKind, FluidSimulationRegistration, FluidSimulationState } from "./fluid-simulation-runtime.js";
 export type { MeshBehaviorAvailability } from "./aquanova-behavior-manager.js";
+export type { ExplosionTarget } from "./explosion-runtime.js";

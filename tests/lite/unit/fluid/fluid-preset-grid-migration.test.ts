@@ -59,6 +59,7 @@ describe("fluid preset grid migration", () => {
         const state = pairState();
         state.simulationDuration = 12;
         state.alphaDecay = 2.5;
+        state.independentRendering = true;
         state.polygonShader = "ocean";
         state.showGridBounds = true;
         state.showGridBoundsSolid = true;
@@ -75,6 +76,8 @@ describe("fluid preset grid migration", () => {
         expect(imported.grid).toEqual(state.grid);
         expect(imported.simulationDuration).toBe(12);
         expect(imported.alphaDecay).toBe(2.5);
+        expect(exported.render.independentRendering).toBe(true);
+        expect(imported.independentRendering).toBe(true);
         expect(exported.showGridBounds).toBe(true);
         expect(exported.showGridBoundsSolid).toBe(true);
         expect(imported.showGridBounds).toBe(true);

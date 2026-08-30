@@ -186,9 +186,25 @@ describe("Aquanova entity toggle behaviors", () => {
         events.emit("entityEvent", { name: "Prop_A", event: "remove" });
 
         expect(setCollisionActive.mock.calls).toEqual([
-            ["Prop_A", false],
-            ["Prop_A", true],
-            ["Prop_A", false],
+            ["Prop_A", false, "all"],
+            ["Prop_A", true, "all"],
+            ["Prop_A", false, "all"],
+        ]);
+    });
+
+    it("can disable only fluid simulation collision", () => {
+        const events = new AquanovaEventManager();
+        const setCollisionActive = vi.fn();
+        registerEntityCollisionEventHandlers(events, setCollisionActive);
+        const disable = new DisableCollisionBehavior("Prop_A", [mesh("prop")], { fluidSimulationOnly: true }, { events });
+        const enable = new EnableCollisionBehavior("Prop_A", [mesh("prop")], {}, { events });
+
+        disable.start();
+        enable.start();
+
+        expect(setCollisionActive.mock.calls).toEqual([
+            ["Prop_A", false, "fluidSimulation"],
+            ["Prop_A", true, "all"],
         ]);
     });
 
@@ -203,8 +219,8 @@ describe("Aquanova entity toggle behaviors", () => {
         enable.start();
 
         expect(setCollisionActive.mock.calls).toEqual([
-            ["weaponAntiGravityGunHolder", false],
-            ["weaponAntiGravityGunHolder", true],
+            ["weaponAntiGravityGunHolder", false, "all"],
+            ["weaponAntiGravityGunHolder", true, "all"],
         ]);
     });
 });

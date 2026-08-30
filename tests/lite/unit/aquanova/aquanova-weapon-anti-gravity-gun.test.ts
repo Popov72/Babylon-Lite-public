@@ -3,7 +3,11 @@ import type { Mesh } from "../../../../packages/babylon-lite/src";
 import { createSceneNode } from "../../../../packages/babylon-lite/src/scene/scene-node";
 import { AquanovaEventManager } from "../../../../lab/lite/src/demos/aquanova/behaviors/aquanova-event-manager";
 import type { AquanovaGameContext, WeaponAntiGravityGunRuntime } from "../../../../lab/lite/src/demos/aquanova/behaviors/game-context";
-import { WeaponAntiGravityGunBehavior, antiGravityCollisionMoveFraction } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
+import {
+    WeaponAntiGravityGunBehavior,
+    antiGravityCollisionMoveFraction,
+    antiGravityCollisionSlideDisplacement,
+} from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-anti-gravity-gun";
 import { WeaponInventory } from "../../../../lab/lite/src/demos/aquanova/behaviors/weapon-inventory";
 
 type WeaponContext = Pick<AquanovaGameContext, "events" | "weaponInventory" | "weaponAntiGravityGun" | "playerMaxGrabDistance" | "dynamicMassOf">;
@@ -149,5 +153,29 @@ describe("Aquanova anti-gravity gun behavior", () => {
         expect(antiGravityCollisionMoveFraction([1, 0, 0], { hasHit: false, fraction: 0, hitNormal: { x: 0, y: 0, z: 0 } })).toBe(1);
         expect(antiGravityCollisionMoveFraction([1, 0, 0], { hasHit: true, fraction: 0.5, hitNormal: { x: -1, y: 0, z: 0 } })).toBeCloseTo(0.49);
         expect(antiGravityCollisionMoveFraction([0, 1, 0], { hasHit: true, fraction: 0, hitNormal: { x: 0, y: 1, z: 0 } })).toBe(1);
+    });
+
+    it("slides the remaining held-object motion along walls and around corners", () => {
+        const casts = [
+            { hasHit: true, fraction: 0.5, hitNormal: { x: -1, y: 0, z: 0 } },
+            { hasHit: true, fraction: 0.5, hitNormal: { x: 0, y: -1, z: 0 } },
+            { hasHit: false, fraction: 0, hitNormal: { x: 0, y: 0, z: 0 } },
+        ];
+        const queries: Array<{ offset: readonly number[]; displacement: readonly number[] }> = [];
+        const result = antiGravityCollisionSlideDisplacement(
+            [1, 1, 1],
+            (offset, displacement) => {
+                queries.push({ offset: [...offset], displacement: [...displacement] });
+                return casts.shift()!;
+            },
+            0
+        );
+
+        expect(result).toEqual({ movement: [0.5, 0.75, 1], blocked: true });
+        expect(queries).toEqual([
+            { offset: [0, 0, 0], displacement: [1, 1, 1] },
+            { offset: [0.5, 0.5, 0.5], displacement: [0, 0.5, 0.5] },
+            { offset: [0.5, 0.75, 0.75], displacement: [0, 0, 0.25] },
+        ]);
     });
 });

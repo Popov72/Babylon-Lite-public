@@ -749,13 +749,16 @@ function soundPlaybackOptions(entitiesByChunk) {
   const idsByEntity = new Map();
   for (const [entityName, assignments] of state.entities) {
     for (const assignment of assignments ?? []) {
-      if (behaviorBaseName(assignment.name) !== "playSound") continue;
+      if (behaviorBaseName(assignment.name) !== "sound") continue;
       const definition = state.behaviors.get(assignment.name) ?? {};
-      const id = String(assignment.id ?? definition.id ?? "").trim();
-      if (!id) continue;
-      ids.add(id);
-      if (!idsByEntity.has(entityName)) idsByEntity.set(entityName, new Set());
-      idsByEntity.get(entityName).add(id);
+      for (const cue of assignment.cues ?? definition.cues ?? []) {
+        if (cue?.action !== "play") continue;
+        const id = String(cue.id ?? "").trim();
+        if (!id) continue;
+        ids.add(id);
+        if (!idsByEntity.has(entityName)) idsByEntity.set(entityName, new Set());
+        idsByEntity.get(entityName).add(id);
+      }
     }
   }
   const byChunk = {};

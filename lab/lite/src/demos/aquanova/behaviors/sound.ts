@@ -1,22 +1,30 @@
 import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
-import type { Behavior, SoundBehaviorConfig, SoundCueConfig } from "./types.js";
+import type { Behavior, SoundBehaviorConfig, SoundPlayCueConfig, SoundStopCueConfig } from "./types.js";
 import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 import { eventSubscriptionMatches, validateEventSubscriptions } from "./event-subscription.js";
-
-const SOUND_ROOT = "/aquanova/sounds";
-const SOUND_ASSET_VERSION = "20260813-1";
+import { aquanovaSoundUrl, validateAquanovaSoundName } from "./sound-asset.js";
 
 type SoundContext = Pick<AquanovaGameContext, "events" | "sounds">;
 
-interface SoundCue {
-    readonly config: SoundCueConfig;
-    readonly soundName: string;
+interface SoundCueBase {
     readonly delay: number;
     readonly fade: number;
     sound: ManagedSound | null;
 }
+
+interface SoundPlayCue extends SoundCueBase {
+    readonly config: SoundPlayCueConfig;
+    readonly volume: number;
+    readonly loop: boolean;
+}
+
+interface SoundStopCue extends SoundCueBase {
+    readonly config: SoundStopCueConfig;
+}
+
+type SoundCue = SoundPlayCue | SoundStopCue;
 
 export class SoundBehavior implements Behavior<"sound"> {
     public readonly name = "sound";
@@ -40,36 +48,50 @@ export class SoundBehavior implements Behavior<"sound"> {
             if (!cue || typeof cue !== "object" || Array.isArray(cue)) {
                 throw new Error("[aquanova] sound.cues[] must be an object");
             }
-            assertBehaviorConfigKeys(cue, "sound.cues[]", ["action", "delay", "events", "fade", "sound"]);
-            validateSoundName(cue.sound);
-            validateEventSubscriptions("sound.cues[]", cue.events);
             if (cue.action !== "play" && cue.action !== "stop") {
                 throw new Error('[aquanova] sound.cues[].action must be "play" or "stop"');
             }
-            return {
-                config: cue,
-                soundName: cue.sound,
+            validateEventSubscriptions("sound.cues[]", cue.events);
+            const base = {
                 delay: nonNegativeSeconds("delay", cue.delay),
                 fade: nonNegativeSeconds("fade", cue.fade),
                 sound: null,
             };
+            if (cue.action === "stop") {
+                assertBehaviorConfigKeys(cue, "sound.cues[]", ["action", "delay", "events", "fade", "soundId"]);
+                validatePlaybackId("sound.cues[].soundId", cue.soundId);
+                return { ...base, config: cue };
+            }
+            assertBehaviorConfigKeys(cue, "sound.cues[]", ["action", "delay", "events", "fade", "id", "loop", "sound", "volume"]);
+            validatePlaybackId("sound.cues[].id", cue.id);
+            validateAquanovaSoundName("sound.cues[].sound", cue.sound);
+            if (cue.loop !== undefined && typeof cue.loop !== "boolean") {
+                throw new Error("[aquanova] sound.cues[].loop must be true or false");
+            }
+            return { ...base, config: cue, volume: soundVolume(cue.volume), loop: cue.loop ?? false };
         });
+        for (const cue of this.cues) {
+            if (!isPlayCue(cue)) {
+                continue;
+            }
+            const url = aquanovaSoundUrl(cue.config.sound);
+            context.sounds.registerPlayback(cue.config.id, url, { preloadCount: 1 });
+        }
     }
 
     public async init(): Promise<void> {
         const sounds = new Map<string, ManagedSound>();
         await Promise.all(
-            [...new Set(this.cues.map((cue) => cue.soundName))].map(async (soundName) => {
-                const url = `${SOUND_ROOT}/${encodeURIComponent(soundName)}.mp3?v=${SOUND_ASSET_VERSION}`;
+            [...new Set(this.cues.map((cue) => playbackId(cue)))].map(async (id) => {
                 try {
-                    sounds.set(soundName, await this.context.sounds.load(`sound:${soundName}`, url, { preloadCount: 1 }));
+                    sounds.set(id, await this.context.sounds.resolvePlayback(id));
                 } catch (error) {
-                    throw new Error(`[aquanova] failed to preload sound behavior sound "${soundName}" from "${url}"`, { cause: error });
+                    throw new Error(`[aquanova] failed to initialize sound behavior playback ID "${id}"`, { cause: error });
                 }
             })
         );
         for (const cue of this.cues) {
-            cue.sound = sounds.get(cue.soundName) ?? null;
+            cue.sound = sounds.get(playbackId(cue)) ?? null;
         }
     }
 
@@ -102,7 +124,7 @@ export class SoundBehavior implements Behavior<"sound"> {
             clearTimeout(timer);
         }
         this.timers.clear();
-        const sounds = new Set(this.cues.flatMap((cue) => (cue.sound ? [cue.sound] : [])));
+        const sounds = new Set(this.cues.flatMap((cue) => (isPlayCue(cue) && cue.sound ? [cue.sound] : [])));
         for (const sound of sounds) {
             this.context.sounds.stop(sound);
         }
@@ -127,17 +149,17 @@ export class SoundBehavior implements Behavior<"sound"> {
         if (!sound) {
             throw new Error("[aquanova] sound behavior was not initialized");
         }
-        if (cue.config.action === "play") {
-            this.context.sounds.play(sound, { fade: cue.fade });
+        if (isPlayCue(cue)) {
+            this.context.sounds.play(sound, { fade: cue.fade, loop: cue.loop, volume: cue.volume });
         } else {
             this.context.sounds.stop(sound, cue.fade);
         }
     }
 }
 
-function validateSoundName(soundName: string): void {
-    if (!soundName || soundName.endsWith(".mp3") || soundName.includes("/") || soundName.includes("\\")) {
-        throw new Error(`[aquanova] sound.sound "${soundName}" must be an MP3 file name without its extension`);
+function validatePlaybackId(property: string, id: string): void {
+    if (typeof id !== "string" || !id.trim()) {
+        throw new Error(`[aquanova] ${property} must be a non-empty sound playback ID`);
     }
 }
 
@@ -147,4 +169,20 @@ function nonNegativeSeconds(property: "delay" | "fade", value: number | undefine
         throw new Error(`[aquanova] sound.cues[].${property} must be finite and non-negative`);
     }
     return seconds;
+}
+
+function soundVolume(value: number | undefined): number {
+    const volume = value ?? 1;
+    if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
+        throw new Error("[aquanova] sound.cues[].volume must be finite and between 0 and 1");
+    }
+    return volume;
+}
+
+function playbackId(cue: SoundCue): string {
+    return cue.config.action === "play" ? cue.config.id : cue.config.soundId;
+}
+
+function isPlayCue(cue: SoundCue): cue is SoundPlayCue {
+    return cue.config.action === "play";
 }

@@ -94,7 +94,6 @@
   ],
   "sinks": [],
   "showContainer": true,
-  "physicsParticleSize": 1,
   "gridPosition": [
     -3.1,
     1.5,
@@ -105,26 +104,27 @@
     3,
     6
   ],
-  "gridResolution": 129,
+  "gridResolution": 150,
   "markersPerCell": 8,
   "showGridBounds": true,
+  "showGridBoundsSolid": false,
   "particleCount": 40000,
   "freeCamera": {
     "position": [
-      2.207663781366565,
-      2.2948300891984923,
-      1.6826322057231489
+      2.7945777407052694,
+      2.5582479687147535,
+      1.225048763805946
     ],
     "target": [
-      1.215151184474979,
-      2.19926187989926,
-      1.7586944327669185
+      1.802606912313374,
+      2.4399541811499335,
+      1.2697752150743633
     ]
   },
   "render": {
     "renderAsSpheres": false,
     "polygonShader": "physical",
-    "waterColor": "#4095c4",
+    "waterColor": "#71ec3c",
     "absorption": 9.6,
     "particleSize": 0.62,
     "refractionStrength": 1,

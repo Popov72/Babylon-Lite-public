@@ -83,6 +83,7 @@ export interface FluidSurfaceOptions {
 }
 
 export type FluidSurfaceShading = "physical" | "ocean";
+export type FluidParticleColorMode = "water" | "mesh";
 
 // ── BJS-equivalent tunables (fluidRenderingTargetRenderer defaults) ──
 const DENSITY = 1.0;
@@ -150,7 +151,7 @@ override supportContributionScale: f32 = 1.0;
 // Per-particle alpha (opt-in). cam.misc.z encodes global opacity in [0,1], plus 2 when
 // the per-particle buffer is enabled. The binding is a harmless dummy when disabled.
 @group(0) @binding(4) var<storage, read> palpha: array<f32>;
-// Per-particle RGBA colour (opt-in). Read by the fsColor accumulation pass (mesh-tinted water);
+// Per-particle RGBA colour (opt-in). Read by the fsColor accumulation pass (particle-tinted water);
 // unused by fsDepth/fsThick, so the surface shape is unaffected. Dummy buffer when disabled.
 @group(0) @binding(5) var<storage, read> pcolor: array<vec4<f32>>;
 // Scene opaque depth (reverse-Z). Sampled per-fragment so fluid hidden BEHIND opaque
@@ -1364,19 +1365,20 @@ fn reconstructViewNormal(texCoord: vec2<f32>, depthTexel: vec2<f32>) -> vec3<f32
     }
 
     var diffuseColor = u.diffuse.rgb;
-    // Per-particle mesh colour: replace the uniform water colour with the thickness-weighted
-    // average of the liquefied mesh's particle colours (rgb/a from the accumulation pass), then
-    // SATURATE it — the column average desaturates toward grey, so boost it back so distinct mesh
-    // colours (a red barrel, a green alien) read clearly through the water.
+    // Per-particle colour replaces the uniform water colour with the thickness-weighted average
+    // (rgb/a) from the accumulation pass. Mesh-derived colours are saturated because column
+    // averaging desaturates them; authored water colours stay exact.
     var meshColored = false;
     if (u.diffuse.w > 0.5) {
         let cc = textureSampleLevel(pcolorTex, thickSamp, texCoord, 0.0);
         if (cc.a > 1.0e-4) {
             var mc = cc.rgb / cc.a;
-            let lum = dot(mc, vec3<f32>(0.299, 0.587, 0.114));
-            mc = clamp(mix(vec3<f32>(lum), mc, 1.8), vec3<f32>(0.0), vec3<f32>(1.0));
+            meshColored = u.diffuse.w > 1.5;
+            if (meshColored) {
+                let lum = dot(mc, vec3<f32>(0.299, 0.587, 0.114));
+                mc = clamp(mix(vec3<f32>(lum), mc, 1.8), vec3<f32>(0.0), vec3<f32>(1.0));
+            }
             diffuseColor = mc;
-            meshColored = true;
         }
     }
     let lightDir = normalize((u.view * vec4<f32>(-u.b.xyz, 0.0)).xyz);
@@ -1555,15 +1557,13 @@ fn reconstructViewNormal(texCoord: vec2<f32>, depthTexel: vec2<f32>) -> vec3<f32
     return vec4<f32>(finalColor, 1.0);
 }`;
 
-export function createFluidSurfaceTask(
-    engine: EngineContext,
-    scene: SceneContext,
-    opts: FluidSurfaceOptions
-): Task & {
+/** Screen-space fluid reconstruction task and its live surface controls. */
+export interface FluidSurfaceTask extends Task {
     setSim(s: FluidSim): void;
     setParticleAlpha(buf: GPUBuffer | null): void;
     setOpacity(v: number): void;
     setParticleColor(buf: GPUBuffer | null): void;
+    setParticleColorMode(mode: FluidParticleColorMode): void;
     setUseParticleColor(on: boolean): void;
     setMode(m: "surface" | "blit" | "ellipsoidDebug"): void;
     setEnvMap(e: EnvMap): void;
@@ -1629,7 +1629,9 @@ export function createFluidSurfaceTask(
     /** Opt-in GPU timing hook: tag every surface pass with timestampWrites, or null
      *  to turn timing off. The profiler machinery lives in the app (lab). */
     setProfiler(p: FluidProfiler | null): void;
-} {
+}
+
+export function createFluidSurfaceTask(engine: EngineContext, scene: SceneContext, opts: FluidSurfaceOptions): FluidSurfaceTask {
     const device = engine._device;
     const { bgRT, outRT, depthRT, camera } = opts;
     let currentSim = opts.sim;
@@ -1773,7 +1775,8 @@ export function createFluidSurfaceTask(
     let particleAlphaBuf: GPUBuffer | null = null; // opt-in per-particle alpha (null = disabled, byte-identical)
     let opacity = 1;
     let particleColorBuf: GPUBuffer | null = null; // opt-in per-particle RGBA colour (null = disabled)
-    let useParticleColor = false; // render toggle: tint the water by per-particle mesh colour
+    let useParticleColor = false; // render toggle: tint the water by per-particle colour
+    let particleColorMode: FluidParticleColorMode = "mesh";
     let particleColorActive = false; // resolved per-frame (on + buffer present + not aniso)
     let colorTex: GPUTexture | null = null; // front-most per-particle colour target (lazy)
     let colorView: GPUTextureView | null = null;
@@ -2417,7 +2420,7 @@ export function createFluidSurfaceTask(
         comp[o + 12] = fluidColor[0];
         comp[o + 13] = fluidColor[1];
         comp[o + 14] = fluidColor[2];
-        comp[o + 15] = particleColorActive ? 1 : 0; // diffuse.w = per-particle mesh-colour enable
+        comp[o + 15] = particleColorActive ? (particleColorMode === "mesh" ? 2 : 1) : 0; // diffuse.w = off / authored water / mesh colour
         o += 16;
         comp[o] = 1 / depthW;
         comp[o + 1] = 1 / depthH;
@@ -2605,6 +2608,9 @@ export function createFluidSurfaceTask(
             // Only consumed when setUseParticleColor(true); the accumulation pass tints the water.
             particleColorBuf = buf;
             buildParticleBG();
+        },
+        setParticleColorMode(mode: FluidParticleColorMode): void {
+            particleColorMode = mode;
         },
         setUseParticleColor(on: boolean): void {
             useParticleColor = on;
@@ -2868,7 +2874,7 @@ export function createFluidSurfaceTask(
                 pass.end();
             }
             // 3b. Per-particle colour (opt-in, sphere path only): the FRONT-most particle per pixel
-            // writes its mesh colour (read-only depth test vs the depth pass's buffer), so a hollow
+            // writes its colour (read-only depth test vs the depth pass's buffer), so a hollow
             // shell shows its NEAR side (not the far side bleeding through). Off → colorTex untouched.
             const colorPassOn = particleColorActive && !useAniso && colorPipe !== null;
             if (colorPassOn) {

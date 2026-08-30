@@ -1,340 +1,230 @@
 {
-  "formatVersion": 13,
-  "meta": {
-    "demo": "aquanova-fluid-sim",
-    "method": "FLIP"
-  },
-  "physics": {
-    "gravity": 9.8,
-    "flipRatio": 0.62,
-    "kinematicViscosity": 0,
-    "surfaceTension": 0,
-    "minSubsteps": 1,
-    "maxSubsteps": 3,
-    "cflNumber": 0,
-    "restitution": 0,
-    "velocityDamping": 0,
-    "pressureSolver": 0,
-    "pressureIterations": 40,
-    "pressureRelaxation": 0.8,
-    "multigridCycles": 2,
-    "pressureTolerance": 0,
-    "pressureDiagnostics": 0,
-    "liquidSdf": 0,
-    "ghostFluid": 0,
-    "fractionalSolids": 0,
-    "movingSolidBoundaries": 0,
-    "reseedParticles": 0,
-    "reseedMinParticles": 4,
-    "reseedTargetParticles": 8,
-    "reseedMaxParticles": 12,
-    "reseedInterval": 5,
-    "particleSheeting": 0,
-    "sheetingStrength": 0.5,
-    "sheetingInterval": 5,
-    "polygonSurface": 0,
-    "polygonReconstructionMultiplier": 1,
-    "viscosityIterations": 12,
-    "maxSubDtMs": 8.4
-  },
-  "demoParams": {
-    "particleRadius": 0.035,
-    "useMeshColors": 0,
-    "collisionNeighborhoodRadius": 12,
-    "forceStrength": 0.5,
-    "forceInfluenceRadius": 3.5
-  },
-  "demoState": {
-    "simulationType": "fluid",
-    "samplingMode": "dense",
-    "fillStrategy": "auto"
-  },
-  "simulationDuration": 0,
-  "alphaDecay": 2,
-  "simulationTimeScale": 1,
-  "emitters": [
-    {
-      "id": "manual-source-1",
-      "name": "Manual source",
-      "enabled": true,
-      "behavior": "initial",
-      "transform": {
-        "position": [
-          0,
-          0.03466430089900685,
-          -3.149223361462804
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1.6,
-          3.7,
-          1.6
-        ]
-      },
-      "shape": {
-        "type": "cylinder",
-        "radius": 0.5,
-        "height": 0.5
-      },
-      "sampling": "volume",
-      "velocity": [
-        0,
-        0,
-        0
-      ],
-      "velocitySpace": "world",
-      "spread": 0
+    "formatVersion": 13,
+    "meta": {
+        "demo": "aquanova-fluid-sim",
+        "method": "FLIP"
     },
-    {
-      "id": "emitter-1",
-      "name": "Inflow recycle",
-      "enabled": true,
-      "behavior": "inflow",
-      "transform": {
-        "position": [
-          0,
-          1.4203195280725867,
-          -3.149223361462804
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          1.6,
-          1,
-          1.6
-        ]
-      },
-      "shape": {
-        "type": "cylinder",
-        "radius": 0.5,
-        "height": 0.5
-      },
-      "sampling": "volume",
-      "velocity": [
-        0,
-        1,
-        0
-      ],
-      "velocitySpace": "local",
-      "spread": 0
-    }
-  ],
-  "sinks": [
-    {
-      "id": "sink-1",
-      "name": "Recycle",
-      "enabled": false,
-      "mode": "recycle",
-      "transform": {
-        "position": [
-          0,
-          -2.046068693541898,
-          -3.2848414697489066
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          6,
-          0.4,
-          8
-        ]
-      },
-      "shape": {
-        "type": "box",
-        "size": [
-          1,
-          1,
-          1
-        ]
-      },
-      "targets": [
-        "emitter-1"
-      ]
+    "physics": {
+        "gravity": 9.8,
+        "flipRatio": 0.62,
+        "kinematicViscosity": 0,
+        "surfaceTension": 0,
+        "minSubsteps": 1,
+        "maxSubsteps": 3,
+        "cflNumber": 0,
+        "restitution": 0,
+        "velocityDamping": 0,
+        "pressureSolver": 0,
+        "pressureIterations": 40,
+        "pressureRelaxation": 0.8,
+        "multigridCycles": 2,
+        "pressureTolerance": 0,
+        "pressureDiagnostics": 0,
+        "liquidSdf": 0,
+        "ghostFluid": 0,
+        "fractionalSolids": 0,
+        "movingSolidBoundaries": 0,
+        "reseedParticles": 0,
+        "reseedMinParticles": 4,
+        "reseedTargetParticles": 8,
+        "reseedMaxParticles": 12,
+        "reseedInterval": 5,
+        "particleSheeting": 0,
+        "sheetingStrength": 0.5,
+        "sheetingInterval": 5,
+        "polygonSurface": 0,
+        "polygonReconstructionMultiplier": 1,
+        "viscosityIterations": 12,
+        "maxSubDtMs": 8.4
     },
-    {
-      "id": "sink-2",
-      "name": "Recycle2",
-      "enabled": false,
-      "mode": "delete",
-      "transform": {
-        "position": [
-          0,
-          -2.046068693541898,
-          4.494519319380972
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          6,
-          0.4,
-          5
-        ]
-      },
-      "shape": {
-        "type": "box",
-        "size": [
-          1,
-          1,
-          1
-        ]
-      },
-      "targets": [],
-      "volumeRate": 1
+    "demoParams": {
+        "particleRadius": 0.035,
+        "useMeshColors": 0,
+        "collisionNeighborhoodRadius": 12,
+        "forceStrength": 0.5,
+        "forceInfluenceRadius": 3.5
     },
-    {
-      "id": "sink-3",
-      "name": "BubbleEffect",
-      "enabled": true,
-      "mode": "recycle",
-      "transform": {
-        "position": [
-          0,
-          -1.247815274547307,
-          -3.149223361462804
-        ],
-        "rotation": [
-          0,
-          0,
-          0,
-          1
-        ],
-        "scale": [
-          2,
-          0.5,
-          2
-        ]
-      },
-      "shape": {
-        "type": "cylinder",
-        "radius": 0.5,
-        "height": 0.5,
-        "innerRadius": 0
-      },
-      "targets": [
-        "emitter-1"
-      ]
-    }
-  ],
-  "showContainer": true,
-  "physicsParticleSize": 0.3146067415730337,
-  "gridPosition": [
-    -10,
-    2,
-    -12.9
-  ],
-  "gridSize": [
-    6,
-    4,
-    14
-  ],
-  "gridResolution": 178,
-  "markersPerCell": 8,
-  "showGridBounds": true,
-  "showGridBoundsSolid": false,
-  "particleCount": 61160,
-  "freeCamera": {
-    "position": [
-      -9.603958986513764,
-      2.189133370484673,
-      -8.948113113960282
+    "demoState": {
+        "simulationType": "fluid",
+        "samplingMode": "dense",
+        "fillStrategy": "auto"
+    },
+    "simulationDuration": 0,
+    "alphaDecay": 2,
+    "simulationTimeScale": 1,
+    "emitters": [
+        {
+            "id": "manual-source-1",
+            "name": "Manual source",
+            "enabled": true,
+            "behavior": "initial",
+            "transform": {
+                "position": [0, 0.03466430089900685, -2.445578982837487],
+                "rotation": [0, 0, 0, 1],
+                "scale": [1.2, 3.7, 1.2]
+            },
+            "shape": {
+                "type": "cylinder",
+                "radius": 0.5,
+                "height": 0.5
+            },
+            "sampling": "volume",
+            "velocity": [0, 0, 0],
+            "velocitySpace": "world",
+            "spread": 0
+        },
+        {
+            "id": "emitter-1",
+            "name": "Inflow recycle",
+            "enabled": true,
+            "behavior": "inflow",
+            "transform": {
+                "position": [0, 1.4203195280725867, -2.445578982837487],
+                "rotation": [0, 0, 0, 1],
+                "scale": [1.42, 1, 1.42]
+            },
+            "shape": {
+                "type": "cylinder",
+                "radius": 0.5,
+                "height": 0.5
+            },
+            "sampling": "volume",
+            "velocity": [0, 1, 0],
+            "velocitySpace": "local",
+            "spread": 0
+        }
     ],
-    "target": [
-      -9.671146084672,
-      2.1391542012139952,
-      -9.94460093449804
-    ]
-  },
-  "render": {
-    "renderAsSpheres": false,
-    "polygonShader": "physical",
-    "waterColor": "#71ec3c",
-    "absorption": 3.1,
-    "particleSize": 0.62,
-    "refractionStrength": 0.06,
-    "specularPower": 41,
-    "reflectionExposure": 1,
-    "reflectionContrast": 1.1,
-    "waterReflectivity": 0.02,
-    "surfaceDepthBlur": 29,
-    "depthBlurEdgeThreshold": 41,
-    "surfaceThicknessBlur": 11,
-    "halfRendering": true,
-    "thicknessDownscale": 8,
-    "surfaceFilter": "narrowRange",
-    "narrowRangeDelta": 5,
-    "narrowRangeMu": 0.3,
-    "anisotropicSurface": false,
-    "anisoRadiusDamping": 0.5
-  },
-  "foam": {
-    "enableFoam": false,
-    "activeParticles": true,
-    "generateSpray": true,
-    "generateFoam": true,
-    "generateBubbles": true,
-    "surfaceFiltering": false,
-    "trappedAirRate": 40,
-    "waveCrestRate": 40,
-    "turbulenceRate": 0,
-    "energySpeedMin": 0.7071067811865476,
-    "energySpeedMax": 6.324555320336759,
-    "curvatureMin": 0.05,
-    "curvatureMax": 1.5,
-    "turbulenceMin": 0.1,
-    "turbulenceMax": 2.5,
-    "foamLayerDepth": 0,
-    "sprayDrag": 0,
-    "foamLifetime": 2,
-    "foamLifetimeMin": 0.3,
-    "bubbleBuoyancy": 0.8,
-    "bubbleDrag": 0.5,
-    "poolSize": 3,
-    "foamSoftness": 0.25,
-    "foamDensity": 1.6,
-    "subsurfaceBubbleStrength": 0.4,
-    "subsurfaceBubbleColor": "#b8d1f2",
-    "foamBlurRadius": 4,
-    "foamLightIntensity": 0.9,
-    "foamAmbient": 0.5,
-    "foamAO": 0.5,
-    "foamNormalStrength": 6,
-    "foamDebug": "off",
-    "foamSize": 1
-  },
-  "impulse": {
-    "intensity": 1,
-    "direction": [
-      0,
-      1,
-      0
+    "sinks": [
+        {
+            "id": "sink-1",
+            "name": "Recycle",
+            "enabled": false,
+            "mode": "recycle",
+            "transform": {
+                "position": [0, -2.046068693541898, -3.2848414697489066],
+                "rotation": [0, 0, 0, 1],
+                "scale": [6, 0.4, 8]
+            },
+            "shape": {
+                "type": "box",
+                "size": [1, 1, 1]
+            },
+            "targets": ["emitter-1"]
+        },
+        {
+            "id": "sink-2",
+            "name": "Recycle2",
+            "enabled": false,
+            "mode": "delete",
+            "transform": {
+                "position": [0, -2.046068693541898, 4.494519319380972],
+                "rotation": [0, 0, 0, 1],
+                "scale": [6, 0.4, 5]
+            },
+            "shape": {
+                "type": "box",
+                "size": [1, 1, 1]
+            },
+            "targets": [],
+            "volumeRate": 1
+        },
+        {
+            "id": "sink-3",
+            "name": "BubbleEffect",
+            "enabled": false,
+            "mode": "recycle",
+            "transform": {
+                "position": [0, -1.247815274547307, -3.149223361462804],
+                "rotation": [0, 0, 0, 1],
+                "scale": [1.42, 0.5, 1.42]
+            },
+            "shape": {
+                "type": "cylinder",
+                "radius": 0.5,
+                "height": 0.5,
+                "innerRadius": 0
+            },
+            "targets": ["emitter-1"]
+        }
     ],
-    "radius": 1.5
-  },
-  "grid": {
-    "x": 6,
-    "y": 4,
-    "z": 14,
-    "position": [
-      -10,
-      2,
-      -12.9
-    ]
-  }
+    "showContainer": true,
+    "gridPosition": [-10, 2, -12.9],
+    "gridSize": [6, 4, 14],
+    "gridResolution": 178,
+    "markersPerCell": 8,
+    "showGridBounds": true,
+    "showGridBoundsSolid": false,
+    "particleCount": 61160,
+    "freeCamera": {
+        "position": [-9.706332080249876, 3.105543311921094, -9.562179797393377],
+        "target": [-9.82347345306142, 2.956105179447495, -10.543987387167784]
+    },
+    "render": {
+        "renderAsSpheres": false,
+        "polygonShader": "physical",
+        "waterColor": "#71ec3c",
+        "absorption": 14.8,
+        "particleSize": 0.62,
+        "refractionStrength": 0.06,
+        "specularPower": 41,
+        "reflectionExposure": 1,
+        "reflectionContrast": 1.1,
+        "waterReflectivity": 0.02,
+        "surfaceDepthBlur": 29,
+        "depthBlurEdgeThreshold": 41,
+        "surfaceThicknessBlur": 11,
+        "halfRendering": true,
+        "thicknessDownscale": 8,
+        "surfaceFilter": "narrowRange",
+        "narrowRangeDelta": 5,
+        "narrowRangeMu": 0.3,
+        "anisotropicSurface": false,
+        "anisoRadiusDamping": 0.5
+    },
+    "foam": {
+        "enableFoam": false,
+        "activeParticles": true,
+        "generateSpray": true,
+        "generateFoam": true,
+        "generateBubbles": true,
+        "surfaceFiltering": false,
+        "trappedAirRate": 40,
+        "waveCrestRate": 40,
+        "turbulenceRate": 0,
+        "energySpeedMin": 0.7071067811865476,
+        "energySpeedMax": 6.324555320336759,
+        "curvatureMin": 0.05,
+        "curvatureMax": 1.5,
+        "turbulenceMin": 0.1,
+        "turbulenceMax": 2.5,
+        "foamLayerDepth": 0,
+        "sprayDrag": 0,
+        "foamLifetime": 2,
+        "foamLifetimeMin": 0.3,
+        "bubbleBuoyancy": 0.8,
+        "bubbleDrag": 0.5,
+        "poolSize": 3,
+        "foamSoftness": 0.25,
+        "foamDensity": 1.6,
+        "subsurfaceBubbleStrength": 0.4,
+        "subsurfaceBubbleColor": "#b8d1f2",
+        "foamBlurRadius": 4,
+        "foamLightIntensity": 0.9,
+        "foamAmbient": 0.5,
+        "foamAO": 0.5,
+        "foamNormalStrength": 6,
+        "foamDebug": "off",
+        "foamSize": 1
+    },
+    "impulse": {
+        "intensity": 1,
+        "direction": [0, 1, 0],
+        "radius": 1.5
+    },
+    "grid": {
+        "x": 6,
+        "y": 4,
+        "z": 14,
+        "position": [-10, 2, -12.9]
+    }
 }

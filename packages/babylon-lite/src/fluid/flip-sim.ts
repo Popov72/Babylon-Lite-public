@@ -255,6 +255,94 @@ export function estimateFlipGpuBytes(
     );
 }
 
+export const FLIP_DEFAULT_CELL_SIZE = 0.25;
+export const FLIP_DEFAULT_PARTICLE_RADIUS = 0.09;
+const FLIP_PARTICLE_RADIUS_TO_CELL_SIZE = FLIP_DEFAULT_PARTICLE_RADIUS / FLIP_DEFAULT_CELL_SIZE;
+
+export interface FlipDiscretizationOptions {
+    /** Simulation-domain minimum corner. Default [-20, 0, -20]. */
+    boundsMin?: readonly [number, number, number];
+    /** Simulation-domain maximum corner. Default [20, 20, 20]. */
+    boundsMax?: readonly [number, number, number];
+    /** Pressure-cell divisions along the longest domain axis. */
+    gridResolution?: number;
+    /** Legacy explicit MAC-grid cell width. Mutually exclusive with gridResolution. */
+    dx?: number;
+    /** Legacy exact pressure-cell count. Mutually exclusive with gridResolution. */
+    gridDim?: readonly [number, number, number];
+    /** Marker sampling density represented by one full MAC cell. Default 8. */
+    markersPerCell?: number;
+    /** Explicit marker radius override. Omit to derive it from the cell width. */
+    particleRadius?: number;
+}
+
+export interface FlipDiscretization {
+    readonly dx: number;
+    readonly gridDim: [number, number, number];
+    readonly gridResolution: number;
+    readonly markersPerCell: number;
+    readonly markerVolume: number;
+    readonly particleRadius: number;
+}
+
+function cellsForExtent(extent: number, dx: number): number {
+    const exact = extent / dx;
+    const nearest = Math.round(exact);
+    const tolerance = Number.EPSILON * 16 * Math.max(1, Math.abs(exact));
+    return Math.max(4, Math.abs(exact - nearest) <= tolerance ? nearest : Math.ceil(exact));
+}
+
+/** Resolve every FLIP discretization value from one authoritative domain/resolution contract. */
+export function resolveFlipDiscretization(options: FlipDiscretizationOptions = {}): FlipDiscretization {
+    const boundsMin: [number, number, number] = options.boundsMin ? [...options.boundsMin] : [-20, 0, -20];
+    const boundsMax: [number, number, number] = options.boundsMax ? [...options.boundsMax] : [20, 20, 20];
+    const extents = boundsMax.map((value, axis) => value - boundsMin[axis]!) as [number, number, number];
+    if (extents.some((extent) => !(extent > 0) || !Number.isFinite(extent))) {
+        throw new RangeError("[FLIP] bounds must contain finite positive extents.");
+    }
+    if (options.gridResolution !== undefined && (options.dx !== undefined || options.gridDim !== undefined)) {
+        throw new RangeError("[FLIP] gridResolution is mutually exclusive with dx and gridDim.");
+    }
+    let gridResolution: number;
+    let dx: number;
+    if (options.gridResolution !== undefined) {
+        if (!(options.gridResolution > 0) || !Number.isFinite(options.gridResolution)) {
+            throw new RangeError("[FLIP] gridResolution must be a positive finite number.");
+        }
+        gridResolution = Math.max(1, Math.round(options.gridResolution));
+        dx = Math.max(...extents) / gridResolution;
+    } else {
+        dx = options.dx ?? FLIP_DEFAULT_CELL_SIZE;
+        if (!(dx > 0) || !Number.isFinite(dx)) {
+            throw new RangeError("[FLIP] dx must be a positive finite number.");
+        }
+        gridResolution = cellsForExtent(Math.max(...extents), dx);
+    }
+    const requestedMarkersPerCell = options.markersPerCell ?? 8;
+    if (!(requestedMarkersPerCell > 0) || !Number.isFinite(requestedMarkersPerCell)) {
+        throw new RangeError("[FLIP] markersPerCell must be a positive finite number.");
+    }
+    const markersPerCell = Math.max(1, Math.round(requestedMarkersPerCell));
+    const particleRadius = options.particleRadius ?? dx * FLIP_PARTICLE_RADIUS_TO_CELL_SIZE;
+    if (!(particleRadius > 0) || !Number.isFinite(particleRadius)) {
+        throw new RangeError("[FLIP] particleRadius must be a positive finite number.");
+    }
+    if (options.gridDim?.some((value) => !(value > 0) || !Number.isFinite(value))) {
+        throw new RangeError("[FLIP] gridDim must contain positive finite values.");
+    }
+    const gridDim: [number, number, number] = options.gridDim
+        ? (options.gridDim.map((value) => Math.max(4, Math.round(value))) as [number, number, number])
+        : (extents.map((extent) => cellsForExtent(extent, dx)) as [number, number, number]);
+    return {
+        dx,
+        gridDim,
+        gridResolution,
+        markersPerCell,
+        markerVolume: dx ** 3 / markersPerCell,
+        particleRadius,
+    };
+}
+
 export interface FlipOptions extends FluidSimBaseOptions {
     /** Simulation-domain minimum corner. Default [-20, 0, -20]. */
     boundsMin?: [number, number, number];
@@ -272,7 +360,9 @@ export interface FlipOptions extends FluidSimBaseOptions {
     onPagedGridPages?: (requiredPages: number, capacity: number) => void;
     /** Safety floor height. Default boundsMin.y. */
     groundY?: number;
-    /** MAC-grid cell width in world units. Default 0.25. */
+    /** Pressure-cell divisions along the longest domain axis. Preferred over supplying dx. */
+    gridResolution?: number;
+    /** Legacy explicit MAC-grid cell width in world units. Default 0.25. */
     dx?: number;
     /** Marker sampling density represented by one full MAC cell. Default 8. */
     markersPerCell?: number;
@@ -3646,22 +3736,18 @@ const FIXED_POINT:`
 export function createFlipSim(engine: EngineContext, options: FlipOptions = {}): FluidSim {
     const device = engine._device;
     const count = Math.max(1, Math.floor(options.count ?? 80000));
-    const particleRadius = options.particleRadius ?? 0.09;
     const boundsMin: [number, number, number] = options.boundsMin ? [...options.boundsMin] : [-20, 0, -20];
     const boundsMax: [number, number, number] = options.boundsMax ? [...options.boundsMax] : [20, 20, 20];
     const groundY = options.groundY ?? boundsMin[1];
-    const dx = options.dx ?? 0.25;
-    if (!(dx > 0) || !Number.isFinite(dx)) {
-        throw new RangeError("[FLIP] dx must be a positive finite number.");
-    }
-    const markersPerCell = Math.max(1, Math.round(options.markersPerCell ?? 8));
-    const gridDim: [number, number, number] = options.gridDim
-        ? (options.gridDim.map((value) => Math.max(4, Math.round(value))) as [number, number, number])
-        : [
-              Math.max(4, Math.ceil((boundsMax[0] - boundsMin[0]) / dx)),
-              Math.max(4, Math.ceil((boundsMax[1] - boundsMin[1]) / dx)),
-              Math.max(4, Math.ceil((boundsMax[2] - boundsMin[2]) / dx)),
-          ];
+    const { dx, gridDim, markersPerCell, markerVolume, particleRadius } = resolveFlipDiscretization({
+        boundsMin,
+        boundsMax,
+        ...(options.gridResolution !== undefined ? { gridResolution: options.gridResolution } : {}),
+        ...(options.dx !== undefined ? { dx: options.dx } : {}),
+        ...(options.gridDim !== undefined ? { gridDim: options.gridDim } : {}),
+        ...(options.markersPerCell !== undefined ? { markersPerCell: options.markersPerCell } : {}),
+        ...(options.particleRadius !== undefined ? { particleRadius: options.particleRadius } : {}),
+    });
     const pagedGrid = options.pagedGrid === true;
     const pageBlockDim: [number, number, number] = gridDim.map((value) => Math.ceil(value / FLIP_PAGE_SIZE)) as [number, number, number];
     const numPageBlocks = pageBlockDim[0] * pageBlockDim[1] * pageBlockDim[2];
@@ -3854,7 +3940,7 @@ export function createFlipSim(engine: EngineContext, options: FlipOptions = {}):
     let maxSpeedGeneration = 0;
     let maxSpeedReadbackError: unknown = null;
     let lastMaxSpeed = 0;
-    const flowState = createFluidFlowState(device, count, particleRadius, dx ** 3 / markersPerCell);
+    const flowState = createFluidFlowState(device, count, particleRadius, markerVolume);
     enableFluidActiveCountReadback(flowState);
     const warmupState = createFluidWarmupState(flowState);
     const pageDataBuffer = pageLayout

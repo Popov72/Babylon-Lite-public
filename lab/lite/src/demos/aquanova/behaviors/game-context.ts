@@ -55,6 +55,18 @@ export interface FluidSimShapeRegistration {
     readonly shape: FluidSimShape;
 }
 
+export interface ExplosionOptions {
+    readonly radius: number;
+    readonly fragmentCount: number;
+    readonly strength: number;
+    readonly debrisLifetime: number;
+    readonly fadeDuration: number;
+}
+
+export interface ExplosionRuntime {
+    explode(entityName: string, meshes: readonly Mesh[], options: ExplosionOptions): void;
+}
+
 export interface AquanovaGameContext {
     readonly canvas: HTMLCanvasElement;
     readonly camera: FreeCamera;
@@ -81,6 +93,7 @@ export interface AquanovaGameContext {
     readonly weaponPistol: WeaponPistolRuntime;
     readonly playerMaxGrabDistance: () => number;
     readonly dynamicMassOf: (mesh: Mesh) => number | null;
+    readonly explosions: ExplosionRuntime;
     readonly retireEntity: (entityName: string, meshes: readonly Mesh[]) => void;
     readonly setCollisionShape: (entityName: string, type: "aabb" | "mesh", fluidSimShape?: FluidSimShapeRegistration) => void;
     readonly registerIntersectionTrigger: (entityName: string, playerOnly: boolean, callbacks: IntersectionTriggerCallbacks) => IntersectionTriggerRegistration;

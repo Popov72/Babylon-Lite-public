@@ -107,6 +107,8 @@ export interface FluidExportJson {
      */
     grid?: { x: number; y: number; z: number; position?: [number, number, number] };
     render: {
+        /** Opt into a profile-specific surface pass when combined with other simulations. */
+        independentRendering?: boolean;
         renderAsSpheres: boolean;
         /** FLIP polygon shading model. Optional for presets written before the ocean mode. */
         polygonShader?: "physical" | "ocean";
@@ -216,6 +218,7 @@ export function exportJsonFromPairState(demo: string, method: string, ps: PairSt
         ...(ps.camera ? { camera: { ...ps.camera } } : {}),
         ...(ps.freeCamera ? { freeCamera: { position: [...ps.freeCamera.position], target: [...ps.freeCamera.target] } } : {}),
         render: {
+            ...(ps.independentRendering !== undefined ? { independentRendering: ps.independentRendering } : {}),
             renderAsSpheres: ps.renderMode === "spheres",
             ...(ps.polygonShader !== undefined ? { polygonShader: ps.polygonShader } : {}),
             waterColor: ps.color,
@@ -351,6 +354,7 @@ export function presetFromExportJson(j: FluidExportJson): Partial<PairState> {
         material: j.material,
         ...(j.camera ? { camera: { ...j.camera } } : {}),
         ...(j.freeCamera ? { freeCamera: { position: [...j.freeCamera.position], target: [...j.freeCamera.target] } } : {}),
+        ...(r.independentRendering !== undefined ? { independentRendering: r.independentRendering } : {}),
         renderMode: r.renderAsSpheres ? "spheres" : "surface",
         ...(r.polygonShader !== undefined ? { polygonShader: r.polygonShader } : {}),
         refraction: r.refractionStrength,

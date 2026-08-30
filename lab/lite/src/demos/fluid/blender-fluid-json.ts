@@ -8,8 +8,9 @@ import {
     type FluidShape,
     type FluidSink,
     type FluidTransform,
+    fluidSimulationCellSize,
 } from "babylon-lite";
-import { PHYS_MAX_SCALE, PHYS_MIN_SCALE, cellSizeForPhysicsScale, gridCellsForSize } from "./grid-settings.js";
+import { PHYS_MAX_SCALE, PHYS_MIN_SCALE, gridCellsForSize } from "./grid-settings.js";
 
 const SDF_MAGIC = 0x46534c42;
 const SDF_HEADER_BYTES = 64;
@@ -411,7 +412,7 @@ function validatePhysics(value: unknown, method: string): void {
     }
 }
 
-function validateDemoState(value: unknown): void {
+function validateDemoState(value: unknown): Record<string, unknown> {
     const state = record(value, "manifest.preset.demoState");
     if (Object.keys(state).length > 64) {
         fail("manifest.preset.demoState has too many fields");
@@ -426,6 +427,7 @@ function validateDemoState(value: unknown): void {
             fail(`manifest.preset.demoState.${key} must be a finite number, boolean, or string`);
         }
     }
+    return state;
 }
 
 function validateRender(value: unknown): void {
@@ -454,6 +456,9 @@ function validateRender(value: unknown): void {
     finiteNumber(render.thicknessDownscale, "manifest.preset.render.thicknessDownscale", 1, 16);
     bool(render.halfRendering, "manifest.preset.render.halfRendering");
     bool(render.anisotropicSurface, "manifest.preset.render.anisotropicSurface");
+    if (render.independentRendering !== undefined) {
+        bool(render.independentRendering, "manifest.preset.render.independentRendering");
+    }
     const filter = text(render.surfaceFilter, "manifest.preset.render.surfaceFilter");
     if (filter !== "bilateral" && filter !== "narrowRange") {
         fail('manifest.preset.render.surfaceFilter must be "bilateral" or "narrowRange"');
@@ -574,17 +579,29 @@ function validatePreset(value: unknown): FluidExportJson {
         fail(`manifest.preset.meta.method "${method}" is not supported`);
     }
     validatePhysics(preset.physics, method);
-    numericRecord(preset.demoParams, "manifest.preset.demoParams");
-    validateDemoState(preset.demoState);
-    const particleSize = finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE);
+    const demoParams = numericRecord(preset.demoParams, "manifest.preset.demoParams");
+    const demoState = validateDemoState(preset.demoState);
+    const resolution = method === "FLIP" && preset.gridResolution !== undefined ? integer(preset.gridResolution, "manifest.preset.gridResolution", 16, 2048) : undefined;
+    const particleSize =
+        preset.physicsParticleSize !== undefined
+            ? finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE)
+            : resolution !== undefined
+              ? 1
+              : finiteNumber(preset.physicsParticleSize, "manifest.preset.physicsParticleSize", PHYS_MIN_SCALE, PHYS_MAX_SCALE);
     integer(preset.particleCount, "manifest.preset.particleCount", 1, Number.MAX_SAFE_INTEGER);
     vector(preset.gridPosition, "manifest.preset.gridPosition", 3, -MAX_ABS_POSITION, MAX_ABS_POSITION);
     const gridSize = vector(preset.gridSize, "manifest.preset.gridSize", 3, Number.MIN_VALUE, MAX_EXTENT) as [number, number, number];
-    const resolution = method === "FLIP" && preset.gridResolution !== undefined ? integer(preset.gridResolution, "manifest.preset.gridResolution", 16, 2048) : undefined;
     if (preset.markersPerCell !== undefined) {
         integer(preset.markersPerCell, "manifest.preset.markersPerCell", 1, 64);
     }
-    const cellSize = resolution ? Math.max(...gridSize) / resolution : cellSizeForPhysicsScale(method, particleSize);
+    const simulationType = demoState.simulationType;
+    const cellSize = resolution
+        ? Math.max(...gridSize) / resolution
+        : fluidSimulationCellSize(method, {
+              physicsParticleSize: particleSize,
+              samplingType: simulationType === "mesh" ? "mesh" : "fluid",
+              particleRadius: demoParams.particleRadius,
+          });
     const cells = gridCellsForSize(gridSize, cellSize);
     if (cells.some((count) => count > MAX_GRID_AXIS_CELLS) || cells[0] * cells[1] * cells[2] > MAX_GRID_CELL_COUNT) {
         fail("manifest preset grid exceeds the supported allocation limits");

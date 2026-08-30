@@ -230,7 +230,15 @@
         "disableCollision": {
             "extends": "entityAction",
             "label": "Disable collision",
-            "eventsRaised": [{ "name": "disableCollision" }]
+            "eventsRaised": [{ "name": "disableCollision" }, { "name": "disableFluidSimulationCollision" }],
+            "properties": {
+                "fluidSimulationOnly": {
+                    "type": "boolean",
+                    "default": false,
+                    "label": "Fluid simulation only",
+                    "description": "Keep physics and weapon collision enabled, but exclude this entity from every fluid simulation collision field."
+                }
+            }
         },
         "playAnimation": {
             "label": "Play animation",
@@ -265,6 +273,13 @@
                     "items": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "enum",
+                                "values": ["play", "stop"],
+                                "default": "play",
+                                "required": true,
+                                "label": "Action"
+                            },
                             "events": {
                                 "type": "array",
                                 "minItems": 1,
@@ -291,18 +306,37 @@
                                     }
                                 }
                             },
+                            "id": {
+                                "type": "string",
+                                "required": true,
+                                "when": {
+                                    "property": "action",
+                                    "values": ["play"]
+                                },
+                                "label": "Sound ID",
+                                "description": "Globally unique playback channel ID referenced by stop actions."
+                            },
                             "sound": {
                                 "type": "string",
                                 "optionsSource": "sounds",
                                 "required": true,
+                                "when": {
+                                    "property": "action",
+                                    "values": ["play"]
+                                },
                                 "label": "Sound"
                             },
-                            "action": {
-                                "type": "enum",
-                                "values": ["play", "stop"],
-                                "default": "play",
+                            "soundId": {
+                                "type": "string",
+                                "optionsSource": "soundIds",
+                                "optionsByChunk": "soundIdsByChunk",
                                 "required": true,
-                                "label": "Action"
+                                "when": {
+                                    "property": "action",
+                                    "values": ["stop"]
+                                },
+                                "label": "Sound ID",
+                                "description": "Playback channel defined by a sound play action."
                             },
                             "delay": {
                                 "type": "number",
@@ -316,70 +350,29 @@
                                 "default": 0,
                                 "label": "Fade (s)",
                                 "description": "Fade-in duration for play, or fade-out duration for stop."
+                            },
+                            "volume": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "default": 1,
+                                "when": {
+                                    "property": "action",
+                                    "values": ["play"]
+                                },
+                                "label": "Volume"
+                            },
+                            "loop": {
+                                "type": "boolean",
+                                "default": false,
+                                "when": {
+                                    "property": "action",
+                                    "values": ["play"]
+                                },
+                                "label": "Loop"
                             }
                         }
                     }
-                }
-            }
-        },
-        "playSound": {
-            "extends": "soundControl",
-            "label": "Play sound",
-            "description": "Starts a sound immediately or after a source event.",
-            "eventsRaised": [],
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "required": true,
-                    "definition": false,
-                    "label": "Sound ID",
-                    "description": "Unique playback channel ID referenced by stopSound."
-                },
-                "sound": {
-                    "type": "string",
-                    "optionsSource": "sounds",
-                    "required": true,
-                    "label": "Sound"
-                },
-                "fadeInDelay": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 0,
-                    "label": "Fade-in delay (s)"
-                },
-                "volume": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 1,
-                    "default": 1,
-                    "label": "Volume"
-                },
-                "loop": {
-                    "type": "boolean",
-                    "default": false,
-                    "label": "Loop"
-                }
-            }
-        },
-        "stopSound": {
-            "extends": "soundControl",
-            "label": "Stop sound",
-            "description": "Stops every active instance of a sound immediately or after a source event.",
-            "eventsRaised": [],
-            "properties": {
-                "soundId": {
-                    "type": "string",
-                    "optionsSource": "soundIds",
-                    "optionsByChunk": "soundIdsByChunk",
-                    "required": true,
-                    "label": "Sound ID",
-                    "description": "Playback channel defined by a playSound behavior."
-                },
-                "fadeOutDelay": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 0,
-                    "label": "Fade-out delay (s)"
                 }
             }
         },
@@ -519,6 +512,81 @@
                 }
             }
         },
+        "explode": {
+            "label": "Explosion",
+            "description": "Fractures and ejects nearby liquefiable and dynamic entities. Without explicit subscriptions, the owner's explode event triggers it once.",
+            "eventsRaised": [],
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "minItems": 1,
+                    "label": "Event subscriptions",
+                    "description": "Optional replacement triggers. When omitted, the behavior listens for the owner's explode event.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "entitySource",
+                                "optionsSource": "eventEntities",
+                                "required": true,
+                                "label": "Sources",
+                                "description": "Whose events are watched. One source is written as a string; several are written as an array."
+                            },
+                            "name": {
+                                "type": "event",
+                                "optionsSource": "eventsOfSources",
+                                "optionsFrom": "source",
+                                "required": true,
+                                "label": "Event",
+                                "description": "Only the events every one of the sources raises can be chosen.",
+                                "emptyHint": "Choose the sources first - this offers what they all raise."
+                            }
+                        }
+                    }
+                },
+                "sound": {
+                    "type": "string",
+                    "optionsSource": "sounds",
+                    "default": "bigExplosion",
+                    "label": "Sound"
+                },
+                "radius": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 10,
+                    "label": "Radius (m)"
+                },
+                "fragmentCount": {
+                    "type": "number",
+                    "integer": true,
+                    "minimum": 2,
+                    "maximum": 32,
+                    "default": 8,
+                    "label": "Fragments per mesh"
+                },
+                "strength": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 12,
+                    "label": "Debris speed (m/s)"
+                },
+                "debrisLifetime": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 15,
+                    "label": "Visible lifetime (s)"
+                },
+                "fadeDuration": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 2,
+                    "label": "Fade duration (s)"
+                }
+            }
+        },
         "weaponAntiGravityGun": {
             "label": "Anti-gravity gun",
             "description": "Configures the anti-gravity weapon.",
@@ -538,6 +606,12 @@
             "description": "Fires visible bullets, marks every mesh impact, and pushes dynamic entities at the hit point.",
             "eventsRaised": [],
             "properties": {
+                "sound": {
+                    "type": "string",
+                    "optionsSource": "sounds",
+                    "default": "pistolShot",
+                    "label": "Sound"
+                },
                 "range": {
                     "type": "number",
                     "minimum": 0,
@@ -557,6 +631,13 @@
                     "minimum": 0,
                     "default": 10,
                     "label": "Impact impulse (kg m/s)"
+                },
+                "bulletHoleSize": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "default": 1,
+                    "label": "Bullet hole size factor"
                 }
             }
         },
@@ -646,24 +727,6 @@
         }
     },
     "templates": {
-        "soundControl": {
-            "properties": {
-                "source": {
-                    "type": "entitySource",
-                    "optionsSource": "eventEntities",
-                    "label": "Sources",
-                    "description": "Optional event sources. One source is written as a string; several are written as an array."
-                },
-                "event": {
-                    "type": "event",
-                    "optionsSource": "eventsOfSources",
-                    "optionsFromRoot": "source",
-                    "label": "Event",
-                    "description": "Optional source event that triggers the action. Without a source and event, the action runs at startup.",
-                    "emptyHint": "Choose the sources first - this offers what they all raise."
-                }
-            }
-        },
         "entityAction": {
             "description": "Acts on its owner immediately, or when one of the subscribed source events is raised.",
             "properties": {

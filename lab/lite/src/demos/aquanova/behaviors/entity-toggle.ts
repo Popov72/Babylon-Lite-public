@@ -1,12 +1,12 @@
 import type { Mesh } from "babylon-lite";
 import type { AquanovaGameContext } from "./game-context.js";
-import type { Behavior, EntityToggleBehaviorConfig } from "./types.js";
+import type { Behavior, DisableCollisionBehaviorConfig, EntityToggleBehaviorConfig } from "./types.js";
 import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
 import { eventSubscriptionMatches, validateEventSubscriptions } from "./event-subscription.js";
 
 type EntityToggleContext = Pick<AquanovaGameContext, "events">;
 type EntityToggleBehaviorName = "disableCollision" | "disableEntity" | "enableCollision" | "enableEntity" | "hideEntity" | "removeEntity" | "showEntity";
-type EntityToggleEventName = "disable" | "disableCollision" | "enable" | "enableCollision" | "hide" | "remove" | "show";
+type EntityToggleEventName = "disable" | "disableCollision" | "disableFluidSimulationCollision" | "enable" | "enableCollision" | "hide" | "remove" | "show";
 
 class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Behavior<Name> {
     public readonly name: Name;
@@ -23,9 +23,10 @@ class EntityToggleBehavior<Name extends EntityToggleBehaviorName> implements Beh
         entityName: string,
         meshes: readonly Mesh[],
         config: EntityToggleBehaviorConfig,
-        context: EntityToggleContext
+        context: EntityToggleContext,
+        supportedKeys: readonly string[] = ["events"]
     ) {
-        assertBehaviorConfigKeys(config, name, ["events"]);
+        assertBehaviorConfigKeys(config, name, supportedKeys);
         validateEventSubscriptions(name, config.events);
         this.name = name;
         this.mesh = meshes[0] ?? null;
@@ -68,8 +69,14 @@ export class DisableEntityBehavior extends EntityToggleBehavior<"disableEntity">
 }
 
 export class DisableCollisionBehavior extends EntityToggleBehavior<"disableCollision"> {
-    public constructor(entityName: string, meshes: readonly Mesh[], config: EntityToggleBehaviorConfig, context: EntityToggleContext) {
-        super("disableCollision", "disableCollision", entityName, meshes, config, context);
+    public constructor(entityName: string, meshes: readonly Mesh[], config: DisableCollisionBehaviorConfig, context: EntityToggleContext) {
+        super("disableCollision", config.fluidSimulationOnly ? "disableFluidSimulationCollision" : "disableCollision", entityName, meshes, config, context, [
+            "events",
+            "fluidSimulationOnly",
+        ]);
+        if (config.fluidSimulationOnly !== undefined && typeof config.fluidSimulationOnly !== "boolean") {
+            throw new Error("[aquanova] disableCollision.fluidSimulationOnly must be a boolean");
+        }
     }
 }
 

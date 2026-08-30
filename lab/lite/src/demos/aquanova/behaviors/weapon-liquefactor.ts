@@ -3,10 +3,9 @@ import type { AquanovaGameContext } from "./game-context.js";
 import type { ManagedSound } from "./sound-manager.js";
 import type { Behavior, WeaponLiquefactorBehaviorConfig } from "./types.js";
 import { assertBehaviorConfigKeys } from "./behavior-config-validation.js";
+import { aquanovaSoundUrl, validateAquanovaSoundName } from "./sound-asset.js";
 
 const DEFAULT_RANGE = 100;
-const SOUND_ROOT = "/aquanova/sounds";
-const SOUND_ASSET_VERSION = "20260813-1";
 const START_SHOT_SOUND = "liquefactorStartShot";
 const LIQUEFY_SOUND = "liquefactorLiquefy";
 
@@ -79,9 +78,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
                 throw new Error(`[aquanova] weaponLiquefactor sound category "${category}" must contain at least one sound`);
             }
             for (const soundName of soundNames) {
-                if (!soundName || soundName.endsWith(".mp3") || soundName.includes("/") || soundName.includes("\\")) {
-                    throw new Error(`[aquanova] weaponLiquefactor sound "${String(soundName)}" must be an MP3 file name without its extension`);
-                }
+                validateAquanovaSoundName("weaponLiquefactor sound", soundName);
                 names.add(soundName);
             }
         }
@@ -91,7 +88,7 @@ export class WeaponLiquefactorBehavior implements Behavior<"weaponLiquefactor"> 
 
         const sounds = await Promise.all(
             [...names].map(async (soundName) => {
-                const url = `${SOUND_ROOT}/${encodeURIComponent(soundName)}.mp3?v=${SOUND_ASSET_VERSION}`;
+                const url = aquanovaSoundUrl(soundName);
                 try {
                     return await this.context.sounds.load(`weaponLiquefactor:${soundName}`, url, {
                         preloadCount: 1,
